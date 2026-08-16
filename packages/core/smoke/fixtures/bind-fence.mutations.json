@@ -1,0 +1,41 @@
+{
+  "command": "pnpm smoke:bind-fence",
+  "mutations": [
+    {
+      "name": "restore the code this replaces: no fence at all",
+      "file": "packages/core/src/endpoint-serve.ts",
+      "find": "      assertBoundIncarnation(env, identity);\n",
+      "replace": "",
+      "expectRed": "AND THE HANDLER DID NOT RUN"
+    },
+    {
+      "name": "the fence ignores the epoch, so a successor incarnation serves the predecessor's caller",
+      "file": "packages/core/src/endpoint-serve.ts",
+      "find": "  if (b.instanceId === identity.instanceId && b.epoch === identity.epoch) return;",
+      "replace": "  if (b.instanceId === identity.instanceId) return;",
+      "expectRed": "a bind to a later epoch of the SAME instance is expired"
+    },
+    {
+      "name": "the fence drifts below args validation, so another check answers first",
+      "file": "packages/core/src/endpoint-serve.ts",
+      "find": "      assertBoundIncarnation(env, identity);\n      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      // §13.2: the command admits only its REGISTERED target modes — before args validation,\n      // so an unadmitted mode learns nothing about the input contract.\n      assertModeAdmitted(parsed, def);\n      // §13.7: args validate against the input schema BEFORE any effect (bad-request).\n      assertArgsValid(def.validate.args, env.args);",
+      "replace": "      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      assertModeAdmitted(parsed, def);\n      assertArgsValid(def.validate.args, env.args);\n      assertBoundIncarnation(env, identity);",
+      "expectRed": "a bind mismatch with INVALID ARGS answers the bind refusal"
+    },
+    {
+      "name": "the caller stops cross-checking a refusal against its own attribution",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)",
+      "replace": "      if (false as boolean)",
+      "expectRed": "a bind refusal from the very incarnation the caller bound is internal"
+    },
+    {
+      "name": "the production invoke path stops sending the bind (the fence is never reached)",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "  const bind = opts.currentEpoch === undefined\n    ? { instanceId: service.pinnedInstanceId ?? service.responder.instanceId, epoch: service.responder.epoch }\n    : undefined;",
+      "replace": "  const bind = undefined;",
+      "command": "pnpm smoke:bind-fence:live",
+      "expectRed": "carrying the bind-refused marker"
+    }
+  ]
+}

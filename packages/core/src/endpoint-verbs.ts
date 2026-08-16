@@ -20,9 +20,9 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, registryReadFailed, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, registryReadFailed, replyRefusedBeforeEffect, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail,
-  type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail,
+  type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock,
 } from "./endpoint-envelope.js";
 import type { JetStreamManager } from "@nats-io/jetstream";
 import type { CompiledContract } from "./schema-profile.js";
@@ -47,6 +47,10 @@ export interface EpVerbOp {
   caller: EpCaller;
   args?: Record<string, unknown>;
   target?: EpVerbTarget;
+  /** The incarnation this caller resolved against (§13.3). Carrying it makes a responder that is
+   *  not that incarnation refuse BEFORE running the command, which is the only place the refusal
+   *  can be a guard rather than a report. Omitted ⇒ any member of the class may serve the call. */
+  bind?: EpBindBlock;
   correlation?: EpCorrelation;
   /** Opaque signed authorization-context slot (§13.3); carried as-is. */
   auth?: string;
@@ -85,6 +89,17 @@ function buildRequest(
   // same budget the responder runs, so a request this boundary admits pins digests the
   // responder can honor or reject, never digests detached from the payload.
   assertArgsValid(op.contract.input.validate, op.args);
+  // The responder refuses these too (§13.3), but a caller that would emit an unservable request
+  // should not have to learn it from a round trip: `describe` is what produces a bind, and a
+  // scatter addresses every incarnation, so neither can carry one.
+  if (op.bind !== undefined) {
+    if (op.command === "describe")
+      throw new EpEnvelopeError("bad-request", "describe carries no bind: it is the bootstrap that produces one (SPEC 13.3)");
+    if (route.mode === "all")
+      throw new EpEnvelopeError("bad-request", "a scatter addresses every incarnation; a bind would make every member but one refuse (SPEC 13.5)");
+    if (route.mode === "inst" && op.bind.instanceId !== route.instanceId)
+      throw new EpEnvelopeError("bad-request", `bind.instanceId "${op.bind.instanceId}" contradicts the inst-rail route's instance "${route.instanceId}" (SPEC 13.2)`);
+  }
   const n = nonce();
   const subject = epRequestSubject(space, {
     route, endpoint: op.endpoint, command: op.command,
@@ -105,6 +120,7 @@ function buildRequest(
     replyExpected: verb.replyExpected,
     ...(op.goalId !== undefined ? { goalId: op.goalId } : {}),
     ...(op.target && op.target.mode !== "self" ? { target: bodyTarget(op.target) } : {}),
+    ...(op.bind !== undefined ? { bind: { instanceId: assertLifecycleToken(op.bind.instanceId, "bind instanceId"), epoch: op.bind.epoch } } : {}),
     ...(op.args !== undefined ? { args: op.args } : {}),
     from: { id: `${op.caller.owner}.${op.caller.actor}`, name: op.name ?? op.caller.actor },
     ...(verb.deadlineMs !== undefined ? { deadlineMs: verb.deadlineMs } : {}),
@@ -312,6 +328,22 @@ export async function epCall(
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
     const msg = await Promise.race([outcome, timeout]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
+    // A responder that fenced on the bind has ALREADY settled the question the currency check
+    // below asks, and settled it better: it knows it did not run the command, where the check can
+    // only observe that the answer came from elsewhere. Returning the refusal keeps the reply an
+    // ordinary application-level failure (§13.5) and hands the caller the one thing it needs —
+    // that a retry is safe — instead of a throw that says nothing about whether the command ran.
+    // The refusal is cross-checked against the SUBJECT before it is honored: a reply attributed to
+    // the very incarnation the caller bound cannot coherently claim it is not that incarnation,
+    // and a body that says otherwise is not allowed to stand in for its own attribution (§13.3).
+    if (attributed.reply.ok === false && replyRefusedBeforeEffect(attributed.reply.error)) {
+      if (op.bind === undefined)
+        throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} replied with a bind refusal to a request that carried no bind`);
+      const r = attributed.responder;
+      if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)
+        throw new EpEnvelopeError("internal", `${op.endpoint} instance ${r.instanceId} refused ${op.command} as the wrong incarnation, but the reply subject attributes it to exactly the bound one (${op.bind.instanceId} epoch ${op.bind.epoch}); the body does not get to contradict its own attribution (SPEC 13.3)`);
+      return attributed;
+    }
     if (route.mode === "one") {
       // §13.2:1187-1189 currency for the queue winner, bounded by the REMAINING budget so the whole
       // call stays within ONE `deadlineMs` (deliberately NOT a second dedicated budget like scatter's

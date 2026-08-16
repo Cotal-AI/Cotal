@@ -119,6 +119,45 @@ export function registryReadFailed(e: unknown): boolean {
   return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_REGISTRY_READ_FAILED);
 }
 
+/**
+ * `details[].kind` for a refusal raised by the RESPONDER because the request declared a bound
+ * incarnation (`bind`, §13.3) that is not this instance: `failed-precondition` when a different
+ * instance received it, `expired` when the same instance is at another epoch. It marks the one
+ * fact no caller-side check can establish: **the command did not run, and no effect of it exists.**
+ *
+ * That is the whole point of the block. {@link EP_UNBOUND_RESPONDER} is raised by the CALLER on
+ * the reply, so it can only report a split after the responder has already done whatever it was
+ * going to do — a check that runs after the effect is a report, not a guard. This marker is set
+ * before the handler, before args validation, and before any seam that can consume a one-use
+ * proof, by the only party that knows which incarnation it is. A caller holding it may re-resolve
+ * and re-issue without risking a duplicate effect; that is exactly what a caller holding
+ * `EP_UNBOUND_RESPONDER` must NOT do.
+ */
+export const EP_BIND_REFUSED = "ai.cotal.ep.bind-refused";
+
+/** The {@link EP_BIND_REFUSED} payload: the incarnation the caller bound, and the one that
+ *  refused. Both ids are stated because either field alone can be the mismatching one — a
+ *  different instance, or the same instance at a later epoch — and the reader needs to see which. */
+export interface EpBindRefusedDetail extends EpErrorDetail {
+  kind: typeof EP_BIND_REFUSED;
+  endpoint: string;
+  command: string;
+  /** What the request's `bind` block declared. */
+  boundTo: { instanceId: string; epoch: number };
+  /** The refusing instance's own identity. */
+  servedBy: { instanceId: string; epoch: number };
+}
+
+/** True iff an `EpError` carries the {@link EP_BIND_REFUSED} marker: a responder refused BEFORE
+ *  executing, because it is not the incarnation the caller bound — the command did not run.
+ *
+ *  It takes an `EpError` and not a thrown value, unlike its sibling predicates, because this
+ *  refusal never arrives as a throw: it is the responder's own application-level failure and
+ *  those ride the reply (§13.5). A consumer reads it off `reply.error`. */
+export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
+  return (e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED);
+}
+
 /** The `EndpointReply.error` shape. */
 export interface EpError {
   code: string;

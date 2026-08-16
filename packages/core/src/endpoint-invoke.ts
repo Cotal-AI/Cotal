@@ -404,10 +404,20 @@ export async function invokeCommand(
   const route = service.pinnedInstanceId !== undefined
     ? { mode: "inst" as const, instanceId: service.pinnedInstanceId, epoch: service.responder.epoch }
     : { mode: "one" as const };
+  // The bind travels WITH the request, so the responder can refuse before running the command
+  // rather than leaving `describeBound` to report the split afterwards. It is sent exactly when
+  // this handle's own resolve is the currency reference — that is the caller saying "this
+  // incarnation or none", and it is the same population the check below already refuses. A caller
+  // that supplied its own `currentEpoch` is asking a REGISTRY whether the answerer is current, and
+  // deliberately accepts any current member; binding it would refuse calls that succeed today.
+  const bind = opts.currentEpoch === undefined
+    ? { instanceId: service.pinnedInstanceId ?? service.responder.instanceId, epoch: service.responder.epoch }
+    : undefined;
   return epCall(nc, space, route, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
+    ...(bind !== undefined ? { bind } : {}),
   }, {
     deadlineMs: opts.deadlineMs ?? 10_000,
     currentEpoch: opts.currentEpoch ?? describeBound,

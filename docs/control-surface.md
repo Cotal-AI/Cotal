@@ -87,14 +87,18 @@ rides class anycast (any manager may accept, and the acceptance records which on
 `cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
 foreground spawn has no manager to pin and refuses the flag). There are no ordinal
 aliases and no short forms: wherever a display names an instance you can address, it prints
-the whole id, because `--on` takes nothing else. Pinning is not only a preference: the
-resolve and the invoke are separate trips through the same anycast queue, so in a
-multi-manager space an unpinned call can be received and answered by one instance while
-the caller is told it did not bind. The commands that have `--on` (`ps`, `stop`, `attach`,
-`spawn --detach`) avoid that split by pinning; a command without the flag (`models`, `up`,
-`down`) has no pin to reach for, and its message says what the split means: the instance may
-have received and answered the request, a read is safe to re-issue, and a mutation is verified
-(`ps`/`inspect`/roster) before any retry. `ps` and
+the whole id, because `--on` takes nothing else.
+
+The resolve and the invoke are separate trips through the same anycast queue, so in a
+multi-manager space an unpinned call can land on an instance the caller did not resolve. Every
+call carries the incarnation it resolved against, and a manager that is not that incarnation
+**refuses before running the command** — so the failure an operator sees says the command did
+not run, and re-issuing it cannot duplicate the effect. That is the difference that matters for
+a mutation: the older behaviour detected the mismatch on the reply, after the manager had
+already acted, and could only tell you to go and check. `--on` still matters for reaching a
+specific manager (`ps`, `stop`, `attach`, `spawn --detach`), but it is no longer what stands
+between a split and a duplicated spawn. Against a manager older than this fence the refusal is
+still after the fact, and its message says so. `ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled unreachable,

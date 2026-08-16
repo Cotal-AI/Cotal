@@ -21,7 +21,7 @@ import type { EndpointRef } from "./types.js";
 // use them without dragging in schema-profile's load-time digest (node:crypto). Re-exported here so
 // every existing `@cotal-ai/core` consumer keeps its import path.
 import { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode, type EpError, type EpErrorDetail } from "./endpoint-error.js";
-export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, EP_UNANSWERED, unansweredRequest, EP_REGISTRY_READ_FAILED, registryReadFailed, type EpErrorCode, type EpError, type EpErrorDetail, type EpUnboundResponderDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail } from "./endpoint-error.js";
+export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, EP_UNANSWERED, unansweredRequest, EP_REGISTRY_READ_FAILED, registryReadFailed, EP_BIND_REFUSED, replyRefusedBeforeEffect, type EpErrorCode, type EpError, type EpErrorDetail, type EpUnboundResponderDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpBindRefusedDetail } from "./endpoint-error.js";
 
 /** The envelope schema version — independent of the wire `protocolVersion`; starts at its own
  *  v1 inside the v0.4 revision. Other values are rejected (`unsupported-version`). */
@@ -77,6 +77,25 @@ export interface EpTargetBlock {
  *  class; an action command's submissions are `journal`). */
 export type EpClass = "ephemeral" | "journal";
 
+/**
+ * The BOUND INCARNATION (§13.3): the endpoint incarnation the caller's `describe` resolved
+ * against, and the only one it will accept an effect from.
+ *
+ * It confers nothing and narrows only — a request carrying it reaches exactly the instances the
+ * subject already routes it to, and the block can only make one of them refuse (monotonic
+ * attenuation, §13.3). Attribution still comes from the reply SUBJECT, never from here: this is
+ * the caller's DECLARATION of what it bound, checked by the responder against its own identity,
+ * not a claim about who answered.
+ *
+ * The epoch is carried even on the `inst` rail, where the subject already pins the instance: the
+ * subject grammar has no epoch token, so an instance's SUCCESSOR incarnation answers an
+ * inst-addressed request today and the mismatch is only noticed by the caller afterwards.
+ */
+export interface EpBindBlock {
+  instanceId: string;
+  epoch: number;
+}
+
 export interface EndpointRequest {
   v: typeof EP_ENVELOPE_V;
   id: string;
@@ -89,6 +108,10 @@ export interface EndpointRequest {
    *  serve machinery enforces with the contract in hand); shape-checked here when present. */
   goalId?: string;
   target?: EpTargetBlock;
+  /** The incarnation this caller resolved against; a responder that is not it REFUSES before any
+   *  effect (§13.2). Absent on `describe` (the bootstrap that PRODUCES the bind) and on the
+   *  scatter rail (which addresses every incarnation by construction). */
+  bind?: EpBindBlock;
   /** The input payload: a JSON object, or explicit `null` — a canonical-void side's payload is
    *  absent OR `null` (§13.7), so `null` must survive parsing for the command's own schema
    *  validator to decide (an object-input contract still rejects it there, as `bad-request`). */
@@ -265,6 +288,20 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
     };
   }
 
+  let bind: EpBindBlock | undefined;
+  if (o.bind !== undefined) {
+    // `describe` is what PRODUCES a bind, so it cannot consume one: a bind on describe would have
+    // to come from somewhere other than this handle's own resolve, and there is nowhere else. It
+    // is refused rather than ignored, like every other field that cannot be honored where it sits.
+    if (command === "describe")
+      fail("bad-request", "describe carries no bind: it is the discovery bootstrap that produces one, so a bind on it could not have come from this handle's own resolve (SPEC 13.3)");
+    const b = asRecord(o.bind, "bind");
+    bind = {
+      instanceId: grammar(() => assertLifecycleToken(asString(b.instanceId, "bind.instanceId"), "bind.instanceId")),
+      epoch: asWireInt(b.epoch, "bind.epoch"),
+    };
+  }
+
   // §13.7: explicit `null` is a VALID canonical-void payload and must reach the command's own
   // schema validator, so only non-null args are shape-gated here.
   const args = o.args === undefined || o.args === null ? (o.args as undefined | null) : asRecord(o.args, "args") as Record<string, unknown>;
@@ -285,6 +322,7 @@ export function parseEndpointRequest(raw: unknown): EndpointRequest {
     v: EP_ENVELOPE_V, id, op: { endpoint, command, ...digests }, class: cls, replyExpected,
     ...(goalId !== undefined ? { goalId } : {}),
     ...(target !== undefined ? { target } : {}),
+    ...(bind !== undefined ? { bind } : {}),
     ...(args !== undefined ? { args } : {}),
     from,
     ...(deadlineMs !== undefined ? { deadlineMs } : {}),
@@ -310,6 +348,21 @@ export function checkRequestSubjectAgreement(env: EndpointRequest, subject: Pars
   // are enforced at parse time; scatter is only knowable here, where the route is in hand.
   if (subject.route === "all" && env.deadlineMs === undefined)
     fail("bad-request", "deadlineMs is required on the scatter rail (SPEC 13.3: MUST for call/scatter and journal submissions)");
+
+  if (env.bind !== undefined) {
+    // A scatter addresses EVERY live incarnation and its gather is reconciled against the frozen
+    // expected set (§13.5). A bind would make every member but one refuse, so the scatter would
+    // report the rest as failures of the call rather than as what they are — members that were
+    // never meant to be excluded. There is no coherent reading, so it is refused, not ignored.
+    if (subject.route === "all")
+      fail("bad-request", "a bind on the scatter rail has no coherent reading: the scatter addresses every incarnation and reconciles the gather against the frozen expected set (SPEC 13.5)");
+    // The subject is the authorization boundary and the body only ever narrows (§13.2/§13.3). On
+    // the inst rail the subject ALREADY names an instance, so a bind naming a different one is a
+    // body contradicting the rail it rode in on — the request is incoherent as sent, and the
+    // responder must not pick a winner between them.
+    if (subject.route === "inst" && env.bind.instanceId !== subject.instanceId)
+      fail("bad-request", `bind.instanceId "${env.bind.instanceId}" contradicts the inst-rail subject's instance "${subject.instanceId}"; the subject is the boundary and the body only narrows (SPEC 13.2)`);
+  }
 
   const t = subject.target;
   if (!t || t.mode === "self") {

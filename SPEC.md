@@ -1384,7 +1384,25 @@ answer) is capability-by-secret, the responder's grant spans all caller suffixes
 confines it to the requester is possession of the unguessable per-request nonce, which only
 the request's recipients hold. A stale process (superseded epoch) publishes attributably
 stale replies that callers reject; scatter gathers additionally reject replies from
-instances outside the frozen expected set (§13.5). The **caller's** process epoch is
+instances outside the frozen expected set (§13.5).
+
+**Incarnation admission (the bound-incarnation fence).** Rejecting a reply is a REPORT, not a
+guard: it happens after the responder has already handled the request. On the class rail the
+queue picks the responder, so a caller that resolved incarnation B can have its command executed
+by A and then be told the call failed — with no way to say whether any effect landed. A caller
+that will accept an effect only from the incarnation it resolved therefore declares it in the
+request (`bind`, §13.3), and a responder that is not that incarnation **MUST refuse it at the
+pre-effect seam** — before args validation, before target resolution, and before the §13.6/§13.10
+governed gate, which may consume a one-use payment proof. The refusal carries
+`ai.cotal.ep.bind-refused` and means the command did not run, so re-resolving and re-issuing
+cannot duplicate an effect; that is the distinction `ai.cotal.ep.unbound-responder` (raised by the
+caller, on the reply) cannot make. `bind` is a caller declaration and never authority: it can only
+narrow a request the subject already routed, and attribution still comes from the reply subject —
+a refusal attributed to the very incarnation the caller bound is incoherent and MUST be rejected
+(`internal`) rather than honored. A responder that does not implement the fence ignores the field
+(§5) and executes; the caller-side check remains the only protection in that skewed pair.
+
+The **caller's** process epoch is
 deliberately NOT encoded in the rails: reply consumption binds to the requesting process
 because a caller MUST subscribe the exact concrete nonce subject before publishing a call
 and MUST NOT persist nonces; a restarted successor never holds the predecessor's nonce
@@ -1466,6 +1484,7 @@ envelope is versioned and typed; `ControlRequest`/`ControlReply` are deleted.
 | `replyExpected` | boolean | MUST | the verb: `true` = call (a reply is expected on the reply rail; `deadlineMs` required; the caller subscribes its exact nonce before publishing), `false` = cast (fire-and-forget; a responder MUST NOT reply). The subject shape is identical for both; the verb never changes the grammar |
 | `goalId` | string | action commands | MUST for a command whose contract declares the action composite: the client-generated goal id (§13.6); absent otherwise. `id` remains the per-request idempotency key |
 | `target` | object | per mode | `{ owner, actor, lifecycleUid, mappingRevision? }`. **Absent for `self`** (and for untargeted ops): a supplied one is `target-mismatch`, never ignored. **Required for `owner`/`any`/`child`/`ledger`/`handle`**: `owner` MUST equal the subject `<tOwner>` token (`target-mismatch`); `actor` and `lifecycleUid` are validator-compared against the current mapping (`expired` on mismatch), and in `handle` mode MUST additionally equal the subject `<tActor>`/`<tUid>` tokens (`target-mismatch`); `mappingRevision`, when present, additionally pins the exact mapping revision the caller observed |
+| `bind` | object | MAY | `{ instanceId, epoch }` — the incarnation the caller's `describe` resolved against. A responder whose own `(instanceId, epoch)` differs **MUST refuse before any effect**, at the pre-effect seam and ahead of the governed gate: `failed-precondition` when a different instance received it, `expired` when the same instance is at another epoch, both carrying `details[].kind = ai.cotal.ep.bind-refused`, which asserts the command **did not run**. **Absent on `describe`** (the bootstrap that produces the bind; a supplied one is `bad-request`) and **absent on the scatter rail** (which addresses every incarnation; `bad-request`). On the `inst` rail it MUST name the subject's instance (`bad-request` otherwise) and adds the epoch the subject grammar has no token for. It confers nothing and can only make a responder the subject already reached refuse, so it satisfies monotonic attenuation |
 | `args` | object | MAY | validated against the input schema before any effect (`bad-request`) |
 | `from` | `EndpointRef` | MUST | as §5; `from.id` MUST equal the subject sender principal, and the sender UID token MUST match the caller's minted lifecycle UID (broker-enforced by the grant) |
 | `deadlineMs` | number | MUST for call/scatter and journal submissions | caller deadline budget; bounded, never unbounded. On a journal-class submission it is the **decision deadline**: the bound within which the caller expects its durable decision fact (§13.4) |

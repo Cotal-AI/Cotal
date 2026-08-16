@@ -1,22 +1,32 @@
 /**
- * THE CLASS-QUEUE SPLIT, RENDERED FROM A REAL ONE.
+ * THE CLASS-QUEUE SPLIT, AGAINST A REAL MANAGER — AND WHAT THE FENCE MAKES OF IT.
  *
- * `smoke:ep-rail-failure` grades every branch of {@link epRailFailure}, and drives three of its four
- * producer shapes against a real broker. The fourth — the describe-bound split, the one failure only
- * a LIVE manager can produce — is graded there on a hand-built `EpEnvelopeError`. That proves the
- * renderer's logic and nothing about the wire: an error assembled in the test is the test's own
- * belief about what core throws. This closes that gap and only that gap. Nothing here re-grades a
- * branch that suite already covers.
+ * The production `invokeCommand` path carries the incarnation the caller resolved (`bind`, §13.3),
+ * so a manager that is not that incarnation refuses BEFORE running the command. This drives that
+ * against a manager started by `cotal up` on a live broker and grades the one claim no unit fixture
+ * can make for the CLI: that the path an operator actually rides now returns a refusal PROVING
+ * nothing ran, where it used to raise a report that could not say either way.
  *
- * THE ERROR IS REAL, AND FORCED RATHER THAN RACED. It comes out of the production `invokeCommand`
- * path, against a manager started by `cotal up` on a live broker. Determinism comes from pointing
- * the resolved handle's cached responder id at an instance that does not exist, so whichever
- * instance answers is not the bound incarnation on every run. Waiting for a natural split would
- * grade the same code on a coin flip, and `smoke:queue-win` measured class-queue delivery as sticky
- * on one box — that coin is loaded against the split ever appearing here.
+ * WHAT CHANGED HERE. This file used to assert the opposite outcome — that the same doctored invoke
+ * THREW `failed-precondition` carrying `EP_UNBOUND_RESPONDER`, and that the CLI rendered that throw
+ * as an answer rather than as silence. That was the best available before the fence: the split was
+ * detected on the reply, so the throw was all there was. It is now a reply, and the assertions
+ * below are the same experiment graded against the stronger result.
+ *
+ * FORCED, NOT RACED. Determinism comes from pointing the resolved handle's cached responder id at
+ * an instance that does not exist, so whichever manager answers is not the bound incarnation on
+ * every run. Waiting for a natural split would grade the same code on a coin flip, and
+ * `smoke:queue-win` measured class-queue delivery as sticky on one box.
+ *
+ * WHAT THIS DOES NOT PROVE. A responder that does not know the `bind` field ignores it (§5) and
+ * runs the command, and the caller is back to the after-the-fact report — so `epRailFailure`'s
+ * split branch stays live for version skew and stays graded in `smoke:ep-rail-failure`, on a
+ * constructed error, because a current manager can no longer produce one. The `--on` remedy line
+ * is likewise unreachable from a current CLI against a current manager; both are kept for the
+ * skewed pair, not as dead code.
  *
  * Open mode (no creds); sandboxes COTAL_HOME + a temp root; tears down with `cotal down`, never
- * pkill. Needs `nats-server` on PATH. Run: pnpm smoke:split-verdict:live
+ * pkill. Needs `nats-server` on PATH. Run: pnpm smoke:bind-fence:live
  */
 import { spawnSync } from "node:child_process";
 import { createConnection } from "node:net";
@@ -26,7 +36,8 @@ import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   BASELINE_LIFECYCLE_ENDPOINT, DEV_OWNER, EpEnvelopeError, invokeCommand, mintLifecycleUid,
-  newIdentity, resolveService, respondedButUnbound, standaloneConnectOpts, type EpCaller,
+  newIdentity, resolveService, replyRefusedBeforeEffect, standaloneConnectOpts, type EpCaller,
+  type EndpointReply,
 } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { epRailFailure } from "../src/lib/control.js";
@@ -58,7 +69,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
  *  tears the process down before the summary — and `fail === 0` reads as PASS in every one of them,
  *  with a zero exit code, which is the only bit anyone downstream looks at. So the count is declared
  *  rather than implied, and checked on the way out however the process leaves. */
-const EXPECTED_CELLS = 13;
+const EXPECTED_CELLS = 14;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -111,9 +122,10 @@ try {
 
     // ---- 2. THE SPLIT, FORCED -------------------------------------------------------------
     // The control: an UNDOCTORED invoke must succeed first. Without it the doctored failure below
-    // could be any failure at all — a bad caller triple, a manager that never came up — and the
-    // renderer would be graded on the wrong error while every cell stayed green.
-    console.log("\n2. a REAL describe-bound split off the production invoke path");
+    // could be any failure at all — a bad caller triple, a manager that never came up — and every
+    // cell would stay green while grading the wrong thing. It is also the twin that makes "did not
+    // run" mean something: the SAME command, on the SAME manager, does run when the bind fits.
+    console.log("\n2. a REAL bind mismatch off the production invoke path");
     const control = await invokeCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 10_000 });
     ok("an ordinary invoke against this handle SUCCEEDS", control.reply.ok === true, control.reply);
 
@@ -124,31 +136,30 @@ try {
     service.responder.instanceId = ghost;
 
     let threw: unknown;
-    try { await invokeCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 10_000 }); }
+    let refused: EndpointReply | undefined;
+    try { refused = (await invokeCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 10_000 })).reply; }
     catch (e) { threw = e; }
-    ok("the same invoke now throws failed-precondition",
-      threw instanceof EpEnvelopeError && threw.code === "failed-precondition",
-      threw instanceof Error ? threw.message.slice(0, 160) : threw);
-    ok("...carrying the responder-answered marker — the wire really does produce it here",
-      respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
+    ok("the same invoke does NOT throw — the manager answered it",
+      threw === undefined, threw instanceof Error ? threw.message.slice(0, 200) : threw);
+    ok("...it comes back ok:false failed-precondition",
+      refused?.ok === false && refused.error?.code === "failed-precondition", refused);
+    ok("...carrying the bind-refused marker — the wire really does produce it here",
+      replyRefusedBeforeEffect(refused?.error), refused?.error);
 
-    // ---- 3. WHAT THE RENDERER MAKES OF IT --------------------------------------------------
-    // The claim, on the live error rather than a constructed one. A split is an ANSWER, so no
-    // reachability verdict may be stated and `unanswered` must be false: a caller that keys on that
-    // flag (`up`'s resume poll) must not read a split as silence.
-    console.log("\n3. THE CLAIM — a live split renders as an answer, not as silence");
-    const split = epRailFailure(threw, {});
-    ok("no reachability verdict is stated", !VERDICT.test(split.error ?? ""), split);
-    ok("...and it is not marked unanswered", split.unanswered === false, split);
-    ok("...the responder's own account is what is printed",
-      split.error?.startsWith("failed-precondition:") === true && split.error.includes(answeredBy), split);
-    // The remedy is offered on the caller's declaration, not on the shape of the error — and a live
-    // split is exactly where that distinction shows, since the error is identical either way.
-    ok("...a caller that HAS --on and did not pass it is offered it",
-      /--on <instance>/.test(split.error ?? ""), split);
-    const noFlag = epRailFailure(threw);
-    ok("...a caller with no such flag is not told to type one",
-      !/--on/.test(noFlag.error ?? "") && noFlag.error === `failed-precondition: ${(threw as EpEnvelopeError).message}`, noFlag);
+    // ---- 3. WHAT THE OPERATOR IS TOLD ------------------------------------------------------
+    // The claim, on the live refusal. `askManagerEp` renders a non-ok reply as its message, so the
+    // message IS the operator-facing text — and the one thing it has to carry is that the command
+    // did not run, because that is what makes re-issuing safe.
+    console.log("\n3. THE CLAIM — a live bind mismatch says the command did not run");
+    const msg = refused?.error?.message ?? "";
+    ok("the account states the command was not run", /WAS NOT RUN/.test(msg), msg.slice(0, 200));
+    ok("...and names the incarnation that refused, off its own identity", msg.includes(answeredBy), msg.slice(0, 200));
+    ok("...and the one the caller had bound", msg.includes(ghost), msg.slice(0, 200));
+    // No reachability verdict, from either side: a refusal is an ANSWER. `up`'s resume poll keys on
+    // `unanswered`, and reading a refusal as silence is what turns a retry into a duplicate spawn.
+    ok("no reachability verdict is stated", !VERDICT.test(msg), msg.slice(0, 200));
+    const rendered = epRailFailure(new EpEnvelopeError("failed-precondition", msg), {});
+    ok("...and the rail renderer does not mark it unanswered", rendered.unanswered === false, rendered);
   } finally {
     await nc.drain().catch(() => nc.close());
   }
