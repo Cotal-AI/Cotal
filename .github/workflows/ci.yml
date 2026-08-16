@@ -33,6 +33,10 @@ jobs:
         run: pnpm build
       - name: Docs bundle in sync
         run: pnpm check:docsbundle
+      # Broker-free and network-free, and it reads the BUILT connector, so it belongs after Build.
+      # It was reachable from `check` and executed by nothing, which is how it sat red on main.
+      - name: Docs smoke
+        run: pnpm smoke:docs
       - name: Unit tests
         run: pnpm test
       - name: View smoke

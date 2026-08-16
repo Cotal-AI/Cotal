@@ -79,13 +79,28 @@ const repoRoot = join(here, "..", "..", "..");
   );
 
   // Subject wildcards hit the intended sections: the exact wildcard form keeps its boost so it
-  // ranks the Wildcards section first; a wildcard with no literal form still resolves to its base
-  // subject and surfaces the spec section that documents it.
+  // ranks the Wildcards section first.
   assert.equal(searchDocs("team.>")[0].slug, "channels-and-permissions", "‘team.>’ ranks the Wildcards section first");
   assert.equal(searchDocs("team.*")[0].slug, "channels-and-permissions", "‘team.*’ ranks the Wildcards section first");
+
+  // A wildcard with NO literal form anywhere — `$SYS.>` is written nowhere in the corpus — reaches
+  // its sections only because the tokenizer strips the wildcard and searches the base subject.
+  // That is the whole of the code claim here: without the base expansion this query retrieves
+  // nothing at all, and what it retrieves must be `$SYS` prose rather than incidental noise.
   const sys = searchDocs("$SYS.>");
   assert.ok(sys.length > 0, "‘$SYS.>’ resolves to its base subject");
-  assert.ok(sys.some((h) => h.slug === "spec"), "‘$SYS.>’ surfaces the spec section that documents $SYS");
+  assert.ok(sys.every((h) => /\$SYS/i.test(h.text)), "every ‘$SYS.>’ hit is a section that names $SYS");
+  // WHICH of those sections wins is a fact about the corpus, not about this code. Until 2026-08-12
+  // the spec was in the default five; then two doc pages gained $SYS operational prose and filled
+  // the window, and this suite went red on a docs edit that broke nothing. The base expansion is
+  // what makes the spec reachable, so that is what is asserted — reachable, not ranked. There is
+  // no signal to rank it on: the corpus writes plain `$SYS` everywhere but one place, and a
+  // namespace-prefix term was tried and rejected because every `mesh.` in the docs is the word
+  // "mesh" ending a sentence, so it scores punctuation.
+  assert.ok(
+    searchDocs("$SYS.>", 10).some((h) => h.slug === "spec"),
+    "‘$SYS.>’ reaches the spec section documenting the reserved $SYS prefix",
+  );
   assert.ok(searchDocs("cotal.schema.json").length > 0, "a dotted path matches on its segments");
 
   // `refresh` is page-only: on a search it is flagged, not silently ignored.
