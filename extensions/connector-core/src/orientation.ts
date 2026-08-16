@@ -184,6 +184,17 @@ export function renderOrientation(o: Orientation): string {
     `  • status: ${o.status} · attention: ${o.attention}`,
     `  • peers present: ${o.peers.present} — ${o.peers.summary}`,
   );
+  // "message it directly", deliberately, and not "anycast the role".
+  //
+  // A peer that exists to accept work may admit direct messages only — a reasonable thing for it
+  // to do, since the delivery class is derived by the library from the subject the broker routed
+  // on, while a payload's `to` is written by the sender. Such a peer acks and destroys everything
+  // that arrives by another class, because an unacked delivery redelivers forever. So an anycast
+  // to its role is accepted by the transport, dropped by the peer, and never answered: a silent
+  // black hole, which is the worst failure shape available here, and indistinguishable from a
+  // service that is broken. Resolving the name and addressing that peer cannot fail that way. If a
+  // service does accept anycast, addressing it directly still works; the reverse is not true.
+  //
   // Only when there is a role to address. With none, the rule below is a sentence about nothing.
   if (o.peers.roles.length) {
     lines.push(
