@@ -47,6 +47,12 @@ import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 
+// The responder fence's marker, as a LITERAL and deliberately not imported: this harness must run
+// unchanged on tips that predate the fence (where the constant does not exist) so the two can be
+// compared by the same instrument. An import here would make the probe refuse to load on exactly
+// the tip it is the baseline for.
+const EP_BIND_REFUSED = "ai.cotal.ep.bind-refused";
+
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
     const s = createServer();
@@ -125,6 +131,7 @@ try {
     detail: string;
   };
   const trials: Trial[] = [];
+  let bindRefused = 0;
 
   console.log(`\n1. ${N} describe+invoke trials of the write \`define-persona\`, two live managers`);
   for (let i = 0; i < N; i++) {
@@ -135,7 +142,13 @@ try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
         { name, persona: `probe persona ${i}` }, { deadlineMs: 15_000 });
       if (r.reply.ok === true) { callerSaw = "ok"; detail = r.responder.instanceId === IID1 ? "A" : "B"; }
-      else { callerSaw = "app-error"; detail = r.reply.error?.code ?? "?"; }
+      else {
+        callerSaw = "app-error";
+        const err = r.reply.error as { code?: string; outcome?: string; details?: Array<{ kind?: string }> } | undefined;
+        const marks = (err?.details ?? []).map((d) => d.kind).filter(Boolean);
+        if (marks.includes(EP_BIND_REFUSED)) bindRefused++;
+        detail = `${err?.code ?? "?"}|outcome=${err?.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`;
+      }
     } catch (e) {
       callerSaw = "throw";
       detail = e instanceof EpEnvelopeError ? e.code : (e as Error).message.slice(0, 40);
@@ -164,6 +177,8 @@ try {
   console.log(`     per-trial: ${trials.map((t) => (t.both ? "D" : t.inRoot1 ? "a" : t.inRoot2 ? "b" : "-")).join("")}`);
   console.log(`                (D = duplicate across both instances, a/b = single effect, - = none)`);
 
+  console.log(`     refusals carrying ${EP_BIND_REFUSED}: ${bindRefused}`);
+
   console.log(`\n=== FINDING ===`);
   if (dupes.length > 0) {
     console.log(`REPRODUCED. ${dupes.length}/${N} trials executed the SAME write on BOTH instances.`);
@@ -180,6 +195,22 @@ try {
 
   // The claim under test is that a duplicate CAN occur and is invisible. Assert exactly that, and
   // nothing about a fix: no remedy is adopted, so there is no post-fix state to gate here.
+  // A ZERO IS ONLY EVIDENCE IF A SPLIT ACTUALLY HAPPENED. The three observable signatures of a
+  // split are tip-dependent and this probe must grade both tips with one rule: a duplicate (no
+  // fence, retry crossed instances), a throw (no fence, the second attempt also mismatched), or a
+  // `bind-refused` refusal (fence present, refused before the handler). If ALL THREE are zero the
+  // queue never split during this run and it grades nothing - which is NOT the same as the defect
+  // being absent, and must not be reported as if it were.
+  //
+  // Keyed on the union rather than on the fence marker alone, because the marker cannot exist on a
+  // pre-fence tip: gating on it would label every clean baseline run "unfalsifiable".
+  const splitSeen = dupes.length + trials.filter((t) => t.callerSaw === "throw").length + bindRefused;
+  if (splitSeen === 0) {
+    fail++;
+    console.log(`  \u2717 FAIL: GRADES NOTHING - no duplicate, no throw, no ${EP_BIND_REFUSED} refusal.`);
+    console.log(`     The class queue never split in these ${N} trials, so this run is evidence about`);
+    console.log(`     neither the defect nor any remedy. Re-run; do not read it as absence.`);
+  }
   check("DEFECT PRESENT: at least one write executed on both instances for one caller request",
     dupes.length > 0, { dupes: dupes.length, N });
   check("DEFECT IS SILENT: at least one duplicated write returned success to the caller",
