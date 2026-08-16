@@ -149,6 +149,29 @@ await sleep("1s", { name: "after-race" });
   ok("and the LOSER's own entries are not orphans: the race decided them",
     !raceOrphans.some((k) => losers.some((b) => k.includes(`/b:${b}/`))), JSON.stringify({ losers, raceOrphans }));
   ok("nothing at all is orphaned when the source did not change", raceOrphans.length === 0, raceOrphans);
+
+  // The one above passes against a build that walks the losers too, because an UNEDITED loser
+  // replays clean either way — so it is not the cell that proves the losers are skipped. EDIT the
+  // losing branch, and the two builds part company: skipping it is silent, entering it hits a hash
+  // that no longer matches and refuses the migration over a branch the race already decided. This
+  // is the other diagonal of section 1 — that one catches a walk that reports too LITTLE, this one
+  // catches a walk that reports too MUCH — and the two mutants have different casualty lists.
+  const DURATION: Record<string, string> = { x: "1s", y: "2s" };
+  const loser = losers[0] as string;
+  const EDITED_LOSER = RACE.replace(
+    `sleep("${DURATION[loser]}", { name: "${loser}-work" })`,
+    `sleep("7s", { name: "${loser}-work" })`,
+  );
+  ok("the edit landed on the losing branch", EDITED_LOSER !== RACE, JSON.stringify({ loser }));
+
+  const rj3 = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
+  const overLoser = await run(EDITED_LOSER, {
+    runId: "r-race", handler: checkHandler(10_000_000), journal: rj3, migration: true,
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("a migration does not enter a branch the race decided, so an edit inside the LOSER is invisible",
+    overLoser === null, `${overLoser?.name}: ${overLoser?.message?.slice(0, 140)}`);
+  ok("and the loser's steps are still accounted for rather than orphaned",
+    keys(rj3.orphans()).length === 0, keys(rj3.orphans()));
 }
 
 // ---- 3) a divergence INSIDE the winning branch is seen, because the branch is entered -----------
