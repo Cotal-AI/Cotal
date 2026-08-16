@@ -894,7 +894,7 @@ try {
   let a = await sleep("1s")
   let b = await sleep("1s")
 } catch (e) {
-  await notify(["ops"], "swallowed")
+  await notify(["ops"], { decision: "swallow", outcome: "caught" })
 }
 `;
   let effects = 0;
@@ -908,6 +908,9 @@ try {
   } catch (e) { released = e; }
   ok("a workflow's catch does not swallow its host's stop", released instanceof RunReleased,
     `${(released as Error)?.name}`);
+  // The fact is a VALID one on purpose. With a malformed fact the effect boundary refuses it
+  // (L3043) and this assertion goes green whether the stop worked or not — the assertion would
+  // still read correctly and would have stopped being about the stop.
   ok("and the catch block performed nothing: no notify was recorded",
     journal.entries().every((e) => e.kind !== "notify"), journal.entries().map((e) => e.kind));
 }
