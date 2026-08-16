@@ -396,7 +396,7 @@ export class RunDivergence extends Error {
 class Interpreter {
   readonly journal: Journal;
   readonly prng: Prng;
-  private effectCount = 0;
+  private effectCount: number;
   private readonly ceiling: number;
   private steps = 0;
   private nextYield: number;
@@ -421,7 +421,14 @@ class Interpreter {
     // EVERY limit comes from the pins, never from a default applied here. A default resolved a
     // second time is a default resolved by whichever interpreter happens to be resuming, which is
     // exactly what pinning exists to stop.
+    // THE CEILING IS A RUN BOUND, SO THE COUNT STARTS WHERE THE RUN LEFT OFF. §11 names L4009 "Run
+    // effect ceiling reached" and §7.6 pins the ceiling on the record — a pin is only worth
+    // refusing a mismatch on (L5009) if the thing it pins is enforced. Starting at 0 gave every
+    // activation a full allowance, so a runaway loop of effects that crashed or was released
+    // periodically never reached the ceiling however much it performed against the world, and the
+    // fault text claimed a run-scoped fact from an activation-scoped counter.
     this.prng = new Prng(pins.seed);
+    this.effectCount = this.journal.dispatchedEffects();
     this.ceiling = pins.effectCeiling;
     this.stepBudget = pins.stepBudget;
     this.yieldEvery = pins.yieldEvery;
@@ -442,7 +449,7 @@ class Interpreter {
     if (this.steps > this.stepBudget) {
       throw new RuntimeFault(
         "L4013",
-        `this run has taken more than ${this.stepBudget} interpreter steps without finishing, which means a loop that performs no effect is not terminating. The effect ceiling cannot see such a loop, because it performs nothing to count. Add an exit condition, or raise stepBudget if the program legitimately does this much work.`,
+        `this walk has taken more than ${this.stepBudget} interpreter steps without finishing, which means a loop that performs no effect is not terminating. The effect ceiling cannot see such a loop, because it performs nothing to count. Add an exit condition, or raise stepBudget if the program legitimately does this much work. (stepBudget bounds ONE WALK, not the run: steps are not recorded, so a resume cannot recover a count the way the effect ceiling can.)`,
       );
     }
     if (this.steps < this.nextYield) return null;

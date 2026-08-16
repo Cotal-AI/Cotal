@@ -42,6 +42,13 @@ export interface RunPins {
    */
   readonly startedAt: number;
   readonly yieldEvery: number;
+  /**
+   * Interpreter dispatches allowed in ONE WALK — not in the run. Steps are not recorded, so a
+   * resume has nothing to recover a count from, and a replay re-walks the program anyway. This is
+   * deliberately unlike `effectCeiling`, which IS a run bound because the journal records every
+   * dispatch: the two are listed together and a lane fixing both for symmetry would invent a
+   * counter with no source of truth.
+   */
   readonly stepBudget: number;
   readonly effectCeiling: number;
   readonly languageVersion: string;

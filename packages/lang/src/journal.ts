@@ -13,6 +13,7 @@
  */
 
 import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
+import { EFFECT_KINDS } from "./primitives.js";
 
 export type EntryState = "pending" | "settled";
 export type EntryStatus = "ok" | "failed" | "cancelled";
@@ -446,6 +447,33 @@ export class Journal {
       .filter((k) => !this.consumed.has(k))
       .map((k) => this.byKey.get(k))
       .filter((e): e is JournalEntry => e !== undefined);
+  }
+
+  /**
+   * How many EFFECTS this run has already dispatched, counted from what is recorded.
+   *
+   * The effect ceiling is a RUN bound (§11 names L4009 "Run effect ceiling reached") and the
+   * interpreter's counter is per-instance, so without this a run got a fresh allowance at every
+   * activation and a runaway loop that crashed periodically could never reach the ceiling. The
+   * journal is the only thing that survives an activation, and it already holds the answer.
+   *
+   * Distinct KEYS, not entries: a dispatch writes a pending entry and then a settled one under the
+   * same key, and the interpreter counts the dispatch once. A pending entry still counts — the
+   * effect was performed, which is exactly why it was written before the handler was called.
+   *
+   * `conclave` is excluded because the interpreter does not count it either: it dispatches
+   * `openConclave` from the scope walker rather than through `performEffect`, so counting it here
+   * would make a resumed run's tally disagree with a fresh one's. That asymmetry is a real gap in
+   * what the ceiling sees and it is reported separately; this method mirrors the counter rather
+   * than quietly repairing it, because a seed that does not match the thing it seeds is worse than
+   * the gap it would paper over.
+   */
+  dispatchedEffects(): number {
+    let n = 0;
+    for (const e of this.byKey.values()) {
+      if (e.kind !== "conclave" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;
+    }
+    return n;
   }
 
   /** Start a fresh replay pass. */

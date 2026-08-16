@@ -1,0 +1,33 @@
+{
+  "suite": "packages/lang/smoke/fuel.smoke.ts",
+  "guard": "The effect ceiling is a RUN bound recovered from the journal at every activation, and the step budget is deliberately not: it bounds one walk and its message says so.",
+  "command": "pnpm smoke:lang-fuel",
+  "completionMarker": "fuel.smoke:",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/effect-ceiling.json",
+  "mutations": [
+    {
+      "name": "every activation starts with a fresh allowance again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    this.effectCount = this.journal.dispatchedEffects();",
+      "replace": "    this.effectCount = 0;",
+      "expectRed": "the resumed run reaches the ceiling the RUN was pinned to, not a fresh one",
+      "cell": "the resumed run reaches the ceiling the RUN was pinned to, not a fresh one"
+    },
+    {
+      "name": "the recovered count double-counts, so the ceiling arrives early",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      if (e.kind !== \"conclave\" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;",
+      "replace": "      if (e.kind !== \"conclave\" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 2;",
+      "expectRed": "and it stops at the pinned number rather than after it",
+      "cell": "and it stops at the pinned number rather than after it"
+    },
+    {
+      "name": "the step budget's message drops the clause that says it is not the run",
+      "file": "packages/lang/src/interpret.ts",
+      "find": " (stepBudget bounds ONE WALK, not the run: steps are not recorded, so a resume cannot recover a count the way the effect ceiling can.)",
+      "replace": "",
+      "expectRed": "and its message says it bounds ONE WALK, not the run",
+      "cell": "and its message says it bounds ONE WALK, not the run"
+    }
+  ]
+}

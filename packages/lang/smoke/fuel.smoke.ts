@@ -24,6 +24,8 @@
 import { run } from "../src/interpret.js";
 import { RuntimeFault } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
+import { Journal, type JournalEntry, type JournalStore } from "../src/journal.js";
+import { resolvePins } from "../src/pins.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -193,6 +195,75 @@ log(votes.a.status);
   // than one yield interval, so no ordinary program reaches the boundary where cancellation is
   // checked. If this ever fails, the comment is wrong before the code is.
   ok("and stays well inside one yield interval (1024)", r.steps < 1_024, r.steps);
+}
+
+// ---- 4) the effect ceiling is a RUN bound, and survives a crash ------------------------------
+//
+// The counter lives on the interpreter, so every activation used to start at zero: a run pinned to
+// four effects performed six across two activations and never faulted. Two individually correct
+// decisions composed into it — instance fields at zero, and replayed effects deliberately not
+// counted, which is right because a replay performs nothing. What was missing is that the journal
+// records every dispatch, so the count IS recoverable, and §11 calls L4009 a RUN ceiling.
+//
+// This is the exact reproduction that found it: pin four, release after three, resume.
+{
+  const NOW = 1_770_000_000_000;
+  const pins = resolvePins({ runId: "r-ceil", effectCeiling: 4 }, NOW);
+  const SIX = [1, 2, 3, 4, 5, 6].map((i) => `await sleep("1m", { name: "s${i}" });`).join("\n");
+
+  const entries: JournalEntry[] = [];
+  const store = { append: async (e: JournalEntry) => { entries.push(e); } } as JournalStore;
+
+  let dispatched = 0;
+  const counting = new Proxy(new SimHandler({ now: () => NOW }), {
+    get(t: SimHandler, k: string | symbol) {
+      const v = (t as unknown as Record<string | symbol, unknown>)[k];
+      if (typeof v !== "function") return v;
+      const f = v as (...a: unknown[]) => unknown;
+      if (k !== "sleep") return f.bind(t);
+      return (...a: unknown[]) => { dispatched += 1; return f.apply(t, a); };
+    },
+  }) as SimHandler;
+
+  let stops = 0;
+  const first = await run(SIX, {
+    runId: "r-ceil", handler: counting, pins,
+    journal: new Journal({ run: "r-ceil", store }),
+    shouldStop: () => (stops++ >= 3 ? "released" : undefined),
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("the first activation is released after three effects, well inside the ceiling",
+    first?.name === "RunReleased" && dispatched === 3, { first: first?.name, dispatched });
+
+  const second = await run(SIX, {
+    runId: "r-ceil", handler: counting, pins,
+    journal: new Journal({ run: "r-ceil", entries, store }),
+  }).then(() => null, (e: unknown) => e as Error);
+
+  // Before the fix this returned normally, having performed six effects under a ceiling of four,
+  // and nothing anywhere said so. The ceiling is what the run is pinned to, not what one walk is.
+  ok("the resumed run reaches the ceiling the RUN was pinned to, not a fresh one",
+    second instanceof RuntimeFault && second.code === "L4009", { name: second?.name, code: (second as RuntimeFault)?.code });
+  ok("and it stops at the pinned number rather than after it",
+    dispatched === 4, dispatched);
+  ok("the message quotes the pinned ceiling",
+    second instanceof Error && second.message.includes("more than 4 effects"), second?.message);
+}
+
+// ---- 5) the step budget is NOT the same, and says so -----------------------------------------
+//
+// Steps are not recorded, so nothing can recover a count across an activation and the budget is
+// genuinely per-walk. The two pins sit together in §7.6 and the next reader will assume symmetry,
+// so the message is where the asymmetry has to be stated.
+{
+  let caught: unknown;
+  try {
+    await run(RUNAWAY, { runId: "f-walk", handler: new SimHandler({}), stepBudget: 500, yieldEvery: NEVER });
+  } catch (e) {
+    caught = e;
+  }
+  ok("the step budget faults as L4013", (caught as RuntimeFault)?.code === "L4013", String(caught));
+  ok("and its message says it bounds ONE WALK, not the run",
+    caught instanceof Error && caught.message.includes("bounds ONE WALK, not the run"), (caught as Error)?.message);
 }
 
 console.log(`fuel.smoke: ${pass} checks passed`);
