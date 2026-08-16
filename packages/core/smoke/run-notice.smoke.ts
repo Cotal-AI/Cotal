@@ -167,10 +167,24 @@ const spec = (over: Partial<RunNoticeSpecValue> = {}): RunNoticeSpecValue => ({
   const onOtherRun = runNoticeId("o".repeat(43), PLANNER);
   await writeRunNotice(kv, EP, onOtherRun, spec({ run: OTHER_RUN, at: NOW + 3 }));
 
+  // ORDER, built so id order and decision order DISAGREE. Two notices whose ids happen to sort the
+  // way they were decided would pass against a list sorted by id, which is a different contract:
+  // the render is a table read top to bottom and `at` is what a reader is following.
+  const REVIEWER = "local.reviewer-3";
+  const pair = [runNoticeId("1".repeat(43), REVIEWER), runNoticeId("2".repeat(43), REVIEWER)].sort();
+  await writeRunNotice(kv, EP, pair[0] as string,
+    spec({ addressee: REVIEWER, at: NOW + 90, step: "/notify:told#9" }));
+  await writeRunNotice(kv, EP, pair[1] as string,
+    spec({ addressee: REVIEWER, at: NOW + 10, step: "/notify:told#8" }));
+  const ordered = await listRunNotices(kv, EP, RUN, REVIEWER);
+  c("the earlier DECISION comes first even though its id sorts later",
+    ordered[0]?.noticeId === pair[1] && ordered[1]?.noticeId === pair[0],
+    ordered.map((n) => ({ id: n.noticeId.slice(0, 6), at: n.spec.at })));
+
   const mine = await listRunNotices(kv, EP, RUN, PLANNER);
   c("the per-addressee list returns this agent's notices", mine.length >= 2, mine.map((n) => n.noticeId));
   c("and nobody else's", mine.every((n) => n.spec.addressee === PLANNER), mine.map((n) => n.spec.addressee));
-  c("oldest first, because the render is a table read top to bottom",
+  c("and one agent's own list is oldest-first too",
     mine.every((n, i) => i === 0 || (mine[i - 1] as { spec: { at: number } }).spec.at <= n.spec.at),
     mine.map((n) => n.spec.at));
 
@@ -181,7 +195,7 @@ const spec = (over: Partial<RunNoticeSpecValue> = {}): RunNoticeSpecValue => ({
   c("the per-RUN list spans every addressee on the run",
     all.some((n) => n.spec.addressee === PLANNER) && all.some((n) => n.spec.addressee === BUILDER),
     all.map((n) => n.spec.addressee));
-  c("it is not empty, which is the failure a one-token-short filter produces", all.length >= 3, all.length);
+  c("it is not empty, which is the failure a one-token-short filter produces", all.length >= 5, all.length);
   c("and it is scoped to the run: another run's notices are not on it",
     all.every((n) => n.spec.run === RUN), all.map((n) => n.spec.run));
   c("the other run has its own", (await listRunNoticesForRun(kv, EP, OTHER_RUN)).length === 1,
