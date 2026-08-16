@@ -11,7 +11,7 @@
 > [Reference docs](docs/README.md#reference); those describe the TypeScript implementation,
 > not this contract.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-07-19. Changes are tracked in
+> **Editors:** Cotal maintainers. **Last updated:** 2026-08-16. Changes are tracked in
 > [Appendix D](#appendix-d-change-log); versioning rules are §11.
 >
 > **v0.3 binding revision: owner+actor identity.** An instance's wire identity moves from a single
@@ -744,6 +744,25 @@ every connect: the callout then mints the connection as the named elevated profi
   `AgentCard.protocolVersion` (§6) as a one-way change signal, optional before the v0.4
   marker, MUST from v0.4 (§6, §13.11); v0 defines no behavior on a mismatch beyond rejecting
   messages it cannot parse.
+- **A non-additive discovery change is an out-of-band deployment cutover, and it rolls out
+  CALLER-FIRST.** A discovery change is non-additive when an unamended client that ignores it per
+  the unknown-field rule below would then behave in a way the change exists to prevent — for such
+  a change, ignoring is not a safe default and no default value repairs it. Every caller in a
+  deployment MUST implement the new version's rules BEFORE any responder in that deployment
+  registers or describes at that version. The two halves SHOULD therefore ship in **separate**
+  releases — the caller side first and adopted across the deployment, the responder's emission only
+  after — and shipping them in one release does not make a deployment safe, because **a release is
+  not a deployment**: an already-running caller is unchanged by whatever a new artifact contains,
+  so the order of two source edits says nothing about the processes on the wire. This rule exists
+  because the preceding one leaves a responder no way to detect the hazard itself: with no in-band
+  negotiation and no caller version on the wire, a responder cannot tell an amended caller from an
+  unamended one, so the obligation rests on the deployment rather than on either participant. The
+  observable marker is the discovery protocol's `protocol.v` on the registered service record
+  (§13.7) — "has any responder cut over" is a checkable registry property, while "has every caller
+  adopted" is exactly the out-of-band agreement this section already requires. **The residual is
+  real**: a deployment that cuts a responder over early exposes its unamended callers to whatever
+  the new version exists to prevent, and within v0 nothing in band detects it. Closing that needs
+  negotiation v0 does not have, and the v1 marker below is where it belongs.
 - New message families, subjects, and routing kinds are added in the core contract,
   generalized for all deployments, not in one example.
 - Receivers MUST ignore unknown object fields and MUST NOT treat an unknown field as an
@@ -1461,8 +1480,56 @@ envelope is versioned and typed; `ControlRequest`/`ControlReply` are deleted.
 | `id` | string | MUST | echoes the request `id` |
 | `ok` | boolean | MUST | |
 | `data` | any JSON | MAY | present iff `ok`; validated against the output schema |
-| `error` | object | iff `!ok` | `{ code, message, details?[] }`; codes below; `details[]` entries carry reverse-DNS `kind` |
+| `error` | object | iff `!ok` | `{ code, message, details?[], outcome? }`; codes below; `details[]` entries carry reverse-DNS `kind`; `outcome` per **Effect outcome** below |
 | `receipt` | string | MAY | opaque signed receipt slot (§13.10) |
+
+**Effect outcome.** An error reply MAY carry `error.outcome`, one of `executed`, `not-executed`,
+or `unknown`, stating whether the command's effect occurred. It is emitted by the **responder**,
+which is the only party that knows: a responder that refuses BEFORE dispatching to the handler
+MUST carry `not-executed`, and one that refuses AFTER the handler has run MUST carry `executed`.
+A responder that cannot distinguish the two MUST carry `unknown` rather than guess. An error
+reply that omits `outcome` MUST be read as `unknown`.
+
+`outcome` describes a reply, and only a reply. A refusal a CALLER raises locally is not an
+`EndpointReply` and carries no `outcome` field. It does not follow that the caller knows nothing:
+it MUST classify the refusal from what it observed, and only one of the four cases below is
+genuinely `unknown`.
+
+- **Refused before publication** — the request was never put on the wire. The caller knows the
+  effect did not occur and MUST classify it `not-executed`. Treating this as `unknown` suppresses
+  a retry that is provably safe, including for a `write`.
+- **Refused while holding a reply** — the caller parsed a reply and then rejected it for a reason
+  of its own, the §13.2 post-reply currency check being the case in this document. What the caller
+  knows comes from the reply it holds: an `ok:true` reply means the handler ran to completion, so
+  the refusal is `executed`; an `ok:false` reply carries the responder's own `outcome`, which the
+  caller MUST adopt rather than overwrite. Discarding a held reply's outcome because the caller
+  went on to reject the reply loses the one fact the responder was in a position to state.
+- **Answered by the broker with no responders** — the request subject had zero subscribers, and
+  the broker says so on the reserved no-responders sentinel. That is a positive, broker-attested
+  fact that nothing received the request, so it is `not-executed`, not merely unanswered. A caller
+  MUST trust it ONLY on that reserved sentinel, which carries no responder publish grant: the same
+  status on an ordinary reply subject is a responder's own claim and proves nothing about
+  delivery.
+- **No reply observed** — a deadline that expires with no answer at all, a transport failure after
+  publication, any path where the caller cannot tell whether the request was handled. This is
+  `unknown`, and it is the only local case that is.
+
+A caller **MUST NOT infer execution from the mere arrival of a reply**: a reply proves the request
+was HANDLED, never that it executed. The two differ on every path where a responder refuses before
+the handler — the version, class, target, sender, authz, contract, and guard checks all publish
+`ok:false` having executed nothing, and each of those replies says so in its own `outcome`.
+
+`outcome` exists because a refusal code alone cannot carry this fact: the same code and the same
+message are correct for a request that ran and for one that never left, and a caller that cannot
+tell them apart and retries duplicates the effect. `effect` (§13.7) tells a client whether a
+repeat is safe; `outcome` tells the caller what already happened. Neither substitutes for the
+other, and a `write` command refused with `unknown` is precisely the case where no automatic
+recovery is available and the decision belongs to the caller.
+
+`outcome` is NOT a goal's terminal state. An action accepted under §13.6 reports its result as a
+goal fact; an accepted action whose caller then loses its follow has an `outcome` of `executed`
+for the SUBMISSION and no terminal state at all, which are different facts about different
+things. `outcome` MUST NOT be used to report, replace, or summarize a goal outcome.
 
 The answering instance, its epoch, and the addressee are read from the **reply subject**
 (§13.2), not from payload fields; a payload claim of either is advisory display data only.
@@ -2154,9 +2221,94 @@ session.
   contract, never ephemeral replies.
 - `commands`, each declares name, input/output schemas, `class`, `targeted` (and if so which
   authz modes it admits), its **capability requirement** (the named capability minting maps to
-  subjects, §13.9), and optional traits.
+  subjects, §13.9), its `effect` (below), and optional traits.
 - `events`, name + payload schema; events ride the journal contract on the event plane
   (`epe….ev.<cluster>.<event>`), read-contained by event-topic grants.
+
+**Effect.** A command declaration carries `effect`, one of `read` or `write`.
+
+`read` asserts that executing the command again **changes nothing the command is trying to
+change**: the state after two executions is the state after one, and any difference between their
+results is only the freshness a caller would see by asking twice. The state in question is not
+only the endpoint's own — a command whose intended effect lands somewhere else is still a `write`.
+`evictPrincipal` on the delivery endpoint is the case that fixes the boundary: it drops live
+broker connections and leaves the endpoint's own records untouched, and it is a `write`, because
+dropping those connections is the point of calling it.
+
+Exactly one class of difference is excluded, and it is narrow: the incidental trace of having been
+called. Request ids, spans, access logs, metrics, counters, and timing are observable and are not
+what the command was for, so a command is not `write` merely because it can be seen to have been
+called. The test is not "did anything change" — something always does — but **would a caller who
+repeated this command be surprised by what the repeat did**. If the answer is no, it is `read`.
+
+`write` asserts nothing and MUST be assumed unsafe to repeat.
+
+A client MUST NOT automatically re-issue a command declared `write` after any outcome that does
+not prove non-execution (§13.3), **whatever `id` the re-issue carries**. The exemption is not the
+token but the CONVERGENCE: a re-issue is a resubmission, governed by §13.8 rather than by this
+rule, only while the responder will converge it onto the recorded prior decision. A re-issue the
+responder accepts as NEW WORK is a repeat, and this prohibition binds it however the `id` was
+chosen.
+
+That distinction is load-bearing because the two are not distinguishable by inspection. Same-`id`
+convergence lasts only while the prior decision is retained (§13.8), and a caller cannot observe
+retention from outside — so a client that reuses an `id` after the horizon has issued a repeat
+while believing it issued a resubmission. Reusing the token is therefore not a substitute for the
+proof this rule demands: absent an outcome that proves non-execution, a client that cannot
+establish convergence MUST treat its re-issue as a repeat and MUST NOT make it automatically.
+
+`effect` is a property of the command, not of its delivery class: `class` says how a request is
+carried, `effect` says whether carrying it twice is safe, and the two are independent — an
+`ephemeral` command may be either.
+
+`effect` is declarative, and a declaration is a claim the endpoint author makes. It binds
+clients, not the responder: nothing in this section relieves a handler of its own correctness,
+and a `read` declaration over a mutating handler is a defect in the endpoint, not a licence.
+
+**Version.** `effect` cannot be introduced additively. A client that does not implement it
+ignores it and retries exactly as it did before, and no default value repairs that direction,
+because the field's entire purpose is to STOP a retry an older client already performs. So it
+rides the discovery protocol's version marker rather than the unknown-field rule (§7).
+
+That marker is the one that already exists: `protocol.v` on the **service record spec and the
+describe descriptor** (*Descriptor and describe*, below). It is deliberately not a new field on
+the cluster document, which has no `protocol` of its own — adding one there would be subject to §7
+and dropped unread by exactly the clients this cut has to stop, which is the failure it is meant
+to prevent. An instance whose registered clusters declare `effect` MUST register and describe with
+`protocol.v` of `2`, and every command in every cluster it serves MUST then carry `effect`. `v:1`
+descriptors remain valid, carry no `effect`, and give a resolving caller no repeat-safety
+information — it MUST treat every command served under one as `write`. There is therefore no
+"omitted `effect`" case under a `v:2` descriptor, and no surface in which the field is present but
+optional.
+
+A client that does not implement this section MUST refuse to resolve a descriptor whose
+`protocol.v` it does not implement, rather than ignore what it cannot honor. **That refusal is a
+requirement this section CREATES, not one already met.** What protects an unamended client today
+is a fence on the other side of the wire: `describe`'s pinned output schema fixes
+`descriptor.protocol.v` to the constant `1`, so an unamended responder cannot publish a `v:2`
+descriptor at all — its own reply fails output validation and surfaces as a responder bug. The
+registry read path fails closed the same way, refusing a service record whose `protocol.v` is not
+`1`. The resolving caller does neither: it reads the describe answer without validating it, and
+the shape it reads does not carry `protocol`. So the version marker is enforced today by the
+RESPONDER's contract and by the REGISTRY reader, and by nothing in the caller — which is safe only
+for as long as no `v:2` descriptor can exist.
+
+**Emission.** Moving to `protocol.v: 2` **is** a non-additive discovery change, so §11's
+change-process rule for one governs it and is the authority on how it is rolled out; this section
+adds only what is specific to `2` and states no cutover rule of its own.
+
+Specific to `2`: a caller that resolves a descriptor whose `protocol.v` it does not implement MUST
+fail the resolve (`unsupported-version`) and MUST NOT invoke against it — a descriptor it cannot
+read is not a weaker descriptor, it is no descriptor, and treating it as `v:1` reinstates exactly
+the repeat this section exists to stop. Implementing that refusal is what makes a caller count as
+having adopted this section for the purposes of §11's rule, which is the condition a responder's
+deployment must satisfy before any responder in it registers or describes at `2`.
+
+Why the rule lives there and not here: the condition is a property of the whole deployment, and a
+responder cannot evaluate it from where it stands — per §11 there is no in-band capability
+negotiation and no request carries a caller version, so a responder cannot tell an amended caller
+from an unamended one. A rule stated here would bind the one party unable to check it. §11 assigns
+it instead to the deployment, which can.
 
 An **endpoint type** is a conformance set of cluster URNs. `manager` and `delivery` are
 ordinary conformance sets defined by the reference implementation; core knows only
@@ -2253,7 +2405,7 @@ register under reverse-DNS kind names.
 **Descriptor and describe.** Each instance registers a **service record** (kind `svc`, key
 `svc.<endpoint>.<instanceId>`; the owner is determined by the name and recorded in the
 value): spec = `{ endpoint, owner, endpointType?,
-clusterDigests[], protocol: { v: 1 }, activation? }`, status = `{ epoch, state,
+clusterDigests[], protocol: { v: 1 | 2 }, activation? }`, status = `{ epoch, state,
 observedSpecRevision, … }` (writer table §13.9). The spec key's **store revision is the
 instance's `registrationRevision`**, the value scatter freezes (§13.5): it advances only
 when the mediated registration path writes the spec key, so an advance during a scatter is
@@ -2293,7 +2445,10 @@ refuse before effect. Non-governed traits are unsigned vocabulary.
 MUST be additive and added fields MUST carry defaults; removal, rename, or semantic change
 mints a new cluster URN version. A push-time JSON-native compatibility differ + review gate
 enforce this in the reference workflow (repository tooling under `scripts/`, not shipped
-client code). The discovery protocol itself is versioned additively under `protocol.v`.
+client code). The discovery protocol itself is versioned under `protocol.v`, additively by
+default: a bump is reserved for a change a client cannot safely ignore, and `effect` (§13.7) is
+the one such change so far — a client that ignored it would keep performing exactly the retry the
+field exists to stop, so it refuses the document instead.
 
 ### 13.8 Distributed guarantees
 
@@ -2303,6 +2458,46 @@ client code). The discovery protocol itself is versioned additively under `proto
   guarantees idempotent submission/fact recording and fenced commits of Cotal-owned state; an
   external side effect is exactly-once only when the external API honors the propagated
   idempotency key or fencing token, else the contract documents at-least-once effects.
+- **Repeat versus resubmission.** **A command that is idempotent by `id` is NOT thereby `read`:
+  safe to resubmit is not safe to repeat.** That is the rule neither mechanism states alone, and
+  declaring such a command `read` licenses a fresh-`id` retry that duplicates the effect. The two
+  properties are independent; a command may hold either, both, or neither.
+
+  A **resubmission** is a re-send the responder CONVERGES onto the decision it already recorded; a
+  **repeat** is a re-send it accepts as new work. Reusing the `id` is how a caller ASKS for
+  convergence, and within the horizon below it is how convergence is keyed — but the `id` is the
+  request, not the answer, and a re-send under a reused token that the responder accepts as new
+  work is a repeat by this definition. `effect` (§13.7) governs repeats, whatever token they
+  carry. `id` governs resubmissions — and what `id` alone is worth differs by rail:
+  - **Ephemeral** — `id` is the whole key. A same-`id` resubmission within result retention is
+    the same call; an idempotent command may dedup on it and consult nothing else.
+  - **Journal** — `id` is necessary but NOT sufficient. It is one of the fields the fingerprint
+    binds, so a same-`id` resubmission converges to the first outcome only if the rest of the
+    fingerprint matches too. Same `id` with different args is neither a resubmission nor a fresh
+    call: it is a loud `conflict` (§13.4), because the decision subject is already occupied by a
+    fact with a different fingerprint. A caller that mutates arguments and reuses an `id`
+    therefore gets an error rather than either behaviour it might have expected from the
+    ephemeral rail.
+
+  **Both rails are bounded by a horizon, and outside it neither rule applies.** A resubmission is
+  a resubmission only while the prior decision is still retained — the idempotency horizon is
+  realized by decision-fact retention on the journal rail and by result retention on the ephemeral
+  rail, never by a clock (§13.4). Once the retained decision is gone, the `id` carries no history:
+  a re-send under it is a fresh call that WILL execute, and the same `id` with different args is
+  no longer a `conflict` but simply a new submission. The finite horizon is what makes the decision
+  store finite, so this is a fact callers MUST hold rather than a hole to be closed — but the hole
+  it WOULD open if `repeat` were defined by the token is closed at the definition above: a re-send
+  the responder accepts as new work is a **repeat**, so a post-horizon same-`id` re-send of a
+  `write` is exactly what §13.7 prohibits a client from making automatically. Reusing the token
+  buys nothing outside the horizon, and a caller that cannot establish it is still inside one has
+  not established that its re-send is safe.
+
+  Neither word is "retry": callers retry under a reused `id` and under a fresh one and mean the
+  same English word both times, which is the confusion this paragraph exists to remove. And the
+  dangerous reading is a REASONABLE one, not a careless one — an operator who has correctly
+  learned that a command is idempotent by `id` will retry it after a timeout, mint a fresh `id`
+  because the old request is gone, and get a second effect. Nothing in this document told them
+  those were different acts until now.
 - **Fencing and mediated commits.** Every Cotal-owned authoritative transition flows through
   its mediated writer (§13.9) carrying `(fencingToken | lifecycleUid | epoch)` as applicable;
   the writer validates token currency, unexpired lease against its own clock, lifecycle
@@ -3149,7 +3344,11 @@ lifecycle's artifacts; choose ids/goalIds/nonces within the token grammar and th
 subject bound and reuse ids only per the idempotency rules; declare `class` and
 `replyExpected` and honor `contract-mismatch`/`conflict`; freeze scatter expectations from the
 registry and classify partial results; verify digests of fetched artifacts and signed
-artifacts against the anchor registry, failing closed.
+artifacts against the anchor registry, failing closed; refuse to resolve a **describe descriptor**
+whose `protocol.v` it does not implement (the marker rides the descriptor and the service record,
+never the cluster document, which carries no `protocol`), and never automatically repeat a `write`
+command (§13.7) — whatever `id` the re-issue carries — except on an outcome that proves
+non-execution (§13.3).
 
 ---
 
@@ -3388,6 +3587,8 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-08-16 | **A command declares whether repeating it is safe, a responder reports whether a refusal already executed, and the two are separated from idempotency by `id`.** Three gaps that only bite together. **(1) `effect` (§13.7).** Nothing in a resolved command distinguished a read from a mutation — every manager command declares `class: "ephemeral"`, and `traits` carries no repeat-safety — so a client deciding whether to retry had nothing to consult, and the reference client repeats a mutation on a split. Precisely: the automatic repeat belongs to the high-level helper, not to the primitive — `invokeCommand` raises the post-reply currency refusal and stops, and the `invokeService` wrapper around it catches exactly that code, re-resolves, and invokes a second time. Measured on a live broker under a forced instance split, counting at the handler rather than on the wire, the repeated command executes TWICE. `effect` is `read` or `write`, with `read` defined OPERATIONALLY — repeating it changes nothing the command is TRYING to change, and the only excluded difference is the incidental trace of having been called (request ids, spans, logs, metrics, timing) — because the intuitive definition, indistinguishable to every observer, is satisfiable by no real command and would make the field decorative. The state in question is not only the endpoint's own: a command whose intended effect lands elsewhere is still a `write`, and `evictPrincipal` fixes that boundary, since dropping live broker connections while leaving the endpoint's own records untouched is the point of calling it. **(2) `error.outcome` (§13.3).** A refusal code cannot say whether the effect happened: the same code is correct for a request that ran and one that never left. `outcome` is emitted by the RESPONDER, which is the only party that knows — `not-executed` when it refuses before the handler, `executed` when it refuses after, `unknown` when it cannot tell. It describes a reply and only a reply — a caller-side refusal is not an `EndpointReply` and carries no `outcome` field — but it does NOT follow that the caller knows nothing, and the first cut of this amendment wrongly collapsed four distinguishable local cases into `unknown`. A refusal raised BEFORE publication is `not-executed`: the request never left, and calling that `unknown` suppresses a retry that is provably safe even for a `write`. A refusal raised while HOLDING a reply — the §13.2 post-reply currency check is the case in this document — takes what it knows from that reply: `ok:true` means the handler ran, and an `ok:false` reply carries the responder's own `outcome`, which the caller adopts rather than overwrites. A **broker-attested no-responders answer** on the reserved sentinel is also `not-executed`: it is positive evidence that the subject had zero subscribers, trusted only on that sentinel because the same status on an ordinary reply subject is a responder's own claim. Only "no reply observed at all" (deadline, transport failure after publication) is `unknown`. And **a reply proves the request was HANDLED, never that it was EXECUTED** — the version, class, target, sender, authz, contract, and guard checks all publish `ok:false` having executed nothing. It is also not a goal's terminal state (§13.6 owns that) and must not be used as one. **(3) Repeat versus resubmission (§13.8).** `effect` and "idempotent by `id`" are different axes and were unreconciled. They are now separated by CONVERGENCE rather than by token: a **resubmission** is a re-send the responder converges onto the decision it already recorded, a **repeat** is one it accepts as new work, and `effect` governs repeats whatever `id` they carry. Defining the split by the token instead left a hole — a post-horizon re-send under a reused `id` is accepted as new work, so it executes, while formally escaping a prohibition written as "under a fresh `id`". Reusing the token is how a caller ASKS for convergence; it is not the answer. Within the horizon `id` is what convergence is keyed on — and `id` is the whole key on the ephemeral rail but only ONE of the effect-defining dimensions the journal fingerprint binds — endpoint, command, `id`, `goalId`, `class`, args, both contract digests, the authorization mode, the target, `auth`, and the caller — where same id + different args is neither dedup nor a fresh call but a loud `conflict`. **Both rails are bounded by a horizon**, realized by decision-fact and result retention rather than by a clock, and outside it neither rule applies: the `id` carries no history, a re-send under it is a fresh call that WILL execute, and the same `id` with different args is no longer a `conflict`. A finite horizon is what keeps the decision store finite, so this is a fact callers must hold rather than a hole to close — and because a repeat is defined by acceptance rather than by token, a post-horizon same-`id` re-send of a `write` is exactly what §13.7 forbids a client to make automatically. A command idempotent by `id` is therefore NOT thereby `read`: safe to resubmit is not safe to repeat — and the dangerous reading is a reasonable one, since an operator who retries after a timeout mints a fresh `id` because the old request is gone. **NON-ADDITIVE, and versioned as such:** a client that ignored `effect` would keep performing exactly the retry the field exists to stop, so it rides `protocol.v` — the marker that ALREADY EXISTS on the service record spec and the describe descriptor, never a new field on the cluster document, which has no `protocol` and where §7 would drop it unread by exactly the clients this must stop. An instance whose clusters declare `effect` registers and describes at `v:2`; `v:1` descriptors stay valid, carry no `effect`, and every command served under one reads as `write`. The caller-side refusal of a `protocol.v` it does not implement is a requirement this cut CREATES, not one already met: today `describe`'s pinned output schema fixes `descriptor.protocol.v` to the constant `1`, so an unamended responder cannot publish a `v:2` descriptor at all, and the registry reader refuses a service record that is not `v:1` — but the resolving caller validates neither, and the shape it reads does not carry `protocol`. The responder-side fence is what protects old clients today, and only until this cut widens that constant. **Release order was the wrong instrument and is withdrawn**: a same-release ordering rule has no observable runtime meaning, since a release is not a deployment and an already-running v1 caller is unchanged by whatever a new artifact contains. **The cutover rule is §11's, and §13.7 does not state one.** Moving to `protocol.v: 2` IS a non-additive discovery change, so the §11 rule for one (previous row, landed first) is the sole authority on how it rolls out. §13.7 carries only what is specific to `2`: a caller that resolves a descriptor whose `protocol.v` it does not implement MUST fail the resolve (`unsupported-version`) and MUST NOT invoke against it — a descriptor it cannot read is no descriptor, and reading it as `v:1` reinstates the repeat — and implementing that refusal is what makes a caller count as having ADOPTED the section for §11's condition. Two intermediate drafts had to be withdrawn to reach that: one sited the cutover in §13.7 as a same-release ordering clause, which has no observable runtime meaning because a release is not a deployment; the next stated the cutover in BOTH sections, which is a single-source-of-truth defect, since two normative statements of one rule agree until either is edited and then silently become two conformance rules. The reason it cannot be sited here is the durable part: the condition is a property of the whole deployment, and a responder cannot evaluate it — no in-band negotiation, no caller version on the wire — so a rule stated here would bind the one party unable to check it. |
+| 2026-08-16 | **A non-additive discovery change is an out-of-band deployment cutover and rolls out CALLER-FIRST (§11).** The preceding §11 rule says v0 has no in-band capability negotiation and that deployments agree out of band; this says what that obliges when a discovery change CANNOT be ignored safely — where an unamended client that drops the new field per §7 would then behave in the very way the change exists to prevent, so no default value repairs the direction that matters. The obligation rests on the DEPLOYMENT, because neither participant can discharge it: a responder cannot tell an amended caller from an unamended one, since no request carries a caller version and `describe`'s answer is read by the caller without a version check. So every caller adopts the new rules BEFORE any responder registers or describes at the new version, and the two halves SHOULD ship in SEPARATE releases — **a release is not a deployment**, and an already-running caller is unchanged by whatever a new artifact contains, so the order of two source edits proves nothing about the processes on the wire. `protocol.v` on the registered service record is the observable marker: "has any responder cut over" is a checkable registry property, while "has every caller adopted" is the out-of-band agreement §11 already requires. **The residual is stated rather than engineered around**: an early cutover exposes unamended callers to exactly what the new version prevents, and within v0 nothing in band detects it — closing that needs negotiation v0 does not have, and the v1 marker owns it. Prose only: no schema, no wire field, no code. |
 | 2026-08-14 | **The auth-admin rail moves off the retired `ctl` surface onto the endpoint SUBJECTS (a subject-plane migration, NOT yet a conforming endpoint - see the residual below), and its authz description is corrected to what ships.** TWO defects on the same §13.9 rows, fixed together. **(1) The rail.** The rows served the auth plane's generic "retire a lifecycle" operation on `ctl.auth-admin.<owner>.<actor>` — a rail §13.11 retires in full and states MUST NOT be handled. New normative rows written onto a deleted rail are defects, not exceptions to it, so they are rewritten onto the v0.4 endpoint surface rather than given scoping language: `ep.one.auth.retire-lifecycle.handle.<tO>.<tA>.<tUid>.<cO>.<cA>.<cUid>.<nonce>`, served queue-qualified on the class rail, with the reply DERIVED from the parsed request (the bound-reply rule becomes structural — no caller- or payload-supplied reply target can arrive) and the request/reply planes disjoint, so the listener credential cannot express a request subject and the self-forge closes by grammar. The requester credential now pins its caller TRIPLE and exactly ONE target incarnation, so a leaked requester cannot be re-aimed. §13.11 is unchanged and gains no carve-out. **(2) The authz sentence.** These rows described serve-time authz as a space-manager-LEASE holder check; the implementation replaced that with the serve-issuance-gate check on 2026-07-22 without a spec change, so the normative text had been false since. It now describes what ships — a fresh leader-served read of `epgate.<serveEndpoint>.<serveInstanceId>` requiring presence, the declared epoch, and THE PRINCIPAL CROSS-CHECK (`row.principal` must equal the subject-derived caller principal), the last being new here: the two-token `ctl` subject could not express the caller beyond an alias, so the rail had accepted ANY registered instance's gate. The binding is stated as ALIAS-LEVEL, not incarnation-level: the gate is keyed by the persisted `instanceId` and its row carries no lifecycle uid, so a same-principal predecessor presenting the current epoch still passes; binding the publishing incarnation needs a gate-row schema change and is not attempted here. **NAMED RESIDUAL (Cotal #399) - THE RAIL IS NOT A CONFORMING ENDPOINT: it carries the endpoint SUBJECTS only. It still exchanges the pre-v0.4 `{op,args}` / `{ok,data,error}` bodies this document states are DELETED, registers no `svc.<endpoint>.<instanceId>` service record, does not serve the reserved `describe`, and has no contract/cluster artifact - so a GENERIC endpoint client can neither discover nor invoke this command. The exploitable half is closed in this change - the request carries a caller-chosen `id`, the responder echoes it on every reply, and the caller refuses any reply that does not echo, so a wrong-id `ok:true` cannot clear a retirement hold - but the versioned typed envelope, contract digests, `class`, deadline/`replyExpected` semantics, structured errors, service registration and `describe` are a separate cut tracked at #399, whose acceptance test is that a GENERIC client can discover and invoke the command. Recorded here rather than left implicit: serving a deleted envelope on the new rail is the same class of defect as serving on a deleted subject.** |
 | 2026-07-19 | **v0.4 amendment continuation: retirement cleaner inventory is discovery-only.** The terminal retirement barrier no longer accepts a caller-supplied `(endpoint, pools)` hint: the per-op cleaner and settlement-executor pool set is now DISCOVERY-ONLY, exactly the retiring lifecycle's accepted `oblig.<uid>.>` pool routes discovered from the just-drained obligation set. This SUPERSEDES the round-11 optional-hint clause (the 2026-07-15 row): the hint was a TRUSTED ADDITIVE AUTHORITY input that would mint a bounded per-op credential for a pool with no backing obligation, and the despawn rail never exercised it (always an empty hint), so it was grant-widening surface with no production caller. Every grant now scopes to exactly the pools the target holds accepted work on, and the §13.9 residuals cover only those discovered pools. The intent's `endpoints` field is removed from the closed operation-intent schema; a pre-change durable intent that still carries it fails the closed-schema check on resume (the v0.4 hard-cut window, where a clean broker holds none). |
 | 2026-07-16 | **v0.4 amendment continuation: connect-arm deny-new (production activation R1).** Every bearer carries its incarnation's root credential id (`act.credentialId`); the exchange mints the root credential RELEASE-LAST (active `cred.` row durable, gate finalize, lifecycle-head current-root CAS, bearer bytes last) and the connect authority requires the LIVE row (leader-served from the shape-proved primary auth store, re-proved on every rebind) plus root head equality, so revoking the row denies the next connect and a superseded or crash-orphaned root issuance never authenticates. The root credential is **incarnation-wide** (ratified): one row per incarnation, re-stamped (the same id) every exchange for its 90d life, never a fresh id per exchange, so one revoke denies every bearer of the incarnation, and a crash after the head CAS re-exports the same id by design (nothing unobserved to revoke; the only pre-release crash window is a durable unstamped row, denied by head equality). The authority store shape proof binds the stream to the actual KV bucket (exactly the one `$KV.<bucket>.>` subject + durable file storage, in addition to the primary/un-mirrored/non-evicting/`allow_direct` flags) at every bind and at boot ensure. Claimless bearers, revoked/expired/absent rows, and an unreadable authority store deny outright (no file-only fallback; a failed reader-credential renewal downs the reader immediately and denies). The head's current-root stamp moves only ABSENT to value: root rotation without the full family-revoke barrier is refused structurally. Named R1 residuals: a same-alias re-grant while the predecessor incarnation is live refuses the exchange (production issuance runs no takeover barrier yet), and the auth service's reader/mint-writer are seed-signed infra credentials (revoked by service stop or signing-seed rotation) pending the ledgered infra-mint family. |

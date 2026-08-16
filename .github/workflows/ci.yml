@@ -126,6 +126,13 @@ jobs:
         run: pnpm smoke:lifecycle-e2e
       - name: Runtime smoke tests (tmux, orca, herdr)
         run: pnpm smoke:runtime
+      # Runs BEFORE the soak because it grades the soak's own instrument: the wait behind the
+      # positive control, and the nonce the survivor count matches on. If either is wrong the soak
+      # still goes green — a control that can pass while the payload is absent, or a count that
+      # includes a neighbouring run's processes. Deterministic (fake clock, injected probe), so it
+      # is a cheap gate on the expensive one, not a second copy of it.
+      - name: herdr soak instrument (visibility wait + nonce)
+        run: pnpm smoke:herdr:probe
       # Accumulation is invisible to a single-shot suite: a per-cycle leak of a pane, workspace,
       # launcher dir or process only shows up over many spawn/stop cycles, which is what a
       # long-lived manager actually does.
