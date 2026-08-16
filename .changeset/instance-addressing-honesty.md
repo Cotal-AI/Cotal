@@ -38,7 +38,11 @@ the error text told the operator not to retry; it is the mechanism behind one sp
 several seats. The retry now happens only for commands
 whose second execution is observably indistinguishable from one — the reads and `describe`. Every
 other command surfaces the split to its caller, carrying a marker that says a responder did answer
-the request, so the caller can check before deciding.
+the request, so the caller can check before deciding. Surfacing also drops the stale bind: the
+cached resolve named an incarnation a different live instance has just answered for, and keeping it
+would send every later deliberate call on that endpoint into the same refusal, so the caller could
+verify and still never reach the live instance. Dropping it re-issues nothing; the next call is the
+caller's own.
 
 That classification is an allowlist and fails closed at both levels. It is keyed by endpoint, not by
 bare command name, because the client is endpoint-agnostic and a flat list would lend the manager's
@@ -59,4 +63,6 @@ an effect outcome in the reply — which remains open.
 `ps` prints the full instance id in its multi-manager view. That view appears only where the split
 makes `--on <instance>` the one way to address a manager, and `--on` accepts nothing but the whole
 26-32 character lifecycle token — so an abbreviated header named the remedy and withheld the value
-it needed, and `--on <prefix>` was refused as a malformed token.
+it needed, and `--on <prefix>` was refused as a malformed token. The `stop`/`attach` seat-lookup
+miss, which lists the instances that did not answer for the same purpose, prints them whole too and
+says the id must be passed as printed.

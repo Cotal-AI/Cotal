@@ -555,7 +555,7 @@ cotal attach --name <n> [--on <instance>] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
-| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space) |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also

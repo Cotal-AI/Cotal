@@ -1357,10 +1357,12 @@ export class CotalEndpoint extends EventEmitter {
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
    *  resolve is describe-bound currency: when a DIFFERENT instance answers a later invoke
-   *  (`failed-precondition`, a restart/supersede), the cache is dropped and resolved ONCE more
-   *  against the current incarnation. Errors from the responder come back structurally on the
-   *  attributed reply (`reply.ok === false`); transport/validation refusals throw
-   *  {@link EpEnvelopeError}. */
+   *  (`failed-precondition`, marked {@link respondedButUnbound}), the stale bind is dropped in every
+   *  case, and the call is re-issued ONCE against the current incarnation only for a command on the
+   *  {@link isRepeatSafeCommand} allowlist. Any other command surfaces the error instead: the request
+   *  was received and answered by a live instance, so a second attempt could duplicate its effect.
+   *  Errors from the responder come back structurally on the attributed reply
+   *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
     endpoint: string,
     command: string,

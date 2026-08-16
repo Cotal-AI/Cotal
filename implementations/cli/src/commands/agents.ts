@@ -119,7 +119,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   if (loc.kind === "unpinned") return undefined;
   // The honest error #383 asked for: name the search, not just the absence.
   const missed = loc.unreachable.length
-    ? ` ${loc.unreachable.length} manager instance(s) did not answer (${loc.unreachable.map((i) => i.slice(0, 8)).join(", ")}), so it may be hosted by one of those — retry, or \`${verb} --on <instance>\` if you know where it is.`
+    ? ` ${loc.unreachable.length} manager instance(s) did not answer (${loc.unreachable.join(", ")}), so it may be hosted by one of those: retry, or \`${verb} --on <instance>\` (the whole id, as printed) if you know where it is.`
     : "";
   console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
   process.exit(1);
