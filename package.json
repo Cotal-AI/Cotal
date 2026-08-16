@@ -306,6 +306,7 @@
     "smoke:attach-host-persistence": "tsx implementations/cli/smoke/attach-host-persistence.smoke.ts",
     "smoke:dist-freshness": "tsx bin/smoke/dist-freshness.smoke.ts",
     "smoke:gate-inventory": "tsx bin/smoke/gate-inventory.smoke.ts",
+    "smoke:ci-suites": "tsx bin/smoke/ci-suites.smoke.ts",
     "smoke:dep-pins": "tsx bin/smoke/dep-pins.smoke.ts",
     "smoke:inst-route-enforce": "tsx packages/core/smoke/inst-route-enforce.smoke.ts",
     "smoke:ps-operator-path": "tsx implementations/auth/smoke/ps-operator-path.smoke.ts",
