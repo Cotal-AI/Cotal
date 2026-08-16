@@ -3,7 +3,7 @@
 "@cotal-ai/runtime": minor
 ---
 
-A run can now be forked from a named step: the §8.5 cut, and the refusals that keep it honest.
+A run can now be forked from a named step: the cut, and the refusals that keep it honest.
 
 `planFork` computes the cut by a dry walk over the recorded journal and stops before the step it was
 asked to cut at, because the child re-runs that step and a prefix containing it would replay the very
@@ -23,6 +23,6 @@ between the two leaves journal entries under an id with no record, which neither
 Refused rather than approximated: a step the journal never recorded, a step this program never
 reaches, a source that diverged before the cut, a fork asked to pin a new program hash (a run's spec
 carries none), the fork's own worktree branches (there is no worktree plane here), and a cut
-containing a `spawn`, which §8.5 would have to respawn or adopt at the frontier. The child's record
+containing a `spawn`, which would have to be respawned or adopted at the frontier. The child's record
 cannot yet say it is a fork of anything, and `commitFork` reports that gap rather than leaving a
 reader to notice it.
