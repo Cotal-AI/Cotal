@@ -1,0 +1,64 @@
+{
+  "kind": "unasserted-probe",
+  "suite": "implementations/runtime/smoke/fork-run.smoke.ts",
+  "guard": "the guards in fork.ts that NO cell was written for",
+  "command": "pnpm smoke:runtime-fork",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/fork-unasserted.json",
+  "why": [
+    "Every mutation in fork-cut.json was authored against a cell that had just been written for it,",
+    "so 10/10 killed measures the guards that were aimed at and says nothing about the rest. This",
+    "config is the opposite experiment: it mutates guards NO cell was written for and PREDICTS",
+    "SURVIVED. A survivor here is a finding — a guard nothing is watching — not a failure.",
+    "",
+    "It carries two positive controls that predict KILLED. Without them a batch of survivors is",
+    "ambiguous between 'these guards are unasserted' and 'the suite did not run at all', which are",
+    "the same observation from outside. The controls are what make the survivors mean something."
+  ],
+  "mutations": [
+    {
+      "name": "CONTROL (expect KILLED): the L5002 refusal for a fork onto a new program is skipped",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (req.newProgramHash !== undefined) {",
+      "replace": "  if (false && req.newProgramHash !== undefined) {",
+      "expectRed": "a fork onto a new program is refused, because nothing pins a program hash",
+      "cell": "a fork onto a new program is refused, because nothing pins a program hash",
+      "completionMarker": "fork-run.smoke:"
+    },
+    {
+      "name": "CONTROL (expect KILLED): the L5018 refusal for a cut never reached is skipped",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!reached && recorded) {",
+      "replace": "  if (false && !reached && recorded) {",
+      "expectRed": "with L5018, because a cut never reached is the whole journal",
+      "cell": "with L5018, because a cut never reached is the whole journal",
+      "completionMarker": "fork-run.smoke:"
+    },
+    {
+      "name": "PROBE (expect SURVIVED): an unwalkable scope on the way to the cut raises no L5014",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    } else if (err instanceof UnwalkableScope) {\n      refusals.push({\n        code: \"L5014\",\n        step: err.scopeKey,\n        why: `the walk could not enter a scope on the way to the cut: ${err.message}`,\n      });",
+      "replace": "    } else if (err instanceof UnwalkableScope) {\n      /* mutated: the refusal is dropped */",
+      "expectRed": "(none — L5014 and UnwalkableScope appear ZERO times in the suite)",
+      "cell": "the walk could not enter a scope on the way to the cut",
+      "completionMarker": "fork-run.smoke:"
+    },
+    {
+      "name": "PROBE (expect SURVIVED): an unexpected error class is swallowed instead of rethrown",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    } else if (!(err instanceof ForkFrontier) && !(err instanceof JournalReadOnlyError)) {",
+      "replace": "    } else if (false && !(err instanceof JournalReadOnlyError)) {",
+      "expectRed": "(none known — no cell drives an unexpected error class through planFork)",
+      "cell": "an unexpected error class propagates out of planFork",
+      "completionMarker": "fork-run.smoke:"
+    },
+    {
+      "name": "PROBE (expect SURVIVED): unwrapCut's self-referential-reason stop is removed",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (inner === undefined || inner === cur) return cur;",
+      "replace": "    if (inner === undefined) return cur;",
+      "expectRed": "(none known — no cell builds an error whose `reason` points at itself)",
+      "cell": "unwrapCut terminates on a self-referential reason",
+      "completionMarker": "fork-run.smoke:"
+    }
+  ]
+}

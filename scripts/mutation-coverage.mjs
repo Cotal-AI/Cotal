@@ -37,6 +37,16 @@ if (configs.length === 0) {
 
 let cells = 0, named = 0, mutations = 0, unkillable = 0;
 const rows = [];
+/**
+ * A config marked `"kind": "unasserted-probe"` runs the OPPOSITE experiment: it mutates guards no
+ * cell was written for and predicts SURVIVED, because a survivor names a guard nothing is watching.
+ * Its `cell` fields describe the behaviour that SHOULD have a cell and usually names one that does
+ * not exist — so counting them in the numerator would raise the coverage figure by exactly the
+ * cells that were found to be missing. Summing the two kinds silently would make the better
+ * practice look like progress and the confirm-only method look better than it is; they are reported
+ * apart on purpose.
+ */
+const probes = [];
 
 /**
  * Only the fields THIS script's report depends on are checked here. The set of keys the harness
@@ -90,6 +100,10 @@ for (const path of configs) {
   if (tallied && Number(tallied[2]) !== 0) throw new Error(`${path}: the suite is already red — coverage over a red suite means nothing`);
 
   const executed = Number((tallied ?? failFast)[1]);
+  if (cfg.kind === "unasserted-probe") {
+    probes.push([cfg.suite, cfg.mutations.length, executed]);
+    continue;
+  }
   const distinct = new Set(cfg.mutations.map((x) => x.cell));
   if (distinct.size !== cfg.mutations.length) {
     console.log(`  note: ${path} has ${cfg.mutations.length} mutations naming ${distinct.size} distinct cells`);
@@ -110,3 +124,16 @@ for (const [suite, executed, distinct] of rows) {
 console.log(`${"TOTAL".padEnd(w)}  ${named} / ${cells} = ${Math.round((named / cells) * 100)}%`);
 console.log(`${mutations} mutations run, ${unkillable} recorded unkillable by construction and not run.`);
 console.log("A lower bound: a mutation may redden more cells than the one it names, and those are not claimed here.");
+console.log(
+  "And an OVER-statement in one direction: every mutation above was authored against a cell written for it,\n" +
+  "so this ratio measures the guards that were aimed at, not the guards that exist.",
+);
+if (probes.length) {
+  console.log("\nUnasserted-guard probes — mutations of guards NO cell was written for, predicting SURVIVED.");
+  console.log("NOT added to the ratio above: their cells are the ones found MISSING, and counting them would");
+  console.log("raise the coverage figure by exactly the gaps they were run to find.");
+  for (const [suite, n, executed] of probes) {
+    console.log(`  ${suite}  ${n} probes against a suite of ${executed} cells`);
+  }
+  console.log("  Verdicts come from mutation-proof.mjs; a SURVIVED here is a finding, not a failure.");
+}
