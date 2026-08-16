@@ -95,7 +95,17 @@ const check = async (
   });
 
 const rowFor = (r: Awaited<ReturnType<typeof check>>, needle: string) =>
-  r.orphans.find((o) => o.step.includes(needle));
+  r.orphans?.find((o) => o.step.includes(needle));
+
+/**
+ * The same check, but an escaped fault comes back as a value.
+ *
+ * A migration REPORTS what it found; a fault that escapes to the caller is a different contract, and
+ * without this it is also a dead process rather than a failed cell — the whole suite exits before any
+ * assertion runs, which is red without being an answer.
+ */
+const checkOrThrew = async (...args: Parameters<typeof check>) =>
+  await check(...args).then((r) => r, (e: unknown) => e as Error) as Awaited<ReturnType<typeof check>>;
 
 // ── 1) a removal with nothing behind it ────────────────────────────────────────────────────────
 {
@@ -186,6 +196,9 @@ const rowFor = (r: Awaited<ReturnType<typeof check>>, needle: string) =>
   const unknown = await check(RUN, entries, EDITED);
   c("an orphaned notify with NO notice filed is refused rather than assumed harmless",
     rowFor(unknown, "notify:told")?.code === "L5005", rowFor(unknown, "notify:told"));
+  c("and it says the delivery cannot be ESTABLISHED, which is a different fact from not delivered",
+    rowFor(unknown, "notify:told")?.why.includes("cannot be established") === true,
+    rowFor(unknown, "notify:told")?.why);
 
   // Filed through the same core writer the mesh handler uses, because no durable run reaches
   // `notify` yet — the cell proves the migrate rule against the record, not the handler that files
@@ -231,14 +244,16 @@ const rowFor = (r: Awaited<ReturnType<typeof check>>, needle: string) =>
   const RUN = "r-diverge";
   const LIVE = `await sleep("1s", { name: "one" });\nawait sleep("2s", { name: "two" });`;
   const entries = await record(RUN, LIVE);
-  const r = await check(RUN, entries, `await sleep("9s", { name: "one" });\nawait sleep("2s", { name: "two" });`);
+  const r = await checkOrThrew(RUN, entries, `await sleep("9s", { name: "one" });\nawait sleep("2s", { name: "two" });`);
+  c("a divergence is REPORTED rather than thrown at the caller", !(r instanceof Error), (r as unknown as Error)?.name);
   c("an edited input is a divergence, not an orphan", r.divergence !== undefined, r);
   c("and it names the step", r.divergence?.step.includes("sleep:one") === true, r.divergence);
   c("a diverged migration is never admissible", r.admissible === false, r);
 
   const CONCLAVE = `await conclave([], async (room) => { await sleep("1s", { name: "inside" }); return 1; }, { name: "huddle" });`;
   const cj = await record("r-conclave", CONCLAVE);
-  const cr = await check("r-conclave", cj, CONCLAVE);
+  const cr = await checkOrThrew("r-conclave", cj, CONCLAVE);
+  c("an unwalkable scope is REPORTED rather than thrown at the caller", !(cr instanceof Error), (cr as unknown as Error)?.name);
   c("a conclave the walk cannot enter is refused rather than consumed", cr.unwalkable !== undefined, cr);
   c("and the refusal names the scope", cr.unwalkable?.step.includes("conclave:huddle") === true, cr.unwalkable);
   c("which is not admissible either", cr.admissible === false, cr);
