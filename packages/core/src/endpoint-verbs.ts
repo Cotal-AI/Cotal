@@ -223,7 +223,7 @@ function staleEpochRefusal(
     answeredEpoch: responder.epoch, heldEpoch: held, reference, pinned: rail === "inst",
   };
   return new EpEnvelopeError("expired",
-    `${situation}. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${responder.instanceId} received the request and answered it, so if "${op.command}" mutates, that effect may already have landed; verify the outcome ('ps'/'inspect'/roster) before re-issuing (SPEC 13.2:1187-1189)`,
+    `${situation}. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${responder.instanceId} received the request and answered it, so if "${op.command}" mutates, that effect may already have landed; verify the outcome ('ps'/'inspect'/roster) before re-issuing (SPEC 13.2, the stale-reply rejection rule)`,
     [detail]);
 }
 
@@ -263,7 +263,7 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
  * Call one command and await its reply within `deadlineMs`: on the `one` (queue-group anycast) or
  * `inst` (stable incarnation) rail with `replyExpected: true`, subscribe the caller's own
  * nonce-scoped reply subject BEFORE publishing, and resolve the first attributed reply — BOUND to
- * the invoked identity (§13.2:1187-1189: "callers reject" stale-process replies), on BOTH rails:
+ * the invoked identity (§13.2, the stale-reply rejection rule: "callers reject" stale-process replies), on BOTH rails:
  *  - `inst` pins the addressed `(instanceId, epoch)` incarnation up front; a stale-epoch reply is
  *    `expired` and a wrong-instance reply `internal`.
  *  - `one` cannot pin an instance up front (the queue picks the responder), so the caller MUST supply
@@ -280,7 +280,7 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
  * `bad-request`; an unparseable/mis-echoed/mis-attributed reply `internal` (a raw decode error never
  * escapes); a throwing `currentEpoch` hook `internal` and a garbled (non-integer/negative) currency
  * value `failed-precondition` (the read's own failure, never mislabeled staleness); a stale reply `expired`;
- * NO responder `unavailable` (SPEC 13.5:1484 — the broker's no-responders 503 lands on a reply-to that
+ * NO responder `unavailable` (SPEC 13.5, the broker no-responders answer — the broker's no-responders 503 lands on a reply-to that
  * sits on THIS caller's own rail, so a manual, fully-disposed probe distinguishes it from a slow
  * responder without leaving a lingering request); a failed reply subscription `unavailable`; the
  * elapsed budget `deadline-exceeded`. Every subscription and timer is released in the `finally`.
@@ -294,7 +294,7 @@ export async function epCall(
 ): Promise<EpAttributedReply> {
   const deadlineMs = assertDeadline(opts.deadlineMs);
   if (route.mode === "one" && opts.currentEpoch === undefined)
-    throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2:1187-1189)");
+    throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2, the stale-reply rejection rule)");
   const req = buildRequest(space, route, op, { replyExpected: true, deadlineMs });
   const expect = route.mode === "inst" ? { instanceId: route.instanceId, epoch: route.epoch } : undefined;
   // A no-responders reply-to that lands on THIS caller's OWN rail (within its §13.9 read grant, no
@@ -362,7 +362,7 @@ export async function epCall(
       return attributed;
     }
     if (route.mode === "one") {
-      // §13.2:1187-1189 currency for the queue winner, bounded by the REMAINING budget so the whole
+      // §13.2, the stale-reply rejection rule currency for the queue winner, bounded by the REMAINING budget so the whole
       // call stays within ONE `deadlineMs` (deliberately NOT a second dedicated budget like scatter's
       // `reconcileDeadlineMs`: a call's reply usually arrives well before T, leaving room to verify,
       // whereas scatter's gather deterministically eats its whole deadline). The consequence is a

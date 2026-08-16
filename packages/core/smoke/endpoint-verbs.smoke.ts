@@ -374,7 +374,7 @@ try {
   }
 
   // epCall `one` (queue anycast): the caller cannot pin an instance up front, so it MUST supply a
-  // currentEpoch hook; the queue winner's currency is CHECKED, not assumed (§13.2:1187-1189).
+  // currentEpoch hook; the queue winner's currency is CHECKED, not assumed (§13.2, the stale-reply rejection rule).
   const oneFilter = `${spacePrefix(SPACE)}.ep.one.>`;
   const OID = "7".repeat(26);
   {
@@ -387,7 +387,7 @@ try {
     const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 4, ok: true, data: { which: "stale" } }]); // answers at epoch 4
     const e = await caught(() => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 5 }));
     await sub.drain();
-    c("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2:1187-1189)",
+    c("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2, the stale-reply rejection rule)",
       e instanceof EpEnvelopeError && e.code === "expired", e instanceof Error ? e.message.slice(0, 120) : e);
     // A caller-supplied `currentEpoch` is a REGISTRY read by this verb's contract (nothing of the
     // caller's is a bind), and the responder is BEHIND it: a superseded incarnation still connected
