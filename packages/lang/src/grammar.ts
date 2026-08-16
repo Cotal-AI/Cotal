@@ -24,6 +24,7 @@ import {
   STEP_NAME_RE,
   primitiveDoc,
 } from "./primitives.js";
+import { KEY_RESERVED_RE } from "./keys.js";
 
 /** Acorn nodes are loosely typed; this is the shape we actually read. */
 type AnyNode = Node & Record<string, unknown>;
@@ -798,28 +799,47 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
     }
   }
 
-  // Required step names.
-  if (spec.nameRequired && name !== "checkpoint") {
+  // Step names: REQUIRED-ness and VALIDITY are separate questions and used to share one gate.
+  //
+  // Required-ness is a statement about the caller's obligation; validity is a statement about the
+  // sink. `nameRequired` is false for 7 of the 13 primitives, and a name supplied on one of those
+  // reached `stepKeyString` completely unchecked — so the optional path, which is the one nobody
+  // writes tests for, fed the same durable journal key as the required one. A name containing the
+  // characters the key grammar reserves forges structure: two different programs then print one
+  // identical key, and with matching inputs the collision is entirely silent.
+  if (name !== "checkpoint") {
     const prop = given.get("name");
     if (prop === undefined) {
-      v.fail(
-        "L3012",
-        node,
-        `Every \`${name}\` needs a name, because its journal entry is keyed by that name rather than by its position. Without one, a resumed run cannot tell this step from any other.`,
-        `Add a kebab-case name literal: ${name}(..., { name: "..." })`,
-        name,
-      );
-    } else {
-      const value = prop.value as AnyNode;
-      if (value.type !== "Literal" || typeof value.value !== "string") {
+      if (spec.nameRequired) {
         v.fail(
-          "L3013",
-          value,
-          "A step name must be a string literal, because the flowchart, the linter, and the migration report all read it without running the program.",
-          'Use a literal: { name: "build" }',
+          "L3012",
+          node,
+          `Every \`${name}\` needs a name, because its journal entry is keyed by that name rather than by its position. Without one, a resumed run cannot tell this step from any other.`,
+          `Add a kebab-case name literal: ${name}(..., { name: "..." })`,
           name,
         );
-      } else if (!STEP_NAME_RE.test(value.value)) {
+      }
+    } else {
+      const value = prop.value as AnyNode;
+      const isLiteral = value.type === "Literal" && typeof value.value === "string";
+      // L3013 stays gated on `nameRequired`. Widening it to every present name refused
+      // `fanOut([...], async (lens) => sleep("1m", { name: lens }))` — naming a branch's step after
+      // its item, which is idiomatic and is how a fan-out gets distinct keys at all. That is the
+      // cost this restriction would have had, and it is too high for what it buys: the SHAPE check
+      // below is what closes the forgery, and it does not need the name to be static.
+      if (!isLiteral) {
+        if (spec.nameRequired) {
+          v.fail(
+            "L3013",
+            value,
+            "A step name must be a string literal, because the flowchart, the linter, and the migration report all read it without running the program.",
+            'Use a literal: { name: "build" }',
+            name,
+          );
+        }
+        // A COMPUTED name cannot be checked here at all, and it reaches the same journal key. The
+        // refusal for that one lives at key construction, where the value exists — see keys.ts.
+      } else if (!STEP_NAME_RE.test(value.value as string)) {
         v.fail(
           "L3014",
           value,
@@ -862,6 +882,41 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
         `Use the record form: ${name}({ lint: () => ..., tests: () => ... }, { name: "checks" })`,
         name,
       );
+    }
+  }
+
+  // A record-form branch KEY becomes a path segment verbatim: `frameString` builds
+  // `/kind:name#occ/b:${branch}` by concatenation and escapes nothing. So a key containing one of
+  // the three characters the key grammar reserves forges structure — a single branch named
+  // `a/parallel:inner#0/b:b` prints the identical key to a genuinely nested `a` → `inner` → `b`,
+  // and the journal cannot tell the two locations apart. With different inputs that surfaces as a
+  // spurious L5001 divergence for a program that never diverged; with matching inputs it is
+  // SILENT, one durable row serving both, and a replay hands the second location the first's
+  // recorded effect.
+  //
+  // Only the reserved characters are rejected, NOT the full step-name pattern: branch keys are
+  // ordinary object keys and `{ runTests: ... }` is legitimate, so requiring kebab-case here would
+  // refuse correct programs to fix a forgery that needs `/`, `#` or `:`. The restriction is the
+  // narrowest one that closes it.
+  if (name === "parallel" || name === "race" || name === "fanOut") {
+    const branches = args[0];
+    if (branches !== undefined && branches.type === "ObjectExpression") {
+      for (const prop of (branches.properties as AnyNode[]) ?? []) {
+        const key = prop.key as AnyNode | undefined;
+        if (key === undefined) continue;
+        const text =
+          key.type === "Identifier" ? (key.name as string)
+          : key.type === "Literal" && typeof key.value === "string" ? key.value
+          : undefined;
+        if (text === undefined || !KEY_RESERVED_RE.test(text)) continue;
+        v.fail(
+          "L3025",
+          key,
+          `The branch key "${text}" contains a character the step-key grammar reserves (\`/\`, \`#\` or \`:\`). Branch keys are written into the journal key verbatim, so this one can spell a path that a genuinely nested scope also produces — and two different locations that share a key share a durable row, silently when their inputs match.`,
+          "Use a branch key without `/`, `#` or `:`.",
+          name,
+        );
+      }
     }
   }
 

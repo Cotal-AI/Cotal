@@ -17,6 +17,7 @@
 import { createHash } from "node:crypto";
 import { canonicalize } from "json-canonicalize";
 import type { EffectKind } from "./primitives.js";
+import { RuntimeFault } from "./errors.js";
 
 /** The concurrency combinators that open a scope. */
 export type ScopeKind = "parallel" | "race" | "fanOut" | "conclave";
@@ -88,6 +89,39 @@ export function programHashOf(source: string): string {
   return digest({ source });
 }
 
+/**
+ * The characters the key grammar reserves as STRUCTURE.
+ *
+ * `frameString` and `stepKeyString` below build a key by concatenation and escape nothing, so any
+ * of these appearing inside a name or a branch key forges a path segment: a single branch keyed
+ * `a/parallel:inner#0/b:b` prints exactly what a genuinely nested `a` → `inner` → `b` prints. The
+ * validator refuses them at the source rather than escaping them here, because escaping would
+ * change every key already written to a journal.
+ *
+ * It lives beside the grammar that reserves them: a key format that gains a delimiter and leaves
+ * this set behind gives a validator that guards the wrong characters and still passes its tests.
+ */
+export const KEY_RESERVED_RE = /[/#:]/;
+
+/**
+ * Refuse a name or branch key that would forge structure, at the point the key is MINTED.
+ *
+ * The validator closes the static case, and it is the better place to close it — an author gets the
+ * refusal before the run starts. But it can only see a LITERAL. `fanOut(items, (i) => sleep("1m",
+ * { name: i }))` names each step after its item, which is idiomatic and is how a fan-out gets
+ * distinct keys at all, and those values are usually data from outside the program. **A forged key
+ * built from data is strictly easier to reach than one written in the source, and it is exactly the
+ * case static analysis cannot see.** So the guard exists in both places on purpose: this is not a
+ * belt on the validator's braces, it covers inputs the validator provably cannot.
+ */
+function assertKeySafe(value: string, what: string): void {
+  if (!KEY_RESERVED_RE.test(value)) return;
+  throw new RuntimeFault(
+    "L3025",
+    `${what} is ${JSON.stringify(value)}, which contains a character the step-key grammar reserves (\`/\`, \`#\` or \`:\`). Keys are built by concatenation and nothing is escaped, so this value would forge a scope path that a genuinely nested scope also produces — and two locations sharing a key share a durable journal row, silently when their inputs match.`,
+  );
+}
+
 function frameString(f: ScopeFrame): string {
   const named = f.name === null ? f.kind : `${f.kind}:${f.name}`;
   return `/${named}#${f.occurrence}/b:${f.branch}`;
@@ -123,6 +157,13 @@ export class KeyScope {
 
   /** Allocate the next occurrence for an effect in this namespace, and build its key. */
   nextEffect(kind: EffectKind, name = ""): StepKey {
+    // The validator refuses a reserved character in a LITERAL name, but a name can be computed —
+    // `fanOut(items, (lens) => sleep("1m", { name: lens }))` is idiomatic and its name is only
+    // known here. A static check cannot see that value, so the refusal has to exist at the point
+    // where it does. Without this, a fan-out over items containing a `/` forges scope structure
+    // from data, which is the same collision the validator closes for the static case and is
+    // strictly easier to hit, because the items usually come from outside the program.
+    assertKeySafe(name, `the name of this \`${kind}\``);
     const tag = `${kind}:${name}`;
     const occurrence = this.effectCounts.get(tag) ?? 0;
     this.effectCounts.set(tag, occurrence + 1);
@@ -153,6 +194,10 @@ export class KeyScope {
 
   /** The child namespace for one branch of a scope opened from here. */
   branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): KeyScope {
+    // The other half of the same hazard, and the one the review actually found. A `fanOut` keyed by
+    // a function over its items produces branch keys from DATA, so this is reachable without anyone
+    // writing a suspicious literal anywhere in the program.
+    assertKeySafe(branchKey, `the branch key of this \`${kind}\``);
     return new KeyScope([...this.path, { kind, name, occurrence, branch: branchKey }]);
   }
 }

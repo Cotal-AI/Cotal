@@ -58,6 +58,7 @@ export const CATALOG = {
   L3022: "Two agents share a worktree concurrently",
   L3023: "Array-form `parallel` holds named effects",
   L3024: "`fanOut` branch keys are not unique",
+  L3025: "Branch key contains a reserved step-key character",
   L3041: "Value cannot cross an effect boundary",
   L3042: "Function passed as effect data",
   L3043: "`notify` fact is not a bounded decision record",
@@ -250,5 +251,23 @@ export class LangErrors extends Error {
 
   render(): string {
     return this.errors.map((e) => e.render(this.source)).join("\n\n");
+  }
+}
+
+/**
+ * A refusal raised while a program RUNS, carrying its §11 code as a field so a caller can branch on
+ * it rather than parse prose.
+ *
+ * It lives here rather than in `interpret.ts` because `keys.ts` raises one too — a computed step
+ * name is only knowable at key-construction time — and `keys.ts` cannot import the interpreter that
+ * imports it. The error vocabulary is the one module in this package that depends on nothing.
+ */
+export class RuntimeFault extends Error {
+  constructor(
+    readonly code: string,
+    message: string,
+  ) {
+    super(`${code} ${message}`);
+    this.name = "RuntimeFault";
   }
 }

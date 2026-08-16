@@ -11,7 +11,7 @@
  * will produce them once branches contain awaits.
  */
 import {
-  requestId, KeyScope, branchKeys, digest, stepKeyString } from "../src/keys.js";
+  requestId, KeyScope, branchKeys, digest, stepKeyString, type StepKey } from "../src/keys.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -226,29 +226,52 @@ const eq = (name: string, actual: unknown, expected: unknown) =>
 // "run divergence, INPUT CHANGED" for a program that never diverged; with the SAME inputs it is
 // entirely silent — one durable row serves two locations, the run reports success, and a replay
 // hands the second location the first one's recorded effect. The silent case is the worse one.
+// THE TRIPWIRE ABOVE DIED, WHICH IS THE ONLY OUTCOME THAT PROVES THE REPAIR REACHES HERE.
+// It asserted that two structurally different scopes print one identical key and that a step name
+// forges structure as readily as a branch key. Both were true; both are now unreachable, because
+// the mint refuses the inputs. What replaces it asserts the REFUSAL, and the twin below asserts
+// that the refusal is narrow — a guard that rejected every branch key would satisfy the first half
+// perfectly and destroy the language.
+const refuses = (what: string, f: () => unknown): string | null => {
+  try { f(); return null; } catch (e) { return (e as { code?: string }).code ?? `no code: ${what}`; }
+};
 {
   const root = new KeyScope();
-  // A: genuinely nested — outer/b:a, then inner/b:b, then the sleep.
-  const nested = root
-    .branch("parallel", "outer", 0, "a")
-    .branch("parallel", "inner", 0, "b");
-  // B: ONE branch of ONE scope, whose key spells the whole nested path.
-  const spelled = root.branch("parallel", "outer", 0, "a/parallel:inner#0/b:b");
 
-  const kNested = stepKeyString(nested.nextEffect("sleep", "z"));
-  const kSpelled = stepKeyString(spelled.nextEffect("sleep", "z"));
+  ok("a branch key that spells a nested path is REFUSED at the mint, not silently keyed",
+    refuses("branch", () => root.branch("parallel", "outer", 0, "a/parallel:inner#0/b:b")) === "L3025");
+  ok("and so is a bare reserved character, because the forgery needs no cleverness",
+    refuses("branch", () => root.branch("parallel", "outer", 0, "a#b")) === "L3025");
+  ok("a step NAME forges structure too, and is refused on the same grammar",
+    refuses("name", () => root.nextEffect("sleep", "z#0/b:x/sleep:y")) === "L3025");
 
-  ok("KNOWN DEFECT (g3): two structurally different scopes print ONE identical key",
-    kNested === kSpelled, { nested: kNested, spelled: kSpelled });
-  ok("KNOWN DEFECT (g3): and it is the nested path that the flat branch forged",
-    kSpelled === "/parallel:outer#0/b:a/parallel:inner#0/b:b/sleep:z#0", kSpelled);
+  // The narrowness twin. The guard rejects exactly the three characters the key grammar reserves;
+  // anything else a program legitimately writes must still mint. Without this the cells above are
+  // satisfied by a guard that refuses everything.
+  ok("an ordinary branch key still mints", refuses("branch", () => root.branch("parallel", "outer", 0, "a")) === null);
+  ok("and a camelCase one, which is an ordinary object key",
+    refuses("branch", () => root.branch("parallel", "outer", 0, "runTests")) === null);
+  ok("and a fan-out branch keyed by a hyphenated item",
+    refuses("branch", () => root.branch("fanOut", "reviews", 0, "security-lens")) === null);
+  ok("and an ordinary step name", refuses("name", () => root.nextEffect("sleep", "one")) === null);
 
-  // The same forgery through a step NAME rather than a branch key. `nameRequired` is false for 7 of
-  // the 13 primitives, and an optional name is never checked against STEP_NAME_RE at all — so the
-  // unvalidated half is wider than the branch keys the review named.
-  const viaName = stepKeyString(root.nextEffect("sleep", "z#0/b:x/sleep:y"));
-  ok("KNOWN DEFECT (g3): a step NAME forges structure too, not only a branch key",
-    viaName === "/sleep:z#0/b:x/sleep:y#0", viaName);
+  // The residual, asserted rather than described: the KEY FUNCTION is still non-injective. The
+  // repair closes the paths that MINT a key, not `stepKeyString` itself, so anything handing the
+  // runtime a key STRING — `planFork`'s caller-supplied `fromStepKey` is exactly this — is
+  // unprotected by everything above. Named here so the repair is not read as more than it is.
+  const forged: StepKey = {
+    scope: [{ kind: "parallel", name: "outer", occurrence: 0, branch: "a/parallel:inner#0/b:b" }],
+    kind: "sleep", name: "z", occurrence: 0,
+  };
+  const nested: StepKey = {
+    scope: [
+      { kind: "parallel", name: "outer", occurrence: 0, branch: "a" },
+      { kind: "parallel", name: "inner", occurrence: 0, branch: "b" },
+    ],
+    kind: "sleep", name: "z", occurrence: 0,
+  };
+  ok("RESIDUAL: stepKeyString is still not injective for a hand-built key, so a caller-supplied key string is unprotected",
+    stepKeyString(forged) === stepKeyString(nested), { forged: stepKeyString(forged), nested: stepKeyString(nested) });
 }
 
 console.log(`keys.smoke: ${pass} checks passed`);

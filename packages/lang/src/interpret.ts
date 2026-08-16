@@ -16,7 +16,8 @@
  */
 
 import { validate } from "./grammar.js";
-import { LangError, LangErrors } from "./errors.js";
+import { LangError, LangErrors, RuntimeFault,} from "./errors.js";
+export { RuntimeFault } from "./errors.js";
 import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { Prng, assertCrossable, deepFreeze } from "./values.js";
@@ -210,15 +211,6 @@ export class UnwalkableScope extends Error {
   }
 }
 
-export class RuntimeFault extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(`${code} ${message}`);
-    this.name = "RuntimeFault";
-  }
-}
 
 // ---- statement completion ------------------------------------------------------------------------
 
