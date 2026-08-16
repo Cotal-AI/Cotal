@@ -40,10 +40,11 @@
     {
       "name": "a cut that was never reached is handed back anyway",
       "file": "implementations/runtime/src/fork.ts",
-      "find": "  const cut = reached ? req.entries.filter((e) => !orphaned.has(journalEntryKeyString(e))) : [];",
-      "replace": "  const cut = req.entries.filter((e) => !orphaned.has(journalEntryKeyString(e)));",
+      "find": "  const cut = reached\n    ? req.entries.filter((e) => {\n        const k = journalEntryKeyString(e);\n        return !orphaned.has(k) && !projected.has(k);\n      })\n    : [];",
+      "replace": "  const cut = req.entries.filter((e) => {\n    const k = journalEntryKeyString(e);\n    return !orphaned.has(k) && !projected.has(k);\n  });",
       "expectRed": "an unreached plan carries no cut at all, rather than a plausible one",
-      "cell": "and an unreached plan carries no cut at all, rather than a plausible one"
+      "cell": "and an unreached plan carries no cut at all, rather than a plausible one",
+      "note": "Re-anchored after the claim-1 repair rewrote this line. The old anchor was a single-line filter that no longer exists, so the harness graded this ERROR -- target string not found, nothing mutated -- and the guard went UNGRADED while the run still looked healthy. It was invisible in the log because the log was filtered to KILLED|SURVIVED; only the trailing tally counted it. Two rules come out of that: a repair that rewrites a line disarms every mutation anchored to it, so re-run the ENTIRE set after a repair and read the TALLY, not a grep of the verdicts you expected."
     },
     {
       "name": "a spawn in the cut is copied rather than refused",
@@ -92,7 +93,7 @@
       "replace": "    } else if (err instanceof UnwalkableScope) {\n      /* mutated: the refusal is dropped */",
       "expectRed": "a fork past a settled conclave is refused with L5014, not waved through",
       "cell": "a fork past a settled conclave is refused with L5014, not waved through",
-      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there \u2014 nothing watched L5014 \u2014 and is predicted KILLED here now that a cell does."
+      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there — nothing watched L5014 — and is predicted KILLED here now that a cell does."
     },
     {
       "name": "L5018 rides along beside a refusal that already explains the stop",
@@ -109,7 +110,7 @@
       "replace": "  if (false && !reached && recorded && !stoppedForAnotherReason) {",
       "expectRed": "with L5018, because a cut never reached is the whole journal",
       "cell": "with L5018, because a cut never reached is the whole journal",
-      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything \u2014 a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
+      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything — a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
     },
     {
       "name": "the enclosing scope is copied settled, so the child short-circuits past its own cut",
@@ -133,16 +134,16 @@
       "file": "implementations/runtime/src/fork.ts",
       "find": "    return SCOPE_KINDS.has(e.kind) && req.fromStepKey.startsWith(`${k}/b:`);",
       "replace": "    return SCOPE_KINDS.has(e.kind);",
-      "expectRed": "a fork at a recorded step is admissible",
-      "cell": "a fork at a recorded step is admissible",
-      "note": "The narrowness twin. Projecting EVERY scope entry would satisfy the first mutation perfectly while destroying any fork whose cut sits after an unrelated combinator -- the child would re-enter and re-run scopes it had already settled."
+      "expectRed": "and the scope it does not enclose STAYS in the prefix: the projection is enclosing-only",
+      "cell": "so the CHILD replays that scope instead of re-entering it: it records no second `parallel:pair`",
+      "note": "The narrowness twin. Projecting EVERY scope entry would satisfy the first mutation perfectly while destroying any fork whose cut sits after an unrelated combinator -- the child would re-enter and re-run scopes it had already settled. It SURVIVED its first grading and survived honestly: it was graded on `a fork at a recorded step is admissible`, a cell over a program with NO SCOPES, so the widening could not change its answer. Re-graded on a child seeded from a cut taken AFTER a settled `parallel`, and on what that child APPENDS -- the branch sleeps replay either way, so the first-live-step probe is inert here and only the second `parallel:pair#0` row tells the two apart."
     }
   ],
   "unkillable": [
     {
       "name": "an activation expecting a NEW run accepts one whose journal has records",
       "file": "packages/core/src/run-journal.ts",
-      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild \u2014 the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
+      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild — the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
     }
   ]
 }

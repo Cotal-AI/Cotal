@@ -312,6 +312,43 @@ const plan = async (
     } catch (e) { sConsumed = `threw: ${(e as Error).message.slice(0, 60)}`; }
     c("so the ceiling charges the child for a scope whose result already answers the step it was forked to redo",
       sConsumed === 1, { consumed: sConsumed, cut: keys(sp.cut) });
+
+    // THE NARROWNESS OF THE PROJECTION, measured on the child rather than on the plan.
+    //
+    // Its kill-set twin — "project EVERY scope, not only the enclosing one" — SURVIVED the first
+    // run, and survived honestly: the cell it was graded on forks a program with no scopes in it at
+    // all, so the widening changed nothing there and the harness reported coverage this suite did
+    // not have. A projection that dropped every settled scope would have satisfied the repair's own
+    // mutation perfectly while re-running work the parent had already finished.
+    //
+    // So the case is put where it can actually differ: the same `parallel`, SETTLED, with the cut
+    // AFTER it. Nothing about it is being re-decided, and it must stay in the prefix.
+    //
+    // The discriminator is what the child APPENDS, not what the planner returns and not which step
+    // goes live first. Under the too-broad projection the branch sleeps are still in the prefix and
+    // still replay, so the first live step is `/sleep:after#0` either way — a spy on `sleep` sees
+    // nothing. What differs is the scope row: with it copied the child replays the settled parallel,
+    // without it the child re-enters and records the scope a second time.
+    const aEntries = await record("r-after", SCOPED);
+    const ap = await plan({
+      parent: "r-after", entries: aEntries, source: SCOPED, fromStepKey: "/sleep:after#0",
+    });
+    c("a fork AFTER a settled scope is admissible — nothing in it is being re-decided",
+      ap.admissible === true && ap.refusals.length === 0, ap.refusals);
+    c("and the scope it does not enclose STAYS in the prefix: the projection is enclosing-only",
+      keys(ap.cut).includes("/parallel:pair#0"), keys(ap.cut));
+
+    const { store: aStore, got: appended } = collector();
+    await runProgram(SCOPED, {
+      runId: "a-child",
+      handler: new SimHandler({ clock: { start: NOW } }),
+      journal: new Journal({ run: "a-child", entries: ap.cut.map((e) => ({ ...e, run: "a-child" })), store: aStore }),
+      pins: PINS,
+    });
+    c("so the CHILD replays that scope instead of re-entering it: it records no second `parallel:pair`",
+      !keys(appended).includes("/parallel:pair#0"), keys(appended));
+    c("and it does append the step it was forked to run, so the run really happened",
+      keys(appended).includes("/sleep:after#0"), keys(appended));
   }
 }
 
