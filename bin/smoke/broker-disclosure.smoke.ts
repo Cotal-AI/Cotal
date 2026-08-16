@@ -70,12 +70,16 @@ const CAPTURES = new RegExp(String.raw`${VAR}\s*!==?\s*(?:undefined|null)`);
  *
  * WHAT READING SOURCE CANNOT DO, named rather than implied, because a boundary nobody wrote down
  * gets mistaken for coverage. This checks that the line is SHAPED like a disclosure. It cannot
- * follow evaluation, so a line that builds the value and then discards it stays accepted: a
- * disclosing template with a `.replace` chained onto it that overwrites the whole string, and the
- * comma-expression form that evaluates the disclosing template and hands `console.log` something
- * else. Both are deliberate sabotage rather than a careless edit, and closing them means executing
- * repository source inside a guard, which buys less than it costs. Measured and left open, not
- * overlooked.
+ * follow evaluation, so ONE line that builds the value and then discards it stays accepted: a
+ * disclosing template with a `.replace` chained onto it that overwrites the whole string. That is
+ * deliberate sabotage rather than a careless edit, and closing it means executing repository source
+ * inside a guard, which buys less than it costs. Measured and left open, not overlooked.
+ *
+ * The comma-expression form, which evaluates the disclosing template and hands `console.log`
+ * something else, USED to be the second one. Requiring the backtick immediately after the `(` closed
+ * it as a side effect, since the comma form opens with a parenthesis. It is recorded here rather
+ * than quietly enjoyed: a boundary that has moved and still reads as open is the same misreading as
+ * one nobody wrote down. It fails in the loud direction and stays closed.
  */
 const PRINTS = new RegExp(String.raw`console\.log\(\`[^\n\`]*broker:\s*\$\{\s*${VAR}\s*\}`);
 
