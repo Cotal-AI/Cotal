@@ -31,17 +31,20 @@ import {
   writeRunNotice,
   markRunNoticeConsumed,
   runNoticeId,
+  readRunMigration,
+  listRunMigrations,
 } from "@cotal-ai/core";
 import {
   CATALOG,
   Journal,
+  programHashOf,
   journalEntryKeyString,
   resolvePins,
   run as runProgram,
   SimHandler,
   type JournalEntry,
 } from "@cotal-ai/lang";
-import { migrateRun, commitMigration, NotYetDurable } from "../src/index.js";
+import { migrateRun, commitMigration, MigrationNotAdmissible } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "migrun";
@@ -260,17 +263,56 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   c("which is not admissible either", cr.admissible === false, cr);
 }
 
-// ── 7) the commit, which is a seam and says so ─────────────────────────────────────────────────
+// ── 7) the commit: two writes, two acts, and a refusal before either ──────────────────────────
 {
   const RUN = "r-commit";
+  const NEW = `await sleep("1s", { name: "one" });`;
   const entries = await record(RUN, `await sleep("1s", { name: "one" });\nawait sleep("2s", { name: "two" });`);
-  const r = await check(RUN, entries, `await sleep("1s", { name: "one" });`);
+  const r = await migrateRun({
+    endpoint: EP, runId: RUN, source: NEW, entries, pins: PINS, kv,
+    actor: "david", now: () => NOW, fromHash: "sha256:whatever-the-caller-says",
+  });
   c("the report is admissible", r.admissible === true, r);
+  c("and it carries the hash of the source it would move TO, computed rather than claimed",
+    r.toHash === programHashOf(NEW), { toHash: r.toHash });
+  c("while fromHash is carried as the caller's claim, because nothing here pins one",
+    r.fromHash === "sha256:whatever-the-caller-says", r.fromHash);
 
-  const e = await commitMigration(r).then(() => null, (x: unknown) => x as Error);
-  c("committing it refuses BY NAME rather than writing the fact somewhere it would be lost",
-    e instanceof NotYetDurable, e?.name);
-  c("and names what it is waiting for", e?.message.includes("pinned program hash") === true, e?.message?.slice(0, 200));
+  const { migrationId, created } = await commitMigration(kv, EP, r, "driver-1");
+  c("committing files the migration", created === true, { migrationId, created });
+
+  const filed = await readRunMigration(kv, EP, RUN, migrationId);
+  c("the record holds what the check found", filed?.spec.consumedThrough === r.consumedThrough, filed?.spec);
+  c("including the orphan rows, so a reader is never told the work did not happen",
+    filed?.spec.orphans.some((o) => o.step.includes("sleep:two")) === true, filed?.spec.orphans);
+  c("and who asked", filed?.spec.actor === "david", filed?.spec.actor);
+  c("the APPLICATION is a separate fact naming the driver that made it",
+    filed?.applied?.by === "driver-1", filed?.applied);
+
+  // Idempotent by construction: the id is a digest of the report, so the retry a crash forces lands
+  // on the same record instead of filing a second migration for one decision.
+  const again = await commitMigration(kv, EP, r, "driver-1").then((x) => x, (e: unknown) => e as Error);
+  c("a retry of the same decision re-derives the same id",
+    (again as { migrationId?: string })?.migrationId === migrationId, again);
+  c("and files no second migration", (await listRunMigrations(kv, EP, RUN)).length === 1,
+    (await listRunMigrations(kv, EP, RUN)).length);
+
+  // …but the APPLICATION is create-only, so a second driver claiming the same migration loses.
+  const raced = await commitMigration(kv, EP, r, "driver-2").then(() => null, (e: unknown) => e as Error);
+  c("a second driver claiming one migration loses loudly rather than believing it moved the run",
+    raced !== null, raced);
+  const after = await readRunMigration(kv, EP, RUN, migrationId);
+  c("and the winner is unchanged", after?.applied?.by === "driver-1", after?.applied);
+
+  // A REFUSED migration is not a migration with a caveat.
+  const bad = await record("r-refuse", `const dev = await spawn("dev", { name: "dev" });\nawait sleep("1s", { name: "one" });`);
+  const badReport = await check("r-refuse", bad, `await sleep("1s", { name: "one" });`);
+  c("the refused report is not admissible", badReport.admissible === false, badReport.orphans);
+  const refused = await commitMigration(kv, EP, badReport, "driver-1").then(() => null, (e: unknown) => e as Error);
+  c("committing it is refused BEFORE anything is written", refused instanceof MigrationNotAdmissible, refused?.name);
+  c("and the refusal names the row that stopped it", refused?.message.includes("L5003") === true, refused?.message?.slice(0, 160));
+  c("nothing was filed for the refused run", (await listRunMigrations(kv, EP, "r-refuse")).length === 0,
+    (await listRunMigrations(kv, EP, "r-refuse")).length);
 }
 
 // ── 8) every code the table hands out is a code the language actually has ──────────────────────

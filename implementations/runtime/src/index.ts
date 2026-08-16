@@ -34,6 +34,7 @@ export { renderRunContext, UnrenderableNotice, type RunContextRender } from "./r
 export {
   migrateRun,
   commitMigration,
+  MigrationNotAdmissible,
   type MigrateRequest,
   type MigrateReport,
   type MigrateOrphan,

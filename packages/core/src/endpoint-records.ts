@@ -347,6 +347,32 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "commit-path", status: "commit-path" },
     mediation: "mediated",
   },
+  migration: {
+    // The MIGRATION: `migration.<endpoint>.<runId>.<migrationId>`, one run's move onto edited
+    // source — what the walk found, which refusals a person overrode, and who they were.
+    //
+    // ITS OWN KIND BECAUSE IT IS NEITHER HALF OF THE RUN RECORD. A run's spec is what the run IS,
+    // decided once; its status is what the run is DOING, rewritten by every driver heartbeat. A
+    // migration is neither: it is append-only history with an actor on it, and a run can be
+    // migrated more than once. Last-value-wins would let the second migration erase the first's
+    // history; create-only on the run record would collide with the run's own spec.
+    //
+    // `<migrationId>` is DERIVED FROM THE REPORT'S CONTENT, and that is not a stylistic choice: a
+    // migration is decided from a dry walk that may be re-run after a crash, so the same decision
+    // must land on the same record rather than filing a second one — and a counter would need a
+    // reader-writer to allocate it, which is a second arbiter for a fact the content already
+    // determines. The same reasoning as `notice`, for the same reason.
+    //
+    // SPLIT because deciding and APPLYING are different acts by different parties at different
+    // times: the spec is the report (immutable — what the check found), the status is the commit
+    // (create-only — which driver actually advanced the run, decided by the CAS and by nothing
+    // else, so two drivers racing to apply one migration cannot both believe they did).
+    kind: "migration",
+    qualifiers: [qEndpoint, qId("runId"), qId("migrationId")],
+    split: true,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   lifecycle: {
     // The optional per-UID append-only audit detail — never the authority (that is the HEAD).
     kind: "lifecycle",

@@ -77,6 +77,17 @@ export function digest(value: unknown): string {
   return DIGEST_PREFIX + createHash("sha256").update(canonicalize(value), "utf8").digest("hex");
 }
 
+/**
+ * A program's identity, as one function so there is only one answer.
+ *
+ * The interpreter pins a run to this and a migration records the source it moved TO, and those two
+ * must be the same hash of the same thing — a second copy of `digest({ source })` in another package
+ * is a different function's answer wearing this one's name the moment either side changes.
+ */
+export function programHashOf(source: string): string {
+  return digest({ source });
+}
+
 function frameString(f: ScopeFrame): string {
   const named = f.name === null ? f.kind : `${f.kind}:${f.name}`;
   return `/${named}#${f.occurrence}/b:${f.branch}`;

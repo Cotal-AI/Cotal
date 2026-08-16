@@ -17,19 +17,30 @@
  * refusal is the product: a migration that quietly dropped one would be an evidence-carrying system
  * discarding evidence.
  *
- * **The commit is a named seam and does not exist here.** §8.4 files a `migrated` fact onto the run
- * record and advances the run's pinned program hash. This tree's run record has neither a home for
- * append-only history — its two halves are "decided once" (create-only) and "current state"
- * (last-value-wins, rewritten by every driver heartbeat) — nor the program hash §17 delta 2 declares
- * but slice (b) deliberately did not invent. So {@link commitMigration} refuses by name rather than
- * writing the fact somewhere it would be clobbered or misread. The check above it is complete.
+ * **The commit files its own record kind, and that was a scope decision rather than a preference.**
+ * §8.4 puts a `migrated` fact on the run record; a records-KV record has a create-only half for what
+ * a thing IS and a last-value-wins half for what it is DOING, and a migration is neither — it is
+ * append-only history with an actor, and a run can migrate more than once. So there is a `migration`
+ * kind (SPEC amendment A10), keyed by a content-derived id, whose spec is the report and whose
+ * status is the application.
+ *
+ * **What the commit still does NOT do**: advance the run's pinned program hash, because
+ * `RunSpecValue` carries none to advance — §17 delta 2 declares one and slice (b2) deliberately did
+ * not invent it. The migration is durable and readable; the run record does not yet name its source.
  */
 import type { KV } from "@nats-io/kv";
-import { listRunNoticesForRun } from "@cotal-ai/core";
+import {
+  listRunNoticesForRun,
+  runMigrationId,
+  writeRunMigration,
+  markRunMigrationApplied,
+  type RunMigrationSpecValue,
+} from "@cotal-ai/core";
 import {
   Journal,
   JournalReadOnlyError,
   journalEntryKeyString,
+  programHashOf,
   run as runProgram,
   RunDivergence,
   UnwalkableScope,
@@ -38,7 +49,6 @@ import {
   type JournalEntry,
   type RunPins,
 } from "@cotal-ai/lang";
-import { NotYetDurable } from "./mesh-handler.js";
 
 /** What the caller decided to override, and therefore what the record has to say they decided. */
 export interface MigrateOverrides {
@@ -89,6 +99,9 @@ export interface MigrateReport {
   readonly unwalkable?: { readonly step: string; readonly why: string };
   /** The overrides the caller passed, as recorded strings, for the fact the commit will file. */
   readonly overrides: readonly string[];
+  /** The hash of the source this run would move TO. Computed from that source, so not a claim. */
+  readonly toHash: string;
+  readonly fromHash?: string;
 }
 
 export interface MigrateRequest {
@@ -107,6 +120,15 @@ export interface MigrateRequest {
   readonly now: () => number;
   readonly overrides?: MigrateOverrides;
   readonly file?: string;
+  /**
+   * The program hash the run was on, as the CALLER states it.
+   *
+   * Not verifiable here and deliberately not invented: §17 delta 2 declares a program hash on the
+   * run record and `RunSpecValue` does not carry one yet, so a hash computed from a source this
+   * function was never given would be a guess wearing a fact's name. Absent when the caller does not
+   * know it, and the record says absent rather than approximate.
+   */
+  readonly fromHash?: string;
 }
 
 /** The walk reached work the recorded run never did. Not an error: it is where a walk STOPS. */
@@ -202,6 +224,8 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
     run: req.runId,
     at: req.now(),
     actor: req.actor,
+    toHash: programHashOf(req.source),
+    ...(req.fromHash !== undefined ? { fromHash: req.fromHash } : {}),
     admissible,
     consumedThrough: req.entries.length - orphans.length,
     orphans: table,
@@ -212,24 +236,68 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
 }
 
 /**
- * File the migration and advance the run's pinned hash.
+ * File the migration, and record that this driver applied it.
  *
- * REFUSED, by name, and the reason is structural rather than unfinished wiring. §8.4's `migrated`
- * fact is append-only history with an actor on it; a records-KV record has a create-only half for
- * what a thing IS and a last-value-wins half for what it is DOING, and the driver rewrites the
- * second one on every state change. Filing the fact there means either a read-modify-write race
- * against the driver's own heartbeat or a second writer for one value. And "the run's pinned hash
- * advances" needs a pinned hash: §17 delta 2 declares one, `RunSpecValue` deliberately does not
- * carry it, and inventing it here would be a different function's answer wearing that name.
+ * TWO WRITES AND THEY ARE DIFFERENT ACTS. The report is filed create-only under an id derived from
+ * its own content, so the retry a crash forces lands on its own record rather than filing a second
+ * migration for one decision. The application is a separate, create-only status: two drivers racing
+ * to advance one run both find no status and both write, and the store decides. A driver that lost
+ * that race hears about it instead of believing it moved a run somebody else moved.
  *
- * The check above is complete and its report is the whole decision. What is missing is a home for
- * the decision, which is a record-shape question and belongs where record shapes are decided.
+ * REFUSED FOR AN INADMISSIBLE REPORT, before anything is written. A migration the check rejected is
+ * not a migration with a caveat — filing it would put a decision nobody may act on into the same
+ * history a reader trusts, and the refusal is the product the check exists to produce.
+ *
+ * What is still NOT here, stated rather than implied: the run's pinned program hash does not
+ * advance, because `RunSpecValue` carries no program hash to advance (§17 delta 2, deliberately not
+ * invented in slice (b2)). The migration is durable and readable; the run record does not yet name
+ * which source it is on.
  */
-export async function commitMigration(_report: MigrateReport): Promise<never> {
-  throw new NotYetDurable(
-    "migrate/commit",
-    "a durable home for an append-only `migrated` fact and the run record's pinned program hash (§17 delta 2)",
-  );
+export async function commitMigration(
+  kv: KV,
+  endpoint: string,
+  report: MigrateReport,
+  driver: string,
+): Promise<{ migrationId: string; created: boolean }> {
+  if (!report.admissible) {
+    throw new MigrationNotAdmissible(report);
+  }
+  const content: Omit<RunMigrationSpecValue, "at"> = {
+    v: 1,
+    run: report.run,
+    ...(report.fromHash !== undefined ? { fromHash: report.fromHash } : {}),
+    toHash: report.toHash,
+    consumedThrough: report.consumedThrough,
+    orphans: report.orphans.map((o) => ({
+      step: o.step,
+      kind: o.kind,
+      verdict: o.verdict,
+      ...(o.code !== undefined ? { code: o.code } : {}),
+    })),
+    overrides: report.overrides,
+    actor: report.actor,
+  };
+  const migrationId = runMigrationId(content);
+  const { created } = await writeRunMigration(kv, endpoint, migrationId, { ...content, at: report.at });
+  await markRunMigrationApplied(kv, endpoint, report.run, migrationId, driver, report.at);
+  return { migrationId, created };
+}
+
+/** A migration the check refused, offered for commit anyway. The report says which rows refused. */
+export class MigrationNotAdmissible extends Error {
+  constructor(readonly report: MigrateReport) {
+    const refused = report.orphans.filter((o) => o.verdict === "rejected");
+    super(
+      `run ${report.run} cannot migrate: ` +
+        (report.divergence !== undefined
+          ? `${report.divergence.step} diverged`
+          : report.unwalkable !== undefined
+            ? `the walk could not enter ${report.unwalkable.step}`
+            : refused.map((o) => `${o.code} at ${o.step}`).join(", ")) +
+        `. The report carries the per-step reason; nothing was written.`,
+    );
+    this.name = "MigrationNotAdmissible";
+  }
 }
 
 /** A fault the PROGRAM raised under the new source. Named by code, not by class: the language's

@@ -133,6 +133,7 @@ export {
   KeyScope,
   branchKeys,
   digest,
+  programHashOf,
   scopePathString,
   stepKeyEquals,
   stepKeyString,

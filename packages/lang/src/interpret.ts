@@ -17,7 +17,7 @@
 
 import { validate } from "./grammar.js";
 import { LangError, LangErrors } from "./errors.js";
-import { KeyScope, digest, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
+import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { Prng, assertCrossable, deepFreeze } from "./values.js";
 import { parseDuration } from "./duration.js";
@@ -1731,7 +1731,7 @@ function toProgramError(e: unknown): Record<string, unknown> {
  */
 export async function run(source: string, options: RunOptions): Promise<RunResult> {
   const { ast } = validate(source, options.file);
-  const programHash = digest({ source });
+  const programHash = programHashOf(source);
   // A resume is handed the pins the run STARTED under and binds to them; a fresh run resolves them
   // once, here, and hands them back for the run record.
   const pins =
