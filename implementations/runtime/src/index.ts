@@ -42,3 +42,14 @@ export {
   type MigrateDivergence,
   type OrphanVerdict,
 } from "./migrate.js";
+export {
+  planFork,
+  commitFork,
+  ForkNotAdmissible,
+  CutJournal,
+  CutReached,
+  type ForkRequest,
+  type ForkPlan,
+  type ForkRefusal,
+  type ForkCommitResult,
+} from "./fork.js";
