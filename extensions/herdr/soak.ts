@@ -12,6 +12,7 @@
  */
 import * as herdr from "./src/driver.js";
 import { HerdrRuntime } from "./src/runtime.js";
+import { waitUntilVisible, visibilityDetail } from "./probe.js";
 import { execFileSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -117,6 +118,9 @@ console.log(`  baseline: panes=${base.panes} workspaces=${base.workspaces} tabs=
 
 const started = Date.now();
 let slowestCycleMs = 0;
+/** Time spent inside cycle 1's positive control, subtracted from that cycle so the per-cycle
+ *  slowdown assertion measures the runtime rather than this suite's own instrument. */
+let controlMs = 0;
 for (let i = 1; i <= CYCLES; i++) {
   const cycleStart = Date.now();
   const name = `cotal-herdr-soak-agent-${i}`;
@@ -128,10 +132,24 @@ for (let i = 1; i <= CYCLES; i++) {
   // Positive control, once: prove the survivor instrument can SEE a live agent before the run
   // ends by trusting it to report none. Without this, an instrument that matches nothing reports
   // a clean "no agent processes survive" forever — which is exactly what the previous one did.
-  if (i === 1) ok("positive control: the survivor instrument can see a LIVE agent", ourProcs() >= 1, `${ourProcs()} seen`);
+  //
+  // WAITS for the payload to become visible rather than sampling once. `spawn` returning means the
+  // pane is running the LAUNCHER; the payload it spawns is what carries the nonce, and it appears
+  // 70-155ms later (measured against the real launcher). A single sample here was green only
+  // because `herdr agent start` is usually slower than that — a margin owned by another subsystem,
+  // which disappears under load. See probe.ts for why a longer sleep would keep the defect.
+  if (i === 1) {
+    const controlStart = Date.now();
+    const control = await waitUntilVisible(ourProcs, { deadlineMs: 5_000, intervalMs: 50 });
+    ok("positive control: the survivor instrument can see a LIVE agent", control.kind === "seen", visibilityDetail(control));
+    // Not charged to the cycle: the slowdown assertion below compares cycle times, and a control
+    // that waited would show up there as a per-cycle regression it is not.
+    controlMs = Date.now() - controlStart;
+  }
   handle.stop({ graceful: false });
   await handle.waitForExit!();
-  const cycleMs = Date.now() - cycleStart;
+  const cycleMs = Date.now() - cycleStart - controlMs;
+  controlMs = 0;
   slowestCycleMs = Math.max(slowestCycleMs, cycleMs);
   if (i % 5 === 0 || i === CYCLES)
     console.log(`  cycle ${i}/${CYCLES}  panes=${panes()} workspaces=${workspaces()} launcherDirs=${launcherDirs()}  (${cycleMs}ms)`);
@@ -149,11 +167,16 @@ ok("no server scratch dirs accumulated", srvDirs() === base.srv, `${srvDirs()} v
 // Sampled over a bounded window, not once: the kills are asynchronous, so an instant read can
 // catch a process that has been signalled but not yet reaped.
 let noSurvivors = false;
+let survivors = -1;
 for (let i = 0; i < 40 && !noSurvivors; i++) {
-  noSurvivors = ourProcs() === 0;
+  survivors = ourProcs();
+  noSurvivors = survivors === 0;
   if (!noSurvivors) await new Promise((r) => setTimeout(r, 50));
 }
-ok("no agent processes survive", noSurvivors, `${ourProcs()} still running`);
+// Bind the deciding sample: `ourProcs()` in the detail would be a SECOND ps sweep at a later
+// instant, so a red could report a count that is not the count that failed — and during a race
+// those two legitimately disagree, sending the reader after a contradiction that does not exist.
+ok("no agent processes survive", noSurvivors, `${survivors} still running`);
 ok("the session server is still healthy after the churn", herdr.serverRunning(SESSION));
 // A per-cycle leak usually shows up as monotonically rising latency long before it shows up as a
 // count, so the slowest cycle is asserted against a generous multiple of the mean.
