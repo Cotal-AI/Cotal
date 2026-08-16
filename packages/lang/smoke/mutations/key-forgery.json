@@ -1,0 +1,51 @@
+{
+  "suite": "packages/lang/smoke/keys.smoke.ts",
+  "guard": "the refusals that stop a name or branch key forging step-key structure (g3)",
+  "command": "pnpm smoke:lang-keys",
+  "completionMarker": "ok first turn",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/lang/smoke/mutations/key-forgery.json",
+  "why": [
+    "The guard exists at TWO layers and each mutation must name which one it breaks. The validator",
+    "closes the static case; the mint closes the computed case the validator provably cannot see.",
+    "A single mutation that reddened the suite would not say which layer was load-bearing, and the",
+    "layers cover different inputs — so removing either must be caught on its own.",
+    "",
+    "The completionMarker is the FIRST cell in the suite, printed long upstream of the mutated",
+    "region: this is a fail-fast suite, so a marker at the end would be absent on every genuine",
+    "kill and grade all three INCONCLUSIVE."
+  ],
+  "mutations": [
+    {
+      "name": "the mint accepts a branch key that forges a path",
+      "file": "packages/lang/src/keys.ts",
+      "find": "    assertKeySafe(branchKey, `the branch key of this \\`${kind}\\``);",
+      "replace": "",
+      "expectRed": "a branch key that spells a nested path is REFUSED at the mint, not silently keyed",
+      "cell": "a branch key that spells a nested path is REFUSED at the mint, not silently keyed"
+    },
+    {
+      "name": "the mint accepts a step name that forges a path",
+      "file": "packages/lang/src/keys.ts",
+      "find": "    assertKeySafe(name, `the name of this \\`${kind}\\``);",
+      "replace": "",
+      "expectRed": "a step NAME forges structure too, and is refused on the same grammar",
+      "cell": "a step NAME forges structure too, and is refused on the same grammar"
+    },
+    {
+      "name": "the reserved set is widened until it refuses ordinary keys",
+      "file": "packages/lang/src/keys.ts",
+      "find": "export const KEY_RESERVED_RE = /[/#:]/;",
+      "replace": "export const KEY_RESERVED_RE = /[/#:a-z]/;",
+      "expectRed": "an ordinary branch key still mints",
+      "cell": "an ordinary branch key still mints",
+      "note": "The narrowness twin's mutation. Without it, a guard that refused EVERY branch key would satisfy both mutations above perfectly and destroy the language — the first two prove the refusal fires, this proves it is not firing on everything."
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "the L3025 branch-key check in the validator",
+      "file": "packages/lang/src/grammar.ts",
+      "why": "Graded from packages/lang/smoke/grammar.smoke.ts rather than from here: this suite imports ../src/keys.js and never runs the validator, so mutating grammar.ts could not reach it and would report SURVIVED indistinguishably from a missing test. Recorded so nobody re-authors it here and reads that SURVIVED as a hole."
+    }
+  ]
+}
