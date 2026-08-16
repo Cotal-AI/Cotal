@@ -106,11 +106,11 @@
     {
       "name": "the interpolation may sit ANYWHERE after `broker:`, so a commented one satisfies a literal line",
       "file": "bin/smoke/broker-disclosure.smoke.ts",
-      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
-      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:[^\\n]*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:[^\\n]*\\$\\{\\s*${VAR}\\s*\\}`);",
       "expectRed": "fixture: the INTERPOLATION parked in a trailing comment is rejected too",
       "cell": "fixture: the INTERPOLATION parked in a trailing comment is rejected too",
-      "note": "THE NEXT MEMBER OF THE FAMILY, found by review after the first was closed, and the lesson is that closing the members you were shown is not closing the family. Requiring the interpolation was right and requiring it ANYWHERE ON THE LINE was not: park it in a trailing comment, hardcode the address in the template, and the line prints a literal every run while the check is satisfied. It is also the plausible careless edit rather than a contrived one, because it is what somebody leaves behind after pinning an address to debug something."
+      "note": "THE NEXT MEMBER OF THE FAMILY, found by review after the first was closed, and the lesson is that closing the members you were shown is not closing the family. Requiring the interpolation was right and requiring it ANYWHERE ON THE LINE was not: park it in a trailing comment, hardcode the address in the template, and the line prints a literal every run while the check is satisfied. It is also the plausible careless edit rather than a contrived one, because it is what somebody leaves behind after pinning an address to debug something. RE-ANCHORED after the backtick requirement landed on the same line: it kept the shape it grades and moved to the line as it stands, because an anchor that has moved reports ERROR rather than a verdict, and a set is re-run rather than inherited when the guard it grades changes."
     },
     {
       "name": "the self-exclusion is repointed at a real suite, which stops grading it and lets this file in",
