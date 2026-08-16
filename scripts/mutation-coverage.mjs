@@ -39,30 +39,36 @@ let cells = 0, named = 0, mutations = 0, unkillable = 0;
 const rows = [];
 
 /**
- * The mutation harness ignores keys it does not know, so a misspelt `expectRed` silently disables
- * the strongest check it makes and every mutation then reports KILLED on any red at all — including
- * an unrelated crash. A knob whose unrecognised value degrades to a default is exactly the failure
- * this script exists to measure, so the key set is closed here and a typo is a hard error.
+ * Only the fields THIS script's report depends on are checked here. The set of keys the harness
+ * accepts is defined once, in `mutation-proof.mjs`, which refuses an unknown one before grading
+ * anything — a second copy of that list here drifted the first time the harness gained a key, which
+ * is the defect these two scripts exist to measure, committed by the measuring script.
  */
-const MUTATION_KEYS = ["name", "file", "find", "replace", "expectRed", "allowMultiple", "cell", "cellTemplate"];
-const REQUIRED = ["name", "file", "find", "replace", "expectRed", "cell"];
+const REQUIRED = ["name", "file", "find", "expectRed", "cell"];
+/** `replace` must EXIST but may be empty: deleting the target is a mutation like any other. */
+const REQUIRED_MAY_BE_EMPTY = ["replace"];
 
 for (const path of configs) {
   const cfg = JSON.parse(readFileSync(path, "utf8"));
   for (const m of cfg.mutations) {
-    for (const k of Object.keys(m)) {
-      if (!MUTATION_KEYS.includes(k)) throw new Error(`${path}: mutation "${m.name}" carries the unknown key "${k}" — the harness would ignore it silently`);
-    }
     for (const k of REQUIRED) {
       if (typeof m[k] !== "string" || m[k] === "") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
     }
+    for (const k of REQUIRED_MAY_BE_EMPTY) {
+      if (typeof m[k] !== "string") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
+    }
   }
   const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
-  const m = out.match(/(\d+) passed, (\d+) failed/);
-  if (!m) throw new Error(`${path}: \`${cfg.command}\` printed no "N passed, M failed" line`);
-  if (Number(m[2]) !== 0) throw new Error(`${path}: the suite is already red — coverage over a red suite means nothing`);
+  // Two terminal shapes exist in this repo. "N passed, M failed" comes from a suite that records
+  // failures and keeps going; "N checks passed" from a fail-fast one, where reaching the line at
+  // all means nothing failed. Both are the SUITE's own count of what it executed, which is the
+  // only number that cannot be inflated by reading the source.
+  const tallied = out.match(/(\d+) passed, (\d+) failed/);
+  const failFast = out.match(/(\d+) checks passed/);
+  if (!tallied && !failFast) throw new Error(`${path}: \`${cfg.command}\` printed neither "N passed, M failed" nor "N checks passed"`);
+  if (tallied && Number(tallied[2]) !== 0) throw new Error(`${path}: the suite is already red — coverage over a red suite means nothing`);
 
-  const executed = Number(m[1]);
+  const executed = Number((tallied ?? failFast)[1]);
   const distinct = new Set(cfg.mutations.map((x) => x.cell));
   if (distinct.size !== cfg.mutations.length) {
     console.log(`  note: ${path} has ${cfg.mutations.length} mutations naming ${distinct.size} distinct cells`);
