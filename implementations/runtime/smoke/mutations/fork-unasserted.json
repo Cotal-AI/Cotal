@@ -20,7 +20,17 @@
     "effect at all', and those demand opposite repairs \u2014 write a cell, or delete the code. Telling",
     "them apart needs a second step the mutation cannot do for you: run the shipped guard and the",
     "mutated one over every input the guard was written for and see whether ANY input distinguishes",
-    "them. See `redundant` below for the one that did not."
+    "them. See `redundant` below for the one that did not.",
+    "",
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
   ],
   "mutations": [
     {

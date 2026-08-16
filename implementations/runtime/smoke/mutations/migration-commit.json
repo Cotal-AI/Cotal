@@ -54,5 +54,16 @@
       "cell": "and the missing branch is reported, not consumed",
       "note": "The half a lang-side cell cannot see. The THROW is asserted in migrate.smoke; what nothing watched was this file TRANSLATING it into `unwalkable`, and an untranslated one falls through to the rethrow and reaches the caller as a raw exception instead of a report. The seat's earlier finding on this suite was exactly a translation branch nothing watched."
     }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
   ]
 }

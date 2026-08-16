@@ -216,5 +216,16 @@
       "why": "Ungradable from any suite, because it is now REDUNDANT and that is deliberate. The gate reads `reached && refusals.length === 0`, and the second clause subsumes the first on every path this source has: unreached-and-unrecorded pushes L5017; unreached-and-recorded pushes L5018 unless L5001/L5014/L5020 already explains the stop. So `!reached` always arrives carrying a refusal, removing `reached &&` changes no observable answer, and a mutation on it can only ever report SURVIVED -- indistinguishable from a missing test. It is kept as defence in depth against a FUTURE path that returns unreached with an EMPTY refusal set, which would hand a plausible cut back silently. The premise that makes it redundant is itself asserted, by `an unreached plan always carries a refusal, which is what makes its empty cut overdetermined`: the day that cell fails, this mutation becomes gradable again and belongs back in the set.",
       "history": "It was a graded mutation until this repair. It has now gone ERROR -- anchor line rewritten, nothing mutated -- TWICE in one day, once for the projection repair and once for this one, the second time after the rule about it was already written down. Re-anchoring it a third time would have hidden the real change, which is that the guard it grades stopped being observable."
     }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
   ]
 }

@@ -44,8 +44,8 @@
     {
       "name": "the five refusals drift into five reasons",
       "file": "implementations/runtime/src/mesh-handler.ts",
-      "find": "    throw new NotYetDurable(\"turn(…)\", ACTION_MACHINERY);",
-      "replace": "    throw new NotYetDurable(\"turn(…)\", \"something else entirely\");",
+      "find": "    throw new NotYetDurable(\"turn(\u2026)\", ACTION_MACHINERY);",
+      "replace": "    throw new NotYetDurable(\"turn(\u2026)\", \"something else entirely\");",
       "expectRed": "turn gives the one shared reason",
       "cell": "turn gives the one shared reason",
       "cellTemplate": "${name} gives the one shared reason"
@@ -54,9 +54,20 @@
       "name": "the seam swallows an UNGATED effect too",
       "file": "implementations/runtime/src/mesh-handler.ts",
       "find": "  async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {",
-      "replace": "  async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {\n    throw new NotYetDurable(\"sleep(…)\", ACTION_MACHINERY);",
+      "replace": "  async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {\n    throw new NotYetDurable(\"sleep(\u2026)\", ACTION_MACHINERY);",
       "expectRed": "sleep is not refused by the seam",
       "cell": "sleep is not refused by the seam: it reaches the plane and fails there instead"
     }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
   ]
 }
