@@ -278,7 +278,13 @@ export function hasOutOfRangeNumber(
       }
       const literal = text.slice(i, j);
       const value = Number(literal);
-      if (!Number.isFinite(value) || decimalValueKey(literal) !== decimalValueKey(String(value)))
+      // OVERFLOW AND NaN NEED NO SEPARATE TEST, and this is measured rather than argued: a mutation
+      // that deleted an `!Number.isFinite(value) ||` guard here SURVIVED the whole suite with every
+      // cell green, including the overflow one. `String(Infinity)` is `"Infinity"`, which is not a
+      // number literal and so keys to itself — it can never equal a normalised key. The guard was
+      // stating an intent the comparison already enforced, and a guard that guards nothing reads to
+      // the next person as though something depends on it.
+      if (decimalValueKey(literal) !== decimalValueKey(String(value)))
         return { outOfRange: true, literal, reads: String(value) };
       i = j;
       continue;
