@@ -563,9 +563,7 @@ try {
     () => serveEndpoint(nc, SPACE, grantPlain, plainDef, { public: true }, { traits: { governed: surfaceV1, guard, verifyPaymentProof } }));
 
   // A journal-class command declares an admissionCeiling whether or not it carries the action
-  // marker (SPEC:2226-2228, §13.7: `An endpoint that accepts journal-class submissions MUST
-  // declare admissionCeiling`): the class is what makes it receive submissions. Not :1465 —
-  // that row says the class MUST match the contract, which is a different claim.
+  // marker: the class is what makes it receive submissions.
   const JOBS_CMDS = [{ name: "submitjob", class: "journal", targeted: false, capability: "jobs.call", inputDigest: argsContract.closureDigest, outputDigest: outContract.closureDigest, traits: [TRAIT_PRICED], admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } }];
   const DC_JOBS = register({ urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: JOBS_CMDS });
   await reg({ endpoint: "vaultjobs", owner: "u_op", clusterDigests: [DC_JOBS], protocol: { v: 1 } }, IID);

@@ -149,7 +149,7 @@ function measure(value: unknown): { depth: number; items: number } {
   return { depth, items };
 }
 
-/** Decide ONE submission against the endpoint's DECLARED ceiling (§13.7 `admissionCeiling`).
+/** Decide ONE submission against the command's DECLARED `admissionCeiling`.
  *
  *  The ceiling is a parameter and never a constant, because two conforming implementations must
  *  not be able to decide the same bytes differently and durably. That is also why nothing here
