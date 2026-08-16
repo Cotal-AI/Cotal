@@ -101,7 +101,7 @@ const progressCount = (output, pattern) => {
 function proveOne(m, opts) {
   const cwd = opts.cwd;
   const path = join(cwd, m.file);
-  const label = m.name ?? `${m.file}: ${m.find.slice(0, 48).replace(/\n/g, "⏎")}`;
+  const label = m.name ?? m.label ?? `${m.file}: ${m.find.slice(0, 48).replace(/\n/g, "⏎")}`;
   say(`\n${C.dim}────────────────────────────────────────────────────────${C.off}`);
   say(`${label}`);
 
@@ -195,9 +195,31 @@ let opts = {
   minTicks: a["min-ticks"] === undefined ? undefined : Number(a["min-ticks"]),
 };
 
+/**
+ * The key set is CLOSED, because an ignored key is the quietest way to lose a check. A misspelt
+ * `expectRed` leaves nothing behind: the strongest grade this tool makes silently stops being made,
+ * and every mutation then reports KILLED on any red at all — including an unrelated early crash.
+ * "Red alone is not proof" was reachable by one typo in a file nobody re-reads after it goes green.
+ *
+ * `label` is accepted as an alias for `name` rather than rejected: it is what most configs in
+ * flight already use, and until now they printed the fallback label instead of the intent their
+ * author wrote. The rest are annotations tools other than this one read; they are listed so that
+ * carrying one is a decision rather than a typo that happens to survive.
+ */
+const MUTATION_KEYS = [
+  "name", "label", "file", "find", "replace", "expectRed", "allowMultiple", "command",
+  "cell", "cellTemplate", "id", "note",
+];
+
 if (a.config) {
   const cfg = JSON.parse(readFileSync(join(cwd, a.config), "utf8"));
   mutations = cfg.mutations ?? usage("config has no `mutations` array");
+  for (const m of mutations) {
+    for (const k of Object.keys(m)) {
+      if (!MUTATION_KEYS.includes(k))
+        usage(`mutation ${JSON.stringify(m.name ?? m.label ?? m.file)} carries the unknown key ${JSON.stringify(k)}. This tool would ignore it — and if it is a misspelt "expectRed", every mutation below would report KILLED on any red at all. Known keys: ${MUTATION_KEYS.join(", ")}`);
+    }
+  }
   opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {
   mutations = [{ file: a.file, find: a.find, replace: a.replace, expectRed: a["expect-red"] }];

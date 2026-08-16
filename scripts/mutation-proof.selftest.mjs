@@ -170,6 +170,39 @@ r = runTool([
 ]);
 check("a named red at the FIRST assertion is KILLED, not WRONG-RED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
 
+// 7d. A CONFIG KEY THE TOOL DOES NOT KNOW IS REFUSED BY NAME. This is the quietest failure the
+// tool has: a misspelt `expectRed` is not an error, it is an ABSENT `expectRed`, and every mutation
+// under it then reports KILLED on any red at all — including a crash that never reached the guard.
+// So the mutation below is the same mutation as cell 1, and the ONLY difference is the typo.
+const cfgPath = join(root, "mut.json");
+const baseMutation = {
+  name: "the oversize guard is disabled",
+  file: "src/impl.js",
+  find: "if (n > 10)\n    return false;",
+  replace: "if (false)\n    return false;",
+};
+writeFileSync(cfgPath, JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  mutations: [{ ...baseMutation, expectRedd: "oversized values are refused" }],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg", { cwd: root });
+r = runTool(["--config", "mut.json"]);
+check("a misspelt config key is refused, and NAMED", r.status !== 0 && r.stdout.includes("expectRedd"), r.stdout.slice(-300));
+check("...and the run does not proceed to grade anything", !r.stdout.includes("mutation(s)"), r.stdout.slice(-300));
+
+// `label` is what most configs in flight already write, so it is an ALIAS rather than an unknown:
+// rejecting it would redden them all, and ignoring it printed the fallback label instead of the
+// intent their author wrote.
+writeFileSync(cfgPath, JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  mutations: [{ ...baseMutation, name: undefined, label: "the oversize guard is disabled", expectRed: "oversized values are refused" }],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg2", { cwd: root });
+r = runTool(["--config", "mut.json"]);
+check("`label` names the mutation the way `name` does", r.status === 0 && r.stdout.includes("the oversize guard is disabled"), r.stdout.slice(-300));
+rmSync(cfgPath);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg-gone", { cwd: root });
+
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });
