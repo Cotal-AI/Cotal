@@ -100,21 +100,16 @@ export async function describeEndpoint(
   let statusStream: { [Symbol.asyncIterator](): AsyncIterator<{ type: string; error?: unknown }>; stop(err?: Error): void } | undefined;
   let statusIter: AsyncIterator<{ type: string; error?: unknown }> | undefined;
   try {
-    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING. `nc.status()` registers a
-    // listener at CALL time (the transport pushes each status onto every listener registered when
-    // it dispatches), so a listener created after `nc.publish` cannot see a violation dispatched in
-    // between, and that dropped event is indistinguishable from the silence this whole watch
-    // exists to eliminate. The window is almost certainly unreachable today, since the violation is
-    // a server frame and cannot dispatch inside our own synchronous run; ordering it correctly
-    // costs one hoisted line and removes the need for that argument to stay true.
+    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING: `nc.status()` registers its
+    // listener at CALL time, so one created after `nc.publish` cannot see a violation dispatched in
+    // between, and that dropped event is indistinguishable from the silence this watch exists to
+    // eliminate.
     //
-    // RELEASE IS `stop()`, NOT `return()`. The transport's status stream is a `QueuedIterator`
-    // (core.d.ts declares `stop(err?)` on it) whose generator parks on an internal signal await; a
-    // queued `return()` therefore does not run until the NEXT status event, which on a healthy
-    // connection may never come, so `return()` alone leaves the listener registered for the life
-    // of the connection, one per resolve. `status()` is typed as a bare `AsyncIterable`, so reach
-    // the declared `stop` structurally, and fail loud HERE rather than leak quietly if a transport
-    // ever hands back a stream that cannot be released.
+    // RELEASE IS `stop()`, NOT `return()`. The stream is a `QueuedIterator` parked on an internal
+    // signal await, so a queued `return()` does not run until the NEXT status event — which on a
+    // healthy connection may never come, leaking one listener per resolve. `status()` is typed as a
+    // bare `AsyncIterable`, so `stop` is reached structurally and its absence fails loud HERE rather
+    // than leaking quietly.
     statusStream = nc.status() as typeof statusStream;
     if (typeof statusStream?.stop !== "function")
       throw new EpEnvelopeError("unavailable", "the NATS connection's status() stream does not expose stop(); the describe's permission watch cannot be released and would leak a listener per resolve");
@@ -143,23 +138,17 @@ export async function describeEndpoint(
     });
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: "describe" }])), deadlineMs); });
     // A REFUSED PUBLISH MUST NOT MASQUERADE AS AN ABSENT RESPONDER. `nc.publish` is fire-and-forget:
-    // if the caller's credential lacks this subject, the broker answers the CONNECTION
-    // asynchronously and the publish itself returns normally, so the only observable is that no
-    // reply ever comes, i.e. a deadline that reads as "that endpoint isn't there". Those two need
-    // opposite responses (mint the grant vs. find the responder), and the silence hid a real
-    // shipped defect: a `--on` describe addressed the `ep.inst` rail with a credential granted only
-    // the class rail, and every caller read the resulting 10s timeout as an unresponsive manager.
+    // when the credential lacks the subject the broker answers the CONNECTION asynchronously and the
+    // publish returns normally, so the only observable is a deadline that reads as "that endpoint
+    // isn't there". The two need opposite responses — mint the grant vs. find the responder.
     //
-    // Watch only for OUR subject: the connection is shared, and another component's denial is not
-    // this describe's business. Not racing the whole status stream either: an unrelated transport
-    // error must not fail an otherwise healthy describe.
+    // Watch only for OUR subject, and do not race the whole status stream: the connection is shared,
+    // and another component's denial or an unrelated transport error must not fail this describe.
     const denied = new Promise<never>((_, reject) => {
       void (async () => {
-        // Drive the iterator by hand rather than `for await`, so the `finally` below can CLOSE it.
-        // `nc.status()` is connection-lived: a `for await` parks on the next event and outlives the
-        // describe, so one listener would leak per resolve, unbounded on a long-lived connection,
-        // and measurable as added latency on the resolve-heavy paths. (The transport deregisters on
-        // `iterClosed`, so `return()` in the finally is what actually unhooks it.)
+        // Driven by hand rather than `for await` so the `finally` below can CLOSE it: `nc.status()`
+        // is connection-lived, and a `for await` parks on the next event and outlives the describe,
+        // leaking one listener per resolve.
         const it = statusIter!;
         for (;;) {
           const { value: s, done } = await it.next();

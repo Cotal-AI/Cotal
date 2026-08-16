@@ -81,15 +81,14 @@ export type EpClass = "ephemeral" | "journal";
  * The BOUND INCARNATION (§13.3): the endpoint incarnation the caller's `describe` resolved
  * against, and the only one it will accept an effect from.
  *
- * It confers nothing and narrows only — a request carrying it reaches exactly the instances the
- * subject already routes it to, and the block can only make one of them refuse (monotonic
- * attenuation, §13.3). Attribution still comes from the reply SUBJECT, never from here: this is
- * the caller's DECLARATION of what it bound, checked by the responder against its own identity,
- * not a claim about who answered.
+ * It confers nothing and narrows only: a request carrying it reaches exactly the instances the
+ * subject already routes it to, and can only make one of them refuse (monotonic attenuation,
+ * §13.3). Attribution still comes from the reply SUBJECT — this is the caller's DECLARATION of what
+ * it bound, checked by the responder against its own identity, not a claim about who answered.
  *
- * The epoch is carried even on the `inst` rail, where the subject already pins the instance: the
- * subject grammar has no epoch token, so an instance's SUCCESSOR incarnation answers an
- * inst-addressed request today and the mismatch is only noticed by the caller afterwards.
+ * The epoch is carried even on the `inst` rail, which already pins the instance, because the
+ * subject grammar has no epoch token: an instance's SUCCESSOR answers an inst-addressed request
+ * today, and the caller notices only afterwards.
  */
 export interface EpBindBlock {
   instanceId: string;
@@ -403,11 +402,11 @@ function pickError(v: unknown): EpError {
       return o as EpErrorDetail;
     });
   }
-  // §13.3 Effect outcome. Parsed rather than dropped: this rebuilds the error from scratch, so a
-  // field it does not name is discarded, and discarding THIS one silently downgrades a responder's
-  // `not-executed` to an omitted outcome, which §13.3 says MUST be read as `unknown`. That turns a
-  // proof of non-execution into an absence of evidence at the parser, for a caller that did
-  // everything right. An unrecognised value is refused rather than passed through or coerced.
+  // §13.3 Effect outcome, parsed rather than dropped: this rebuilds the error from scratch, so an
+  // unnamed field is discarded — and discarding THIS one downgrades a responder's `not-executed`
+  // to an omitted outcome, which §13.3 says MUST be read as `unknown`, turning a proof of
+  // non-execution into an absence of evidence at the parser. An unrecognised value is refused
+  // rather than coerced.
   let outcome: EpEffectOutcome | undefined;
   if (e.outcome !== undefined) {
     if (e.outcome !== "executed" && e.outcome !== "not-executed" && e.outcome !== "unknown")

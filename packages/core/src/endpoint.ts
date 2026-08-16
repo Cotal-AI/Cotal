@@ -453,17 +453,12 @@ export class CotalEndpoint extends EventEmitter {
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
-  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) —
-   *  i.e. how many class-queue splits this endpoint has hit and survived.
+  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) — the
+   *  class-queue splits this endpoint hit and survived.
    *
-   *  IT IS COUNTED BECAUSE IT IS RECOVERED. Handling the split makes it invisible, and that
-   *  routing event is the only evidence the split exists at all: silence it and the split rate
-   *  becomes unmeasurable exactly as it becomes survivable — the failure gets handled and the
-   *  instrument that justified handling it gets destroyed. Measured on a live two-manager mesh,
-   *  5 of 6 unpinned class reads split, so this is not a rare-event counter.
-   *
-   *  Always on, never behind a flag: a counter you have to enable is not there when the thing you
-   *  needed it for happened. */
+   *  Counted because it is recovered: handling the split is what makes it invisible, so this is the
+   *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
+   *  enable is not there when the thing you needed it for happened. */
   private splitsRecovered = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
@@ -1375,19 +1370,19 @@ export class CotalEndpoint extends EventEmitter {
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
    *  resolve is describe-bound currency, and a call that reaches the wrong incarnation is recovered
-   *  two different ways depending on WHO caught it — which is the difference between knowing the
-   *  command did not run and only knowing that someone answered:
+   *  two ways depending on WHO caught it — the difference between knowing the command did not run
+   *  and only knowing someone answered:
    *   - the RESPONDER fenced it on the request's `bind` (§13.2, an `ok:false` reply marked
-   *     {@link replyRefusedBeforeEffect}): the command did not run, so the stale bind is dropped and
-   *     the call is re-issued ONCE for any command. If that re-issue cannot even be resolved, the
-   *     refusal is what surfaces — still saying the command did not run — with the resolve failure
-   *     named as the reason the repair could not be attempted.
+   *     {@link replyRefusedBeforeEffect}): the command did not run, so the bind is dropped and the
+   *     call re-issued ONCE for any command. If that re-issue cannot be resolved, the refusal
+   *     surfaces — still saying the command did not run — naming the resolve failure as why the
+   *     repair could not be attempted.
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
-   *     `failed-precondition`; the same instance at a later epoch after a same-root restart,
-   *     `expired`) — which is what happens against a responder too old to know the field. There the
-   *     request was received and answered by a live instance, so the stale bind is still dropped but
-   *     the call is re-issued only for a command on the {@link isRepeatSafeCommand} allowlist; any
-   *     other surfaces, because a second attempt could duplicate its effect.
+   *     `failed-precondition`; the same instance at a later epoch, `expired`), which is what a
+   *     responder too old to know the field produces. A live instance received and answered it, so
+   *     the bind is dropped but the call is re-issued only for a command on the
+   *     {@link isRepeatSafeCommand} allowlist; anything else surfaces, since a second attempt could
+   *     duplicate its effect.
    *  Errors from the responder come back structurally on the attributed reply
    *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
@@ -1410,60 +1405,44 @@ export class CotalEndpoint extends EventEmitter {
     const doInvoke = async (): Promise<EpAttributedReply> => {
       try {
         const r = await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
-        // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a member of the class received
-        // this call, saw it was bound to a different incarnation, and refused BEFORE running the
-        // command. Two consequences, and they are the reason the fence is worth having here.
+        // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a class member saw the call
+        // was bound to a different incarnation and refused BEFORE running the command.
         //
-        // First, this arrives as an ordinary `ok:false` REPLY, not a throw, so the recovery below —
-        // which keys on a thrown `respondedButUnbound` — never sees it. Without this branch a
-        // long-lived client would keep its stale bind and every later call on this endpoint would
-        // meet the same refusal, permanently, on an endpoint with no repeat-safe command to heal it
-        // through. That is the exact failure the bind-drop below exists to prevent.
+        // Handled here rather than below because it arrives as an ordinary `ok:false` REPLY, not a
+        // throw, so the `respondedButUnbound` recovery never sees it — a long-lived client would
+        // otherwise keep its stale bind and meet the same refusal forever.
         //
-        // Second, the retry here is NOT gated on {@link isRepeatSafeCommand}, and deliberately so.
-        // That allowlist exists because a split used to be detected after the responder had already
-        // handled the request, so core could not tell a duplicate-able effect from a repaired one
-        // and had to fail closed. A bind refusal removes the uncertainty rather than working around
-        // it: the responder states it did not run the command, so re-issuing is a FIRST attempt, not
-        // a second one. Re-resolve and re-issue exactly once; a second refusal surfaces.
+        // The re-issue is NOT gated on {@link isRepeatSafeCommand}: the responder states the command
+        // did not run, so this is a FIRST attempt, not a second. Exactly once; a second refusal
+        // surfaces.
         if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {
-          // Counted before it is repaired, and emitted for anyone watching: see {@link splitsRecovered}.
-          // A recovery that leaves no trace takes the split rate with it.
+          // Counted before it is repaired: a recovery that leaves no trace takes the split rate with it.
           this.splitsRecovered++;
           this.emit("split-recovered", {
             endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
           });
           this.resolvedServices.delete(endpoint);
-          // THE RE-ISSUE CAN FAIL, AND THE REFUSAL IS THE HALF WORTH KEEPING. Re-resolving goes back
-          // to the registry, and an endpoint that has since RETIRED answers nothing: the caller was
-          // handed `no describe reply from <endpoint> within 10000ms` — ten seconds later, about a
-          // describe it never asked for — while the refusal, the one fact that says its handle is
-          // stale AND that nothing ran, was discarded on the way. Measured on the pin suite's
-          // third-party cell, where the guard used to surface the marker immediately.
+          // A FAILED RE-ISSUE RETHROWS THE ORIGINAL REFUSAL, not the resolve error: if the endpoint
+          // has since retired, the resolve times out and the caller would otherwise get `no describe
+          // reply within 10000ms` — about a describe it never asked for — losing the one fact that
+          // says its handle is stale AND that nothing ran. The resolve failure is named as the
+          // reason the repair could not be attempted.
           //
-          // So a failed re-issue rethrows the ORIGINAL refusal, carrying its details, with the
-          // resolve failure named as the reason the repair could not be attempted. The code is the
-          // refusal's own — `failed-precondition` for a different instance, `expired` for the same
-          // instance at another epoch — and a marker arriving on any OTHER code is incoherent in the
-          // same way a refusal attributed to the bound incarnation is (§13.3): the body does not get
-          // to carry the fence's marker while claiming a failure the fence cannot produce.
+          // The code must be the refusal's own (`failed-precondition` for a different instance,
+          // `expired` for a later epoch); the marker on any other code is incoherent, so it is
+          // rejected rather than trusted (§13.3).
           const raw = r.reply.error?.code;
           const refusalCode = raw === "expired" ? ("expired" as const)
             : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;
           if (refusalCode === undefined)
             throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error?.details);
-          // ONLY THE RESOLVE IS WRAPPED. Widening this to cover the re-issue itself is the exact
-          // duplicate-effect defect this command exists to prevent, inverted: a re-issue that
-          // PUBLISHED AND RAN can still throw (an unfenced responder answers, the post-reply
-          // currency check raises `respondedButUnbound`), and re-wrapping that as the first hop's
-          // refusal hands the caller `WAS NOT RUN` plus the bind-refused marker for a command that
-          // executed. The caller then treats its next attempt as a first attempt. That version
-          // existed; a two-hop fixture measured attempts=2, executions=1, wrappedAsNotRun=true.
-          //
-          // A re-issue that fails on its own terms therefore propagates its OWN error unchanged.
-          // `respondedButUnbound` in particular must reach the caller as itself: it is the marker
-          // that says a responder answered and the effect may have landed, which is the opposite
-          // of what the fence's marker asserts.
+          // ONLY THE RESOLVE IS WRAPPED — do not widen this `try` to cover the re-issue. A re-issue
+          // that PUBLISHED AND RAN can still throw (an unfenced responder answers and the post-reply
+          // currency check raises `respondedButUnbound`); wrapping that as the first hop's refusal
+          // would hand the caller `WAS NOT RUN` for a command that executed, and its next attempt
+          // would be a second one believing it was the first. A re-issue that fails on its own terms
+          // must propagate its OWN error, because `respondedButUnbound` asserts the opposite of what
+          // the fence's marker does: a responder answered and the effect may have landed.
           let reissueTarget;
           try {
             reissueTarget = await resolve();
@@ -1479,69 +1458,42 @@ export class CotalEndpoint extends EventEmitter {
         return r;
       } catch (e) {
         if (!(e instanceof EpEnvelopeError)) throw e;
-        // DO NOT auto-retry a command that a responder already ANSWERED. This recovery was
-        // written for one reading of `failed-precondition`, "the describe-bound incarnation is gone
-        // (restart or supersede), so re-resolve and invoke the current one", and on that reading a
-        // second invoke is a repair, because the first never ran. That premise fails for the other
-        // producer of this code: the describe-bound currency check also fires when a DIFFERENT live
-        // instance wins the class queue and REPLIES, which in a multi-manager space is an ordinary
-        // split, not a supersession. There the request DID reach a responder, which may have
-        // executed it or refused it (the marker cannot tell), and the error is raised afterwards,
-        // so re-invoking is a second attempt that may duplicate whatever effect the first had.
+        // DO NOT auto-retry a command a responder already ANSWERED. This path covers the responders
+        // WITHOUT the fence above: they ignore `bind`, run the command, and the error is raised
+        // afterwards, so core cannot tell a repair from a duplicate and the allowlist is the only
+        // guard left. (`failed-precondition` here is not only supersession — it also fires when a
+        // DIFFERENT live instance wins the class queue and replies, an ordinary split.)
         //
-        // Removing the retry outright is not an option either: in a two-manager space roughly half
-        // of all class-queue calls split, so every other `ps` would surface an error the retry used
-        // to absorb harmlessly (measured here, this suite's own warm-up read hit it on the first
-        // try). Re-running a read costs nothing.
+        // Dropping the retry outright is not an option: in a two-manager space roughly half of all
+        // class-queue calls split, so every other `ps` would surface an error this absorbs, and
+        // re-running a read costs nothing.
         //
-        // So the retry is gated on an ALLOWLIST of commands whose second execution is observably
-        // indistinguishable from one (`REPEAT_SAFE_COMMANDS`), keyed by ENDPOINT because this
-        // method is endpoint-agnostic and a bare name list would lend the manager's judgement to
-        // every other endpoint in the mesh. Everything else surfaces. The polarity matters more
-        // than the membership: an allowlist fails CLOSED, so a command nobody has classified (on
-        // an endpoint nobody has classified) is surfaced rather than silently duplicated.
+        // So it is gated on an ALLOWLIST (`REPEAT_SAFE_COMMANDS`), keyed by ENDPOINT because this
+        // method is endpoint-agnostic. Polarity matters more than membership: an allowlist fails
+        // CLOSED. Not a `GOAL_BEARING_COMMANDS`-only gate — `purge` is neither goal-bearing nor
+        // convergent, and its second run deletes messages published after the first completed, so
+        // the boundary is "changes anything", which core cannot see: commands carry no idempotency
+        // declaration and every manager command shares `class: "ephemeral"`.
         //
-        // An earlier version of this guard withheld the retry only for `GOAL_BEARING_COMMANDS`
-        // (spawn/launch) on the theory that duplication only hurts when it CREATES something.
-        // Adversarial review broke that with a measured counterexample: `purge` is neither
-        // goal-bearing nor convergent, and its second execution deleted messages published after
-        // the first had completed. "Creates something" is not the boundary; "changes anything" is,
-        // and core cannot tell: a command carries no idempotency declaration and every manager
-        // command shares `class: "ephemeral"`, so nothing in the resolved surface distinguishes a
-        // read from a mutation. The allowlist is the honest stand-in until it can. The general fix
-        // is a safety annotation on the command contract plus an effect-outcome in the reply; that
-        // is a SPEC change and is not made here.
-        //
-        // The gate is keyed on the MARKER, not on the error code, because the same fact has two
-        // producers. A DIFFERENT instance answering is `failed-precondition` (the describe-bound
-        // currency check). The SAME instance answering at a LATER EPOCH is `expired` (a same-root
-        // restart re-registers the same logical id with an advanced epoch), raised after the
-        // attributed reply in exactly the same way. Distsys review measured, on a real restart, that
-        // `expired` used to be rethrown untouched with the bind kept: every later deliberate call on
-        // a long-lived client reached the successor, may have applied its effect, came back
-        // `expired`, and stayed bound to the old epoch. Same rule for both.
+        // Keyed on the MARKER, not the error code, because the same fact has two producers: a
+        // DIFFERENT instance answering (`failed-precondition`) and the SAME instance at a LATER
+        // EPOCH after a same-root restart (`expired`). Same rule for both, or a long-lived client
+        // stays bound to the old epoch while every call reaches the successor.
         if (respondedButUnbound(e)) {
-          // Drop the stale bind FIRST, whichever way this goes. The bind names an incarnation that
-          // is not the one answering; on a long-lived client every later DELIBERATE call on this
-          // endpoint would otherwise reuse it, meet the same refusal, and never reach the live
-          // incarnation - permanently, on an endpoint with no repeat-safe command to heal it
-          // through. Dropping the bind is not a retry: nothing is re-issued by it, and for a
-          // command that is not repeat-safe the next call is the caller's, made after it has
-          // verified.
+          // Drop the stale bind FIRST, whichever way this goes: it names an incarnation that is not
+          // the one answering, so every later call would reuse it and meet the same refusal. This is
+          // not a retry — nothing is re-issued by it, and for a command that is not repeat-safe the
+          // next call is the caller's, made after it has verified.
           this.resolvedServices.delete(endpoint);
           if (!isRepeatSafeCommand(endpoint, command)) throw e;
           return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
         }
-        // An UNMARKED `failed-precondition` did not come from an attributed reply (nothing this
-        // client publishes can produce one after a reply: the describe-bound currency read is the
-        // cached epoch, never garbled), so it is the resolve's own refusal, before any command was
-        // published; re-resolving once is a repair. Everything else surfaces as it is.
-        // ...and a refusal this method itself raised after a FAILED re-issue is not unmarked either.
-        // It carries the fence's marker and the refusal's own `failed-precondition`, so without this
-        // it fell straight into the re-resolve below — a THIRD attempt at a command whose second one
-        // could not even be resolved, with the refusal discarded on the way. Measured, not reasoned:
-        // `smoke:unfenced-responder`'s fenced arm executed the handler twice more before this guard
-        // existed. The marker means the disposition is already decided, whichever code carries it.
+        // An UNMARKED `failed-precondition` is the resolve's own refusal, raised before any command
+        // was published, so re-resolving once is a repair. The `replyRefusedBeforeEffect` half keeps
+        // out the refusal THIS method raises after a failed re-issue: it carries that same code, and
+        // would otherwise fall into the re-resolve below as a THIRD attempt at a command whose
+        // second could not even be resolved. A marker means the disposition is already decided,
+        // whichever code carries it.
         if (e.code !== "failed-precondition" || replyRefusedBeforeEffect(e.toEpError())) throw e;
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);

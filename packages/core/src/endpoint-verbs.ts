@@ -196,11 +196,9 @@ export interface EpAttributedReply {
  *    `currentEpoch` contract, {@link serviceEpochReader}). Nothing of the caller's is stale here:
  *    `answered > current` means the read lags a restart, `answered < current` a superseded
  *    incarnation still answering.
- *  Either way the marker says what the code alone cannot: a retry is a second attempt. The one
- *  message this replaced called the reference the responder's "current" epoch on both paths, which
- *  named the wrong side under the describe-bound default; the first rewording called it the caller's
- *  held bind on both paths, which named the wrong side under the registry read (review, engineering
- *  and fact lenses). Hence the explicit kind. */
+ *  Either way the marker says what the code alone cannot: a retry is a second attempt. The kind is
+ *  explicit rather than inferred because a single wording names the wrong stale side on one of the
+ *  two paths, whichever meaning it picks. */
 function staleEpochRefusal(
   op: EpVerbOp,
   responder: { instanceId: string; epoch: number },
@@ -328,30 +326,27 @@ export async function epCall(
     const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
     const msg = await Promise.race([outcome, timeout]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
-    // A responder that fenced on the bind has ALREADY settled the question the currency check
-    // below asks, and settled it better: it knows it did not run the command, where the check can
-    // only observe that the answer came from elsewhere. Returning the refusal keeps the reply an
-    // ordinary application-level failure (§13.5) and hands the caller the one thing it needs —
-    // that a retry is safe — instead of a throw that says nothing about whether the command ran.
-    // The refusal is cross-checked against the SUBJECT before it is honored: a reply attributed to
-    // the very incarnation the caller bound cannot coherently claim it is not that incarnation,
-    // and a body that says otherwise is not allowed to stand in for its own attribution (§13.3).
+    // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
+    // the same question better: it knows it did not run the command, where the check can only
+    // observe that the answer came from elsewhere. Returning the refusal keeps it an ordinary
+    // application-level failure (§13.5) that tells the caller a retry is safe, instead of a throw
+    // that says nothing about whether the command ran. Cross-checked against the SUBJECT first: a
+    // reply attributed to the very incarnation the caller bound cannot coherently claim it is not
+    // that incarnation (§13.3).
     if (attributed.reply.ok === false && replyRefusedBeforeEffect(attributed.reply.error)) {
       if (op.bind === undefined)
         throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} replied with a bind refusal to a request that carried no bind`);
       const r = attributed.responder;
       if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)
         throw new EpEnvelopeError("internal", `${op.endpoint} instance ${r.instanceId} refused ${op.command} as the wrong incarnation, but the reply subject attributes it to exactly the bound one (${op.bind.instanceId} epoch ${op.bind.epoch}); the body does not get to contradict its own attribution (SPEC 13.3)`);
-      // AND THE REFUSAL MUST BE AN ANSWER TO *THIS* REQUEST, FROM *THIS* RESPONDER. A caller acts on
-      // this marker by re-issuing a command it would otherwise never repeat, so the marker is the
-      // one place where a responder's word moves the caller's hand. It is not enough that the word
-      // is present: a fence produces it by comparing the request's own bind against its own
-      // identity, so both halves are DERIVABLE by the caller and are checked rather than believed.
-      // A detail whose `boundTo` is not the block this request carried was not computed from this
-      // request; a `servedBy` that disagrees with the reply subject is a body contradicting its own
-      // attribution, the same defect the check above refuses in its other direction. Neither is a
-      // refusal a responder without a fence could have produced by accident, so both are `internal`
-      // — the caller does not get a "did not run" it cannot derive, and does not re-issue on one.
+      // AND THE REFUSAL MUST BE AN ANSWER TO *THIS* REQUEST, FROM *THIS* RESPONDER. THREE CHECKS ARE
+      // JOINTLY REQUIRED here — the subject check above, plus `boundTo` and `servedBy` below — and
+      // removing any one of them accepts a "did not run" the caller cannot derive. A caller acts on
+      // this marker by re-issuing a command it would otherwise never repeat, so it is checked rather
+      // than believed: a fence computes it from the request's own bind against its own identity, so
+      // both halves are DERIVABLE. A `boundTo` that is not the block this request carried was not
+      // computed from this request; a `servedBy` disagreeing with the reply subject is a body
+      // contradicting its own attribution. Both are `internal`, not a retry.
       const refusal = (attributed.reply.error?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED) as EpBindRefusedDetail | undefined;
       if (refusal === undefined)
         throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} came back marked ${EP_BIND_REFUSED} with no such detail to derive it from (SPEC 13.3)`);
@@ -700,10 +695,10 @@ export async function epScatter(
 
     // Reconcile shortly after T, bounded by its OWN explicit budget (not a second full `deadlineMs`):
     // a never-settling read is `unavailable`, an unreadable registry `failed-precondition`. Only the
-    // bound's own (marked) refusal passes through as is; the hook is an untrusted caller-supplied
-    // boundary, so whatever IT throws, `unavailable` included, is the read failing and is normalized
-    // and marked here. Keying the pass-through on the code let a hook's bare `unavailable` escape
-    // unmarked, and an unmarked refusal is what a consumer cannot classify.
+    // bound's own MARKED refusal passes through as is: the hook is untrusted caller-supplied code,
+    // so whatever it throws is the read failing and is normalized and marked here. Keying the
+    // pass-through on the code instead would let a hook's bare `unavailable` escape unmarked, and an
+    // unmarked refusal is what a consumer cannot classify.
     let current: Map<string, EpRegistrationState>;
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     try {

@@ -26,24 +26,20 @@ export interface EpErrorDetail {
 
 /**
  * `details[].kind` for a refusal raised because a responder ANSWERED but was not the incarnation
- * this handle resolved against (§13.2): `failed-precondition` when a DIFFERENT instance answered,
- * `expired` when the SAME instance answered at a different EPOCH (a same-root restart, or a
- * superseded incarnation still connected). It marks the one fact a caller cannot recover
- * from the code alone: **the request drew an attributed reply from a live responder**. That reply
- * may be a refusal (validation, authorization, admission, business) or a result; the marker does
- * not say which, and it does not prove the command executed or that any effect landed. What it
- * rules out is the reading "the incarnation is gone, resolve again": a retry here is a SECOND
- * ATTEMPT that may duplicate an effect, so an automatic re-invoke must not take it as a repair.
+ * this handle resolved against (§13.2): `failed-precondition` for a DIFFERENT instance, `expired`
+ * for the SAME instance at another EPOCH. It marks what the code alone cannot say — **the request
+ * drew an attributed reply from a live responder** — which rules out the reading "the incarnation
+ * is gone, resolve again". The reply may be a refusal or a result and the marker does not say
+ * which, so a retry here is a SECOND ATTEMPT that may duplicate an effect, never a repair.
  */
 export const EP_UNBOUND_RESPONDER = "ai.cotal.ep.unbound-responder";
 
-/** The {@link EP_UNBOUND_RESPONDER} payload. Two producers set it. The describe-bound currency check
- *  (a DIFFERENT instance answered) sets `answeredBy` and `boundTo`, and they differ. The stale-epoch
- *  refusal (the SAME instance answered at another epoch) sets `answeredEpoch` and `heldEpoch`, and
- *  says in `reference` what `heldEpoch` is: `bind`, the epoch this caller's own resolve bound (a
- *  responder ahead of it is a successor and the handle is the stale side), or `registry`, a currency
- *  read of the responder's current registered epoch (nothing of the caller's is stale; a responder
- *  behind it is a superseded incarnation still answering). `boundTo` is set only where a bind exists. */
+/** The {@link EP_UNBOUND_RESPONDER} payload. Two producers: the describe-bound currency check (a
+ *  DIFFERENT instance) sets `answeredBy`/`boundTo`; the stale-epoch refusal (the SAME instance at
+ *  another epoch) sets `answeredEpoch`/`heldEpoch` and says in `reference` which epoch `heldEpoch`
+ *  is — `bind`, this caller's own resolve (so the handle is the stale side), or `registry`, the
+ *  responder's current registered epoch (so a responder behind it is superseded and still
+ *  answering). `boundTo` is set only where a bind exists. */
 export interface EpUnboundResponderDetail extends EpErrorDetail {
   kind: typeof EP_UNBOUND_RESPONDER;
   endpoint: string;
@@ -67,18 +63,13 @@ export function respondedButUnbound(e: unknown): boolean {
 }
 
 /**
- * `details[].kind` for a refusal raised because NO VALID REPLY REACHED THE CALLER: the broker
- * reported no responder on the subject, or the reply deadline elapsed with no reply attributed to
- * the request on its nonce. A frame that fails the request binding (another nonce or endpoint, an
- * unparseable body, a mismatched echoed id) is dropped and is not an answer, so a deadline that
- * follows such a frame is marked too: the marker says nothing the caller could attribute to the
- * request arrived, not that no bytes did. It marks the one fact a consumer cannot recover from the
- * code alone: **nothing answered the request as sent**. The same codes are also raised where
- * something did answer or where the failure is a read on the caller's own side (a responder's
- * `ok:false` describe reply is rethrown under its own code, `unavailable` included; a store or
- * registry read fails after the describe was answered), so `unavailable` or `deadline-exceeded` on
- * its own is not evidence of silence. Only the producers that observed the silence set this marker;
- * a consumer that states a reachability verdict keys on it, never on the code.
+ * `details[].kind` for a refusal raised because NO VALID REPLY REACHED THE CALLER: no responder on
+ * the subject, or the deadline elapsed with nothing attributed to the request's nonce. A frame that
+ * fails the request binding is dropped and is not an answer, so the marker means nothing
+ * ATTRIBUTABLE arrived, not that no bytes did. `unavailable`/`deadline-exceeded` alone is not
+ * evidence of silence — the same codes are raised where something did answer, or where a
+ * caller-side read failed after the describe — so a consumer stating a reachability verdict keys on
+ * this marker, never on the code.
  */
 export const EP_UNANSWERED = "ai.cotal.ep.unanswered";
 
@@ -96,13 +87,11 @@ export function unansweredRequest(e: unknown): boolean {
 }
 
 /**
- * `details[].kind` for a refusal raised because a read of the SERVICE REGISTRY that the verb
- * performs on the caller's side did not settle within its bound or failed: the scatter's freeze
- * (§13.5, the expected set) or its mandatory registration reconcile. It marks that the failure is
- * the caller's own registry read, not the responders: nothing about them is established (the
- * freeze fails before any request goes out; the reconcile fails after the gather, so members may
- * all have answered and their replies could not be classified). A consumer must not read it as
- * their silence.
+ * `details[].kind` for a refusal raised because a caller-side read of the SERVICE REGISTRY failed
+ * or did not settle: the scatter's freeze (§13.5) or its mandatory reconcile. It marks the failure
+ * as the caller's own, establishing NOTHING about the responders — the freeze fails before any
+ * request goes out, and the reconcile fails after the gather, where members may all have answered
+ * and their replies simply could not be classified. A consumer must not read it as their silence.
  */
 export const EP_REGISTRY_READ_FAILED = "ai.cotal.ep.registry-read-failed";
 
@@ -121,17 +110,15 @@ export function registryReadFailed(e: unknown): boolean {
 
 /**
  * `details[].kind` for a refusal raised by the RESPONDER because the request declared a bound
- * incarnation (`bind`, §13.3) that is not this instance: `failed-precondition` when a different
- * instance received it, `expired` when the same instance is at another epoch. It marks the one
- * fact no caller-side check can establish: **the command did not run, and no effect of it exists.**
+ * incarnation (`bind`, §13.3) that is not this instance: `failed-precondition` for a different
+ * instance, `expired` for the same instance at another epoch. It marks what no caller-side check
+ * can establish: **the command did not run, and no effect of it exists.**
  *
- * That is the whole point of the block. {@link EP_UNBOUND_RESPONDER} is raised by the CALLER on
- * the reply, so it can only report a split after the responder has already done whatever it was
- * going to do — a check that runs after the effect is a report, not a guard. This marker is set
- * before the handler, before args validation, and before any seam that can consume a one-use
- * proof, by the only party that knows which incarnation it is. A caller holding it may re-resolve
- * and re-issue without risking a duplicate effect; that is exactly what a caller holding
- * `EP_UNBOUND_RESPONDER` must NOT do.
+ * Set before the handler, before args validation, and before any seam that can consume a one-use
+ * proof, by the only party that knows which incarnation it is. {@link EP_UNBOUND_RESPONDER} is
+ * raised by the CALLER on the reply, after the responder has already acted — a report, not a
+ * guard. So a caller holding THIS marker may re-resolve and re-issue without risking a duplicate,
+ * which is exactly what a caller holding that one must not do.
  */
 export const EP_BIND_REFUSED = "ai.cotal.ep.bind-refused";
 

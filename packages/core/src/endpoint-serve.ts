@@ -124,21 +124,18 @@ export type EpLedgerAuthority = (args: {
  * §13.2/§13.3 INCARNATION ADMISSION — the responder's own answer to "am I the instance this
  * caller bound to?", settled before anything else this request could cause.
  *
- * Without it, a class-anycast caller learns the answer only from the reply, by which time the
- * command has run: the queue picks the responder, the responder cannot see the caller's bind, and
- * so the effect lands on A while the caller — bound to B — is told the call failed. The caller's
- * own currency check cannot close that; nothing that runs on a reply can. A guard has to be on
- * this side of the wire, and this is it.
+ * Without it a class-anycast caller learns the answer only from the reply, by which time the
+ * command has run: the effect lands on A while the caller, bound to B, is told the call failed.
+ * Nothing that runs on a reply can close that, so the guard has to be on this side of the wire.
  *
  * `bind` is a caller DECLARATION, never authority: it can only make this instance refuse a request
- * the subject already routed here, so it narrows and never widens (§13.3 monotonic attenuation).
- * A different instance is `failed-precondition` — the caller's handle is not stale, it simply
- * addressed the class and the queue chose someone else. A different EPOCH on the same instance is
- * `expired`, matching every other supersession in the catalog.
+ * the subject already routed here, so it narrows and never widens (§13.3 monotonic attenuation). A
+ * different instance is `failed-precondition` (the handle is not stale — the queue simply chose
+ * someone else); a different EPOCH on the same instance is `expired`, as everywhere else.
  *
- * Both refusals carry {@link EP_BIND_REFUSED}, whose meaning is the point of the whole mechanism:
- * NOTHING RAN. That claim is only true while this stays ahead of every effect in `handle` —
- * including the governed gate, which awaits a guard and MAY consume a one-use priced proof.
+ * Both refusals carry {@link EP_BIND_REFUSED}, meaning NOTHING RAN — true only while this stays
+ * ahead of every effect in `handle`, including the governed gate, which may consume a one-use
+ * priced proof.
  */
 function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity): void {
   const b = env.bind;
@@ -151,11 +148,10 @@ function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity)
     boundTo: { instanceId: b.instanceId, epoch: b.epoch },
     servedBy: { instanceId: identity.instanceId, epoch: identity.epoch },
   };
-  // §13.3 requires the outcome, not just the marker: a responder refusing BEFORE dispatching to
-  // the handler MUST carry `not-executed`, and an omitted outcome MUST be read as `unknown`. The
-  // `bind-refused` detail is this implementation's own vocabulary; `outcome` is the spec's, and a
-  // conformant peer that has never heard of the detail reads only the latter. Emitting one without
-  // the other is what makes two implementations disagree about whether the command ran.
+  // §13.3 requires the outcome, not just the marker. `bind-refused` is this implementation's own
+  // vocabulary and `outcome` is the spec's, so a conformant peer that has never heard of the detail
+  // reads only the latter; emitting one without the other is what makes two implementations
+  // disagree about whether the command ran.
   if (b.instanceId !== identity.instanceId)
     throw new EpEnvelopeError("failed-precondition",
       `this request reached ${identity.endpoint} instance ${identity.instanceId}, but the caller bound to ${b.instanceId}; the class queue chose a different member and "${env.op.command}" WAS NOT RUN - no effect of it exists here. Re-resolve and re-issue, or address one instance (SPEC 13.2)`,
