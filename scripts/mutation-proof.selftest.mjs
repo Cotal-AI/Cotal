@@ -31,6 +31,15 @@ const check = (name, cond, extra) => {
   console.log(`  ✓ ${name}`);
 };
 
+// A verdict is a FIELD, not a substring. The tool prints it as `verdict.padEnd(12)` at the start
+// of its own line, and the prose legitimately names other verdicts — the UNGRADABLE explanation
+// ends "...this verdict becomes SURVIVED and is reportable". So `stdout.includes("SURVIVED")`
+// matched the EXPLANATION of an UNGRADABLE, and two checks here stayed green while the tool had
+// reclassified their fixtures out from under them. Read the field, not the page.
+const stripAnsi = (s) => s.replace(/\[[0-9;]*m/g, "");
+const verdictIs = (out, v) =>
+  out.split("\n").some((l) => stripAnsi(l).startsWith(v + " "));
+
 // ---- a fixture repo: one guard, one suite that depends on it, one that does not ----------------
 mkdirSync(join(root, "src"), { recursive: true });
 writeFileSync(
@@ -76,6 +85,30 @@ check("a killed mutation exits 0 and reports KILLED", r.status === 0 && r.stdout
 check("...and a multi-line target matches (the compiled shape of a guard)", !r.stdout.includes("not found"));
 
 // 2. THE ONE THAT MATTERS: a mutation the suite does NOT catch must be reported, not passed.
+// Paired with a KILLING control in the SAME FILE, which is what licenses the SURVIVED verdict:
+// the kill proves the suite reaches `src/impl.js` at runtime, so a survivor there is a real
+// coverage gap rather than a mutant that changed nothing. See 2b for the unpaired case.
+writeFileSync(join(root, "survivor-with-control.json"), JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  mutations: [
+    { name: "control: the guard itself", file: "src/impl.js", find: "if (n > 10)\n    return false;",
+      replace: "if (false)\n    return false;", expectRed: "oversized values are refused" },
+    { name: "the survivor", file: "src/impl.js", find: "'untouched'", replace: "'mutated'",
+      expectRed: "never printed" },
+  ],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm survivor-control", { cwd: root });
+r = runTool(["--config", "survivor-with-control.json"]);
+check("a SURVIVED mutation is reported and exits non-zero", r.status !== 0 && verdictIs(r.stdout, "SURVIVED"), r.stdout.slice(-300));
+check("...and it cites the positive control that licenses the verdict",
+  r.stdout.includes("positive control") && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
+
+// 2b. APPLIES IS NOT MUTATES. The same survivor with NO control in the file is UNGRADABLE, not
+// SURVIVED. A mutant can install cleanly and change nothing — a shadowed duplicate key, a dead
+// branch — and that produces a passing suite exactly as a genuine coverage gap does. Output
+// comparison cannot separate them: a true survivor is byte-identical to the green run too. With
+// no kill anywhere in the file, the run has no evidence either way, and UNGRADABLE says so
+// instead of accusing the suite.
 r = runTool([
   "--command", `${process.execPath} suite.mjs`,
   "--file", "src/impl.js",
@@ -83,7 +116,10 @@ r = runTool([
   "--replace", "'mutated'",
   "--expect-red", "never printed",
 ]);
-check("a SURVIVED mutation is reported and exits non-zero", r.status !== 0 && r.stdout.includes("SURVIVED"), r.stdout.slice(-300));
+check("an unpaired survivor is UNGRADABLE, not SURVIVED",
+  r.status !== 0 && verdictIs(r.stdout, "UNGRADABLE") && !verdictIs(r.stdout, "SURVIVED"), r.stdout.slice(-400));
+check("...and UNGRADABLE still exits non-zero, so it is never a cheap green",
+  r.status !== 0, r.stdout.slice(-200));
 
 // 3. A target that does not exist must ERROR, never silently grade.
 r = runTool([
@@ -355,15 +391,24 @@ writeFileSync(
   ].join("\n"),
 );
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm indifferent", { cwd: root });
-r = runTool([
-  "--command", `${process.execPath} indifferent.mjs`,
-  "--file", "src/impl.js",
-  "--find", "if (n > 10)\n    return false;",
-  "--replace", "if (false)\n    return false;",
-  "--expect-red", "the guard admits a small value",
-]);
+// Paired with a control this suite DOES catch, in the same file: breaking `return true` reddens
+// `the guard admits a small value`. The kill proves `indifferent.mjs` reaches src/impl.js at
+// runtime, so the exact-baseline survivor beside it is a real coverage gap and not an inert mutant.
+writeFileSync(join(root, "indifferent.json"), JSON.stringify({
+  command: `${process.execPath} indifferent.mjs`,
+  mutations: [
+    { name: "control: break what this suite DOES read", file: "src/impl.js",
+      find: "  return true;", replace: "  return false;",
+      expectRed: "FAIL: the guard admits a small value" },
+    { name: "the indifferent guard", file: "src/impl.js",
+      find: "if (n > 10)\n    return false;", replace: "if (false)\n    return false;",
+      expectRed: "the guard admits a small value" },
+  ],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm indifferent-cfg", { cwd: root });
+r = runTool(["--config", "indifferent.json"]);
 check("a genuine survivor at EXACTLY the baseline still reports SURVIVED",
-  r.status !== 0 && r.stdout.includes("SURVIVED") && !r.stdout.includes("INCONCLUSIVE"), r.stdout.slice(-500));
+  r.status !== 0 && verdictIs(r.stdout, "SURVIVED") && !verdictIs(r.stdout, "INCONCLUSIVE"), r.stdout.slice(-500));
 
 // 7e-octies. THE SURVIVOR THAT IS ABOUT NOTHING. An empty baseline hit-set turns the survivor checks
 // off, because a suite that prints nothing on a pass makes the label's absence uninformative. It is
@@ -379,15 +424,24 @@ writeFileSync(
   ].join("\n"),
 );
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm silent", { cwd: root });
-r = runTool([
-  "--command", `${process.execPath} silent.mjs`,
-  "--file", "src/impl.js",
-  "--find", "if (n > 10)\n    return false;",
-  "--replace", "if (false)\n    return false;",
-  "--expect-red", "the guard admits a small value",
-]);
+// Paired with a control, for the same reason as 7e-septies: without a kill in this file the run
+// cannot tell an inert mutant from an untested one, and the ambiguity being reported here is a
+// DIFFERENT one (silent-on-pass vs wrong-suite). Both notes must survive together.
+writeFileSync(join(root, "silent.json"), JSON.stringify({
+  command: `${process.execPath} silent.mjs`,
+  mutations: [
+    { name: "control: break what this suite DOES read", file: "src/impl.js",
+      find: "  return true;", replace: "  return false;",
+      expectRed: "FAIL: the guard admits a small value" },
+    { name: "the unread branch", file: "src/impl.js",
+      find: "if (n > 10)\n    return false;", replace: "if (false)\n    return false;",
+      expectRed: "the guard admits a small value" },
+  ],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm silent-cfg", { cwd: root });
+r = runTool(["--config", "silent.json"]);
 check("a survivor whose cell never printed in the GREEN run is SURVIVED and says the absence is ambiguous",
-  r.status !== 0 && r.stdout.includes("SURVIVED") && r.stdout.includes("appears nowhere in the green run"),
+  r.status !== 0 && verdictIs(r.stdout, "SURVIVED") && r.stdout.includes("appears nowhere in the green run"),
   r.stdout.slice(-500));
 
 // 7e-quinquies. RESTORING THE FILE IS NOT RESTORING THE TREE. When the command under test compiles

@@ -370,7 +370,46 @@ for (const m of mutations) {
   // Report each verdict's marks against ITS OWN suite's baseline. Two suites count different
   // things, so "8 marks (baseline 24)" across a suite boundary reads as a run that died early
   // when it may have run to completion.
-  results.push({ ...proveOne(m, opts), baseTicks: baseTicksBy.get(m.command ?? opts.command) });
+  results.push({ ...proveOne(m, opts), file: m.file, command: m.command ?? opts.command,
+    baseTicks: baseTicksBy.get(m.command ?? opts.command) });
+}
+
+// ---- APPLIES IS NOT MUTATES: a SURVIVED needs a positive control in the same file ----------
+//
+// The identical-file check upstream proves the mutation APPLIED — the bytes changed. It cannot
+// prove the mutation MUTATED. A mutant can install cleanly and alter no behaviour at all:
+// prepend a duplicate object key and the last occurrence still wins; edit a branch nothing
+// takes; reword a string no code reads. It compiles, it applies, the suite passes, and the tool
+// says SURVIVED — an accusation against the suite for a change that never happened. An
+// `ANCHOR NOT FOUND` guard cannot catch this, because the anchor WAS found.
+//
+// Output comparison does NOT settle it, and this is the trap worth naming: a GENUINE survivor
+// also produces output identical to the green run. Measured — rewording a refusal message no
+// cell reads survives at exactly 156 of 156, byte-identical. So "no observable difference"
+// is the signature of BOTH the mutant that did nothing and the suite that does not care.
+// Silence cannot separate them, in either direction.
+//
+// What does separate them is a POSITIVE CONTROL: another mutation in the SAME FILE that came
+// back KILLED in this same run. A kill proves the suite reaches that file at runtime — not
+// merely that it loads it, which the module specifier already told us. With such a control, a
+// SURVIVED in that file is a real finding about the suite's coverage. Without one, the two
+// explanations are indistinguishable and the honest verdict is that we cannot grade it.
+const killedFiles = new Set(results.filter((r) => r.verdict === "KILLED").map((r) => r.file));
+for (const r of results) {
+  if (r.verdict !== "SURVIVED") continue;
+  if (killedFiles.has(r.file)) {
+    r.why += ` · positive control: another mutation in ${r.file} was KILLED in this run, so the`
+      + " suite provably reaches this file at runtime and this survivor is a real coverage gap";
+    continue;
+  }
+  r.verdict = "UNGRADABLE";
+  r.why = `the suite passed with this mutation applied, but NO mutation in ${r.file} was killed in`
+    + " this run, so nothing here shows the suite reaches that file at runtime. `Applies` and"
+    + " `mutates` are different properties and only the first was checked: a mutant that changed"
+    + " no behaviour (a shadowed duplicate, a dead branch, an unread string) produces exactly this"
+    + " result, and so does a suite that genuinely does not test the code. Add a mutation to the"
+    + " same file that MUST redden a named cell; if that one is killed, this verdict becomes"
+    + " SURVIVED and is reportable.";
 }
 
 say(`\n${C.dim}════════════════════════════════════════════════════════${C.off}`);
@@ -379,6 +418,9 @@ for (const r of results) {
   const good = r.verdict === "KILLED";
   if (!good) bad++;
   const colour = good ? C.green : r.verdict === "SURVIVED" ? C.red : C.yellow;
+  // UNGRADABLE is not a softer SURVIVED. It says the run produced no evidence either way, so it
+  // counts against a clean result exactly as loudly — otherwise the cheapest way to a green
+  // report would be to write mutants that do nothing.
   say(`${colour}${r.verdict.padEnd(12)}${C.off} ${r.label}`);
   say(`  ${C.dim}${r.why}${r.ticks !== undefined ? ` · ${r.ticks} marks (baseline ${r.baseTicks ?? "?"})` : ""}${C.off}`);
 }
