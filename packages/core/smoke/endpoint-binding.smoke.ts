@@ -294,28 +294,28 @@ c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact
     ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
   })());
-// ── A6: the three journal-action coordination kinds ────────────────────────────────────────────
-// Registration and grant are TWO claims and the amendment needed both. A registry entry pins a key
+// ── the three journal-action coordination kinds ────────────────────────────────────────────
+// Registration and grant are TWO claims and this needed both. A registry entry pins a key
 // grammar and confers no authority; the grant builder decides the commit path's records keys BY
 // KIND and default-denies anything it does not name. Either half alone ships something that looks
 // present and does nothing, which is why each is asserted separately below.
 for (const [kind, quals] of [["goaleff", 6], ["epname", 2], ["epmig", 1]] as const) {
   const def = RECORD_KINDS[kind as keyof typeof RECORD_KINDS];
-  c(`A6 \`${kind}\` is a REGISTERED core record kind`, def !== undefined && def.kind === kind, def);
-  c(`A6 \`${kind}\` is UNSPLIT (an atomic coordination row, no .spec/.status)`, def?.split === false, def?.split);
-  c(`A6 \`${kind}\` is written by the commit path`,
+  c(`\`${kind}\` is a REGISTERED core record kind`, def !== undefined && def.kind === kind, def);
+  c(`\`${kind}\` is UNSPLIT (an atomic coordination row, no .spec/.status)`, def?.split === false, def?.split);
+  c(`\`${kind}\` is written by the commit path`,
     def?.writers.spec === "commit-path" && def?.writers.status === "commit-path", def?.writers);
-  c(`A6 \`${kind}\` pins ${quals} qualifier(s)`, def?.qualifiers.length === quals, def?.qualifiers.length);
+  c(`\`${kind}\` pins ${quals} qualifier(s)`, def?.qualifiers.length === quals, def?.qualifiers.length);
 }
 // The GRAMMARS, built rather than described — a key grammar stated in a comment is not a key.
-c("A6 `goaleff` keys on the caller triple, the goalId AND the acceptance generation",
+c("`goaleff` keys on the caller triple, the goalId AND the acceptance generation",
   recordAtomicKey(RECORD_KINDS.goaleff, ["manager", "u_abc", "worker", "u".repeat(26), "g1", "77"])
   === `goaleff.manager.u_abc.worker.${"u".repeat(26)}.g1.77`);
 // Keyed by the NAME, not by a caller: two callers racing for one name MUST contend on one key, and
 // a caller-scoped grammar would make that contention impossible by construction.
-c("A6 `epname` keys on the NAME, with no caller triple",
+c("`epname` keys on the NAME, with no caller triple",
   recordAtomicKey(RECORD_KINDS.epname, ["manager", "worker-7"]) === "epname.manager.worker-7");
-c("A6 `epmig` is ONE key per endpoint", recordAtomicKey(RECORD_KINDS.epmig, ["manager"]) === "epmig.manager");
+c("`epmig` is ONE key per endpoint", recordAtomicKey(RECORD_KINDS.epmig, ["manager"]) === "epmig.manager");
 
 // RAISED, NOT SETTLED — and asserted so it cannot merge unnoticed. These three are ordinary
 // (non-authority) kinds, so `callerReadableRecordKind` admits them and the reader-config seam would
@@ -325,7 +325,7 @@ c("A6 `epmig` is ONE key per endpoint", recordAtomicKey(RECORD_KINDS.epmig, ["ma
 // correct is an authority decision inside an authority change, so it is pinned here at today's
 // answer rather than quietly chosen; if the ruling narrows it, this cell dies and says so.
 for (const kind of ["goaleff", "epname", "epmig"])
-  c(`A6 TODAY: \`${kind}\` is caller-readable (non-authority) — RAISED with fm-orchestrator, not settled here`,
+  c(`TODAY: \`${kind}\` is caller-readable (non-authority) — pinned here, decided at grant-issuance time`,
     callerReadableRecordKind(kind) === true);
 
 c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, the must-5 reconcile-index write, and the must-5 own-gate read — nothing else",
@@ -357,9 +357,9 @@ c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the go
       // authority — the boot sweep enumerates the index over the provisioner, never this connection)
       && g.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>")
       && g.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind")
-      // A6: registering a kind does NOT grant it. This builder decides the commit path's records
+      // Registering a kind does NOT grant it. This builder decides the commit path's records
       // keys BY KIND and default-denies anything it does not name, so a registry entry with no row
-      // here is an authority row that authorizes nothing — the shape the amendment exists to stop.
+      // here is an authority row that authorizes nothing — the shape this enumeration exists to stop.
       && g.publish.includes("$KV.cotal_records_epbind.goaleff.manager.>")
       && g.publish.includes("$KV.cotal_records_epbind.epname.manager.>")
       // `epmig` is ONE key per endpoint, so its row is the exact key and NOT a `.>` subtree: a
@@ -465,7 +465,7 @@ admitsFloor("and an explicit 0 is admitted for the same reason — 0 is the docu
   + "spelling, not a zero-length retention", 0, HORIZON);
 admitsFloor("a fact age EXACTLY at the horizon is admitted: the floor is `below`, not `at or below`", HORIZON, HORIZON);
 admitsFloor("and a longer retention is admitted (SPEC's floor is a minimum, never a target)", HORIZON * 90, HORIZON);
-// The horizon is DECLARED, never compiled in — the same lesson as A1's admission ceiling. A space
+// The horizon is DECLARED, never compiled in — the same lesson as the admission ceiling. A space
 // retaining decisions for a week must have its fact age measured against ITS horizon, and this cell
 // is the one that fails if the floor is ever hardcoded to the module default.
 throws("the floor is measured against the DECLARED horizon, not this module's default: 48h of facts "

@@ -261,7 +261,7 @@ export function assertEpNameEdge(
   // ---- creation edges ------------------------------------------------------------------------
   if (prev === null) {
     if (to === "live") {
-      // The A6 cutover backfill. `runtimeOwner` comes from the incumbent's LIVE gate row, and if no
+      // The cutover backfill. `runtimeOwner` comes from the incumbent's LIVE gate row, and if no
       // such row names an incarnation the key is NOT backfilled — it is recorded as a casualty. A
       // `live` row whose owner is unknown is the row § R15-A exists to forbid, and inventing one
       // here puts the unevaluable value in the durable record where every later release reads it.

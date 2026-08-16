@@ -164,7 +164,7 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
         invalid(`command "${name}" declares the action composite but class "${cmd.class}": an action command's submissions are journal-class (SPEC 13.7)`);
       action = true;
     }
-    // THE CEILING KEYS ON THE CLASS, NEVER ON THE MARKER (amendment A1). A1's MUST is on an
+    // THE CEILING KEYS ON THE CLASS, NEVER ON THE MARKER (SPEC §13.7). The MUST is on an
     // endpoint that accepts JOURNAL-CLASS SUBMISSIONS, and the action composite is a marker on top
     // of that class rather than the thing that creates it — so a `class: "journal"` command with no
     // marker receives submissions exactly like an action command does. This keyed on `action` and

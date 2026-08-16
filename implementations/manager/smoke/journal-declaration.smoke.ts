@@ -34,7 +34,7 @@ const c = (label: string, cond: boolean, detail?: unknown): void => {
 };
 /** Not a cell. Prints what the flip must produce, and is counted separately so it can never be
  *  mistaken for a passing assertion — the whole failure family this campaign kept finding. */
-const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the A2/A6 merges): ${what}`);
+const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the spec changes this depends on): ${what}`);
 
 const doc = managerClusterDocument();
 const byName = new Map(doc.commands.map((r) => [r.name, r]));
@@ -62,9 +62,9 @@ c("WRONG-TODAY: NO command carries the `action` marker, so no command requires a
   doc.commands.filter((r) => "action" in r).map((r) => r.name));
 pending("spawn + launch carry `action: true` and `readinessDeadlineMs`, joining cluster revision 6 rather than minting a seventh");
 
-// A1's declaration. Named here rather than in the core suite because the obligation is on the
+// The admission-ceiling declaration. Named here rather than in the core suite because the obligation is on the
 // ENDPOINT that accepts journal submissions, and this is that endpoint's document.
-c("WRONG-TODAY: the document declares no `admissionCeiling`, which A1 makes a MUST for a journal endpoint",
+c("WRONG-TODAY: the document declares no `admissionCeiling`, which SPEC §13.7 makes a MUST for a journal endpoint",
   !("admissionCeiling" in doc) && doc.commands.every((r) => !("admissionCeiling" in r)));
 pending("the endpoint declares `admissionCeiling` = { maxBytes, maxDepth, maxItems }, and the canonicalizer reads its ceilings from it rather than from a constant");
 

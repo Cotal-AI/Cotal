@@ -1060,7 +1060,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // index subtree; the goal-writer holds NO records CONSUMER.CREATE (the boot sweep enumerates the
   // index over the PROVISIONER, never this standing connection).
   const indexRow = `$KV.${recordsBucket(space)}.goalidx.${e}.>`;
-  // A6 — the three journal-action coordination kinds. ENUMERATED, not inherited: a kind's registry
+  // The three journal-action coordination kinds. ENUMERATED, not inherited: a kind's registry
   // entry pins its grammar and mediation class and confers NO grant, because this builder decides
   // the commit path's records keys by kind and anything it does not name is default-denied. A
   // registry entry without a row here is an authority row that authorizes nothing.

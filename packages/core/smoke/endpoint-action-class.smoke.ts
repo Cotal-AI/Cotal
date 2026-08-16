@@ -79,7 +79,7 @@ throws("action + ephemeral class is refused",
   () => parseClusterDocument(doc(command({ action: true, class: "ephemeral", admissionCeiling: CEILING }))),
   "an action command's submissions are journal-class");
 
-// A1's MUST. Hardcoding the ceiling in the canonicalizer would satisfy the code and not the
+// THE CEILING IS A MUST ON A JOURNAL-CLASS COMMAND (SPEC §13.7). Hardcoding the ceiling in the canonicalizer would satisfy the code and not the
 // contract: the caller could not see before submitting what will be refused.
 throws("an action command without a ceiling is refused",
   () => parseClusterDocument(doc(command({ action: true }))),
@@ -97,15 +97,15 @@ throws("a ceiling on an EPHEMERAL command is refused",
   "receives no journal submissions");
 
 // ---------------------------------------------------------------------------------------------
-// A1 KEYS ON THE CLASS, NOT ON THE MARKER — and the gap survived because every negative above
+// THE CEILING KEYS ON THE CLASS, NOT ON THE MARKER — and the gap survived because every negative above
 // changes TWO things at once. Each one drops the marker AND sets `class: "ephemeral"`, so the
-// command that has the class without the marker was never constructed, and it is the one A1's
+// command that has the class without the marker was never constructed, and it is the one the ceiling's
 // MUST is actually about: `action` is a marker ON journal class, not the thing that creates it.
 // The old rule did two wrong things to that command in one breath — required no ceiling, and
 // REFUSED one, on the ground that it "cannot receive" submissions. `endpoint-service.ts` derives
 // the journal rail from `class === "journal"` with no reference to the marker, so it can.
 // ---------------------------------------------------------------------------------------------
-throws("a JOURNAL-class command without the marker must ALSO declare a ceiling — this is the case A1 names",
+throws("a JOURNAL-class command without the marker must ALSO declare a ceiling — this is the case SPEC §13.7 names",
   () => parseClusterDocument(doc(command({ class: "journal" }))),
   "must declare admissionCeiling");
 const journalNoMarker = parseClusterDocument(doc(command({ class: "journal", admissionCeiling: CEILING })));

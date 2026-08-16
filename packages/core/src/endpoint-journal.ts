@@ -98,7 +98,7 @@ export function submissionFingerprint(
   return { object, fingerprint: contractDigest(object) }; // contractDigest throws on non-I-JSON → quarantine
 }
 
-// ---- admission: the CLOSED outcome table (§13.4 item 2, amendment A1) ------------------------
+// ---- admission: the CLOSED outcome table (§13.4 item 2, §13.7 `admissionCeiling`) ------------------------
 
 /** Why a submission was quarantined. CLOSED and mutually exclusive: a reader branches on the
  *  cause without knowing the order the canonicalizer evaluated its checks in.
@@ -163,7 +163,7 @@ function measure(value: unknown): { depth: number; items: number } {
  *
  * `JSON.parse('{"id":"a","id":"b"}')` yields `{id:"b"}` and reports nothing. So a submission that
  * two conforming implementations could read DIFFERENTLY — one taking the first name, one the last —
- * arrives at the decision looking perfectly ordinary. That is the precise failure amendment A1
+ * arrives at the decision looking perfectly ordinary. That is the precise failure the declared ceiling
  * exists to prevent: two implementations deciding the same bytes differently and DURABLY.
  *
  * The module has claimed duplicate names as a `no-canonical-form` cause since it was written, and

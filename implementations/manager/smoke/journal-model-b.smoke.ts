@@ -26,7 +26,7 @@ const c = (label: string, cond: boolean, detail?: unknown): void => {
   if (cond) { ok++; console.log(`  ✓ ${label}`); }
   else { fail++; console.log(`  ✗ FAIL: ${label}`, detail ?? ""); }
 };
-const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the A1/A2/A6 merges): ${what}`);
+const pending = (what: string): void => console.log(`  ⏳ PENDING (blocked on the spec changes this depends on): ${what}`);
 
 const SRC = join(dirname(fileURLToPath(import.meta.url)), "..", "src", "manager.ts");
 const src = readFileSync(SRC, "utf8");

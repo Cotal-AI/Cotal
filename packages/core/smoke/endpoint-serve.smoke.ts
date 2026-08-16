@@ -130,7 +130,7 @@ const DOC_REL = {
     cmd("audit", { targeted: true, modes: ["ledger"] }),
   ],
 };
-// A1: a JOURNAL-class command declares its admission ceiling whether or not it carries the action
+// A JOURNAL-class command declares its admission ceiling whether or not it carries the action
 // marker — the marker sits on top of the class, and it is the CLASS that makes a command receive
 // submissions. This fixture predates that rule and went red when it landed, which is the rule
 // working: `submitjob` is a real journal-class non-action command, and it had no ceiling.

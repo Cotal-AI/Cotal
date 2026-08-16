@@ -76,7 +76,7 @@ c("wrong-typed carried auth is fingerprinted AS CARRIED, never collapsed onto ab
 
 // ── admission: the CLOSED outcome table against a DECLARED ceiling (broker-free) ──
 // Every ceiling here is a parameter read from a declaration, never a constant. That is the whole
-// point of amendment A1: two conforming implementations must not be able to decide the same bytes
+// point of the declared ceiling: two conforming implementations must not be able to decide the same bytes
 // differently and durably, and a constant compiled into one of them can.
 const CEIL = { maxBytes: 4096, maxDepth: 8, maxItems: 64 };
 const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
@@ -335,7 +335,7 @@ throws("a pool route WITHOUT workExpiry refuses", () => parseDecisionFact({ ...a
 throws("an effects route WITH workExpiry refuses", () => parseDecisionFact({ ...acc, workExpiry: 5 }, accSubj));
 // c9 — THE EFFECT COMPLETION UNION'S `outcome` DISCRIMINANT, which nothing in this tree read.
 // Found by a static sweep of every refusal code the source can emit against every suite in the
-// repo: `"ran"` was the one literal with ZERO occurrences in 301 suite files. It is not Lane A
+// repo: `"ran"` was the one literal with ZERO occurrences in 301 suite files. It is not this change's
 // behaviour and predates this branch — but it sits in the file J1 hardens, and the refusal below
 // was unasserted, so a mutation could delete it and no suite anywhere would notice.
 //
