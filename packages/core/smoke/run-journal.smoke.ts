@@ -121,6 +121,11 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("and it replayed nothing, because there was nothing", a.replayed.length === 0);
   await a.append({ step: "one" }, 1);
   await a.append({ step: "two" }, 2);
+  // Read RAW first, without the replay's own guards: the chain is only worth checking if it is
+  // actually written, and a replay that throws on a torn chain cannot show you an intact one.
+  const chain = (await replayRunJournalRaw("r-1")).map((r) => r.n);
+  c("every record carries its journal ordinal, contiguous from 0 — activation included",
+    chain.join(",") === "0,1,2", chain);
   const { records, lastSeq } = await replayRunJournal(js, jsm, SPACE, "r-1");
   c("the journal reads back as activation-then-steps, in order",
     records.map((r) => r.record.kind).join(",") === "activation,step,step", records.map((r) => r.record.kind));
