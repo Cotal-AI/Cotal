@@ -4,7 +4,7 @@
     {
       "name": "a long-lived client stops recovering from a bind refusal (the stale bind strands it)",
       "file": "packages/core/src/endpoint.ts",
-      "find": "        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {\n          this.resolvedServices.delete(endpoint);\n          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n        }\n",
+      "find": "        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {\n          // Counted before it is repaired, and emitted for anyone watching: see {@link splitsRecovered}.\n          // A recovery that leaves no trace takes the split rate with it.\n          this.splitsRecovered++;\n          this.emit(\"split-recovered\", {\n            endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,\n          });\n          this.resolvedServices.delete(endpoint);\n          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n        }\n",
       "replace": "",
       "expectRed": "the stale (epoch 0) bind was replaced by the successor's"
     },
