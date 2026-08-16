@@ -10,3 +10,20 @@
  */
 export { RunJournalStore, RunJournalUnavailable } from "./journal-store.js";
 export { startRun, driveRun, PauseToken, type RunLease, type DriveRequest, type DriveOutcome } from "./run-driver.js";
+export {
+  MeshHandler,
+  EpfSettleWatcher,
+  CheckpointAnswerMissing,
+  rearmOutstandingPauses,
+  outstandingPauseTokens,
+  type MeshHandlerBinding,
+  type SettleWatcher,
+} from "./mesh-handler.js";
+export {
+  resolveCheckpoint,
+  openCheckpointToken,
+  CheckpointNotOpen,
+  type ResolveCheckpointDeps,
+  type ResolveCheckpointRequest,
+  type ResolveCheckpointResult,
+} from "./resolve-checkpoint.js";

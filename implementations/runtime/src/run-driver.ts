@@ -134,6 +134,21 @@ export interface DriveRequest {
   readonly workExpiry?: number;
   /** An operator's pause, honoured at the next effect boundary. */
   readonly pause?: PauseToken;
+  /**
+   * Repair external state bound to the PREVIOUS holder, once this driver holds the run and before
+   * the program is resumed.
+   *
+   * The case that exists is timers: a checkpoint's armed schedule fires onto a subject derived from
+   * the instance and epoch that armed it, so a run adopted by another host has live timers firing
+   * where nobody is listening, and resuming the program does not repair that — the pause replays as
+   * pending and goes straight back to waiting. What to re-arm is the mesh handler's business, not
+   * the driver's, so the driver only says WHEN: after the activation, because arming timers for a
+   * run this process turned out not to hold would point another driver's fires at this one.
+   *
+   * A failure here is a failure to take the run over, and is not swallowed: a driver that resumed a
+   * program whose pauses it could not re-arm would look like it was holding a run it cannot advance.
+   */
+  readonly onActivated?: (entries: readonly JournalEntry[]) => Promise<void>;
 }
 
 /**
@@ -232,11 +247,14 @@ async function drive(
     throw e;
   }
 
+  const resumed = appender.steps() as readonly JournalEntry[];
+  if (req.onActivated !== undefined) await req.onActivated(resumed);
+
   const store = new RunJournalStore(appender);
   const journal = new Journal({
     run: req.runId,
     // The prefix the barrier validated and activated on, not a second read of the subject.
-    entries: appender.steps() as readonly JournalEntry[],
+    entries: resumed,
     store,
   });
 
