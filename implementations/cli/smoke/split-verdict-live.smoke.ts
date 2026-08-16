@@ -28,9 +28,14 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT, DEV_OWNER, EpEnvelopeError, invokeCommand, mintLifecycleUid,
   newIdentity, resolveService, respondedButUnbound, standaloneConnectOpts, type EpCaller,
 } from "@cotal-ai/core";
+import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { epRailFailure } from "../src/lib/control.js";
 
-const PORT = 14327; // distinct from the other live smokes' fixed ports
+// EPHEMERAL, not a fixed port distinct from the other live smokes'. A fixed port is only safe while
+// no two live smokes share a runner, which is a property of how smoke:ci is sharded rather than of
+// anything this file controls -- so it is a hazard to be managed, at a distance, by whoever next
+// changes the sharding. Picking a free port removes it instead.
+const PORT = await pickFreePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "split-verdict";
 const WT = resolve(import.meta.dirname, "..", "..", "..");
