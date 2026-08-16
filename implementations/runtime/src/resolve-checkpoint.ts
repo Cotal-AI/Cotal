@@ -4,11 +4,11 @@
  * **Nothing outside presents the token.** A checkpoint's resume is holder-bound (SPEC §13.10), and
  * a workflow checkpoint's holder is the run driver: it is the one principal guaranteed to exist for
  * the pause's whole life. So an observer UI, a notification action, or another agent does not talk
- * to `endpoint-checkpoint` at all — each calls this, which authorizes the caller under the run's own
- * ACL, files their answer, and then presents the token as the driver. "Resolvable from anywhere" is
- * true at the product level while resume stays holder-bound at the protocol level, and §13.10 is not
- * weakened by a millimetre. The cost is that the driver must be reachable to answer a checkpoint,
- * which is the same condition under which the run advances at all (design §5.5, §10).
+ * to `endpoint-checkpoint` at all — each calls this, which authorizes the caller under the run's
+ * own ACL, files their answer, and then presents the token as the driver. "Resolvable from
+ * anywhere" is true at the product level while resume stays holder-bound at the protocol level, and
+ * §13.10 is not weakened by a millimetre. The cost is that the driver must be reachable to answer a
+ * checkpoint, which is the same condition under which the run advances at all.
  *
  * **The answer is written BEFORE the token is presented,** and the two are separate facts on
  * purpose. The record is the payload; the settle is the one-use arbiter that releases the run. In

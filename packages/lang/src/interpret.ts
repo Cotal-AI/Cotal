@@ -153,7 +153,7 @@ interface ScopeFacts {
  * A scope's failure, carrying the interpreter's OWN facts about it.
  *
  * These facts used to be attached to the thrown value with `Object.assign`, which works exactly as
- * long as every program throws an object. `throw null` is valid (§3.2), and `Object.assign(null, …)`
+ * long as every program throws an object. `throw null` is valid, and `Object.assign(null, …)`
  * is a TypeError — so a conclave whose body threw a primitive lost its closure fact AND handed the
  * caller a manufactured type error in place of the body's failure, while the entry recorded
  * `closed: undefined` for a room the handler had in fact closed. The facts belong to the
@@ -348,7 +348,7 @@ export interface RunOptions {
    * branches were decided rather than deleted. A migration runs EDITED source against that journal,
    * so the same short-circuit would account for entries the new source no longer reaches — and an
    * orphan that is never reported is an effect nobody is told about, which for a resolved human
-   * checkpoint means a decision silently discarded with L5004 never firing (design §8.4).
+   * checkpoint means a decision silently discarded with L5004 never firing.
    *
    * Set here rather than inferred, because "the source changed" is not something the interpreter
    * can see: it is handed a program and a journal and both are what the caller says they are.
@@ -438,8 +438,8 @@ class Interpreter {
     // EVERY limit comes from the pins, never from a default applied here. A default resolved a
     // second time is a default resolved by whichever interpreter happens to be resuming, which is
     // exactly what pinning exists to stop.
-    // THE CEILING IS A RUN BOUND, SO THE COUNT STARTS WHERE THE RUN LEFT OFF. §11 names L4009 "Run
-    // effect ceiling reached" and §7.6 pins the ceiling on the record — a pin is only worth
+    // THE CEILING IS A RUN BOUND, SO THE COUNT STARTS WHERE THE RUN LEFT OFF. L4009 is named "Run
+    // effect ceiling reached" and the run record pins the ceiling — a pin is only worth
     // refusing a mismatch on (L5009) if the thing it pins is enforced. Starting at 0 gave every
     // activation a full allowance, so a runaway loop of effects that crashed or was released
     // periodically never reached the ceiling however much it performed against the world, and the
@@ -1136,7 +1136,7 @@ class Interpreter {
    * which one finished first.
    */
   /**
-   * §7.2's `branchDigest`, over the arms a settled `race` will never be walked into.
+   * The `branchDigest`, over the arms a settled `race` will never be walked into.
    *
    * STRUCTURE, NOT TEXT AND NOT POSITION. Acorn nodes carry `start`/`end`, and an edit anywhere
    * earlier in the file moves every offset after it — a digest over those would diverge on a run
@@ -1178,7 +1178,7 @@ class Interpreter {
     const occurrence = frame.keys.nextScope(scopeKind, scopeName);
     const scopeKey = frame.keys.scopeKey(scopeKind, scopeName, occurrence);
 
-    // `conclave` is the one scope whose identity includes a SUBJECT (`hashesSubject`, §5.8): the
+    // `conclave` is the one scope whose identity includes a SUBJECT (`hashesSubject`): the
     // members are what the sub-team IS, so editing the member list has to diverge rather than
     // resume into a different room. The other three are identified by kind, name and occurrence.
     const subject = spec.hashesSubject
@@ -1220,7 +1220,7 @@ class Interpreter {
     frame: Frame,
     body: (ctx: EffectContext, only?: ReadonlySet<string>) => Promise<ScopeOutcome>,
     subject?: unknown,
-    /** §7.2's `branchDigest` over a named loser set. Absent where there is nothing to digest. */
+    /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
     branchDigest?: (losers: readonly string[]) => string | undefined,
   ): Promise<unknown> {
     const inputHash = digest(
@@ -1237,12 +1237,12 @@ class Interpreter {
       const entry = verdict.entry;
       const endedAt = entry.endedAt ?? this.options.handler.now();
 
-      // §8.5: "compare `branchDigest` if the entry carries one". The scope's own `inputHash` is
-      // `{kind, name}` — an arm's body is not in it — and a settled race is delivered from this
-      // entry without entering a branch, so without this comparison an edit inside a LOSING arm
-      // reaches nothing that could notice it. Both replay paths, not the migration path alone: a
-      // resume of edited source is exactly the case a divergence exists to make loud, and the run
-      // record carries no program hash to have refused it earlier (§17 delta 2).
+      // The comparison: `branchDigest` is checked whenever the entry carries one. The scope's own
+      // `inputHash` is `{kind, name}` — an arm's body is not in it — and a settled race is
+      // delivered from this entry without entering a branch, so without this comparison an edit
+      // inside a LOSING arm reaches nothing that could notice it. Both replay paths, not the
+      // migration path alone: a resume of edited source is exactly the case a divergence exists to
+      // make loud, and the run record carries no program hash to have refused it earlier.
       if (entry.branchDigest !== undefined && branchDigest !== undefined) {
         const now = branchDigest(entry.cancel?.losers ?? []);
         if (now !== undefined && now !== entry.branchDigest) {
@@ -1448,7 +1448,7 @@ class Interpreter {
       // propagates a rejection, so the first arm to FAIL threw straight out of this await: past the
       // cancellation below, past `allSettled`, and into a scope entry recorded as failed with no
       // losers on it. The run terminated while a sibling was still performing effects, which is the
-      // exact defect §3.4 says the scope entry exists to prevent. A rejection is a settle.
+      // exact defect the scope entry exists to prevent. A rejection is a settle.
       await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
       for (const f of frames) f.signal.cancel("a sibling branch won the race");
       const settled = await Promise.allSettled(running);
@@ -1545,13 +1545,13 @@ class Interpreter {
     }
 
     if (name === "conclave") {
-      // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`, carrying the
-      // durable answer to "is this sub-team still live". That answer is the explicit `closed` FACT,
-      // not the entry's state: a body that failed after a clean close settles `failed` exactly like
-      // one whose close never acknowledged, and only the fact separates them. Pending means a close
-      // is still owed. §17's migrate table reads that fact — an orphaned conclave is rejected unless
-      // the scope closed — so a second entry for the close would be a second thing to keep in
-      // agreement with the first, and nothing needs it.
+      // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`, carrying
+      // the durable answer to "is this sub-team still live". That answer is the explicit `closed`
+      // FACT, not the entry's state: a body that failed after a clean close settles `failed`
+      // exactly like one whose close never acknowledged, and only the fact separates them. Pending
+      // means a close is still owed. The migrate table reads that fact — an orphaned conclave is
+      // rejected unless the scope closed — so a second entry for the close would be a second thing
+      // to keep in agreement with the first, and nothing needs it.
       const members = deepFreeze(first) as AgentHandleValue[];
       const fn = (await this.evaluate(argNodes[1] as AnyNode, env, frame)) as (
         f: Frame,
@@ -1589,9 +1589,9 @@ class Interpreter {
       }
       frame.clock.join([branch.clock]);
 
-      // A CANCELLED branch performs no new effects (§5.8), so a cancelled conclave does not close
+      // A CANCELLED branch performs no new effects, so a cancelled conclave does not close
       // itself: releasing the membership travels the same recovery path as every other branch-local
-      // resource a race loser took (§3.4). A conclave whose body merely FAILED is not cancelled —
+      // resource a race loser took. A conclave whose body merely FAILED is not cancelled —
       // this process is live and the world is reachable — and walking away from live membership on
       // an ordinary error would be the `spawn` leak in another shape.
       if (bodyError instanceof Cancelled) throw new ScopeFailed(bodyError, { closed: false });

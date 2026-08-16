@@ -332,7 +332,7 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 //
 // Gated by their INPUT rather than their mechanism: an agent handle comes from `spawn`, and `down`
 // additionally needs `monitor` to have registered interest. Both ride the same seam as the durable
-// actions themselves — one place to look when Lane A lands, not two.
+// actions themselves — one place to look when the durable-action surface lands, not two.
 {
   // BOUNDED. A refusal that stops refusing must be observable as "did not refuse", not as a suite
   // that stops: an implementation which accepts one of these would otherwise wait for an event that

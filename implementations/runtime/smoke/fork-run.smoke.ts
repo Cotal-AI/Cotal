@@ -1,5 +1,5 @@
 /**
- * §8.5's fork: the cut, the mode that decides it, and the two things a fork must not re-decide.
+ * The fork: the cut, the mode that decides it, and the two things a fork must not re-decide.
  *
  * Four claims, each a different way to ship a fork that looks right:
  *
@@ -209,9 +209,9 @@ const plan = async (
   // visible rather than to defend it. The effect ceiling is a RUN bound recovered from the journal,
   // so a child that replays the copied prefix starts having already spent it — a fork near the
   // ceiling gets a nearly-spent allowance. That follows from the recovery rather than from anyone
-  // deciding it, and §8.5 does not say which it wants: `inherit the consumption` (the prefix is the
-  // child's history and the child claims those effects as its own) or `a fresh allowance` (a fork
-  // exists to do NEW work, and the frontier is the whole point).
+  // deciding it, and the rule does not say which it wants: `inherit the consumption` (the prefix is
+  // the child's history and the child claims those effects as its own) or `a fresh allowance` (a
+  // fork exists to do NEW work, and the frontier is the whole point).
   //
   // NAMED RE-OPEN TRIGGER: if that question is settled the other way, this cell FAILS, and it is
   // meant to. A design decision recorded only in a plan is one nobody re-reads; one asserted here
@@ -241,14 +241,14 @@ const plan = async (
   // is in the cut, and a fork-inheritance closure that rested on "the prefix is the child's history"
   // must be re-argued at that moment rather than inherited silently.
   //
-  // WHAT IT WOULD NOT HAVE CAUGHT, named here because a re-open mechanism that cannot say which case
-  // it fires on is the same blind artifact it replaced. Had this existed when the closure was made,
-  // it would have PASSED: `planFork`'s scope-internal path is unchanged since then, and the reviewer
-  // measured this exact cut at `c641f90c` and got this exact answer. **It detects that the premise's
-  // GROUND CHANGED. It cannot detect that the premise was FALSE.** The cell that would have fired is
-  // the one that seeds a child and asserts its first live lookup is the requested key — it does not
-  // exist yet, it belongs to slice (g1), and it is the only kind that measures inheritance rather
-  // than the planner agreeing with itself.
+  // WHAT IT WOULD NOT HAVE CAUGHT, named here because a re-open mechanism that cannot say which
+  // case it fires on is the same blind artifact it replaced. Had this existed when the closure was
+  // made, it would have PASSED: `planFork`'s scope-internal path is unchanged since then, and the
+  // reviewer measured this exact cut at `c641f90c` and got this exact answer. **It detects that the
+  // premise's GROUND CHANGED. It cannot detect that the premise was FALSE.** The cell that would
+  // have fired is the one that seeds a child and asserts its first live lookup is the requested key
+  // — it does not exist yet, it belongs to the driver's own suite, and it is the only kind that
+  // measures inheritance rather than the planner agreeing with itself.
   {
     const sEntries = await record("r-scoped", SCOPED);
     const sp = await plan({
@@ -441,7 +441,7 @@ const plan = async (
       { admissible: past.admissible, cut: keys(past.cut) });
   }
 
-  // A spawn in the CUT, which §8.5 says the fork must respawn or adopt at the frontier.
+  // A spawn in the CUT, which a fork must respawn or adopt at the frontier.
   const spawned = await record(
     "r-spawn",
     `const d = await spawn("dev", { name: "dev" });\nawait sleep("1m", { name: "after" });\nawait sleep("2m", { name: "later" });`,
@@ -572,13 +572,13 @@ const plan = async (
 // authored after a fix asserts what the fix does; a cell authored before it has to state what is
 // wrong first, which is the only moment the claim can still be falsified by the code.
 //
-// The design does not leave this open (§8.5's migrate walk, quoted): "A MIGRATION IS NOT A RESUME
-// AND MUST NOT USE §8.2's SHORT-CIRCUIT ... walk the RECORDED WINNING BRANCH and run the ordinary
-// hash and orphan checks inside it, APPLY LOST-BRANCH POLICY TO THE OTHERS, and compare
-// `branchDigest` if the entry carries one." The walk here does the first clause and neither of the
-// other two: `branchDigest` exists nowhere in this tree (it is optional, so that is not the
-// defect), and the losing arms are consumed wholesale — which is the short-circuit the paragraph
-// forbids by name, applied to the arms the winner's walk does not cover.
+// This is not left open. A MIGRATION IS NOT A RESUME AND MUST NOT USE THE RESUME SHORT-CIRCUIT ...
+// walk the RECORDED WINNING BRANCH and run the ordinary hash and orphan checks inside it, APPLY
+// LOST-BRANCH POLICY TO THE OTHERS, and compare `branchDigest` if the entry carries one." The walk
+// here does the first clause and neither of the other two: `branchDigest` exists nowhere in this
+// tree (it is optional, so that is not the defect), and the losing arms are consumed wholesale —
+// which is the short-circuit the paragraph forbids by name, applied to the arms the winner's walk
+// does not cover.
 {
   const RACED =
     `await race({ quick: async () => { await sleep("1m", { name: "q" }); return 1; }, ` +
@@ -612,7 +612,7 @@ const plan = async (
     winnerEdit.admissible === false && winnerEdit.refusals.some((r) => r.code === "L5018"),
     winnerEdit.refusals);
 
-  // REPAIRED by §7.2's `branchDigest`. The same edit on the other arm used to produce a plan
+  // REPAIRED by the entry's `branchDigest`. The same edit on the other arm used to produce a plan
   // byte-for-byte identical to the plan for source that was never edited at all; the losers' bodies
   // are now bound into the scope entry, so it diverges at the scope rather than passing through it.
   c("REPAIRED: editing the LOSING arm diverges, at the scope that bound it",
@@ -635,7 +635,7 @@ const plan = async (
     reformatted.admissible === true && reformatted.refusals.length === 0, reformatted.refusals);
 
   // WRONG TODAY, and DELIBERATELY still wrong: the mechanism the digest hardens over rather than
-  // replaces. The dry walk never looks the loser's entry up, so by §8.5's own definition ("ORPHANS
+  // replaces. The dry walk never looks the loser's entry up, so by the orphan definition ("ORPHANS
   // = journal entries never looked up by the dry replay") it is an orphan and lost-branch policy
   // decides it. Instead it is swept into the prefix as accounted-for — the wholesale consumption
   // that paragraph forbids by name, applied to the arms the winner's walk does not cover, so a
@@ -645,7 +645,7 @@ const plan = async (
   // whole plan, which empties the cut and would make this cell pass for a reason that has nothing
   // to do with disposition — a cell that dies for the wrong reason stops being a tripwire.
   //
-  // §8.5 NAMES lost-branch policy and DEFINES IT NOWHERE, and routing losers into the existing
+  // Lost-branch policy is NAMED and DEFINED NOWHERE, and routing losers into the existing
   // orphan table would change what already-working UNEDITED source does: every migration over a
   // race with a rejected-kind orphan in a losing arm would start being refused. That is a semantic
   // decision, so it is a SPEC proposal rather than something this lane invents. The cell stays red-

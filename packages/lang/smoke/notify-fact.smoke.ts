@@ -3,7 +3,7 @@
  *
  * The validator checks a fact written as a LITERAL, exactly — that is `grammar.smoke.ts`'s subject.
  * This suite is the other half, and it is the half the bound exists for: a fact assembled at run
- * time from journaled results is invisible to a static check, and §5.10's rule is precisely that no
+ * time from journaled results is invisible to a static check, and the rule is precisely that no
  * interpolation hook may launder a turn result's free text into another agent's context. A rule
  * enforced only where the value is a literal is a rule that holds everywhere except where it
  * matters.
@@ -31,7 +31,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   console.log("  ✗ FAIL:", name, extra === undefined ? "" : JSON.stringify(extra));
 };
 
-// ---- 1) the rule itself, stated as the design states it ---------------------------------------
+// ---- 1) the rule itself, stated as the rule states it ---------------------------------------
 {
   ok("a plain decision record holds", notifyFactViolation({ decision: "build", outcome: "blocked" }) === null);
   ok("with up to eight short scalars beside it", notifyFactViolation({
@@ -70,7 +70,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 
 // ---- 3) the boundary is the interpreter, so a COMPUTED fact is checked -------------------------
 {
-  // The laundering path §5.10 names: a turn's free text, carried into a notice.
+  // The laundering path the rule names: a turn's free text, carried into a notice.
   const PROGRAM = `
 const team = channel("t");
 const planner = await spawn("planner", { join: [team] });

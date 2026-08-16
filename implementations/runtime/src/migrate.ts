@@ -1,14 +1,14 @@
 /**
- * Migrate a run onto edited source: the §8.4 check, and why the check is the whole decision.
+ * Migrate a run onto edited source: the migrate check, and why the check is the whole decision.
  *
  * Nothing here rewrites a journal and nothing here performs an effect. A migration is decided by a
- * DRY walk of the new program over the recorded journal, and the walk answers two questions with two
- * different inputs — which is the distinction the design spent a section on. Whether a RECORD is
- * still valid is a question about the record and is answered on the raw fact; which records the
- * program still REACHES is a question about the program and is answered through its own view, with
- * checkpoint policy applied. Both live in the language: the hash comparison in `Journal.lookup`, the
- * policy sandwich at the interpreter's `checkpoint` call site. This file supplies the walk's mode,
- * reads what it left behind, and applies the orphan table.
+ * DRY walk of the new program over the recorded journal, and the walk answers two questions with
+ * two different inputs — which is the distinction that decided it. Whether a RECORD is still valid
+ * is a question about the record and is answered on the raw fact; which records the program still
+ * REACHES is a question about the program and is answered through its own view, with checkpoint
+ * policy applied. Both live in the language: the hash comparison in `Journal.lookup`, the policy
+ * sandwich at the interpreter's `checkpoint` call site. This file supplies the walk's mode, reads
+ * what it left behind, and applies the orphan table.
  *
  * **The orphan table is by effect kind because our removed steps have consequences.** "Removed
  * steps' data is ignored" is right for a step that outlives nothing. It is wrong for an agent that
@@ -18,15 +18,16 @@
  * discarding evidence.
  *
  * **The commit files its own record kind, and that was a scope decision rather than a preference.**
- * §8.4 puts a `migrated` fact on the run record; a records-KV record has a create-only half for what
- * a thing IS and a last-value-wins half for what it is DOING, and a migration is neither — it is
- * append-only history with an actor, and a run can migrate more than once. So there is a `migration`
- * kind (SPEC amendment A10), keyed by a content-derived id, whose spec is the report and whose
- * status is the application.
+ * The obvious home for a `migrated` fact is the run record itself; a records-KV record has a
+ * create-only half for what a thing IS and a last-value-wins half for what it is DOING, and a
+ * migration is neither — it is append-only history with an actor, and a run can migrate more than
+ * once. So there is a `migration` kind (SPEC amendment A10), keyed by a content-derived id, whose
+ * spec is the report and whose status is the application.
  *
  * **What the commit still does NOT do**: advance the run's pinned program hash, because
- * `RunSpecValue` carries none to advance — §17 delta 2 declares one and slice (b2) deliberately did
- * not invent it. The migration is durable and readable; the run record does not yet name its source.
+ * `RunSpecValue` carries none to advance — a program-hash pin is declared and unbuilt, and this
+ * branch deliberately did not invent it. The migration is durable and readable; the run record does
+ * not yet name its source.
  */
 import type { KV } from "@nats-io/kv";
 import {
@@ -53,7 +54,7 @@ import {
 /** What the caller decided to override, and therefore what the record has to say they decided. */
 export interface MigrateOverrides {
   /**
-   * Discard human decisions the edit made unreachable. Recorded WITH the actor: §8.4's one
+   * Discard human decisions the edit made unreachable. Recorded WITH the actor: the one
    * absolute is that a recorded human decision is never discarded quietly.
    */
   readonly discardApprovals?: boolean;
@@ -83,7 +84,7 @@ export interface MigrateDivergence {
 /**
  * The answer a migration attempt produces.
  *
- * `admissible` is the §8.4 commit condition — no divergence and the orphan table satisfied — and
+ * `admissible` is the commit condition — no divergence and the orphan table satisfied — and
  * NOT a statement that anything was written. Nothing is: see {@link commitMigration}.
  */
 export interface MigrateReport {
@@ -123,10 +124,10 @@ export interface MigrateRequest {
   /**
    * The program hash the run was on, as the CALLER states it.
    *
-   * Not verifiable here and deliberately not invented: §17 delta 2 declares a program hash on the
-   * run record and `RunSpecValue` does not carry one yet, so a hash computed from a source this
-   * function was never given would be a guess wearing a fact's name. Absent when the caller does not
-   * know it, and the record says absent rather than approximate.
+   * Not verifiable here and deliberately not invented: a program-hash pin on the run record is
+   * declared and unbuilt, and `RunSpecValue` does not carry one yet, so a hash computed from a
+   * source this function was never given would be a guess wearing a fact's name. Absent when the
+   * caller does not know it, and the record says absent rather than approximate.
    */
   readonly fromHash?: string;
 }
@@ -142,10 +143,10 @@ class Frontier extends Error {
 /**
  * A handler that performs NOTHING and says so by stopping.
  *
- * §8.4's walk "stops at the frontier", and the frontier is exactly the first effect with no record
- * behind it. A handler that returned a plausible value instead would carry the walk past it into a
- * region where every subsequent step is a `miss`, and the orphan set — the entire output — would be
- * computed against a history the run does not have.
+ * The migrate walk "stops at the frontier", and the frontier is exactly the first effect with no
+ * record behind it. A handler that returned a plausible value instead would carry the walk past it
+ * into a region where every subsequent step is a `miss`, and the orphan set — the entire output —
+ * would be computed against a history the run does not have.
  *
  * IT IS THE SECOND STOP, NOT THE FIRST, and that is worth knowing rather than discovering. The walk
  * reads a READ-ONLY journal, so a missing step is refused at `begin` before any handler is reached:
@@ -165,10 +166,11 @@ function dryHandler(now: () => number): EffectHandler {
 }
 
 /**
- * Run §8.4's check. Reads; never writes.
+ * Run the migrate check. Reads; never writes.
  *
  * The report is the product whether or not the migration is admissible — a rejected migration owes
- * the caller the per-step reason, which is the only thing that makes repair possible (§11).
+ * the caller the per-step reason, which is the only thing that makes repair possible (the `L`
+ * catalogue).
  */
 export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
   const journal = new Journal({ run: req.runId, entries: req.entries, readOnly: true });
@@ -195,9 +197,9 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
       unwalkable = { step: e.scopeKey, why: e.message };
     } else if (!(e instanceof Frontier) && !(e instanceof JournalReadOnlyError)) {
       // A program fault under an edited source is the migration's answer too — L4007 from an edited
-      // `onExpiry: fail` is exactly the case §8.4 walks through — but it is not a divergence, and
-      // it is not this function's to swallow. The steps after it were simply not reached, which is
-      // already visible in the orphan set below.
+      // `onExpiry: fail` is exactly the case the walk is specified to handle — but it is not a
+      // divergence, and it is not this function's to swallow. The steps after it were simply not
+      // reached, which is already visible in the orphan set below.
       if (!isProgramFault(e)) throw e;
     }
   }
@@ -249,9 +251,9 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
  * history a reader trusts, and the refusal is the product the check exists to produce.
  *
  * What is still NOT here, stated rather than implied: the run's pinned program hash does not
- * advance, because `RunSpecValue` carries no program hash to advance (§17 delta 2, deliberately not
- * invented in slice (b2)). The migration is durable and readable; the run record does not yet name
- * which source it is on.
+ * advance, because `RunSpecValue` carries no program hash to advance — that pin is declared and
+ * unbuilt, and this branch does not invent it. The migration is durable and readable; the run
+ * record does not yet name which source it is on.
  */
 export async function commitMigration(
   kv: KV,
@@ -316,7 +318,7 @@ function recordedOverrides(o: MigrateOverrides | undefined): string[] {
 }
 
 /**
- * §8.4's orphan table, one entry at a time.
+ * The orphan table, one entry at a time.
  *
  * `kept` rather than `ignored` for a turn, because the two are different promises. An ignored sleep
  * leaves nothing behind. An ignored TURN would be a claim that an agent did not speak, and it did:
@@ -368,11 +370,11 @@ function classify(
         : reject("L5014", "an open conclave is live membership the new program cannot close");
 
     case "spawn":
-      // §8.4 clears this row with `--adopt <handle>` or `--release`. NEITHER IS HONOURED HERE, and
-      // that is the seam rather than an omission: both name a durable agent this host cannot
-      // address, because `spawn` itself rides Lane A's durable-action machinery. An override that
-      // read as accepted would be the fake success — a migration recorded as having released an
-      // agent nothing ever released.
+      // The specified repair for this row is `--adopt <handle>` or `--release`. NEITHER IS HONOURED
+      // HERE, and that is the seam rather than an omission: both name a durable agent this host
+      // cannot address, because `spawn` itself rides durable-action machinery that is not in this
+      // tree yet. An override that read as accepted would be the fake success — a migration
+      // recorded as having released an agent nothing ever released.
       return (o?.adopt?.length ?? 0) + (o?.release?.length ?? 0) > 0
         ? reject(
             "L5003",
@@ -402,9 +404,9 @@ function classify(
     case "parallel":
     case "race":
     case "fanOut":
-      // A scope is not an effect and outlives nothing by itself; every consequence it had belongs to
-      // an entry underneath it, and those get their own rows. `conclave` is the exception and is
-      // above, which is exactly why §8.4's table lists it and not these three.
+      // A scope is not an effect and outlives nothing by itself; every consequence it had belongs
+      // to an entry underneath it, and those get their own rows. `conclave` is the exception and is
+      // above, which is exactly why the orphan table lists it and not these three.
       return ignore("a scope outlives nothing of its own; what ran under it has its own rows");
 
     default:

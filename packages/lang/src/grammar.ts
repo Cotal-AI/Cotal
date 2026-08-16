@@ -991,7 +991,7 @@ function resolveFunction(node: AnyNode, v: Validator, scope: Scope): AnyNode | u
  * The thunks a combinator owns, in every form the language accepts.
  *
  * `parallel({ a: () => …, b })` mixes an inline branch and a NAMED one, and a first version of this
- * dropped the named half — so the design's own captured-write program, written with two named
+ * dropped the named half — so a captured-write program written with two named
  * `async function`s instead of two arrows, was accepted. A branch is a branch however it is
  * spelled.
  */

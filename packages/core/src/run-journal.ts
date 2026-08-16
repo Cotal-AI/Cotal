@@ -47,19 +47,19 @@
  * dropped connection — poisons it: everything queued behind fails with the same terminal error and
  * never reaches the wire.
  *
- * **ONE SUBJECT PER RUN**, `<spacePrefix>.wfj.<runId>`, where the design's §7.6 writes
- * `…wfj.<runId>.<entryId>`. This is a deviation, and it is NOT because a per-entry subject cannot be
- * fenced — it can: `Nats-Expected-Last-Subject-Sequence-Subject` lets the expectation be evaluated
- * against a wildcard comparator, and it works on the repo's broker floor (measured on 2.12.1:
- * per-entry subjects under a `wfj.<runId>.*` comparator accepted at the run's head, refused 10071
- * on a stale one, and were unaffected by another run's appends). The reasons are the design's own:
- * §7.6 asks the subject range for per-run ordering, per-run replay by consumer filter, and cheap
- * retirement by subject purge, and all three are properties of the RUN token — the entry token buys
- * per-entry point reads, which an append-only journal replayed in full never issues. Against that it
- * costs one stream subject per journal entry forever, in a stream that deliberately has no age
- * eviction, and a second header whose absence or mismatch degrades silently to a per-publish-subject
- * comparison — which on a fresh entry subject is `0`, i.e. always a create, i.e. no fence at all.
- * A fence that fails open when misconfigured is worse than one coordinate less addressable.
+ * **ONE SUBJECT PER RUN**, `<spacePrefix>.wfj.<runId>`, where a per-entry subject would write
+ * `…wfj.<runId>.<entryId>`. This is a deviation, and it is NOT because a per-entry subject cannot
+ * be fenced — it can: `Nats-Expected-Last-Subject-Sequence-Subject` lets the expectation be
+ * evaluated against a wildcard comparator, and it works on the repo's broker floor (measured on
+ * 2.12.1: per-entry subjects under a `wfj.<runId>.*` comparator accepted at the run's head, refused
+ * 10071 on a stale one, and were unaffected by another run's appends). The reasons are the ones the
+ * range exists for: per-run ordering, per-run replay by consumer filter, and cheap retirement by
+ * subject purge, and all three are properties of the RUN token — the entry token buys per-entry
+ * point reads, which an append-only journal replayed in full never issues. Against that it costs
+ * one stream subject per journal entry forever, in a stream that deliberately has no age eviction,
+ * and a second header whose absence or mismatch degrades silently to a per-publish-subject
+ * comparison — which on a fresh entry subject is `0`, i.e. always a create, i.e. no fence at all. A
+ * fence that fails open when misconfigured is worse than one coordinate less addressable.
  */
 import { randomBytes } from "node:crypto";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
@@ -126,11 +126,11 @@ export interface StoredRunJournalRecord {
  * longer where this driver left it.
  *
  * Usually that means someone else activated, and that is what the name says. It is NOT the only
- * cause: purging a run's subject — the retirement mechanism §7.6 asks the subject range for — also
- * moves the head out from under a live appender, and measured, it produced exactly this refusal with
- * no successor in existence. So `isSuperseded` is "the stream refused my expectation", and a driver
- * that needs to know WHICH replays the run: a journal that reads back empty was retired, one that
- * carries a later activation was taken over.
+ * cause: purging a run's subject — the retirement mechanism the subject range exists for — also
+ * moves the head out from under a live appender, and measured, it produced exactly this refusal
+ * with no successor in existence. So `isSuperseded` is "the stream refused my expectation", and a
+ * driver that needs to know WHICH replays the run: a journal that reads back empty was retired, one
+ * that carries a later activation was taken over.
  *
  * Not retryable either way, and not an effect failure. It says nothing about the effect the entry
  * described — whatever it did, it did — only that this process may no longer speak for the run.
@@ -645,8 +645,8 @@ export interface RunTakeover {
    * Whether this activation STARTS the run or RESUMES one that already exists.
    *
    * An empty journal is ambiguous on its own and the stream cannot resolve it: a run that was never
-   * started and a run that was retired by subject purge — which is the retirement mechanism §7.6
-   * asks the subject range for — read back identically as zero records. Measured: a purged run
+   * started and a run that was retired by subject purge — which is the retirement mechanism the
+   * subject range exists for — read back identically as zero records. Measured: a purged run
    * activated again as if new. Only the caller knows which it meant, because the run record is what
    * says the run exists, so the caller states it and this refuses the mismatch either way.
    */

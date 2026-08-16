@@ -187,7 +187,7 @@ while (n < 50) {
     caught instanceof Error && caught.message.includes("more than 5 effects"));
 }
 
-// ---- 8) the two codes exist in the catalog, with the design's titles -------------------------
+// ---- 8) the two codes exist in the catalog, with their titles -------------------------
 
 {
   ok("L5009 is in the catalog", CATALOG.L5009 === "Resume pin mismatch");

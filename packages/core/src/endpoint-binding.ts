@@ -57,15 +57,16 @@ export function wfjStreamName(space: string): string { return `WFJ_${token(space
 /**
  * The ONE subject a run's journal entries append to.
  *
- * ONE SUBJECT PER RUN, not one per entry — a deviation from the design's §7.6, and a CHOICE rather
- * than a necessity. Per-entry subjects can be fenced: `Nats-Expected-Last-Subject-Sequence-Subject`
- * evaluates the expectation against a wildcard comparator, measured working on the repo's broker
- * floor. They are not used because the three properties the design asks a subject range for —
- * per-run ordering, replay by consumer filter, and retirement by subject purge — are all properties
- * of the RUN subject, while the entry level buys only per-entry point reads, which an append-only
- * journal replayed in full never issues. Against that it costs one stream subject per entry forever
- * in a stream with no age eviction, and a second header whose absence degrades silently to a
- * per-publish-subject comparison — on a fresh entry subject that is `0`, i.e. no fence at all.
+ * ONE SUBJECT PER RUN, not one per entry — a deviation from the per-entry subject first sketched
+ * for it, and a CHOICE rather than a necessity. Per-entry subjects can be fenced:
+ * `Nats-Expected-Last-Subject-Sequence-Subject` evaluates the expectation against a wildcard
+ * comparator, measured working on the repo's broker floor. They are not used because the three
+ * properties a subject range is wanted for here — per-run ordering, replay by consumer filter, and
+ * retirement by subject purge — are all properties of the RUN subject, while the entry level buys
+ * only per-entry point reads, which an append-only journal replayed in full never issues. Against
+ * that it costs one stream subject per entry forever in a stream with no age eviction, and a second
+ * header whose absence degrades silently to a per-publish-subject comparison — on a fresh entry
+ * subject that is `0`, i.e. no fence at all.
  */
 export function wfjSubject(space: string, runId: string): string {
   return `${spacePrefix(space)}.wfj.${assertIdToken(runId, "runId")}`;

@@ -47,10 +47,11 @@ export interface RunMigrationSpecValue {
   /**
    * The program hash the run was on, as the CALLER states it.
    *
-   * Optional, and the reason is a gap rather than a preference: §17 delta 2 declares a program hash
-   * on the run record and `RunSpecValue` deliberately never invented one, so nothing here can VERIFY
-   * this. Recorded as the caller's claim when supplied and absent when not — an unverifiable field
-   * labelled as such beats one this file computes from a source it was never given.
+   * Optional, and the reason is a gap rather than a preference: a program-hash pin on the run
+   * record is declared and unbuilt, and `RunSpecValue` deliberately never invented one, so nothing
+   * here can VERIFY this. Recorded as the caller's claim when supplied and absent when not — an
+   * unverifiable field labelled as such beats one this file computes from a source it was never
+   * given.
    */
   readonly fromHash?: string;
   /** The hash of the source the run is moving TO. Computed from that source, so not a claim. */

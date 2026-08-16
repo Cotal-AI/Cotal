@@ -7,7 +7,7 @@
  * deleted. Run EDITED source over the same journal and the identical short-circuit becomes a
  * defect: every entry beneath the scope is accounted for, so an effect the new source no longer
  * reaches never appears in `orphans()`, and a resolved human checkpoint inside the WINNING branch
- * disappears with L5004 never firing (design §8.4).
+ * disappears with L5004 never firing.
  *
  * The whole suite is one A/B on ONE journal: the same edited source walked with `migration: false`
  * and with `migration: true`. Anything that only asserted the migration side would pass against an
@@ -174,7 +174,7 @@ await sleep("1s", { name: "after-race" });
     !raceOrphans.some((k) => losers.some((b) => k.includes(`/b:${b}/`))), JSON.stringify({ losers, raceOrphans }));
   ok("nothing at all is orphaned when the source did not change", raceOrphans.length === 0, raceOrphans);
 
-  // An edit INSIDE the loser used to be invisible, which was the contract until §7.2's
+  // An edit INSIDE the loser used to be invisible, which was the contract until the entry's
   // `branchDigest` landed — read the note below before treating this pair as the proof of either.
   const DURATION: Record<string, string> = { x: "1s", y: "2s" };
   const loser = losers[0] as string;
@@ -238,11 +238,11 @@ await sleep("1s", { name: "after-race" });
       overWinner.message.includes(`/race:pick#0/b:${winner}/sleep:${winner}-work#0`),
     overWinner?.message?.slice(0, 160));
 
-  // AND ON THE RESUME PATH TOO, which is not the design's letter — §8.5 puts the comparison in the
-  // migrate walk — but is the same guard on the same field, and a resume is where the edit is most
-  // silent: the run record carries no program hash (§17 delta 2), so nothing upstream refused the
-  // edited source before it got here, and a settled race is delivered from its entry without
-  // entering an arm. One string comparison, and it never fires on source that did not change.
+  // AND ON THE RESUME PATH TOO, which is wider than the specified placement — the comparison in the
+  // migrate walk only — but is the same guard on the same field, and a resume is where the edit is
+  // most silent: the run record carries no program hash, so nothing upstream refused the edited
+  // source before it got here, and a settled race is delivered from its entry without entering an
+  // arm. One string comparison, and it never fires on source that did not change.
   const rjResume = new Journal({ run: "r-race", entries: rj.entries(), readOnly: true });
   const resumed = await run(EDITED_LOSER, {
     runId: "r-race", handler: checkHandler(10_000_000), journal: rjResume, migration: false,

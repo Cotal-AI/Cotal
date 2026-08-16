@@ -203,7 +203,7 @@ log(votes.a.status);
 // four effects performed six across two activations and never faulted. Two individually correct
 // decisions composed into it — instance fields at zero, and replayed effects deliberately not
 // counted, which is right because a replay performs nothing. What was missing is that the journal
-// records every dispatch, so the count IS recoverable, and §11 calls L4009 a RUN ceiling.
+// records every dispatch, so the count IS recoverable, and L4009 is a RUN ceiling.
 //
 // This is the exact reproduction that found it: pin four, release after three, resume.
 {
@@ -252,8 +252,8 @@ log(votes.a.status);
 // ---- 5) the step budget is NOT the same, and says so -----------------------------------------
 //
 // Steps are not recorded, so nothing can recover a count across an activation and the budget is
-// genuinely per-walk. The two pins sit together in §7.6 and the next reader will assume symmetry,
-// so the message is where the asymmetry has to be stated.
+// genuinely per-walk. The two pins sit together on the run record and the next reader will assume
+// symmetry, so the message is where the asymmetry has to be stated.
 {
   let caught: unknown;
   try {

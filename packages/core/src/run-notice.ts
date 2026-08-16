@@ -3,7 +3,7 @@
  *
  * **A record and not a channel post.** `notify` is the only primitive that moves program-authored
  * bytes toward an agent's context, and a post would put the program into the conversation as a
- * participant — the one thing the design's first non-negotiable forbids. So a notice is filed here,
+ * participant — the one thing this plane's first non-negotiable forbids. So a notice is filed here,
  * addressed to one agent, and rendered as a fixed key→value table ahead of that agent's next turn.
  *
  * **Keyed by a DERIVED addressee id.** An agent's name is dotted and a dot is the records-key
@@ -14,7 +14,7 @@
  * **The spec is create-only; the status is the consumption.** A notice is something the program
  * decided, so its content is immutable — a retry after a crash re-derives the same id and lands on
  * its own record rather than filing a second one. Whether it has been CONSUMED is a fact somebody
- * else establishes later, which is why it lives in the status half: §8's migrate rule refuses to
+ * else establishes later, which is why it lives in the status half: the migrate rule refuses to
  * move a run whose notice has not yet been consumed by its addressee's next turn, and that rule
  * needs something to read.
  */
@@ -222,7 +222,7 @@ export async function listRunNotices(
 /**
  * Every notice filed on one RUN, whoever it was addressed to, oldest first.
  *
- * The migrate rule (§8.4) asks a question the journal cannot answer on its own: a `notify` entry
+ * The migrate rule asks a question the journal cannot answer on its own: a `notify` entry
  * records an input HASH, not the agents it addressed, so "has this orphaned notify been consumed?"
  * cannot be asked per addressee. It is asked per RUN, and each notice's own `step` says which entry
  * it came from — which is why the step is in the value rather than only in the key.

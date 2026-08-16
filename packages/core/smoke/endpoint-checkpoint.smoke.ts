@@ -504,7 +504,7 @@ try {
     await drainAndArm(1);
   }
 
-  // ── the ANSWER the settlement accepted (design §5.5 delta 1, §17 delta 4b) ──
+  // ── the ANSWER the settlement accepted ──
   //
   // The payload of an answer lives in its own record; what the settle fact adds is the NAME of the
   // one it took. Every resolver of a workflow checkpoint presents as the run driver, so without

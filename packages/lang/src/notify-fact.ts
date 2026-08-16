@@ -4,7 +4,7 @@
  * The validator checks a fact written as a literal, exactly, and its own comment has always said
  * the other half out loud: *a computed one is checked at the effect boundary by the same rules*.
  * This is that half. It matters because the computed case is the one the bound exists for —
- * §5.10's rule is that no interpolation hook may launder a turn result's free text into another
+ * The rule is that no interpolation hook may launder a turn result's free text into another
  * agent's prompt, and a static check cannot see a string that does not exist until the run
  * produces it. Over-cap is an ERROR, never a truncation: silently shortening prose would make the
  * program's intent unrecoverable while still delivering a message.

@@ -189,7 +189,7 @@ await sleep("2h", { name: "second" });
 
 // ── 4) a program cannot CATCH the loss of its own journal ────────────────────────────────────
 //
-// The worst shape this lane can produce, and it was live: an ordinary `try { await sleep() } catch`
+// The worst shape this seam can produce, and it was live: an ordinary `try { await sleep() } catch`
 // swallowed the journal's refusal, the program went on to perform two more effects against the
 // world, and the run returned normally — with nothing recorded from the refusal onward, so a resume
 // would perform them all again. A cancellation was already uncatchable for the same reason. A run

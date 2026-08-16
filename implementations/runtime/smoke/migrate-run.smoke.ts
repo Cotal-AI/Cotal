@@ -3,17 +3,17 @@
  *
  * The language proves the WALK (`pnpm smoke:lang-migrate`): that a settled scope is entered rather
  * than consumed, so an effect the edit removed actually reaches `orphans()`. This suite proves what
- * is done with what the walk found — §8.4's table — and the interesting rows are the refusals. A
- * migration that silently dropped a live agent, an open conclave, an undelivered notice, or a
+ * is done with what the walk found — the orphan table — and the interesting rows are the refusals.
+ * A migration that silently dropped a live agent, an open conclave, an undelivered notice, or a
  * decision a person actually made would be an evidence-carrying system discarding evidence, and
  * every one of those failures is invisible in the artifact afterwards.
  *
- * **Journals are RECORDED by the simulator and CHECKED by the dry walk**, which is the honest shape:
- * the check reads entries, and the simulator is the only thing in this tree that can produce a
- * journal containing a spawn or a turn (no durable run reaches them until Lane A lands — the gap
- * slice (e) named). Where a cell needs a store fact the simulator cannot file — the notice
- * consumption — it is written through the same core writer the mesh handler uses, and the cell says
- * so rather than implying the handler filed it.
+ * **Journals are RECORDED by the simulator and CHECKED by the dry walk**, which is the honest
+ * shape: the check reads entries, and the simulator is the only thing in this tree that can produce
+ * a journal containing a spawn or a turn (no durable run reaches them until the durable-action
+ * surface lands — the gap the seam names). Where a cell needs a store fact the simulator cannot
+ * file — the notice consumption — it is written through the same core writer the mesh handler uses,
+ * and the cell says so rather than implying the handler filed it.
  *
  * Run: pnpm smoke:runtime-migrate   (needs nats-server on PATH)
  */
@@ -132,7 +132,7 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
 {
   const RUN = "r-approve";
   // `onExpiry: "proceed"` so ONE source covers both recordings: an expired checkpoint under the
-  // default would fail the recorded run, and the disposition is not hashed (§5.12) so it changes
+  // default would fail the recorded run, and the disposition is not hashed, so it changes
   // nothing about the edit under test.
   const LIVE = `const a = await checkpoint("approve", "ship it?", { timeout: "10m", onExpiry: "proceed" });\nawait sleep("1s", { name: "after" });`;
   const EDITED = `await sleep("1s", { name: "after" });`;
@@ -176,9 +176,9 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   c("dropping a spawn is refused with L5003", rowFor(r, "spawn:dev")?.code === "L5003", rowFor(r, "spawn:dev"));
   c("and the migration is not admissible", r.admissible === false, r);
 
-  // §8.4 says --adopt/--release clear it. Neither can be honoured here: there is no durable spawn to
-  // adopt or release, so an override that LOOKED accepted would be the fake success this lane
-  // refuses. It stays a refusal and says why.
+  // The specified repair is --adopt/--release. Neither can be honoured here: there is no durable
+  // spawn to adopt or release, so an override that LOOKED accepted would be the fake success this
+  // lane refuses. It stays a refusal and says why.
   const adopted = await check(RUN, entries, EDITED, { adopt: ["dev"] });
   c("--adopt does not clear it on this host", adopted.admissible === false, adopted);
   c("and the reason names the substrate rather than the caller's mistake",
@@ -320,8 +320,8 @@ const checkOrThrew = async (...args: Parameters<typeof check>) =>
   // Cheap, and it catches the easy half of the mistake this table already made once. It does NOT
   // catch the hard half: three of these rows first shipped as L5005/L5006/L5007, which ARE in the
   // catalog and mean a pending effect, an oversized result and a lost lease. A membership check
-  // reads green on a code that means something else entirely — so the rule is procedural and lives
-  // in the plan: allocate from the catalog file, never from memory.
+  // reads green on a code that means something else entirely — so the rule is procedural: allocate
+  // from the catalog file, never from memory.
   const RUN = "r-codes";
   const LIVE = `const dev = await spawn("dev", { name: "dev" });\n`
     + `const a = await checkpoint("approve", "ship?", { timeout: "10m", onExpiry: "proceed" });\n`

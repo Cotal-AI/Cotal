@@ -19,7 +19,7 @@
  * than it is is worse than none: it is written at each ACTIVATION, so it detects truncation back
  * past the last takeover. Steps appended since that activation are not covered — writing the record
  * per append would double every step's cost, and the journal's own ordinal chain already covers
- * every interior loss. See `plans/runtime-v1.md`, round 10.
+ * every interior loss.
  */
 import type { KV } from "@nats-io/kv";
 import {

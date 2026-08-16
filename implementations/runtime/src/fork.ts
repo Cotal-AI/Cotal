@@ -1,5 +1,5 @@
 /**
- * Fork a run from a named step: the §8.5 cut, and the two things a fork must not re-decide.
+ * Fork a run from a named step: the fork cut, and the two things a fork must not re-decide.
  *
  * `fork(runId, fromStepKey)` is the repair verb. It does not roll the parent back — the parent is
  * untouched — it starts a NEW run that owns the parent's history up to a named step and re-runs from
@@ -22,15 +22,16 @@
  * derivation begins at the frontier, which is what "fork" means.
  *
  * What this file does NOT do, named rather than implied:
- *   - It does not respawn agents. §8.5's `onFork` mints a fresh agent at the frontier, and `spawn`
- *     rides the durable-action machinery this host does not have, so a cut containing a spawn is
- *     REFUSED (L5019) rather than copied and hoped about.
- *   - It does not cut worktree branches (§9). There is no worktree plane in this tree; a caller that
+ *   - It does not respawn agents. `onFork` is specified to mint a fresh agent at the frontier, and
+ *     `spawn` rides the durable-action machinery this host does not have, so a cut containing a
+ *     spawn is REFUSED (L5019) rather than copied and hoped about.
+ *   - It does not cut worktree branches. There is no worktree plane in this tree; a caller that
  *     asks for one is refused rather than told a branch exists.
- *   - It does not record LINEAGE. The child's run record cannot say it is a fork of anything: a run's
- *     spec has no such field, and inventing one is a §17 scope change of the kind the `migration`
- *     record went through a ruling for. `commitFork` reports `lineageRecorded: false` so the gap is
- *     something a caller reads rather than something a reader has to notice.
+ *   - It does not record LINEAGE. The child's run record cannot say it is a fork of anything: a
+ *     run's spec has no such field, and inventing one changes the run record's shape — the kind of
+ *     change the `migration` record was raised for a decision on rather than made here.
+ *     `commitFork` reports `lineageRecorded: false` so the gap is something a caller reads rather
+ *     than something a reader has to notice.
  */
 import type { KV } from "@nats-io/kv";
 import { createRunSpec, readRunRecord } from "@cotal-ai/core";
@@ -55,7 +56,8 @@ import {
 /** The journal kinds that open a scope, i.e. whose entry can ENCLOSE a cut point. */
 const SCOPE_KINDS = new Set<string>(["parallel", "race", "fanOut", "conclave"]);
 
-/** One reason a fork was refused, carrying the code a reader repairs against (§11). */
+/** One reason a fork was refused, carrying the code a reader repairs against — the `L` catalogue
+ *  in `@cotal-ai/lang`. */
 export interface ForkRefusal {
   readonly code: string;
   readonly step?: string;
@@ -92,12 +94,13 @@ export interface ForkRequest {
   readonly now: () => number;
   readonly file?: string;
   /**
-   * §8.5's `newProgramHash`. Accepted only to be REFUSED: the run record carries no program hash to
-   * pin (§17 delta 2, deliberately not invented in slice (b2)), so a fork "pinned to" one would
-   * record nothing at all and the caller would have been told it happened.
+   * The `newProgramHash` fork option. Accepted only to be REFUSED: the run record carries no
+   * program hash to pin — a declared but unbuilt capability this branch does not invent — so a fork
+   * "pinned to" one would record nothing at all and the caller would have been told it happened.
    */
   readonly newProgramHash?: string;
-  /** §8.5 step 4. There is no worktree plane in this tree, so asking for one is refused. */
+  /** Worktree branches for the child. There is no worktree plane in this tree, so asking for one
+   *  is refused. */
   readonly worktreeBranches?: boolean;
 }
 
@@ -155,7 +158,7 @@ class ForkFrontier extends Error {
 }
 
 /**
- * Compute §8.5's cut. Reads; never writes.
+ * Compute the fork cut. Reads; never writes.
  *
  * The plan is the product whether or not the fork is admissible — a refused fork owes the caller the
  * code and the step, because that is what makes the next attempt a repair rather than a guess.
@@ -166,13 +169,13 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
   if (req.newProgramHash !== undefined) {
     refusals.push({
       code: "L5002",
-      why: "a fork onto a new program would have to pin its hash on the child's run record, and a run's spec carries no program hash (§17 delta 2 is declared and unbuilt). Refused rather than accepted and dropped.",
+      why: "a fork onto a new program would have to pin its hash on the child's run record, and a run's spec carries no program hash — that pin is declared and unbuilt. Refused rather than accepted and dropped.",
     });
   }
   if (req.worktreeBranches === true) {
     refusals.push({
       code: "L5019",
-      why: "§8.5 gives a fork its own worktree branches cut from the parent's branch head, and there is no worktree plane in this tree to cut one from",
+      why: "a fork is specified to get its own worktree branches cut from the parent's branch head, and there is no worktree plane in this tree to cut one from",
     });
   }
 
@@ -309,10 +312,11 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
         })
       : [];
 
-  // §8.5 step 3, at plan time rather than at commit time. `onFork: "respawn"` mints a fresh agent at
-  // the frontier and `"adopt"` shares the parent's; both name a durable agent handle, and `spawn`
-  // rides the durable-action machinery this host does not have. Copying the prefix anyway would
-  // produce a child that owns turns taken by an agent it can neither address nor replace.
+  // The respawn decision, at plan time rather than at commit time. `onFork: "respawn"` mints a
+  // fresh agent at the frontier and `"adopt"` shares the parent's; both name a durable agent
+  // handle, and `spawn` rides the durable-action machinery this host does not have. Copying the
+  // prefix anyway would produce a child that owns turns taken by an agent it can neither address
+  // nor replace.
   for (const e of cut) {
     if (e.kind !== "spawn") continue;
     refusals.push({
@@ -341,10 +345,10 @@ export interface ForkCommitResult {
   /**
    * Always false, and reported rather than omitted.
    *
-   * The child's record cannot say it is a fork of anything: `RunSpecValue` has no lineage field, and
-   * adding one — or a `fork` record kind beside `migration` — is a §17 scope change that belongs to a
-   * ruling rather than to this file. A caller that needs the lineage has it in the {@link ForkPlan}
-   * it passed; nothing durable carries it yet.
+   * The child's record cannot say it is a fork of anything: `RunSpecValue` has no lineage field,
+   * and adding one — or a `fork` record kind beside `migration` — changes the run record's shape,
+   * which is a decision to raise rather than one to make in this file. A caller that needs the
+   * lineage has it in the {@link ForkPlan} it passed; nothing durable carries it yet.
    */
   readonly lineageRecorded: false;
 }

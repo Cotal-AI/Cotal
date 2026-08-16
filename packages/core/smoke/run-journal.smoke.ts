@@ -541,7 +541,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 
 // ── 5j) a retired run is not a new run, and only the caller can say so ───────────────────────
 //
-// Purging a run's subject is the retirement §7.6 asks the subject range for, and it leaves a
+// Purging a run's subject is the retirement the subject range exists for, and it leaves a
 // journal that reads back exactly like a run that never started: zero records. Measured before
 // this, a purged run activated again as if new, at `replayedTo: 0`. The stream cannot answer it —
 // the record that says a run EXISTS is not in the stream — so the activation states which it means.
@@ -904,7 +904,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 
 // ── 7) the head cannot come from STREAM.INFO, which is why it comes from the replay ───────────
 //
-// The plan once said the driver would read the run subject's current sequence from `STREAM.INFO`.
+// The obvious way to get a run subject's current sequence is to read it from `STREAM.INFO`.
 // It cannot: `last_seq` is stream-WIDE and `subjects_filter` returns per-subject message COUNTS.
 // This is the measurement, kept executable, because the wrong version of it is entirely plausible.
 {
@@ -950,12 +950,13 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 
 // ── 10) the deviation's evidence: a per-entry subject COULD be fenced ─────────────────────────
 //
-// Kept executable because the plan states this as a CHOICE, and a choice justified by a claim
-// nobody re-runs decays into folklore. `Nats-Expected-Last-Subject-Sequence-Subject` evaluates the
-// expectation against a wildcard comparator, so `wfj.<runId>.<entryId>` could carry a run-wide
-// fence on this broker floor. What it also shows is the failure mode: WITHOUT the comparator, the
-// same publish is compared against its own fresh subject, is therefore a create at 0, and always
-// lands. The fence disappears silently, which is why the run subject carries it instead.
+// Kept executable because the one-subject-per-run shape is a CHOICE, and a choice justified by a
+// claim nobody re-runs decays into folklore. `Nats-Expected-Last-Subject-Sequence-Subject`
+// evaluates the expectation against a wildcard comparator, so `wfj.<runId>.<entryId>` could carry a
+// run-wide fence on this broker floor. What it also shows is the failure mode: WITHOUT the
+// comparator, the same publish is compared against its own fresh subject, is therefore a create at
+// 0, and always lands. The fence disappears silently, which is why the run subject carries it
+// instead.
 {
   const sub = (e: string) => `cotal.${SPACE}.wfjprobe.r.${e}`;
   await jsm.streams.add({ name: "WFJPROBE", subjects: [`cotal.${SPACE}.wfjprobe.>`] });

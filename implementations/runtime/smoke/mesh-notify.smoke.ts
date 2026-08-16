@@ -7,7 +7,7 @@
  *
  * 1. **The record.** One notice per addressee, create-only, idempotent under the retry a crash
  *    forces, keyed by a DERIVED addressee id because an agent name is dotted and a dot is the key
- *    separator. Consumption is a separate fact, written once, which is what §8's migrate rule reads.
+ *    separator. Consumption is a separate fact, written once, which is what the migrate rule reads.
  * 2. **The render.** A fixed key→value table. The load-bearing cell is the last one: a record
  *    carrying a line break in a detail value — which the effect boundary excludes, and which a
  *    foreign or corrupted writer could still file — makes the renderer REFUSE rather than emit a

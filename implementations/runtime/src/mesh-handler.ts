@@ -52,13 +52,13 @@ import {
 /** Who this handler acts as, and where. All of it is the DRIVER's identity, not the program's. */
 export interface MeshHandlerBinding {
   readonly space: string;
-  /** The endpoint hosting the driver — the manager daemon (§10). */
+  /** The endpoint hosting the driver — the manager daemon. */
   readonly endpoint: string;
   /**
    * WHICH RUN this handler performs for.
    *
-   * It is here rather than on `EffectContext` because the design's effect context deliberately
-   * carries the step's identity and nothing about the run (§6): `requestId` already folds the run
+   * It is here rather than on `EffectContext` because the effect context deliberately
+   * carries the step's identity and nothing about the run: `requestId` already folds the run
    * in, and a handler that needed to name the run for recovery would be recovering by something
    * other than the recorded identity. A NOTICE is keyed by its run, though — it is filed onto the
    * run — so the run is part of what this handler is bound to. A drive is already shaped that way:
@@ -180,7 +180,7 @@ export class MeshHandler {
    *
    * It returns the RAW outcome and never the program's result. Whether an expiry throws or returns
    * is `onExpiry`, which is computed from today's source on the live path and the replay path
-   * alike; deciding it here would bake one answer into the journal (design §5.5, §6).
+   * alike; deciding it here would bake one answer into the journal.
    */
   async checkpoint(req: CheckpointRequest, ctx: EffectContext): Promise<CheckpointRaw> {
     const ref: CheckpointRef = { endpoint: this.binding.endpoint, token: ctx.requestId };
@@ -227,7 +227,7 @@ export class MeshHandler {
    * The TIMEOUT rides the checkpoint plane, which makes it durable too: it is minted once with an
    * absolute deadline, so a wait that spans a crash resumes against the ORIGINAL deadline rather
    * than restarting the clock — a resumed 20-minute wait that had 30 seconds left has 30 seconds
-   * left. A timeout resolves `null` and never throws (design §5.7, D5: `??` is `otherwise`).
+   * left. A timeout resolves `null` and never throws: `??` is `otherwise`.
    *
    * Two of the four event kinds are NOT here. `replied(agent)` and `down(agent)` are addressed to an
    * agent HANDLE, which comes from `spawn` — and `down` additionally needs `monitor` to have
@@ -315,7 +315,7 @@ export class MeshHandler {
    * `notify` writes one bounded decision record per addressee, onto the run.
    *
    * NOT a channel post, and that is the whole point of the primitive: a post would put the program
-   * into the conversation as a participant, where the design says conversation is the data plane and
+   * into the conversation as a participant, where conversation is the data plane and
    * the program is the control plane. A notice is data filed on the run and rendered ahead of the
    * addressee's next turn.
    *
@@ -359,9 +359,9 @@ export class MeshHandler {
   //
   // THE REFUSAL IS TERMINAL FOR THE RUN THAT HITS IT, and the mechanism is worth stating exactly
   // rather than assumed. The interpreter settles the entry `failed` with the code the handler
-  // raised, so the step is recorded as attempted-and-failed and a resume replays that failure —
-  // the run does not heal the day Lane A lands. It is recorded as L5016 rather than a generic
-  // handler fault so the journal at least says which of the two happened.
+  // raised, so the step is recorded as attempted-and-failed and a resume replays that failure — the
+  // run does not heal the day the durable-action surface lands. It is recorded as L5016 rather than
+  // a generic handler fault so the journal at least says which of the two happened.
   //
   // Whether it SHOULD be terminal is a live question and not this file's to settle: an effect a
   // host cannot perform is closer to a release than to a failure, and leaving the entry pending

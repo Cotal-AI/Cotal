@@ -68,7 +68,7 @@ export interface JournalEntry {
    */
   readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
   /**
-   * §7.2's `branchDigest`: what the arms this scope did NOT walk looked like when it ran.
+   * `branchDigest`: what the arms this scope did NOT walk looked like when it ran.
    *
    * A settled `race` is replayed from its own entry, and a migration walks the RECORDED WINNING
    * branch alone — so an edit inside a LOSING arm is invisible to every check the walk performs.
@@ -76,7 +76,7 @@ export interface JournalEntry {
    * plan byte-identical to the plan for source that was never edited, and the child ran silently.
    * This binds the losers' bodies into the entry so that edit diverges directly.
    *
-   * Optional by the design and optional here: it is written only where the branch bodies are
+   * Optional in the entry shape and optional here: it is written only where the branch bodies are
    * literals in the source the interpreter is holding. A `race` over a variable has no branch node
    * to digest, and inventing one is worse than carrying nothing — hence "compare it IF the entry
    * carries one" rather than "require it".
@@ -482,7 +482,7 @@ export class Journal {
   /**
    * How many EFFECTS this run has already dispatched, counted from what is recorded.
    *
-   * The effect ceiling is a RUN bound (§11 names L4009 "Run effect ceiling reached") and the
+   * The effect ceiling is a RUN bound (L4009, "Run effect ceiling reached") and the
    * interpreter's counter is per-instance, so without this a run got a fresh allowance at every
    * activation and a runaway loop that crashed periodically could never reach the ceiling. The
    * journal is the only thing that survives an activation, and it already holds the answer.

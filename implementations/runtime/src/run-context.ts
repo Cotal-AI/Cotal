@@ -4,7 +4,7 @@
  * **A fixed key→value table, never a sentence.** The property this buys is the whole reason
  * `notify` exists in its bounded form: a notice reads as DATA in the receiving agent's context and
  * cannot be mistaken for an instruction from the workflow. Prose would be an instruction whatever
- * the design intended, because an agent reading prose in its prompt has no way to tell who wrote it.
+ * intended, because an agent reading prose in its prompt has no way to tell who wrote it.
  *
  * Eight short scalars in a labelled table is not enough room to write an instruction. That is the
  * bound's purpose rather than a side effect of it, and it is enforced at the effect boundary

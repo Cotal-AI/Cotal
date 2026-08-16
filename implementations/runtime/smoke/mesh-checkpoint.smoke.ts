@@ -8,7 +8,7 @@
  * resolvers answering at once must therefore end with the program reading the winner's value and
  * not the last one written, and that property is exactly what the `(token, answerId)` key and the
  * `answerId` on the settle fact exist to provide. A suite that only ever resolved a checkpoint once
- * would pass with the design's rejected first draft.
+ * would pass with the rejected first draft of this shape.
  *
  * Everything else here is about honesty at the edges: an expiry returns an expiry rather than an
  * empty answer, a late resolver is told it was late rather than told it succeeded, and a resume
@@ -167,7 +167,7 @@ const tokenOf = async (runId: string): Promise<string | undefined> => {
 
   const r = await resolveCheckpoint(deps, { runId: "cp-1", stepKey: STEP, by: "david", value: { ship: true }, now: NOW + 1_000 });
   c("the resolve settles the checkpoint as RESUMED", r.settle.settle === "resumed", r.settle.settle);
-  c("and the settle NAMES the answer it accepted (design §17 delta 4b)", r.settle.answerId === r.answerId, `${r.settle.answerId} vs ${r.answerId}`);
+  c("and the settle NAMES the answer it accepted", r.settle.answerId === r.answerId, `${r.settle.answerId} vs ${r.answerId}`);
 
   const filed = await readCheckpointAnswer(kv, EP, r.token, r.answerId);
   c("the answer itself is a record, keyed (token, answerId), carrying the value and the answerer",
@@ -180,7 +180,7 @@ const tokenOf = async (runId: string): Promise<string | undefined> => {
     : undefined;
   // The journal holds the RAW outcome, not the program's `CheckpointResult`: whether an expiry
   // throws or returns is `onExpiry`, recomputed from today's source on every replay, and recording
-  // the policy's answer would bake one reading of it into the record (design §5.5, §6).
+  // the policy's answer would bake one reading of it into the record.
   const rec = entry?.result as { outcome?: string; value?: unknown; by?: string; answerId?: string } | undefined;
   c("and the program's checkpoint resolved with the value that was answered",
     rec?.outcome === "resolved" && JSON.stringify(rec?.value) === JSON.stringify({ ship: true }), JSON.stringify(rec));

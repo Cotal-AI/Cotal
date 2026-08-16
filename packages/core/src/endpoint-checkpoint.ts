@@ -273,7 +273,7 @@ export interface CheckpointSettleFact {
   generation: number;
   holder?: { id: string; lifecycleUid: string };
   /**
-   * The ANSWER this settlement accepted (design §5.5 delta 1, §17 delta 4b).
+   * The ANSWER this settlement accepted.
    *
    * The payload of an answer — its value, its artifact — deliberately does NOT live here: these
    * keys are closed and this fact is the small arbiter of a race. But the arbiter has to NAME what

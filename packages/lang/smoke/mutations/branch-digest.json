@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/migrate.smoke.ts",
-  "guard": "§7.2's `branchDigest`: the arms a settled race is never walked into",
+  "guard": "the entry's `branchDigest`: the arms a settled race is never walked into",
   "command": "pnpm smoke:lang-migrate",
   "completionMarker": "migrate.smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/lang/smoke/mutations/branch-digest.json",
@@ -61,7 +61,7 @@
       "replace": "      if (this.options.migration === true && entry.branchDigest !== undefined && branchDigest !== undefined) {",
       "expectRed": "a RESUME of the same edited source diverges as well, rather than replaying past it",
       "cell": "a RESUME of the same edited source diverges as well, rather than replaying past it",
-      "note": "§8.5 puts the comparison in the migrate walk, so this mutation restores the design's LETTER and is still a defect: the run record carries no program hash (§17 delta 2), so nothing upstream refused edited source before a resume got here, and a settled race is delivered from its entry without entering an arm. The wider placement is deliberate and is graded rather than assumed."
+      "note": "The specified placement is the migrate walk only, so this mutation restores the narrower rule and is still a defect: the run record carries no program hash, so nothing upstream refused edited source before a resume got here, and a settled race is delivered from its entry without entering an arm. The wider placement is deliberate and is graded rather than assumed."
     }
   ],
   "unkillable": [

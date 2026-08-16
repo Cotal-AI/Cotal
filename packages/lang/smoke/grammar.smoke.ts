@@ -287,14 +287,14 @@ accepts(
 
 // ---- 5e) a branch may not write a binding it captured (L2032) ---------------------------------
 
-// This is the program the design doc found by EXECUTING rather than by reading, and it is the
+// This is the program that was found by EXECUTING rather than by reading, and it is the
 // worst-behaved one in the language: live, `a` finishes last so `winner` is "a" and the run takes
 // `a-won`; on resume the journalled sleeps return instantly, the assignments run in launch order
 // instead of completion order, `winner` is "b", and the resumed run PERFORMS `b-won`. A replay that
 // abandons the recorded path and does new work, with no divergence raised, because no effect's
 // inputs changed. Freeze-on-share cannot see it: nothing crosses an effect boundary.
 rejects(
-  "the design's own captured-write program is refused",
+  "the captured-write program is refused",
   "L2032",
   'let winner = "none";\nawait parallel({\n  a: async () => { await sleep("5s", { name: "a" }); winner = "a"; },\n  b: async () => { await sleep("1s", { name: "b" }); winner = "b"; },\n}, { name: "p" });\nif (winner === "a") { await sleep("1s", { name: "a-won" }); } else { await sleep("1s", { name: "b-won" }); }',
 );
@@ -318,7 +318,7 @@ rejects(
   "L2032",
   'let winner = "none";\nawait parallel({ a: async () => { if (true) { winner = "a"; } } }, { name: "p" });',
 );
-// A BRANCH IS A BRANCH HOWEVER IT IS SPELLED. This is the design's own program with the arrows
+// A BRANCH IS A BRANCH HOWEVER IT IS SPELLED. This is the same program with the arrows
 // replaced by named declarations, and the first version of the rule accepted it: `branchThunks`
 // looked only at function nodes written at the call site, so `parallel({ a, b })` had no branches
 // to check at all. Found by review, not by the suite, which is why both spellings are here now.

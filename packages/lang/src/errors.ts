@@ -112,11 +112,11 @@ export const CATALOG = {
   // because the alternative — a generic handler fault — records "the handler broke" for a step
   // nothing ever attempted, and a reader of the journal cannot tell the two apart afterwards.
   L5016: "Effect not durable on this host",
-  // §8.5's three refusals, allocated from THIS FILE rather than from memory — the rule the orphan
-  // table's L5005/L5006/L5007 collision bought. Note what is NOT here: a fork asked to pin a new
-  // program hash reuses L5002, which already says exactly that and had no user. A synonym would have
-  // been a second name for one fact, which is the same defect as a reused number, wearing a nicer
-  // face.
+  // The fork's three refusals, allocated from THIS FILE rather than from memory — the rule the
+  // orphan table's L5005/L5006/L5007 collision bought. Note what is NOT here: a fork asked to pin a
+  // new program hash reuses L5002, which already says exactly that and had no user. A synonym would
+  // have been a second name for one fact, which is the same defect as a reused number, wearing a
+  // nicer face.
   L5017: "Fork cut step is not in the journal",
   L5018: "Fork cut was never reached",
   L5020: "A fork cut lies inside a scope whose outcome was already decided",
@@ -256,7 +256,7 @@ export class LangErrors extends Error {
 }
 
 /**
- * A refusal raised while a program RUNS, carrying its §11 code as a field so a caller can branch on
+ * A refusal raised while a program RUNS, carrying its `L` code as a field so a caller can branch on
  * it rather than parse prose.
  *
  * It lives here rather than in `interpret.ts` because `keys.ts` raises one too — a computed step

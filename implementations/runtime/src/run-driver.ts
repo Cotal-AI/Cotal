@@ -102,7 +102,7 @@ export class PauseToken {
 export interface DriveRequest {
   readonly space: string;
   /**
-   * The endpoint HOSTING this driver — the manager daemon (design §10). It leads the run record's
+   * The endpoint HOSTING this driver — the manager daemon. It leads the run record's
    * key, so a retirement drain and a per-endpoint enumeration both work by prefix.
    */
   readonly endpoint: string;
