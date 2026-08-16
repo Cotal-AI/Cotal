@@ -1,7 +1,7 @@
 {
   "guard": "the completion check runs ahead of EVERY verdict, not only ahead of the red one",
   "command": "node scripts/mutation-proof.selftest.mjs",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "completionMarker": "an absolute --config path is read where it is",
   "mutations": [
     {
@@ -36,10 +36,50 @@
     {
       "name": "the failure vocabulary is widened until it fires on a clean run",
       "file": "scripts/mutation-proof.mjs",
-      "find": "const FAILURE_EVIDENCE = \"(?:^|[\\\\s:])(?:✗|FAIL\\\\b|FAILED\\\\b|AssertionError)|\\\\b[1-9]\\\\d* failed\\\\b\";",
+      "find": "const FAILURE_EVIDENCE = \"(?:^|[\\\\s:])(?:\u2717|FAIL\\\\b|FAILED\\\\b|AssertionError)|\\\\b[1-9]\\\\d* failed\\\\b\";",
       "replace": "const FAILURE_EVIDENCE = \"failed\";",
       "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
       "note": "A pattern matching the word 'failed' anywhere fires on the summary line of a CLEAN run ('0 failed'), which turns every genuine survivor into a WRONG-RED. Narrowness is the whole design of this default."
+    },
+    {
+      "name": "the word boundary after FAIL is relaxed away",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "FAIL\\\\b|FAILED\\\\b",
+      "replace": "FAIL|FAILED\\\\b",
+      "expectRed": "the word boundary after FAIL is load-bearing: a cell LABEL containing `FAILING` is not a failure",
+      "cell": "the word boundary after FAIL is load-bearing: a cell LABEL containing `FAILING` is not a failure",
+      "note": "A real near-miss from a neighbouring lane, not an invented string: a passing cell whose LABEL says FAILING would become evidence that the suite failed, which turns a genuine SURVIVED into a WRONG-RED and hides the finding a kill set exists to produce.",
+      "completionMarker": "an absolute --config path is read where it is"
+    },
+    {
+      "name": "FAILED is matched case-insensitively",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "FAILED\\\\b|AssertionError",
+      "replace": "[Ff][Aa][Ii][Ll][Ee][Dd]\\\\b|AssertionError",
+      "expectRed": "the case sensitivity of FAILED is load-bearing: `a failed reply` in a label is not a failure",
+      "cell": "the case sensitivity of FAILED is load-bearing: `a failed reply` in a label is not a failure",
+      "note": "The other measured near-miss. Prose about a failed REPLY is ordinary suite vocabulary; the verdict word is the shouted one.",
+      "completionMarker": "an absolute --config path is read where it is"
+    },
+    {
+      "name": "the non-zero anchor on the failure count is dropped",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "\\\\b[1-9]\\\\d* failed\\\\b",
+      "replace": "\\\\b\\\\d* failed\\\\b",
+      "expectRed": "...and not on a clean summary, because `0 failed` is what a green run prints",
+      "cell": "...and not on a clean summary, because `0 failed` is what a green run prints",
+      "note": "`0 failed` is what every clean run of a counting suite prints, so without the anchor the grader reads a green summary as a failure and no counting suite can ever report SURVIVED.",
+      "completionMarker": "an absolute --config path is read where it is"
+    },
+    {
+      "name": "the vocabulary is WIDENED by a word these four strings do not contain",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "AssertionError)|",
+      "replace": "AssertionError|PANIC)|",
+      "expectRed": "...and it is EXACTLY the measured pattern, so a relaxation these strings miss still fails here",
+      "cell": "...and it is EXACTLY the measured pattern, so a relaxation these strings miss still fails here",
+      "note": "The reason the literal is pinned at all. This change is invisible to every behaviour cell above -- none of the four strings contains PANIC -- and it is still a guessed convention entering a grader that is only allowed to carry a measured one. Without the pin it survives.",
+      "completionMarker": "an absolute --config path is read where it is"
     }
   ]
 }

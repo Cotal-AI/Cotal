@@ -317,6 +317,47 @@ rmSync(dirname(outside), { recursive: true, force: true });
 rmSync(cfgPath);
 execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg-gone", { cwd: root });
 
+// 7j. THE FAILURE VOCABULARY IS PINNED AS A LITERAL, not merely exercised.
+//
+// The rule this cell exists for: a cross-suite grader MAY carry a content check if it MEASURES the
+// convention, and MAY NOT carry a guessed one. This pattern was measured — 19 suites, zero false
+// positives — but a measurement ages the moment someone relaxes the regex, and a loosened copy is a
+// guessed convention again wearing the measurement's credibility. So the literal itself is asserted.
+//
+// It is ONE RELAXATION from a false red, and the two near-misses below are real strings found in a
+// neighbouring lane's suites, not invented ones. They clear only because of a word boundary and a
+// case. Delete either and a passing cell's own LABEL becomes evidence that the suite failed — which
+// downgrades a genuine SURVIVED into a WRONG-RED and hides the finding a kill set exists to produce.
+{
+  const PINNED = "(?:^|[\\s:])(?:✗|FAIL\\b|FAILED\\b|AssertionError)|\\b[1-9]\\d* failed\\b";
+  const src = readFileSync(TOOL, "utf8");
+  const m = /^const FAILURE_EVIDENCE = "(.*)";$/m.exec(src);
+  check("the failure vocabulary is a single literal the self-test can find", m !== null);
+  // Through JSON.parse, because the file holds the SOURCE form (`\\s`) and the pattern is what that
+  // source means (`\s`). Comparing the two forms directly would fail on a correct file, which is the
+  // kind of check that gets deleted rather than fixed.
+  const literal = JSON.parse(`"${m[1]}"`);
+  const re = new RegExp(literal, "m");
+  const fires = (s) => re.test(s);
+
+  // BEHAVIOUR FIRST, THE LITERAL LAST, and the order is the point. This file stops at its first red,
+  // so whichever cell comes first is the one a relaxation gets named by. Put the pin first and every
+  // relaxation reports "the literal changed" — true, and useless. Put the behaviour first and the
+  // relaxation is named by the thing it broke, with the pin left as the backstop that catches a
+  // change these four strings happen not to distinguish.
+  check("it fires on the vocabulary it was measured over",
+    fires("  ✗ FAIL: the thing") && fires("FAILED\n") && fires("AssertionError: nope") && fires("3 failed"),
+    "one of the four real verdict shapes stopped matching");
+  check("...and not on a clean summary, because `0 failed` is what a green run prints",
+    !fires("migrate.smoke: 48 passed, 0 failed"));
+  check("the word boundary after FAIL is load-bearing: a cell LABEL containing `FAILING` is not a failure",
+    !fires("  ✓ IF THIS CELL IS FAILING BECAUSE YOU DELETED THE SWEEP, read the note above"));
+  check("the case sensitivity of FAILED is load-bearing: `a failed reply` in a label is not a failure",
+    !fires("  ✓ a failed reply with data is bad-request"));
+  check("...and it is EXACTLY the measured pattern, so a relaxation these strings miss still fails here",
+    literal === PINNED, { found: literal, pinned: PINNED });
+}
+
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });
