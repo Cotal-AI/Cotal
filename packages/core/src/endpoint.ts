@@ -1356,11 +1356,13 @@ export class CotalEndpoint extends EventEmitter {
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
-   *  resolve is describe-bound currency: when a DIFFERENT instance answers a later invoke
-   *  (`failed-precondition`, marked {@link respondedButUnbound}), the stale bind is dropped in every
-   *  case, and the call is re-issued ONCE against the current incarnation only for a command on the
-   *  {@link isRepeatSafeCommand} allowlist. Any other command surfaces the error instead: the request
-   *  was received and answered by a live instance, so a second attempt could duplicate its effect.
+   *  resolve is describe-bound currency: when an incarnation OTHER than the bound one answers a
+   *  later invoke (a different instance: `failed-precondition`; the same instance at a later epoch
+   *  after a same-root restart: `expired`; both marked {@link respondedButUnbound}), the stale bind
+   *  is dropped in every case, and the call is re-issued ONCE against the current incarnation only
+   *  for a command on the {@link isRepeatSafeCommand} allowlist. Any other command surfaces the
+   *  error instead: the request was received and answered by a live instance, so a second attempt
+   *  could duplicate its effect.
    *  Errors from the responder come back structurally on the attributed reply
    *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
@@ -1384,7 +1386,7 @@ export class CotalEndpoint extends EventEmitter {
       try {
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       } catch (e) {
-        if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
+        if (!(e instanceof EpEnvelopeError)) throw e;
         // DO NOT auto-retry a command that a responder already ANSWERED. This recovery was
         // written for one reading of `failed-precondition` — "the describe-bound incarnation is gone
         // (restart or supersede), so re-resolve and invoke the current one" — and on that reading a
@@ -1417,16 +1419,32 @@ export class CotalEndpoint extends EventEmitter {
         // read from a mutation. The allowlist is the honest stand-in until it can. The general fix
         // is a safety annotation on the command contract plus an effect-outcome in the reply; that
         // is a SPEC change and is not made here.
-        if (respondedButUnbound(e) && !isRepeatSafeCommand(endpoint, command)) {
-          // Surface it, but drop the stale bind FIRST. The bind that just failed names an
-          // incarnation a different live instance has answered for; on a long-lived client every
-          // later DELIBERATE call on this endpoint would otherwise reuse it, meet the same currency
-          // refusal, and never reach the live incarnation - permanently, on an endpoint with no
-          // repeat-safe command to heal it through. Dropping the bind is not a retry: nothing is
-          // re-issued here, and the next call is the caller's, made after it has verified.
+        //
+        // The gate is keyed on the MARKER, not on the error code, because the same fact has two
+        // producers. A DIFFERENT instance answering is `failed-precondition` (the describe-bound
+        // currency check). The SAME instance answering at a LATER EPOCH is `expired` (a same-root
+        // restart re-registers the same logical id with an advanced epoch), raised after the
+        // attributed reply in exactly the same way. Distsys review measured, on a real restart, that
+        // `expired` used to be rethrown untouched with the bind kept: every later deliberate call on
+        // a long-lived client reached the successor, may have applied its effect, came back
+        // `expired`, and stayed bound to the old epoch. Same rule for both.
+        if (respondedButUnbound(e)) {
+          // Drop the stale bind FIRST, whichever way this goes. The bind names an incarnation that
+          // is not the one answering; on a long-lived client every later DELIBERATE call on this
+          // endpoint would otherwise reuse it, meet the same refusal, and never reach the live
+          // incarnation - permanently, on an endpoint with no repeat-safe command to heal it
+          // through. Dropping the bind is not a retry: nothing is re-issued by it, and for a
+          // command that is not repeat-safe the next call is the caller's, made after it has
+          // verified.
           this.resolvedServices.delete(endpoint);
-          throw e;
+          if (!isRepeatSafeCommand(endpoint, command)) throw e;
+          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
         }
+        // An UNMARKED `failed-precondition` did not come from an attributed reply (nothing this
+        // client publishes can produce one after a reply: the describe-bound currency read is the
+        // cached epoch, never garbled), so it is the resolve's own refusal, before any command was
+        // published; re-resolving once is a repair. Everything else surfaces as it is.
+        if (e.code !== "failed-precondition") throw e;
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       }

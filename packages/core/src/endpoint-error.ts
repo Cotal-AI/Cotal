@@ -25,8 +25,10 @@ export interface EpErrorDetail {
 }
 
 /**
- * `details[].kind` for a `failed-precondition` raised because a responder ANSWERED but was not the
- * incarnation this handle resolved against (§13.2). It marks the one fact a caller cannot recover
+ * `details[].kind` for a refusal raised because a responder ANSWERED but was not the incarnation
+ * this handle resolved against (§13.2): `failed-precondition` when a DIFFERENT instance answered,
+ * `expired` when the SAME instance answered at a different EPOCH (a same-root restart, or a
+ * superseded incarnation still connected). It marks the one fact a caller cannot recover
  * from the code alone: **the request drew an attributed reply from a live responder**. That reply
  * may be a refusal (validation, authorization, admission, business) or a result; the marker does
  * not say which, and it does not prove the command executed or that any effect landed. What it

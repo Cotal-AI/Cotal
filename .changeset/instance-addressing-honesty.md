@@ -44,6 +44,17 @@ would send every later deliberate call on that endpoint into the same refusal, s
 verify and still never reach the live instance. Dropping it re-issues nothing; the next call is the
 caller's own.
 
+The same rule now covers the adjacent case, a manager restarted in the same workspace root. That
+restart keeps the logical instance id and advances its epoch, so a client that resolved before it
+gets its next answer from the same id at a later epoch: `expired`, raised after the attributed reply
+just like the split. It used to be rethrown untouched with the bind kept, so a long-lived client
+(a connector's mesh agent, the console) reached the successor on every later call, may have applied
+the effect each time, and never recovered. The stale-epoch refusal now carries the same
+responder-answered marker, the guard keys on the marker rather than the error code, and its message
+says which side is stale: a responder ahead of what the caller holds is a successor (re-resolve to
+adopt it), one behind is a superseded incarnation still answering. The old text called the caller's
+own bound epoch the responder's "current" epoch, which named the wrong side.
+
 That classification is an allowlist and fails closed at both levels. It is keyed by endpoint, not by
 bare command name, because the client is endpoint-agnostic and a flat list would lend the manager's
 judgement to any endpoint that happened to reuse a name — an endpoint nobody has classified has no

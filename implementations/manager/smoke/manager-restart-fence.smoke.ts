@@ -32,9 +32,9 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { createServer, type AddressInfo } from "node:net";
 import {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER,
+  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, CotalEndpoint, EpEnvelopeError, respondedButUnbound,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
-  type ActionContext, type EpCaller, type ParsedEpRequest,
+  type ActionContext, type EpAttributedReply, type EpCaller, type ParsedEpRequest,
 } from "@cotal-ai/core";
 import { recordMesh, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -73,6 +73,7 @@ const reqFor = (goalId: string): ParsedEpRequest =>
   ({ plane: "request", route: "one", endpoint: MANAGER_ENDPOINT, command: "spawn", caller, id: goalId } as unknown as ParsedEpRequest);
 
 let mgr: InstanceType<typeof Manager> | undefined;
+let client: CotalEndpoint | undefined;
 try {
   const broker = spawnProc("nats-server", ["-a", "127.0.0.1", "-p", String(PORT), "-js", "-sd", mkdtempSync(join(tmpdir(), "cotal-mrf-js-"))], { stdio: "ignore" });
   kids.push(broker);
@@ -106,6 +107,24 @@ try {
   check("incarnation 1 sees the terminal it committed under its own accepted epoch",
     (await readGoalResult(gw1, ref1))?.state === "failed");
 
+  // A LONG-LIVED CLIENT resolves the manager BEFORE the restart. `invokeService` caches the resolve,
+  // bound to the incarnation that answered the describe: (iid1, epoch 0). This is the shape of every
+  // client that outlives a manager restart (a connector's mesh agent, the console), and what it does
+  // with that bind afterwards is graded below.
+  client = new CotalEndpoint({
+    space: SPACE, servers: SERVER, lifecycleUid: mintLifecycleUid(),
+    card: { name: "restart-probe", role: "operator", kind: "endpoint" },
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+  });
+  client.on("error", () => {});
+  await client.start();
+  const cache = (client as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const pubs = (): number => (client as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
+  const warm = await client.invokeService(MANAGER_ENDPOINT, "ps");
+  check("a long-lived client is bound to incarnation 1 before the restart",
+    warm.reply.ok === true && cache.get(MANAGER_ENDPOINT)?.responder.instanceId === iid1 && cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch1,
+    { reply: warm.reply, bound: cache.get(MANAGER_ENDPOINT)?.responder });
+
   // ── restart: incarnation 2 (same root) ──
   await mgr.stop();
   mgr = await bootManager();
@@ -116,6 +135,59 @@ try {
   check("the restart PRESERVED the logical instanceId (persisted, not a fresh mint)", iid2 === iid1, { iid1, iid2 });
   check("the restart ADVANCED the process epoch through the §13.1 gate (superseding the predecessor)",
     epoch2 > epoch1 && M2.serviceServe!.grant.instanceId === iid1, { epoch1, epoch2 });
+
+  // ── the long-lived client across the restart ──
+  // The split-retry guard's rule, on the ADJACENT path. A different instance answering is
+  // `failed-precondition` (graded in instrument-instance-pin); the SAME instance answering at a
+  // later epoch is `expired`, raised after the attributed reply exactly the same way. Distsys review
+  // measured, on a real same-root restart, that this path retained the stale (iid1, epoch 0) bind:
+  // every later deliberate call reached the successor, may have applied its effect, came back
+  // `expired`, and stayed bound to epoch 0, so a long-lived client never recovered. Same rule as the
+  // split: drop the bind, re-issue nothing unsafe, let a repeat-safe read heal in one call.
+  console.log("\n-- a long-lived client's cached bind across the restart --");
+  {
+    // An UNSAFE command (`spawn` creates; the persona does not exist, so incarnation 2 refuses it
+    // cheaply and nothing starts, but it ANSWERS, at epoch 1, and that answer is what the cached
+    // client must not mistake for its bound incarnation's).
+    const before = pubs();
+    let threw: unknown;
+    try { await client.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${mintLifecycleUid().slice(0, 6)}`, agent: "claude" }); } catch (e) { threw = e; }
+    check("the stale-epoch client's UNSAFE call is refused as `expired` (the successor answered at a later epoch)",
+      threw instanceof EpEnvelopeError && threw.code === "expired", threw instanceof Error ? `${(threw as EpEnvelopeError).code ?? ""} ${threw.message.slice(0, 160)}` : threw);
+    check("...carrying the responder-answered marker (a responder DID answer; a retry is a second attempt)",
+      respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
+    check("...and the message says which side is stale: the responder is a SUCCESSOR of the incarnation this handle holds",
+      threw instanceof Error && /successor/i.test(threw.message), threw instanceof Error ? threw.message.slice(0, 260) : threw);
+    check("...and NOTHING was re-issued: exactly one publish", pubs() - before === 1, { publishes: pubs() - before });
+    check("...and the stale (epoch 0) bind was dropped", cache.get(MANAGER_ENDPOINT) === undefined, { got: cache.get(MANAGER_ENDPOINT)?.responder });
+
+    // THE STRAND, OR NOT. The operator verifies and deliberately re-issues. With the bind retained,
+    // this call reused (iid1, epoch 0), reached the successor AGAIN and came back `expired` again,
+    // forever. It must re-resolve and be answered by the successor at ITS epoch (a refusal reply
+    // here, since the persona still does not exist, but a REPLY, attributed to epoch 1).
+    let again: unknown;
+    let againReply: EpAttributedReply | undefined;
+    try { againReply = await client.invokeService(MANAGER_ENDPOINT, "spawn", { name: `ghost-${mintLifecycleUid().slice(0, 6)}`, agent: "claude" }); } catch (e) { again = e; }
+    check("a DELIBERATE re-issue reaches the live incarnation and is answered at its current epoch",
+      again === undefined && againReply?.responder.instanceId === iid1 && againReply.responder.epoch === epoch2,
+      { threw: again instanceof Error ? again.message.slice(0, 160) : again, responder: againReply?.responder, epoch2 });
+
+    // THE READ ARM: a repeat-safe command bound to the stale epoch heals inside ONE call (drop,
+    // re-resolve, re-issue), exactly as it does on the split. Force the old epoch back onto the
+    // fresh bind and read once.
+    const fresh = cache.get(MANAGER_ENDPOINT);
+    check("the re-issue left a fresh bind, at the successor's epoch", fresh?.responder.epoch === epoch2, fresh?.responder);
+    if (fresh) fresh.responder.epoch = epoch1;
+    const readBefore = pubs();
+    let readThrew: unknown;
+    let read: EpAttributedReply | undefined;
+    try { read = await client.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
+    check("a READ bound to the stale epoch heals inside ONE call and comes back bound to the successor",
+      readThrew === undefined && read?.reply.ok === true && cache.get(MANAGER_ENDPOINT)?.responder.epoch === epoch2,
+      { threw: readThrew instanceof Error ? readThrew.message.slice(0, 160) : readThrew, bound: cache.get(MANAGER_ENDPOINT)?.responder });
+    check("...and that heal re-issued (more than the one publish a held guard leaves)",
+      pubs() - readBefore > 1, { publishes: pubs() - readBefore });
+  }
 
   // THE INVERSION, driven by a real restart. The advanced epoch does not hide the pre-restart fact
   // and does not license overwriting it: one goal has ONE terminal subject, and the first fact won.
@@ -138,6 +210,7 @@ try {
   check("...and the durable terminal is still the pre-restart one, not the successor's",
     after?.state === "failed" && (after?.data as { by?: string })?.by === "pre-restart", after);
 } finally {
+  await client?.stop().catch(() => {});
   await mgr?.stop().catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
 }

@@ -20,7 +20,7 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock,
 } from "./endpoint-envelope.js";
 import type { JetStreamManager } from "@nats-io/jetstream";
@@ -159,6 +159,24 @@ export interface EpAttributedReply {
   responder: { endpoint: string; instanceId: string; epoch: number };
 }
 
+/** The stale-epoch refusal, worded by DIRECTION and carrying the {@link EP_UNBOUND_RESPONDER} marker.
+ *  Both rails reach it after an ATTRIBUTED reply: the responder received the request and answered
+ *  it, at an epoch other than the one this caller holds for it. `answered > held` means a SUCCESSOR
+ *  of the held incarnation answered (a same-root restart, or a supersession): the caller's handle
+ *  is the stale side, and re-resolving adopts the successor. `answered < held` means a superseded
+ *  incarnation still connected answered, and its reply is what is rejected. The one message this
+ *  replaced called the held epoch the responder's "current" epoch, which under the describe-bound
+ *  default (the held epoch is the caller's bind, not a registry read) named the wrong side as
+ *  stale. Either way the marker says what the code alone cannot: a retry is a second attempt. */
+function staleEpochRefusal(op: EpVerbOp, responder: { instanceId: string; epoch: number }, held: number, rail: "one" | "inst"): EpEnvelopeError {
+  const direction = responder.epoch > held
+    ? `a SUCCESSOR of the incarnation this handle holds answered (a restart or supersession), so the handle is the stale side; re-resolve to adopt it`
+    : `a SUPERSEDED incarnation still connected answered, and its reply is rejected`;
+  return new EpEnvelopeError("expired",
+    `the \`${rail}\` responder ${responder.instanceId} answered at epoch ${responder.epoch} while this caller holds it at epoch ${held}: ${direction}. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${responder.instanceId} received the request and answered it, so if "${op.command}" mutates, that effect may already have landed; verify before re-issuing (SPEC 13.2:1187-1189)`,
+    [{ kind: EP_UNBOUND_RESPONDER, endpoint: op.endpoint, command: op.command, answeredBy: responder.instanceId, boundTo: responder.instanceId, answeredEpoch: responder.epoch, heldEpoch: held, pinned: rail === "inst" }]);
+}
+
 function parseAttributedReply(space: string, subject: string, data: Uint8Array, requestId: string, op: EpVerbOp, expect?: { instanceId?: string; epoch?: number }): EpAttributedReply {
   const parsed = parseEpSubject(subject);
   if (!parsed || parsed.plane !== "reply")
@@ -173,7 +191,7 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
   if (expect?.instanceId !== undefined && parsed.instanceId !== expect.instanceId)
     throw new EpEnvelopeError("internal", `reply instance "${parsed.instanceId}" is not the addressed instance "${expect.instanceId}" (SPEC 13.2)`);
   if (expect?.epoch !== undefined && parsed.epoch !== expect.epoch)
-    throw new EpEnvelopeError("expired", `reply epoch ${parsed.epoch} is not the addressed epoch ${expect.epoch}; a superseded incarnation's reply is rejected (SPEC 13.2:1187-1189)`);
+    throw staleEpochRefusal(op, { instanceId: parsed.instanceId, epoch: parsed.epoch }, expect.epoch, "inst");
   // §13.3: an unparseable body is THIS boundary's own structured refusal — the documented catalog
   // (`internal`) holds; a raw SyntaxError must never escape the verb (the watch path already wraps
   // its decode the same way).
@@ -280,7 +298,7 @@ export async function epCall(
       if (!Number.isSafeInteger(cur) || cur < 0)
         throw new EpEnvelopeError("failed-precondition", `the \`one\` currency read returned a non-integer/negative epoch ${String(cur)}; a garbled currency read is refused as the read's own failure, never reported as responder staleness (SPEC 13.2)`);
       if (attributed.responder.epoch !== cur)
-        throw new EpEnvelopeError("expired", `the \`one\` responder ${attributed.responder.instanceId} answered at epoch ${attributed.responder.epoch}, not its current ${cur}; a superseded incarnation's reply is rejected (SPEC 13.2:1187-1189)`);
+        throw staleEpochRefusal(op, attributed.responder, cur, "one");
     }
     return attributed;
   } finally {
