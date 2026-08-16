@@ -564,6 +564,17 @@ export class RunJournalAppender {
     return this.dead !== undefined;
   }
 
+  /**
+   * The highest journal ordinal this appender has written or replayed.
+   *
+   * The run record's tail anchor is written from this: it is the one number that says how far the
+   * journal got, and it lives here because `nextN` advances only on a PubAck — so it is a fact about
+   * what the broker accepted, never about what this process attempted.
+   */
+  get journalHigh(): number {
+    return this.nextN - 1;
+  }
+
   /** The step entries of the replayed prefix, in order, with the activations dropped. */
   steps(): readonly unknown[] {
     return this.replayed.filter((r) => r.record.kind === "step").map((r) => (r.record as RunJournalStep).entry);

@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { isReachable, createEndpointStreams, activateRun, replayRunJournal } from "@cotal-ai/core";
+import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, RunJournalTailTruncated } from "@cotal-ai/core";
 import { SimHandler } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -47,6 +47,8 @@ const nc = await connect({ servers });
 const jsm = await jetstreamManager(nc);
 const js = jetstream(nc);
 await createEndpointStreams(jsm, new Kvm(nc), SPACE);
+const kv = await openRecordsBucket(nc, SPACE);
+const EP = "manager";
 
 let takeovers = 0;
 const lease = (holder: string, epoch: number, fencingToken: number) =>
@@ -84,7 +86,7 @@ await sleep("2h", { name: "second" });
 {
   const handler = new CountingHandler();
   const out = await startRun(js, jsm, {
-    space: SPACE, runId: "d-1", source: PROGRAM, lease: lease("m1", 1, 1), handler,
+    space: SPACE, endpoint: EP, kv, runId: "d-1", source: PROGRAM, lease: lease("m1", 1, 1), handler,
   });
   c("a started run completes", out.status === "completed",
     out.status === "released" ? out.reason.name : out.status);
@@ -109,7 +111,7 @@ await sleep("2h", { name: "second" });
 {
   const second = new CountingHandler();
   const taken = await driveRun(js, jsm, {
-    space: SPACE, runId: "d-1", source: PROGRAM, lease: lease("m2", 2, 2), handler: second,
+    space: SPACE, endpoint: EP, kv, runId: "d-1", source: PROGRAM, lease: lease("m2", 2, 2), handler: second,
   });
   c("a successor resumes a fully-journalled run to completion", taken.status === "completed",
     taken.status === "released" ? taken.reason.name : taken.status);
@@ -140,11 +142,11 @@ await sleep("2h", { name: "second" });
   }
   const blocked = new Blocking();
   const started = startRun(js, jsm, {
-    space: SPACE, runId: "d-2", source: PROGRAM, lease: lease("m1", 1, 1), handler: blocked,
+    space: SPACE, endpoint: EP, kv, runId: "d-2", source: PROGRAM, lease: lease("m1", 1, 1), handler: blocked,
   });
   await wait(300);
   const usurper = await activateRun(js, jsm, {
-    space: SPACE, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
+    space: SPACE, endpoint: EP, kv, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
   const firstOut = await attempt(started);
@@ -159,7 +161,7 @@ await sleep("2h", { name: "second" });
 // ── 3) the four ways a drive is not this driver's to make ─────────────────────────────────────
 {
   const handler = new CountingHandler();
-  const req = { space: SPACE, runId: "d-3", source: PROGRAM, handler };
+  const req = { space: SPACE, endpoint: EP, kv, runId: "d-3", source: PROGRAM, handler };
   await startRun(js, jsm, { ...req, lease: lease("m1", 1, 5) });
 
   const restart = await attempt(startRun(js, jsm, { ...req, lease: lease("m1", 1, 6) }));
@@ -177,7 +179,7 @@ await sleep("2h", { name: "second" });
     why(impostor));
 
   const missing = await attempt(driveRun(js, jsm, {
-    space: SPACE, runId: "d-3-never", source: PROGRAM, handler, lease: lease("m1", 1, 1),
+    space: SPACE, endpoint: EP, kv, runId: "d-3-never", source: PROGRAM, handler, lease: lease("m1", 1, 1),
   }));
   c("and resuming a run with no journal is released rather than started from scratch",
     missing.status === "released" && missing.reason.name === "RunNotResumable",
@@ -203,7 +205,7 @@ await sleep("3h", { name: "after-the-catch" });
 `;
   const handler = new CountingHandler();
   const out = await attempt(startRun(js, jsm, {
-    space: SPACE, runId: "d-4", source: CATCHER, lease: lease("m1", 1, 1), handler,
+    space: SPACE, endpoint: EP, kv, runId: "d-4", source: CATCHER, lease: lease("m1", 1, 1), handler,
   }));
   // Take the run away while the first effect is in flight? No — simpler and stricter: the run is
   // superseded before it starts its second effect, by a driver that just activates.
@@ -222,11 +224,11 @@ await sleep("3h", { name: "after-the-catch" });
   }
   const handler2 = new Held();
   const started = startRun(js, jsm, {
-    space: SPACE, runId: "d-5", source: CATCHER, lease: lease("m1", 1, 1), handler: handler2,
+    space: SPACE, endpoint: EP, kv, runId: "d-5", source: CATCHER, lease: lease("m1", 1, 1), handler: handler2,
   });
   await wait(300);
   await activateRun(js, jsm, {
-    space: SPACE, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
+    space: SPACE, endpoint: EP, kv, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
   const lost = await attempt(started);
@@ -256,11 +258,11 @@ try {
   }
   const quiet = new HeldOnce();
   const running = startRun(js, jsm, {
-    space: SPACE, runId: "d-5b", source: QUIET, lease: lease("m1", 1, 1), handler: quiet,
+    space: SPACE, endpoint: EP, kv, runId: "d-5b", source: QUIET, lease: lease("m1", 1, 1), handler: quiet,
   });
   await wait(300);
   await activateRun(js, jsm, {
-    space: SPACE, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
+    space: SPACE, endpoint: EP, kv, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   letGo();
   const quietOut = await attempt(running);
@@ -275,7 +277,7 @@ try {
 // as this run's own, and a PubAck on one run's subject makes the other's journal say "durable".
 {
   const a = await activateRun(js, jsm, {
-    space: SPACE, runId: "d-6", holder: "m1", fencingToken: 1, epoch: 1, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "new",
+    space: SPACE, endpoint: EP, kv, runId: "d-6", holder: "m1", fencingToken: 1, epoch: 1, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "new",
   });
   const store = new RunJournalStore(a);
   let crossed: unknown;
@@ -306,7 +308,7 @@ try {
   // driver can refuse to start; asserting the exact count is what caught it.
   (handler as unknown as { now: () => number }).now = () => (handler.performed.length >= 1 ? 9_000 : 1_000);
   const out = await attempt(startRun(js, jsm, {
-    space: SPACE, runId: "d-7", source: PROGRAM, lease: lease("m1", 1, 1), handler,
+    space: SPACE, endpoint: EP, kv, runId: "d-7", source: PROGRAM, lease: lease("m1", 1, 1), handler,
     workExpiry: 5_000,
   }));
   c("a driver past its work horizon RELEASES the run rather than failing it",
@@ -327,7 +329,7 @@ try {
   // horizon — which is the whole point of stopping between effects rather than inside one.
   const successor = new CountingHandler();
   const done2 = await attempt(driveRun(js, jsm, {
-    space: SPACE, runId: "d-7", source: PROGRAM, lease: lease("m2", 2, 2), handler: successor,
+    space: SPACE, endpoint: EP, kv, runId: "d-7", source: PROGRAM, lease: lease("m2", 2, 2), handler: successor,
   }));
   c("a successor under a fresh horizon finishes the run from where it stopped",
     done2.status === "completed", why(done2));
@@ -344,7 +346,7 @@ try {
   const pause = new PauseToken();
   pause.pause("operator asked");
   const out = await attempt(startRun(js, jsm, {
-    space: SPACE, runId: "d-8", source: PROGRAM, lease: lease("m1", 1, 1), handler, pause,
+    space: SPACE, endpoint: EP, kv, runId: "d-8", source: PROGRAM, lease: lease("m1", 1, 1), handler, pause,
   }));
   c("a paused driver releases the run", out.status === "released", why(out));
   c("carrying the operator's reason", out.status === "released" && /operator asked/.test(out.reason.message),
@@ -355,6 +357,98 @@ try {
   c("the run exists and holds only its activation: a pause writes no step",
     back.records.length === 1 && back.records[0]!.record.kind === "activation",
     back.records.map((r) => r.record.kind));
+}
+
+// ── 8) the run record: what the run IS, beside the journal that says what it DID ─────────────
+{
+  const out = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-9", source: PROGRAM, lease: lease("m1", 1, 1),
+    handler: new CountingHandler(), seed: "seed-of-d-9",
+  }));
+  c("a started run completes", out.status === "completed", why(out));
+
+  const rec = await readRunRecord(kv, EP, "d-9");
+  c("and it has a record: the run exists as STATE, not only as a list of events", rec !== undefined);
+  c("whose spec carries the pins resolved once at start",
+    rec!.spec.value.pins.seed === "seed-of-d-9" && rec!.spec.value.pins.languageVersion.length > 0,
+    rec!.spec.value.pins);
+  c("and whose status says who held it, in what state, and how far its journal got",
+    rec!.status?.value.state === "completed" && rec!.status?.value.holder === "m1"
+    && rec!.status!.value.journalHigh > 0,
+    rec!.status?.value);
+}
+
+// ── 9) pins are READ BACK on a resume, never re-derived ──────────────────────────────────────
+//
+// A default is a property of the interpreter, and the interpreter is the thing that may have
+// changed between attempts. The logical epoch is the sharpest case: a resumed run that took the
+// resuming host's clock would measure an elapsed time the recorded run never saw.
+{
+  const first = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-10", source: PROGRAM, lease: lease("m1", 1, 1),
+    handler: new CountingHandler(), seed: "the-original-seed",
+  }));
+  c("a run starts and pins itself", first.status === "completed", why(first));
+  const pinned = (await readRunRecord(kv, EP, "d-10"))!.spec.value.pins;
+
+  // A successor that supplies NOTHING: every pin must come back from the record.
+  const second = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-10", source: PROGRAM, lease: lease("m2", 2, 2),
+    handler: new CountingHandler(),
+  }));
+  c("a successor resumes it", second.status === "completed", why(second));
+  c("under the SAME seed it was started with, not one derived again on this host",
+    second.status === "completed" && second.result.pins.seed === "the-original-seed",
+    second.status === "completed" ? second.result.pins.seed : why(second));
+  c("and the SAME logical epoch: the run's clock is a recorded fact, not this machine's",
+    second.status === "completed" && second.result.pins.startedAt === pinned.startedAt,
+    second.status === "completed" ? `${second.result.pins.startedAt} vs ${pinned.startedAt}` : why(second));
+}
+
+// ── 10) the tail anchor: the one truncation nothing inside the journal can see ────────────────
+//
+// Delete the NEWEST record and the survivors stay contiguous, so the ordinal chain has nothing to
+// object to, and the subject's head recalculates backwards so the fence accepts an append at a head
+// the run already moved past. The run record is the anchor OUTSIDE the journal, and this is the
+// cell that says the driver refuses rather than resuming from a prefix missing real work.
+{
+  const out = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-11", source: PROGRAM, lease: lease("m1", 1, 1),
+    handler: new CountingHandler(),
+  }));
+  c("a run completes and records how far its journal got", out.status === "completed", why(out));
+  const high = (await readRunRecord(kv, EP, "d-11"))!.status!.value.journalHigh;
+
+  const before = await replayRunJournal(js, jsm, SPACE, "d-11", `r${(takeovers += 1)}`);
+  await jsm.streams.deleteMessage("WFJ_" + SPACE, before.records[before.records.length - 1]!.seq);
+
+  const after = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-11", source: PROGRAM, lease: lease("m2", 2, 2),
+    handler: new CountingHandler(),
+  }));
+  c("a successor REFUSES the truncated journal rather than resuming from it",
+    after.status === "threw" && after.reason instanceof RunJournalTailTruncated,
+    `${after.status}: ${after.status === "threw" ? after.reason.name : ""}`);
+  c("and it refused loudly, not as a release: a corrupted journal is not a lost lease",
+    after.status !== "released", why(after));
+  c("the record still says how far the run really got", high > 0, high);
+  // And nothing was written into the journal it refused: the check runs BEFORE the activation.
+  const seen = await replayRunJournal(js, jsm, SPACE, "d-11", `r${(takeovers += 1)}`);
+  c("no activation was appended over the rolled-back head",
+    seen.records.length === before.records.length - 1,
+    `${seen.records.length} vs ${before.records.length - 1}`);
+}
+
+// ── 11) a run id is claimed once ─────────────────────────────────────────────────────────────
+{
+  const again = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-9", source: PROGRAM, lease: lease("m3", 3, 3),
+    handler: new CountingHandler(), seed: "a-different-seed",
+  }));
+  c("starting a run that already has a spec is refused: the same id under fresh pins is a different run",
+    again.status === "released", why(again));
+  c("and the recorded pins are untouched by the attempt",
+    (await readRunRecord(kv, EP, "d-9"))!.spec.value.pins.seed === "seed-of-d-9");
 }
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);

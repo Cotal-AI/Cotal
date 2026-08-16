@@ -26,6 +26,12 @@
  */
 import {
   activateRun,
+  readRunRecord,
+  createRunSpec,
+  writeRunStatus,
+  assertJournalTailIntact,
+  RunJournalTailTruncated,
+  type RunStatusValue,
   RunSuperseded,
   RunJournalStalled,
   StaleLeaseToken,
@@ -35,12 +41,16 @@ import {
   RunJournalPrefixTruncated,
 } from "@cotal-ai/core";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
+import type { KV } from "@nats-io/kv";
 import {
   Journal,
   JournalAppendRejected,
   run as runProgram,
   resume as resumeProgram,
   RunReleased,
+  resolvePins,
+  LANGUAGE_VERSION,
+  PIN_DEFAULTS,
   type EffectHandler,
   type JournalEntry,
   type RunPins,
@@ -91,13 +101,23 @@ export class PauseToken {
 
 export interface DriveRequest {
   readonly space: string;
+  /**
+   * The endpoint HOSTING this driver — the manager daemon (design §10). It leads the run record's
+   * key, so a retirement drain and a per-endpoint enumeration both work by prefix.
+   */
+  readonly endpoint: string;
   readonly runId: string;
   /** The program. A resume MUST be handed the same source: a different one is a fork, not a resume. */
   readonly source: string;
   readonly lease: RunLease;
   readonly handler: EffectHandler;
-  /** The pins the run STARTED under, read from the run record. Required on a resume. */
-  readonly pins?: RunPins;
+  /**
+   * The records bucket. NOT optional, and deliberately so: the run record holds the pins a resume
+   * must read back and the high-water ordinal that is the only thing able to see a truncated
+   * journal tail. A driver that could run without it would skip both silently, which is the failure
+   * mode both exist to prevent.
+   */
+  readonly kv: KV;
   readonly seed?: string;
   readonly file?: string;
   readonly effectCeiling?: number;
@@ -153,6 +173,38 @@ async function drive(
   req: DriveRequest,
   expect: "new" | "existing",
 ): Promise<DriveOutcome> {
+  // The record FIRST, because two of the things it holds decide whether this attempt may proceed at
+  // all: the pins the run was started under, and how far its journal is known to have got.
+  const record = await readRunRecord(req.kv, req.endpoint, req.runId);
+  const recordedStatus = record?.status?.value;
+
+  let pins: RunPins;
+  let statusRevision: number | undefined;
+  if (expect === "new") {
+    if (record !== undefined) {
+      // Not `RunAlreadyStarted` from the journal — this run has a SPEC, which is the stronger
+      // statement: it was started, pinned, and those pins are not this attempt's to re-decide.
+      return { status: "released", reason: new RunAlreadyStarted(req.runId, 0) };
+    }
+    // Resolved ONCE, here, from the host clock read exactly once — from here on the epoch is a
+    // recorded fact, and a second read could not be the same run's epoch.
+    pins = resolvePins(
+      {
+        runId: req.runId,
+        ...(req.seed !== undefined ? { seed: req.seed } : {}),
+        ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
+        ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
+      },
+      req.handler.now(),
+    );
+  } else {
+    if (record === undefined) return { status: "released", reason: new RunNotResumable(req.runId, req.runId) };
+    // READ BACK, never re-derived. A default is a property of the interpreter, and the interpreter
+    // is the thing that may have changed between attempts.
+    pins = record.spec.value.pins as RunPins;
+    statusRevision = record.status?.revision;
+  }
+
   let appender;
   try {
     appender = await activateRun(js, jsm, {
@@ -164,6 +216,13 @@ async function drive(
       takeoverId: req.lease.takeoverId,
       at: req.handler.now(),
       expect,
+    }, {
+      // BETWEEN the replay and the activation, which is the only place this check is worth
+      // anything: an activation appended over a rolled-back head is another record written into a
+      // journal already known to be wrong, at an ordinal the deleted records already used.
+      onReplayed: (replay) => {
+        assertJournalTailIntact(req.runId, recordedStatus, lastOrdinal(replay.records));
+      },
     });
   } catch (e) {
     // Every one of these means "this driver does not hold this run", and none of them is a fact
@@ -196,26 +255,54 @@ async function drive(
     runId: req.runId,
     handler: req.handler,
     shouldStop,
-    ...(req.pins !== undefined ? { pins: req.pins } : {}),
+    pins,
     ...(req.seed !== undefined ? { seed: req.seed } : {}),
     ...(req.file !== undefined ? { file: req.file } : {}),
     ...(req.effectCeiling !== undefined ? { effectCeiling: req.effectCeiling } : {}),
     ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
   };
 
+  // The spec is created AFTER the activation, not before: until this driver holds the run it has
+  // decided nothing, and a spec written by a driver that then lost the activation race would pin a
+  // run for a winner who never agreed to those pins.
+  if (expect === "new") {
+    await createRunSpec(req.kv, req.endpoint, req.runId, {
+      pins,
+      createdAt: pins.startedAt,
+    });
+  }
+  const specRevision = expect === "new"
+    ? (await readRunRecord(req.kv, req.endpoint, req.runId))!.spec.revision
+    : record!.spec.revision;
+  statusRevision = await note(req, "running", appender.journalHigh, specRevision, statusRevision);
+
   try {
     const result =
       expect === "new"
         ? await runProgram(req.source, { ...options, journal })
         : await resumeProgram(req.source, journal, options);
+    await note(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {
     // L5010 is the journal saying it could not record — the run is not this driver's any more. It
     // arrives here rather than at the append because the interpreter is what was holding the stack.
-    if (e instanceof JournalAppendRejected) return { status: "released", reason: e };
+    if (e instanceof JournalAppendRejected) {
+      // Recorded on a BEST-EFFORT basis and never allowed to mask the real answer: the record is a
+      // projection, and a driver that could not append to the journal may not be able to write here
+      // either. What it must not do is turn a lost run into a different-looking failure.
+      await noteQuietly(req, "released", appender.journalHigh, specRevision, statusRevision);
+      return { status: "released", reason: e };
+    }
     // The host stopping is the same kind of answer: this driver no longer holds the run, and the
     // program has neither failed nor finished.
-    if (e instanceof RunReleased) return { status: "released", reason: e };
+    if (e instanceof RunReleased) {
+      await note(req, "released", appender.journalHigh, specRevision, statusRevision);
+      return { status: "released", reason: e };
+    }
+    // A program that FAILED is a fact about the program, and the run record is where a reader looks
+    // for it. Recorded, then re-raised: swallowing it here would leave the caller believing the
+    // driver finished normally.
+    await note(req, "failed", appender.journalHigh, specRevision, statusRevision);
     throw e;
   }
 }
@@ -230,4 +317,49 @@ function isNotOurs(e: unknown): boolean {
     e instanceof RunAlreadyStarted ||
     e instanceof RunJournalPrefixTruncated
   );
+}
+
+/** The last ordinal in a replayed prefix, or -1 for a run that has none yet. */
+function lastOrdinal(records: readonly { readonly record: { readonly n: number } }[]): number {
+  return records.length === 0 ? -1 : records[records.length - 1]!.record.n;
+}
+
+/** Write the run's status. Returns the new revision so the next write can pin it. */
+async function note(
+  req: DriveRequest,
+  state: RunStatusValue["state"],
+  journalHigh: number,
+  observedSpecRevision: number,
+  expectedRevision: number | undefined,
+): Promise<number> {
+  return await writeRunStatus(
+    req.kv,
+    req.endpoint,
+    req.runId,
+    {
+      observedSpecRevision,
+      state,
+      holder: req.lease.holder,
+      epoch: req.lease.epoch,
+      fencingToken: req.lease.fencingToken,
+      journalHigh,
+      at: req.handler.now(),
+    },
+    expectedRevision,
+  );
+}
+
+/** The same write, where failing to make it must not replace the answer the caller is owed. */
+async function noteQuietly(
+  req: DriveRequest,
+  state: RunStatusValue["state"],
+  journalHigh: number,
+  observedSpecRevision: number,
+  expectedRevision: number | undefined,
+): Promise<void> {
+  try {
+    await note(req, state, journalHigh, observedSpecRevision, expectedRevision);
+  } catch {
+    /* the record is a projection; the journal is the authority and it has already spoken */
+  }
 }
