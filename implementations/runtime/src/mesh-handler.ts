@@ -13,20 +13,30 @@
  * attempt ATTACHES to the timer the crashed one armed instead of arming a second. Nothing here has
  * to remember anything across a crash, because the identity was recorded before the work started.
  */
+import { createHash } from "node:crypto";
 import {
   mintCheckpoint,
+  heartbeatCheckpoint,
+  resumeCheckpoint,
   readCheckpointSettle,
   readCheckpointAnswer,
+  readCheckpointStatus,
   reconcileCheckpointSchedule,
   checkpointSettleSubject,
   epfStreamName,
+  chatStream,
+  chatSubject,
+  isConcreteChannel,
+  assertSafePattern,
   type CheckpointRef,
   type CheckpointSettleFact,
+  type CotalMessage,
 } from "@cotal-ai/core";
 import type { JetStreamClient, JetStreamManager } from "@nats-io/jetstream";
 import type { KV } from "@nats-io/kv";
 import {
   parseDuration,
+  type WaitRequest,
   type CheckpointRaw,
   type CheckpointRequest,
   type EffectContext,
@@ -185,6 +195,161 @@ export class MeshHandler {
   }
 
   /**
+   * `wait` — an event await that survives the process waiting for it.
+   *
+   * The mechanism is a DURABLE JetStream consumer named from `ctx.requestId`, created before the
+   * wait begins. That is the whole durability argument: the consumer holds the run's position on
+   * the channel, so an event published while the run's host was down is still there when the run
+   * comes back and re-attaches under the same derived name. An ephemeral consumer, or one created
+   * on resume, would silently start from "now" and the event would simply never have happened.
+   *
+   * The TIMEOUT rides the checkpoint plane, which makes it durable too: it is minted once with an
+   * absolute deadline, so a wait that spans a crash resumes against the ORIGINAL deadline rather
+   * than restarting the clock — a resumed 20-minute wait that had 30 seconds left has 30 seconds
+   * left. A timeout resolves `null` and never throws (design §5.7, D5: `??` is `otherwise`).
+   *
+   * Two of the four event kinds are NOT here. `replied(agent)` and `down(agent)` are addressed to an
+   * agent HANDLE, which comes from `spawn` — and `down` additionally needs `monitor` to have
+   * registered interest. They are gated by their input rather than by their mechanism, and they
+   * refuse through the same named seam as the durable actions themselves.
+   */
+  async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
+    const ev = req.event;
+    if (ev.event === "replied" || ev.event === "down") {
+      throw new NotYetDurable(`wait(${ev.event}(…))`, "the durable-action machinery an agent handle comes from");
+    }
+    if (!isConcreteChannel(ev.channel)) {
+      throw new Error(`wait() cannot await a wildcard channel ("${ev.channel}"); an await names one channel`);
+    }
+    // A recorded seq is a previous attempt's MATCH, taken before the crash. Return that message
+    // rather than looking again: the consumer has already acked it, so looking again would wait for
+    // a second event the program never asked for.
+    const bound = ctx.resume?.chatSeq;
+    if (typeof bound === "number") return await this.messageAt(bound);
+
+    const timeoutAt = req.timeout === undefined ? undefined : this.now() + parseDuration(req.timeout);
+    const idleFor = ev.event === "idle" ? parseDuration(ev.duration) : undefined;
+    const matcher = ev.event === "message" && ev.matches !== undefined ? compileMatch(ev.matches) : undefined;
+    const from = ev.event === "message" ? ev.from : undefined;
+
+    // ONE token per deadline, both derived, so a resume re-derives them instead of remembering.
+    // The step's own id is the deadline that DEFINES the wait — the idle window where there is one,
+    // the timeout otherwise — and a second, derived id carries an idle wait's outer timeout.
+    const primary = idleFor !== undefined || timeoutAt !== undefined
+      ? { endpoint: this.binding.endpoint, token: ctx.requestId }
+      : undefined;
+    const outer = idleFor !== undefined && timeoutAt !== undefined
+      ? { endpoint: this.binding.endpoint, token: derivedToken(ctx.requestId, "wait-timeout") }
+      : undefined;
+    if (primary !== undefined) {
+      await this.arm(primary, idleFor !== undefined ? this.now() + idleFor : timeoutAt!);
+    }
+    if (outer !== undefined) await this.arm(outer, timeoutAt!);
+
+    const durable = waitConsumerName(ctx.requestId);
+    const stream = chatStream(this.binding.space);
+    await this.jsm.consumers.add(stream, waitConsumerConfig(this.binding.space, ctx.requestId, ev.channel));
+    const consumer = await this.js.consumers.get(stream, durable);
+    try {
+      for (;;) {
+        // The deadline is durable and authoritative — a checkpoint's settle fact — and this is only
+        // the OBSERVATION of it, so the cost of polling is lateness bounded by one poll rather than
+        // a wait that outlives its deadline.
+        const ended = await this.expired(outer ?? (idleFor === undefined ? primary : undefined));
+        if (ended !== undefined) return null;
+        if (idleFor !== undefined && (await this.expired(primary)) !== undefined) {
+          return { channel: ev.channel, at: this.now() };
+        }
+        for await (const m of await consumer.fetch({ max_messages: 16, expires: WAIT_POLL_MS })) {
+          const msg = decodeMessage(m.data);
+          if (idleFor !== undefined) {
+            // ANY traffic resets an idle window, matched or not: "idle" is a fact about the
+            // channel, not about the messages this program finds interesting.
+            m.ack();
+            await this.push(primary!, this.now() + idleFor);
+            continue;
+          }
+          if (msg === undefined || !matchesEvent(msg, from, matcher)) { m.ack(); continue; }
+          // BIND BEFORE ACK. The bind is durable; the ack is what makes the message unrecoverable.
+          // In this order a crash in between redelivers it, and a crash after it is answered from
+          // the recorded sequence — in the other order the match is simply lost.
+          await ctx.bind({ chatSeq: m.seq });
+          m.ack();
+          if (primary !== undefined) await this.cancelTimer(primary);
+          if (outer !== undefined) await this.cancelTimer(outer);
+          return msg;
+        }
+      }
+    } finally {
+      // The wait is over however it ended, so its position is worthless. Deleted rather than left
+      // to an inactivity threshold: a threshold that could reap a LIVE wait's consumer while its
+      // host was down would lose exactly the events the durable exists to hold.
+      try {
+        await this.jsm.consumers.delete(stream, durable);
+      } catch { /* already gone, or never created — either way there is nothing to hold */ }
+    }
+  }
+
+  /** Mint a deadline, idempotently. The same token re-minted with the same deadline attaches. */
+  private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
+    await mintCheckpoint(this.kv, this.js, this.binding.space, {
+      ref,
+      instanceId: this.binding.instanceId,
+      epoch: this.binding.epoch,
+      holder: this.binding.holder,
+      deadline,
+      now: this.now(),
+    });
+  }
+
+  /** Push a live deadline out — the idle window restarting. The heartbeat CAS-advances the
+   *  generation before replacing the timer, so a fire from the old one no-ops rather than racing. */
+  private async push(ref: CheckpointRef, deadline: number): Promise<void> {
+    await heartbeatCheckpoint(this.kv, this.js, this.jsm, this.binding.space, {
+      ref,
+      instanceId: this.binding.instanceId,
+      epoch: this.binding.epoch,
+      deadline,
+      now: this.now(),
+    });
+  }
+
+  /** Has this deadline settled? `undefined` for "no deadline" and for "not yet". */
+  private async expired(ref: CheckpointRef | undefined): Promise<CheckpointSettleFact | undefined> {
+    if (ref === undefined) return undefined;
+    return await readCheckpointSettle(this.jsm, this.binding.space, ref);
+  }
+
+  /** End a deadline that is no longer waited on, by claiming its one-use settlement with no answer.
+   *  A timer left armed would fire into a run that has moved on; claiming it is how the plane says
+   *  "this pause is over" without a second mechanism for cancellation. */
+  private async cancelTimer(ref: CheckpointRef): Promise<void> {
+    const st = await readCheckpointStatus(this.kv, ref);
+    if (st?.value.state !== "waiting") return;
+    try {
+      await resumeCheckpoint(this.kv, this.js, this.jsm, this.binding.space, {
+        ref,
+        presenter: this.binding.holder,
+        now: this.now(),
+      });
+    } catch {
+      // It settled underneath us — the deadline won a race it was already allowed to win. The
+      // caller has its answer either way, and a cancelled timer is not a fact anyone reads.
+    }
+  }
+
+  /** The message at a recorded stream sequence — the re-bind path after a crash. */
+  private async messageAt(seq: number): Promise<unknown> {
+    const m = await this.jsm.streams.getMessage(chatStream(this.binding.space), { seq });
+    if (m === null || m === undefined) {
+      throw new Error(`the message this wait matched (sequence ${seq}) is no longer on the channel's stream; a recorded match cannot be re-read`);
+    }
+    const msg = decodeMessage(m.data);
+    if (msg === undefined) throw new Error(`the message at sequence ${seq} did not decode; a recorded match cannot be re-read`);
+    return msg;
+  }
+
+  /**
    * Wait for this token's one-use settlement.
    *
    * A settle that ALREADY landed is the ordinary case on a resume: the run crashed while paused and
@@ -195,6 +360,101 @@ export class MeshHandler {
   private async settle(ref: CheckpointRef): Promise<CheckpointSettleFact> {
     const already = await readCheckpointSettle(this.jsm, this.binding.space, ref);
     return already ?? (await this.watcher.awaitSettle(ref));
+  }
+}
+
+/** The durable that holds one wait's position on a channel. Derived from the step's own request id,
+ *  which is why a resumed run finds the consumer its earlier attempt created rather than starting
+ *  again from "now" — and why nothing about the wait has to be remembered across a crash. */
+export function waitConsumerName(requestId: string): string {
+  return `wfw_${requestId}`;
+}
+
+/**
+ * The one definition of a wait's consumer, shared by the handler and by anything that has to
+ * recreate it — so the name a resume looks for and the name a wait creates cannot drift apart.
+ *
+ * `deliver_policy: "new"` applies only to the FIRST create: an existing durable keeps its own
+ * position, which is exactly what a resume needs, and events from before the program asked are not
+ * this wait's to see.
+ */
+export function waitConsumerConfig(space: string, requestId: string, channel: string): Record<string, unknown> {
+  return {
+    durable_name: waitConsumerName(requestId),
+    filter_subject: chatSubject(space, "*", "*", channel),
+    ack_policy: "explicit",
+    deliver_policy: "new",
+  };
+}
+
+/** How long one poll of a wait's consumer blocks. The deadline itself is durable; this is only how
+ *  late its observation can be, and a shorter poll buys latency at the cost of fetch traffic. */
+const WAIT_POLL_MS = 2_000;
+
+/** A second deadline for one step, derived so a resume re-derives it instead of remembering it.
+ *  Same shape and alphabet as a request id, so it is a valid `<token>` by construction. */
+function derivedToken(requestId: string, purpose: string): string {
+  return createHash("sha256").update(`${requestId}:${purpose}`, "utf8").digest("base64url").slice(0, 43);
+}
+
+/**
+ * A `matches` pattern, admitted through the repo's bounded-regex subset before it is compiled.
+ *
+ * A workflow is other people's text and a channel can be busy, so an exponential pattern here is a
+ * run that stalls with nothing to show for it. The subset is the same one the schema profile
+ * admits, which means the same rule applies: a pattern is ANCHORED (`^…`), and an author who wants
+ * "somewhere in the message" writes `^.*…` themselves. Wrapping it for them was the alternative and
+ * it is worse — the wrapper turns patterns that are safe as written into refusals about a `.*` the
+ * author never typed.
+ */
+function compileMatch(pattern: string): RegExp {
+  try {
+    assertSafePattern(pattern, 256);
+  } catch (e) {
+    throw new Error(`wait()'s \`matches\` is a bounded regular expression, anchored like every pattern in this repo: ${(e as Error).message}`);
+  }
+  return new RegExp(pattern);
+}
+
+function decodeMessage(data: Uint8Array): CotalMessage | undefined {
+  try {
+    const v = JSON.parse(new TextDecoder().decode(data)) as CotalMessage;
+    return v !== null && typeof v === "object" ? v : undefined;
+  } catch {
+    // Someone else's malformed publish is not this run's failure. It does not match, and the wait
+    // goes on waiting — which is what would happen if the message had never been sent.
+    return undefined;
+  }
+}
+
+/** Does this message answer the await? `from` is matched on the SENDER'S NAME as the mesh records
+ *  it, never on the subject: the subject carries a principal, and a program names an agent. */
+function matchesEvent(msg: CotalMessage, from: string | undefined, matcher: RegExp | undefined): boolean {
+  if (from !== undefined && msg.from?.name?.toLowerCase() !== from.toLowerCase()) return false;
+  if (matcher === undefined) return true;
+  const text = (msg.parts ?? [])
+    .filter((p): p is { kind: "text"; text: string } => p.kind === "text" && typeof (p as { text?: unknown }).text === "string")
+    .map((p) => p.text)
+    .join("\n");
+  return matcher.test(text);
+}
+
+/**
+ * An effect whose durable substrate has not landed on this host.
+ *
+ * An honest two-exit, and deliberately not a fake success: the simulator implements these, so a
+ * program that uses them can be written, validated and dry-run today — but a DURABLE run refuses
+ * rather than performing them on a plane that could not recover them. A run that "succeeded" at an
+ * effect nothing can replay would be a lie the journal then carries forever.
+ */
+export class NotYetDurable extends Error {
+  constructor(readonly effect: string, readonly needs: string) {
+    super(
+      `${effect} is not durable on this host yet: it rides ${needs}, which has not landed. ` +
+        `The simulator performs it, so the program can be tested and dry-run; a durable run refuses ` +
+        `rather than performing an effect it could not recover after a crash.`,
+    );
+    this.name = "NotYetDurable";
   }
 }
 
