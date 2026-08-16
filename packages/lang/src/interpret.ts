@@ -188,6 +188,28 @@ function messageOf(v: unknown): string {
 }
 
 /** A fault the interpreter itself raises, as opposed to one an effect handler reported. */
+/**
+ * A migration's walk reached a settled scope it cannot enter.
+ *
+ * A `conclave` is the case that exists today: its channel handle is HANDLER-DERIVED — the mint
+ * returns it and nothing journals it — so a walk cannot re-enter the body without inventing a
+ * handle, and an invented one would re-hash every step inside that used the channel into a
+ * divergence the run never had. Refusing is the honest exit. Consuming the subtree instead would
+ * hide exactly the orphans a migration exists to find, which is a silent wrong answer in place of
+ * a loud refusal.
+ */
+export class UnwalkableScope extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly why: string,
+  ) {
+    super(
+      `a migration cannot walk inside the settled ${why} at ${scopeKey}: its handle is handler-derived and was never journalled, so the walk would have to invent one. Fork from this step instead, or migrate a run that does not contain it.`,
+    );
+    this.name = "UnwalkableScope";
+  }
+}
+
 export class RuntimeFault extends Error {
   constructor(
     readonly code: string,
@@ -300,6 +322,21 @@ export interface RunOptions {
    * where its journal says it is and the next driver resumes from there.
    */
   readonly shouldStop?: () => string | undefined;
+  /**
+   * This walk is a MIGRATION's dry replay, not a resume.
+   *
+   * The two differ in exactly one place and it is a concurrency scope. A resume delivers a settled
+   * scope from its own entry and accounts for the whole subtree without entering a branch, which is
+   * correct: the program hash is unchanged, so nothing beneath it can have been removed and the
+   * branches were decided rather than deleted. A migration runs EDITED source against that journal,
+   * so the same short-circuit would account for entries the new source no longer reaches — and an
+   * orphan that is never reported is an effect nobody is told about, which for a resolved human
+   * checkpoint means a decision silently discarded with L5004 never firing (design §8.4).
+   *
+   * Set here rather than inferred, because "the source changed" is not something the interpreter
+   * can see: it is handed a program and a journal and both are what the caller says they are.
+   */
+  readonly migration?: boolean;
   /**
    * Fail loud on a loop the effect ceiling cannot see, counted in walker dispatches (L4013).
    *
@@ -1096,8 +1133,8 @@ class Interpreter {
         }
       : undefined;
 
-    return await this.performScope(scopeKey, frame, async (ctx) => await this.runScope(
-      name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame, ctx,
+    return await this.performScope(scopeKey, frame, async (ctx, only) => await this.runScope(
+      name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame, ctx, only,
     ), subject);
   }
 
@@ -1118,7 +1155,7 @@ class Interpreter {
   private async performScope(
     scopeKey: StepKey,
     frame: Frame,
-    body: (ctx: EffectContext) => Promise<ScopeOutcome>,
+    body: (ctx: EffectContext, only?: ReadonlySet<string>) => Promise<ScopeOutcome>,
     subject?: unknown,
   ): Promise<unknown> {
     const inputHash = digest(
@@ -1133,8 +1170,56 @@ class Interpreter {
     }
     if (verdict.verdict === "replay" || verdict.verdict === "replay-failed") {
       const entry = verdict.entry;
+      const endedAt = entry.endedAt ?? this.options.handler.now();
+
+      // A MIGRATION MUST NOT TAKE THE SHORT-CIRCUIT ABOVE.
+      //
+      // Consuming the subtree wholesale is right for a resume — the program hash is unchanged, so
+      // nothing under this scope can have been removed, and the branches were DECIDED rather than
+      // deleted. Under a migration the source HAS changed, and marking every entry beneath the
+      // scope accounted for means an effect the new source removed never reaches `orphans()`: a
+      // resolved human checkpoint inside the winning branch disappears and L5004 never fires. A
+      // silent disappearance whose log line never fires is invisible in the artifact AND in the
+      // trace, which is the worst available failure.
+      //
+      // So the walk enters the RECORDED WINNING branches and runs the ordinary hash and orphan
+      // checks inside them, while the losers — decided, not removed — are accounted for as before.
+      if (this.options.migration === true) {
+        if (subject !== undefined) throw new UnwalkableScope(stepKeyString(scopeKey), "conclave");
+        const recorded = entry.result as { branches?: readonly string[] } | undefined;
+        const branches = recorded?.branches ?? [];
+        const losers = new Set(entry.cancel?.losers ?? []);
+        await this.journal.consumeScope(stepKeyString(scopeKey), endedAt, losers);
+        try {
+          await body(
+            {
+              key: scopeKey,
+              signal: frame.signal,
+              requestId: entry.requestId ?? requestId(this.options.runId, scopeKey, inputHash),
+              attempt: entry.attempt ?? 0,
+              bind: async () => {
+                throw new UnwalkableScope(stepKeyString(scopeKey), "bind");
+              },
+            },
+            new Set(branches.filter((b) => !losers.has(b))),
+          );
+        } catch (e) {
+          // UNWRAPPED, because the caller of a migration wants the step that diverged and not the
+          // scope that carried it. A live scope wraps a branch's failure so it can record the
+          // cancellation intent with it; a walk records nothing and cancels nobody, so the wrapper
+          // would only hide a `RunDivergence` behind a generic scope fault.
+          throw unwrapScope(e).reason;
+        }
+        if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
+        if (verdict.verdict === "replay-failed") {
+          const e = entry.error as EntryError;
+          throw new EffectError(e.code, e.kind, e.message, e.detail);
+        }
+        return (entry.result as { value: unknown }).value;
+      }
+
       // (1) account for the subtree, settling any loser still pending as cancelled;
-      await this.journal.consumeScope(stepKeyString(scopeKey), entry.endedAt ?? this.options.handler.now());
+      await this.journal.consumeScope(stepKeyString(scopeKey), endedAt);
       // (2) the cancellation intent is the driver's to discharge against the world; a journal write
       //     cancels nothing by itself, so an undischarged intent stays visible rather than silently
       //     reading as done.
@@ -1233,11 +1318,14 @@ class Interpreter {
     env: Env,
     frame: Frame,
     ctx: EffectContext,
+    /** A migration's walk: enter exactly these branches, the ones the recorded run WON with. */
+    only?: ReadonlySet<string>,
   ): Promise<ScopeOutcome> {
     if (name === "parallel" || name === "race") {
-      const entries: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
+      const all: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
         ? (first as ((f: Frame, a: unknown[]) => Promise<unknown>)[]).map((fn, i) => [String(i), fn])
         : Object.entries(first as Record<string, (f: Frame, a: unknown[]) => Promise<unknown>>);
+      const entries = only === undefined ? all : all.filter(([k]) => only.has(k));
 
       const frames = entries.map(([k]) => frame.branch(scopeKind, scopeName, occurrence, k));
       const running = entries.map(([, fn], i) => fn(frames[i] as Frame, []));
@@ -1362,7 +1450,14 @@ class Interpreter {
       }
 
       const frames = branchKeys.map((k) => frame.branch(scopeKind, scopeName, occurrence, k));
-      const results = await Promise.all(items.map((item, i) => fn(frames[i] as Frame, [item, i])));
+      // A fanOut has no losers: every branch is a winner, so a migration's walk enters the ones the
+      // recorded run actually had. A branch the new source no longer produces is simply not walked,
+      // and its entries surface as orphans — which is the whole point of walking rather than
+      // consuming.
+      const walk = items
+        .map((item, i) => [item, i] as const)
+        .filter(([, i]) => only === undefined || only.has(branchKeys[i] as string));
+      const results = await Promise.all(walk.map(([item, i]) => fn(frames[i] as Frame, [item, i])));
       frame.clock.join(frames.map((f) => f.clock));
       return { branches: branchKeys, value: results };
     }

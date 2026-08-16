@@ -396,11 +396,26 @@ export class Journal {
    * has to be told separately, which is what `cancel.issued` tracks — but leaving it pending would
    * make a resumed run try to recover work the scope already decided to abandon.
    */
-  async consumeScope(scopeKeyString: string, endedAt: number): Promise<readonly string[]> {
+  async consumeScope(
+    scopeKeyString: string,
+    endedAt: number,
+    /**
+     * Restrict the accounting to these branch keys.
+     *
+     * A resume passes nothing and takes the whole subtree, which is correct because the program
+     * hash is unchanged and nothing under the scope can have been removed. A MIGRATION passes the
+     * losers alone: the branches it does not name are walked instead, so that an effect the edited
+     * source removed still shows up as an orphan rather than being accounted for by a scope that
+     * never entered it.
+     */
+    only?: ReadonlySet<string>,
+  ): Promise<readonly string[]> {
     const prefix = `${scopeKeyString}/b:`;
+    const wanted = only === undefined ? undefined : new Set([...only].map((b) => `${prefix}${b}/`));
     const touched: string[] = [];
     for (const k of this.order) {
       if (!k.startsWith(prefix)) continue;
+      if (wanted !== undefined && ![...wanted].some((w) => k.startsWith(w))) continue;
       this.consumed.add(k);
       touched.push(k);
       const entry = this.byKey.get(k);
