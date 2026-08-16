@@ -109,6 +109,49 @@ const presence = (id: string, name: string, role?: string, status = "idle") => (
   assert.equal(o.unread.total, 3);
 }
 
+// 4b — roles present: the card answers "is there one of these here, and how do I address it".
+{
+  const many = [
+    presence("ALICEID0000000000000000000000000000000000000", "alice", "reviewer"), // self
+    presence("B0000000000000000000000000000000000000000000", "board", "board"),
+    presence("C0000000000000000000000000000000000000000000", "carol", "worker"),
+    presence("D0000000000000000000000000000000000000000000", "dave", "worker"),
+    presence("E0000000000000000000000000000000000000000000", "erin"), // no role
+    // Past the eight the summary shows, so the roles field is proved to count the whole roster
+    // rather than the visible slice — which is the case that matters, since a space small enough
+    // to read off the summary never needed this field.
+    ...Array.from({ length: 9 }, (_, i) =>
+      presence(`F${String(i).padStart(43, "0")}`, `filler-${i}`, "filler"),
+    ),
+  ];
+  const o = buildOrientation(agentStub({ roster: many }), cfg({ creds: "CREDS" }), [], 1);
+
+  assert.deepEqual(
+    o.peers.roles,
+    [{ role: "board", count: 1 }, { role: "filler", count: 9 }, { role: "worker", count: 2 }],
+    "roles are counted over the whole roster, self excluded, sorted by name",
+  );
+  assert.equal(o.peers.present, 13, "a peer with no role still counts as present");
+  assert.ok(
+    !o.peers.roles.some((r) => r.role === "reviewer"),
+    "own role is not listed as present: the card is what is around you",
+  );
+
+  // The summary has truncated by now; the roles field must not have.
+  assert.ok(o.peers.summary.includes("more"), "precondition: this roster is past the summary cutoff");
+  const text = renderOrientation(o);
+  assert.match(text, /roles present: board \(1\), filler \(9\), worker \(2\)/);
+  assert.match(text, /found by its ROLE/, "the card carries the addressing rule, not just the counts");
+  assert.match(text, /cotal_roster/, "and names the tool that turns a role into an address");
+
+  // No roles at all ⇒ no line and no rule. A sentence about how to address a role, printed to an
+  // agent in a space with none, is advice that cannot be acted on.
+  const alone = buildOrientation(agentStub({ roster: [] }), cfg({ creds: "CREDS" }), [], 1);
+  assert.deepEqual(alone.peers.roles, []);
+  assert.ok(!renderOrientation(alone).includes("roles present"));
+  assert.ok(!renderOrientation(alone).includes("found by its ROLE"));
+}
+
 // 5 — the shared connector bootstrap is exported and points agents at the tool.
 {
   assert.ok(ORIENTATION_BOOTSTRAP.length > 0, "bootstrap is non-empty");

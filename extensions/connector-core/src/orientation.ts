@@ -58,7 +58,25 @@ export interface Orientation {
   capabilities: string[];
   /** The tools available to you, grouped so the surface reads small: `core` is the everyday loop. */
   tools: { core: OrientationTool[]; more: OrientationTool[] };
-  peers: { present: number; summary: string };
+  peers: {
+    present: number;
+    summary: string;
+    /**
+     * The distinct roles present, with how many peers hold each.
+     *
+     * Here as DATA rather than as advice, because that is the difference between a card that
+     * describes the space and one that lets an agent find something in it. An agent that needs a
+     * service peer — a board, an indexer, a gateway — has to learn two things: that one is running
+     * at all, and how to address it. The summary above answers neither past its first eight
+     * entries, and a name written into a brief answers the second one only until the peer is
+     * respawned under a different name.
+     *
+     * Peers with no role are counted in `present` and absent here: a peer that declares no role is
+     * not addressable by one, and inventing a bucket for them would list something nobody can ask
+     * for. Sorted by role name so the same space renders the same card twice running.
+     */
+    roles: { role: string; count: number }[];
+  };
   status: PresenceStatus;
   attention: AttentionMode;
   unread: { total: number };
@@ -101,6 +119,18 @@ export function buildOrientation(
     ? shown.join(", ") + (peers.length > shown.length ? `, +${peers.length - shown.length} more` : "")
     : "no other peers present";
 
+  // Counted over ALL peers, not the eight the summary shows: the point of this field is to answer
+  // "is there one of these here" for a space too big to list, which is exactly the space where the
+  // summary has already truncated.
+  const byRole = new Map<string, number>();
+  for (const p of peers) {
+    const role = p.card.role;
+    if (role) byRole.set(role, (byRole.get(role) ?? 0) + 1);
+  }
+  const roles = [...byRole]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([role, count]) => ({ role, count }));
+
   return {
     v: 1,
     generatedAt,
@@ -113,7 +143,7 @@ export function buildOrientation(
     },
     capabilities: config.capabilities ?? [],
     tools: { core, more },
-    peers: { present: peers.length, summary },
+    peers: { present: peers.length, summary, roles },
     status: agent.status,
     attention: agent.attention,
     unread: { total: agent.inboxCount() },
@@ -153,6 +183,18 @@ export function renderOrientation(o: Orientation): string {
     `Right now (snapshot @ ${new Date(o.generatedAt).toISOString()}):`,
     `  • status: ${o.status} · attention: ${o.attention}`,
     `  • peers present: ${o.peers.present} — ${o.peers.summary}`,
+  );
+  // Only when there is a role to address. With none, the rule below is a sentence about nothing.
+  if (o.peers.roles.length) {
+    lines.push(
+      `  • roles present: ${o.peers.roles.map((r) => `${r.role} (${r.count})`).join(", ")}`,
+      "    A peer that provides a service is found by its ROLE, not by a name someone wrote in a brief: " +
+        "pick the role here, take that peer's name from cotal_roster, and message it directly. Names are " +
+        "reassigned when a peer is respawned; a role is what the peer is. No role you need means it is not " +
+        "running in this space, and several holders mean you must choose rather than assume.",
+    );
+  }
+  lines.push(
     `  • unread: ${o.unread.total}`,
     "",
     `Act → read: ${o.actions.read} · reply on a channel: ${o.actions.replyChannel} · ` +
