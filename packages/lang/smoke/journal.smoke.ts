@@ -7,7 +7,7 @@
  * bug this keying scheme exists to prevent, so "diverged" has to be a verdict the interpreter
  * cannot accidentally treat as "miss".
  */
-import { Journal, RunClock, type JournalEntry } from "../src/journal.js";
+import { Journal, JournalAppendRejected, RunClock, type JournalEntry } from "../src/journal.js";
 import { KeyScope, digest } from "../src/keys.js";
 import { run } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
@@ -467,6 +467,49 @@ const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
   const same = new Journal({ run: "other", entries: foreign.entries() });
   ok("because the key would have matched — same scope, same name, same occurrence",
     same.lookup(k, "h1").verdict === "replay");
+}
+
+// ── a program cannot CATCH the loss of its own journal ────────────────────────────────────────
+//
+// Reproduced before this was fixed: a store that refused ONE append (the settle of the first
+// effect) and then worked again. The program's own `try/catch` swallowed the refusal, went on to
+// perform two more effects against the world, and the run returned normally — with nothing recorded
+// from the refusal onward, so a resume would perform all three again. A cancellation was already
+// uncatchable for exactly this reason: neither is a program error, and neither is the program's to
+// handle. The transient store is what makes the difference visible; a permanently dead one masks it,
+// because the next append fails too and the run stops for the wrong reason.
+{
+  let appends = 0;
+  const flaky = {
+    async append() {
+      appends += 1;
+      if (appends === 2) throw new Error("the stream refused this expectation");
+    },
+  };
+  const performed: string[] = [];
+  class Counting extends SimHandler {
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      performed.push(req.duration);
+      return await super.sleep(req, ctx);
+    }
+  }
+  const PROGRAM = `
+try {
+  await sleep("1h", { name: "first" });
+} catch (e) {
+  await sleep("2h", { name: "swallowed" });
+}
+await sleep("3h", { name: "after-the-catch" });
+`;
+  let outcome: unknown;
+  try {
+    await run(PROGRAM, { runId: "catch-1", handler: new Counting(), journal: new Journal({ run: "catch-1", store: flaky }) });
+    outcome = "COMPLETED";
+  } catch (e) { outcome = e; }
+  ok("a refused append ends the run rather than reaching the program's catch block",
+    outcome instanceof JournalAppendRejected, outcome instanceof Error ? outcome.name : outcome);
+  ok("and the program performed nothing after the refusal: the world stops where the journal did",
+    performed.join(",") === "1h", performed);
 }
 
 console.log(`journal.smoke: ${pass} checks passed`);
