@@ -32,10 +32,18 @@ import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { createServer, type AddressInfo } from "node:net";
 import {
-  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, CotalEndpoint, EpEnvelopeError,
+  probeConnect, newIdentity, mintLifecycleUid, DEV_OWNER, EpEnvelopeError,
   bindGoal, createGoal, commitGoalResult, readGoalResult, goalRefOf,
   type ActionContext, type EpAttributedReply, type EpCaller, type ParsedEpRequest,
 } from "@cotal-ai/core";
+// `CotalEndpoint` comes from SOURCE while everything else above comes from the built package, and
+// the split is deliberate. The long-lived-client behaviour graded below lives in
+// `invokeService`, and a suite that imports `dist` cannot make a claim about `src`: a mutation of
+// the source leaves it green, which is a mutation surviving for the one reason that says nothing
+// about the test. Nothing is shared across the two copies — the client's only contact with the
+// manager (which reaches core through `dist`) is over NATS, and the goal helpers above operate on
+// the manager's own context, so no branded object crosses the boundary.
+import { CotalEndpoint } from "../../../packages/core/src/index.js";
 import { recordMesh, loadManagerInstanceIdentity } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
