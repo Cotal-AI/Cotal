@@ -50,6 +50,19 @@ await createEndpointStreams(jsm, new Kvm(nc), SPACE);
 
 const lease = (holder: string, epoch: number, fencingToken: number) => ({ holder, epoch, fencingToken });
 
+/**
+ * A drive attempt, with a THROW as a third observable outcome.
+ *
+ * The claim under test is that losing a run comes back as an answer rather than as an exception, so
+ * a cell that let the exception escape would be asserting nothing — the suite would die instead of
+ * failing, and the failure would name no claim.
+ */
+type Attempt = Awaited<ReturnType<typeof driveRun>> | { readonly status: "threw"; readonly reason: Error };
+const attempt = async (p: Promise<Awaited<ReturnType<typeof driveRun>>>): Promise<Attempt> => {
+  try { return await p; } catch (e) { return { status: "threw" as const, reason: e as Error }; }
+};
+const why = (a: Attempt) => (a.status === "completed" ? "completed" : a.reason.name);
+
 /** A handler that COUNTS what it performed. A replayed effect must not reach it at all. */
 class CountingHandler extends SimHandler {
   readonly performed: string[] = [];
@@ -132,12 +145,12 @@ await sleep("2h", { name: "second" });
     space: SPACE, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, at: 1, expect: "existing",
   });
   release();
-  const firstOut = await started;
-  c("the superseded driver is RELEASED, not completed", firstOut.status === "released",
-    firstOut.status === "completed" ? "completed" : firstOut.reason.name);
+  const firstOut = await attempt(started);
+  c("the superseded driver is RELEASED, not completed and not thrown", firstOut.status === "released",
+    why(firstOut));
   c("and it says so as a durability failure, which is what the journal actually reported",
     firstOut.status === "released" && firstOut.reason.name === "JournalAppendRejected",
-    firstOut.status === "released" ? firstOut.reason.name : "-");
+    why(firstOut));
   c("the successor holds the run and can still write", (await usurper.append({ mine: true }, 1)) > 0);
 }
 
@@ -147,26 +160,26 @@ await sleep("2h", { name: "second" });
   const req = { space: SPACE, runId: "d-3", source: PROGRAM, handler };
   await startRun(js, jsm, { ...req, lease: lease("m1", 1, 5) });
 
-  const restart = await startRun(js, jsm, { ...req, lease: lease("m1", 1, 6) });
+  const restart = await attempt(startRun(js, jsm, { ...req, lease: lease("m1", 1, 6) }));
   c("starting a run that already has a journal is released, not silently re-run",
     restart.status === "released" && restart.reason.name === "RunAlreadyStarted",
-    restart.status === "released" ? restart.reason.name : "completed");
+    why(restart));
 
-  const stale = await driveRun(js, jsm, { ...req, lease: lease("m9", 9, 1) });
+  const stale = await attempt(driveRun(js, jsm, { ...req, lease: lease("m9", 9, 1) }));
   c("driving on an older fencing token is released", stale.status === "released" &&
-    stale.reason.name === "StaleLeaseToken", stale.status === "released" ? stale.reason.name : "completed");
+    stale.reason.name === "StaleLeaseToken", why(stale));
 
-  const impostor = await driveRun(js, jsm, { ...req, lease: lease("m2", 2, 5) });
+  const impostor = await attempt(driveRun(js, jsm, { ...req, lease: lease("m2", 2, 5) }));
   c("driving on another holder's current token is released", impostor.status === "released" &&
     impostor.reason.name === "ActivationNotAuthorized",
-    impostor.status === "released" ? impostor.reason.name : "completed");
+    why(impostor));
 
-  const missing = await driveRun(js, jsm, {
+  const missing = await attempt(driveRun(js, jsm, {
     space: SPACE, runId: "d-3-never", source: PROGRAM, handler, lease: lease("m1", 1, 1),
-  });
+  }));
   c("and resuming a run with no journal is released rather than started from scratch",
     missing.status === "released" && missing.reason.name === "RunNotResumable",
-    missing.status === "released" ? missing.reason.name : "completed");
+    why(missing));
   c("none of those touched the world", handler.performed.length === 2, handler.performed);
 }
 
