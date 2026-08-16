@@ -1653,7 +1653,8 @@ raw submissions.
    consumed by the acceptance itself, never checked apart from it. A submission that cannot
    yield a decision key; bytes that are not canonicalizable I-JSON (unparseable, duplicate
    object names, lone surrogate, out-of-range number), or no `id` within the token
-   grammar; is
+   grammar; **or bytes that breach the endpoint's declared `admissionCeiling`** (§13.7) — raw
+   size over `maxBytes`, nesting over `maxDepth`, or member count over `maxItems`; is
    **quarantined, never redelivered forever**: the canonicalizer publishes a
    **`QuarantineFact`** to the disjoint quarantine family
    `epf.<endpoint>.quar.<sourceSeq>` (§13.2); keyed by the source sequence, which exists
@@ -2222,6 +2223,14 @@ session.
 - `commands`, each declares name, input/output schemas, `class`, `targeted` (and if so which
   authz modes it admits), its **capability requirement** (the named capability minting maps to
   subjects, §13.9), its `effect` (below), and optional traits.
+  An endpoint that accepts `journal`-class submissions **MUST** declare
+  **`admissionCeiling`** = `{ maxBytes, maxDepth, maxItems }`, the bounds its canonicalizer
+  refuses beyond (§13.4 item 3). The ceiling is **declared, never compiled in**: it decides
+  what a submission durably *becomes*, so two conforming implementations that agree on the
+  wire and disagree on a constant would write different permanent decisions for identical
+  bytes. Declaring it puts the bound inside the digest-verified registered surface, so a
+  caller can see before submitting what will be refused and the contract digests bind it like
+  every other declared field.
 - `events`, name + payload schema; events ride the journal contract on the event plane
   (`epe….ev.<cluster>.<event>`), read-contained by event-topic grants.
 
