@@ -254,6 +254,38 @@ if (!opts.command) usage("no --command given (and none in the config)");
 
 assertCleanTree(cwd, a["allow-dirty"] !== undefined);
 
+// EVERY TARGET IS CHECKED BEFORE ANY SUITE RUNS, because a stale anchor is what a REPAIR leaves
+// behind and a repair is exactly what you run this tool after.
+//
+// `proveOne` already refuses an absent or ambiguous target — but per mutation, after the baseline
+// and after every earlier mutation has run the suite. A config whose first mutation is stale
+// therefore costs a full pass to find out, and the finding lands as one ERROR line among N verdicts
+// where a reader scanning for KILLED/SURVIVED does not see it: the guard went UNGRADED while the run
+// still looked healthy, and only the trailing tally disagreed. That happened three times in one day
+// in this tree, twice on the same mutation, the second time after the rule about it was written
+// down — because the rule was about how to READ the log, and reading correctly still costs the run.
+//
+// So it is asked up front, and all of them are reported at once rather than one per pass: a repair
+// usually disarms several anchors, and finding them one run at a time is the same discovery paid
+// for repeatedly.
+{
+  const stale = [];
+  for (const m of mutations) {
+    const path = join(cwd, m.file);
+    if (!existsSync(path)) { stale.push([m, `file not found: ${m.file}`]); continue; }
+    const hits = countOccurrences(readFileSync(path, "utf8"), m.find);
+    if (hits === 0) stale.push([m, `target string not found in ${m.file}`]);
+    else if (hits > 1 && !m.allowMultiple) stale.push([m, `target appears ${hits}× in ${m.file}`]);
+  }
+  if (stale.length > 0) {
+    say(`${C.red}REFUSING: ${stale.length} of ${mutations.length} mutation(s) name a target this tree does not have.${C.off}`);
+    say("Nothing would have been mutated for these, so their guards would go UNGRADED while the run looked healthy.");
+    for (const [m, why] of stale) say(`  ${C.dim}- ${m.name ?? m.label ?? m.find.slice(0, 48).replace(/\n/g, "⏎")}: ${why}${C.off}`);
+    say("Re-anchor them to the code as it is now — or, if the guard they grade has stopped being observable, retire them with the reason.");
+    process.exit(6);
+  }
+}
+
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
 say(`${C.dim}baseline: ${opts.command}${C.off}`);
 const base = run(opts.command, cwd, opts.timeoutMs);
