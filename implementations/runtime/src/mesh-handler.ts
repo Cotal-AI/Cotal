@@ -291,14 +291,18 @@ export class MeshHandler {
     const stream = chatStream(this.binding.space);
     await this.jsm.consumers.add(stream, waitConsumerConfig(this.binding.space, ctx.requestId, ev.channel));
     const consumer = await this.js.consumers.get(stream, durable);
+    // Set on each of the three paths that END the wait, and read by the cleanup below. A THROW is
+    // not one of them — see the note there.
+    let over = false;
     try {
       for (;;) {
         // The deadline is durable and authoritative — a checkpoint's settle fact — and this is only
         // the OBSERVATION of it, so the cost of polling is lateness bounded by one poll rather than
         // a wait that outlives its deadline.
         const ended = await this.expired(outer ?? (idleFor === undefined ? primary : undefined));
-        if (ended !== undefined) return null;
+        if (ended !== undefined) { over = true; return null; }
         if (idleFor !== undefined && (await this.expired(primary)) !== undefined) {
+          over = true;
           return { channel: ev.channel, at: this.now() };
         }
         for await (const m of await consumer.fetch({ max_messages: 16, expires: WAIT_POLL_MS })) {
@@ -318,16 +322,36 @@ export class MeshHandler {
           m.ack();
           if (primary !== undefined) await this.cancelTimer(primary);
           if (outer !== undefined) await this.cancelTimer(outer);
+          over = true;
           return msg;
         }
       }
     } finally {
-      // The wait is over however it ended, so its position is worthless. Deleted rather than left
-      // to an inactivity threshold: a threshold that could reap a LIVE wait's consumer while its
+      // A THROW IS NOT AN ENDING, and that is what this used to miss by cleaning up unconditionally.
+      //
+      // The three returns above are the wait being OVER — it matched, its deadline passed, or its
+      // idle window closed — and then its position is worthless. A throw is the opposite: the step
+      // is still pending, someone will retry it, and the consumer's position is the only record of
+      // where this run had reached on the channel. `ctx.bind` is a JOURNAL APPEND and a journal can
+      // refuse one (L5010, RunSuperseded), so this is reached in ordinary operation, not only by a
+      // bug — and the source comment above it, which promises a crash between bind and ack is
+      // recoverable, was true only of a crash that never runs this block at all.
+      //
+      // Measured before the repair: the wait matched at `chatSeq` 2, the bind was refused, the
+      // consumer was deleted on the way out, and the retry — which carries no recorded sequence,
+      // because recording it is exactly what failed — created a fresh consumer at
+      // `deliver_policy: "new"` and found NOTHING. The message sat on the stream, permanently
+      // invisible to that run, with nothing anywhere red.
+      //
+      // Keeping it costs one consumer on a run that is abandoned rather than retried. That is the
+      // same cost a host crash already pays, and it is the cost this comment's original argument
+      // deliberately chose: an inactivity threshold that could reap a LIVE wait's consumer while its
       // host was down would lose exactly the events the durable exists to hold.
-      try {
-        await this.jsm.consumers.delete(stream, durable);
-      } catch { /* already gone, or never created — either way there is nothing to hold */ }
+      if (over) {
+        try {
+          await this.jsm.consumers.delete(stream, durable);
+        } catch { /* already gone, or never created — either way there is nothing to hold */ }
+      }
     }
   }
 

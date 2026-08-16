@@ -362,6 +362,73 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
     evil?.message.includes("bounded regular expression") === true, evil?.message?.slice(0, 70));
 }
 
+// ── 10) A BIND THAT IS REFUSED DOES NOT THROW THE MATCH AWAY ──────────────────────────────────
+//
+// The residual a review seat named and could not force, and it took a harness that already existed:
+// this suite has a chat stream to publish onto, which the seat's brief did not let it see.
+//
+// The handler says "BIND BEFORE ACK ... a crash in between redelivers it". That is true of a crash,
+// which never runs the cleanup at all. It was NOT true of a `ctx.bind` that FAILS — and a bind is a
+// journal append, which a journal refuses in ordinary operation (L5010, RunSuperseded). The cleanup
+// ran on every exit, so the durable consumer holding this run's position on the channel was deleted
+// on the way out; the retry carries no recorded sequence, because recording it is exactly what
+// failed, so it created a fresh consumer at `deliver_policy: "new"` and found NOTHING. Measured
+// before the repair: matched at a real sequence, bound, refused, consumer gone, message permanently
+// invisible to that run with nothing anywhere red.
+//
+// WHAT IS ASSERTED HERE IS THE PART THIS CODE OWNS: the position survives, with the message still
+// unacked. The redelivery that then consumes it is NATS's `ack_wait` (server default, 30s) and was
+// measured end-to-end twice — the retry found the message again and re-bound a sequence — but is not
+// re-run here, because a 45-second sleep in the gate buys a fact about the broker, not about us.
+{
+  const id = tok("bindfail");
+  const attempted: unknown[] = [];
+  const refusing = {
+    requestId: id, attempt: 0,
+    bind: async (e: unknown) => { attempted.push(e); throw new Error("L5010 journal append rejected"); },
+  } as never;
+
+  const aborted = handler.wait({ event: { event: "message", channel: CHANNEL } }, refusing);
+  await wait(300);
+  await say("the message whose bind gets refused");
+  const outcome = await aborted.then(() => null, (e: Error) => e);
+  c("a refused bind comes back as the refusal, not as a match", outcome?.message.includes("L5010") === true,
+    outcome?.message?.slice(0, 60));
+  // The bind was REACHED, or the cell below is about a wait that never matched anything.
+  c("and the wait had genuinely matched: it reached the bind with a sequence",
+    typeof (attempted[0] as { chatSeq?: number })?.chatSeq === "number", JSON.stringify(attempted));
+
+  const after = await jsm.consumers.info(chatStream(SPACE), waitConsumerName(id)).then(
+    (i) => ({ exists: true, ackPending: i.num_ack_pending }),
+    () => ({ exists: false, ackPending: -1 }));
+  c("REPAIRED: the wait's position SURVIVES a refused bind — a throw is not the wait being over",
+    after.exists, after);
+  // BOTH HALVES. A consumer that survives but has already acked the message holds a position past
+  // the very message the run needs, which is the same loss wearing a healthier shape.
+  c("...with the matched message still unacked, which is what makes it recoverable at all",
+    after.ackPending >= 1, after);
+}
+
+// ── 10b) but a wait that is genuinely OVER still cleans up after itself ────────────────────────
+//
+// The narrowness, and it is load-bearing: keeping the consumer on every exit would leak one per
+// wait, and the reason the handler deletes rather than leaning on an inactivity threshold is that a
+// threshold could reap a LIVE wait's consumer while its host was down — losing exactly the events
+// the durable exists to hold. Cell 1 pins the matched ending; this pins the TIMED-OUT one, which is
+// the exit the `over` flag is most easily got wrong on.
+{
+  const id = tok("expcleanup");
+  const { ctx: k } = ctx(id);
+  const awaited = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "2s" }, k);
+  await wait(400);
+  await armPending();
+  await fireWhenDue(id);
+  const got = await awaited;
+  c("a wait that reaches its deadline ends as null", got === null, JSON.stringify(got));
+  c("and its consumer is gone: an ENDED wait's position is worthless and is not left behind",
+    (await jsm.consumers.info(chatStream(SPACE), waitConsumerName(id)).then(() => "still-there", () => "gone")) === "gone");
+}
+
 console.log(`mesh-wait.smoke: ${ok} passed, ${fail} failed`);
 done();
 process.exit(fail === 0 ? 0 : 1);
