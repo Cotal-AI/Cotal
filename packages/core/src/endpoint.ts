@@ -1452,8 +1452,21 @@ export class CotalEndpoint extends EventEmitter {
             : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;
           if (refusalCode === undefined)
             throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error?.details);
+          // ONLY THE RESOLVE IS WRAPPED. Widening this to cover the re-issue itself is the exact
+          // duplicate-effect defect this command exists to prevent, inverted: a re-issue that
+          // PUBLISHED AND RAN can still throw (an unfenced responder answers, the post-reply
+          // currency check raises `respondedButUnbound`), and re-wrapping that as the first hop's
+          // refusal hands the caller `WAS NOT RUN` plus the bind-refused marker for a command that
+          // executed. The caller then treats its next attempt as a first attempt. That version
+          // existed; a two-hop fixture measured attempts=2, executions=1, wrappedAsNotRun=true.
+          //
+          // A re-issue that fails on its own terms therefore propagates its OWN error unchanged.
+          // `respondedButUnbound` in particular must reach the caller as itself: it is the marker
+          // that says a responder answered and the effect may have landed, which is the opposite
+          // of what the fence's marker asserts.
+          let reissueTarget;
           try {
-            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+            reissueTarget = await resolve();
           } catch (reissue) {
             throw new EpEnvelopeError(
               refusalCode,
@@ -1461,6 +1474,7 @@ export class CotalEndpoint extends EventEmitter {
               r.reply.error?.details,
             );
           }
+          return await invokeCommand(nc, this.space, reissueTarget, command, args, invokeOpts);
         }
         return r;
       } catch (e) {

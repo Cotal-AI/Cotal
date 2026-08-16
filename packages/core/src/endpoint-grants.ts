@@ -226,7 +226,23 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  heuristic standing in for something the wire does not carry. The general fix is a safety
  *  annotation on the command contract plus an effect-outcome in the reply, so a caller can KNOW
  *  whether the first execution landed rather than guessing from a name. That is a SPEC change and
- *  is deliberately not made here. */
+ *  is deliberately not made here.
+ *
+ *  **THIS TABLE MUST NOT SURVIVE `protocol.v: 2`.** Half of that general fix now exists in the
+ *  spec: §13.7 `effect` (`read`/`write`) is an author's declaration on the command contract, and it
+ *  rides a `v: 2` descriptor. It cannot reach the wire in this tree — `endpoint-serve.ts` pins the
+ *  descriptor schema to `v: { const: 1 }` and the registry refuses a non-1 — so this table is not
+ *  competing with `effect`; it stands in for a field no responder here can emit.
+ *
+ *  §13.7 also says a caller resolving a `v: 1` descriptor MUST treat every command under it as
+ *  `write`, and every descriptor in this tree is `v: 1`. That MUST binds a caller reasoning FROM A
+ *  DESCRIPTOR: it forbids inventing repeat-safety the wire did not give you. This table derives
+ *  nothing from a descriptor. It is first-party knowledge of first-party endpoints, hardcoded by
+ *  the people who wrote those handlers, and it fails CLOSED — an unlisted endpoint or command is
+ *  not repeat-safe. That is a different claim, and it stops being tenable the moment an author can
+ *  declare `effect` on the wire, because then allowlist-says-safe can contradict
+ *  author-declares-`write`. `smoke:unfenced-responder` carries a tripwire on the `v: 1` pin so that
+ *  direction cannot open without this table being named. */
 export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
   [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect"]),
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),

@@ -151,13 +151,18 @@ function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity)
     boundTo: { instanceId: b.instanceId, epoch: b.epoch },
     servedBy: { instanceId: identity.instanceId, epoch: identity.epoch },
   };
+  // §13.3 requires the outcome, not just the marker: a responder refusing BEFORE dispatching to
+  // the handler MUST carry `not-executed`, and an omitted outcome MUST be read as `unknown`. The
+  // `bind-refused` detail is this implementation's own vocabulary; `outcome` is the spec's, and a
+  // conformant peer that has never heard of the detail reads only the latter. Emitting one without
+  // the other is what makes two implementations disagree about whether the command ran.
   if (b.instanceId !== identity.instanceId)
     throw new EpEnvelopeError("failed-precondition",
       `this request reached ${identity.endpoint} instance ${identity.instanceId}, but the caller bound to ${b.instanceId}; the class queue chose a different member and "${env.op.command}" WAS NOT RUN - no effect of it exists here. Re-resolve and re-issue, or address one instance (SPEC 13.2)`,
-      [detail]);
+      [detail], "not-executed");
   throw new EpEnvelopeError("expired",
     `this request reached ${identity.endpoint} instance ${identity.instanceId} at epoch ${identity.epoch}, but the caller bound to epoch ${b.epoch} of the same instance; this incarnation is not the one it resolved against and "${env.op.command}" WAS NOT RUN - no effect of it exists here (SPEC 13.2)`,
-    [detail]);
+    [detail], "not-executed");
 }
 
 /** §13.3 target currency at the pre-effect seam, for EVERY body-targeted request (call or

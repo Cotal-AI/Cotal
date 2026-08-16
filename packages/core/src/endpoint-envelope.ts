@@ -20,8 +20,8 @@ import type { EndpointRef } from "./types.js";
 // The error catalog + EpEnvelopeError live in a node-free module so the browser session bundle can
 // use them without dragging in schema-profile's load-time digest (node:crypto). Re-exported here so
 // every existing `@cotal-ai/core` consumer keeps its import path.
-import { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode, type EpError, type EpErrorDetail } from "./endpoint-error.js";
-export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, EP_UNANSWERED, unansweredRequest, EP_REGISTRY_READ_FAILED, registryReadFailed, EP_BIND_REFUSED, replyRefusedBeforeEffect, type EpErrorCode, type EpError, type EpErrorDetail, type EpUnboundResponderDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpBindRefusedDetail } from "./endpoint-error.js";
+import { EP_ERROR_CODES, EpEnvelopeError, type EpErrorCode, type EpError, type EpErrorDetail, type EpEffectOutcome } from "./endpoint-error.js";
+export { EP_ERROR_CODES, EpEnvelopeError, EP_UNBOUND_RESPONDER, respondedButUnbound, EP_UNANSWERED, unansweredRequest, EP_REGISTRY_READ_FAILED, registryReadFailed, EP_BIND_REFUSED, replyRefusedBeforeEffect, type EpErrorCode, type EpError, type EpErrorDetail, type EpUnboundResponderDetail, type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpBindRefusedDetail, type EpEffectOutcome } from "./endpoint-error.js";
 
 /** The envelope schema version — independent of the wire `protocolVersion`; starts at its own
  *  v1 inside the v0.4 revision. Other values are rejected (`unsupported-version`). */
@@ -403,7 +403,18 @@ function pickError(v: unknown): EpError {
       return o as EpErrorDetail;
     });
   }
-  return { code, message, ...(details ? { details } : {}) };
+  // §13.3 Effect outcome. Parsed rather than dropped: this rebuilds the error from scratch, so a
+  // field it does not name is discarded, and discarding THIS one silently downgrades a responder's
+  // `not-executed` to an omitted outcome, which §13.3 says MUST be read as `unknown`. That turns a
+  // proof of non-execution into an absence of evidence at the parser, for a caller that did
+  // everything right. An unrecognised value is refused rather than passed through or coerced.
+  let outcome: EpEffectOutcome | undefined;
+  if (e.outcome !== undefined) {
+    if (e.outcome !== "executed" && e.outcome !== "not-executed" && e.outcome !== "unknown")
+      fail("bad-request", `error.outcome ${JSON.stringify(e.outcome)} is not one of executed, not-executed, unknown (SPEC 13.3)`);
+    outcome = e.outcome;
+  }
+  return { code, message, ...(details ? { details } : {}), ...(outcome ? { outcome } : {}) };
 }
 
 /** Shape-validate a reply at the caller's consuming boundary. `data` is schema-validated by the

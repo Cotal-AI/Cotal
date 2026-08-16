@@ -29,11 +29,16 @@
  * and a re-issue that cannot be resolved surfaces the ORIGINAL refusal rather than the resolve's
  * own timeout.
  *
+ * And the COMPOSED pair (cell 6), which is the one arm needing both populations at once: a fenced
+ * hop 1 authorizes a re-issue, an unfenced hop 2 RUNS it and then trips the caller's own currency
+ * check. Two errors asserting opposite things, and the one that must reach the caller is the
+ * second — subordinating it to the first reports `WAS NOT RUN` for a command that ran.
+ *
  * Open mode, ephemeral loopback broker, no creds. Needs `nats-server` on PATH.
  * Run: pnpm smoke:unfenced-responder
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -55,7 +60,7 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
 /** Declared, not implied: a live suite can end in ways that redden no line, and `fail === 0` reads
  *  as PASS in every one of them. Measured by this lane's own crash controls — a mid-run exit prints
  *  nothing at all, and an import-time throw does not even reach this handler. */
-const EXPECTED_CELLS = 24;
+const EXPECTED_CELLS = 33;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -86,6 +91,17 @@ const nc = await connect({ servers: `nats://127.0.0.1:${PORT}` });
  *  the rest are fenced responders whose refusal is, in one way each, not derivable by the caller. */
 type Mode = "unfenced" | "fenced" | "forged-boundTo" | "forged-servedBy";
 let mode: Mode = "unfenced";
+/**
+ * THE MODE FOR THE **NEXT** REQUEST, consumed once (cell 6 only, `null` everywhere else).
+ *
+ * Every arm above fixes `mode` for the whole call, so both hops of a recovery always meet a
+ * responder with the SAME knowledge of the field — and the one pair that matters most cannot be
+ * built that way: hop 1 fenced (so a re-issue is made at all) and hop 2 UNFENCED (so the re-issue
+ * runs and then throws on the caller's own currency check). That is not a contrived shape; it is
+ * what a class queue looks like mid-rolling-upgrade, and it is the shape under which re-wrapping
+ * the re-issue hands the caller `WAS NOT RUN` for a command that ran.
+ */
+let modeAfterThisRequest: Mode | null = null;
 /** THE INSTRUMENTS, and they answer two different questions. `attempts` counts every `poke` REQUEST
  *  that reached this responder — that is the caller's decision to try again, observed at the far
  *  end rather than inferred from a publish count. `executions` counts the ones that RAN. Under the
@@ -129,6 +145,8 @@ const sub = nc.subscribe(epServeFilter(SPACE, "one", EP), {
       };
     }
     nc.publish(deriveReplySubject(SPACE, parsed, { instanceId: IID_REAL, epoch: EPOCH }), enc.encode(JSON.stringify(reply)));
+    // Flipped AFTER the reply so this request was decided entirely by the mode it was sent under.
+    if (modeAfterThisRequest !== null) { mode = modeAfterThisRequest; modeAfterThisRequest = null; }
   },
 });
 
@@ -200,6 +218,24 @@ try {
     !isRepeatSafeCommand(EP, "poke"));
   c("...and the fenced arm's re-issue is therefore attributable to the refusal alone",
     !isRepeatSafeCommand(EP, "poke") && isRepeatSafeCommand(EP, "describe"));
+
+  // THE TRIPWIRE. `REPEAT_SAFE_COMMANDS` is a stand-in for §13.7 `effect`, which rides
+  // `protocol.v: 2` and cannot reach the wire while the descriptor is pinned to 1: the responder
+  // cannot publish a 2, the registry refuses one, so no caller in this tree can ever read an
+  // author-declared `read`/`write`. That pin is the whole reason the allowlist is not the
+  // descriptor-derived repeat-safety §13.7 forbids — it derives nothing from a descriptor, because
+  // there is nothing there to derive from.
+  //
+  // The dangerous direction is allowlist-says-safe against author-declares-`write`, and it opens
+  // the moment someone lifts the pin. This cell fires FIRST. It is a source-text assertion and
+  // says so: it grades that the pin is still written, not that the two fences behave — the schema
+  // constant is module-private and the behaviour has no reachable seam from here. That is enough
+  // for a tripwire, whose whole job is to be impossible to remove silently.
+  const servePinned = /protocol: \{ type: "object", required: \["v"\], properties: \{ v: \{ const: 1 \} \} \}/
+    .test(readFileSync(new URL("../src/endpoint-serve.ts", import.meta.url), "utf8"));
+  c("the describe descriptor is still pinned to protocol.v 1 — if this is red, §13.7 `effect` can " +
+    "now reach the wire and REPEAT_SAFE_COMMANDS (endpoint-grants.ts) must go, not coexist with it",
+    servePinned);
 
   // ---- 1. THE PAIR UNDER TEST ------------------------------------------------------------------
   // A RE-ISSUE HERE WOULD REACH THE RESPONDER AND WOULD EXECUTE. `reseedTo = GHOST` makes the
@@ -311,6 +347,44 @@ try {
     c(`...and nothing was re-issued on it (${label})`,
       executions === e0 && ep.splitRecoveryCount === s0, { executions, e0, splits: ep.splitRecoveryCount, s0 });
   }
+
+  // ---- 6. THE COMPOSED PAIR: FENCED HOP 1, UNFENCED HOP 2 --------------------------------------
+  // The gap this suite had. Cells 1-5 each grade ONE responder held at ONE mode for a whole call,
+  // so none of them can produce the case where the RE-ISSUE is the thing that goes wrong on its
+  // own terms. Here hop 1 refuses before running (the fence works, a re-issue is authorized), the
+  // re-resolve still finds a stale bind, and hop 2 meets a responder that has never heard of the
+  // field: it RUNS the command and answers, and the caller's post-reply currency check throws.
+  //
+  // Two errors are now in play and they assert OPPOSITE things. The wrong answer is to subordinate
+  // the second to the first — a caller told `WAS NOT RUN` plus `bind-refused` for a command that
+  // executed will make its next attempt believing it is the first. So what must reach the caller
+  // is hop 2's own `respondedButUnbound`: a responder answered, and the effect may have landed.
+  console.log("\n6. fenced refusal, then a re-issue that RAN and still failed");
+  mode = "fenced";
+  modeAfterThisRequest = "unfenced";
+  reseedTo = GHOST;
+  seed();
+  const exec6 = executions, att6 = attempts, splits6 = ep.splitRecoveryCount;
+  let composed: unknown;
+  try { await poke(); } catch (e) { composed = e; }
+  const msg6 = composed instanceof Error ? composed.message : String(composed);
+  c("TWO attempts reached the responder: the refusal really was recovered",
+    attempts === att6 + 2, { att6, attempts });
+  c("...and the SECOND one EXECUTED, because that responder does not read `bind`",
+    executions === exec6 + 1, { exec6, executions });
+  c("...the call still THROWS: the reply came from an incarnation the handle is not bound to",
+    composed !== undefined, composed);
+  c("...carrying `respondedButUnbound` — a responder answered, so the effect MAY have landed",
+    respondedButUnbound(composed), msg6.slice(0, 180));
+  c("...and NOT `bind-refused`, which would assert the opposite of what just happened",
+    !replyRefusedBeforeEffect(composed instanceof EpEnvelopeError ? composed.toEpError() : undefined),
+    composed instanceof EpEnvelopeError ? composed.details : composed);
+  c("...and not the first hop's `WAS NOT RUN`, for a command that ran",
+    !/WAS NOT RUN/.test(msg6), msg6.slice(0, 200));
+  c("...and no THIRD attempt: an unsafe command is not auto-retried on that marker",
+    attempts === att6 + 2 && executions === exec6 + 1, { attempts, executions });
+  c("...while the recovery is counted exactly once, for the hop that was actually recovered",
+    ep.splitRecoveryCount === splits6 + 1, { splits6, after: ep.splitRecoveryCount });
 } finally {
   sub.unsubscribe();
   await ep.stop().catch(() => {});

@@ -80,8 +80,11 @@ splits now surface instead of being re-issued, plus the repeat-safe `ps` reads o
 `down -f` and the console, which keep absorbing them. The one-shot CLI commands (`cotal ps`,
 `cotal models`, `stop`, `attach`, `spawn --detach`) resolve fresh and invoke once on a short-lived
 connection; they had no cached bind and no retry, and are unchanged. That is the clearest statement of what the list is: a client-side
-stand-in for something the wire does not yet carry (a safety annotation on the command contract and
-an effect outcome in the reply), which remains open.
+stand-in for `effect` (SPEC 13.7), which the wire now carries and this change does not yet consult.
+The spec grew both halves after this work began: `effect` declares whether repeating a command is
+safe, and rides `protocol.v: 2`, while this tree still registers and resolves at `v: 1`, under which
+every command reads as a write. Reconciling the two is a separate change and is named here rather
+than described as absent from the wire.
 
 The CLI no longer prefixes every failed manager call with "no manager reachable on the ep rails".
 That verdict is stated only where the call went unanswered, as core marks it: no responder, or the

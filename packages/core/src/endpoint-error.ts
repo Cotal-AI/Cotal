@@ -158,22 +158,36 @@ export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
   return (e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED);
 }
 
+/** §13.3 **Effect outcome**: whether the command's effect occurred. Emitted by the RESPONDER,
+ *  which is the only party that knows. An omitted `outcome` MUST be read as `unknown`, so absence
+ *  is never evidence of non-execution. */
+export type EpEffectOutcome = "executed" | "not-executed" | "unknown";
+
 /** The `EndpointReply.error` shape. */
 export interface EpError {
   code: string;
   message: string;
   details?: EpErrorDetail[];
+  /** §13.3. A responder refusing BEFORE dispatching to the handler MUST carry `not-executed`;
+   *  one refusing AFTER the handler ran MUST carry `executed`; one that cannot tell MUST carry
+   *  `unknown` rather than guess. Absent on a caller-raised refusal, which is not a reply. */
+  outcome?: EpEffectOutcome;
 }
 
 /** A consuming-boundary rejection: the catalog code plus a human message. Boundaries convert it
  *  to an `EndpointReply` error via {@link EpEnvelopeError.toEpError} (or, on reply-less planes,
  *  to the §13.4 decision/quarantine fact carrying the same code). */
 export class EpEnvelopeError extends Error {
-  constructor(readonly code: EpErrorCode, message: string, readonly details?: EpErrorDetail[]) {
+  constructor(readonly code: EpErrorCode, message: string, readonly details?: EpErrorDetail[],
+              readonly outcome?: EpEffectOutcome) {
     super(message);
     this.name = "EpEnvelopeError";
   }
   toEpError(): EpError {
-    return { code: this.code, message: this.message, ...(this.details ? { details: this.details } : {}) };
+    return {
+      code: this.code, message: this.message,
+      ...(this.details ? { details: this.details } : {}),
+      ...(this.outcome ? { outcome: this.outcome } : {}),
+    };
   }
 }
