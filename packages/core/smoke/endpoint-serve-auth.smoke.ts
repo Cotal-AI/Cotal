@@ -303,7 +303,13 @@ try {
       ephRows.pub.every((r) => !r.startsWith("$JS.")));
     const DOC_J = {
       urn: "ai.cotal.jobsrv", revision: 1, attributes: [], events: [],
-      commands: [{ name: "submitjob", class: "journal", targeted: false, capability: "jobsrv.call", inputDigest: D, outputDigest: D }],
+      // The ceiling is a MUST on a JOURNAL-class command, marker or no marker (SPEC:1465 / §13.7):
+      // `submitjob` is a real journal-class NON-action command, so it receives submissions and the
+      // canonicalizer must read its bounds from the digest-verified surface rather than a constant.
+      commands: [{
+        name: "submitjob", class: "journal", targeted: false, capability: "jobsrv.call",
+        inputDigest: D, outputDigest: D, admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 },
+      }],
     };
     const DOCJ_ROOT = contractDigest(DOC_J);
     const DCJ = contractDigest({ v: 1, root: DOCJ_ROOT, members: [] });
