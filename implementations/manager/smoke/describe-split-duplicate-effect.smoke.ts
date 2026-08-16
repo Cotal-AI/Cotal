@@ -1,39 +1,19 @@
 /**
  * DESCRIBE/INVOKE SPLIT — DUPLICATE EFFECT ON THE CLASS QUEUE (live repro).
  *
- * The mechanism, all of it in core:
- *  1. `invokeService` resolves an endpoint once and CACHES the resolved service, binding the
- *     describe winner's instance (`endpoint.ts` resolve cache).
- *  2. An unpinned invoke routes to the class `one` queue, which picks its own winner — the describe
- *     and the invoke are two independent trips through the same anycast, so in a multi-instance
- *     space they land on different instances on an ordinary, correct request.
- *  3. `describeBound` is handed to `epCall` as its `currentEpoch` hook, and `epCall` calls it
- *     AFTER the reply lands. So when instance B answers a handle resolved against A, B HAS ALREADY
- *     EXECUTED THE COMMAND when the `failed-precondition` is raised.
- *  4. `invokeService` catches exactly that code, drops the cache, re-resolves and re-invokes WITH
- *     THE SAME ARGS. The refusal is never surfaced; the caller sees the second attempt's outcome.
+ * A resolved handle binds the describe winner's instance; an unpinned invoke goes to the class
+ * queue, which picks its own. The currency check runs AFTER the reply lands, so a non-matching
+ * responder has already executed the command when `failed-precondition` is raised, and
+ * `invokeService` re-invokes with the same args — for a write, a duplicate the caller cannot see.
  *
- * For a read this is waste. For a WRITE it is a duplicate effect the caller cannot see, and the
- * manager already registers writes on this rail (`spawn`, `despawn`, `purge`, `launch`, the resume
- * family, and the one used here).
+ * `define-persona`, never `spawn`: a duplicated `spawn` starts a second real agent process.
  *
- * WHY `define-persona` AND NOT `spawn`: a duplicated `spawn` starts a second real agent process.
- * `define-persona` is the most benign write on this surface — it writes one small file and nothing
- * else, a repeat is not destructive, and it rides the SAME `invokeService` path, the same class
- * queue and the same post-reply currency hook. It is admitted by the same `spawn` capability
- * (`SPAWN_SERVICE_COMMANDS`).
- *
- * THE EFFECT IS COUNTED AT THE RESPONDER, NOT AT THE CALLER — the whole defect is that the caller's
- * view is wrong, so the caller cannot be the instrument. Each manager writes personas into its OWN
- * workspace root, so one persona name present in BOTH roots is direct proof the command executed on
- * BOTH instances.
- *
- * This UNDERCOUNTS deliberately: a retry that lands on the same instance executes twice and leaves
- * one file. Every number here is therefore a floor, which is the safe direction for a defect claim.
+ * Effects are counted at the RESPONDERS because the caller's view is what is under test — each
+ * manager writes personas into its own root, so one name in BOTH roots proves it ran twice. This
+ * undercounts (a retry landing on the same instance leaves one file), so every number is a floor.
  *
  * Run: pnpm smoke:describe-split-effect   (needs nats-server on PATH; boots its own broker)
- */
-import { randomUUID } from "node:crypto";
+ */import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
@@ -47,10 +27,8 @@ import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 
-// The responder fence's marker, as a LITERAL and deliberately not imported: this harness must run
-// unchanged on tips that predate the fence (where the constant does not exist) so the two can be
-// compared by the same instrument. An import here would make the probe refuse to load on exactly
-// the tip it is the baseline for.
+// A literal, not an import: the constant does not exist on tips predating the fence, and an import
+// would make this probe refuse to load on the very tip it is the baseline for.
 const EP_BIND_REFUSED = "ai.cotal.ep.bind-refused";
 
 const freePort = (): Promise<number> =>
@@ -62,8 +40,7 @@ const freePort = (): Promise<number> =>
 const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 
-// FIRST ACTION: scrub inherited live-broker pointers, then verify the scrub held. This probe
-// performs WRITES; it must never be able to reach a real mesh.
+// This probe performs WRITES; it must never be able to reach a real mesh.
 const LIVE_HOST = "broker.cotal.ai";
 for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete process.env[k];
 for (const [k, v] of Object.entries(process.env))
@@ -121,8 +98,7 @@ try {
     card: { name: "epsplit-caller", owner: DEV_OWNER, actor: id.id, kind: "endpoint" },
   });
   ep.on("error", () => {});
-  // The fence's repair path emits this when it re-resolves and re-issues a bind-refused call. On a
-  // tip that predates the fence the event simply never fires, which keeps one instrument on both.
+  // Emitted by the fence's repair path; never fires on a pre-fence tip, so one instrument grades both.
   let recoveriesThisTrial = 0, recoveriesTotal = 0;
   ep.on("split-recovered", () => { recoveriesThisTrial++; recoveriesTotal++; });
   await ep.start();
@@ -207,17 +183,9 @@ try {
     console.log(`never produced a split at all, and the harness did not reach the condition.`);
   }
 
-  // The claim under test is that a duplicate CAN occur and is invisible. Assert exactly that, and
-  // nothing about a fix: no remedy is adopted, so there is no post-fix state to gate here.
-  // A ZERO IS ONLY EVIDENCE IF A SPLIT ACTUALLY HAPPENED. The three observable signatures of a
-  // split are tip-dependent and this probe must grade both tips with one rule: a duplicate (no
-  // fence, retry crossed instances), a throw (no fence, the second attempt also mismatched), or a
-  // `bind-refused` refusal (fence present, refused before the handler). If ALL THREE are zero the
-  // queue never split during this run and it grades nothing - which is NOT the same as the defect
-  // being absent, and must not be reported as if it were.
-  //
-  // Keyed on the union rather than on the fence marker alone, because the marker cannot exist on a
-  // pre-fence tip: gating on it would label every clean baseline run "unfalsifiable".
+  // A zero is only evidence if a split actually happened, and the signatures differ by tip:
+  // duplicate, throw, or bind-refused. All three zero means the queue never split and this run
+  // grades nothing — which is not the same as the defect being absent.
   const splitSeen = dupes.length + trials.filter((t) => t.callerSaw === "throw").length + bindRefused;
   if (splitSeen === 0) {
     fail++;
