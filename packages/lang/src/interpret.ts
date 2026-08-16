@@ -410,6 +410,36 @@ export class RunDivergence extends Error {
   }
 }
 
+/**
+ * A migration's walk was sent into a recorded branch the new source does not have.
+ *
+ * Its own code rather than `RunDivergence`, for the reason the L5005/L5006/L5007 collision in the
+ * orphan table bought: `RunDivergence` is a HASH comparison and says so in both its fields and its
+ * message, and putting branch NAMES in fields called `recordedHash`/`programHash` would be a lie in
+ * the payload a repair loop reads. The author's repair differs too — this one is fixed by looking at
+ * an arm's NAME, not at its body.
+ */
+export class ScopeBranchMissing extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly scope: string,
+    readonly missing: readonly string[],
+    readonly recorded: readonly string[],
+    readonly source: readonly string[],
+  ) {
+    super(
+      `L5022 A recorded branch is not in the migrated source\n\n  step  ${scopeKey}   BRANCH MISSING\n`
+        + `        recorded  ${recorded.join(", ")}\n        source    ${source.join(", ")}\n`
+        + `        missing   ${missing.join(", ")}\n\n`
+        + `This ${scope} settled on ${missing.length === 1 ? "a branch" : "branches"} the new source no longer declares, so the walk `
+        + `cannot enter ${missing.length === 1 ? "it" : "them"} to check what ran inside. Migrating anyway would hand the program a `
+        + `result produced by an arm it does not have.\n\nOptions\n  restore the branch ${missing.map((k) => `\`${k}\``).join(", ")}   `
+        + `keep the recorded result\n  fork(run, "${scopeKey}")   re-run this scope on the new arms`,
+    );
+    this.name = "ScopeBranchMissing";
+  }
+}
+
 class Interpreter {
   readonly journal: Journal;
   readonly prng: Prng;
@@ -1408,6 +1438,29 @@ class Interpreter {
         ? (first as ((f: Frame, a: unknown[]) => Promise<unknown>)[]).map((fn, i) => [String(i), fn])
         : Object.entries(first as Record<string, (f: Frame, a: unknown[]) => Promise<unknown>>);
       const entries = only === undefined ? all : all.filter(([k]) => only.has(k));
+
+      // THE WALK MUST FIND EVERY ARM IT WAS SENT TO ENTER.
+      //
+      // `only` is the set of RECORDED WINNING branch keys, and the whole "losers only" digest rule
+      // rests on the walk entering the winner: an edit there is supposed to diverge at the step it
+      // broke, which is a strictly better error than "some arm of this race changed". A RENAME
+      // removes the arm, so there is no step left to diverge at and the argument silently stops
+      // holding. What happened instead was worse than a silent pass. `entries` came back empty,
+      // `running` with it, and `Promise.race([])` NEVER SETTLES — a migration or a fork over a
+      // renamed winning arm hung rather than returning any verdict at all. `parallel` did not hang,
+      // because `Promise.all([])` resolves, and handed the program back the recorded value keyed by
+      // the arm the source no longer has.
+      //
+      // Narrow on purpose, and every neighbouring shape already has an answer: a renamed or deleted
+      // LOSER diverges through the branch digest, and an ADDED arm is not an edit to anything
+      // recorded, so neither reaches this.
+      if (only !== undefined) {
+        const present = new Set(all.map(([k]) => k));
+        const missing = [...only].filter((k) => !present.has(k));
+        if (missing.length > 0) {
+          throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);
+        }
+      }
 
       const frames = entries.map(([k]) => frame.branch(scopeKind, scopeName, occurrence, k));
       const running = entries.map(([, fn], i) => fn(frames[i] as Frame, []));

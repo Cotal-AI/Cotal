@@ -42,6 +42,7 @@ import {
   run as runProgram,
   RunDivergence,
   UnwalkableScope,
+  ScopeBranchMissing,
   stepKeyString,
   type EffectContext,
   type EffectHandler,
@@ -234,6 +235,17 @@ export async function planFork(req: ForkRequest): Promise<ForkPlan> {
         code: "L5014",
         step: err.scopeKey,
         why: `the walk could not enter a scope on the way to the cut: ${err.message}`,
+      });
+    } else if (err instanceof ScopeBranchMissing) {
+      // Its OWN code and not L5014's. Both stop the walk at a scope, but a conclave stops it because
+      // the handle was never journalled, and this one because the arm is gone from the source — and
+      // a refusal that named the wrong reason would send the author to fix the wrong thing.
+      refusals.push({
+        code: "L5022",
+        step: err.scopeKey,
+        why: `the walk reached ${err.scopeKey} on the way to the cut and the source no longer declares `
+          + `${err.missing.map((k) => `\`${k}\``).join(", ")}, the branch${err.missing.length === 1 ? "" : "es"} the run settled on; `
+          + `fork on the source it recorded, or restore the arm name`,
       });
     } else if (!(err instanceof ForkFrontier) && !(err instanceof JournalReadOnlyError)) {
       throw e;

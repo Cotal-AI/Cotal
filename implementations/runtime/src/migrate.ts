@@ -45,6 +45,7 @@ import {
   run as runProgram,
   RunDivergence,
   UnwalkableScope,
+  ScopeBranchMissing,
   type EffectContext,
   type EffectHandler,
   type JournalEntry,
@@ -193,7 +194,11 @@ export async function migrateRun(req: MigrateRequest): Promise<MigrateReport> {
         recordedHash: e.recordedHash,
         programHash: e.programHash,
       };
-    } else if (e instanceof UnwalkableScope) {
+    } else if (e instanceof UnwalkableScope || e instanceof ScopeBranchMissing) {
+      // Both are "the walk could not enter this scope", which is what `unwalkable` is for and what
+      // blocks `admissible` below. They are separate classes because the REPAIRS differ — a
+      // conclave needs a fork, a missing branch needs the arm's name back — and `why` carries the
+      // whole refusal, which for L5022 names the recorded arms, the source's arms, and the gap.
       unwalkable = { step: e.scopeKey, why: e.message };
     } else if (!(e instanceof Frontier) && !(e instanceof JournalReadOnlyError)) {
       // A program fault under an edited source is the migration's answer too — L4007 from an edited

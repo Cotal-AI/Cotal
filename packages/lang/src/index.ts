@@ -41,6 +41,7 @@ export { validate, type ValidateResult } from "./grammar.js";
 export {
   RunDivergence,
   RuntimeFault,
+  ScopeBranchMissing,
   UnwalkableScope,
   resume,
   run,

@@ -15,7 +15,7 @@
  *
  * Run: pnpm smoke:lang-migrate
  */
-import { run, RuntimeFault, UnwalkableScope } from "../src/interpret.js";
+import { run, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
 import { stepKeyString } from "../src/keys.js";
@@ -381,6 +381,119 @@ const team = await conclave([], async (room) => {
   }).then(() => null, (e: unknown) => e as Error);
   ok("a RESUME still short-circuits it, which is correct: nothing under it can have been removed",
     resumed === null, resumed?.name);
+}
+
+// ---- 5) THE WALK CANNOT ENTER AN ARM THE EDIT RENAMED AWAY, AND MUST SAY SO RATHER THAN HANG ----
+//
+// Found by a review seat walking the complement of the "losers only" digest rule. That rule is
+// deliberate: the walk ENTERS the winner, so an edit there diverges at the step it broke, which is
+// a better error than "some arm of this race changed". A RENAME removes the arm, so there is no
+// step left to diverge at — and the failure was not a silent pass. The walk filtered the source's
+// arms down to the recorded winner, got NOTHING, and awaited `Promise.race([])`, which never
+// settles. Measured before the guard: a migration over a renamed winning arm ran to a 2s cap and
+// returned no verdict at all, while an ordinary resume of the same source returned OK.
+//
+// Every cell here is wrapped in its own deadline. A guard against a HANG that is asserted by a bare
+// `await` fails by hanging the suite, which grades as a timeout rather than as a red — and a
+// mutation that removes the guard would then be scored on the harness's patience.
+{
+  const deadline = async (label: string, p: Promise<unknown>, ms = 2_000) => {
+    let t: ReturnType<typeof setTimeout>;
+    const timer = new Promise<"HUNG">((res) => { t = setTimeout(() => res("HUNG"), ms); });
+    const outcome = await Promise.race([p.then(() => null, (e: unknown) => e as Error), timer]);
+    clearTimeout(t!);
+    return outcome === "HUNG" ? new Error(`HUNG: ${label} did not return within ${ms}ms`) : outcome;
+  };
+
+  const RACE5 = `
+await race({
+  x: async () => { await sleep("1s", { name: "x-work" }); return "x"; },
+  y: async () => { await sleep("2s", { name: "y-work" }); return "y"; },
+}, { name: "pick" });
+`;
+  const j = new Journal({ run: "r-rename" });
+  const pins = (await run(RACE5, { runId: "r-rename", handler: new SimHandler({}), journal: j })).pins;
+  const scope = j.entries().find((e) => e.kind === "race") as
+    { result?: { value?: { index?: string } }; cancel?: { losers?: readonly string[] } } | undefined;
+  // Read out, never guessed: the sim's shared virtual clock decides who wins, and a suite that
+  // assumed the answer would be asserting its own guess.
+  const won = scope?.result?.value?.index as string;
+  const lost = (scope?.cancel?.losers ?? [])[0] as string;
+  ok("the race recorded a winner and a loser", typeof won === "string" && typeof lost === "string",
+    JSON.stringify({ won, lost }));
+
+  const walk = async (src: string) => await deadline(
+    "the migration walk",
+    run(src, {
+      runId: "r-rename", handler: checkHandler(10_000_000), pins, migration: true,
+      journal: new Journal({ run: "r-rename", entries: j.entries(), readOnly: true }),
+    }),
+  );
+
+  // THE CONTROL FIRST. Without it a refusal below is indistinguishable from a walk that refuses
+  // every race it is shown, which is a different system wearing the same green.
+  ok("an unedited race still walks to completion", (await walk(RACE5)) === null);
+
+  const renamedWinner = RACE5.split(`  ${won}:`).join(`  ${won}${won}:`);
+  ok("the winner rename landed", renamedWinner !== RACE5, { won });
+  const overRenamed = await walk(renamedWinner);
+  ok("REPAIRED: a walk into a recorded winning arm the edit renamed away RETURNS rather than hanging",
+    overRenamed !== null && !overRenamed.message.startsWith("HUNG:"), overRenamed?.message?.slice(0, 90));
+  ok("and it returns the refusal, not some incidental fault",
+    overRenamed instanceof ScopeBranchMissing, `${overRenamed?.name}: ${overRenamed?.message?.slice(0, 90)}`);
+  // The refusal has to be ACTIONABLE, and the whole repair is a NAME: an author who is told only
+  // "this scope diverged" goes looking inside an arm's body, which is the one place nothing changed.
+  ok("the refusal names the missing arm, the scope, and what the source does declare",
+    overRenamed instanceof ScopeBranchMissing
+      && overRenamed.missing.join() === won
+      && overRenamed.scopeKey === "/race:pick#0"
+      && overRenamed.source.includes(`${won}${won}`),
+    overRenamed instanceof ScopeBranchMissing
+      ? { missing: overRenamed.missing, scope: overRenamed.scopeKey, source: overRenamed.source } : String(overRenamed));
+
+  // PARALLEL, which the seat did not walk and which failed the other way: `Promise.all([])` RESOLVES,
+  // so the walk entered nothing, refused nothing, and handed the program back the recorded value
+  // keyed by an arm the source no longer has. Silent is not better than hung.
+  const PAR5 = `
+await parallel({
+  a: async () => { await sleep("1s", { name: "a-work" }); return "a"; },
+  b: async () => { await sleep("2s", { name: "b-work" }); return "b"; },
+}, { name: "pair" });
+`;
+  const pj = new Journal({ run: "r-rename-par" });
+  const ppins = (await run(PAR5, { runId: "r-rename-par", handler: new SimHandler({}), journal: pj })).pins;
+  const pwalk = async (src: string) => await deadline("the parallel walk", run(src, {
+    runId: "r-rename-par", handler: checkHandler(10_000_000), pins: ppins, migration: true,
+    journal: new Journal({ run: "r-rename-par", entries: pj.entries(), readOnly: true }),
+  }));
+  ok("an unedited parallel still walks to completion", (await pwalk(PAR5)) === null);
+  const parRenamed = await pwalk(PAR5.split("  a:").join("  aa:"));
+  ok("a parallel branch the edit renamed away is refused too, rather than completing silently",
+    parRenamed instanceof ScopeBranchMissing, `${parRenamed?.name}: ${parRenamed?.message?.slice(0, 90)}`);
+
+  // NARROWNESS, and it is the half that keeps migrations possible. A guard that refused any edited
+  // race would satisfy every cell above and make an edited arm un-migratable and un-forkable. Each
+  // neighbouring shape already had an answer BEFORE this guard, and each must still get that one:
+  //   - a renamed or deleted LOSER diverges through the branch digest (L5001, section 2);
+  //   - an ADDED arm is not an edit to anything recorded, so the walk completes.
+  const renamedLoser = await walk(RACE5.split(`  ${lost}:`).join(`  ${lost}${lost}:`));
+  ok("a renamed LOSER still diverges through the digest rather than through this guard",
+    renamedLoser?.name === "RunDivergence", `${renamedLoser?.name}: ${renamedLoser?.message?.slice(0, 90)}`);
+  const addedArm = await walk(RACE5.replace(`}, { name: "pick" })`,
+    `  z: async () => { await sleep("3s", { name: "z-work" }); return "z"; },\n}, { name: "pick" })`));
+  ok("and an arm the edit ADDED does not trip it: nothing recorded went missing", addedArm === null,
+    `${addedArm?.name}: ${addedArm?.message?.slice(0, 90)}`);
+
+  // The RESIDUAL, recorded rather than fixed. A RESUME of the same renamed source is silent: resume
+  // mode consumes a settled scope wholesale without entering an arm, which is its documented and
+  // correct behaviour, and the thing that is supposed to refuse edited source on a resume is a
+  // program-hash pin the run record does not carry yet. Asserted so the day it changes is loud.
+  const resumedRename = await deadline("the resume", run(renamedWinner, {
+    runId: "r-rename", handler: checkHandler(10_000_000), pins, migration: false,
+    journal: new Journal({ run: "r-rename", entries: j.entries(), readOnly: true }),
+  }));
+  ok("KNOWN GAP: a RESUME of a renamed winning arm is still silent, because it never enters an arm",
+    resumedRename === null, `${(resumedRename as Error)?.name}: ${(resumedRename as Error)?.message?.slice(0, 90)}`);
 }
 
 console.log(`migrate.smoke: ${pass} passed, ${fail} failed`);

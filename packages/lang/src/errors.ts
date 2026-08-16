@@ -126,6 +126,11 @@ export const CATALOG = {
   // as the run's epoch and this interpreter's default as the seed, and carries on. Nothing in the
   // journal disagrees, because pure draws are not journalled and the clock is not a recorded fact.
   L5021: "Resume over a journal without the run's pins",
+  // The hole the "losers only" branch digest left open, and it did not fail quietly: the walk was
+  // sent into a recorded winning arm the edited source had RENAMED away, entered nothing, and
+  // awaited `Promise.race([])`, which never settles. Its own code and not L5001 because that one is
+  // a hash comparison down to its field names, and this is a comparison of branch NAMES.
+  L5022: "A recorded branch is not in the migrated source",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
