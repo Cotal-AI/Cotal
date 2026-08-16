@@ -303,7 +303,10 @@ try {
       ephRows.pub.every((r) => !r.startsWith("$JS.")));
     const DOC_J = {
       urn: "ai.cotal.jobsrv", revision: 1, attributes: [], events: [],
-      // The ceiling is a MUST on a JOURNAL-class command, marker or no marker (SPEC:1465 / §13.7):
+      // The ceiling is a MUST on a JOURNAL-class command, marker or no marker (SPEC:2226-2228,
+      // §13.7: `An endpoint that accepts journal-class submissions MUST declare admissionCeiling`
+      // — that sentence WRAPS, so anchor it by phrase; :1465 is the `class` field row, which is
+      // adjacent to the claim and does not carry it):
       // `submitjob` is a real journal-class NON-action command, so it receives submissions and the
       // canonicalizer must read its bounds from the digest-verified surface rather than a constant.
       commands: [{
