@@ -22,7 +22,7 @@
  * live rails end to end — a pinned instrument reaches the instance it names, an unpinned one still
  * cannot, and no ordinary credential gains a route. They do NOT prove the CLI threads `--on` down
  * to the mint: `agents.ts`/`spawn.ts` -> `resolveControlTarget` -> `connectOrExit` type-checks with
- * the argument dropped anywhere along it. That gap is no longer merely named — it is covered by
+ * the argument dropped anywhere along it. That gap is no longer merely named; it is covered by
  * `cli-on-instance-live.smoke.ts`, which drives the real binary; and it was a real shipped defect,
  * not a hypothetical. Keep the two suites distinct: "the pin works" and "the flag reaches the pin"
  * are different claims, evidenced in different files.
@@ -85,7 +85,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
  *  change, and the second failure has always propagated) and is reported, not fixed here.
  *
  *  Any cell that calls `ps` ONCE inherits that 25% and reads as a flaky test rather than the product
- *  behaviour it is — which is exactly what happened: cell 7's warm-up was written as a bare single
+ *  behaviour it is, which is exactly what happened: cell 7's warm-up was written as a bare single
  *  call and went red on an otherwise green sweep. Shared, so the next cell that needs a warm read
  *  cannot quietly reintroduce it. The tolerance is explicit and bounded; it is not a retry loop
  *  hiding a failure, because a genuine break exhausts all six attempts and still reports. */
@@ -233,7 +233,7 @@ try {
   // instance is not there". A missing GRANT and a missing RESPONDER need opposite responses, and
   // this is the only place the two are distinguishable, so assert the distinction rather than
   // trusting the message. Without this, the reworded refusal could stop firing and nothing notices.
-  console.log("\n4. the denied publish is LOUD — a missing grant never reads as an absent responder");
+  console.log("\n4. the denied publish is LOUD: a missing grant never reads as an absent responder");
   check("it is reported as permission-denied, NOT a describe deadline",
     noPin.why === "permission-denied", { got: noPin.why, detail: noPin.detail?.slice(0, 200) });
   check("...and it names the subject the credential lacked, so the remedy is readable off the error",
@@ -244,14 +244,14 @@ try {
 
   // ---- 5. THE WATCH RELEASES ITSELF ------------------------------------------------------------
   // The permission watch in cell 4 subscribes the connection's status stream. That stream is
-  // connection-lived, so a describe that does not RELEASE its listener leaks one per resolve — an
+  // connection-lived, so a describe that does not RELEASE its listener leaks one per resolve, an
   // unbounded growth on exactly the long-lived connections the mesh runs on, and invisible to every
   // functional assertion above, which is how the first cut of this shipped. `return()` is not
   // enough: the transport's generator parks on an internal signal await, so a queued return does
   // not run until the next status event, which on a healthy connection may never arrive.
   //
   // This reaches into `protocol.listeners` deliberately. The registration is internal and there is
-  // no public accessor, so the choice is to assert on the internal or not to assert at all — and
+  // no public accessor, so the choice is to assert on the internal or not to assert at all, and
   // "cleanup happens" was claimed once already without evidence. If a transport upgrade moves this,
   // the cell fails loud and gets rewritten, which is the correct outcome for a probe of internals.
   console.log("\n5. the describe's permission watch does not leak a status listener per resolve");
@@ -279,7 +279,7 @@ try {
 
   // ---- 6. A SPLIT IS NEVER AUTO-RETRIED --------------------------------------------------------
   // `Endpoint.invokeService` recovers from `failed-precondition` by dropping the cached resolve and
-  // invoking AGAIN. That was written for one reading of the code — "the describe-bound incarnation
+  // invoking AGAIN. That was written for one reading of the code, "the describe-bound incarnation
   // is gone, so the first invoke never ran, and a second is a repair". The describe-bound currency
   // check also raises it in a case where that premise is FALSE: a different live instance wins the
   // class queue and REPLIES, so the request was received and answered (executed or refused; the
@@ -290,7 +290,7 @@ try {
   // Made deterministic rather than raced: resolve for real, then doctor the CACHED responder id to
   // an instance that does not exist. Every subsequent class-queue answer is then "not the bound
   // incarnation" on every run, whichever manager wins. Reaching into `resolvedServices` is the
-  // point — that cache is what the retry drops, and there is no public way to age it.
+  // point; that cache is what the retry drops, and there is no public way to age it.
   console.log("\n6. a responder that ANSWERED is never silently re-invoked");
   {
     const id = newIdentity(); const uid = mintLifecycleUid();
@@ -312,7 +312,7 @@ try {
       if (cached) cached.responder.instanceId = ghost;
 
       // (a) A CREATING command must surface. `spawn` names a persona that does not exist, so the
-      // manager refuses it cheaply — no agent is started. What matters is that the request REACHED a
+      // manager refuses it cheaply; no agent is started. What matters is that the request REACHED a
       // responder, which is enough to make a second invoke a second attempt that may duplicate the effect. Without the guard the
       // catch drops the cache, re-resolves against a real instance and invokes AGAIN, and that
       // second call is the duplicate; the caller is handed its success and never learns of the split.
@@ -334,7 +334,7 @@ try {
 
       // (b) THE OTHER SIDE OF THE BOUNDARY, and the reason (a) is a narrow guard rather than a blanket
       // one. A read must still self-heal: in a two-manager space roughly half of all class-queue calls
-      // split, so surfacing them all would break `ps` about every other run for nothing — re-running a
+      // split, so surfacing them all would break `ps` about every other run for nothing; re-running a
       // read duplicates no effect. Without this cell the guard could quietly widen to every command
       // and every assertion above would stay green while ordinary reads started failing.
       // The surfaced split above DROPPED the stale bind (that is part of the contract now: a
@@ -366,7 +366,7 @@ try {
   // classification is an allowlist. That version withheld the retry only for GOAL_BEARING_COMMANDS
   // (spawn/launch), on the theory that a duplicate only hurts when it creates. Adversarial review
   // produced a measured counterexample: `purge` is not goal-bearing, is not convergent, and its
-  // second execution deletes messages published between the two — the manager's handler reaches
+  // second execution deletes messages published between the two; the manager's handler reaches
   // `clearSpaceHistory`, i.e. a real STREAM.PURGE, so "the first one already deleted everything" is
   // false the moment anyone is still publishing.
   //
@@ -376,21 +376,21 @@ try {
   // the first and quietly fail the second.
   console.log("\n7. a DESTRUCTIVE, non-creating command is retry-unsafe too (the purge counterexample)");
   {
-    // Classification first — total over the vocabulary, and it needs no broker at all.
+    // Classification first: total over the vocabulary, and it needs no broker at all.
     const safe = (c: string) => isRepeatSafeCommand(MANAGER_ENDPOINT, c);
     check("EVERY manager.admin command is classified retry-unsafe, purge included",
       MANAGER_ADMIN_COMMANDS.every((c) => !safe(c)),
       { admin: MANAGER_ADMIN_COMMANDS, retrySafe: MANAGER_ADMIN_COMMANDS.filter(safe) });
     // NOT `MANAGER_READ_COMMANDS.every(safe)`, and the difference is the point. `models` is in the
     // read GRANT class and is NOT repeat-safe: with `{refresh: true}` it reaches the connector's
-    // listModels({refresh}) and, for OpenCode, shells out to `opencode models --refresh` — a
+    // listModels({refresh}) and, for OpenCode, shells out to `opencode models --refresh`, a
     // provider round-trip that rewrites a cache. Same name, same grant class, opposite answer,
     // decided by an argument the classifier cannot see. Asserting the two vocabularies are equal
     // would re-couple them and re-admit exactly that bug.
     check("...while the manager READS stay retry-safe (the guard did not widen)",
       (["status", "ps", "inspect"] as const).every(safe),
       (["status", "ps", "inspect"] as const).filter((c) => !safe(c)));
-    check("...but `models` is NOT repeat-safe — its effect depends on an ARGUMENT, not its name",
+    check("...but `models` is NOT repeat-safe: its effect depends on an ARGUMENT, not its name",
       !safe("models"));
     // An unknown command must default to UNSAFE. This is the fail-closed property, and it is the
     // only assertion that goes red if someone re-inverts the guard into a denylist.
@@ -409,7 +409,7 @@ try {
     check("...except `describe`, which is a read on every endpoint by construction",
       isRepeatSafeCommand("some-third-party-endpoint", "describe"));
 
-    // Behavioural — the same forced split as cell 6, on a command that MUTATES without creating.
+    // Behavioural: the same forced split as cell 6, on a command that MUTATES without creating.
     // `purge` is manager.admin, so this needs the admin control tier; the privileged probe above
     // would be refused at the broker and never reach a responder, which would grade nothing.
     const id = newIdentity(); const uid = mintLifecycleUid();
@@ -421,8 +421,8 @@ try {
     ep.on("error", () => {});
     await ep.start();
     try {
-      // Resolve for real, then doctor the cached responder id — identical to cell 6, because the
-      // point is that the COMMAND changed the outcome, nothing else.
+      // Resolve for real, then doctor the cached responder id (identical to cell 6, because the
+      // point is that the COMMAND changed the outcome, nothing else).
       const warm = await readTolerant(ep, "admin warm-up");
       const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string } }> }).resolvedServices;
       const cached = cache.get(MANAGER_ENDPOINT);
@@ -437,7 +437,7 @@ try {
       try {
         returned = await ep.invokeService(MANAGER_ENDPOINT, "purge", { includeDms: false });
       } catch (e) { threw = e; }
-      check("a DESTRUCTIVE non-creating command's split SURFACES — it is not purged a second time",
+      check("a DESTRUCTIVE non-creating command's split SURFACES: it is not purged a second time",
         threw !== undefined, { returned: (returned as { reply?: unknown } | undefined)?.reply });
       check("...carrying the responder-answered marker (so the caller can tell it may already have run)",
         respondedButUnbound(threw), threw instanceof Error ? threw.message.slice(0, 200) : threw);
@@ -520,7 +520,7 @@ try {
       // the full baseline. The list was proved right and the guard was proved to work twice, and
       // between those two facts sat the thing neither of them checked.
       //
-      // A peer lane hit the same class from the other side — its fixture graded the old guard with
+      // A peer lane hit the same class from the other side; its fixture graded the old guard with
       // only the first member of a two-member set, so the second silently lost its protection with
       // nothing going red. Same underlying mistake in both: grading a DECISION through one example
       // of it.
@@ -549,7 +549,7 @@ try {
       // the witness meaningful. `notReached` is not a tolerance: it is red, because a command that
       // cannot get there is a hole in the sweep and must be seen rather than absorbed.
       //
-      // WHAT THE MARKER PROVES, EXACTLY — narrower than an earlier draft of this comment claimed,
+      // WHAT THE MARKER PROVES, EXACTLY (narrower than an earlier draft of this comment claimed),
       // which said the responder "received and handled it". It proves the published request drew an
       // ATTRIBUTED REPLY from a responder, which is precisely the guard's own input and therefore
       // exactly the right witness here. It does NOT prove the command executed or that any effect
@@ -559,7 +559,7 @@ try {
       // nothing more. The `purge` cell above is the separate proof that a real destructive effect
       // runs, and it is the only cell in this file that claims one.
       // Each command needs SCHEMA-VALID arguments or the envelope refuses it before it is ever
-      // published — which is precisely how the first version passed vacuously: `{}` fails
+      // published, which is precisely how the first version passed vacuously: `{}` fails
       // `required` on all seven, so none of them left the client. The values are deliberately
       // nonsense (no such run, no such attempt) so every handler refuses on business grounds and
       // nothing is launched, resumed, or preserved; refusing is a REPLY, which is all this needs.
@@ -592,7 +592,7 @@ try {
         } catch (e) { err = e; }
         // ORDER MATTERS, and getting it wrong made this cell nondeterministic in the mutated
         // direction. When a guard lets the command through, the retry either succeeds (no error, so
-        // no marker) or splits again (marker present) — a coin flip per command. Testing the marker
+        // no marker) or splits again (marker present), a coin flip per command. Testing the marker
         // first therefore sorted the SAME defect into two different buckets depending on the toss.
         // The publish count is the stronger witness and it is checked first: more than one publish
         // means the command reached a responder AND was re-issued, whichever way the second invoke
@@ -603,7 +603,7 @@ try {
       }
       check("every other manager.admin command REACHES the guard (without this the sweep is vacuous)",
         notReached.length === 0, { notReached });
-      check("...and none of them is quietly retried — the guard reads the classifier, not a fixed list",
+      check("...and none of them is quietly retried: the guard reads the classifier, not a fixed list",
         retriedAnyway.length === 0,
         { retriedAnyway, checked: MANAGER_ADMIN_COMMANDS.filter((c) => c !== "purge") });
       check("...and each surfaced split dropped the stale bind (a deliberate re-issue re-resolves)",

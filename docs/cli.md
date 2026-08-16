@@ -480,6 +480,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
 | `--allow-publish <a,b>` | deny | Post-ACL override |
 | `--detach`, `-d` | off | Launch via the manager into a detached PTY (reattach with `cotal attach`) |
+| `--on <instance>` | class anycast | With `--detach` only: pin the launch to one manager instance id (the whole id, as `ps` prints it). Refused on a foreground spawn (no manager to pin) and with `-f` (a manifest deploy launches through the manager class queue) |
 | `--file <cotal.yaml>`, `-f` | — | Deploy a manifest onto the running mesh |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
@@ -569,7 +570,11 @@ renders each managed agent's last credential-refresh outcome, fail-closed.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
   rather than falling through: a well-formed id that no live manager carries is reported as
   `manager instance <id> did not answer` (nothing else is asked), and a credential without that
-  instance's rail is reported as refused by the broker, not as an unresponsive manager.
+  instance's rail is reported as refused by the broker, not as an unresponsive manager. A manager
+  that answers with a refusal is shown with its own cause; "no manager reachable" is said only when
+  nothing answered at all. If the scatter's own registry read fails (the freeze or the reconcile),
+  `ps` says the manager registry could not be read rather than pronouncing on the managers, which
+  may all be up.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a

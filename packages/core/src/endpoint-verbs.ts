@@ -20,8 +20,9 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, EP_UNBOUND_RESPONDER, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail,
+  type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail,
 } from "./endpoint-envelope.js";
 import type { JetStreamManager } from "@nats-io/jetstream";
 import type { CompiledContract } from "./schema-profile.js";
@@ -136,15 +137,22 @@ function isNoRespondersMsg(msg: Msg): boolean {
 
 /** Race a caller-supplied read against a bounded budget so a never-settling hook cannot exceed the
  *  operation deadline (SPEC 13.5: deadline mandatory). Clears its timer on either outcome. */
-async function raceBounded<T>(read: () => Promise<T> | T, ms: number, what: string): Promise<T> {
+async function raceBounded<T>(read: () => Promise<T> | T, ms: number, what: string, details?: EpErrorDetail[]): Promise<T> {
   let t: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       (async () => read())(),
-      new Promise<never>((_, reject) => { t = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `${what} did not settle within the ${ms}ms budget (SPEC 13.5)`)), ms); }),
+      new Promise<never>((_, reject) => { t = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `${what} did not settle within the ${ms}ms budget (SPEC 13.5)`, details)), ms); }),
     ]);
   } finally { if (t !== undefined) clearTimeout(t); }
 }
+
+/** The {@link EP_UNANSWERED} detail for `op`: set ONLY where this module observed that nothing
+ *  answered (the broker's no-responders control frame, or the reply deadline elapsing). */
+const unansweredDetail = (op: EpVerbOp): EpUnansweredDetail => ({ kind: EP_UNANSWERED, endpoint: op.endpoint, command: op.command });
+/** The {@link EP_REGISTRY_READ_FAILED} detail for `op`: set where the scatter's OWN registry read
+ *  (freeze or reconcile) failed, so the failure is never read as the responders' silence. */
+const registryReadDetail = (op: EpVerbOp): EpRegistryReadFailedDetail => ({ kind: EP_REGISTRY_READ_FAILED, endpoint: op.endpoint, command: op.command });
 
 /** The caller's per-request reply subscription: its own rail narrowed to exactly this request's
  *  nonce (contained in the §13.9 reply-read grant), so concurrent calls never see each other. */
@@ -293,7 +301,7 @@ export async function epCall(
           // impersonate transport absence — so it takes the ordinary attributed-reply path below, never
           // the broker-control path.
           if (msg.subject === noRespReplyTo) {
-            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`)); return; }
+            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`, [unansweredDetail(op)])); return; }
             reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${op.endpoint}.${op.command}; nothing but the broker control frame is addressable there`)); return;
           }
           resolve({ subject: msg.subject, data: msg.data });
@@ -301,7 +309,7 @@ export async function epCall(
       });
     });
     nc.publish(req.subject, req.body, { reply: noRespReplyTo });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`)), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
     const msg = await Promise.race([outcome, timeout]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
     if (route.mode === "one") {
@@ -648,11 +656,11 @@ export async function epScatter(
     try {
       current = await Promise.race([
         opts.reconcileRegistration(),
-        new Promise<never>((_, reject) => { reconcileTimer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the scatter registration reconcile did not settle within its ${reconcileDeadlineMs}ms bound (SPEC 13.5: deadline mandatory, never a hung scatter)`)), reconcileDeadlineMs); }),
+        new Promise<never>((_, reject) => { reconcileTimer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the scatter registration reconcile did not settle within its ${reconcileDeadlineMs}ms bound (SPEC 13.5: deadline mandatory, never a hung scatter)`, [registryReadDetail(op)])), reconcileDeadlineMs); }),
       ]);
     } catch (e) {
       if (e instanceof EpEnvelopeError && e.code === "unavailable") throw e; // the reconcile bound
-      throw new EpEnvelopeError("failed-precondition", `the scatter registration reconcile is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${failMsg(e)}`);
+      throw new EpEnvelopeError("failed-precondition", `the scatter registration reconcile is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${failMsg(e)}`, [registryReadDetail(op)]);
     } finally {
       if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
     }
@@ -727,10 +735,10 @@ export async function epScatterService(
   // its budget, and the gather runs on the REMAINING budget.
   const deadlineMs = assertDeadline(opts.deadlineMs);
   const started = Date.now();
-  const expected = await raceBounded(() => freezeExpectedSet(jsm, space, op.endpoint), deadlineMs, `the scatter freeze for ${op.endpoint}`);
+  const expected = await raceBounded(() => freezeExpectedSet(jsm, space, op.endpoint), deadlineMs, `the scatter freeze for ${op.endpoint}`, [registryReadDetail(op)]);
   const remaining = deadlineMs - (Date.now() - started);
   if (remaining <= 0)
-    throw new EpEnvelopeError("deadline-exceeded", `the scatter freeze for ${op.endpoint} consumed the whole ${deadlineMs}ms budget; no time left to gather (SPEC 13.5)`);
+    throw new EpEnvelopeError("deadline-exceeded", `the scatter freeze for ${op.endpoint} consumed the whole ${deadlineMs}ms budget; no time left to gather (SPEC 13.5)`, [registryReadDetail(op)]);
   return epScatter(nc, space, op, { ...opts, deadlineMs: remaining, expected, reconcileRegistration: registrationReconciler(jsm, space, op.endpoint, expected) });
 }
 

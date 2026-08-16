@@ -276,6 +276,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
 
   // `spawn -f cotal.yaml` is a distinct path: deploy a manifest onto a RUNNING mesh (additive,
   // ownership-scoped). The broker must already be reachable; bringing up a fresh mesh is `up -f`.
+  // `--on` is read only by the detached imperative launch. A foreground spawn runs the connector in
+  // this process (no manager to pin), and a manifest deploy launches every agent through the
+  // manager class queue (`spawnManifest` takes no instance). Both would have to ignore the flag;
+  // an ignored pin is a silent fallback, so refuse it where it cannot apply, as `--dry-run` is.
+  if (values.on !== undefined && (!values.detach || values.file)) {
+    console.error(c.red("✗ --on only applies to a detached imperative spawn (`cotal spawn <persona> --detach --on <instance>`); a foreground spawn has no manager to pin and a manifest deploy (-f) launches through the manager class queue"));
+    process.exit(1);
+  }
   if (values.file) {
     await spawnManifest(values.file, {
       dryRun: Boolean(values["dry-run"]),

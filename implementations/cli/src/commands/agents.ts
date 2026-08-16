@@ -217,7 +217,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
   //
   // The header prints the FULL instance id, not a prefix. This block runs only in a multi-manager
-  // space — precisely when the split makes `--on <instance>` the one way to address a manager — and
+  // space (precisely when the split makes `--on <instance>` the one way to address a manager) and
   // `--on` takes nothing but the whole 26-32 char lifecycle token (`assertLifecycleToken`). An
   // abbreviated header therefore showed the operator an id that the very next command refuses
   // (`"4ik6rb0e" is not a valid lifecycle token`), with the full value printed nowhere: the remedy

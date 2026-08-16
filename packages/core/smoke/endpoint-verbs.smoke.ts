@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { connect, headers } from "@nats-io/transport-node";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import {
-  isReachable, EpEnvelopeError, respondedButUnbound, EP_UNBOUND_RESPONDER,
+  isReachable, EpEnvelopeError, respondedButUnbound, EP_UNBOUND_RESPONDER, unansweredRequest, registryReadFailed, EP_UNANSWERED,
   compileContract,
   parseEpSubject, epReplySubject, epeSubject, spacePrefix,
   epCall, epCast, epWatchEvents, epScatter,
@@ -193,6 +193,15 @@ try {
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }), "failed-precondition");
   await rejects("scatter BOUNDS a never-settling reconcile as unavailable (deadline mandatory, no hung scatter)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, EpRegistrationState>>(() => { /* never settles */ }) }), "unavailable");
+  {
+    // Both reconcile failures are the CALLER's registry read failing after the gather ran (members may
+    // all have answered): marked EP_REGISTRY_READ_FAILED, never EP_UNANSWERED, so a consumer does not
+    // pronounce on the members' reachability for a read of its own.
+    const hung = await caught(() => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, EpRegistrationState>>(() => { /* never settles */ }) }));
+    c("a never-settling reconcile is marked EP_REGISTRY_READ_FAILED, not EP_UNANSWERED", registryReadFailed(hung) && !unansweredRequest(hung), hung);
+    const unread = await caught(() => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }));
+    c("an unreadable reconcile is marked EP_REGISTRY_READ_FAILED, not EP_UNANSWERED", registryReadFailed(unread) && !unansweredRequest(unread), unread);
+  }
   await rejects("scatter FAILS LOUD when the reconcile omits a frozen slot (incomplete read can't authorize completion)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }, { instanceId: B, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "failed-precondition");
   await rejects("scatter FAILS LOUD when the reconcile reports a below-frozen revision (non-monotonic/buggy read)",
@@ -285,6 +294,13 @@ try {
   await rejects("epCall with NO responder rejects `unavailable` (SPEC 13.5), not deadline-exceeded",
     () => epCall(nc, SPACE, { mode: "inst", instanceId: "9".repeat(26), epoch: 1 }, opFor(), { deadlineMs: 400 }), "unavailable");
   {
+    // The broker's no-responders control is the one `unavailable` that OBSERVED silence: it carries
+    // EP_UNANSWERED naming the call, the marker a consumer keys its reachability verdict on.
+    const e = await caught(() => epCall(nc, SPACE, { mode: "inst", instanceId: "9".repeat(26), epoch: 1 }, opFor(), { deadlineMs: 400 }));
+    const d = e instanceof EpEnvelopeError ? (e.details ?? []).find((x) => x.kind === EP_UNANSWERED) : undefined;
+    c("no-responder `unavailable` is marked EP_UNANSWERED with the call it names", unansweredRequest(e) && d?.endpoint === ENDPOINT && d?.command === "ping", e);
+  }
+  {
     // A selected responder knows the nonce and can forge a 503 status header on its OWN normal reply
     // subject. That must NOT be read as the broker's no-responders control (which lands only on the
     // reserved `_nr._nr._nr` sentinel reply-to): the forged 503 takes the ordinary attributed-reply path.
@@ -327,6 +343,9 @@ try {
     const sub = respond(nc, instFilter, () => []); // subscriber exists but never replies -> slow, not absent
     await rejects("epCall with a live-but-silent responder rejects deadline-exceeded (distinct from unavailable)",
       () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 250 }), "deadline-exceeded");
+    // The reply deadline elapsing is the other producer that observed silence: marked EP_UNANSWERED.
+    const e = await caught(() => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 250 }));
+    c("reply-deadline `deadline-exceeded` is marked EP_UNANSWERED", unansweredRequest(e), e);
     await sub.drain();
   }
   await rejects("epCall whose args fail its own input contract refuses bad-request BEFORE publish",
@@ -398,6 +417,10 @@ try {
       () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 800, currentEpoch: () => { throw new TypeError("registry exploded"); } }), "internal");
     await rejects("epCall `one` refuses a NaN currentEpoch value as failed-precondition, never mislabeled `expired` staleness",
       () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 800, currentEpoch: () => Number.NaN }), "failed-precondition");
+    // A `deadline-exceeded` raised AFTER the reply arrived (the currency read never settled) observed
+    // no silence: it is NOT marked EP_UNANSWERED, so the code alone never earns a reachability verdict.
+    const e = await caught(() => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 300, currentEpoch: () => new Promise<number>(() => { /* never settles */ }) }));
+    c("a currency-read deadline after a valid reply is `deadline-exceeded` WITHOUT EP_UNANSWERED (the reply arrived)", e instanceof EpEnvelopeError && e.code === "deadline-exceeded" && !unansweredRequest(e), e);
     await sub.drain();
   }
 

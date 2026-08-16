@@ -179,14 +179,14 @@ export const MANAGER_ADMIN_COMMANDS = Object.freeze([
 export const GOAL_BEARING_COMMANDS = Object.freeze(["spawn", "launch"] as const);
 const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
 
-/** RETRY SAFETY (§13.2) — the commands a client may execute a SECOND time after a
+/** RETRY SAFETY (§13.2): the commands a client may execute a SECOND time after a
  *  responded-but-unbound split, because a second execution is observably indistinguishable from
  *  one. Consulted by {@link isRepeatSafeCommand}; see `Endpoint.invokeService` for the decision it
  *  gates.
  *
  *  THIS IS AN ALLOWLIST AND THE POLARITY IS THE WHOLE POINT. A denylist has to enumerate every
  *  destructive command correctly, forever, and it fails OPEN: the next admin command added above
- *  is auto-retried by default, and nothing goes red. This list fails CLOSED — a command nobody has
+ *  is auto-retried by default, and nothing goes red. This list fails CLOSED: a command nobody has
  *  classified surfaces the split to its caller instead of running twice. Surfacing costs a caller
  *  an error it can re-issue deliberately; the other direction cost `purge` a second STREAM.PURGE
  *  that deleted messages published after the first one completed (measured, adversarial review).
@@ -201,18 +201,18 @@ const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
  *  Membership is a claim about the COMMAND'S EFFECT, so it is written out literally rather than
  *  derived from a grant class. Deriving it from {@link MANAGER_READ_COMMANDS} would silently widen
  *  retry safety the day a mutating command joins the `manager.read` tier for grant reasons; the two
- *  vocabularies answer different questions and must be able to disagree — and they already do.
+ *  vocabularies answer different questions and must be able to disagree, and they already do.
  *
  *  A command belongs here only if re-running it is a no-op FOR EVERY OBSERVER. Convergence is not
  *  sufficient: `despawn` converges on a terminated agent, but its second run is still a distinct
  *  despawn of whatever now holds that name.
  *
  *  `models` is the instructive exclusion, and it is why this list cannot simply mirror
- *  `manager.read`. It reads a catalog — unless called with `{refresh: true}`, which reaches the
+ *  `manager.read`. It reads a catalog, unless called with `{refresh: true}`, which reaches the
  *  connector's `listModels({refresh})` and, for OpenCode, shells out to `opencode models --refresh`:
  *  a provider round-trip that rewrites a cache. Same command name, same grant class, opposite
  *  answer, decided by an ARGUMENT this table cannot see. Rather than encode per-command argument
- *  rules here — the fail-open shape all over again — `models` is simply not repeat-safe. The cost
+ *  rules here (the fail-open shape all over again), `models` is simply not repeat-safe. The cost
  *  is that a long-lived client invoking `models` through `CotalEndpoint.invokeService` surfaces a
  *  split instead of absorbing it in a multi-instance space; the alternative was a wrong answer for
  *  the refreshing caller. (The `cotal models` CLI is NOT affected: like every `askManager` command it
@@ -232,7 +232,7 @@ export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> =
   [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
 });
 /** `describe` is a read on EVERY endpoint by construction, so it is the one name that is
- *  repeat-safe without an endpoint. That is not a carve-out taken on faith — two independent
+ *  repeat-safe without an endpoint. That is not a carve-out taken on faith: two independent
  *  fences make a mutating `describe` unreachable: a cluster document declaring the name is invalid
  *  at registration (`endpoint-cluster.ts`, "reserved, served by the machinery, never a cluster
  *  command", §13.7), and `serveEndpoint` throws unconditionally on any def whose command is
@@ -240,8 +240,8 @@ export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> =
  *  The answer is built by the machinery from the serve artifact; no handler can be attached.
  *
  *  The residual, stated rather than left implicit: `describe` is authorization-scoped, so repeating
- *  one does exercise the authorization path. That is a read under the ordinary meaning — transport
- *  and telemetry are not state the endpoint owns — but the exemption rests on that reading, not on
+ *  one does exercise the authorization path. That is a read under the ordinary meaning (transport
+ *  and telemetry are not state the endpoint owns), but the exemption rests on that reading, not on
  *  describe touching nothing at all. A future `describe` that consumed a grant or decremented a
  *  quota would be a write, and this line would be wrong for a reason having nothing to do with
  *  handlers. */
@@ -253,8 +253,8 @@ const REPEAT_SAFE_SNAP: ReadonlyMap<string, ReadonlySet<string>> = new Map(
   Object.entries(REPEAT_SAFE_COMMANDS).map(([endpoint, commands]) => [endpoint, new Set(commands)]),
 );
 /** True only for a command whose re-execution is observably harmless on THAT endpoint
- *  ({@link REPEAT_SAFE_COMMANDS}). An unknown endpoint, or an unlisted command, is NOT repeat-safe
- *  — that is the intended default, not an oversight. */
+ *  ({@link REPEAT_SAFE_COMMANDS}). An unknown endpoint, or an unlisted command, is NOT repeat-safe;
+ *  that is the intended default, not an oversight. */
 export function isRepeatSafeCommand(endpoint: string, command: string): boolean {
   if (command === REPEAT_SAFE_ANY_ENDPOINT) return true;
   return REPEAT_SAFE_SNAP.get(endpoint)?.has(command) === true;

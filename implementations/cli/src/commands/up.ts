@@ -1491,10 +1491,14 @@ async function completeResumeActivation(
   const readinessDeadline = Date.now() + 20_000;
   for (;;) {
     const ready = await askManager(pending.space, server, "ps", undefined, auth, "any", 2_000);
-    if (!ready.error?.startsWith("no manager reachable")) break;
+    // Wait only while nothing ANSWERS (the manager is still coming up). Any answer, including a
+    // refusal, ends the wait: a refusal will not heal by waiting, and the resume call right after
+    // this fails loud on it with its own message.
+    if (!ready.unanswered) break;
     if (Date.now() >= readinessDeadline) {
-      markPendingResumeDegraded(attemptId, ready.error);
-      throw new Error(ready.error);
+      const why = ready.error ?? "no manager answered within the readiness deadline";
+      markPendingResumeDegraded(attemptId, why);
+      throw new Error(why);
     }
     await new Promise((resolveWait) => setTimeout(resolveWait, 150));
   }

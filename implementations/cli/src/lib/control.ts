@@ -5,6 +5,9 @@ import {
   EpEnvelopeError,
   GOAL_BEARING_COMMANDS,
   invokeCommand,
+  respondedButUnbound,
+  unansweredRequest,
+  registryReadFailed,
   submitAndFollowGoal,
   scatterCommand,
   mintLifecycleUid,
@@ -175,7 +178,7 @@ async function askManagerEp(
   reach: ControlReach,
   timeoutMs?: number,
   instanceId?: string,
-): Promise<ControlReply> {
+): Promise<ManagerReply> {
   const mapped = EP_COMMANDS[op];
   if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
   const caller = auth.epCaller!;
@@ -241,28 +244,57 @@ async function askManagerEp(
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
   } catch (e) {
-    return { ok: false, error: epRailFailure(e, instanceId) };
+    return epRailFailure(e, instanceId);
   } finally {
     await nc.drain().catch(() => nc.close());
   }
 }
 
-/** Render an ep-rail failure for the operator. The reachability verdict ("no manager reachable")
- *  is stated only where the call went UNANSWERED (no responder, or the deadline elapsed) and nothing
- *  was pinned. Every other refusal already states its own cause, and prepending the verdict made
- *  the headline contradict the body: a describe REFUSED BY THE BROKER read as an unreachable manager,
- *  which is precisely the misreading the refusal was reworded to stop. An unanswered PINNED call
- *  names the instance instead: three managers may be answering while the one the operator typed
- *  is not there, so "no manager reachable" sends them to the broker for a typo. Measured on a live
- *  three-manager mesh during review. `up`'s resume readiness poll keys on the unpinned verdict
- *  prefix (it waits only for an answer), so that prefix is kept verbatim for that case. */
-function epRailFailure(e: unknown, instanceId?: string): string {
-  if (!(e instanceof EpEnvelopeError)) return `no manager reachable on the ep rails (${(e as Error).message})`;
-  const unanswered = e.code === "unavailable" || e.code === "deadline-exceeded";
-  if (!unanswered) return `${e.code}: ${e.message}`;
-  return instanceId !== undefined
-    ? `manager instance ${instanceId} did not answer (${e.code}: ${e.message})`
-    : `no manager reachable on the ep rails (${e.code}: ${e.message})`;
+/** {@link ControlReply} plus the one fact a caller cannot recover from the rendered message: whether
+ *  the call went UNANSWERED, as core marks it (`EP_UNANSWERED`: no responder, or the reply
+ *  deadline elapsed with nothing attributed to the request). `up`'s resume readiness poll keys on it;
+ *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
+ *  predicate in another file. */
+export type ManagerReply = ControlReply & { unanswered?: boolean };
+
+/** Render an ep-rail failure for the operator. Three outcomes, told apart by core's markers and never
+ *  by the catalog code: a responder's own `ok:false` describe reply is rethrown under ITS code
+ *  (`unavailable` included), and a store read after an answered describe raises the same code, so
+ *  the code says nothing about whether anyone answered.
+ *  - UNANSWERED ({@link unansweredRequest}: no responder, or the reply deadline elapsed). The
+ *    reachability verdict "no manager reachable" is stated here and only here, and only unpinned:
+ *    an unanswered PINNED call names the instance instead, since three managers may be answering
+ *    while the one the operator typed is not there, and "no manager reachable" sends them to the
+ *    broker for a typo. Measured on a live three-manager mesh during review.
+ *  - a REGISTRY READ on this side failed ({@link registryReadFailed}: the scatter's freeze or its
+ *    reconcile). The managers were not the failure and may all be up; a verdict on them here sent
+ *    the operator to the managers for a broker read.
+ *  - everything else answered, or failed on this side with its own cause, and is printed as is.
+ *    Prepending a verdict made the headline contradict the body: a describe REFUSED BY THE BROKER
+ *    read as an unreachable manager, which is precisely the misreading the refusal was reworded to
+ *    stop.
+ *  A failure that is not an {@link EpEnvelopeError} carries no answer provenance at all, so no verdict
+ *  is stated for it either: its message stands alone. */
+export function epRailFailure(e: unknown, instanceId?: string): ManagerReply {
+  if (!(e instanceof EpEnvelopeError)) return { ok: false, unanswered: false, error: e instanceof Error ? e.message : String(e) };
+  const detail = `${e.code}: ${e.message}`;
+  if (unansweredRequest(e)) {
+    return {
+      ok: false, unanswered: true,
+      error: instanceId !== undefined
+        ? `manager instance ${instanceId} did not answer (${detail})`
+        : `no manager reachable on the ep rails (${detail})`,
+    };
+  }
+  if (registryReadFailed(e))
+    return { ok: false, unanswered: false, error: `the manager registry could not be read: a broker read on this side, not the managers' silence, and they may all be up. Retry; if it persists, look at the broker's JetStream (${detail})` };
+  // The unpinned class-queue split. Core says a call that addresses one instance does not split
+  // and stops there (a CLI flag name does not belong in a core error); this is the surface that
+  // has the flag, and on this path the unpinned branch is reached exactly when it was not passed.
+  // A marked `expired` is the other producer (a stale-epoch bind) and its remedy is re-resolving,
+  // so the flag is offered only for the split.
+  const unpinnedSplit = e.code === "failed-precondition" && respondedButUnbound(e) && instanceId === undefined;
+  return { ok: false, unanswered: false, error: `${detail}${unpinnedSplit ? " Pin one manager instance with --on <instance> (the whole id, as `ps` prints it) to avoid the split." : ""}` };
 }
 
 /** Send one control command to the manager over the v0.4 service-endpoint rails and disconnect —
@@ -284,7 +316,7 @@ export async function askManager(
   reach: ControlReach = "owner",
   timeoutMs?: number,
   instanceId?: string,
-): Promise<ControlReply> {
+): Promise<ManagerReply> {
   // A user bearer or a minted static instrument carries its own ep caller triple: ride it.
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
     return askManagerEp(space, server, op, args, auth, reach, timeoutMs, instanceId);
@@ -345,7 +377,8 @@ async function askManagerScatterEp(
     for (const instanceId of result.missing) instances.push({ instanceId, reachable: false });
     return { ok: true, instances };
   } catch (e) {
-    return { ok: false, error: epRailFailure(e) };
+    const { error } = epRailFailure(e);
+    return { ok: false, error: error ?? "error" };
   } finally {
     await nc.drain().catch(() => nc.close());
   }

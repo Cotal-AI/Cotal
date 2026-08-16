@@ -66,6 +66,56 @@ export function respondedButUnbound(e: unknown): boolean {
   return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_UNBOUND_RESPONDER);
 }
 
+/**
+ * `details[].kind` for a refusal raised because the request drew NO REPLY AT ALL: the broker
+ * reported no responder on the subject, or the reply deadline elapsed with nothing attributed to
+ * the request. It marks the one fact a consumer cannot recover from the code alone: **nothing
+ * answered**. The same codes are also raised where something did answer or where the failure is a
+ * read on the caller's own side (a responder's `ok:false` describe reply is rethrown under its own
+ * code, `unavailable` included; a store or registry read fails after the describe was answered), so
+ * `unavailable` or `deadline-exceeded` on its own is not evidence of silence. Only the producers
+ * that observed the silence set this marker; a consumer that states a reachability verdict keys on
+ * it, never on the code.
+ */
+export const EP_UNANSWERED = "ai.cotal.ep.unanswered";
+
+/** The {@link EP_UNANSWERED} payload: the call that drew no reply. */
+export interface EpUnansweredDetail extends EpErrorDetail {
+  kind: typeof EP_UNANSWERED;
+  endpoint: string;
+  command: string;
+}
+
+/** True iff `e` carries the {@link EP_UNANSWERED} marker: the request drew no reply at all (no
+ *  responder, or the deadline elapsed unanswered). */
+export function unansweredRequest(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_UNANSWERED);
+}
+
+/**
+ * `details[].kind` for a refusal raised because a read of the SERVICE REGISTRY that the verb
+ * performs on the caller's side did not settle within its bound or failed: the scatter's freeze
+ * (§13.5, the expected set) or its mandatory registration reconcile. It marks that the failure is
+ * the caller's own registry read, not the responders: nothing about them is established (the
+ * freeze fails before any request goes out; the reconcile fails after the gather, so members may
+ * all have answered and their replies could not be classified). A consumer must not read it as
+ * their silence.
+ */
+export const EP_REGISTRY_READ_FAILED = "ai.cotal.ep.registry-read-failed";
+
+/** The {@link EP_REGISTRY_READ_FAILED} payload: the call whose registry read failed. */
+export interface EpRegistryReadFailedDetail extends EpErrorDetail {
+  kind: typeof EP_REGISTRY_READ_FAILED;
+  endpoint: string;
+  command: string;
+}
+
+/** True iff `e` carries the {@link EP_REGISTRY_READ_FAILED} marker: a caller-side registry read
+ *  failed; the responders were not the failure. */
+export function registryReadFailed(e: unknown): boolean {
+  return e instanceof EpEnvelopeError && (e.details ?? []).some((d) => d.kind === EP_REGISTRY_READ_FAILED);
+}
+
 /** The `EndpointReply.error` shape. */
 export interface EpError {
   code: string;

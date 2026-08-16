@@ -8,7 +8,7 @@ Say what a refused publish, a goal deadline, and a class-queue split actually pr
 A refused publish now reports itself. `nc.publish` is fire-and-forget: a caller whose credential
 does not authorize the subject gets an asynchronous answer on the *connection*, so the publish
 returns normally and the only observable is that no reply arrives. That is indistinguishable from
-an absent responder, though the two need opposite responses — mint the grant, or go find the
+an absent responder, though the two need opposite responses: mint the grant, or go find the
 responder. An instance-addressed describe made with a class-rail credential is exactly that case,
 and it read as an unresponsive manager: measured live, `ps --on <instance>` returned `no describe
 reply from manager within 10000ms` against a 115ms RTT while an untargeted describe answered from
@@ -25,9 +25,10 @@ alone.
 
 An unpinned class-queue split no longer implies the effect did not land. Describe and invoke are
 separate trips through the same anycast queue, so in a multi-instance space the instance that won
-the queue received the request and may have executed it — possibly after the error was raised. The
-message now says so, points at `ps`/`inspect`/roster before any retry, and names `--on` as the way
-to avoid the split.
+the queue received the request and may have executed it, possibly after the error was raised. The
+core message now says so and points at `ps`/`inspect`/roster before any retry; it stops at "a call
+that addresses one instance does not split", and the CLI, which owns the flag, adds that
+`--on <instance>` is how to pin one.
 
 And a split is no longer silently retried into a duplicate effect. The client recovered from
 `failed-precondition` by dropping its cached resolve and invoking again, which is a repair when the
@@ -36,7 +37,7 @@ answering the class queue: request received and answered (executed or refused; t
 say which), error raised afterwards. Re-invoking there re-issued the command automatically, while
 the error text told the operator not to retry; it is the mechanism behind one spawn producing
 several seats. The retry now happens only for commands
-whose second execution is observably indistinguishable from one — the reads and `describe`. Every
+whose second execution is observably indistinguishable from one: the reads and `describe`. Every
 other command surfaces the split to its caller, carrying a marker that says a responder did answer
 the request, so the caller can check before deciding. Surfacing also drops the stale bind: the
 cached resolve named an incarnation a different live instance has just answered for, and keeping it
@@ -57,14 +58,14 @@ own bound epoch the responder's "current" epoch, which named the wrong side.
 
 That classification is an allowlist and fails closed at both levels. It is keyed by endpoint, not by
 bare command name, because the client is endpoint-agnostic and a flat list would lend the manager's
-judgement to any endpoint that happened to reuse a name — an endpoint nobody has classified has no
+judgement to any endpoint that happened to reuse a name; an endpoint nobody has classified has no
 repeat-safe commands, and an unlisted command is surfaced rather than repeated. `describe` is the one
 exception, and structurally so: it is served by the machinery on every endpoint and can never be
 redefined into something that mutates.
 
 `models` is deliberately not on that list even though it is a read command. With `{refresh: true}` it
 reaches the connector's model listing and, for OpenCode, re-fetches provider catalogs and rewrites a
-cache — the same name, in the same grant class, answering differently because of an argument the
+cache: the same name, in the same grant class, answering differently because of an argument the
 classification cannot see. A long-lived client invoking `models` through `invokeService` therefore
 surfaces a split rather than absorbing it in a multi-instance space; encoding per-command argument
 rules here would reintroduce exactly the fail-open shape this replaced.
@@ -76,19 +77,29 @@ splits now surface instead of being re-issued, plus the repeat-safe `ps` reads o
 `down -f` and the console, which keep absorbing them. The one-shot CLI commands (`cotal ps`,
 `cotal models`, `stop`, `attach`, `spawn --detach`) resolve fresh and invoke once on a short-lived
 connection; they had no cached bind and no retry, and are unchanged. That is the clearest statement of what the list is: a client-side
-stand-in for something the wire does not yet carry — a safety annotation on the command contract and
-an effect outcome in the reply — which remains open.
+stand-in for something the wire does not yet carry (a safety annotation on the command contract and
+an effect outcome in the reply), which remains open.
 
 The CLI no longer prefixes every failed manager call with "no manager reachable on the ep rails".
-That verdict is stated only where the call went unanswered and nothing was pinned; a refusal that
-states its own cause (a describe refused by the broker, a split, a stale epoch) is printed as it is,
-because the prefix contradicted it, and an unanswered `--on <instance>` names the instance that did
-not answer instead of pronouncing on the mesh (measured: three managers answering, one typo in
-`--on`, "no manager reachable").
+That verdict is stated only where the call went unanswered, as core marks it: no responder, or the
+reply deadline elapsed with nothing attributed to the request. The catalog code alone was not
+evidence of that. A manager that answers its describe with `ok:false` has the refusal rethrown under
+its own code, `unavailable` included, and a store read after an answered describe raises the same
+code; both printed as an unreachable manager while a manager was answering (reproduced live during
+review). Core now sets a detail kind on the producers that observed silence and the CLI keys on it,
+never on the code. A registry read on the caller's own side (the scatter's freeze or its reconcile)
+is a third outcome with its own line, since the managers were not the failure and may all be up. A
+refusal that states its own cause (a describe refused by the broker, a split, a stale epoch) is
+printed as it is, because the prefix contradicted it, and an unanswered `--on <instance>` names the
+instance that did not answer instead of pronouncing on the mesh (measured: three managers answering,
+one typo in `--on`, "no manager reachable"). `up`'s resume readiness poll keys on that same
+unanswered fact rather than on the message prefix.
 
 `ps` prints the full instance id in its multi-manager view. That view appears only where the split
 makes `--on <instance>` the one way to address a manager, and `--on` accepts nothing but the whole
-26-32 character lifecycle token — so an abbreviated header named the remedy and withheld the value
+26-32 character lifecycle token, so an abbreviated header named the remedy and withheld the value
 it needed, and `--on <prefix>` was refused as a malformed token. The `stop`/`attach` seat-lookup
 miss, which lists the instances that did not answer for the same purpose, prints them whole too and
-says the id must be passed as printed.
+says the id must be passed as printed. `spawn` refuses `--on` outside a detached imperative spawn: a
+foreground spawn has no manager to pin and a manifest deploy launches through the manager class
+queue, so the flag was accepted there and silently ignored.

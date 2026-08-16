@@ -1388,8 +1388,8 @@ export class CotalEndpoint extends EventEmitter {
       } catch (e) {
         if (!(e instanceof EpEnvelopeError)) throw e;
         // DO NOT auto-retry a command that a responder already ANSWERED. This recovery was
-        // written for one reading of `failed-precondition` — "the describe-bound incarnation is gone
-        // (restart or supersede), so re-resolve and invoke the current one" — and on that reading a
+        // written for one reading of `failed-precondition`, "the describe-bound incarnation is gone
+        // (restart or supersede), so re-resolve and invoke the current one", and on that reading a
         // second invoke is a repair, because the first never ran. That premise fails for the other
         // producer of this code: the describe-bound currency check also fires when a DIFFERENT live
         // instance wins the class queue and REPLIES, which in a multi-manager space is an ordinary
@@ -1399,22 +1399,22 @@ export class CotalEndpoint extends EventEmitter {
         //
         // Removing the retry outright is not an option either: in a two-manager space roughly half
         // of all class-queue calls split, so every other `ps` would surface an error the retry used
-        // to absorb harmlessly — measured here, this suite's own warm-up read hit it on the first
-        // try. Re-running a read costs nothing.
+        // to absorb harmlessly (measured here, this suite's own warm-up read hit it on the first
+        // try). Re-running a read costs nothing.
         //
         // So the retry is gated on an ALLOWLIST of commands whose second execution is observably
         // indistinguishable from one (`REPEAT_SAFE_COMMANDS`), keyed by ENDPOINT because this
         // method is endpoint-agnostic and a bare name list would lend the manager's judgement to
         // every other endpoint in the mesh. Everything else surfaces. The polarity matters more
-        // than the membership: an allowlist fails CLOSED, so a command nobody has classified — on
-        // an endpoint nobody has classified — is surfaced rather than silently duplicated.
+        // than the membership: an allowlist fails CLOSED, so a command nobody has classified (on
+        // an endpoint nobody has classified) is surfaced rather than silently duplicated.
         //
         // An earlier version of this guard withheld the retry only for `GOAL_BEARING_COMMANDS`
         // (spawn/launch) on the theory that duplication only hurts when it CREATES something.
         // Adversarial review broke that with a measured counterexample: `purge` is neither
         // goal-bearing nor convergent, and its second execution deleted messages published after
         // the first had completed. "Creates something" is not the boundary; "changes anything" is,
-        // and core cannot tell — a command carries no idempotency declaration and every manager
+        // and core cannot tell: a command carries no idempotency declaration and every manager
         // command shares `class: "ephemeral"`, so nothing in the resolved surface distinguishes a
         // read from a mutation. The allowlist is the honest stand-in until it can. The general fix
         // is a safety annotation on the command contract plus an effect-outcome in the reply; that
