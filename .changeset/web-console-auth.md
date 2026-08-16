@@ -1,6 +1,5 @@
 ---
 "@cotal-ai/web": minor
-"cotal-ai": minor
 ---
 
 feat(web)!: authenticate the console's HTTP surface with a single-use launch link
