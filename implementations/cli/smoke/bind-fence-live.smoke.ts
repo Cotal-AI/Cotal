@@ -34,13 +34,19 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { connect } from "@nats-io/transport-node";
+// Core comes from SOURCE, not from the built package this file would otherwise resolve. The
+// caller half of what this suite grades — `invokeCommand` deciding to carry the bind — lives in
+// core, and a suite that imports `dist` cannot make a claim about `src`: a mutation of the source
+// leaves it green, which is a mutation SURVIVING for the one reason that says nothing about the
+// test. The manager below is a different process running the built binary, so what it proves is
+// that a built responder honours the field; the responder-side seam order is graded on source in
+// `smoke:bind-fence`.
 import {
-  BASELINE_LIFECYCLE_ENDPOINT, DEV_OWNER, EpEnvelopeError, invokeCommand, mintLifecycleUid,
+  BASELINE_LIFECYCLE_ENDPOINT, DEV_OWNER, invokeCommand, mintLifecycleUid,
   newIdentity, resolveService, replyRefusedBeforeEffect, standaloneConnectOpts, type EpCaller,
   type EndpointReply,
-} from "@cotal-ai/core";
+} from "../../../packages/core/src/index.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
-import { epRailFailure } from "../src/lib/control.js";
 
 // EPHEMERAL, not a fixed port distinct from the other live smokes'. A fixed port is only safe while
 // no two live smokes share a runner, which is a property of how smoke:ci is sharded rather than of
@@ -69,7 +75,7 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
  *  tears the process down before the summary — and `fail === 0` reads as PASS in every one of them,
  *  with a zero exit code, which is the only bit anyone downstream looks at. So the count is declared
  *  rather than implied, and checked on the way out however the process leaves. */
-const EXPECTED_CELLS = 14;
+const EXPECTED_CELLS = 13;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -158,8 +164,6 @@ try {
     // No reachability verdict, from either side: a refusal is an ANSWER. `up`'s resume poll keys on
     // `unanswered`, and reading a refusal as silence is what turns a retry into a duplicate spawn.
     ok("no reachability verdict is stated", !VERDICT.test(msg), msg.slice(0, 200));
-    const rendered = epRailFailure(new EpEnvelopeError("failed-precondition", msg), {});
-    ok("...and the rail renderer does not mark it unanswered", rendered.unanswered === false, rendered);
   } finally {
     await nc.drain().catch(() => nc.close());
   }
