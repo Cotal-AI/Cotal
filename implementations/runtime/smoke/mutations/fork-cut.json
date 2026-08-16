@@ -1,0 +1,88 @@
+{
+  "suite": "implementations/runtime/smoke/fork-run.smoke.ts",
+  "guard": "The fork cut: computed in migration mode, ending before the step it names, inheriting the parent pins verbatim, and committed with the child record written last.",
+  "command": "pnpm smoke:runtime-fork",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/fork-cut.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "the cut includes the very step it was cut at",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (stepKeyString(key) === this.cutAt) throw new CutReached(this.cutAt);\n    return super.lookup(key, inputHash);",
+      "replace": "    const v = super.lookup(key, inputHash);\n    if (stepKeyString(key) === this.cutAt) throw new CutReached(this.cutAt);\n    return v;",
+      "expectRed": "the step forked at is NOT in the cut: the child re-runs it",
+      "cell": "the step forked at is NOT in the cut: the child re-runs it"
+    },
+    {
+      "name": "the cut is computed in RESUME mode",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "      migration: true,\n      pins: req.pins,",
+      "replace": "      migration: false,\n      pins: req.pins,",
+      "expectRed": "the real plan reaches a cut inside a settled scope, because it walks in migration mode",
+      "cell": "the real plan reaches a cut inside a settled scope, because it walks in migration mode"
+    },
+    {
+      "name": "the child is reseeded from its own run id",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });",
+      "replace": "  await createRunSpec(kv, endpoint, plan.child, { pins: { ...plan.pins, seed: plan.child }, createdAt: plan.at });",
+      "expectRed": "it is pinned to the parent's seed, so the copied prefix decides what it decided",
+      "cell": "and it is pinned to the parent's seed, so the copied prefix decides what it decided"
+    },
+    {
+      "name": "the record is written FIRST, so a crash leaves a drivable half-fork",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }\n\n  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });",
+      "replace": "  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });\n\n  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }",
+      "expectRed": "leaves NO record behind: the spec is written last",
+      "cell": "and leaves NO record behind: the spec is written last"
+    },
+    {
+      "name": "a cut that was never reached is handed back anyway",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const cut = reached ? req.entries.filter((e) => !orphaned.has(journalEntryKeyString(e))) : [];",
+      "replace": "  const cut = req.entries.filter((e) => !orphaned.has(journalEntryKeyString(e)));",
+      "expectRed": "an unreached plan carries no cut at all, rather than a plausible one",
+      "cell": "and an unreached plan carries no cut at all, rather than a plausible one"
+    },
+    {
+      "name": "a spawn in the cut is copied rather than refused",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (e.kind !== \"spawn\") continue;",
+      "replace": "    if (e.kind !== \"spawn\" || true) continue;",
+      "expectRed": "a cut containing a spawn is refused: the fork would have to respawn an agent this host cannot mint",
+      "cell": "a cut containing a spawn is refused: the fork would have to respawn an agent this host cannot mint"
+    },
+    {
+      "name": "a step the journal never recorded is waved through",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!recorded) {",
+      "replace": "  if (!recorded && false) {",
+      "expectRed": "with L5017 rather than a cut at the end of history",
+      "cell": "with L5017 rather than a cut at the end of history"
+    },
+    {
+      "name": "a divergence before the cut is reported as an unreachable step",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "      refusals.push({\n        code: \"L5001\",\n        step: err.stepKey,",
+      "replace": "      refusals.push({\n        code: \"L5018\",\n        step: err.stepKey,",
+      "expectRed": "with L5001, the divergence, not with a cut refusal",
+      "cell": "with L5001, the divergence, not with a cut refusal"
+    },
+    {
+      "name": "the copy leaves the entries on the parent's run",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    await store.append({ ...entry, run: plan.child });",
+      "replace": "    await store.append({ ...entry });",
+      "expectRed": "onto the CHILD's run, because the prefix is now the child's history",
+      "cell": "onto the CHILD's run, because the prefix is now the child's history"
+    },
+    {
+      "name": "forking into a run that already exists is allowed",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (existing !== undefined) {",
+      "replace": "  if (existing !== undefined && false) {",
+      "expectRed": "forking into a run that already exists is refused: a fork mints a new run",
+      "cell": "forking into a run that already exists is refused: a fork mints a new run"
+    }
+  ]
+}

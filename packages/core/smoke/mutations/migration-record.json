@@ -1,0 +1,71 @@
+{
+  "suite": "packages/core/smoke/run-migration.smoke.ts",
+  "guard": "The migration record: an id derived from the report, a report filed once, an application that is a separate create-only act, and a history ordered by when it happened.",
+  "command": "pnpm smoke:run-migration",
+  "proveWith": "pnpm mutation-proof --config packages/core/smoke/mutations/migration-record.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "the id ignores what the check found, so two decisions share one identity",
+      "file": "packages/core/src/run-migration.ts",
+      "find": "  return digestId(canonicalJson(value));",
+      "replace": "  return digestId(canonicalJson({ v: value.v, run: value.run, toHash: value.toHash }));",
+      "expectRed": "and so is a different orphan table, which is the thing a person authorised",
+      "cell": "and so is a different orphan table, which is the thing a person authorised"
+    },
+    {
+      "name": "a differing report is written over instead of refused",
+      "file": "packages/core/src/run-migration.ts",
+      "find": "    if (canonicalJson(parsed) !== canonicalJson(value))",
+      "replace": "    if (false && canonicalJson(parsed) !== canonicalJson(value))",
+      "expectRed": "a DIFFERENT report under the same id is refused rather than overwritten",
+      "cell": "a DIFFERENT report under the same id is refused rather than overwritten"
+    },
+    {
+      "name": "the application overwrites whichever driver claimed it first",
+      "file": "packages/core/src/run-migration.ts",
+      "find": "    const already = existing?.status === undefined ? undefined : parseStatus(existing.status.value, statusKey);\n    if (already?.by === by) return;",
+      "replace": "    const already = existing?.status === undefined ? undefined : parseStatus(existing.status.value, statusKey);\n    void already;\n    return;",
+      "expectRed": "a DIFFERENT driver claiming it loses loudly: a run moves once",
+      "cell": "a DIFFERENT driver claiming it loses loudly: a run moves once"
+    },
+    {
+      "name": "a driver's own retry is treated as a race",
+      "file": "packages/core/src/run-migration.ts",
+      "find": "    if (already?.by === by) return;",
+      "replace": "    if (already?.by === by && false) return;",
+      "expectRed": "the SAME driver re-applying is its own earlier attempt, not a race",
+      "cell": "the SAME driver re-applying is its own earlier attempt, not a race"
+    },
+    {
+      "name": "applying a migration nobody filed invents one",
+      "file": "packages/core/src/run-migration.ts",
+      "find": "  if (merged === undefined)\n    throw new EpEnvelopeError(\"failed-precondition\", `no migration is filed at ${specKey}; an application names the migration it applied`);",
+      "replace": "  if (merged === undefined && false)\n    throw new EpEnvelopeError(\"failed-precondition\", `no migration is filed at ${specKey}; an application names the migration it applied`);",
+      "expectRed": "applying a migration nobody filed is a failed precondition, not a new record",
+      "cell": "applying a migration nobody filed is a failed precondition, not a new record"
+    },
+    {
+      "name": "the history is ordered by id rather than by when it happened",
+      "file": "packages/core/src/run-migration.ts",
+      "find": "  found.sort((a, b) => (a.spec.at - b.spec.at) || (a.migrationId < b.migrationId ? -1 : a.migrationId > b.migrationId ? 1 : 0));",
+      "replace": "  found.sort((a, b) => (a.migrationId < b.migrationId ? -1 : a.migrationId > b.migrationId ? 1 : 0));",
+      "expectRed": "the earlier DECISION comes first even though its id sorts later",
+      "cell": "the earlier DECISION comes first even though its id sorts later"
+    },
+    {
+      "name": "the closed schema lets an unknown field through",
+      "file": "packages/core/src/run-migration.ts",
+      "find": "    if (!SPEC_KEYS.includes(k))\n      throw new EpEnvelopeError(\"internal\", `migration ${key} carries the unknown field \"${k}\"; record schemas are closed`);",
+      "replace": "    if (!SPEC_KEYS.includes(k) && false)\n      throw new EpEnvelopeError(\"internal\", `migration ${key} carries the unknown field \"${k}\"; record schemas are closed`);",
+      "expectRed": "an unknown field is refused rather than read past: record schemas are closed",
+      "cell": "an unknown field is refused rather than read past: record schemas are closed"
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "the history is not scoped to the run",
+      "file": "packages/core/src/run-migration.ts",
+      "why": "Unkillable by construction, and recorded rather than dropped from the denominator. `recordSpecKey` validates every qualifier as an id token, so a mutation that loosens the run token does not run at all; every other way of widening the prefix collapses into the empty-list failure that a different cell already names. Two enumerations, one structural guard, zero independent kills."
+    }
+  ]
+}
