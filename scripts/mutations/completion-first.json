@@ -9,7 +9,8 @@
       "file": "scripts/mutation-proof.mjs",
       "find": "if (marker !== undefined && !r.output.includes(marker)) {",
       "replace": "if (false) {",
-      "expectRed": "a CLEAN exit that never reached the region is INCONCLUSIVE, not SURVIVED"
+      "expectRed": "a run that never reaches the suite's end is INCONCLUSIVE, not KILLED",
+      "note": "Disabling the check outright is BROADER than the cell it would like to name: in a fail-fast suite the earlier incomplete-run cell fires first, so this is graded on that one and the clean-exit direction is graded by the ordering mutation below, which is the narrow one."
     },
     {
       "name": "THE ORDERING: the completion check applies only to a red run, as it did before",
