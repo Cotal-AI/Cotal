@@ -150,16 +150,17 @@
     {
       "name": "a refused plan hands its cut back anyway",
       "file": "implementations/runtime/src/fork.ts",
-      "find": "  const cut =\n    reached && refusals.length === 0\n      ? req.entries.filter((e) => {",
-      "replace": "  const cut =\n    reached\n      ? req.entries.filter((e) => {",
+      "find": "  const cut =\n    reached && refusals.length === 0\n      ? entries.filter((e) => {",
+      "replace": "  const cut =\n    reached\n      ? entries.filter((e) => {",
       "expectRed": "REPAIRED: an INADMISSIBLE plan carries no cut",
-      "cell": "REPAIRED: an INADMISSIBLE plan carries no cut"
+      "cell": "REPAIRED: an INADMISSIBLE plan carries no cut",
+      "note": "Re-anchored: the seed-fold repair renamed `req.entries` to the journal's folded `entries` on this very line, so the old anchor was gone and the mutation graded ERROR -- nothing mutated, guard ungraded, run still healthy-looking. THIRD occurrence of that class in one day, and the count is the point: a repair that touches a line disarms every mutation anchored to it, silently, and only the TALLY catches it."
     },
     {
       "name": "the cut is emptied for everyone, refused or not",
       "file": "implementations/runtime/src/fork.ts",
-      "find": "  const cut =\n    reached && refusals.length === 0\n      ? req.entries.filter((e) => {",
-      "replace": "  const cut =\n    false\n      ? req.entries.filter((e) => {",
+      "find": "  const cut =\n    reached && refusals.length === 0\n      ? entries.filter((e) => {",
+      "replace": "  const cut =\n    false\n      ? entries.filter((e) => {",
       "expectRed": "and an admissible plan over the same journal still carries its prefix",
       "cell": "and an admissible plan over the same journal still carries its prefix",
       "note": "The narrowness twin. `cut = []` unconditionally satisfies the removal above perfectly and makes every fork a fork of nothing -- admissible, empty-prefixed, and silent. Graded on the control cell in the same block rather than on a distant one, so the two mutations differ by exactly the condition under test."
@@ -174,13 +175,13 @@
       "note": "The defect exactly as it shipped, and it is invisible to every other block in this file because they all build a KEYED view with `Journal.entries()`. Only the block that hands `planFork` an append log -- the shape a driver actually holds -- can see it."
     },
     {
-      "name": "the fold returns nothing, so every fork is a fork of no history",
+      "name": "the plan folds the WRONG view",
       "file": "implementations/runtime/src/fork.ts",
       "find": "  const entries = journal.entries();",
-      "replace": "  const entries: readonly JournalEntry[] = [];",
+      "replace": "  const entries = journal.orphans();",
       "expectRed": "the cut is what happened BEFORE it",
       "cell": "the cut is what happened BEFORE it",
-      "note": "The narrowness twin. An empty fold satisfies the mutation above perfectly -- one row per step is trivially true of no rows -- and hands every child an empty prefix, which is admissible, silent, and wrong. Graded on block 1's cut, the plainest statement of what a prefix is, because this suite counts rather than throws and a broad mutation may redden more than the cell it names."
+      "note": "The narrowness twin, and its FIRST form was wrong in a way worth recording. `entries = []` satisfies 'one row per step' trivially -- but an empty prefix makes later blocks in this suite throw on a plan they assumed admissible, so the run died before printing its marker and graded INCONCLUSIVE: red, and not evidence about any cell. A twin has to be survivable enough to reach the assertion it names. `orphans()` is also a folded entry list and also one row per step -- it is simply the WRONG set, the steps AFTER the cut rather than before it -- so it tests that the fold names the right view without destroying the run."
     }
   ],
   "unkillable": [
