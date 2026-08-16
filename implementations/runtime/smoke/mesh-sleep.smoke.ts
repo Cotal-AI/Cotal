@@ -5,11 +5,13 @@
  * about a run that outlives its process. This is the other half: a real broker, a real timer armed by
  * the timer writer, a real fire, and the one-use settle fact that ends the wait.
  *
- * The load-bearing claim is the second cell. `ctx.requestId` is derived from (runId, stepKey,
+ * The load-bearing claim is the second block. `ctx.requestId` is derived from (runId, stepKey,
  * inputHash, attempt) and written to the journal BEFORE the handler runs, so a crashed run re-derives
- * the same checkpoint token — and `mintCheckpoint` is idempotent-if-identical, so the resumed attempt
- * attaches to the timer the crashed one armed instead of arming a second. Nothing has to be remembered
- * across the crash, which is the point.
+ * the same checkpoint token, and the resumed attempt attaches to the timer the crashed one armed
+ * instead of arming a second. Nothing has to be remembered across the crash, which is the point — but
+ * attaching is not free, because a mint is idempotent only if the whole spec is identical and a
+ * deadline recomputed from the clock is not. The handler reads the recorded one, and the block that
+ * grades it lets real time pass between the attempts, since a crash is a gap in time by definition.
  *
  * Run: pnpm smoke:runtime-mesh-sleep   (needs nats-server on PATH)
  */
@@ -98,6 +100,14 @@ const armPending = async (expect: number): Promise<number> => {
     m.ack();
   }
   return armed;
+};
+
+/** Take schedule requests off the stream and arm NOTHING: a writer that read the request and died
+ *  before it armed anything. Used to open the crash-before-arm window on purpose. */
+const dropPending = async (expect: number): Promise<number> => {
+  let seen = 0;
+  for await (const m of await writerC.fetch({ max_messages: expect, expires: 1_000 })) { seen += 1; m.ack(); }
+  return seen;
 };
 
 /** Whether the broker has published its own `.fire` for this token yet — an OBSERVATION of the
@@ -244,7 +254,14 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   const first = live.sleep({ duration: "2s" }, ctx(TOKEN3));
   first.catch(() => { /* the abandoned attempt */ });
   await wait(300);
-  // Deliberately NOT armed: the schedule request sits unread, which is the crash-before-arm window.
+  // THE REQUEST IS TAKEN AND THROWN AWAY, which is the window this block is about: a writer read it
+  // and died before it armed anything. Leaving it on the stream instead was the first version and
+  // it graded nothing — the resume's own `armPending` armed the ORIGINAL request, the timer fired,
+  // the pause ended, and removing the reconciler entirely changed no cell. The request has to be
+  // gone for the re-emission to be the only thing that can still arm this pause.
+  const dropped = await dropPending(4);
+  c("the one schedule request was consumed by a writer that armed nothing: the crash-before-arm window",
+    dropped === 1, dropped);
   const armedBefore = await brokerFired(TOKEN3);
   await wait(3_000);
   c("nothing fired while the timer was never armed, so the pause is due and nobody is coming",
@@ -255,8 +272,8 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   resumed.catch((e: unknown) => { refused = (e as Error).message; });
   await wait(500);
   c("the overdue resume is not refused: a past deadline is reconciled, not re-minted", refused === undefined, refused);
-  c("and it asked for the schedule again, which is the only thing that can still arm it",
-    (await armPending(8)) >= 1);
+  c("and it asked for the schedule again, which is now the only thing that can still arm it",
+    (await armPending(8)) === 1);
   await withDeadline(resumed, 20_000, "the overdue sleep");
   const settle3 = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN3 });
   c("the pause ends as an expiry, on the deadline it recorded before the crash", settle3?.settle === "expired", settle3?.settle);

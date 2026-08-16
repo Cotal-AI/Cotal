@@ -9,9 +9,12 @@
  * **The request id IS the durable token.** `ctx.requestId` is `base64url(sha256(runId, stepKey,
  * inputHash, attempt))`, written onto the pending journal entry BEFORE the handler is called, and
  * it is a valid `<token>` by construction — same alphabet, 43 characters. So a crashed run that
- * resumes re-derives the same token, and `mintCheckpoint` is idempotent-if-identical: the resumed
- * attempt ATTACHES to the timer the crashed one armed instead of arming a second. Nothing here has
- * to remember anything across a crash, because the identity was recorded before the work started.
+ * resumes re-derives the same token and ATTACHES to the pause the crashed attempt recorded instead
+ * of opening a second one. Nothing here remembers anything across a crash, because the identity was
+ * recorded before the work started and the pause itself holds the rest: `mintCheckpoint` is
+ * idempotent only if the ENTIRE spec is identical, and the deadline in it cannot be recomputed from
+ * a clock that has moved, so `arm()` reads the recorded spec rather than doing the arithmetic
+ * again.
  */
 import { createHash } from "node:crypto";
 import {
