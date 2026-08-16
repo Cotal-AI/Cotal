@@ -514,7 +514,7 @@ importers:
         specifier: ^8.20.0
         version: 8.20.0
       json-canonicalize:
-        specifier: ^2.0.0
+        specifier: 2.0.0
         version: 2.0.0
       yaml:
         specifier: ^2.9.0
@@ -526,7 +526,7 @@ importers:
         specifier: ^8.15.0
         version: 8.18.0
       json-canonicalize:
-        specifier: ^2.0.0
+        specifier: 2.0.0
         version: 2.0.0
 
   packages/workspace:

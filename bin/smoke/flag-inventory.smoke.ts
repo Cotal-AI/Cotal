@@ -96,7 +96,13 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   ext: { flags: ["force:boolean", "repair:boolean", "reset:boolean"], positionals: true },
   __complete: { flags: [], positionals: true, rawArgs: true },
   mint: {
-    flags: ["allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string", "signer:boolean"],
+    // `--role` / `--provision` / `--space` / `--server` (2026-08): an out-of-band mint can pre-create
+    // the identity's bind-only durables so the credential can CONSUME, not only publish (issue #306's
+    // second half); the target flags name the mesh that provisioning connects to.
+    flags: [
+      "allow-publish:string", "allow-subscribe:string", "force:boolean", "out:string", "profile:string",
+      "provision:boolean", "role:string", "server:string", "signer:boolean", "space:string",
+    ],
     positionals: true,
   },
   topology: { flags: ["file:string:f"], positionals: true },

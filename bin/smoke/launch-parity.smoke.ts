@@ -61,11 +61,13 @@ for (const f of launchFlags) {
 // enumeration needs A config, not the AMBIENT session's: pass an empty env (open-mode defaults)
 // so a connector-launched shell's COTAL_* vars (e.g. creds without a lifecycle uid) can't leak
 // in and trip the authed-launch parse gate — this smoke is about vocabulary, not identity.
+// `schema` is a closed Zod object; the argument names are on `.shape`. Reading the object itself
+// enumerates Zod's internals and every one of them fails the vocabulary check below.
 const spawnTool = cotalToolSpecs(configFromEnv({ COTAL_NAME: "parity-smoke" }), "parity-smoke").find((t) => t.name === "cotal_spawn") as
-  | { name: string; schema: Record<string, unknown> }
+  | { name: string; schema: { shape: Record<string, unknown> } }
   | undefined;
 assert.ok(spawnTool, "cotal_spawn tool spec exists");
-const toolParams = Object.keys(spawnTool.schema);
+const toolParams = Object.keys(spawnTool.schema.shape);
 for (const p of toolParams) {
   assert.ok(START_OP_KEYS.has(p), `cotal_spawn param "${p}" is not a start-op key — vocabulary drift`);
 }
