@@ -60,6 +60,14 @@ const CAPTURES = new RegExp(String.raw`${VAR}\s*!==?\s*(?:undefined|null)`);
  * plausible careless edit in this family, because it is what somebody leaves behind after pinning
  * an address to debug something.
  *
+ * AND THE STRING MUST BE A TEMPLATE, which is the same requirement one level down. `${…}` inside a
+ * quoted string is not an interpolation, it is six characters of text: a line reading
+ * `console.log("• broker: ${process.env.COTAL_SERVERS}")` prints that literally on every run with
+ * the real address sitting in the environment, unread. Ran both forms with the variable set to
+ * confirm it rather than reasoning about it. This is the plausible careless edit, not sabotage:
+ * somebody converts ticks to quotes, or rewrites toward concatenation and leaves a `${}` behind
+ * inside the quotes. So the pattern requires the opening backtick.
+ *
  * WHAT READING SOURCE CANNOT DO, named rather than implied, because a boundary nobody wrote down
  * gets mistaken for coverage. This checks that the line is SHAPED like a disclosure. It cannot
  * follow evaluation, so a line that builds the value and then discards it stays accepted: a
@@ -69,7 +77,7 @@ const CAPTURES = new RegExp(String.raw`${VAR}\s*!==?\s*(?:undefined|null)`);
  * repository source inside a guard, which buys less than it costs. Measured and left open, not
  * overlooked.
  */
-const PRINTS = new RegExp(String.raw`console\.log\([^\n]*broker:\s*\$\{\s*${VAR}\s*\}`);
+const PRINTS = new RegExp(String.raw`console\.log\(\`[^\n\`]*broker:\s*\$\{\s*${VAR}\s*\}`);
 
 let pass = 0;
 let fail = 0;
@@ -178,6 +186,13 @@ function evaluate(text: string): { prints: boolean; ordered: boolean } {
     + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
     + 'console.log(`• broker: nats://127.0.0.1:4222`); // ${process.env.COTAL_SERVERS}\n'
     + 'void brokerFromEnv;\n';
+  // Same family, one level down: the interpolation is exactly where it belongs and the string is
+  // QUOTED, so JS never interpolates it and the line prints `${process.env.COTAL_SERVERS}` as text.
+  // Ran it with the variable set before writing this. Careless rather than sabotage: it is what a
+  // tick-to-quote conversion leaves behind.
+  const QUOTED = 'const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;\n'
+    + 'process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";\n'
+    + 'console.log("• broker: ${process.env.COTAL_SERVERS} (x)");\nvoid brokerFromEnv;\n';
   // The census direction. A file this cannot SEE is not rejected, it is absent, and every per-file
   // cell is generated from the census -- so a shape it does not know costs cells rather than reds.
   const BRACKET = 'const brokerFromEnv = process.env["COTAL_SERVERS"] !== undefined;\n'
@@ -192,6 +207,8 @@ function evaluate(text: string): { prints: boolean; ordered: boolean } {
     !evaluate(HARDCODED).prints);
   check("fixture: the INTERPOLATION parked in a trailing comment is rejected too",
     !evaluate(COMMENTED_INTERP).prints);
+  check("fixture: the interpolation inside a QUOTED string is rejected: it prints as text, not a value",
+    !evaluate(QUOTED).prints);
   check("fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
     DEFAULTS.test(BRACKET) && evaluate(BRACKET).prints && evaluate(BRACKET).ordered);
 }

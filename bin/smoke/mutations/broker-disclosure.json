@@ -88,11 +88,11 @@
     {
       "name": "the disclosure requirement drops back to the NAME, so `${` deleted is accepted",
       "file": "bin/smoke/broker-disclosure.smoke.ts",
-      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
       "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:[^\\n]*${VAR}`);",
       "expectRed": "fixture: a line carrying the NAME without the interpolation is rejected",
       "cell": "fixture: a line carrying the NAME without the interpolation is rejected: `${` is the value",
-      "note": "THE SHIPPED STATE BEFORE THIS ROUND, and it is the whole name-versus-value family in one character. A reviewer reproduced it against the suite's own `evaluate`: delete the `$` from `${process.env.COTAL_SERVERS}` and every cell stays green while the line prints the literal text `{process.env.COTAL_SERVERS}` at runtime. The cell was called \"prints the broker it resolved\" and never looked at whether anything was resolved. The corpus cannot prove this either way -- every real file is compliant -- so the fixtures are the only thing that can, which is the same argument mutation 3 already carries one level up. RE-ANCHORED after the same regex was tightened again a round later: an anchor that has moved reports ERROR rather than a verdict, which is the tool being honest, and is the reason a kill set is re-run rather than inherited when the guard it grades changes."
+      "note": "THE SHIPPED STATE BEFORE THIS ROUND, and it is the whole name-versus-value family in one character. A reviewer reproduced it against the suite's own `evaluate`: delete the `$` from `${process.env.COTAL_SERVERS}` and every cell stays green while the line prints the literal text `{process.env.COTAL_SERVERS}` at runtime. The cell was called \"prints the broker it resolved\" and never looked at whether anything was resolved. The corpus cannot prove this either way -- every real file is compliant -- so the fixtures are the only thing that can, which is the same argument mutation 3 already carries one level up. RE-ANCHORED TWICE, the second time after the backtick requirement landed on the same line: an anchor that has moved reports ERROR rather than a verdict, which is the tool being honest, and is the reason a kill set is re-run rather than inherited when the guard it grades changes."
     },
     {
       "name": "the self-exclusion is removed, so the guard counts its own fixtures as real suites",
@@ -129,6 +129,15 @@
       "expectRed": "fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
       "cell": "fixture: the same assignment under bracket access is SEEN, so it can be judged at all",
       "note": "The dangerous direction, because it is SILENT. `process.env[\"COTAL_SERVERS\"] ||=` is the same assignment, and a census that cannot see it does not reject that file, it never enumerates it -- and every per-file cell is generated from the census, so the guard loses cells rather than going red. That is the same shape as scoping the sweep to `extensions/` (mutation 2), one level lower: there the census missed a DIRECTORY, here it misses a SPELLING. No file in the tree writes it this way today, which is exactly why only a fixture can hold the line."
+    },
+    {
+      "name": "the template requirement is dropped, so `${...}` inside a QUOTED string is accepted",
+      "file": "bin/smoke/broker-disclosure.smoke.ts",
+      "find": "const PRINTS = new RegExp(String.raw`console\\.log\\(\\`[^\\n\\`]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "replace": "const PRINTS = new RegExp(String.raw`console\\.log\\([^\\n]*broker:\\s*\\$\\{\\s*${VAR}\\s*\\}`);",
+      "expectRed": "fixture: the interpolation inside a QUOTED string is rejected",
+      "cell": "fixture: the interpolation inside a QUOTED string is rejected: it prints as text, not a value",
+      "note": "THE SHIPPED STATE BEFORE THIS ROUND, and the same name-versus-value family one level down. The interpolation is present, spelled correctly, and sits exactly where the pattern wants it, and the string is quoted, so JS never interpolates: the line prints `${process.env.COTAL_SERVERS}` as six characters of text with the real address sitting unread in the environment. Ran both forms with the variable set rather than reasoning about it. This is a careless edit and not sabotage, which is why it belongs closed: a tick-to-quote conversion, or a rewrite toward concatenation that leaves a `${}` behind inside the quotes. Every real file uses a template today, so only a fixture can hold this."
     }
   ]
 }
