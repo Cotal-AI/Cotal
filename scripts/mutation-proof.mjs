@@ -228,6 +228,7 @@ function proveOne(m, opts) {
     // convention is the `progressPattern` mistake again. The baseline transcript is convention-free
     // and answers the same question.
     const short = opts.minTicks !== undefined && ticks < opts.minTicks;
+    const baseTicks = opts.baseTicksBy?.get(m.command ?? opts.command) ?? 0;
     const named = r.output.split("\n").filter((l) => l.includes(m.expectRed));
     const baseHits = new Set(
       (opts.baseOutputBy?.get(m.command ?? opts.command) ?? "").split("\n").filter((l) => l.includes(m.expectRed)),
@@ -249,6 +250,23 @@ function proveOne(m, opts) {
       if (changed !== undefined) {
         return { label, verdict: "INCONCLUSIVE",
           why: `exited 0, but the named assertion did NOT print what it prints when green (${JSON.stringify(changed.trim())}) — the suite noticed and something swallowed the exit code; a green status is not a pass`, ticks };
+      }
+      // The remaining swallow: OTHER cells reddened, the NAMED one stayed green, and teardown
+      // returned 0. Every check above passes — the named assertion is intact and prints exactly
+      // what it prints when green — so the run reads as a survivor. But SURVIVED is a claim that
+      // the SUITE PASSED, and it did not.
+      //
+      // NOTE THE DIRECTION, because it is the whole design. FEWER marks than the green run means
+      // cells that print on a pass did not print here. EQUAL to the green run is what a GENUINE
+      // survivor looks like — measured, not assumed: rewording a refusal message no cell reads, in
+      // a file this suite loads by RELATIVE specifier so it provably sees the change, survives at
+      // exactly 156 of 156. So a rule that made an exact-baseline survivor inconclusive would make
+      // a true SURVIVED unreportable, and a true SURVIVED is the finding a kill set exists to
+      // produce. Mark count cannot tell "never saw the mutation" from "saw it and does not care";
+      // both are silent by construction. That question is answered by the module SPECIFIER, not here.
+      if (baseTicks > 0 && ticks < baseTicks) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0 with ${ticks} progress marks against the green run's ${baseTicks} — the named assertion held, but cells that print when green did not print here, so the suite did NOT pass and something swallowed the exit code`, ticks };
       }
       return { label, verdict: "SURVIVED",
         why: "the suite PASSED with the implementation broken — it does not test this", ticks };
@@ -311,6 +329,7 @@ const baseTicksBy = new Map();
 // assertion looks like when it PASSES, which is the only way to tell a red line from a green one
 // without guessing at a suite's marker convention.
 opts.baseOutputBy = new Map();
+opts.baseTicksBy = baseTicksBy;
 for (const cmd of commands) {
   say(`${C.dim}baseline: ${cmd}${C.off}`);
   const base = run(cmd, cwd, opts.timeoutMs);

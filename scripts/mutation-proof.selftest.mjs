@@ -306,6 +306,65 @@ check("a green run that never printed the named cell is INCONCLUSIVE, not SURVIV
   r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("never printed the named assertion")
   && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
 
+// 7e-sexies. THE LAST SWALLOW ON THIS BRANCH, and the one every check above waves through: OTHER
+// cells go red, the NAMED cell stays green and prints exactly what it prints when green, teardown
+// returns 0. The named assertion is intact, so the run reads as a survivor — but SURVIVED claims
+// the SUITE passed, and it did not. Discriminated convention-free by mark count against baseline.
+writeFileSync(
+  join(root, "collateral.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "let fail = 0;",
+    "const c = (n, v) => { if (v) console.log(`  ✓ ${n}`); else { fail++; console.log(`  ✗ FAIL: ${n}`); } };",
+    // The named cell does not read the mutated branch at all, so it survives the mutation intact.
+    "c('the guard admits a small value', admit(1) === true);",
+    // These do, and they are the ones that redden.
+    "c('some other cell', admit(50) === false);",
+    "c('and another', admit(99) === false);",
+    "if (fail > 0) process.exitCode = 1;",
+    "process.on('exit', () => { process.exit(0); });",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm collateral", { cwd: root });
+r = runTool([
+  "--command", `${process.execPath} collateral.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard admits a small value",
+]);
+check("exit 0 with the named cell green but FEWER marks than the green run is INCONCLUSIVE",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("progress marks against the green run")
+  && !r.stdout.includes("SURVIVED"), r.stdout.slice(-500));
+
+// 7e-septies. THE NEGATIVE CONTROL FOR IT, and the reason the rule reads `fewer` and not `at or
+// fewer`. A GENUINE survivor sits at EXACTLY the baseline: a guard nothing tests, removed, changes
+// no cell and moves no mark. Making an exact-baseline survivor inconclusive would make a true
+// SURVIVED unreportable — and a true SURVIVED is the finding a kill set exists to produce.
+writeFileSync(
+  join(root, "indifferent.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "let fail = 0;",
+    "const c = (n, v) => { if (v) console.log(`  ✓ ${n}`); else { fail++; console.log(`  ✗ FAIL: ${n}`); } };",
+    "c('the guard admits a small value', admit(1) === true);",
+    "c('and a second cell that also ignores the branch', admit(2) === true);",
+    "if (fail > 0) process.exitCode = 1;",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm indifferent", { cwd: root });
+r = runTool([
+  "--command", `${process.execPath} indifferent.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard admits a small value",
+]);
+check("a genuine survivor at EXACTLY the baseline still reports SURVIVED",
+  r.status !== 0 && r.stdout.includes("SURVIVED") && !r.stdout.includes("INCONCLUSIVE"), r.stdout.slice(-500));
+
 // 7e-quinquies. RESTORING THE FILE IS NOT RESTORING THE TREE. When the command under test compiles
 // the mutated source, the run leaves a build artefact made FROM THE MUTANT; the sha check proves
 // only that the source is byte-identical again, and a `dist/` is gitignored, so the git recovery
