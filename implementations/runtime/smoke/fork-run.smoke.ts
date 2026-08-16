@@ -552,6 +552,87 @@ const plan = async (
     fenced instanceof RunAlreadyStarted, fenced?.name ?? "activated");
 }
 
+// ── 6) THE LOSING ARM. Every cell here pins behaviour that is WRONG TODAY ───────────────────────
+//
+// These land BEFORE the repair on purpose, and they are written to DIE when it arrives. A cell
+// authored after a fix asserts what the fix does; a cell authored before it has to state what is
+// wrong first, which is the only moment the claim can still be falsified by the code.
+//
+// The design does not leave this open (§8.5's migrate walk, quoted): "A MIGRATION IS NOT A RESUME
+// AND MUST NOT USE §8.2's SHORT-CIRCUIT ... walk the RECORDED WINNING BRANCH and run the ordinary
+// hash and orphan checks inside it, APPLY LOST-BRANCH POLICY TO THE OTHERS, and compare
+// `branchDigest` if the entry carries one." The walk here does the first clause and neither of the
+// other two: `branchDigest` exists nowhere in this tree (it is optional, so that is not the
+// defect), and the losing arms are consumed wholesale — which is the short-circuit the paragraph
+// forbids by name, applied to the arms the winner's walk does not cover.
+{
+  const RACED =
+    `await race({ quick: async () => { await sleep("1m", { name: "q" }); return 1; }, ` +
+    `slow: async () => { await sleep("9m", { name: "s" }); return 2; } }, { name: "first" });\n` +
+    `await sleep("3m", { name: "after" });`;
+  // The LOSING arm edited: its step is renamed, so the recorded loser key is unreachable from it.
+  const EDITED_LOSER = RACED.replace(`{ name: "s" }`, `{ name: "s-renamed" }`);
+  // The WINNING arm edited instead — the arm the walk does cover. This is the POSITIVE CONTROL,
+  // and without it every cell below is indistinguishable from "the divergence check is switched
+  // off in this fixture".
+  const EDITED_WINNER = RACED.replace(`{ name: "q" }`, `{ name: "q-renamed" }`);
+
+  const WINNER = "/race:first#0/b:quick/sleep:q#0";
+  const LOSER = "/race:first#0/b:slow/sleep:s#0";
+  const AFTER = "/sleep:after#0";
+
+  const rEntries = await record("r-loser", RACED);
+  const atKey = async (source: string, fromStepKey: string) =>
+    await plan({ parent: "r-loser", entries: rEntries, source, fromStepKey });
+
+  const control = await atKey(RACED, AFTER);
+  const winnerEdit = await atKey(EDITED_WINNER, AFTER);
+  const loserEdit = await atKey(EDITED_LOSER, AFTER);
+
+  c("the parent really did record the loser's step, settled — this is not an unrecorded branch",
+    rEntries.some((e) => journalEntryKeyString(e) === LOSER && e.state === "settled"),
+    rEntries.map((e) => `${journalEntryKeyString(e)}:${e.state}`));
+
+  // THE CONTROL, and it proves the instrument: the checker is alive on the arm the walk enters.
+  c("editing the WINNING arm is caught — the walk enters it, so the recorded step stops being reached",
+    winnerEdit.admissible === false && winnerEdit.refusals.some((r) => r.code === "L5018"),
+    winnerEdit.refusals);
+
+  // WRONG TODAY. Same edit, other arm, and the plan is byte-for-byte the plan for source that was
+  // never edited at all. A fork onto edited source is the whole point of forking; this one accepts
+  // a program whose losing arm no longer contains the step the parent recorded under it.
+  c("WRONG TODAY: editing the LOSING arm is invisible — admissible, with no refusal at all",
+    loserEdit.admissible === true && loserEdit.refusals.length === 0, loserEdit.refusals);
+  c("WRONG TODAY: and its plan is indistinguishable from the plan for the UNEDITED source",
+    JSON.stringify(keys(loserEdit.cut)) === JSON.stringify(keys(control.cut)),
+    { edited: keys(loserEdit.cut), control: keys(control.cut) });
+
+  // WRONG TODAY, and this is the mechanism under the two above. The dry walk never looks the
+  // loser's entry up, so by §8.5's own definition ("ORPHANS = journal entries never looked up by
+  // the dry replay") it is an orphan and lost-branch policy decides it. Instead it is swept into
+  // the prefix as accounted-for, which is the wholesale consumption the design forbids: an effect
+  // the new source DELETED inside a losing arm never reaches the orphan table.
+  c("WRONG TODAY: the loser's recorded step is copied into the child's prefix rather than dispositioned",
+    keys(loserEdit.cut).includes(LOSER), keys(loserEdit.cut));
+
+  // WRONG TODAY, a different failure with the same root: the walk does not go there, so the loser's
+  // OWN step is reported unreached. L5018 tells the caller their program does not reach a step the
+  // parent demonstrably performed and settled — a repair aimed at a key that is correct. It is the
+  // ride-along already fixed for L5001/L5014, one code short: the gate does not count L5020.
+  const atLoser = await atKey(RACED, LOSER);
+  c("a cut at the loser's step is refused, and L5020 is the right half of that",
+    atLoser.admissible === false && atLoser.refusals.some((r) => r.code === "L5020"), atLoser.refusals);
+  c("WRONG TODAY: L5018 rides along, about a step the parent recorded and settled",
+    atLoser.refusals.some((r) => r.code === "L5018"), atLoser.refusals);
+
+  // WRONG TODAY, and the cheapest of the four. A refused plan still hands back a plausible-looking
+  // cut, so a caller that reads `cut` without reading `admissible` gets something usable. The
+  // unreached path already returns nothing; the refused-but-reached path does not.
+  const atWinner = await atKey(RACED, WINNER);
+  c("WRONG TODAY: an INADMISSIBLE plan still carries a non-empty cut",
+    atWinner.admissible === false && atWinner.cut.length > 0, { cut: keys(atWinner.cut) });
+}
+
 console.log(`fork-run.smoke: ${ok} passed, ${fail} failed`);
 done();
 process.exit(fail === 0 ? 0 : 1);
