@@ -209,23 +209,43 @@ if (!opts.command) usage("no --command given (and none in the config)");
 assertCleanTree(cwd, a["allow-dirty"] !== undefined);
 
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
-say(`${C.dim}baseline: ${opts.command}${C.off}`);
-const base = run(opts.command, cwd, opts.timeoutMs);
-const baseTicks = progressCount(base.output, opts.progressPattern);
-if (base.status !== 0) {
-  say(`${C.red}REFUSING: the suite is red BEFORE any mutation (exit ${base.status}).${C.off}`);
-  say("Every mutation would grade as KILLED for a reason that has nothing to do with the mutation.");
-  process.exit(4);
+//
+// ONE BASELINE PER DISTINCT COMMAND, because a mutation may name its own (`m.command`). Baselining
+// only the top-level one left every mutation that ran a DIFFERENT suite with no proof its suite was
+// green beforehand — and compared its progress marks against a tally from an unrelated suite, so
+// the "did the run reach the check" floor was being applied across suites that count different
+// things. Both protections silently covered a fraction of the set and reported as if they covered
+// all of it.
+const commands = [...new Set(mutations.map((m) => m.command ?? opts.command))];
+const baseTicksBy = new Map();
+for (const cmd of commands) {
+  say(`${C.dim}baseline: ${cmd}${C.off}`);
+  const base = run(cmd, cwd, opts.timeoutMs);
+  const ticks = progressCount(base.output, opts.progressPattern);
+  if (base.status !== 0) {
+    say(`${C.red}REFUSING: \`${cmd}\` is red BEFORE any mutation (exit ${base.status}).${C.off}`);
+    say("Every mutation running it would grade as KILLED for a reason that has nothing to do with the mutation.");
+    process.exit(4);
+  }
+  // A suite that emits no marks has NO reached-the-assertion protection, whatever else it printed.
+  // Say so out loud rather than letting the floor quietly not apply.
+  say(`${C.green}baseline green${C.off} (${ticks} progress marks)`
+    + (ticks === 0 ? ` ${C.yellow}— no progress marks: the reached-the-check floor cannot apply to this suite${C.off}` : ""));
+  baseTicksBy.set(cmd, ticks);
 }
-say(`${C.green}baseline green${C.off} (${baseTicks} progress marks)`);
-if (opts.minTicks === undefined && baseTicks > 0) {
+if (opts.minTicks === undefined && [...baseTicksBy.values()].some((t) => t > 0)) {
   // Default the floor just under the baseline: a mutated run that dies much earlier failed for
   // some other reason, and a run that never reaches the check is not evidence about it.
   opts.minTicks = 1;
 }
 
 const results = [];
-for (const m of mutations) results.push(proveOne(m, opts));
+for (const m of mutations) {
+  // Report each verdict's marks against ITS OWN suite's baseline. Two suites count different
+  // things, so "8 marks (baseline 24)" across a suite boundary reads as a run that died early
+  // when it may have run to completion.
+  results.push({ ...proveOne(m, opts), baseTicks: baseTicksBy.get(m.command ?? opts.command) });
+}
 
 say(`\n${C.dim}════════════════════════════════════════════════════════${C.off}`);
 let bad = 0;
@@ -234,7 +254,7 @@ for (const r of results) {
   if (!good) bad++;
   const colour = good ? C.green : r.verdict === "SURVIVED" ? C.red : C.yellow;
   say(`${colour}${r.verdict.padEnd(12)}${C.off} ${r.label}`);
-  say(`  ${C.dim}${r.why}${r.ticks !== undefined ? ` · ${r.ticks} marks (baseline ${baseTicks})` : ""}${C.off}`);
+  say(`  ${C.dim}${r.why}${r.ticks !== undefined ? ` · ${r.ticks} marks (baseline ${r.baseTicks ?? "?"})` : ""}${C.off}`);
 }
 say("");
 if (bad === 0) {

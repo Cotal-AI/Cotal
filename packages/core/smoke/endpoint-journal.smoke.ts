@@ -187,17 +187,32 @@ const dupNested = new TextEncoder().encode('{"id":"req-1","args":{"a":1,"a":2}}'
 c("c8 a duplicate NESTED name is caught too",
   decideAdmission(dupNested, JSON.parse(new TextDecoder().decode(dupNested)), subj, CEIL).cause === "no-canonical-form");
 // THE NEGATIVE SIDE, which is what stops the scanner degenerating into "refuse everything".
-// The fixture is BUILT and then serialised, never hand-escaped: a string containing `{"a":1}`, a
-// string ending in a backslash, and the same name repeated in sibling objects and array elements
-// are all legal, and my first attempt at writing those escapes by hand produced invalid JSON.
-const trickyBody = {
-  id: "req-1",
-  args: { a: '{"a":1}', b: "x\\", c: [{ k: 1 }, { k: 2 }], d: { k: 3 } },
+// Each fixture below is BUILT and then serialised, never hand-escaped — my first attempt at writing
+// those escapes by hand produced invalid JSON.
+//
+// A NEGATIVE CELL IS ONLY WORTH ITS MUTANT. My first two negatives both asserted `admit` on one
+// fixture of sibling objects and quoted braces, and BOTH survived the mutants aimed at them:
+// running the mutated scanner directly showed the sibling case takes the same path with the frame
+// pop removed, and the quoted-brace case takes the same path with escape handling removed. The
+// mutants were sound — they broke the scanner on OTHER inputs — so the fixture was the weak part,
+// and the cell that named siblings was describing a mechanism the pop does not implement. Sibling
+// frames are safe either way, because names are recorded on the top frame and each `{` pushes a
+// fresh one. What the pop actually protects is the shape below: an inner object CLOSES, and its
+// names must not still be in scope for the outer one.
+const admits = (label: string, body: unknown) => {
+  const raw = new TextEncoder().encode(JSON.stringify(body));
+  const d = decideAdmission(raw, JSON.parse(new TextDecoder().decode(raw)), subj, CEIL);
+  c(label, d.outcome === "admit", d);
 };
-const trickyOk = new TextEncoder().encode(JSON.stringify(trickyBody));
-const trickyDecided = decideAdmission(trickyOk, JSON.parse(new TextDecoder().decode(trickyOk)), subj, CEIL);
-c("c8 braces and escaped quotes INSIDE a string are not structure", trickyDecided.outcome === "admit", trickyDecided);
-c("c8 the same name in SIBLING objects and array elements is legal", trickyDecided.outcome === "admit");
+admits("c8 a name reappearing at the OUTER level after an inner object closes is legal",
+  { id: "req-1", args: { k: 1 }, k: 2 });
+admits("c8 and the same after an ARRAY of objects closes", { id: "req-1", c: [{ k: 1 }], k: 2 });
+// A string whose CONTENTS spell a name and a separator. If escapes stop being honoured the string
+// terminates at its first `\"` and the rest of it is read as structure, which invents a second
+// top-level `id` that was never there.
+admits("c8 a string spelling out a name is CONTENT, never structure", { id: "r", a: '":"x", "id', b: 2 });
+admits("c8 quoted braces and a trailing backslash are content too",
+  { id: "req-1", args: { a: '{"a":1}', b: "x\\", c: [{ k: 1 }, { k: 2 }], d: { k: 3 } } });
 
 const unparseable = decideAdmission(new Uint8Array([0xff, 0xfe]), undefined, subj, CEIL);
 c("c5 unparseable bytes take the same distinct cause",
