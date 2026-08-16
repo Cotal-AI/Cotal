@@ -90,6 +90,18 @@ refuses("a claimant missing a required field is refused",
 refuses("a claimant carrying an extra field is refused",
   () => P({ ...claimed, claimant: { ...CLAIMANT, uid: "x" } }), /unknown field\(s\) on a action claimant/);
 
+// Prototype keys, the same defect the goaleff parser had at its state lookup and at its claimant
+// kind lookup. Both were `in`; both are `Object.hasOwn` now.
+for (const proto of ["toString", "constructor", "hasOwnProperty", "valueOf"]) {
+  refuses(`an inherited key (${proto}) is refused as an unknown state`,
+    () => P({ ...claimed, state: proto }), /unknown state/);
+  refuses(`an inherited key (${proto}) is refused as an unknown claimant kind`,
+    () => P({ ...claimed, claimant: { kind: proto } }), /unknown claimant kind/);
+}
+refuses("an unknown actor role is REFUSED, not measured against a list it cannot be in",
+  () => assertEpNameEdge(P(claimed), P(launching), { role: "auditor" } as never, G),
+  /unknown actor role/);
+
 console.log("\n── § S2 edges: the table, and nothing else ──");
 allows("— → claimed (allocator)", () => assertEpNameEdge(null, P(claimed), ALLOC, G));
 allows("released → claimed re-claim", () => assertEpNameEdge(P(released), P(claimed), ALLOC, G));

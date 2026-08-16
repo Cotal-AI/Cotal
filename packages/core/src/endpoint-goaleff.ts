@@ -108,7 +108,11 @@ export function parseGoalEff(value: unknown): GoalEffRow {
   const o = value as Record<string, unknown>;
 
   const phase = o.phase;
-  if (typeof phase !== "string" || !(phase in PHASE_FIELDS))
+// `Object.hasOwn`, NOT `in`: the `in` operator walks the PROTOTYPE CHAIN, so a row whose
+// discriminant is `toString`, `constructor` or `hasOwnProperty` passed this test and then
+// crashed with an uncontrolled TypeError instead of the declared bad-request refusal. An
+// attacker-supplied string reaching a plain-object lookup is exactly where that matters.
+  if (typeof phase !== "string" || !Object.hasOwn(PHASE_FIELDS, phase))
     fail(`unknown phase ${JSON.stringify(phase)} — the legal set is claimed|launching|launched|settled`);
   const p = phase as GoalEffPhase;
 
@@ -155,9 +159,12 @@ const EDGES: Record<string, { to: GoalEffPhase; sweeperMay: boolean }[]> = {
 function sameExecutor(a: GoalEffExecutor, b: GoalEffExecutor): boolean {
   return a.instanceId === b.instanceId && a.processEpoch === b.processEpoch;
 }
-function sameAddr(a: GoalEffAddr | undefined, b: GoalEffAddr | undefined): boolean {
-  if (a === undefined && b === undefined) return true;
-  if (a === undefined || b === undefined) return false;
+/** The first argument is REQUIRED, and that is not a style choice: the only call site is inside the
+ *  branch where `prevAddr === undefined` is already false, so the both-undefined and first-undefined
+ *  cases were unreachable. They read as protection and covered nothing — the fourth such guard found
+ *  in this file, and the first found by someone other than its author. */
+function sameAddr(a: GoalEffAddr, b: GoalEffAddr | undefined): boolean {
+  if (b === undefined) return false;
   return a.nameToken === b.nameToken && a.lifecycleUid === b.lifecycleUid;
 }
 function addrOf(r: GoalEffRow): GoalEffAddr | undefined {
@@ -188,6 +195,11 @@ export function assertGoalEffEdge(
   if (edge === undefined)
     fail(`${from} → ${to} is not a legal edge; from \`${from}\` the legal set is ${legal.map((e) => e.to).join(", ")}`);
 
+  // CLOSED AT RUNTIME. The union is a compile-time claim about callers this module does not
+  // have yet; an unknown role fell through both branches below and was ACCEPTED, which is the
+  // most permissive possible answer to "who are you". Refuse first, then discriminate.
+  if (actor.role !== "sweeper" && actor.role !== "executor")
+    fail(`unknown actor role ${JSON.stringify((actor as { role: unknown }).role)} — the legal set is executor|sweeper`);
   if (actor.role === "sweeper" && !edge.sweeperMay)
     fail(`a sweeper may only settle — it may never advance a launch phase (attempted ${from} → ${to}) `
        + `on behalf of an executor it believes is gone`);

@@ -184,6 +184,16 @@ export function decideAdmission(
   if (typeof id !== "string" || id.length === 0)
     return { outcome: "quarantine", cause: "no-usable-id",
       detail: "no `id`: there is no caller-scoped subject to address a decision to" };
+  // NON-EMPTY IS NOT USABLE. The id becomes a SUBJECT TOKEN — `epf.<e>.dec.<owner>.<actor>.<uid>.<id>`
+  // — so an id outside the token grammar has no subject to address a decision to, exactly as an
+  // absent one does not. This check was missing while `assertIdToken` was already imported into this
+  // file and used two functions away: `bad.id` admitted here and threw at the subject builder later,
+  // turning a submission defect into an internal error at a boundary that had already accepted it.
+  try { assertIdToken(id, "submission id"); }
+  catch (e) {
+    return { outcome: "quarantine", cause: "no-usable-id",
+      detail: `\`id\` is not within the token grammar, so it names no subject: ${(e as Error).message}` };
+  }
 
   let object: Record<string, unknown>, fingerprint: string;
   try {

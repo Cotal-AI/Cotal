@@ -103,14 +103,19 @@ c("c4 a within-ceiling submission is ADMITTED, never quarantined", first.outcome
 // clock read at all. A source-level assertion is a weaker KIND of claim than a behavioural one,
 // and it is the strongest claim that is true here — the function takes no clock, so there is no
 // clock to inject and nothing behavioural to observe. Injecting one reddens this every time.
-// THE SPAN IS THE WHOLE CALLEE SET, NOT THE ENTRY POINT. The first version of this cell started at
-// `export function decideAdmission` and so did not cover `measure()`, which sits ABOVE it and which
-// the decision calls — a clock there would have passed a cell whose label says "the decision path".
-// A source-level claim is only as wide as the text it reads, so the span starts at the first callee.
+// THE SPAN IS THE WHOLE CALLEE SET, AND IT HAS BEEN TOO NARROW TWICE. It first began at
+// `decideAdmission`, missing `measure()`. Widened to `measure(`, it STILL missed
+// `submissionFingerprint` — which `decideAdmission` also calls, which sits above `measure`, and
+// into which a day-bucket clock could be added while every behavioural cell agreed all day and the
+// regex passed because the clock was before `spanFrom`. A reviewer found that; I had already
+// "fixed" this once and recorded the fix as complete.
+// The lesson is not "pick a wider marker". It is that a source-span claim is only as wide as the
+// text it reads, and the author is the worst judge of where the text ends, because the author is
+// choosing the marker from the same mental model that produced the gap.
 // `canonical.ts` is the one dependency outside this file; checked once, by hand, and it reads no
 // clock — recorded here because a hand check that is not written down has to be redone by the reader.
 const decisionSource = readFileSync(new URL("../src/endpoint-journal.ts", import.meta.url), "utf8");
-const spanFrom = decisionSource.indexOf("function measure(");
+const spanFrom = decisionSource.indexOf("export function submissionFingerprint");
 const spanTo = decisionSource.indexOf("\n// ---- fact shapes");
 // A marker that moved would make `slice` silently return the wrong region — and an empty region
 // passes the regex trivially. The cell must fail loudly rather than pass vacuously.
@@ -129,6 +134,39 @@ const noId = admit({ ...sub1, id: undefined });
 c("c5 a submission with no usable id quarantines", noId.outcome === "quarantine", noId);
 c("c5 the cause is DISTINCT from every ceiling cause",
   noId.outcome === "quarantine" && noId.cause === "no-usable-id", noId);
+// c5b — NON-EMPTY IS NOT USABLE, and the previous cells only ever tested ABSENT and EMPTY. The id
+// becomes a subject token, so an id outside the token grammar addresses no subject at all, exactly
+// as a missing one does not. Before this, `bad.id` was ADMITTED here and threw at the subject
+// builder later — a submission defect converted into an internal error at a boundary that had
+// already said yes. Found by a reviewer, not by the six ceiling mutants that pass either way.
+for (const badId of ["bad.id", "has space", "x".repeat(200), "UPPER!", "tab\there"]) {
+  const r = admit({ ...sub1, id: badId });
+  c(`c5b a malformed non-empty id (${JSON.stringify(badId)}) quarantines no-usable-id`,
+    r.outcome === "quarantine" && r.cause === "no-usable-id", r);
+}
+c("c5b and a WELL-FORMED id still admits — the check refuses a grammar, not every id",
+  admit({ ...sub1, id: "req-1" }).outcome === "admit");
+
+// c7 — PRECEDENCE. Each cell above tests ONE breach in isolation, and isolated cells cannot pin an
+// ORDER: move the unparseable check ahead of the raw-byte ceiling and every one of them stays
+// green. The order is load-bearing — the raw ceiling exists to refuse work BEFORE paying for it —
+// so the overlaps are asserted directly. Each row below breaches two rules at once and names which
+// one must win.
+const tooBigUnparseable = decideAdmission(new Uint8Array(CEIL.maxBytes + 1), undefined, subj, CEIL);
+c("c7 raw-bytes BEFORE unparseable: oversized junk is too-large, not no-usable-id",
+  tooBigUnparseable.outcome === "quarantine" && tooBigUnparseable.cause === "submission-too-large", tooBigUnparseable);
+let deepWide: unknown = Array.from({ length: 200 }, (_, i) => i);
+for (let i = 0; i < 12; i++) deepWide = { n: deepWide };
+const depthAndItems = admit({ ...sub1, args: deepWide });
+c("c7 depth BEFORE items when both breach",
+  depthAndItems.outcome === "quarantine" && depthAndItems.cause === "submission-too-deep", depthAndItems);
+const itemsAndNoId = admit({ ...sub1, id: undefined, args: { list: Array.from({ length: 200 }, (_, i) => i) } });
+c("c7 items BEFORE no-usable-id when both breach",
+  itemsAndNoId.outcome === "quarantine" && itemsAndNoId.cause === "submission-too-many-items", itemsAndNoId);
+const noIdAndSurrogate = admit({ ...sub1, id: undefined, args: { s: "\uD800" } });
+c("c7 no-usable-id BEFORE no-canonical-form when both breach",
+  noIdAndSurrogate.outcome === "quarantine" && noIdAndSurrogate.cause === "no-usable-id", noIdAndSurrogate);
+
 const unparseable = decideAdmission(new Uint8Array([0xff, 0xfe]), undefined, subj, CEIL);
 c("c5 unparseable bytes take the same distinct cause",
   unparseable.outcome === "quarantine" && unparseable.cause === "no-usable-id", unparseable);

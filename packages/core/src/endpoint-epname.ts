@@ -99,7 +99,8 @@ function parseClaimant(v: unknown): EpNameClaimant {
     incumbent: ["kind", "backfillId"],
   };
   const kind = o.kind;
-  if (typeof kind !== "string" || !(kind in legal))
+  // `Object.hasOwn`, not `in` — see the state check below.
+  if (typeof kind !== "string" || !Object.hasOwn(legal, kind))
     fail(`unknown claimant kind ${JSON.stringify(kind)} — the legal set is action|direct|incumbent`);
   const extra = Object.keys(o).filter((k) => !legal[kind].includes(k));
   if (extra.length > 0) fail(`unknown field(s) on a ${kind} claimant: ${extra.join(", ")}`);
@@ -128,7 +129,11 @@ export function parseEpName(value: unknown): EpNameRow {
   const o = value as Record<string, unknown>;
 
   const state = o.state;
-  if (typeof state !== "string" || !(state in STATE_FIELDS))
+// `Object.hasOwn`, NOT `in`: the `in` operator walks the PROTOTYPE CHAIN, so a row whose
+// discriminant is `toString`, `constructor` or `hasOwnProperty` passed this test and then
+// crashed with an uncontrolled TypeError instead of the declared bad-request refusal. An
+// attacker-supplied string reaching a plain-object lookup is exactly where that matters.
+  if (typeof state !== "string" || !Object.hasOwn(STATE_FIELDS, state))
     fail(`unknown state ${JSON.stringify(state)} — the legal set is ${Object.keys(STATE_FIELDS).join("|")}`);
   const s = state as EpNameState;
 
@@ -238,6 +243,12 @@ export function assertEpNameEdge(
       ? `\`${from}\` has no outgoing edge at all (attempted ${from} → ${to})`
       : `${from} → ${to} is not a legal edge; from \`${from}\` the legal set is ${legal.join(", ")}`);
   }
+  // CLOSED AT RUNTIME for the same reason as `goaleff`: an unknown role must be refused, not
+  // silently measured against a list it cannot be in. Here it happens to fail closed via
+  // `includes`, but relying on that is relying on an accident of the check's shape.
+  const ROLES = ["claimant", "holder", "sweeper", "operator", "allocator", "cutover"];
+  if (!ROLES.includes(actor.role))
+    fail(`unknown actor role ${JSON.stringify((actor as { role: unknown }).role)} — the legal set is ${ROLES.join("|")}`);
   if (!edge.actors.includes(actor.role))
     fail(`a ${actor.role} may not take ${from} → ${to}; that edge belongs to: ${edge.actors.join(", ")}`);
   if (!opts.gateSatisfied)

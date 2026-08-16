@@ -75,6 +75,14 @@ refuses("an unknown field on `addr` is refused",
 refuses("processEpoch must be a non-negative safe integer",
   () => P({ ...claimed, executor: { instanceId: "mgr-a", processEpoch: -1 } }), /processEpoch/);
 
+// PROTOTYPE KEYS. `phase in PHASE_FIELDS` walked the prototype chain, so these three passed the
+// membership test and then died with an uncontrolled TypeError instead of the declared refusal.
+// A reviewer found it; the suite's own "unknown phase" cell used `relaunching`, a plausible-looking
+// name that is not on any prototype — so it tested the branch and never the lookup.
+for (const proto of ["toString", "constructor", "hasOwnProperty", "__proto__", "valueOf"])
+  refuses(`an inherited key (${proto}) is refused as an unknown phase, not a TypeError`,
+    () => P({ ...claimed, phase: proto }), /unknown phase/);
+
 console.log("\n── § S1 edges: the table, and nothing outside it ──");
 allows("claimed → launching (executor, addr set in the same operation)",
   () => assertGoalEffEdge(P(claimed), P(launching), A, { terminalExists: false }));
@@ -146,6 +154,13 @@ refuses("a sweeper may NOT advance claimed → launching",
 refuses("a sweeper may NOT advance launching → launched",
   () => assertGoalEffEdge(P(launching), P(launched), SWEEPER, { terminalExists: false }),
   /may only settle/);
+
+// The role union is a COMPILE-TIME claim about callers this module does not have yet. An unknown
+// role fell through both branches and was ACCEPTED — the most permissive possible answer to "who
+// are you". Runtime-closed now.
+refuses("an unknown actor role is REFUSED, not silently allowed through",
+  () => assertGoalEffEdge(P(claimed), P(launching), { role: "auditor" } as never, { terminalExists: false }),
+  /unknown actor role/);
 
 console.log("\n── the executor: a FOREIGN nonce is a loss, never a licence ──");
 refuses("a different executor cannot take the row's edge",

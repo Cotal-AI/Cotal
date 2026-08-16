@@ -134,4 +134,30 @@ assertActionGoalId(req({ class: "journal", goalId: "01JCOTALGOAL000000000000AA" 
 assertActionGoalId(req(), false);
 ok("both agreeing shapes are admitted", true);
 
+// ---------------------------------------------------------------------------------------------
+// 4) THE MARKER IS NOT THE CLASS, and the four cells above could not tell them apart.
+//
+//    Every `declaresAction = true` above was paired with `class: "journal"`, and every `false` with
+//    an ephemeral envelope. The two inputs were perfectly correlated, so an implementation that
+//    IGNORED the marker entirely and gated on `env.class === "journal"` produces the identical
+//    pass/throw vector and satisfies all four. A reviewer built that wrong implementation and ran
+//    it against these cells; it passed.
+//
+//    The fix is not a stronger assertion, it is DECORRELATION: a journal-class command that does
+//    NOT declare the action composite. Every action command's submissions are journal (SPEC:1446),
+//    and that is emphatically not the converse — the composite is a command MARKER, and journal is
+//    a class that plenty of non-action commands use. These two cells are the only place in the
+//    suite where the two inputs disagree, and they are therefore the only place either is tested.
+// ---------------------------------------------------------------------------------------------
+throwsCode("a goalId on a JOURNAL-class command that declares NO action is still refused",
+  () => assertActionGoalId(req({ class: "journal", goalId: "01JCOTALGOAL000000000000AA" }), false),
+  "bad-request");
+assertActionGoalId(req({ class: "journal" }), false);
+ok("a journal-class NON-action command without goalId is admitted", true);
+// And the mirror, so the pair cannot be satisfied by refusing every journal envelope: the marker
+// still governs when the class is held constant.
+throwsCode("an action command on the same journal class STILL requires goalId",
+  () => assertActionGoalId(req({ class: "journal" }), true),
+  "bad-request");
+
 console.log(`\nendpoint-action-class smoke: ${pass} checks passed`);
