@@ -298,9 +298,14 @@ try {
   // decision, on a different subject, with the same request id. Re-reading `dSubj` here is the
   // first point at which "reads the winner" and "reads the latest thing in the stream" give
   // different answers, so it is the first point at which the claim is worth making.
-  const stillWinner = parseDecisionFact(await readLastFact(jsm, epfStreamName("epjrn"), dSubj), dSubj);
+  // Read RAW and assert before parsing. `parseDecisionFact` validates the fact against the subject
+  // it was asked for and throws on a mismatch — correct, but a throw makes the SCENARIO red rather
+  // than this cell, and a red that is not the named assertion is not evidence for this claim.
+  const reread = await readLastFact(jsm, epfStreamName("epjrn"), dSubj) as { decision?: unknown } | undefined;
   c("the loser's read is scoped to its SUBJECT, not to the stream's newest fact",
-    stillWinner.decision === "accepted", { stillWinner, streamNewestIs: "w3 rejection on subj2" });
+    reread?.decision === "accepted", { reread, streamNewestIs: "w3 rejection on subj2" });
+  const stillWinner = parseDecisionFact(reread, dSubj);
+  c("and it still parses against the subject it was read for", stillWinner.decision === "accepted");
 
   // Quarantine + goal-bind families: disjoint namespaces, same create-only discipline.
   const qSubj = epfQuarantineSubject("epjrn", "manager", seq);
