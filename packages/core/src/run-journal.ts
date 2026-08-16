@@ -61,6 +61,7 @@
  * comparison — which on a fresh entry subject is `0`, i.e. always a create, i.e. no fence at all.
  * A fence that fails open when misconfigured is worse than one coordinate less addressable.
  */
+import { randomBytes } from "node:crypto";
 import { jetstream, jetstreamManager, type JetStreamClient, type JetStreamManager } from "@nats-io/jetstream";
 import { headers as natsHeaders, type NatsConnection } from "@nats-io/transport-node";
 import { wfjStreamName, wfjSubject, runJournalConsumerConfig } from "./endpoint-binding.js";
@@ -77,6 +78,14 @@ export interface RunJournalActivation {
   readonly v: 1;
   readonly kind: "activation";
   readonly run: string;
+  /**
+   * This record's position in the run's journal, from 0. The CHAIN: a replay requires
+   * `records[i].n === i`, which is the only check that sees a record removed from the MIDDLE —
+   * counting cannot, and neither can any anchor at the front. Measured: deleting one interior
+   * message left a replay of sequences [1,2,4] that passed every other check, so the run would have
+   * re-performed an effect it had already done.
+   */
+  readonly n: number;
   /** The driver principal taking the run over. */
   readonly holder: string;
   /**
@@ -98,6 +107,8 @@ export interface RunJournalStep {
   readonly v: 1;
   readonly kind: "step";
   readonly run: string;
+  /** This record's position in the run's journal, from 0. See {@link RunJournalActivation.n}. */
+  readonly n: number;
   readonly at: number;
   readonly entry: unknown;
 }
@@ -111,11 +122,18 @@ export interface StoredRunJournalRecord {
 }
 
 /**
- * The server refused an append from a driver that had already activated: someone else has taken the
- * run over.
+ * The server refused an append from a driver that had already activated: the run's subject is no
+ * longer where this driver left it.
  *
- * Not retryable, and not an effect failure. It says nothing about the effect the entry described —
- * whatever it did, it did — only that this process may no longer speak for the run.
+ * Usually that means someone else activated, and that is what the name says. It is NOT the only
+ * cause: purging a run's subject — the retirement mechanism §7.6 asks the subject range for — also
+ * moves the head out from under a live appender, and measured, it produced exactly this refusal with
+ * no successor in existence. So `isSuperseded` is "the stream refused my expectation", and a driver
+ * that needs to know WHICH replays the run: a journal that reads back empty was retired, one that
+ * carries a later activation was taken over.
+ *
+ * Not retryable either way, and not an effect failure. It says nothing about the effect the entry
+ * described — whatever it did, it did — only that this process may no longer speak for the run.
  */
 export class RunSuperseded extends Error {
   constructor(
@@ -125,7 +143,7 @@ export class RunSuperseded extends Error {
     readonly cause?: unknown,
   ) {
     super(
-      `run ${run} is driven by someone else: an append to ${subject} expecting last sequence ${expectedSeq} was refused by the stream. This driver is superseded — stop driving, and do not retry with a refreshed sequence.`,
+      `run ${run}: an append to ${subject} expecting last sequence ${expectedSeq} was refused by the stream — someone else activated, or the run was retired. This driver is finished either way: stop, and do not retry with a refreshed sequence. Replay the run to learn which it was.`,
     );
     this.name = "RunSuperseded";
   }
@@ -245,13 +263,44 @@ export class StaleLeaseToken extends Error {
   }
 }
 
+/**
+ * A takeover said the run exists and its journal is empty.
+ *
+ * Terminal. A run whose journal has been purged is RETIRED, not new, and the difference is
+ * unrecoverable from the stream alone — which is why the caller states which it expected.
+ */
+export class RunNotResumable extends Error {
+  constructor(readonly run: string, readonly subject: string) {
+    super(`run ${run} was to be resumed, but ${subject} holds no records. Its journal has been retired or lost; there is nothing to resume, and starting it again here would re-perform whatever it already did.`);
+    this.name = "RunNotResumable";
+  }
+}
+
+/** A takeover said the run is new and its journal already has records. Terminal: a run id is used
+ *  once, and re-running one under its own id is a fork, which takes a new id. */
+export class RunAlreadyStarted extends Error {
+  constructor(readonly run: string, readonly records: number) {
+    super(`run ${run} was to be started, but its journal already holds ${records} records. A run is never started twice under one id — a re-run is a fork, and a fork takes a new id.`);
+    this.name = "RunAlreadyStarted";
+  }
+}
+
+/** A takeover carried a current fencing token but not the identity that holds it. Terminal. */
+export class ActivationNotAuthorized extends Error {
+  constructor(readonly run: string, readonly why: string) {
+    super(`run ${run}: ${why}. This driver may not activate.`);
+    this.name = "ActivationNotAuthorized";
+  }
+}
+
 export class RunJournalPrefixTruncated extends Error {
   constructor(
     readonly run: string,
-    readonly firstSeq: number,
-    readonly firstKind: string,
+    readonly seq: number,
+    readonly expectedN: number,
+    readonly foundN: number,
   ) {
-    super(`run ${run}: the replay begins at sequence ${firstSeq} with a ${firstKind}, not with the run's genesis activation. The head of the journal is gone — this run cannot be resumed.`);
+    super(`run ${run}: the record at stream sequence ${seq} is journal entry ${foundN} where entry ${expectedN} was expected. Records are missing from this run's journal — it cannot be resumed, and re-running it from what is left would repeat effects it has already performed.`);
     this.name = "RunJournalPrefixTruncated";
   }
 }
@@ -299,15 +348,17 @@ export function parseRunJournalRecord(raw: unknown, subject: string): RunJournal
     throw new Error(`run-journal record on ${subject} has no run id`);
   if (typeof raw.at !== "number") throw new Error(`run-journal record on ${subject} has no timestamp`);
   if (raw.kind === "step") {
-    assertKeys(raw, ["v", "kind", "run", "at", "entry"], `run-journal step on ${subject}`);
+    assertKeys(raw, ["v", "kind", "run", "n", "at", "entry"], `run-journal step on ${subject}`);
     if (!("entry" in raw)) throw new Error(`run-journal step on ${subject} carries no entry`);
+    if (typeof raw.n !== "number" || !Number.isInteger(raw.n) || raw.n < 0)
+      throw new Error(`run-journal step on ${subject} has no n`);
     return raw as unknown as RunJournalStep;
   }
   if (raw.kind === "activation") {
-    assertKeys(raw, ["v", "kind", "run", "holder", "fencingToken", "epoch", "replayedTo", "at"], `run-journal activation on ${subject}`);
+    assertKeys(raw, ["v", "kind", "run", "n", "holder", "fencingToken", "epoch", "replayedTo", "at"], `run-journal activation on ${subject}`);
     if (typeof raw.holder !== "string" || raw.holder.length === 0)
       throw new Error(`run-journal activation on ${subject} has no holder`);
-    for (const k of ["epoch", "replayedTo"] as const)
+    for (const k of ["epoch", "replayedTo", "n"] as const)
       if (typeof raw[k] !== "number") throw new Error(`run-journal activation on ${subject} has no ${k}`);
     if (typeof raw.fencingToken !== "number" || !Number.isInteger(raw.fencingToken) || raw.fencingToken < 1)
       throw new Error(`run-journal activation on ${subject} has no fencingToken`);
@@ -341,23 +392,41 @@ export async function replayRunJournal(
 ): Promise<RunJournalReplay> {
   const stream = wfjStreamName(space);
   const subject = wfjSubject(space, runId);
-  const cfg = runJournalConsumerConfig(space, runId);
+  // A consumer nobody else names. Replay used to share one durable per run, which made every
+  // takeover a race with every other: `add` returns an existing durable rather than refusing, so a
+  // contender could inherit a half-read consumer, and each contender's delete tore down the other's
+  // live fetch. Measured, two concurrent takeovers on a six-record run left one of them holding 1
+  // record and then a terminal incomplete-replay error, and eight produced raw `consumer deleted`
+  // and `ConsumerNotFoundError` straight from the API. This one is created, read and removed by a
+  // single replay, so none of that has anyone to happen with.
+  const cfg = runJournalConsumerConfig(space, runId, takeoverToken());
   const durable = cfg.durable_name as string;
-  try {
-    await jsm.consumers.delete(stream, durable);
-  } catch (e) {
-    // ONLY "there was nothing to delete" is ordinary — a first activation, or a predecessor that
-    // cleaned up. A swallowed permission or transport error here left a consumer that has already
-    // delivered part of this run standing, and the `add` below would inherit it.
-    if (!isConsumerNotFound(e)) throw e;
-  }
   const created = await jsm.consumers.add(stream, cfg);
-  // The durable's name is derived from the run, so every contender asks for the SAME one, and
-  // `add` on an existing durable RETURNS it rather than refusing. Measured: a rival that had
-  // drained 3 of 6 records left `add` answering `delivered=3, pending=3`, which is a self-
-  // consistent count for the second HALF of the journal. Replay is not allowed to be that:
-  // resume re-runs the program against this prefix.
+  try {
+    return await readReplay(js, stream, durable, created, subject, runId);
+  } finally {
+    // Best effort: a leaked per-takeover consumer is inert (nobody else will ever name it) and the
+    // stream's own limits reap it, but leaving one per attempt would be litter with no purpose.
+    try { await jsm.consumers.delete(stream, durable); } catch { /* already gone, or going */ }
+  }
+}
+
+function takeoverToken(): string {
+  return randomBytes(8).toString("hex");
+}
+
+async function readReplay(
+  js: JetStreamClient,
+  stream: string,
+  durable: string,
+  created: { delivered: { consumer_seq: number }; num_ack_pending: number },
+  subject: string,
+  runId: string,
+): Promise<RunJournalReplay> {
   assertReplayConsumerFresh(runId, durable, created);
+  // Belt and braces now that the name is unique: a consumer that has delivered anything is not the
+  // one this replay just created, and reading a tail as if it were a run is the failure this exists
+  // to refuse. It costs nothing and it is the check the whole prefix rests on.
   const consumer = await js.consumers.get(stream, durable);
   // The CACHED info from the create, so the count is the one this consumer was born with rather
   // than a second round trip that a concurrent append could have moved under us.
@@ -371,14 +440,16 @@ export async function replayRunJournal(
     if (records.length >= pending) break;
   }
   if (records.length !== pending) throw new RunJournalReplayIncomplete(runId, pending, records.length);
-  // A count is only self-consistency: it says the consumer delivered what it promised, not that
-  // what it promised is the whole run. The anchor is the GENESIS activation — the only record in a
-  // run whose `replayedTo` is 0, because it is the only one published into an empty subject — so a
-  // prefix that does not begin with it is short at the front, whether a rival consumer ate the head
-  // or a subject purge retired it. Either way it is not a prefix this run may be resumed from.
-  const first = records[0]!.record;
-  if (first.kind !== "activation" || first.replayedTo !== 0) {
-    throw new RunJournalPrefixTruncated(runId, records[0]!.seq, first.kind);
+  // A count is only self-consistency: it says the consumer delivered what it promised, not that what
+  // it promised is the whole run. The CHAIN is the integrity check — every record carries its
+  // ordinal, so `records[i].n === i` fails on a short front (a purge that retired the run, a
+  // consumer that ate the head) AND on a record removed from the middle, which nothing else here can
+  // see. Measured before it existed: one interior delete left a replay of [1,2,4] that passed the
+  // count and the front anchor both, and the run would have re-performed the effect it lost.
+  for (let i = 0; i < records.length; i += 1) {
+    if (records[i]!.record.n !== i) {
+      throw new RunJournalPrefixTruncated(runId, records[i]!.seq, i, records[i]!.record.n);
+    }
   }
   return { records, lastSeq: records[records.length - 1]!.seq };
 }
@@ -413,6 +484,10 @@ export class RunJournalAppender {
   private dead: RunSuperseded | RunJournalStalled | undefined;
   /** The serial pump. Every append waits for the one before it, so one expectation is in flight. */
   private chain: Promise<void> = Promise.resolve();
+  /** The next journal ordinal. Allocated under the serial pump, so it cannot be raced, and only
+   *  advanced by a PubAck — a stalled append leaves the ordinal where it was, and the appender is
+   *  finished anyway. */
+  private nextN: number;
 
   private constructor(
     private readonly js: JetStreamClient,
@@ -421,7 +496,11 @@ export class RunJournalAppender {
     /** The prefix this driver replayed, which is the journal the interpreter resumes from. */
     readonly replayed: readonly StoredRunJournalRecord[],
     private seq: number,
-  ) {}
+  ) {
+    // The prefix ends at ordinal `replayed.length - 1` and this driver's own activation took the
+    // next one, so its first step is two past the end of what it read.
+    this.nextN = replayed.length + 1;
+  }
 
   /** @internal — {@link activateRun} is the only way in. */
   static of(
@@ -481,7 +560,7 @@ export class RunJournalAppender {
     // it reaches the wire. A queued entry retried at the new head is the superseded driver writing
     // again, which is the one thing the barrier forbids.
     if (this.dead !== undefined) throw this.dead;
-    const record: RunJournalStep = { v: 1, kind: "step", run: this.run, at, entry };
+    const record: RunJournalStep = { v: 1, kind: "step", run: this.run, n: this.nextN, at, entry };
     // EVERY outcome without a PubAck is terminal, not just a refusal. A publish that throws leaves
     // the head unknown, and the next queued append would reuse the stale expectation: measured, an
     // entry that failed to serialize was followed by the NEXT entry landing at the same head, so the
@@ -498,6 +577,7 @@ export class RunJournalAppender {
       throw this.dead;
     }
     this.seq = r.seq;
+    this.nextN += 1;
     return r.seq;
   }
 }
@@ -509,6 +589,16 @@ export interface RunTakeover {
   /** The work-pool lease's fencing token. A takeover under an OLDER one is refused. */
   readonly fencingToken: number;
   readonly epoch: number;
+  /**
+   * Whether this activation STARTS the run or RESUMES one that already exists.
+   *
+   * An empty journal is ambiguous on its own and the stream cannot resolve it: a run that was never
+   * started and a run that was retired by subject purge — which is the retirement mechanism §7.6
+   * asks the subject range for — read back identically as zero records. Measured: a purged run
+   * activated again as if new. Only the caller knows which it meant, because the run record is what
+   * says the run exists, so the caller states it and this refuses the mismatch either way.
+   */
+  readonly expect: "new" | "existing";
   readonly at: number;
 }
 
@@ -542,6 +632,41 @@ export interface ActivateOptions {
  * may try again while it holds the lease. It never throws {@link RunSuperseded}: not having won the
  * subject yet is not the same as having lost it.
  */
+/**
+ * May this takeover activate over the activation the journal already holds?
+ *
+ * The fencing token orders LEASES, and by itself that is not the whole authority: two takeovers can
+ * legitimately carry the SAME token — a renewed lease keeps its token, and a holder whose appender
+ * stalled recovers under the lease it still has — so "equal is allowed" was written to let that
+ * recovery through. Measured, it let much more through: holder A at epoch 1, then B at epoch 2, then
+ * A at epoch 1 again, all on token 7, with A appending after its return and B superseded. That is
+ * the retry-at-a-refreshed-head the barrier exists to forbid, performed through `activateRun`
+ * instead of through the appender.
+ *
+ * So an equal token stays bound to the identity that holds it: the same holder, and never an older
+ * epoch. Exact-tuple recovery — same token, same holder, same epoch — remains possible, because that
+ * is one process picking its own run back up, which is the case this rule was relaxed for.
+ */
+function assertMayActivate(t: RunTakeover, held: RunJournalActivation | undefined): void {
+  if (held === undefined) return;
+  if (t.fencingToken < held.fencingToken) {
+    throw new StaleLeaseToken(t.runId, t.fencingToken, held.fencingToken, held.holder);
+  }
+  if (t.fencingToken > held.fencingToken) return;
+  if (t.holder !== held.holder) {
+    throw new ActivationNotAuthorized(
+      t.runId,
+      `token ${t.fencingToken} is held by ${held.holder}; ${t.holder} cannot activate on the same token`,
+    );
+  }
+  if (t.epoch < held.epoch) {
+    throw new ActivationNotAuthorized(
+      t.runId,
+      `${t.holder} already activated at epoch ${held.epoch}; epoch ${t.epoch} is an older process and must not take the run back`,
+    );
+  }
+}
+
 /** The last activation in a replayed prefix, i.e. whoever currently holds the run. */
 function lastActivation(records: readonly StoredRunJournalRecord[]): RunJournalActivation | undefined {
   for (let i = records.length - 1; i >= 0; i -= 1) {
@@ -580,15 +705,19 @@ export async function activateRun(
     // append landing at seq 4. The replayed prefix is where the answer already is — it contains
     // every activation, and it is current as of the CAS that follows — so a takeover under a token
     // older than the last one recorded is refused here rather than after the damage.
-    const held = lastActivation(records);
-    if (held !== undefined && t.fencingToken < held.fencingToken) {
-      throw new StaleLeaseToken(t.runId, t.fencingToken, held.fencingToken, held.holder);
+    if (t.expect === "existing" && records.length === 0) {
+      throw new RunNotResumable(t.runId, subject);
     }
+    if (t.expect === "new" && records.length > 0) {
+      throw new RunAlreadyStarted(t.runId, records.length);
+    }
+    assertMayActivate(t, lastActivation(records));
     if (opts.onReplayed !== undefined) await opts.onReplayed(replay);
     const activation: RunJournalActivation = {
       v: 1,
       kind: "activation",
       run: t.runId,
+      n: records.length,
       holder: t.holder,
       fencingToken: t.fencingToken,
       epoch: t.epoch,

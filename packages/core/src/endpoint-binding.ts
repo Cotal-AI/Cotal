@@ -790,8 +790,13 @@ const JSAPI = "$JS.API";
  *  the wildcard matches (a `*` durable grants INFO/MSG.NEXT/ACK on ALL durables of the stream).
  *  Every grammar in this module emits `[A-Za-z0-9_-]`, so anything else is refused loudly. */
 function assertGrantName(v: string, what: string): string {
+  // A consumer whose name is per-takeover cannot be granted by literal name, so ONE trailing `*`
+  // is admitted after a literal prefix — `wfj_<runId>_*`. Everything before it stays literal, so
+  // the row still pins the run, and a bare `*` is refused: that would be every consumer on the
+  // stream, which is a different grant entirely.
+  if (/^[A-Za-z0-9_-]+_\*$/.test(v)) return v;
   if (!/^[A-Za-z0-9_-]+$/.test(v))
-    throw new Error(`${what} ${JSON.stringify(v)} must be a literal wildcard-free name component ([A-Za-z0-9_-]+)`);
+    throw new Error(`${what} ${JSON.stringify(v)} must be a literal wildcard-free name component ([A-Za-z0-9_-]+), or a literal prefix followed by one trailing "_*"`);
   return v;
 }
 /** A consume-create row embeds the consumer's filter verbatim, so the filter's tokens become
@@ -870,10 +875,21 @@ export function canonicalizerWorkGrants(space: string, endpoint: string): string
 export function runJournalConsumerConfig(
   space: string,
   runId: string,
+  /**
+   * A token unique to ONE takeover attempt. Contenders used to share a per-run durable, and sharing
+   * it is what made replay a race with itself: `add` on an existing durable returns it, so one
+   * driver could inherit another's half-read consumer, and each contender's delete tore down the
+   * other's live fetch — measured, two concurrent takeovers on a six-record run left one with 1 of 6
+   * and a terminal incomplete-replay error, and eight produced raw `consumer deleted` and
+   * `ConsumerNotFoundError` from the API. A consumer nobody else names cannot be inherited, nor
+   * deleted out from under its owner. The grant pins the run and the filter, not this token, so it
+   * may be freely chosen per attempt.
+   */
+  takeoverId: string,
   opts: { ackWaitMs?: number; maxAckPending?: number } = {},
 ): Partial<ConsumerConfig> {
   return family(wfjStreamName(space), {
-    durable_name: `wfj_${assertIdToken(runId, "runId")}`,
+    durable_name: `wfj_${assertIdToken(runId, "runId")}_${assertIdToken(takeoverId, "takeoverId")}`,
     filter_subject: wfjSubject(space, runId),
     ack_policy: AckPolicy.Explicit,
     ack_wait: nanos(opts.ackWaitMs ?? 60_000),
@@ -897,14 +913,33 @@ export function runJournalConsumerConfig(
  * exactly one authoritative appender at a time; a grant that spans runs describes a different
  * system.
  */
+/**
+ * The GRANT form of the replay consumer's config: the same family, named with the `*` the rows
+ * carry. Minted by a builder rather than spread from a real config, because §13.9 authority is the
+ * tuple a builder minted and a mutated config is deliberately refused.
+ */
+function runJournalGrantConfig(space: string, runId: string): Partial<ConsumerConfig> {
+  return family(wfjStreamName(space), {
+    durable_name: `wfj_${assertIdToken(runId, "runId")}_*`,
+    filter_subject: wfjSubject(space, runId),
+    ack_policy: AckPolicy.Explicit,
+    deliver_policy: DeliverPolicy.All,
+  });
+}
+
 export function runDriverJournalGrants(space: string, runId: string): string[] {
   const stream = wfjStreamName(space);
-  const cfg = runJournalConsumerConfig(space, runId);
+  // The durable is per-TAKEOVER, so the rows carry a `*` in that one token and pin everything else.
+  // This does not widen what a driver may read: a consume-create row embeds the stored-subject
+  // filter verbatim (§13.9), so the consumer it can create is still fixed to THIS run's subject
+  // however it is named.
+  const cfg = runJournalGrantConfig(space, runId);
+  const pattern = cfg.durable_name!;
   return [
     wfjSubject(space, runId),
     consumeCreateRow(stream, cfg),
-    ...consumeBindRows(stream, cfg.durable_name!),
-    consumeDeleteRow(stream, cfg.durable_name!),
+    ...consumeBindRows(stream, pattern),
+    consumeDeleteRow(stream, pattern),
   ];
 }
 
