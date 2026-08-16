@@ -596,12 +596,24 @@ await parallel({
       && (legacyRace as ScopeBranchMissing)?.recorded?.length === 0,
     (legacyRace as Error)?.message?.split("\n")[0]);
 
-  // NARROWNESS. The empty-set backstop must not fire on a scope the SOURCE has no arms for, or it
-  // would refuse a legitimately emptied scope instead of letting the ordinary checks speak.
-  const emptied = await walk6("r6-race", `await race({}, { name: "doomed" });`, raceEntries);
-  ok("an emptied scope is not caught by the empty-set backstop, whose subject is the RECORD",
-    !(emptied instanceof ScopeBranchMissing) || (emptied as ScopeBranchMissing).recorded.length > 0,
-    `${(emptied as Error)?.name}: ${(emptied as Error)?.message?.slice(0, 80)}`);
+  // NARROWNESS, and the fixture has to be chosen with care or the cell grades nothing. The
+  // backstop's subject is a RECORD carrying no arm names, never a SOURCE declaring none, and the
+  // only shape that separates those two is a legacy entry walked against an emptied scope: nothing
+  // recorded AND nothing in the source. A first attempt used `race({})`, which is vacuous twice
+  // over -- an empty `race` awaits `Promise.race([])` and hangs on a LIVE run too, so the cell
+  // returned a timeout in both worlds and could not see the mutation at all. `parallel` resolves on
+  // an empty arm set, so it is the one that can answer.
+  //
+  // What the walk does here is unchanged by this fix and is asserted as such: it completes and
+  // re-raises the failure the run recorded. Refusing it instead would take the answer away from the
+  // ordinary checks that already handle an emptied scope.
+  const emptiedLegacy = await walk6("r6-par", `await parallel({}, { name: "doomedp" });`, asLegacy(parEntries));
+  ok("an emptied scope over a record with no arm names is NOT caught by the backstop",
+    !(emptiedLegacy instanceof ScopeBranchMissing),
+    `${(emptiedLegacy as Error)?.name}: ${(emptiedLegacy as Error)?.message?.slice(0, 80)}`);
+  ok("and it completes with the recorded failure rather than a refusal",
+    (emptiedLegacy as Error)?.name === "EffectError",
+    `${(emptiedLegacy as Error)?.name}: ${(emptiedLegacy as Error)?.message?.slice(0, 80)}`);
 }
 
 console.log(`migrate.smoke: ${pass} passed, ${fail} failed`);

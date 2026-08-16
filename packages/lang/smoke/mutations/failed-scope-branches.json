@@ -43,7 +43,19 @@
     "",
     "SPECIFIER BOUNDARY: not applicable, and checked rather than assumed. This suite imports",
     "`../src/*.js` by relative path and the command is bare `tsx` with no build step, so the bytes",
-    "mutated are the bytes the suite loads."
+    "mutated are the bytes the suite loads.",
+    "",
+    "ONE MUTATION SURVIVED THE FIRST RUN AND THE FIXTURE WAS AT FAULT, fixed on the test side. The",
+    "narrowness cell used `race({})`, which hangs on a LIVE run for the same `Promise.race([])` reason",
+    "-- so the cell timed out whether or not the code was mutated and could not see the difference. A",
+    "fixture that fails identically in both worlds is not a control. `parallel({})` resolves, so it is",
+    "the shape that can answer, and the fixture is a legacy entry walked against it: nothing recorded",
+    "AND nothing in the source, which is the only pair that separates the record from the source.",
+    "",
+    "MEASURED AND NOT FIXED, named rather than left for someone else to rediscover: `await race({}, …)`",
+    "hangs on an ORDINARY run, no migration involved, because an empty arm set awaits",
+    "`Promise.race([])`. That is a program-authoring footgun in the same family and it is outside this",
+    "change, which is about what a walk does with a RECORD."
   ],
   "mutations": [
     {
@@ -78,9 +90,9 @@
       "file": "packages/lang/src/interpret.ts",
       "find": "        if (only.size === 0 && all.length > 0) {",
       "replace": "        if (only.size === 0) {",
-      "expectRed": "an emptied scope is not caught by the empty-set backstop, whose subject is the RECORD",
-      "cell": "an emptied scope is not caught by the empty-set backstop, whose subject is the RECORD",
-      "note": "The other direction, and the one a fix written from the bug report alone lands on. The backstop's subject is a RECORD that carries no arm names, not a SOURCE that declares none; conflating them refuses a legitimately emptied scope and takes the answer away from the ordinary checks that already handle it."
+      "expectRed": "an emptied scope over a record with no arm names is NOT caught by the backstop",
+      "cell": "an emptied scope over a record with no arm names is NOT caught by the backstop",
+      "note": "The other direction, and the one a fix written from the bug report alone lands on. The backstop's subject is a RECORD that carries no arm names, not a SOURCE that declares none. It first SURVIVED against a `race({})` fixture, and the reason is worth keeping: an empty `race` awaits `Promise.race([])` and hangs on a LIVE run too, so the cell timed out in both worlds and graded nothing. `parallel` resolves on an empty arm set, which is what makes the distinction observable at all."
     }
   ]
 }
