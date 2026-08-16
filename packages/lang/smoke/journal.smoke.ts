@@ -449,4 +449,24 @@ const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
     next.seq > Math.max(...journal.entries().map((e) => e.seq)), next.seq);
 }
 
+// ── a journal is ONE run's, and the keys are what make that matter ────────────────────────────
+//
+// Step keys are structural, so another run's entry with the same scope, kind, name and occurrence
+// MATCHES. Seeding across runs is therefore not a labelling mistake: it is one run resuming from
+// another run's history and returning its recorded results as its own.
+{
+  const k = new KeyScope().nextEffect("sleep", "nap");
+  const foreign = new Journal({ run: "other" });
+  await foreign.begin(k, "h1", 1000);
+  await foreign.settle(k, { status: "ok", result: { from: "the other run" } }, 1100);
+  let crossed: unknown;
+  try { new Journal({ run: "mine", entries: foreign.entries() }); } catch (e) { crossed = e; }
+  ok("a journal refuses to be seeded with another run's entries", crossed instanceof Error,
+    (crossed as Error)?.message?.slice(0, 70));
+  // And the reason, made concrete: without the check, that entry answers this run's lookup.
+  const same = new Journal({ run: "other", entries: foreign.entries() });
+  ok("because the key would have matched — same scope, same name, same occurrence",
+    same.lookup(k, "h1").verdict === "replay");
+}
+
 console.log(`journal.smoke: ${pass} checks passed`);

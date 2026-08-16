@@ -356,6 +356,14 @@ class Interpreter {
     readonly programHash: string,
     readonly pins: RunPins,
   ) {
+    // The journal and the run must be the same run. Request ids derive from `options.runId` while
+    // recorded results come from the journal, so a mismatch would submit work under one identity and
+    // resolve it against another's history.
+    if (options.journal !== undefined && options.journal.run !== options.runId)
+      throw new RuntimeFault(
+        "L5011",
+        `this run is ${options.runId} but it was handed the journal of run ${options.journal.run}; a run resumes only from its own journal`,
+      );
     this.journal = options.journal ?? new Journal({ run: options.runId });
     // EVERY limit comes from the pins, never from a default applied here. A default resolved a
     // second time is a default resolved by whichever interpreter happens to be resuming, which is
@@ -1485,9 +1493,19 @@ class Interpreter {
           const c = await this.execute(node.block as AnyNode, env, frame);
           if (c.type !== "normal") return c;
         } catch (e) {
-          // A cancellation is not a program error: it is the scope being unwound, and a catch
-          // block must not be able to swallow it and keep working in a branch that lost a race.
-          if (e instanceof Cancelled) throw e;
+          // Two things a `catch` may not have, because neither is a program error and neither is
+          // this program's to handle.
+          //
+          // A cancellation is the scope being unwound, and swallowing it would keep a branch
+          // working after it lost a race.
+          //
+          // A durability failure is the JOURNAL refusing to record — the run losing its ability to
+          // have a result at all. Measured before this line existed: a program whose store refused
+          // an append caught the failure, performed two more effects against the world, and
+          // returned normally. Nothing about that run was recorded from the refusal onward, so the
+          // effects it went on to perform exist only in the world, and a resume would perform them
+          // again. An unrecordable run must stop, and no `catch` may decide otherwise.
+          if (e instanceof Cancelled || e instanceof JournalAppendRejected) throw e;
           const handlerNode = node.handler as AnyNode | null;
           if (handlerNode === null || handlerNode === undefined) throw e;
           const catchEnv = new Env(env);

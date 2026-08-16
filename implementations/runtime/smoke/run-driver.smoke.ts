@@ -22,7 +22,7 @@ import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal } from "@cotal-ai/core";
 import { SimHandler } from "@cotal-ai/lang";
-import { startRun, driveRun } from "../src/index.js";
+import { startRun, driveRun, RunJournalStore } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "wfjdrive";
@@ -181,6 +181,81 @@ await sleep("2h", { name: "second" });
     missing.status === "released" && missing.reason.name === "RunNotResumable",
     why(missing));
   c("none of those touched the world", handler.performed.length === 2, handler.performed);
+}
+
+// ── 4) a program cannot CATCH the loss of its own journal ────────────────────────────────────
+//
+// The worst shape this lane can produce, and it was live: an ordinary `try { await sleep() } catch`
+// swallowed the journal's refusal, the program went on to perform two more effects against the
+// world, and the run returned normally — with nothing recorded from the refusal onward, so a resume
+// would perform them all again. A cancellation was already uncatchable for the same reason. A run
+// that cannot record must stop, and no catch block may decide otherwise.
+{
+  const CATCHER = `
+try {
+  await sleep("1h", { name: "first" });
+} catch (e) {
+  await sleep("2h", { name: "swallowed" });
+}
+await sleep("3h", { name: "after-the-catch" });
+`;
+  const handler = new CountingHandler();
+  const out = await attempt(startRun(js, jsm, {
+    space: SPACE, runId: "d-4", source: CATCHER, lease: lease("m1", 1, 1), handler,
+  }));
+  // Take the run away while the first effect is in flight? No — simpler and stricter: the run is
+  // superseded before it starts its second effect, by a driver that just activates.
+  c("a run whose journal is intact completes normally", out.status === "completed", why(out));
+
+  // Hold the run INSIDE its first effect so the takeover lands mid-flight: a virtual-clock sleep
+  // returns instantly, so without the gate the program is finished before anything can supersede it.
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  class Held extends CountingHandler {
+    override async sleep(req: Parameters<CountingHandler["sleep"]>[0], ctx: Parameters<CountingHandler["sleep"]>[1]) {
+      const out = await super.sleep(req, ctx);
+      if (this.performed.length === 1) await gate;
+      return out;
+    }
+  }
+  const handler2 = new Held();
+  const started = startRun(js, jsm, {
+    space: SPACE, runId: "d-5", source: CATCHER, lease: lease("m1", 1, 1), handler: handler2,
+  });
+  await wait(300);
+  await activateRun(js, jsm, {
+    space: SPACE, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, at: 1, expect: "existing",
+  });
+  release();
+  const lost = await attempt(started);
+  c("but a run that LOSES its journal is released, not caught and carried on", lost.status === "released",
+    why(lost));
+  c("and it stopped at the refusal rather than performing the catch block's effects",
+    handler2.performed.length < 3, handler2.performed);
+}
+
+// ── 5) a journal belongs to ONE run, at both ends ────────────────────────────────────────────
+//
+// The keys are structural, so another run's entry with the same scope and name MATCHES. A journal
+// crossed with the wrong run does not mislabel anything — it returns another run's recorded results
+// as this run's own, and a PubAck on one run's subject makes the other's journal say "durable".
+{
+  const a = await activateRun(js, jsm, {
+    space: SPACE, runId: "d-6", holder: "m1", fencingToken: 1, epoch: 1, at: 1, expect: "new",
+  });
+  const store = new RunJournalStore(a);
+  let crossed: unknown;
+  try {
+    await store.append({
+      v: 1, seq: 0, run: "SOME-OTHER-RUN", scope: "", kind: "sleep", name: "x", occurrence: 0,
+      inputHash: "h", state: "pending", startedAt: 1,
+    } as never);
+  } catch (e) { crossed = e; }
+  c("a store refuses an entry that belongs to another run", crossed instanceof Error,
+    (crossed as Error)?.message?.slice(0, 60));
+  const back = await replayRunJournal(js, jsm, SPACE, "d-6");
+  c("and nothing of it reached this run's subject",
+    back.records.filter((r) => r.record.kind === "step").length === 0);
 }
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);

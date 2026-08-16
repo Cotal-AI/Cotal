@@ -31,11 +31,22 @@ import { RunJournalAppender, RunSuperseded, RunJournalStalled } from "@cotal-ai/
  * correct response to both: stop, and record nothing else.
  */
 export class RunJournalUnavailable extends Error {
+  /**
+   * True when it is NOT known whether the entry landed.
+   *
+   * A refusal is determinate: the stream said no, and nothing was written. A stalled append is not —
+   * the publish may already be on disk — and the language's L5010 text says which, because "the
+   * entry was not recorded" is a claim, and making it about an ambiguous append would be the
+   * durability layer telling the run the more comfortable of two possibilities.
+   */
+  readonly indeterminate: boolean;
+
   constructor(
     readonly run: string,
     override readonly cause: unknown,
   ) {
     super(`run ${run} can no longer record: ${cause instanceof Error ? cause.message : String(cause)}`);
+    this.indeterminate = cause instanceof RunJournalStalled;
     this.name = "RunJournalUnavailable";
   }
 }
@@ -50,11 +61,19 @@ export class RunJournalStore implements JournalStore {
   }
 
   async append(entry: JournalEntry): Promise<void> {
+    // A run's journal takes only that run's entries. The language checks this where a journal is
+    // SEEDED; this is the other end, where an entry is made durable — a PubAck on one run's subject
+    // must never be what makes another run's journal report an entry as recorded.
+    if (entry.run !== this.appender.run) {
+      throw new Error(
+        `entry belongs to run ${entry.run}, but this store appends to run ${this.appender.run}; a journal entry is durable on its own run's subject or not at all`,
+      );
+    }
     try {
-      // `entry.endedAt ?? entry.startedAt` is NOT the journal's ordering — the appender's PubAck
-      // sequence is. This stamp is the entry's own clock, carried so the record is readable on its
-      // own, and nothing downstream sorts by it.
-      await this.appender.append(entry, entry.startedAt);
+      // The stamp is the entry's own clock — its end when it has one, its start while it is pending
+      // — carried so a record is readable on its own. It is NOT the journal's ordering: the PubAck
+      // sequence is that, and nothing downstream sorts by this.
+      await this.appender.append(entry, entry.endedAt ?? entry.startedAt);
     } catch (e) {
       if (e instanceof RunSuperseded || e instanceof RunJournalStalled) {
         throw new RunJournalUnavailable(this.appender.run, e);

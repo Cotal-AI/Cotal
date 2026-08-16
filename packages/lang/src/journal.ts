@@ -116,6 +116,18 @@ export interface JournalStore {
   append(entry: JournalEntry): Promise<void>;
 }
 
+/**
+ * A store's refusal that could NOT be determined to have failed.
+ *
+ * A store that knows the append never landed says so by throwing an ordinary error. One that cannot
+ * tell — a publish that timed out, a connection that died mid-flight — sets this, because the two
+ * are different facts and the run must not be told the safer one. Everything else about the failure
+ * is identical: the run stops either way.
+ */
+export interface IndeterminateAppend {
+  readonly indeterminate: true;
+}
+
 export interface JournalInit {
   readonly run: string;
   readonly entries?: readonly JournalEntry[];
@@ -141,14 +153,23 @@ export interface JournalInit {
 export class JournalAppendRejected extends Error {
   readonly code = "L5010";
 
+  /** True when the store could not tell whether the entry landed. See {@link IndeterminateAppend}. */
+  readonly indeterminate: boolean;
+
   constructor(
     readonly stepKey: string,
     readonly state: EntryState,
     readonly reason: Error,
   ) {
+    const indeterminate = (reason as Partial<IndeterminateAppend> | null | undefined)?.indeterminate === true;
     super(
-      `L5010 Journal append rejected\n\n  step  ${stepKey}   ${state}\n\n${reason.message}\n\nThe entry was not recorded and the in-memory journal was left as it was. This is a durability failure, not an effect failure: whatever the effect did, it stands, and this run can no longer say so.`,
+      `L5010 Journal append rejected\n\n  step  ${stepKey}   ${state}\n\n${reason.message}\n\n${
+        indeterminate
+          ? "Whether the entry was recorded is UNKNOWN — the store could not tell — and the in-memory journal was left as it was."
+          : "The entry was not recorded and the in-memory journal was left as it was."
+      } This is a durability failure, not an effect failure: whatever the effect did, it stands, and this run can no longer say so.`,
     );
+    this.indeterminate = indeterminate;
     this.name = "JournalAppendRejected";
   }
 }
@@ -184,6 +205,11 @@ export class Journal {
     this.readOnly = init.readOnly === true;
     if (init.store !== undefined) this.store = init.store;
     for (const e of init.entries ?? []) {
+      // A journal is ONE run's. Seeding it with another run's entry would make this run resume
+      // against a history it never had — the keys are structural, so a foreign entry with the same
+      // scope and name matches, and its recorded result is returned as if this run had produced it.
+      if (e.run !== this.run)
+        throw new Error(`journal for run ${this.run} was seeded with an entry from run ${e.run}; a run resumes only from its own journal`);
       // The stored `scope` string is authoritative: it is what makes a journal readable back
       // without re-running the program that produced it.
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;

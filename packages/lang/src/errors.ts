@@ -89,6 +89,10 @@ export const CATALOG = {
   // cannot append has no result to report, and reporting one anyway is how a completed effect
   // comes to be replayed as a failure.
   L5010: "Journal append rejected",
+  // A journal belongs to ONE run. The keys are structural, so another run's entry with the same
+  // scope and name MATCHES: a mismatch is not a mislabelling, it is one run resuming from another
+  // run's history and returning its results as its own.
+  L5011: "Journal belongs to a different run",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
