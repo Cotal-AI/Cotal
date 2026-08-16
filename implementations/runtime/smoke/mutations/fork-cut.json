@@ -137,6 +137,41 @@
       "expectRed": "and the scope it does not enclose STAYS in the prefix: the projection is enclosing-only",
       "cell": "so the CHILD replays that scope instead of re-entering it: it records no second `parallel:pair`",
       "note": "The narrowness twin. Projecting EVERY scope entry would satisfy the first mutation perfectly while destroying any fork whose cut sits after an unrelated combinator -- the child would re-enter and re-run scopes it had already settled. It SURVIVED its first grading and survived honestly: it was graded on `a fork at a recorded step is admissible`, a cell over a program with NO SCOPES, so the widening could not change its answer. Re-graded on a child seeded from a cut taken AFTER a settled `parallel`, and on what that child APPENDS -- the branch sleeps replay either way, so the first-live-step probe is inert here and only the second `parallel:pair#0` row tells the two apart."
+    },
+    {
+      "name": "L5020 is dropped from the ride-along gate",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const stoppedForAnotherReason = refusals.some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\" || r.code === \"L5020\",\n  );",
+      "replace": "  const stoppedForAnotherReason = refusals.some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\",\n  );",
+      "expectRed": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "cell": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "note": "The gate's narrowness is graded by mutation 12 (`the L5018 gate is too broad`), which is why no twin is added here: a gate that swallowed L5018 for every stop would satisfy this removal and be caught there."
+    },
+    {
+      "name": "the gate runs before the projection, so it cannot see L5020",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const stoppedForAnotherReason = refusals.some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\" || r.code === \"L5020\",\n  );",
+      "replace": "  const stoppedForAnotherReason = ([] as { code: string }[]).some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\" || r.code === \"L5020\",\n  );",
+      "expectRed": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "cell": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "note": "ORDERING, mutated as its own fact. The repair was not only adding a code to the gate -- it was moving the gate BELOW the projection that pushes L5020. An empty set stands in for the ordering bug the move fixed: a `some()` over a refusal list that has not been filled yet is a check that cannot fail, and it reads identically to a correct gate."
+    },
+    {
+      "name": "a refused plan hands its cut back anyway",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const cut =\n    reached && refusals.length === 0\n      ? req.entries.filter((e) => {",
+      "replace": "  const cut =\n    reached\n      ? req.entries.filter((e) => {",
+      "expectRed": "REPAIRED: an INADMISSIBLE plan carries no cut",
+      "cell": "REPAIRED: an INADMISSIBLE plan carries no cut"
+    },
+    {
+      "name": "the cut is emptied for everyone, refused or not",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const cut =\n    reached && refusals.length === 0\n      ? req.entries.filter((e) => {",
+      "replace": "  const cut =\n    false\n      ? req.entries.filter((e) => {",
+      "expectRed": "and an admissible plan over the same journal still carries its prefix",
+      "cell": "and an admissible plan over the same journal still carries its prefix",
+      "note": "The narrowness twin. `cut = []` unconditionally satisfies the removal above perfectly and makes every fork a fork of nothing -- admissible, empty-prefixed, and silent. Graded on the control cell in the same block rather than on a distant one, so the two mutations differ by exactly the condition under test."
     }
   ],
   "unkillable": [
