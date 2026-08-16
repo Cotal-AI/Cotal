@@ -250,6 +250,62 @@ r = runTool([
 ]);
 check("a real red followed by a crash is still KILLED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
 
+// 7e-ter. EXIT STATUS IS NOT THE EVIDENCE, THE OTHER WAY ROUND. A teardown that calls
+// `process.exit(0)` after the suite printed real failures and set `exitCode = 1` hands the grader a
+// green status over a red run. Graded on status alone that reads SURVIVED — "the suite PASSED with
+// the implementation broken" — about a suite that printed `✗ FAIL:` on the very cell being graded.
+writeFileSync(
+  join(root, "swallow.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "let fail = 0;",
+    "const c = (n, v) => { if (v) console.log(`  ✓ ${n}`); else { fail++; console.log(`  ✗ FAIL: ${n}`); } };",
+    // A preamble cell that stays green, so the mutated run still clears the tick floor and this arm
+    // measures the swallowed exit code rather than an early death.
+    "c('the preamble ran', true);",
+    "c('the guard refuses an oversized value', admit(50) === false);",
+    "if (fail > 0) process.exitCode = 1;",
+    "process.on('exit', () => { process.exit(0); });",
+    "",
+  ].join("\n"),
+);
+// 7e-quater. And the mirror hole on the same branch: a green run that never printed the named cell
+// at all. Nothing failed, so nothing is red — but the cell did not run, so its "pass" is about
+// nothing, and a survivor claim needs the cell to have executed and stayed green.
+writeFileSync(
+  join(root, "skips.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "console.log('  ✓ the preamble ran');",
+    "if (admit(50) !== false) process.exit(0);",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm swallow", { cwd: root });
+
+r = runTool([
+  "--command", `${process.execPath} swallow.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("exit 0 after a REAL named red is INCONCLUSIVE, not SURVIVED",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("swallowed the exit code")
+  && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
+r = runTool([
+  "--command", `${process.execPath} skips.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("a green run that never printed the named cell is INCONCLUSIVE, not SURVIVED",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("never printed the named assertion")
+  && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
 // 7f. A mis-spelled key is silently dropped by every JSON reader. In an instrument whose whole
 // premise is that each step of the experiment has a way to lie, a `label:` that should have been
 // `name:` — or an `expectred:` that should have been `expectRed:` — is one of them.

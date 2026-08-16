@@ -184,7 +184,29 @@ function proveOne(m, opts) {
     // false negative the floor caused on a suite's first assertion. Its one blind spot is a harness
     // that prints byte-identical text on pass and on fail; such a harness cannot be graded by any
     // signal this tool has, and no heuristic here should pretend otherwise.
+    // EXIT STATUS IS CORROBORATION, NEVER THE EVIDENCE — in BOTH directions, and the second one was
+    // found the same way as the first. A teardown that calls `process.exit(0)` after the suite has
+    // printed real failures and set `exitCode = 1` produces a green status over a red run; graded on
+    // status alone that is SURVIVED, and the tool says "the suite PASSED with the implementation
+    // broken" about a suite that printed `✗ FAIL: <the named cell>`. Measured in the rig before this
+    // was written. The failure direction is the cheap one — it accuses a working test instead of
+    // blessing a broken one — but in a kill set it is exactly the verdict that makes someone rewrite
+    // a test that already worked.
+    //
+    // So both branches ask the SAME question of the named assertion's own line, and only the answer
+    // differs: a KILL needs a line the green run does not print, a SURVIVOR needs the line the green
+    // run does print. Deliberately NOT adopted here: a rule requiring the suite to print its own
+    // summary, a zero-failure count in it, or an incompleteness marker. Those need the grader to know
+    // a suite's output convention, this tool grades hundreds of suites it did not write, and a guessed
+    // convention is the `progressPattern` mistake again. The baseline transcript is convention-free
+    // and answers the same question.
     const short = opts.minTicks !== undefined && ticks < opts.minTicks;
+    const named = r.output.split("\n").filter((l) => l.includes(m.expectRed));
+    const baseHits = new Set(
+      (opts.baseOutputBy?.get(m.command ?? opts.command) ?? "").split("\n").filter((l) => l.includes(m.expectRed)),
+    );
+    // `baseHits` empty = the label appears ONLY on failure in this harness (a throw-only suite). Then
+    // its absence from a green run is normal and carries no information, so these checks stay off.
     if (r.status === 0) {
       // Green after barely running is not a survivor — it is a run that never reached the check,
       // which is the fourth lie listed at the top of this file.
@@ -192,18 +214,23 @@ function proveOne(m, opts) {
         return { label, verdict: "INCONCLUSIVE",
           why: `exited 0 but reached only ${ticks} progress marks (expected ≥ ${opts.minTicks}) — the suite did not run far enough for its pass to mean anything`, ticks };
       }
+      if (baseHits.size > 0 && named.length === 0) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0 but never printed the named assertion at all (the green run prints it) — the cell did not run, so its "pass" is about nothing`, ticks };
+      }
+      const changed = named.find((l) => !baseHits.has(l));
+      if (changed !== undefined) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0, but the named assertion did NOT print what it prints when green (${JSON.stringify(changed.trim())}) — the suite noticed and something swallowed the exit code; a green status is not a pass`, ticks };
+      }
       return { label, verdict: "SURVIVED",
         why: "the suite PASSED with the implementation broken — it does not test this", ticks };
     }
 
-    const named = r.output.split("\n").filter((l) => l.includes(m.expectRed));
     if (named.length === 0) {
       return { label, verdict: "WRONG-RED",
         why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`, ticks };
     }
-    const baseHits = new Set(
-      (opts.baseOutputBy?.get(m.command ?? opts.command) ?? "").split("\n").filter((l) => l.includes(m.expectRed)),
-    );
     if (baseHits.size > 0 && named.every((l) => baseHits.has(l))) {
       return { label, verdict: "WRONG-RED",
         why: `exited ${r.status}, but the named assertion printed exactly what it prints when GREEN `
