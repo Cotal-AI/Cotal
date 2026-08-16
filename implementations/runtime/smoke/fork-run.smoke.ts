@@ -188,6 +188,21 @@ const plan = async (
     (rec?.spec.value.pins as { seed?: string } | undefined)?.seed === "r-parent",
     (rec?.spec.value.pins as { seed?: string } | undefined)?.seed);
   c("the copy reports what it copied", r.copied === got.length && r.copied === 2, { r, got: got.length });
+
+  // WHAT THE CHILD INHERITS BESIDE THE PINS, and this cell exists to make a provisional answer
+  // visible rather than to defend it. The effect ceiling is a RUN bound recovered from the journal,
+  // so a child that replays the copied prefix starts having already spent it — a fork near the
+  // ceiling gets a nearly-spent allowance. That follows from the recovery rather than from anyone
+  // deciding it, and §8.5 does not say which it wants: `inherit the consumption` (the prefix is the
+  // child's history and the child claims those effects as its own) or `a fresh allowance` (a fork
+  // exists to do NEW work, and the frontier is the whole point).
+  //
+  // NAMED RE-OPEN TRIGGER: if that question is settled the other way, this cell FAILS, and it is
+  // meant to. A design decision recorded only in a plan is one nobody re-reads; one asserted here
+  // cannot be reversed quietly.
+  const childJournal = new Journal({ run: "r-pins", entries: got });
+  c("the child inherits the prefix's effect CONSUMPTION, not just the ceiling — provisional, by construction",
+    childJournal.dispatchedEffects() === 2, childJournal.dispatchedEffects());
 }
 
 // ── 4) the refusals, each naming a different repair ────────────────────────────────────────────
