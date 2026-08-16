@@ -3,8 +3,9 @@
  * quietly — and pinned at the invariant the flip must NOT break.
  *
  * WHY THIS SUITE IS GREEN WHILE THE DEFECT IS UNFIXED, said first because it looks backwards.
- * The panel's HIGH-2 is that spawn/launch ship as Model B: `class: "ephemeral"`, where the SPEC
- * mandates journal-class actions. The obvious instrument is a cell that fails today and passes when
+ * The defect is that spawn/launch ship as Model B — `class: "ephemeral"` — where SPEC:1465 makes
+ * the class a MUST that matches the command's contract and §13.6 makes these action commands, whose
+ * submissions are journal. The obvious instrument is a cell that fails today and passes when
  * the flip lands. It was asked for, and it is the wrong instrument HERE, for a mechanical reason:
  * a permanently red suite makes `mutation-proof` REFUSE — its baseline check exits 4 on an
  * already-red suite, on the grounds that every mutation would then grade KILLED for a reason that
