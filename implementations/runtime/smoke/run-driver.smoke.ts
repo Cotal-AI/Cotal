@@ -391,10 +391,14 @@ try {
   c("a run starts and pins itself", first.status === "completed", why(first));
   const pinned = (await readRunRecord(kv, EP, "d-10"))!.spec.value.pins;
 
-  // A successor that supplies NOTHING: every pin must come back from the record.
+  // A successor that supplies NOTHING, on a host whose clock reads DIFFERENTLY. The differing clock
+  // is the whole cell: with both attempts on the same fixed sim clock, a driver that re-derived the
+  // epoch would produce the same number by accident and the cell would prove nothing.
+  const later = new CountingHandler();
+  (later as unknown as { now: () => number }).now = () => pinned.startedAt + 86_400_000;
   const second = await attempt(driveRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-10", source: PROGRAM, lease: lease("m2", 2, 2),
-    handler: new CountingHandler(),
+    handler: later,
   }));
   c("a successor resumes it", second.status === "completed", why(second));
   c("under the SAME seed it was started with, not one derived again on this host",
