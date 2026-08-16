@@ -17,6 +17,7 @@
  * Run: pnpm smoke:runtime-mesh-checkpoint   (needs nats-server on PATH)
  */
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -377,6 +378,47 @@ const a = await checkpoint("approve", "Ship it?", { timeout: "2s", onExpiry: "pr
     .catch(() => null);
   c("so an armed schedule now exists at the successor's coordinates, where it will actually be read",
     armedAtNext !== null);
+
+  // AND `wait` IS A PAUSE, which is the half this cell did not have and a review found.
+  //
+  // A `wait` mints no pause of its own, so it does not look like one — but it ARMS mediated
+  // deadlines exactly as `sleep` does, an idle window or a timeout, and neither was re-armed. A run
+  // adopted at a new epoch sat on a deadline no live epoch would fire: the run waits forever, and
+  // nothing anywhere is red. Reproduced as a pending `wait` entry that yielded NO tokens at all.
+  //
+  // Asserted on `outstandingPauseTokens` rather than end-to-end because that list IS the mechanism —
+  // `rearmOutstandingPauses` re-arms exactly what it returns, which cell 7 above already proves.
+  {
+    const waitTok = "req-wait-token-7";
+    const shapes = [
+      { kind: "sleep", requestId: "tok-sleep" },
+      { kind: "checkpoint", requestId: "tok-cp" },
+      { kind: "wait", requestId: waitTok },
+    ].map((s, i) => ({
+      v: 1, seq: i, run: "cp-7w", scope: "", name: `s${i}`, occurrence: 0, inputHash: "h",
+      state: "pending", startedAt: 0, ...s,
+    })) as never;
+    const open = outstandingPauseTokens(shapes);
+    c("REPAIRED: a pending `wait` is an outstanding pause, so a takeover re-arms its deadline",
+      open.includes(waitTok), open.join(","));
+    // The IDLE wait's second deadline. It is derived rather than recorded, so the repair has to
+    // derive it too — a wait that had to remember it would carry state its own key determines.
+    const derived = createHash("sha256").update(`${waitTok}:wait-timeout`, "utf8").digest("base64url").slice(0, 43);
+    c("...including the outer timeout an idle wait arms, re-derived rather than remembered",
+      open.includes(derived), open.join(","));
+    // NARROWNESS, both directions. Emitting a derived token for a wait that never armed an outer
+    // deadline is harmless — the reconciler reads the checkpoint's status first and re-emits
+    // nothing when there is none — but a SETTLED wait must contribute nothing at all, or a takeover
+    // re-arms timers for pauses that are already over.
+    const settledWait = [{
+      v: 1, seq: 0, run: "cp-7w", scope: "", kind: "wait", name: "over", occurrence: 0, inputHash: "h",
+      requestId: "tok-done", state: "settled", status: "ok", startedAt: 0,
+    }] as never;
+    c("while a SETTLED wait contributes nothing: a pause that is over is not re-armed",
+      outstandingPauseTokens(settledWait).length === 0, outstandingPauseTokens(settledWait).join(","));
+    c("and the other kinds are unchanged by the addition",
+      open.includes("tok-sleep") && open.includes("tok-cp"), open.join(","));
+  }
 
   await resolveCheckpoint(deps, { runId: "cp-7", stepKey: STEP, by: "david", value: "done", now: NOW + 1_000 });
   await driven;

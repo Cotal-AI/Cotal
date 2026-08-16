@@ -620,6 +620,19 @@ export async function rearmOutstandingPauses(
  * An entry is open when its LAST record is `pending`, so the map is built in append order and the
  * later record wins — a step that settled has a settled entry after its pending one, and reading
  * only the first would re-arm timers for pauses that are already over.
+ *
+ * THE KINDS ARE THE THREE THAT ARM A TIMER, and `wait` was missing from that list. It does not mint
+ * a pause of its own, so it does not look like one, but `wait()` arms mediated deadlines exactly as
+ * `sleep` does — its idle window or its timeout — and a `wait` adopted at a new epoch was therefore
+ * left waiting on a deadline no live epoch would ever fire. Found by review, reproduced on a pending
+ * `wait` entry that yielded no tokens at all.
+ *
+ * An idle wait with a timeout arms TWO, and the second is DERIVED rather than recorded, so it is
+ * re-derived here for the same reason the live path derives it: a resume that had to remember it
+ * would be carrying state the key already determines. Emitting it for a wait that never minted one
+ * is harmless by construction — the reconciler reads the checkpoint's status first and re-emits
+ * nothing when there is none — and the alternative, reading the request shape back out of the
+ * entry to decide, would make the repair depend on a field a replay is not guaranteed to carry.
  */
 export function outstandingPauseTokens(entries: readonly JournalEntry[]): string[] {
   const last = new Map<string, JournalEntry>();
@@ -628,6 +641,7 @@ export function outstandingPauseTokens(entries: readonly JournalEntry[]): string
   for (const e of last.values()) {
     if (e.state !== "pending" || e.requestId === undefined) continue;
     if (e.kind === "sleep" || e.kind === "checkpoint") tokens.push(e.requestId);
+    else if (e.kind === "wait") tokens.push(e.requestId, derivedToken(e.requestId, "wait-timeout"));
   }
   return tokens;
 }
