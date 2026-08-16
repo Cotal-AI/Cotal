@@ -51,8 +51,8 @@ const jsm = await jetstreamManager(nc);
 const js = jetstream(nc);
 await createEndpointStreams(jsm, new Kvm(nc), SPACE);
 
-const takeover = (runId: string, holder: string, token: number) => ({
-  space: SPACE, runId, holder, fencingToken: token, epoch: token, at: 1_700_000_000_000,
+const takeover = (runId: string, holder: string, token: number, expect: "new" | "existing" = "new") => ({
+  space: SPACE, runId, holder, fencingToken: token, epoch: token, at: 1_700_000_000_000, expect,
 });
 const key = (name: string) => new KeyScope().nextEffect("sleep", name);
 
@@ -84,7 +84,7 @@ const key = (name: string) => new KeyScope().nextEffect("sleep", name);
   const first = await activateRun(js, jsm, takeover("s-2", "d1", 1));
   const journal = new Journal({ run: "s-2", store: new RunJournalStore(first) });
   await journal.begin(key("one"), "h1", 1_000);
-  await activateRun(js, jsm, takeover("s-2", "d2", 2)); // someone else takes the run
+  await activateRun(js, jsm, takeover("s-2", "d2", 2, "existing")); // someone else takes the run
   let refused: unknown;
   try { await journal.begin(key("two"), "h2", 2_000); } catch (e) { refused = e; }
   c("the interpreter sees L5010, the journal's own durability failure",
