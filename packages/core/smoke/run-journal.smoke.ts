@@ -590,20 +590,28 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("so nothing the intruder wanted is in the journal: still one activation",
     (await replayRunJournal(js, jsm, SPACE, "r-5l", tid())).records.filter((r) => r.record.kind === "activation").length === 1);
 
-  // Direction two: one holder, restarted. The newer process takes its own run back — that is what
-  // an epoch is for — and then the OLDER one must not take it back again.
-  const A2 = await activateRun(js, jsm, tok("r-5l", "A", 2, "existing"));
-  c("a NEWER process of the same holder resumes its own run on the same lease", (await A2.append({ by: "A2" }, 2)) > 0);
+  // Direction two: the same holder at a DIFFERENT epoch, both ways. This used to allow the newer
+  // one through, on the reasoning that a restart should reclaim its own run. The pool disagrees, and
+  // it is the authority: within one attempt the lease comes back verbatim, a redelivery advances the
+  // token, and the commit gate binds the epoch EXACTLY — so (equal token, newer epoch) is a tuple no
+  // lease issues, and a driver holding it could drive a run it could never settle.
+  let newEpoch: unknown;
+  try { await activateRun(js, jsm, tok("r-5l", "A", 2, "existing")); } catch (e) { newEpoch = e; }
+  c("a NEWER process of the same holder cannot activate on the epoch the lease did not bind",
+    newEpoch instanceof ActivationNotAuthorized, `${(newEpoch as Error)?.name}`);
   let oldEpoch: unknown;
-  try { await activateRun(js, jsm, tok("r-5l", "A", 1, "existing")); } catch (e) { oldEpoch = e; }
-  c("and the older process cannot take it back from its own successor",
+  try { await activateRun(js, jsm, tok("r-5l", "A", 0, "existing")); } catch (e) { oldEpoch = e; }
+  c("and an OLDER one cannot either: the direction does not matter, the binding does",
     oldEpoch instanceof ActivationNotAuthorized, `${(oldEpoch as Error)?.name}`);
+  c("neither attempt is in the journal: still one activation",
+    (await replayRunJournal(js, jsm, SPACE, "r-5l", tid())).records.filter((r) => r.record.kind === "activation").length === 1);
 
   // Direction three, the case the rule was relaxed for and which must still work: same token, same
-  // holder, same epoch — one process picking its own run back up after its appender stalled.
-  const recovered = await activateRun(js, jsm, tok("r-5l", "A", 2, "existing"));
+  // holder, same epoch — one process picking its own run back up after its appender stalled. A
+  // restart reaches this by re-leasing: its attempt's lease returns with the epoch it was bound at.
+  const recovered = await activateRun(js, jsm, tok("r-5l", "A", 1, "existing"));
   c("exact-tuple recovery still works: that is one process resuming itself, not two drivers",
-    (await recovered.append({ by: "A2-again" }, 3)) > 0);
+    (await recovered.append({ by: "A-again" }, 2)) > 0);
 }
 
 // ── 5m) two takeovers replaying at the same instant ──────────────────────────────────────────
@@ -678,6 +686,41 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   try { await replayRunJournal(js, jsm, SPACE, "r-5o", tid()); } catch (e) { anchored = e; }
   c("but the replay refuses it: entry 0 of a run is the activation that replayed nothing",
     anchored instanceof RunJournalPrefixTruncated, `${(anchored as Error)?.name}`);
+}
+
+// ── 5p) the tuple that was AUTHORIZED is the tuple that lands ────────────────────────────────
+//
+// `activateRun` awaits inside the window between checking the takeover and publishing it. Anything
+// that runs in that window — the caller's own hook, or any concurrent task on this loop — can
+// mutate an ordinary JS object after it passed authorization, so one tuple is checked and a
+// different one is written. The subject was captured before the await, which makes the runId case
+// worse rather than better: a mutated runId would label a foreign run on THIS run's subject, which
+// is a record the barrier itself would then believe. The repo's WorkLease seams snapshot caller
+// input before awaiting for exactly this reason (`endpoint-work.ts:98-118`); this one now does too.
+{
+  await activateRun(js, jsm, startRun("r-5p", "d1", 1));
+  const t = { ...takeover("r-5p", "d2", 2) };
+  const app = await activateRun(js, jsm, t, {
+    onReplayed: async (replay) => {
+      t.holder = "impostor";
+      t.fencingToken = 99;
+      t.epoch = 7;
+      t.runId = "r-other";
+      t.at = 999;
+      (replay.records as { record: RunJournalRecord; seq: number }[]).push(replay.records[0]!);
+    },
+  });
+  const seen = await replayRunJournalRaw("r-5p");
+  const landed = seen[seen.length - 1] as RunJournalActivation;
+  c("a takeover mutated after authorization lands as the tuple that was AUTHORIZED, not the mutated one",
+    landed.holder === "d2" && landed.fencingToken === 2 && landed.epoch === 2 && landed.at === 1_700_000_000_000,
+    landed);
+  c("and the run it labels is the run whose subject it was published on",
+    landed.run === "r-5p", landed.run);
+  c("and the ordinal is the prefix that was VALIDATED, not one the hook grew after the fact",
+    landed.n === 1, landed.n);
+  c("the appender that comes back is bound to the validated prefix too",
+    app.steps().length === 0, app.steps().length);
 }
 
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────

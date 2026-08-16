@@ -662,9 +662,18 @@ export interface ActivateOptions {
  * the retry-at-a-refreshed-head the barrier exists to forbid, performed through `activateRun`
  * instead of through the appender.
  *
- * So an equal token stays bound to the identity that holds it: the same holder, and never an older
- * epoch. Exact-tuple recovery — same token, same holder, same epoch — remains possible, because that
- * is one process picking its own run back up, which is the case this rule was relaxed for.
+ * So an equal token stays bound to the identity that holds it: the SAME holder at the SAME epoch.
+ * Exact-tuple recovery — same token, same holder, same epoch — remains possible, because that is one
+ * process picking its own run back up, which is the case this rule was relaxed for.
+ *
+ * A newer epoch on an equal token is refused too, and that is not extra strictness but agreement
+ * with the authority that issues the token. A lease is bound to one worker at assignment: within an
+ * attempt the pool returns the SAME lease verbatim, a redelivery advances the token
+ * (`endpoint-work.ts:440-444`), and the commit gate matches the bound epoch EXACTLY —
+ * `current !== bound.epoch` settles nothing (`endpoint-work.ts:655-656`). So (equal token, newer
+ * epoch) is a tuple no lease can produce, and a driver presenting it would be driving a run it can
+ * never settle. A restarted process re-leases and gets its attempt's lease back with the epoch it
+ * was bound at, which is the exact tuple above.
  */
 function assertMayActivate(t: RunTakeover, held: RunJournalActivation | undefined): void {
   if (held === undefined) return;
@@ -678,10 +687,10 @@ function assertMayActivate(t: RunTakeover, held: RunJournalActivation | undefine
       `token ${t.fencingToken} is held by ${held.holder}; ${t.holder} cannot activate on the same token`,
     );
   }
-  if (t.epoch < held.epoch) {
+  if (t.epoch !== held.epoch) {
     throw new ActivationNotAuthorized(
       t.runId,
-      `${t.holder} already activated at epoch ${held.epoch}; epoch ${t.epoch} is an older process and must not take the run back`,
+      `token ${t.fencingToken} is bound to ${held.holder} at epoch ${held.epoch}; epoch ${t.epoch} is a different process of it, and a lease binds one worker per attempt`,
     );
   }
 }
@@ -698,9 +707,27 @@ function lastActivation(records: readonly StoredRunJournalRecord[]): RunJournalA
 export async function activateRun(
   js: JetStreamClient,
   jsm: JetStreamManager,
-  t: RunTakeover,
+  takeover: RunTakeover,
   opts: ActivateOptions = {},
 ): Promise<RunJournalAppender> {
+  // DETACHED before anything is validated. A takeover is an ordinary JS object owned by the caller,
+  // and this function awaits between authorizing it and publishing it — so without a snapshot, one
+  // tuple is checked and a different one lands: check holder A at token 7, publish holder B at
+  // token 7, or token 1. The runId case is the worst of them, because `subject` is fixed here: a
+  // mutated runId would label a FOREIGN run on this run's subject, and the barrier would then
+  // believe that record. Measured before this snapshot existed: an activation carrying
+  // `run: "r-other"` landed on r-5p's subject at ordinal 2. The pool's seams detach caller input for
+  // the same reason (`endpoint-work.ts:98-118`).
+  const t: RunTakeover = {
+    space: takeover.space,
+    runId: takeover.runId,
+    holder: takeover.holder,
+    fencingToken: takeover.fencingToken,
+    epoch: takeover.epoch,
+    at: takeover.at,
+    expect: takeover.expect,
+    takeoverId: takeover.takeoverId,
+  };
   const subject = wfjSubject(t.space, t.runId);
   const attempts = Math.max(1, opts.attempts ?? 3);
   let lastExpected = 0;
@@ -736,22 +763,27 @@ export async function activateRun(
       throw new RunAlreadyStarted(t.runId, records.length);
     }
     assertMayActivate(t, lastActivation(records));
-    if (opts.onReplayed !== undefined) await opts.onReplayed(replay);
+    // Built HERE, from the prefix that was just validated, and not after the hook below: `records`
+    // is handed to the caller and an array can grow. It did — the hook pushed one record and the
+    // activation landed at ordinal 2 over a prefix of 1, which the chain check would then read as a
+    // hole for the rest of the run's life.
+    const prefix = records.slice();
     const activation: RunJournalActivation = {
       v: 1,
       kind: "activation",
       run: t.runId,
-      n: records.length,
+      n: prefix.length,
       holder: t.holder,
       fencingToken: t.fencingToken,
       epoch: t.epoch,
       replayedTo: lastSeq,
       at: t.at,
     };
+    if (opts.onReplayed !== undefined) await opts.onReplayed(replay);
     const r = await publishFenced(js, subject, activation, lastSeq);
     // The activation's PubAck is the line: before it this driver has performed nothing and holds
     // nothing, after it the run's subject is its own until someone else activates.
-    if (r.ok) return RunJournalAppender.of(js, t.runId, subject, records, r.seq);
+    if (r.ok) return RunJournalAppender.of(js, t.runId, subject, prefix, r.seq);
     cause = r.cause;
   }
   throw new ActivationRaced(t.runId, subject, lastExpected, attempts, cause);
