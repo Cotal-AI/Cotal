@@ -19,6 +19,20 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
   pass++;
   console.log(`  ✓ ${name}`);
 };
+/** A BARE CALL IS NOT A CELL. The admitted directions were written `fn(); ok(label, true)`, so a
+ *  mutant that makes `fn()` THROW kills the process before the named cell can print — the suite goes
+ *  red with no assertion name on it, while the labels of the cells that already passed are still in
+ *  the transcript. A grader looking for the named assertion then finds it on a `✓` line. Measured:
+ *  the mutation that gates the goalId rule on the CLASS instead of the marker reddens this suite at
+ *  exactly such a bare call, and read as a clean named kill for as long as the call had no label. */
+const admits = (name: string, fn: () => unknown) => {
+  try {
+    fn();
+    ok(name, true);
+  } catch (e) {
+    ok(name, false, (e as Error).message);
+  }
+};
 const throws = (name: string, fn: () => unknown, needle: string) => {
   try {
     fn();
@@ -134,8 +148,8 @@ const req = (over: Partial<EndpointRequest> = {}): EndpointRequest => ({
 throwsCode("ep.one against a journal-class action is refused class-mismatch",
   () => assertClassMatches(req(), parsed.commands[0].class),
   "class-mismatch");
-assertClassMatches(req({ class: "journal" }), parsed.commands[0].class);
-ok("a journal envelope against the same command is admitted", true);
+admits("a journal envelope against the same command is admitted",
+  () => assertClassMatches(req({ class: "journal" }), parsed.commands[0].class));
 
 // ---------------------------------------------------------------------------------------------
 // 3) The `goalId` rule, both directions. Neither is a default: the id is CLIENT-generated, so a
@@ -148,9 +162,10 @@ throwsCode("an action submission without goalId is refused",
 throwsCode("a goalId on a non-action command is refused",
   () => assertActionGoalId(req({ goalId: "01JCOTALGOAL000000000000AA" }), false),
   "bad-request");
-assertActionGoalId(req({ class: "journal", goalId: "01JCOTALGOAL000000000000AA" }), true);
-assertActionGoalId(req(), false);
-ok("both agreeing shapes are admitted", true);
+admits("an action submission WITH goalId is admitted",
+  () => assertActionGoalId(req({ class: "journal", goalId: "01JCOTALGOAL000000000000AA" }), true));
+admits("a non-action request WITHOUT goalId is admitted",
+  () => assertActionGoalId(req(), false));
 
 // ---------------------------------------------------------------------------------------------
 // 4) THE MARKER IS NOT THE CLASS, and the four cells above could not tell them apart.
@@ -170,8 +185,8 @@ ok("both agreeing shapes are admitted", true);
 throwsCode("a goalId on a JOURNAL-class command that declares NO action is still refused",
   () => assertActionGoalId(req({ class: "journal", goalId: "01JCOTALGOAL000000000000AA" }), false),
   "bad-request");
-assertActionGoalId(req({ class: "journal" }), false);
-ok("a journal-class NON-action command without goalId is admitted", true);
+admits("a journal-class NON-action command without goalId is admitted",
+  () => assertActionGoalId(req({ class: "journal" }), false));
 // And the mirror, so the pair cannot be satisfied by refusing every journal envelope: the marker
 // still governs when the class is held constant.
 throwsCode("an action command on the same journal class STILL requires goalId",
