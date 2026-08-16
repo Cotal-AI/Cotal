@@ -723,6 +723,27 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
     app.steps().length === 0, app.steps().length);
 }
 
+// ── 5p2) …and the window is not only the hook ────────────────────────────────────────────────
+//
+// The cell above uses `onReplayed` because a hook is a deterministic way to run code inside the
+// window. The window is not the hook: `activateRun` awaits a replay from the network before it
+// validates anything, and any task on the loop can reassign the caller's takeover while that await
+// is outstanding — no test seam involved. `subject` is computed from `runId` before that await, so
+// an unsnapshotted runId produces the same foreign-label record with nothing hooked at all.
+{
+  await activateRun(js, jsm, startRun("r-5p2", "d1", 1));
+  const t = { ...takeover("r-5p2", "d2", 2) };
+  const pending = activateRun(js, jsm, t);
+  // Synchronously, before the replay's first await can resolve: this is the ordinary case of a
+  // caller reusing a mutable object, not an adversary.
+  t.runId = "r-elsewhere";
+  t.holder = "someone-else";
+  await pending;
+  const landed = (await replayRunJournalRaw("r-5p2")).at(-1) as RunJournalActivation;
+  c("a takeover reassigned while its replay is in flight still lands as the tuple that was read",
+    landed.run === "r-5p2" && landed.holder === "d2", landed);
+}
+
 // ── 6) runs do not fence each other ───────────────────────────────────────────────────────────
 {
   const x = await activateRun(js, jsm, startRun("r-6a", "d1", 1));
