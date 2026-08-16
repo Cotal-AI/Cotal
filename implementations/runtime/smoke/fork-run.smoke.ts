@@ -229,6 +229,15 @@ const plan = async (
   // WHEN CLAIM 1 IS REPAIRED THIS CELL FAILS, and that is its whole purpose: the repair changes what
   // is in the cut, and a fork-inheritance closure that rested on "the prefix is the child's history"
   // must be re-argued at that moment rather than inherited silently.
+  //
+  // WHAT IT WOULD NOT HAVE CAUGHT, named here because a re-open mechanism that cannot say which case
+  // it fires on is the same blind artifact it replaced. Had this existed when the closure was made,
+  // it would have PASSED: `planFork`'s scope-internal path is unchanged since then, and the reviewer
+  // measured this exact cut at `c641f90c` and got this exact answer. **It detects that the premise's
+  // GROUND CHANGED. It cannot detect that the premise was FALSE.** The cell that would have fired is
+  // the one that seeds a child and asserts its first live lookup is the requested key — it does not
+  // exist yet, it belongs to slice (g1), and it is the only kind that measures inheritance rather
+  // than the planner agreeing with itself.
   {
     const sEntries = await record("r-scoped", SCOPED);
     const sp = await plan({
