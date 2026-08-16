@@ -24,7 +24,13 @@ import {
 import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
-const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
+// A PASSING CELL PRINTS. It used to be silent, and silence is not free: `mutation-proof` counts
+// `✓` marks to tell "the mutation applied and nothing caught it" apart from "the run died before
+// reaching the cell", and a suite that prints nothing on success reports zero marks — so that
+// protection was inert here while the runner reported a number as though it applied. Every mutant
+// aimed at this file was graded on its named red alone. The named red is direct evidence and those
+// kills stand; the floor that backs it up simply was not there, and nothing said so.
+const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown) => { try { fn(); c(n, false, "no throw"); } catch { c(n, true); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
