@@ -183,6 +183,11 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.goal.jobsrv.>",
     "$KV.cotal_records_d32m.cp.jobsrv.>",
     "$KV.cotal_records_d32m.lease.jobsrv.>",
+    // SPEC:2721 puts SIX record kinds on the commit row. The three coordination kinds were
+    // built on the Model-B overlay only, so this fixture pinned the wrong shape as "reviewed".
+    "$KV.cotal_records_d32m.goaleff.jobsrv.>",
+    "$KV.cotal_records_d32m.epname.jobsrv.>",
+    "$KV.cotal_records_d32m.epmig.jobsrv",
     "$JS.API.STREAM.MSG.GET.EPF_d32m",
     "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
     "$JS.API.INFO",
@@ -199,9 +204,8 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   "goal-writer": { publish: [
     "cotal.d32m.epf.jobsrv.goal.*.*.*.*.bind",
     "$KV.cotal_records_d32m.goalidx.jobsrv.>",
-    "$KV.cotal_records_d32m.goaleff.jobsrv.>",
-    "$KV.cotal_records_d32m.epname.jobsrv.>",
-    "$KV.cotal_records_d32m.epmig.jobsrv",
+    // The three coordination kinds are NOT here: they are SPEC:2721 commit-row grants and this
+    // overlay inherits them below. `goalidx` stays, because it is not on that row at all.
     "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m",
     "cotal.d32m.epf.jobsrv.goal.*.*.*.*.result",
     "cotal.d32m.epf.jobsrv.eff.>",
@@ -211,6 +215,11 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.goal.jobsrv.>",
     "$KV.cotal_records_d32m.cp.jobsrv.>",
     "$KV.cotal_records_d32m.lease.jobsrv.>",
+    // SPEC:2721 puts SIX record kinds on the commit row. The three coordination kinds were
+    // built on the Model-B overlay only, so this fixture pinned the wrong shape as "reviewed".
+    "$KV.cotal_records_d32m.goaleff.jobsrv.>",
+    "$KV.cotal_records_d32m.epname.jobsrv.>",
+    "$KV.cotal_records_d32m.epmig.jobsrv",
     "$JS.API.STREAM.MSG.GET.EPF_d32m",
     "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
     "$JS.API.INFO",

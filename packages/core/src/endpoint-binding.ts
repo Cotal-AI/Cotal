@@ -1058,6 +1058,17 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
     `$KV.${records}.goal.${e}.>`,
     `$KV.${records}.cp.${e}.>`,
     `$KV.${records}.lease.${e}.>`,
+    // SPEC:2721 puts SIX kinds on this row, not three, and says why in the row itself: the three
+    // coordination kinds "are enumerated HERE because a shared registry profile does not confer a
+    // grant — a kind absent from this enumeration is default-denied however it is registered". They
+    // were built on the Model-B overlay instead, where one connection happens to bind and commit,
+    // so the omission is invisible for exactly as long as that overlay is the only caller. A commit
+    // principal minted from this builder alone would be silently denied the launch election, the
+    // name claim, and the cutover manifest — the failure arriving as a broker denial at commit time,
+    // in the one place the journal rail has already promised the caller a durable answer.
+    `$KV.${records}.goaleff.${e}.>`,
+    `$KV.${records}.epname.${e}.>`,
+    `$KV.${records}.epmig.${e}`,
     `${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`,
     `${JSAPI}.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
     `${JSAPI}.INFO`,
@@ -1098,17 +1109,12 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // index subtree; the goal-writer holds NO records CONSUMER.CREATE (the boot sweep enumerates the
   // index over the PROVISIONER, never this standing connection).
   const indexRow = `$KV.${recordsBucket(space)}.goalidx.${e}.>`;
-  // The three journal-action coordination kinds. ENUMERATED, not inherited: a kind's registry
-  // entry pins its grammar and mediation class and confers NO grant, because this builder decides
-  // the commit path's records keys by kind and anything it does not name is default-denied. A
-  // registry entry without a row here is an authority row that authorizes nothing.
-  // Each is key-pinned to THIS endpoint's subtree, exactly as `goalidx` is: `goaleff` is the
-  // at-most-one-launch election, `epname` the durable name claim, `epmig` the cutover manifest.
-  const journalRows = [
-    `$KV.${recordsBucket(space)}.goaleff.${e}.>`,
-    `$KV.${recordsBucket(space)}.epname.${e}.>`,
-    `$KV.${recordsBucket(space)}.epmig.${e}`,
-  ];
+  // The three journal-action coordination kinds (`goaleff` the at-most-one-launch election,
+  // `epname` the durable name claim, `epmig` the cutover manifest) are NOT added here: SPEC:2721
+  // puts them on the commit row, so they come in through `commitPrincipalGrants` above and this
+  // overlay inherits them. They were duplicated here while the commit builder listed only three of
+  // the six, which made the overlay look like their source — a grant the SPEC gives every commit
+  // principal reading as a privilege of this one profile.
   // must-5 (a) — the own-gate currency belt: the manager reads its OWN issuance gate
   // (`epgate.<e>.<iid>`) over this connection before the first-terminal-fact CAS and skips a
   // superseded commit. The auth store is `allow_direct=false`, so the read is a body-selected
@@ -1117,7 +1123,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // metadata, never bearer bytes), here on a standing rather than one-shot connection. The manager
   // reads ONLY `epgate.<e>.<iid>`; (a) is the fast-fail belt, (b) barrier-revoke is the durable fence.
   const gateRead = `${JSAPI}.STREAM.MSG.GET.KV_${epAuthBucket(space)}`;
-  return { publish: [bindLeaf, indexRow, ...journalRows, gateRead, ...base.publish], subscribe: base.subscribe };
+  return { publish: [bindLeaf, indexRow, gateRead, ...base.publish], subscribe: base.subscribe };
 }
 
 /** The manager's SESSION-LEDGER rows (P2 item 6): the standing connection that owns the §13.6

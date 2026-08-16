@@ -276,24 +276,42 @@ c("a reader bind grant is INFO/MSG.NEXT/ACK on the reader's own stream, never cr
   readerBindGrants(recordsKvStreamName(SPACE), recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: recSubtree })).length === 3);
 // ── D14: the commit principal + contract publisher (§13.9 matrix rows, exact strings) ──
 const CONN = "ibxsmoke0123456789";
-c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the three record-key prefixes + the two leader-served fencing reads), never dec/quar",
+const COMMIT_ROWS = [
+  "cotal.epbind.epf.manager.goal.*.*.*.*.result",
+  "cotal.epbind.epf.manager.eff.>",
+  "cotal.epbind.epf.manager.receipt.>",
+  "cotal.epbind.epf.manager.wrk.>",
+  "cotal.epbind.epf.manager.cp.>",
+  "$KV.cotal_records_epbind.goal.manager.>",
+  "$KV.cotal_records_epbind.cp.manager.>",
+  "$KV.cotal_records_epbind.lease.manager.>",
+  // SPEC:2721 enumerates SIX record kinds on this row, not three. These were built on the Model-B
+  // overlay instead, where one connection binds AND commits, so nothing noticed for as long as that
+  // overlay was the only caller — and a commit principal minted from this builder alone would be
+  // denied the launch election, the name claim, and the cutover manifest at commit time.
+  "$KV.cotal_records_epbind.goaleff.manager.>",
+  "$KV.cotal_records_epbind.epname.manager.>",
+  "$KV.cotal_records_epbind.epmig.manager",
+  "$JS.API.STREAM.MSG.GET.EPF_epbind",
+  "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
+  "$JS.API.INFO",
+];
+c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the SIX record-key prefixes SPEC:2721 enumerates + the two leader-served fencing reads), never dec/quar",
   (() => {
     const g = commitPrincipalGrants(SPACE, "manager", CONN);
-    return JSON.stringify(g.publish) === JSON.stringify([
-      "cotal.epbind.epf.manager.goal.*.*.*.*.result",
-      "cotal.epbind.epf.manager.eff.>",
-      "cotal.epbind.epf.manager.receipt.>",
-      "cotal.epbind.epf.manager.wrk.>",
-      "cotal.epbind.epf.manager.cp.>",
-      "$KV.cotal_records_epbind.goal.manager.>",
-      "$KV.cotal_records_epbind.cp.manager.>",
-      "$KV.cotal_records_epbind.lease.manager.>",
-      "$JS.API.STREAM.MSG.GET.EPF_epbind",
-      "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
-      "$JS.API.INFO",
-    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
+    return JSON.stringify(g.publish) === JSON.stringify(COMMIT_ROWS)
+      && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
   })());
+// AN EXACT-LIST CELL NAMES ONE ASSERTION FOR EVERY ROW IN IT. Three separate mutations — drop
+// `goaleff`, drop `epname`, widen `epmig` to a subtree — all reddened the same conjunctive cell, so
+// the suite went red without being able to say which grant died. Per-row cells below; the exact
+// list above still holds the CLOSURE (nothing extra), which per-row membership cannot.
+for (const kind of ["goaleff", "epname", "epmig"] as const) {
+  const row = kind === "epmig" ? "$KV.cotal_records_epbind.epmig.manager" : `$KV.cotal_records_epbind.${kind}.manager.>`;
+  c(`the commit principal holds the \`${kind}\` key EXACTLY as SPEC:2721 spells it (\`epmig\` is ONE key, never a subtree)`,
+    commitPrincipalGrants(SPACE, "manager", CONN).publish.includes(row), row);
+}
 // ── the three journal-action coordination kinds ────────────────────────────────────────────
 // Registration and grant are TWO claims and this needed both. A registry entry pins a key
 // grammar and confers no authority; the grant builder decides the commit path's records keys BY
@@ -328,46 +346,37 @@ for (const kind of ["goaleff", "epname", "epmig"])
   c(`TODAY: \`${kind}\` is caller-readable (non-authority) — pinned here, decided at grant-issuance time`,
     callerReadableRecordKind(kind) === true);
 
+const GW = goalWriterGrants(SPACE, "manager", CONN);
 c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, the must-5 reconcile-index write, and the must-5 own-gate read — nothing else",
-  (() => {
-    const g = goalWriterGrants(SPACE, "manager", CONN);
-    return JSON.stringify(g.publish) === JSON.stringify([
-      "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
-      "$KV.cotal_records_epbind.goalidx.manager.>",
-      "$KV.cotal_records_epbind.goaleff.manager.>",
-      "$KV.cotal_records_epbind.epname.manager.>",
-      "$KV.cotal_records_epbind.epmig.manager",
-      "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
-      "cotal.epbind.epf.manager.goal.*.*.*.*.result",
-      "cotal.epbind.epf.manager.eff.>",
-      "cotal.epbind.epf.manager.receipt.>",
-      "cotal.epbind.epf.manager.wrk.>",
-      "cotal.epbind.epf.manager.cp.>",
-      "$KV.cotal_records_epbind.goal.manager.>",
-      "$KV.cotal_records_epbind.cp.manager.>",
-      "$KV.cotal_records_epbind.lease.manager.>",
-      "$JS.API.STREAM.MSG.GET.EPF_epbind",
-      "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
-      "$JS.API.INFO",
-    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
-      // the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
-      && g.publish[0] === "cotal.epbind.epf.manager.goal.*.*.*.*.bind"
-      // must-5: the reconcile-index write is key-pinned to THIS endpoint's index subtree, and the
-      // own-gate read is the auth store's leader MSG.GET (the goal-writer holds NO records CONSUMER
-      // authority — the boot sweep enumerates the index over the provisioner, never this connection)
-      && g.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>")
-      && g.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind")
-      // Registering a kind does NOT grant it. This builder decides the commit path's records
-      // keys BY KIND and default-denies anything it does not name, so a registry entry with no row
-      // here is an authority row that authorizes nothing — the shape this enumeration exists to stop.
-      && g.publish.includes("$KV.cotal_records_epbind.goaleff.manager.>")
-      && g.publish.includes("$KV.cotal_records_epbind.epname.manager.>")
-      // `epmig` is ONE key per endpoint, so its row is the exact key and NOT a `.>` subtree: a
-      // wildcard here would grant an endpoint-wide namespace for a single-key kind.
-      && g.publish.includes("$KV.cotal_records_epbind.epmig.manager")
-      && !g.publish.includes("$KV.cotal_records_epbind.epmig.manager.>")
-      && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET") || r.includes("CONSUMER."));
-  })());
+  JSON.stringify(GW.publish) === JSON.stringify([
+    "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
+    "$KV.cotal_records_epbind.goalidx.manager.>",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
+    ...COMMIT_ROWS,
+  ]) && JSON.stringify(GW.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`]), GW.publish);
+// SPELLED AS A COMPOSITION, not as a re-listing. The three coordination kinds were written out here
+// as well as on the commit row, which made this overlay look like their source; they are SPEC:2721
+// commit-row grants that every commit principal holds, and this profile only INHERITS them. Reusing
+// `COMMIT_ROWS` is what makes that structural rather than a claim in a comment: the day the commit
+// row changes, this cell moves with it or fails, and it cannot drift into a private copy again.
+// the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
+c("the `.bind` leaf is the goal-writer's FIRST row — the privilege that separates it from a serve credential",
+  GW.publish[0] === "cotal.epbind.epf.manager.goal.*.*.*.*.bind");
+// must-5: the reconcile-index write is key-pinned to THIS endpoint's index subtree, and the own-gate
+// read is the auth store's leader MSG.GET (the goal-writer holds NO records CONSUMER authority — the
+// boot sweep enumerates the index over the provisioner, never this standing connection).
+c("the must-5 reconcile-index write is key-pinned to THIS endpoint's index subtree",
+  GW.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>"));
+c("the must-5 own-gate read is the auth store's leader MSG.GET",
+  GW.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind"));
+c("the goal-writer forges no decision and binds no consumer",
+  !GW.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET") || r.includes("CONSUMER.")));
+// `epmig` is ONE key per endpoint, so its row is the exact key and NOT a `.>` subtree: a wildcard
+// here would grant an endpoint-wide namespace for a single-key kind. Asserted NEGATIVELY as well,
+// because `includes(exact)` stays true when a widened row is added ALONGSIDE it.
+c("`epmig` reaches the goal-writer as ONE key, never widened to a subtree",
+  GW.publish.includes("$KV.cotal_records_epbind.epmig.manager")
+  && !GW.publish.includes("$KV.cotal_records_epbind.epmig.manager.>"));
 c("the contract publisher's rows are exactly the §13.9 publication + subject-confined read-back (no STREAM.INFO, no MSG.GET, no consumer authority)",
   (() => {
     const g = contractPublisherGrants(SPACE, CONN);
