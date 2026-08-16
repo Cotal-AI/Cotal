@@ -38,15 +38,6 @@
       "cell": "and leaves NO record behind: the spec is written last"
     },
     {
-      "name": "a cut that was never reached is handed back anyway",
-      "file": "implementations/runtime/src/fork.ts",
-      "find": "  const cut = reached\n    ? req.entries.filter((e) => {\n        const k = journalEntryKeyString(e);\n        return !orphaned.has(k) && !projected.has(k);\n      })\n    : [];",
-      "replace": "  const cut = req.entries.filter((e) => {\n    const k = journalEntryKeyString(e);\n    return !orphaned.has(k) && !projected.has(k);\n  });",
-      "expectRed": "an unreached plan carries no cut at all, rather than a plausible one",
-      "cell": "and an unreached plan carries no cut at all, rather than a plausible one",
-      "note": "Re-anchored after the claim-1 repair rewrote this line. The old anchor was a single-line filter that no longer exists, so the harness graded this ERROR -- target string not found, nothing mutated -- and the guard went UNGRADED while the run still looked healthy. It was invisible in the log because the log was filtered to KILLED|SURVIVED; only the trailing tally counted it. Two rules come out of that: a repair that rewrites a line disarms every mutation anchored to it, so re-run the ENTIRE set after a repair and read the TALLY, not a grep of the verdicts you expected."
-    },
-    {
       "name": "a spawn in the cut is copied rather than refused",
       "file": "implementations/runtime/src/fork.ts",
       "find": "    if (e.kind !== \"spawn\") continue;",
@@ -179,6 +170,12 @@
       "name": "an activation expecting a NEW run accepts one whose journal has records",
       "file": "packages/core/src/run-journal.ts",
       "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild — the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
+    },
+    {
+      "name": "the `reached` clause of the cut's gate",
+      "file": "implementations/runtime/src/fork.ts",
+      "why": "Ungradable from any suite, because it is now REDUNDANT and that is deliberate. The gate reads `reached && refusals.length === 0`, and the second clause subsumes the first on every path this source has: unreached-and-unrecorded pushes L5017; unreached-and-recorded pushes L5018 unless L5001/L5014/L5020 already explains the stop. So `!reached` always arrives carrying a refusal, removing `reached &&` changes no observable answer, and a mutation on it can only ever report SURVIVED -- indistinguishable from a missing test. It is kept as defence in depth against a FUTURE path that returns unreached with an EMPTY refusal set, which would hand a plausible cut back silently. The premise that makes it redundant is itself asserted, by `an unreached plan always carries a refusal, which is what makes its empty cut overdetermined`: the day that cell fails, this mutation becomes gradable again and belongs back in the set.",
+      "history": "It was a graded mutation until this repair. It has now gone ERROR -- anchor line rewritten, nothing mutated -- TWICE in one day, once for the projection repair and once for this one, the second time after the rule about it was already written down. Re-anchoring it a third time would have hidden the real change, which is that the guard it grades stopped being observable."
     }
   ]
 }

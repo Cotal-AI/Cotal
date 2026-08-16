@@ -380,6 +380,20 @@ const plan = async (
   c("and an unreached plan carries no cut at all, rather than a plausible one",
     unreached.cut.length === 0, keys(unreached.cut));
 
+  // WHY THAT EMPTINESS IS OVERDETERMINED, pinned rather than left to a reader's argument.
+  //
+  // The cut is now gated on `reached && refusals.length === 0`, and the second clause subsumes the
+  // first on every path this source has: unreached-and-unrecorded pushes L5017, unreached-and-
+  // recorded pushes L5018 unless L5001/L5014/L5020 already explains the stop — so `!reached` always
+  // arrives with at least one refusal, and mutating `reached` away changes nothing. That makes the
+  // `reached` clause defence in depth against a FUTURE path that returns unreached with an empty
+  // refusal set, where the cut would otherwise be handed back silently. Defence in depth is only
+  // honest if the premise it rests on is asserted, so this asserts it: the day a path can be both
+  // unreached and refusal-free, this cell fails and the ungradable mutation on `reached` becomes
+  // gradable again.
+  c("an unreached plan always carries a refusal, which is what makes its empty cut overdetermined",
+    unreached.refusals.length > 0, unreached.refusals);
+
   // AN EMPTY CUT IS TWO DIFFERENT ANSWERS, and only one of them is admissible. Above it means the
   // walk never reached the step, and the plan is REFUSED. Here it means the step is the run's FIRST,
   // so nothing happened before it — a fork at the beginning is a legal fork of no history, and a
