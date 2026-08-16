@@ -21,6 +21,7 @@ import {
   readCheckpointSettle,
   readCheckpointAnswer,
   readCheckpointStatus,
+  readCheckpointSpec,
   reconcileCheckpointSchedule,
   handleCheckpointFire,
   checkpointSettleSubject,
@@ -179,14 +180,7 @@ export class MeshHandler {
     // window without rolling a heartbeat-advanced deadline back to the one this caller computed.
     // A request emitted from here would carry the caller's coordinates and could arm a stale
     // generation the writer would then have to be trusted to ignore.
-    await mintCheckpoint(this.kv, this.js, this.binding.space, {
-      ref,
-      instanceId: this.binding.instanceId,
-      epoch: this.binding.epoch,
-      holder: this.binding.holder,
-      deadline,
-      now,
-    });
+    await this.arm(ref, deadline);
 
     await this.settle(ref);
     return null;
@@ -210,14 +204,7 @@ export class MeshHandler {
     const now = this.now();
     const deadline = now + parseDuration(req.timeout ?? this.binding.defaultCheckpointTimeout);
 
-    await mintCheckpoint(this.kv, this.js, this.binding.space, {
-      ref,
-      instanceId: this.binding.instanceId,
-      epoch: this.binding.epoch,
-      holder: this.binding.holder,
-      deadline,
-      now,
-    });
+    await this.arm(ref, deadline);
 
     const settled = await this.settle(ref);
     if (settled.settle === "expired") return { outcome: "expired", at: settled.ts };
@@ -448,15 +435,61 @@ export class MeshHandler {
     throw new NotYetDurable("conclave(…)", ACTION_MACHINERY);
   }
 
-  /** Mint a deadline, idempotently. The same token re-minted with the same deadline attaches. */
+  /**
+   * Arm this pause, or ATTACH to the one already recorded under the same token.
+   *
+   * The deadline a resume must use is the RECORDED one, and it cannot be recomputed. `deadline` is
+   * derived from the clock at the moment the step runs, and a mint is idempotent only if the whole
+   * spec is identical, so a resumed step that recomputes `now() + duration` presents a deadline a
+   * second or an hour later than the one on record and the plane refuses it as a different intent.
+   * Reproduced live before this existed, on the clock a real host has: an eight second `sleep`
+   * armed, the step performed again 1.2 seconds later under its recorded id, and the mint threw
+   * `already exists with a DIFFERENT spec`. The pause stayed `waiting` with nobody attached to it,
+   * which is the same permanent-and-correct pause the fire had before anything took it. The suites
+   * did not catch it because they held the clock still between the two attempts, so the arithmetic
+   * agreed by accident. An adopting neighbour at the next epoch walks into the identical door.
+   *
+   * So the spec on record is the authority, and this reads it before it computes anything. Nothing
+   * is remembered anywhere else: the pause itself is where the deadline lives, and a second copy in
+   * the journal would be a second thing to disagree.
+   *
+   * A pause whose recorded deadline has ALREADY PASSED cannot be re-minted at all, because a mint
+   * requires a future deadline, and that is right: it is not being armed, it is overdue. What it
+   * needs is the schedule re-emitted at the status's current generation, which is the reconciler's
+   * job and takes no deadline from here. A spec with no status is the crash window between the two
+   * halves of a mint, and once the deadline has passed nothing can repair it from here, so it is
+   * named and raised rather than waited on forever.
+   */
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
-    await mintCheckpoint(this.kv, this.js, this.binding.space, {
+    // Over already: an expiry or an answer landed while this host was away. Nothing to arm, and the
+    // caller reads the fact next.
+    if ((await readCheckpointSettle(this.jsm, this.binding.space, ref)) !== undefined) return;
+    const prior = await readCheckpointSpec(this.kv, ref);
+    const now = this.now();
+    const at = prior?.initialDeadline ?? deadline;
+    if (at > now) {
+      await mintCheckpoint(this.kv, this.js, this.binding.space, {
+        ref,
+        instanceId: this.binding.instanceId,
+        epoch: this.binding.epoch,
+        holder: this.binding.holder,
+        deadline: at,
+        now,
+      });
+      return;
+    }
+    const status = await readCheckpointStatus(this.kv, ref);
+    if (status === undefined) {
+      throw new Error(
+        `checkpoint "${ref.token}" carries a spec with no status and its recorded deadline `
+        + `(${at}) has passed; a mint repairs the missing status only while the deadline is still `
+        + `ahead, so this pause has to be reconciled on the plane before the run can go on`,
+      );
+    }
+    await reconcileCheckpointSchedule(this.kv, this.js, this.jsm, this.binding.space, {
       ref,
       instanceId: this.binding.instanceId,
       epoch: this.binding.epoch,
-      holder: this.binding.holder,
-      deadline,
-      now: this.now(),
     });
   }
 

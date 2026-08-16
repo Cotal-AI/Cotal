@@ -262,6 +262,44 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
     (await withDeadline(awaited, 25_000, "the timed-out wait")) === null);
 }
 
+// ── 5b) a wait that is re-performed mid-pause attaches to the deadline it already has ─────────
+//
+// Block 6 covers the resume that has something recorded to answer from. This is the one that has
+// NOT matched yet: the step is performed again under the id recorded before it first ran, and its
+// timeout is a minted checkpoint like any other. A timeout recomputed as `now() + duration` is a
+// different spec a second later, and the plane refuses a second intent under one token, so the
+// resumed wait threw a conflict where it should have picked the pause back up. The clock here has
+// always been the real one, so what this needed was the gap: a crash is time passing.
+{
+  console.log("• 5b — a pending wait, performed again after real time passed");
+  const id = tok("reattach");
+  const { ctx: k } = ctx(id);
+  const first = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "6s" }, k);
+  first.catch(() => { /* the abandoned attempt */ });
+  await wait(300);
+  await armPending();
+  const before = await readCheckpointStatus(kv, { endpoint: EP, token: id });
+  await wait(1_200);
+  const { ctx: k2 } = ctx(id);
+  const second = handler.wait({ event: { event: "message", channel: CHANNEL }, timeout: "6s" }, k2);
+  let refused: string | undefined;
+  second.catch((e: unknown) => { refused = (e as Error).message; });
+  await wait(400);
+  c("the re-performed wait was not refused: it attaches to the timeout already minted for it",
+    refused === undefined, refused);
+  const after = await readCheckpointStatus(kv, { endpoint: EP, token: id });
+  c("and the deadline is the one it was given, not one restarted by the second attempt",
+    before?.value.deadline === after?.value.deadline, `${before?.value.deadline} vs ${after?.value.deadline}`);
+  c("one pause, one generation: the second attempt joined it rather than opening another",
+    before?.value.deadlineGeneration === after?.value.deadlineGeneration && after?.value.state === "waiting",
+    `${before?.value.deadlineGeneration} -> ${after?.value.deadlineGeneration} ${after?.value.state}`);
+  // BOTH ATTEMPTS ARE LEFT PENDING ON PURPOSE, and the ending is block 5's to grade. A crashed
+  // attempt is gone: it deletes nothing on its way out. This one is still alive, so letting both
+  // run to the deadline has them racing to tear down the durable consumer they share, and the
+  // loser's in-flight fetch fails with `consumer deleted` — an artefact of a fixture that keeps the
+  // corpse walking, not a fact about a resume. What this block can honestly grade is the ATTACH.
+}
+
 // ── 6) a resumed attempt returns the message it already matched, and awaits nothing new ───────
 {
   const { ctx: k, bound } = ctx(tok("rebind"));

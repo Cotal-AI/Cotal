@@ -1,0 +1,89 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-sleep.smoke.ts",
+  "guard": "a step that resumes a durable pause attaches to the deadline already recorded for it, instead of recomputing one from the clock it happens to be running on",
+  "command": "pnpm smoke:runtime-mesh-sleep",
+  "completionMarker": "mesh-sleep.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/resume-attach.json",
+  "why": [
+    "A MINT IS IDEMPOTENT ONLY IF THE WHOLE SPEC IS IDENTICAL, and a deadline computed as",
+    "`now() + duration` is not identical to itself a second later. So a resumed step presented a",
+    "different intent under the same token and the plane refused it, which is exactly what a",
+    "one-mint token is supposed to do. The defect was upstream of that refusal: the step should",
+    "never have recomputed the deadline at all.",
+    "",
+    "Reproduced on the clock a real host has, before the repair: an eight second `sleep` armed, the",
+    "step performed again 1.2 seconds later under the id recorded before it ran, and",
+    "`already exists with a DIFFERENT spec`. The pause stayed `waiting`, correct and permanent,",
+    "with nobody attached to it. An adopting neighbour at the next epoch walks into the same door,",
+    "so the story the fire-taking was written for -- reading the fire that landed while this host",
+    "was down -- was unreachable on any clock that moves.",
+    "",
+    "THE SUITE DID NOT CATCH IT BECAUSE IT HELD THE CLOCK STILL. Both attempts computed the same",
+    "arithmetic, so the mint agreed by coincidence and the cell called it attaching. A crash is a",
+    "gap in time by definition: the block that grades a resume runs on a live clock now and lets",
+    "real time pass between the attempts, which is why these changes redden anything at all.",
+    "",
+    "AND A PAUSE CAN COME BACK OVERDUE. A mint refuses a deadline in the past, correctly, so an",
+    "unarmed pause whose deadline elapsed while the host was away cannot be repaired by minting it",
+    "again. The reconciler re-emits its schedule at the status's current generation instead, and",
+    "the fire that follows is what ends it. Without that branch the resume throws where it used to",
+    "hang, which is louder and still wrong."
+  ],
+  "mutations": [
+    {
+      "name": "the recorded deadline is ignored, so a resume recomputes one from its own clock",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const at = prior?.initialDeadline ?? deadline;",
+      "replace": "    const at = deadline;",
+      "command": "pnpm smoke:runtime-mesh-sleep",
+      "completionMarker": "• 2 — the same step after a crash",
+      "expectRed": "the resumed attempt was not refused",
+      "cell": "the resumed attempt was not refused: it attaches to the recorded pause rather than re-minting",
+      "note": "THE SHIPPED STATE, and `prior` is still read, so the change is one expression wide. It reddens as a refusal rather than as a hang, which is the one merciful thing about it: the run stops on a named conflict instead of waiting forever. What it does not do is resume."
+    },
+    {
+      "name": "the spec read is dropped entirely, which is the same defect one line earlier",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const prior = await readCheckpointSpec(this.kv, ref);",
+      "replace": "    const prior = undefined as { initialDeadline: number } | undefined;",
+      "command": "pnpm smoke:runtime-mesh-sleep",
+      "completionMarker": "• 2 — the same step after a crash",
+      "expectRed": "the resumed attempt was not refused",
+      "cell": "the resumed attempt was not refused: it attaches to the recorded pause rather than re-minting",
+      "note": "The same behaviour reached by deleting the read instead of the use of it. Worth its own entry because the two are separately deletable: a future edit that keeps the read for the overdue branch and stops feeding the deadline from it looks like a tidy-up and is the whole defect back."
+    },
+    {
+      "name": "the overdue branch is removed, so a past deadline is minted again and refused",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (at > now) {",
+      "replace": "    if (true) {",
+      "command": "pnpm smoke:runtime-mesh-sleep",
+      "completionMarker": "• 3 — a resume that arrives after its own deadline, never armed",
+      "expectRed": "the overdue resume is not refused",
+      "cell": "the overdue resume is not refused: a past deadline is reconciled, not re-minted",
+      "note": "A mint requires a future deadline, so this turns the overdue resume into a `failed-precondition`. The distinction the branch draws is not tidiness: a pause that is due is not being armed, it is being collected, and those are different operations on the plane."
+    },
+    {
+      "name": "the overdue pause is recognised and then nothing is done about it",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    await reconcileCheckpointSchedule(this.kv, this.js, this.jsm, this.binding.space, {\n      ref,\n      instanceId: this.binding.instanceId,\n      epoch: this.binding.epoch,\n    });",
+      "replace": "    return;",
+      "command": "pnpm smoke:runtime-mesh-sleep",
+      "completionMarker": "• 3 — a resume that arrives after its own deadline, never armed",
+      "expectRed": "the overdue sleep did not end within 20000ms",
+      "cell": "the overdue sleep did not end within 20000ms",
+      "note": "The silent direction, and the reason the cell it reddens carries its own deadline: nothing throws, nothing is wrong, and the schedule nobody armed is never asked for again. The pause is due, unarmed and permanent, which is the same shape as the fire that had no caller. A guard against a hang asserted by a bare `await` is not weak, it is ungradeable -- the tool scores a timeout inconclusive by its own correct rule that a hang is not a red."
+    },
+    {
+      "name": "PAIRED: the recorded deadline is ignored, graded on the `wait` timeout rather than on `sleep`",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const at = prior?.initialDeadline ?? deadline;",
+      "replace": "    const at = deadline;",
+      "command": "pnpm smoke:runtime-mesh-wait",
+      "completionMarker": "mesh-wait.smoke:",
+      "expectRed": "the re-performed wait was not refused",
+      "cell": "the re-performed wait was not refused: it attaches to the timeout already minted for it",
+      "note": "THE SAME LINE SERVES THREE EFFECTS, and a repair claimed for one of them is a claim about all three until something grades the others. `wait` arms its timeout through the same helper, and its clock was always the real one, so what it was missing was the gap: a block that performs a pending wait again after real time has passed. That block exists now and this entry is what proves it is grading the deadline rather than watching a wait time out the way it always did."
+    }
+  ]
+}

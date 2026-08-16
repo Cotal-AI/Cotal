@@ -175,17 +175,37 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
 // The identity was recorded before the work started, so the resumed attempt derives the same token.
 // If this minted a second checkpoint, a run that crashed while asleep would come back holding two
 // timers and would be settled by whichever fired first — under a deadline nobody chose.
+//
+// ON ITS OWN CLOCK, AND THAT IS THE WHOLE CELL. This block used to run on the suite's held clock,
+// so both attempts computed the same `now() + duration` and the mint agreed by arithmetic rather
+// than by attaching. On the clock a real host has, the second attempt is a second or an hour later
+// and its recomputed deadline is a DIFFERENT spec, which the plane refuses. Reproduced before the
+// repair: an eight second sleep, the step performed again 1.2 seconds later under its recorded id,
+// `already exists with a DIFFERENT spec`, and a pause left waiting with nobody attached to it. A
+// crash is a gap in time by definition, so the cell that grades a resume has to let time pass.
 {
   console.log("• 2 — the same step after a crash");
   const TOKEN2 = "cnRlc3RfYXR0YWNoX3Rva2VuXzAwMDI";
-  const first = handler.sleep({ duration: "6s" }, ctx(TOKEN2));
+  const live = new MeshHandler(
+    kv, js, jsm,
+    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER },
+    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    () => Date.now(),
+  );
+  const first = live.sleep({ duration: "8s" }, ctx(TOKEN2));
   await wait(300);
   await armPending(4);
   const before = await readCheckpointStatus(kv, { endpoint: EP, token: TOKEN2 });
 
-  // The "crash": the first wait is abandoned and the step is performed again under its recorded id.
-  const second = handler.sleep({ duration: "6s" }, ctx(TOKEN2));
+  // The "crash": the first wait is abandoned and the step is performed again under its recorded id,
+  // after real time has passed, which is what makes the recomputed deadline differ.
+  await wait(1_200);
+  const second = live.sleep({ duration: "8s" }, ctx(TOKEN2));
+  let refused: string | undefined;
+  second.catch((e: unknown) => { refused = (e as Error).message; });
   await wait(300);
+  c("the resumed attempt was not refused: it attaches to the recorded pause rather than re-minting",
+    refused === undefined, refused);
   const after = await readCheckpointStatus(kv, { endpoint: EP, token: TOKEN2 });
 
   c("the resumed attempt did not mint a second checkpoint: same token, same generation",
@@ -202,6 +222,44 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   c("the broker published one fire, for the one timer that was armed", await brokerFired(TOKEN2));
   await withDeadline(Promise.all([first, second]), 20_000, "both waiters");
   c("and BOTH waiters return: they were waiting on one fact, not two", true);
+}
+
+// ── 3) a resume that arrives AFTER the deadline it is resuming, with the timer never armed ────
+//
+// The worst of the crash windows and the one a mint cannot repair: the pause was recorded, the
+// schedule request was written, nobody armed it, and the host stayed away past the deadline. A mint
+// is refused here by design — a deadline in the past is not something to arm — so the repair is the
+// reconciler re-emitting the schedule at the status's current generation, and the fire that follows
+// is what ends the pause. Without it the run comes back to a pause that is due, unarmed, and
+// permanent: nothing red, nothing wrong, and nothing ever happening.
+{
+  console.log("• 3 — a resume that arrives after its own deadline, never armed");
+  const TOKEN3 = "cnRlc3Rfb3ZlcmR1ZV90b2tlbl8wMDAz";
+  const live = new MeshHandler(
+    kv, js, jsm,
+    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER },
+    new EpfSettleWatcher(js, jsm, SPACE, 3_000),
+    () => Date.now(),
+  );
+  const first = live.sleep({ duration: "2s" }, ctx(TOKEN3));
+  first.catch(() => { /* the abandoned attempt */ });
+  await wait(300);
+  // Deliberately NOT armed: the schedule request sits unread, which is the crash-before-arm window.
+  const armedBefore = await brokerFired(TOKEN3);
+  await wait(3_000);
+  c("nothing fired while the timer was never armed, so the pause is due and nobody is coming",
+    !armedBefore && !(await brokerFired(TOKEN3)));
+
+  const resumed = live.sleep({ duration: "2s" }, ctx(TOKEN3));
+  let refused: string | undefined;
+  resumed.catch((e: unknown) => { refused = (e as Error).message; });
+  await wait(500);
+  c("the overdue resume is not refused: a past deadline is reconciled, not re-minted", refused === undefined, refused);
+  c("and it asked for the schedule again, which is the only thing that can still arm it",
+    (await armPending(8)) >= 1);
+  await withDeadline(resumed, 20_000, "the overdue sleep");
+  const settle3 = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN3 });
+  c("the pause ends as an expiry, on the deadline it recorded before the crash", settle3?.settle === "expired", settle3?.settle);
 }
 
 console.log(`mesh-sleep.smoke: ${ok} passed, ${fail} failed`);
