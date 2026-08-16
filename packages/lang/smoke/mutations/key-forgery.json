@@ -8,7 +8,7 @@
     "The guard exists at TWO layers and each mutation must name which one it breaks. The validator",
     "closes the static case; the mint closes the computed case the validator provably cannot see.",
     "A single mutation that reddened the suite would not say which layer was load-bearing, and the",
-    "layers cover different inputs — so removing either must be caught on its own.",
+    "layers cover different inputs \u2014 so removing either must be caught on its own.",
     "",
     "The completionMarker is the FIRST cell in the suite, printed long upstream of the mutated",
     "region: this is a fail-fast suite, so a marker at the end would be absent on every genuine",
@@ -35,10 +35,10 @@
       "name": "the reserved set is widened until it refuses ordinary keys",
       "file": "packages/lang/src/keys.ts",
       "find": "export const KEY_RESERVED_RE = /[/#:]/;",
-      "replace": "export const KEY_RESERVED_RE = /[/#:a-z]/;",
-      "expectRed": "an ordinary branch key still mints",
-      "cell": "an ordinary branch key still mints",
-      "note": "The narrowness twin's mutation. Without it, a guard that refused EVERY branch key would satisfy both mutations above perfectly and destroy the language — the first two prove the refusal fires, this proves it is not firing on everything."
+      "replace": "export const KEY_RESERVED_RE = /[/#:A-Z]/;",
+      "expectRed": "and a camelCase one, which is an ordinary object key",
+      "cell": "and a camelCase one, which is an ordinary object key",
+      "note": "The narrowness twin. Without it a guard that refused EVERY branch key would satisfy both removals above perfectly and destroy the language. The widening is to A-Z rather than to a-z on purpose: this suite is FAIL-FAST, and a-z reddens the first cell that mints any lowercase key -- far upstream of the narrowness cells -- so the mutation graded WRONG-RED, killing the suite for a true reason at an assertion that was not the one under test. `runTests` is the only uppercase value the suite ever mints, so A-Z reaches exactly the cell this twin is about. In a fail-fast suite a mutation must be no broader than the cell it names."
     }
   ],
   "unkillable": [
