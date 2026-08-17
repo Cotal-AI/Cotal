@@ -140,7 +140,7 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const missed = loc.unreachable.length
     ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it. To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).`
     : "";
-  console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} answering manager instance(s) in this space.${missed}`));
+  console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
   process.exit(1);
 }
 
