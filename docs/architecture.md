@@ -187,7 +187,7 @@ laterally; the manager only births and configures them.
   spawn <persona> --detach --on <instance>` pins one instance (`ps`, `stop` and `attach` take
   the same flag); an untargeted spawn rides class anycast and the acceptance records which
   instance took it. `ps` and `status` scatter across every registered instance and label a
-  non-answering one unreachable, never dropping it.
+  non-answering one as registered with no answer within the deadline, never dropping it.
 - **A manager holds a liveness lease, and only proof ends it.** Each instance keeps its own key
   in the space's manager bucket and refreshes it several times over inside the key's TTL. A
   refresh that gets *no answer* is not a lost lease: it proves nothing about the key, and the
