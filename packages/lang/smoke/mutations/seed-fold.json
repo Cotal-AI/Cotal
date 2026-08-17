@@ -29,8 +29,8 @@
     {
       "name": "the fold keeps the FIRST write instead of the last",
       "file": "packages/lang/src/journal.ts",
-      "find": "      this.byKey.set(full, e);\n      // FOLD THE LOG.",
-      "replace": "      if (!this.byKey.has(full)) this.byKey.set(full, e);\n      // FOLD THE LOG.",
+      "find": "      this.byKey.set(full, e);",
+      "replace": "      if (!this.byKey.has(full)) this.byKey.set(full, e);",
       "expectRed": "and it is the LAST write, so a step that settled reads settled",
       "cell": "and it is the LAST write, so a step that settled reads settled",
       "note": "WHICH row survives is a separate claim from WHETHER it folds. First-write-wins folds just as tidily and reports every completed step as still pending -- a resumed run would re-perform work the journal holds a result for. Graded on its own cell because the mutation above cannot distinguish it."
