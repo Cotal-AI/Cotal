@@ -1213,7 +1213,8 @@ export function packUnits(opts: {
     if (aloneBytes > limit)
       throw new AguiVocabularyError(
         `a single source observation does not fit in one frame (${aloneBytes} > ${limit} bytes, ` +
-          `${unit.events.length} event(s), run ${unit.runId}). [P8] requires this to fail loud rather ` +
+          `${unit.events.length} event(s), run ${unit.runId}). One source observation is one frame, ` +
+          `and that rule requires this to fail loud rather ` +
           `than be truncated at a frame boundary: a frame that ends mid-record has no cursor it can ` +
           `honestly store, and a dropped boundary with no gap marker is worse than a halt.`,
       );
@@ -1228,19 +1229,25 @@ export function packUnits(opts: {
 /**
  * The event emitter: one per principal, one thread at a time.
  *
- * **A KNOWN GAP, DECLARED RATHER THAN PAPERED OVER: bracket state does not survive a restart.**
- * It now DIAGNOSES ITSELF ({@link AguiBracketStateLost}) instead of surfacing as an anonymous
- * protocol violation, which is the interim ruled for this wave; PERSISTING the machine is a design
- * amendment targeted at the wave that ships a connector, and it must not slip past it.
- * Today this is unreachable in production because nothing emits; the moment a connector cuts over,
- * a mid-run crash is an ordinary Tuesday.
- * {@link AguiBrackets} checks a property of the WRITER'S STREAM across frames, and the WAL persists
- * `epoch`, `frontier` and the pending frame — not the open runs and messages. So a process that
- * crashes mid-run restarts with an empty bracket machine, resumes from `sourceCursor` at events
- * whose `RUN_STARTED` was already published, and the first of them is REFUSED. That is a halt, not
- * a loss, which is the safe direction, but it is a real production behaviour and not a hypothetical,
- * and the recovery rules cover the durable state without saying anything about this one. Reported
- * as a design defect; not decided here.
+ * **BRACKET STATE SURVIVES A RESTART, AND THIS PARAGRAPH USED TO SAY THE OPPOSITE.** It described a
+ * declared gap — an emitter coming back with an empty machine, resuming at events whose
+ * `RUN_STARTED` had already been published, and refusing the first of them — long after the WAL
+ * started persisting the machine. The words were true when they were written and stayed on the page
+ * through the change that falsified them, which is the failure mode a class header is worst at
+ * showing: it is the first thing a cutover author reads about recovery, and it was telling them to
+ * expect a halt the code no longer produces.
+ *
+ * What actually happens: {@link AguiBrackets} is a property of the WRITER'S STREAM across frames, so
+ * the WAL freezes the machine's state WITH each pending frame and promotes it on fold. A restart
+ * therefore reopens knowing exactly which run, messages and tool calls were open at the last FOLDED
+ * position, and {@link AguiBrackets.restore} continues from there rather than from empty.
+ *
+ * **The lost-state path still exists, and it is now the narrow case it should always have been:** a
+ * document that CANNOT SAY what was open. That is a WAL migrated from v1, which recorded no bracket
+ * state at all, and it loads as `null` rather than as an empty machine precisely so the difference
+ * stays visible. Only there does the emitter start empty, resume into an already-open run, and
+ * refuse the first event with {@link AguiBracketStateLost} — a halt rather than a loss, which is the
+ * safe direction, and diagnosed by name rather than surfacing as an anonymous protocol violation.
  */
 export class AguiEmitter<T> {
   /**
@@ -1494,7 +1501,8 @@ export class AguiEmitter<T> {
         `event emitter for ${this.channel}: the broker answered ${o.retry ? "a RETRY" : "a FIRST attempt"} ` +
           `for id ${o.id} with duplicate:true. ` +
           (o.retry
-            ? `Under [P5] this cannot happen on an R1 stream, which evaluates the subject expectation ` +
+            ? `Under the SINGLE-REPLICA RETRY RULE this cannot happen on an R1 stream, which ` +
+              `evaluates the subject expectation ` +
               `before the dedup cache — so either the stream is not R1 or a foreign body holds our ` +
               `stream-wide id. `
             : `We have never published this id, so a body we did not write holds it. `) +

@@ -299,8 +299,8 @@ try {
         r.err?.message ?? "no throw",
       );
       c(
-        `${config}: the halt names [P5] and the RETRY path, not a foreign first publish`,
-        r.err instanceof AguiEmitterHalted && /RETRY/.test(r.err.message) && /\[P5\]/.test(r.err.message),
+        `${config}: the halt names the SINGLE-REPLICA RETRY RULE and the RETRY path, not a foreign first publish`,
+        r.err instanceof AguiEmitterHalted && /RETRY/.test(r.err.message) && /SINGLE-REPLICA RETRY RULE/.test(r.err.message),
         r.err?.message ?? "no throw",
       );
       c(

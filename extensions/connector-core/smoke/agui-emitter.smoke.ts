@@ -28,9 +28,9 @@
  *   E2  treat a duplicate ack as success (fold it) instead of halting
  *       -> `halt:duplicate-on-a-FIRST-attempt-does-not-move-the-frontier-ON-DISK`
  *   E3  publish frames splitting at EVENT boundaries, so an oversized unit is truncated rather than
- *       refused -> `pack:[P8]-a-single-oversized-unit-FAILS-LOUD`
+ *       refused -> `pack:one-observation-one-frame-a-single-oversized-unit-FAILS-LOUD`
  *   E4  let one frame carry two runs -> `pack:a-run-change-flushes-even-when-the-frame-has-room`
- *   E5  drop the cursor-only advance on an empty map -> `[P7]:an-adopt-persists-its-cursor`
+ *   E5  drop the cursor-only advance on an empty map -> `cursor-only:an-adopt-persists-its-cursor`
  *   E6  size with a SHORT id instead of the longest admissible one
  *       -> `sizing:the-UPPER-BOUND-keeps-a-packed-frame-under-the-REAL-ceiling`. Added because the
  *          two earlier sizing cells assert a property of `encodedSize` and NOT of the emitter, so
@@ -349,7 +349,7 @@ try {
     // adopts a LATER end and silently skips everything appended in between.
     const adopt = await attempt(() => em.pump());
     const afterAdopt = wal.frontier.sourceCursor;
-    c("[P7]:an-adopt-persists-its-cursor", adopt.value?.frames === 0 && typeof afterAdopt === "string", {
+    c("cursor-only:an-adopt-persists-its-cursor", adopt.value?.frames === 0 && typeof afterAdopt === "string", {
       pumped: adopt.value,
       cursor: afterAdopt,
     });
@@ -381,8 +381,8 @@ try {
     c("emit:seq-advances-by-one-per-frame", (ep.publishes[1]?.parts[0] as unknown as AguiFrame | undefined)?.seq === 2, ep.publishes[1]?.parts[0]);
   });
 
-  // ── `[P7]`: A RECORD THAT MAPS TO NOTHING ADVANCES THE CURSOR AND NOTHING ELSE ────────────────
-  await block("`[P7]`: A RECORD THAT MAPS TO NOTHING ADVANCES THE CURSOR AND NOTHING ", async () => {
+  // ── THE CURSOR-ONLY RULE: A RECORD THAT MAPS TO NOTHING ADVANCES THE CURSOR AND NOTHING ELSE ────────────────
+  await block("THE CURSOR-ONLY RULE: A RECORD THAT MAPS TO NOTHING ADVANCES THE CURSOR", async () => {
     const { wal, source, src, walPath } = await fresh("p7");
     const ep = new FakeEndpoint();
     const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
@@ -392,7 +392,7 @@ try {
     const p = await attempt(() => em.pump());
     const disk = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
     c(
-      "[P7]:a-dropped-range-advances-the-cursor-alone",
+      "cursor-only:a-dropped-range-advances-the-cursor-alone",
       p.value?.frames === 0 &&
         ep.publishes.length === 0 &&
         disk.frontier.seq === before.seq &&
@@ -438,12 +438,12 @@ try {
     c("halt:it-reports-itself-stopped", em.stopped === true, em.stopped);
   });
 
-  // ── HALT: A DUPLICATE ACK ON A RETRY — `[P5]` VIOLATED, AND THE MESSAGE MUST SAY SO ──────────
+  // ── HALT: A DUPLICATE ACK ON A RETRY — THE SINGLE-REPLICA RETRY RULE VIOLATED, AND THE MESSAGE MUST SAY SO ──────────
   //
   // The CONTROL that makes this cell mean something is the FIRST-attempt cell above: two halts that
   // both say "duplicate" prove nothing about which path produced them. These assert the DIFFERENT
   // diagnosis each one is supposed to carry.
-  await block("HALT: A DUPLICATE ACK ON A RETRY — `[P5]` VIOLATED, AND THE MESSAGE MU", async () => {
+  await block("HALT: A DUPLICATE ACK ON A RETRY — THE SINGLE-REPLICA RETRY RULE VIOLATED", async () => {
     const { source, walPath } = await fresh("dup-retry");
     const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: false });
     await wal.beginSend({
@@ -458,11 +458,11 @@ try {
     ep.answers = [{ seq: 88, duplicate: true }];
     const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
     c(
-      "halt:a-duplicate-on-a-RETRY-names-[P5]-rather-than-a-foreign-first-publish",
+      "halt:a-duplicate-on-a-RETRY-names-the-SINGLE-REPLICA-RETRY-RULE-rather-than-a-foreign-first-publish",
       started.err instanceof AguiEmitterHalted &&
         started.err.reason === "duplicate-ack" &&
         /RETRY/.test(started.err.message) &&
-        /\[P5\]/.test(started.err.message) &&
+        /SINGLE-REPLICA RETRY RULE/.test(started.err.message) &&
         !/never published this id/.test(started.err.message),
       started.err?.message ?? "no throw",
     );
@@ -534,8 +534,8 @@ try {
     );
   });
 
-  // ── PACKING (`[P8]`) ─────────────────────────────────────────────────────────────────────────
-  await block("PACKING (`[P8]`)", async () => {
+  // ── PACKING: ONE OBSERVATION IS ONE FRAME ─────────────────────────────────────────────────────────────────────────
+  await block("PACKING: ONE OBSERVATION IS ONE FRAME", async () => {
     const measureOf = (ep: FakeEndpoint) => (f: AguiFrame) =>
       ep.encodedSize({ channel: "events.local.aaa", parts: [f as unknown as Part], id: "S".repeat(64), expectedLastSubjectSeq: Number.MAX_SAFE_INTEGER });
     const ep = new FakeEndpoint();
@@ -597,8 +597,8 @@ try {
       oversized = e as Error;
     }
     c(
-      "pack:[P8]-a-single-oversized-unit-FAILS-LOUD",
-      oversized instanceof AguiVocabularyError && /does not fit in one frame/.test(oversized.message) && /\[P8\]/.test(oversized.message),
+      "pack:one-observation-one-frame-a-single-oversized-unit-FAILS-LOUD",
+      oversized instanceof AguiVocabularyError && /does not fit in one frame/.test(oversized.message) && /One source observation is one frame/.test(oversized.message),
       oversized?.message ?? "no throw",
     );
     // CONTROL: one byte more and the SAME unit packs. Without this, the cell above passes for a
