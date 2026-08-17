@@ -288,3 +288,5 @@ smoke:agui-render
 smoke:agui-render-parity
 smoke:agui-frame-dispatch
 smoke:view-events-filter
+smoke:event-order
+smoke:web-events-filter

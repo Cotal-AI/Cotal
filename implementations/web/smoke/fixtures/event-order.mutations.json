@@ -1,0 +1,61 @@
+{
+  "command": "pnpm smoke:event-order",
+  "mutations": [
+    {
+      "name": "O1 the baseline is taken from the batch's first row instead of its minimum, so a history batch sorted by timestamp rather than by seq baselines on whichever frame the producer stamped earliest and manufactures a gap beneath it",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "          if (c.baseline === undefined || f.seq < c.baseline) c.baseline = f.seq;",
+      "replace": "          if (c.baseline === undefined) c.baseline = f.seq;",
+      "expectRed": "4.12 the baseline is the batch MINIMUM, not its first row"
+    },
+    {
+      "name": "O2 the buffered frames are released in arrival order instead of seq order, so a frame that arrived early is drawn before the frames it comes after and the reader sees the stream run backwards",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        heldFrames.sort((a, b) => (a.frame.seq - b.frame.seq) || (a.i - b.i));\n",
+      "replace": "",
+      "expectRed": "5.2 released in seq order, not arrival order"
+    },
+    {
+      "name": "O3 live frames are no longer held before the boundary, which is the first-arrival baseline this design exists to refuse: the first frame observed becomes the baseline and the retained range that follows reads as arriving beneath it",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        if (!settled) {\n          pending.push(entry);\n          return { emit: [], held: true, notes: [] };\n        }\n",
+      "replace": "",
+      "expectRed": "3.1 a live frame before the boundary is held"
+    },
+    {
+      "name": "O4 prefix-incomplete is reported at the first sequence too, so every chain that is complete from origin is marked as having lost its prefix and the marker stops meaning anything",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "          c.prefixIncomplete = c.baseline > FIRST_SEQ;",
+      "replace": "          c.prefixIncomplete = c.baseline >= FIRST_SEQ;",
+      "expectRed": "6.1 baseline 1 is NOT prefix-incomplete"
+    },
+    {
+      "name": "O5 the gap note and the fault flag are dropped, so a missing frame is applied forward silently: the consumer's sequence shows no hole and the wire shows nothing wrong",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        notes.push({ type: \"gap\", key, expected: c.next, got: seq, missing: seq - c.next });\n        c.faulted = true;\n",
+      "replace": "",
+      "expectRed": "7.3 a post-baseline discontinuity IS reported"
+    },
+    {
+      "name": "O6 epoch leaves the chain key, so two writers whose runId and seq collide by construction are folded into one chain and each one's frames read as gaps in the other's",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "      typeof frame.epoch === \"string\" ? frame.epoch : null,\n",
+      "replace": "",
+      "expectRed": "9.1 two epochs are two chains"
+    },
+    {
+      "name": "O7 the frontier only advances on an exact match, so one lost frame re-reports on every frame that follows it and the single event that mattered is buried under repetitions of itself",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "      if (seq >= c.next) c.next = seq + 1;",
+      "replace": "      if (seq === c.next) c.next = seq + 1;",
+      "expectRed": "7.7 the frame after a gap does not re-report it"
+    },
+    {
+      "name": "O8 the seq check leaves the frame test, so a part whose seq is a string or absent is treated as orderable: it is held at a boundary it can never satisfy and compared with arithmetic that yields nothing",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        if (p && typeof p === \"object\" && p.kind === KIND && isSeq(p.seq)) return p;",
+      "replace": "        if (p && typeof p === \"object\" && p.kind === KIND) return p;",
+      "expectRed": "10.1 a frame whose seq is a string passes through rather than being held"
+    }
+  ]
+}

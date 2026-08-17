@@ -1,0 +1,26 @@
+{
+  "command": "pnpm smoke:web-events-filter",
+  "mutations": [
+    {
+      "name": "F1 the derivation is replaced by a bare prefix test, which is the silent chat loss this classifier was moved into core to remove: a human channel called events.standup is swept out of the sidebar it was being read in",
+      "file": "implementations/web/src/web.ts",
+      "find": "  return rows.filter((row) => !isEventChannel(row.channel));",
+      "replace": "  return rows.filter((row) => !row.channel.startsWith(\"events.\"));",
+      "expectRed": "1.3 `events.standup` STAYS: prefix-shaped, not principal-shaped"
+    },
+    {
+      "name": "F2 the backfill filters nothing before it fetches, so every event channel is still asked for and its history still merged: the answer looks the same and the cost is exactly what it was",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const chans = chatOnly(await ep.listChannels());",
+      "replace": "  const chans = await ep.listChannels();",
+      "expectRed": "2.1 no event channel was ever ASKED for"
+    },
+    {
+      "name": "F3 the channel list route drops its filter, so the sidebar and the graph page grow one row per agent that has ever run while the backfill stays clean and the two surfaces disagree about what a channel is",
+      "file": "implementations/web/src/web.ts",
+      "find": "      const channels = chatOnly(await ep.listChannels());",
+      "replace": "      const channels = await ep.listChannels();",
+      "expectRed": "5.1 SOURCE-SHAPE: chatOnly has exactly two call sites"
+    }
+  ]
+}

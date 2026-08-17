@@ -404,8 +404,16 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
     partsText: () => "", shortId: (x: unknown) => x, physics() {}, fitTarget: () => ({ x: 0, y: 0, scale: 1 }),
     cam: { x: 0, y: 0, scale: 1 }, alpha: 0,
     __p: undefined,
+    // `app.js`'s `refresh()` re-arms the shape-B ordering machine before it fetches, so the machine
+    // is a collaborator of the BACKFILL path too. Loaded from the shipped file, not stubbed, for the
+    // same reason as the live path: the entry list this function returns is the one the shipped merge
+    // produced, and a stub would let a broken merge report a correct channel.
+    window: {} as Record<string, unknown>,
+    feedOrder: undefined, channelOrder: undefined, orderNotes: [] as unknown[],
+    noteOrder() {},
   };
   const c = createContext(ctx);
+  runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });
   runInContext(`${code}\n__p = ${fnName}();`, c, { filename: file });
   await (ctx.__p as Promise<void>);
   // `entries` is returned rather than `ctx.activity` ON PURPOSE. In `app.js` the backfill assigns
@@ -464,8 +472,29 @@ function runAppOnMessage(code: string, entry: unknown, selected = "*") {
     selected,
     dmSel: null,
     renderDMs() {}, renderChannels() {}, renderCenter() {},
+    // The shipped `onMessage` now routes every arrival through the shape-B ordering machine, so the
+    // machine is a collaborator this context has to supply. It is loaded from the REAL
+    // `event-order.js` below rather than stubbed, for the reason this whole file exists: a stub that
+    // returned `{emit:[entry]}` would satisfy every cell here while the shipped page held the entry
+    // forever, and the ingress trust rule would be graded against a merge that does not ship.
+    window: {} as Record<string, unknown>,
+    feedOrder: undefined as unknown,
+    channelOrder: undefined as unknown,
+    orderNotes: [] as unknown[],
+    noteOrder(notes: unknown[]) { for (const n of notes) ctx.orderNotes.push(n); },
   };
-  runInContext(`${code}\nonMessage(__entry);`, createContext(ctx), { filename: "app.js" });
+  const c = createContext(ctx);
+  runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });
+  // Both machines are settled immediately: these cells drive the LIVE ingress, and an unsettled
+  // machine would legitimately hold a frame, which is the ordering behaviour its own suite measures
+  // and not the trust rule this one does.
+  runInContext(
+    "feedOrder = window.COTAL_EVENT_ORDER.create(); feedOrder.backfill([]);" +
+      "channelOrder = window.COTAL_EVENT_ORDER.create(); channelOrder.backfill([]);",
+    c,
+    { filename: "event-order bootstrap" },
+  );
+  runInContext(`${code}\nonMessage(__entry);`, c, { filename: "app.js" });
   return ctx;
 }
 
