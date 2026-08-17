@@ -67,6 +67,7 @@ For connector users putting an agent on the mesh:
 | [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
 | [Connect pi (alpha)](connect-pi.md) | How does a pi session — or an agent built on pi's SDK — join? |
 | [Authoring a connector](authoring-a-connector.md) | How do I add my own agent harness as a `cotal ext` plugin? |
+| [Nebius Token Factory](nebius-token-factory.md) | How do I run a mesh's inference on Nebius Token Factory? |
 
 For protocol implementers:
 
