@@ -18,7 +18,7 @@ import {
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
-import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect } from "./endpoint-envelope.js";
+import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect, EP_BIND_REFUSED, type EpBindRefusedDetail } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
@@ -1418,8 +1418,16 @@ export class CotalEndpoint extends EventEmitter {
         if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {
           // Counted before it is repaired: a recovery that leaves no trace takes the split rate with it.
           this.splitsRecovered++;
+          // `boundTo` is the other half of `servedBy`: who the handle THOUGHT it was talking to,
+          // against who actually answered. Without it a listener sees that a split was recovered
+          // but not which bind went stale, so it cannot tell one handle's repeated staleness from
+          // splits spread across many — and that is the difference between a handle to drop and a
+          // class that is churning.
           this.emit("split-recovered", {
             endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
+            boundTo: (r.reply.error?.details ?? []).find(
+              (d): d is EpBindRefusedDetail => d.kind === EP_BIND_REFUSED,
+            )?.boundTo,
           });
           this.resolvedServices.delete(endpoint);
           // A FAILED RE-ISSUE RETHROWS THE ORIGINAL REFUSAL, not the resolve error: if the endpoint

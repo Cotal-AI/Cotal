@@ -106,7 +106,15 @@ try {
   ep.on("error", () => {});
   // Emitted by the fence's repair path; never fires on a pre-fence tip, so one instrument grades both.
   let recoveriesThisTrial = 0, recoveriesTotal = 0;
-  ep.on("split-recovered", () => { recoveriesThisTrial++; recoveriesTotal++; });
+  // The FIRST refusal's bind, which the final error cannot supply: once the repair re-issues, the
+  // error the caller ends up holding names the SECOND refusal's bind. Only this event sees the one
+  // that was actually fenced, and the forced arm's positive control is that it names the uid the
+  // probe installed.
+  let firstBoundTo = "";
+  ep.on("split-recovered", (e: { boundTo?: { instanceId: string } }) => {
+    if (recoveriesThisTrial === 0) firstBoundTo = e.boundTo?.instanceId ?? "";
+    recoveriesThisTrial++; recoveriesTotal++;
+  });
   await ep.start();
 
   const N = 24;
@@ -198,11 +206,17 @@ try {
   // queue and is split again about half the time. Asserting that the repair always lands is
   // asserting a coin comes up heads.
   let forcedRefusedBeforeEffect = false, forcedDetail = "", forcedUid = "", forcedBoundTo = "";
+  let forcedInstalled = false;
   if (bound !== undefined) {
     forcedUid = mintLifecycleUid();
     bound.responder.instanceId = forcedUid;
+    // Read back through a FRESH cache lookup, not the local alias: this is what proves the probe
+    // mutated the entry the client will actually send from, rather than a copy handed out by
+    // `get`. If this is ever false the arm below is measuring an unforced call.
+    forcedInstalled = cache.get(MANAGER_ENDPOINT)?.responder.instanceId === forcedUid;
     const forcedName = `epsplit-forced-${randomUUID().slice(0, 6)}`;
     recoveriesThisTrial = 0;
+    firstBoundTo = "";
     try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
         { name: forcedName, persona: "forced-split probe" }, { deadlineMs: 15_000 });
@@ -241,6 +255,16 @@ try {
   console.log(`     pre-effect refusals repaired: ${forcedRecoveries}   effects: ${forcedEffects}   caller saw ok: ${forcedOk}`);
   if (!forcedOk) console.log(`     the re-issue was refused too: ${forcedDetail}`);
   if (!forcedOk) console.log(`     forced bind: ${forcedUid}   the refusal names: ${forcedBoundTo || "(none)"}`);
+  console.log(`     armed: installed=${forcedInstalled}  first refusal named: ${firstBoundTo || "(none)"}`);
+  // POSITIVE CONTROL ON THE ARMING, and it must come before any question about the outcome. This
+  // suite's space splits naturally about half the time, so a probe that failed to force anything
+  // still sees a refusal, a repair and a differing bind — every symptom of the case under test,
+  // produced by the ordinary race instead. Measured: with the forcing removed, the cells below
+  // passed on 4 of 6 runs. An absence of effects is only evidence if the arm could have produced
+  // one, and that is what this states: the bind went in, and the refusal that came back is the
+  // one it provoked.
+  check("THE FORCED SPLIT WAS ACTUALLY FORCED: the probe's bind was installed on the live handle, and the refusal that came back names THAT bind and not a natural one",
+    forcedInstalled && firstBoundTo === forcedUid, { forcedInstalled, forcedUid, firstBoundTo });
   // A recovery is emitted ONLY on a reply the caller read as refused-before-effect, so counting one
   // proves the responder produced the marked refusal — this is the fence, observed and not inferred.
   check("FORCED SPLIT IS FENCED: the wrongly-bound call was refused before it ran, then repaired",
