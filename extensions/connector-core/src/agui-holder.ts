@@ -53,10 +53,17 @@ export class AguiEmitterHolder<T> {
    * @param onError Where a failure goes. Required, and not defaulted to a swallow: this class runs
    *   behind a hook that must not throw, so the only way a failure reaches a human is if the caller
    *   is made to say where it goes.
+   * @param onRunClosed Told which run {@link closeRun} closed, so the connector's own mapper can
+   *   forget the run it will no longer attribute records to. Optional, and it is NOT the holder
+   *   doing the forgetting: which state a record mapper keeps is the connector's business, and a
+   *   holder that reached into it would be a second place that decides what a run is. Without it a
+   *   mapper that still believes the run is open would emit under a `runId` the published stream has
+   *   already closed, and the emitter would refuse the batch.
    */
   constructor(
     private readonly startEmitter: (path: string) => Promise<AguiEmitter<T>>,
     private readonly onError: (e: Error) => void,
+    private readonly onRunClosed?: (runId: string) => void,
   ) {}
 
   /** True once an emitter is running here. False while a start is still in flight — it reports what
@@ -103,6 +110,25 @@ export class AguiEmitterHolder<T> {
    * Returns `undefined` when there is nothing to run against — a dead holder or a path this holder
    * cannot take — rather than throwing, so a caller cannot mistake "no emitter" for "pumped".
    */
+  /**
+   * Close the open run at a turn boundary the record stream cannot see.
+   *
+   * Same contract as {@link adopt} and {@link flush}: synchronous, non-throwing, work on the chain,
+   * because a lifecycle hook calls it and a hook must not be made to wait or to fail.
+   *
+   * It deliberately does NOT start an emitter. A session that never adopted a transcript has nothing
+   * open and nothing to close, and starting one here would reach the broker on the way OUT of a
+   * turn that published nothing.
+   */
+  closeRun(timestamp: number): void {
+    this.enqueue(async () => {
+      const emitter = this.emitter;
+      if (this.dead || !emitter || emitter.stopped) return;
+      const runId = await emitter.closeRun({ timestamp });
+      if (runId !== null) this.onRunClosed?.(runId);
+    });
+  }
+
   private async ensureStarted(path: unknown): Promise<AguiEmitter<T> | undefined> {
     if (this.dead) return undefined;
     if (typeof path !== "string" || path.length === 0) return undefined;

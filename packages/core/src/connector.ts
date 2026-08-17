@@ -75,6 +75,16 @@ export interface LaunchOpts {
    *  (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to opt in — surfaced as the `--transcript`
    *  flag on `cotal spawn` / `cotal start`. */
   transcript?: boolean;
+  /** Publish this session's AG-UI event plane to the agent's own event channel (see
+   *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
+   *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to OFF; set `true`
+   *  to opt in, surfaced as the `--events` flag on `cotal spawn` / `cotal start`.
+   *
+   *  The flag ARMS the emitter. It is deliberately separate from the grant the manager mints from
+   *  {@link Connector.eventChannel}: holding publish rights on a channel is not a request to publish
+   *  to it, so a hand-written `allowPublish` entry cannot turn events on for a session the launch
+   *  path never armed. */
+  events?: boolean;
   /** Operator MCP servers to SHARE with this agent, resolved from the cotal config by the caller
    *  (see {@link connectorServers}). Keyed by server name, `.mcp.json`-shaped, with `${VAR}`
    *  secret refs intact. A connector renders them into its own host format; the default is none
@@ -164,6 +174,18 @@ export interface Connector extends Extension {
    *  one source and can't drift. If `transcript` is requested for a connector that lacks this, the
    *  manager fails loud rather than silently skipping the grant. */
   transcriptChannel?(name: string): string;
+  /** The channel this connector publishes an agent's AG-UI event plane to (see
+   *  {@link LaunchOpts.events}). OPTIONAL exactly as {@link transcriptChannel} is: only connectors
+   *  that actually emit implement it, and asking for `events` from one that does not FAILS LOUD in
+   *  the manager rather than minting a grant nothing will ever use.
+   *
+   *  It takes the agent's PRINCIPAL, never its display name. A display name is UI convenience and is
+   *  not an identity: this mesh permits two live agents to carry one name, so a name-keyed channel
+   *  fuses two principals' streams onto one subject and authorizes both onto it from the same
+   *  name-only value. The principal is the address. Connectors derive the channel with core's own
+   *  `eventChannel`, so the grant the manager mints here and the subject the session publishes to
+   *  are the same derivation and cannot drift. */
+  eventChannel?(principal: { owner: string; actor: string }): string;
   /** External executables this connector invokes beyond `LaunchSpec.command` (e.g. the
    *  `claude` / `opencode` CLI). A preflight PATH hint, not a full environment validator: the
    *  manager checks each is on PATH before spawning and fails with a clear error naming the
