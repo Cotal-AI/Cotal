@@ -192,7 +192,7 @@ laterally; the manager only births and configures them.
   in the space's manager bucket and refreshes it several times over inside the key's TTL. A
   refresh that gets *no answer* is not a lost lease: it proves nothing about the key, and the
   write may even have landed with only the acknowledgement lost. So the manager re-reads the key
-  before deciding — it keeps serving when the key is still its own, adopting whatever revision the
+  before deciding. It keeps serving when the key is still its own, adopting whatever revision the
   broker actually has, and shuts itself down only on proof: the key is gone, or it now holds a
   different process. Failing to confirm the key *at all* for longer than the TTL is its own
   reason to stop, and it says so in those words. Either way that stops one instance, never the
