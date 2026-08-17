@@ -46,9 +46,16 @@
     {
       "name": "R7 the line-start predicate accepts everything, which turns the invariant cell vacuous and is caught only by its own control",
       "file": "extensions/connector-core/src/agui-render.ts",
-      "find": "  !/^ {0,3}(?:#|[-*+>|]|\\d+[.)])(?:\\s|$)/.test(line) && !/^ {4}/.test(line);",
-      "replace": "  true;",
+      "find": "  return !BLOCK_START_CHARS.has(first);",
+      "replace": "  return true;",
       "expectRed": "predicate rejects a raw block opener"
+    },
+    {
+      "name": "R9 one character falls out of the block-start set, which is the exact defect this predicate was rewritten to stop being possible, and the only thing that notices is the construct-by-construct control",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "const BLOCK_START_CHARS = new Set([...\"#>|`~=_*+-[<0123456789\", \"\\t\"]);",
+      "replace": "const BLOCK_START_CHARS = new Set([...\"#>|`~=_*+-[0123456789\", \"\\t\"]);",
+      "expectRed": "every construct the enumerating predicate wrongly called safe is now refused"
     },
     {
       "name": "R8 the idempotence guard is dropped, so loading this package from a second physical copy throws and takes down `cotal ext add` for every connector, which is the crash this guard was written from",
