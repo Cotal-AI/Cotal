@@ -187,6 +187,7 @@ smoke:cross-path-dedup
 smoke:backup-cli
 smoke:registry-staging
 smoke:materialize-concurrency
+smoke:import-remedy
 smoke:seed
 smoke:setup-failloud
 smoke:agent-skills

@@ -11,6 +11,7 @@ import {
   type InstalledExtension,
 } from "./extensions.js";
 import { claimExtensionMutationLock } from "./extension-mutation.js";
+import { diagnosePeerSkew } from "./import-diagnosis.js";
 
 /**
  * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
@@ -21,12 +22,63 @@ import { claimExtensionMutationLock } from "./extension-mutation.js";
  * name→package hint used to phrase a not-found error.
  */
 
+/** The range the installed extension declares for a shared peer (undefined when it declares none). */
+function declaredPeerRange(pkg: string, peer: string): string | undefined {
+  try {
+    const meta = JSON.parse(readFileSync(join(extensionPackageDir(pkg), "package.json"), "utf8")) as {
+      peerDependencies?: Record<string, string>;
+    };
+    return meta.peerDependencies?.[peer];
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * A missing-export failure is a SKEW between two installs, and the remedy depends on which of them is
+ * behind. `bindExtensionPeers` linked this host's peer into the extension a few lines above the
+ * import, so the copy that failed is nameable — path and version — and rankable against the extension.
+ * Prescribing `cotal ext add` without ranking them tells the operator to reinstall whichever side is
+ * CURRENT, and no reinstall of an extension can add an export to an older core.
+ */
 function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error {
   const message = e instanceof Error ? e.message : String(e);
-  const compatibility = /does not provide an export named/.test(message) && /@cotal-ai\/(core|workspace)/.test(message)
-    ? " (the extension is not compatible with this cotal binary's linked @cotal-ai/* packages; update the binary and extension together)"
-    : "";
-  return new Error(`extension ${pkg}@${ext.version} failed to import: ${message}${compatibility} - reinstall it: \`cotal ext add ${ext.spec}\``);
+  const reinstall = `reinstall it: \`cotal ext add ${ext.spec}\``;
+  const missing = /The requested module '([^']+)' does not provide an export named '([^']+)'/.exec(message);
+  // Any other import failure (a syntax error, an unresolvable specifier) is the extension's own file
+  // being wrong, not a skew: reinstalling it is the remedy, and no side claim is warranted.
+  if (!missing) return new Error(`extension ${pkg}@${ext.version} failed to import: ${message} - ${reinstall}`);
+
+  const [, peer, symbol] = missing;
+  const head = `extension ${pkg}@${ext.version} failed to import: it needs \`${symbol}\` from ${peer}`;
+  const skew = diagnosePeerSkew(pkg, ext.version, peer, declaredPeerRange(pkg, peer));
+  if (!skew) {
+    return new Error(
+      `${head}, which the linked ${peer} does not export. This cotal cannot locate its own ${peer} to compare against, ` +
+        `so neither side can be named as behind - compare the two installs before reinstalling either.`,
+    );
+  }
+  const at = `the linked ${peer} ${skew.peerVersion} at ${skew.peerPath} does not export it`;
+  switch (skew.side) {
+    case "peer-behind":
+      return new Error(
+        `${head}, and ${at}. The installed ${peer} is BEHIND: ${skew.because} - upgrade the cotal that owns ` +
+          `${skew.peerPath} (for a global install, \`npm i -g cotal-ai@latest\`). Reinstalling the extension cannot ` +
+          `add an export to an older ${peer}.`,
+      );
+    case "same-version":
+      return new Error(
+        `${head}, and ${at}. Same version, different build (${skew.because}): the installed ${peer} predates this ` +
+          `extension's source - rebuild or reinstall the cotal that owns ${skew.peerPath}.`,
+      );
+    case "extension-behind":
+      return new Error(`${head}, and ${at}. The extension is the older side: ${skew.because} - ${reinstall}`);
+    case "unrankable":
+      return new Error(
+        `${head}, and ${at}. Neither side can be named as behind: ${skew.because} - compare the two installs before ` +
+          `reinstalling either.`,
+      );
+  }
 }
 
 /** Process-wide single-flight serializer: two `import()`s must not share a staging/validation window,
