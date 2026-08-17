@@ -1378,7 +1378,7 @@ export class CotalEndpoint extends EventEmitter {
    *     surfaces — still saying the command did not run — naming the resolve failure as why the
    *     repair could not be attempted.
    *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
-   *     `failed-precondition`; the same instance at a later epoch, `expired`), which is what a
+   *     `failed-precondition`; the same instance at any other epoch, `expired`), which is what a
    *     responder too old to know the field produces. A live instance received and answered it, so
    *     the bind is dropped but the call is re-issued only for a command on the
    *     {@link isRepeatSafeCommand} allowlist; anything else surfaces, since a second attempt could
@@ -1477,9 +1477,10 @@ export class CotalEndpoint extends EventEmitter {
         // declaration and every manager command shares `class: "ephemeral"`.
         //
         // Keyed on the MARKER, not the error code, because the same fact has two producers: a
-        // DIFFERENT instance answering (`failed-precondition`) and the SAME instance at a LATER
-        // EPOCH after a same-root restart (`expired`). Same rule for both, or a long-lived client
-        // stays bound to the old epoch while every call reaches the successor.
+        // DIFFERENT instance answering (`failed-precondition`) and the SAME instance at ANY OTHER
+        // EPOCH (`expired`) — epoch inequality, not "a successor", so a superseded incarnation
+        // still answering produces it too. Same rule for both, or a long-lived client stays bound
+        // to a dead epoch while every call reaches whoever is actually there.
         if (respondedButUnbound(e)) {
           // Drop the stale bind FIRST, whichever way this goes: it names an incarnation that is not
           // the one answering, so every later call would reuse it and meet the same refusal. This is

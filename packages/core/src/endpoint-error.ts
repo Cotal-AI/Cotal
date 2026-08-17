@@ -124,7 +124,8 @@ export const EP_BIND_REFUSED = "ai.cotal.ep.bind-refused";
 
 /** The {@link EP_BIND_REFUSED} payload: the incarnation the caller bound, and the one that
  *  refused. Both ids are stated because either field alone can be the mismatching one — a
- *  different instance, or the same instance at a later epoch — and the reader needs to see which. */
+ *  different instance, or the same instance at any other epoch — and the reader needs to see
+ *  which. */
 export interface EpBindRefusedDetail extends EpErrorDetail {
   kind: typeof EP_BIND_REFUSED;
   endpoint: string;
