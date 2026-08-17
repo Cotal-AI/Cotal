@@ -68,6 +68,7 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertEphemeralBroker } from "./_ephemeral-only.js";
 
 const PORT = await pickFreePort();
@@ -96,9 +97,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `mgr-split-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-mgrsplit-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 /** Publish `subject` as a request using `creds`. Auth Violation ⇒ DENIED; anything else (JS-API error,
  *  No-Responders, timeout) ⇒ ALLOWED (the publish itself was accepted). `inboxPrefix` matches the cred's
@@ -440,4 +442,5 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
