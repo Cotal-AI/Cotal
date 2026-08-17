@@ -22,7 +22,10 @@
     "not run the resume rail. That is deliberate and it is a real limit: a resume ADOPTS the",
     "credential the spawn wrote and refuses when the adopted authority stops matching the inventory,",
     "so what a restart can lose is the record, which is what these cells read. A defect in the resume",
-    "rail's own re-launch would not be caught here."
+    "rail's own re-launch would not be caught here.",
+    "",
+    "The last mutation is about an upgrade rather than a spawn: a strict schema is the correct instinct",
+    "everywhere except on a document the previous version wrote, where it converts a restart into a loss."
   ],
   "mutations": [
     {
@@ -68,6 +71,15 @@
       "expectRed": "the refusal releases the reserved name",
       "cell": "the refusal releases the reserved name",
       "note": "A leaked reserve is silent: the next spawn of that persona is auto-numbered and nothing says why."
+    },
+    {
+      "name": "G6 require the arming flag in the resume document, refusing every inventory the previous version wrote",
+      "file": "implementations/manager/src/resume.ts",
+      "find": "    events: z.boolean().default(false),",
+      "replace": "    events: z.boolean(),",
+      "expectRed": "an inventory written before the event plane still parses",
+      "cell": "an inventory written before the event plane still parses",
+      "note": "The upgrade hazard: a manager restarted onto a new binary reads an inventory the old one wrote, and a required field turns that restart into a loss of every agent it was preserving."
     }
   ]
 }

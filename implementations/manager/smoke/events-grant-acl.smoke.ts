@@ -168,9 +168,11 @@ try {
   }
 
   // 4 — RESTART. The record has to carry BOTH halves: the channel and the arming.
+  let preserved: ManagerResumeInventory | undefined;
   {
     const captured: ManagerResumeInventory[] = [];
     const plan = await mgr.preserveState({ attemptId: "ev-grant-attempt", persistInventory: async (inv) => { captured.push(inv); } });
+    preserved = plan.inventory;
     check("preservation produced an inventory", plan.inventory.agents.length > 0, plan.failures);
     const entry = plan.inventory.agents.find((a) => a.name === armedName);
     check("the armed agent is in the inventory", entry !== undefined, plan.inventory.agents.map((a) => a.name));
@@ -186,6 +188,19 @@ try {
     const sibling = plan.inventory.agents.find((a) => a.name !== armedName);
     check("an unarmed agent stays unarmed in the same inventory", sibling !== undefined && sibling.launch.events === false, sibling?.launch);
   }
+
+  // 5 — the record an OLDER manager wrote. An upgrade restarts the manager against an inventory
+  // written by the previous version, which has no `events` field at all. Refusing that document
+  // would lose every agent the restart was meant to preserve, so absent reads as off, which is what
+  // it means: that session was not publishing a plane, because there was none to publish.
+  {
+    const { parseResumeControlArgs } = await import("../src/resume.js");
+    const entry = JSON.parse(JSON.stringify({ ...preserved, agents: [preserved!.agents[0]] }));
+    delete entry.agents[0].launch.events;
+    const parsed = parseResumeControlArgs({ attemptId: "old-record", inventory: entry });
+    check("an inventory written before the event plane still parses", parsed.inventory.agents.length === 1, parsed);
+    check("and its agent reads as unarmed rather than being refused", parsed.inventory.agents[0]?.launch.events === false, parsed.inventory.agents[0]?.launch);
+  }
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
@@ -193,7 +208,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 16;
+const EXPECTED = 18;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
