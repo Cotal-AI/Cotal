@@ -47,7 +47,13 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import { AGUI_EVENT_TYPE, AGUI_FRAME_KIND } from "@cotal-ai/core";
-import { aguiFramePartRenderer, LINE_START_SAFE } from "@cotal-ai/connector-core/agui-render";
+// BY SOURCE PATH, NOT BY PACKAGE NAME, and that is the difference between grading the tree and
+// grading the last build. `@cotal-ai/connector-core/agui-render` resolves to that package's `dist`,
+// so an edit to the node renderer's source would not be seen here until someone rebuilt, and a
+// mutation against it would report SURVIVED for a reason that has nothing to do with the test. The
+// browser half is already read off disk as bytes; this puts the two halves on equal footing, which
+// is the only way a parity claim means anything.
+import { aguiFramePartRenderer, LINE_START_SAFE } from "../../extensions/connector-core/src/agui-render.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const browserFile = join(here, "..", "..", "implementations", "web", "src", "web", "agui-frame.js");

@@ -2,15 +2,15 @@
   "command": "pnpm smoke:event-channel",
   "mutations": [
     {
-      "name": "C1 the channel is keyed on the display name again, the fusing defect the principal key exists to remove",
-      "file": "extensions/connector-core/src/launch.ts",
+      "name": "C1 the channel is keyed on the display name again, the fusing defect the principal key exists to remove (re-anchored: the constructor moved into core)",
+      "file": "packages/core/src/event-channel.ts",
       "find": "  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;",
       "replace": "  return `${EVENT_CHANNEL_PREFIX}${String((principal as unknown as { name?: string }).name ?? principal.actor).toLowerCase().replace(/[^a-z0-9_-]+/g, \"-\")}`;",
       "expectRed": "no two distinct principals share a channel"
     },
     {
-      "name": "C2 the owner half is dropped, so every owner's same-named actor collapses onto one channel",
-      "file": "extensions/connector-core/src/launch.ts",
+      "name": "C2 the owner half is dropped, so every owner`s same-named actor collapses onto one channel (re-anchored: the constructor moved into core)",
+      "file": "packages/core/src/event-channel.ts",
       "find": "export function eventChannel(principal: { owner: string; actor: string }): string {\n  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;",
       "replace": "export function eventChannel(principal: { owner: string; actor: string }): string {\n  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key.split(\".\").slice(1).join(\".\")}`;",
       "expectRed": "the principal is RECOVERABLE from the channel"

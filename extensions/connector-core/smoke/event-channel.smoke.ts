@@ -275,13 +275,27 @@ c("an underscore is legal in both halves (the token grammar allows it; only `-` 
   // Near-miss on the token itself, so a predicate matching `event` rather than `events.` is caught.
   c("[isEventChannel] rejects the singular near-miss `event.`", !isEventChannel("event.owner.actor"));
 
-  // THE DOCUMENTED LIMIT, ASSERTED. `isEventChannel` is a prefix test and not a validation: a
-  // malformed remainder still classifies as an event channel. That is deliberate — an unparseable
-  // event channel is still not chat, and hiding it would make a malformed publisher invisible on
-  // exactly the surface meant to reveal it. Graded here so the limit is a decision on the record
-  // rather than a sentence in a comment that nothing checks.
-  c("[isEventChannel] a malformed events.* name still classifies (prefix test, not validation)",
-    isEventChannel("events.NOT A VALID KEY"));
+  // THE LIMIT THIS CELL USED TO ASSERT IS RETIRED, AND THE CELL IS INVERTED RATHER THAN DELETED.
+  //
+  // It read: "a malformed events.* name still classifies (prefix test, not validation)", and it
+  // argued that an unparseable event channel is still not chat, so hiding it would make a malformed
+  // publisher invisible. The argument was one-sided. Nothing reserves the `events.` prefix and
+  // `assertValidChannel` permits a dot inside a channel name, so the cost fell on the other side:
+  // a channel a human created and talks on classified as machine traffic and was swept out of the
+  // pane it was sent to. `isEventChannel` now derives the principal, so a name that resolves to
+  // none is not an event channel, and a malformed publisher stays visible in chat rather than
+  // hidden. Kept as a cell, inverted, because the pair of them is the record of a decision that
+  // reversed; a deleted cell leaves no trace that the question was ever asked.
+  //
+  // The classifier moved to `packages/core/src/event-channel.ts` with the constructor and is graded
+  // in depth by `pnpm smoke:event-channel-classify`. What is asserted HERE is that the symbol this
+  // package re-exports is the one with the new behaviour, since a re-export is exactly where a stale
+  // second copy would hide.
+  c("[isEventChannel] a malformed events.* name is NOT an event channel (derivation, not prefix)",
+    !isEventChannel("events.NOT A VALID KEY"));
+  c("[isEventChannel] a human channel under the prefix stays in chat", !isEventChannel("events.standup"));
+  c("[isEventChannel] the re-export is the derivation, not a stale local copy",
+    isEventChannel("events.local.abc") && !isEventChannel("events.local"));
 }
 
 console.log(`event-channel smoke: ${ok} passed, ${fail} failed`);
