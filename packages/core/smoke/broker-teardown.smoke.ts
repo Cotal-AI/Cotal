@@ -43,7 +43,11 @@ function alive(pid: number): boolean {
 }
 
 interface Started {
+  /** The `tsx` wrapper. Signalling THIS is not the signal path: it makes the forked child exit with
+   *  code 13 and run its exit handler, never receiving the signal at all. */
   readonly proc: ChildProcess;
+  /** The process that actually spawned the broker and holds the handle. Signal this one. */
+  readonly selfPid: number;
   readonly brokerPid: number;
   readonly storeDir: string;
 }
@@ -56,8 +60,8 @@ async function start(mode: "clean" | "signal" | "unowned"): Promise<Started> {
   let err = "";
   proc.stderr.on("data", (d: Buffer) => (err += d.toString()));
   for (let i = 0; i < 200; i++) {
-    const m = /READY (\d+) (\S+)/.exec(out);
-    if (m) return { proc, brokerPid: Number(m[1]), storeDir: m[2] };
+    const m = /READY (\d+) (\d+) (\S+)/.exec(out);
+    if (m) return { proc, selfPid: Number(m[1]), brokerPid: Number(m[2]), storeDir: m[3] };
     if (proc.exitCode !== null && mode !== "clean") throw new Error(`fixture(${mode}) exited before READY: ${err}`);
     await wait(100);
   }
@@ -85,7 +89,7 @@ try {
   //    reproduction, run as a cell, and it is what makes cells 2-4 mean something.
   {
     const s = await start("unowned");
-    s.proc.kill("SIGTERM");
+    process.kill(s.selfPid, "SIGTERM");
     await ended(s.proc);
     await wait(500);
     const leaked = alive(s.brokerPid);
@@ -97,7 +101,7 @@ try {
   // 2. The fix, on the signal a killed seat actually receives.
   {
     const s = await start("signal");
-    s.proc.kill("SIGTERM");
+    process.kill(s.selfPid, "SIGTERM");
     const how = await ended(s.proc);
     await wait(500);
     check("SIGTERM: the owned broker is gone", !alive(s.brokerPid), `pid ${s.brokerPid}`);
@@ -112,7 +116,7 @@ try {
   // 3. The other signal a terminal or a supervisor sends.
   {
     const s = await start("signal");
-    s.proc.kill("SIGINT");
+    process.kill(s.selfPid, "SIGINT");
     await ended(s.proc);
     await wait(500);
     check("SIGINT: the owned broker is gone", !alive(s.brokerPid), `pid ${s.brokerPid}`);
@@ -139,11 +143,25 @@ try {
   //    store-dir token is the only surviving evidence, which is what a separate reaper must match.
   {
     const s = await start("signal");
-    s.proc.kill("SIGKILL");
+    process.kill(s.selfPid, "SIGKILL");
     await ended(s.proc);
     await wait(500);
     check("LIMIT: SIGKILL still orphans the broker, and this helper cannot fix that", alive(s.brokerPid), `pid ${s.brokerPid}`);
     check("LIMIT: the orphan carries the minted token, the only evidence a reaper can match", s.storeDir.includes("cotal-smoke-broker-"), s.storeDir);
+    reapOwn(s.brokerPid, s.storeDir);
+  }
+  // 6. The OTHER way a suite dies, and the reason the cells above signal the fixture's own pid rather
+  //    than its `tsx` wrapper. Killing the wrapper does not signal the fixture at all: it exits with
+  //    code 13 (unsettled top-level await) and runs its exit handler. That path is real and is what a
+  //    killed terminal produces, so it gets its own cell, but grading it while calling it the signal
+  //    path would have graded the exit handler and reported the signal handlers as proven.
+  {
+    const s = await start("signal");
+    s.proc.kill("SIGTERM");
+    const how = await ended(s.proc);
+    await wait(500);
+    check("wrapper killed: the broker is still torn down, by the exit handler", !alive(s.brokerPid), `pid ${s.brokerPid}`);
+    check("wrapper killed: the fixture exited rather than being signalled", how.signal === null, JSON.stringify(how));
     reapOwn(s.brokerPid, s.storeDir);
   }
 } finally {

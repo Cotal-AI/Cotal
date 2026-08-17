@@ -26,7 +26,11 @@ const release = mode === "unowned" ? () => {} : teardownOnSignal(broker, storeDi
 // Give it long enough to actually be running, so "still alive later" is a real observation.
 await new Promise((r) => setTimeout(r, 900));
 if (broker.exitCode !== null) throw new Error(`fixture: nats-server exited early with ${broker.exitCode}`);
-console.log(`READY ${broker.pid} ${storeDir}`);
+// Its OWN pid matters as much as the broker's. `tsx` runs this in a forked child, and signalling the
+// wrapper instead makes THIS process exit with code 13 (unsettled top-level await) and run its exit
+// handler, without ever receiving the signal. A cell that signalled the wrapper would therefore be
+// grading the exit path while claiming to grade the signal path.
+console.log(`READY ${process.pid} ${broker.pid} ${storeDir}`);
 
 if (mode !== "clean") await new Promise(() => {}); // idle until signalled; the handler does the rest
 
