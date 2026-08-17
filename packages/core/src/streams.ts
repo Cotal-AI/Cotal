@@ -83,10 +83,25 @@ export const DINBOX_MAX_ACK_PENDING = 1000;
 export const LEASE_TTL_MS = 30_000;
 
 /** Manager singleton-lease TTL (ms) — the bucket-level `max_age` on `cotal_manager_<space>`. Shorter
- *  than the delivery lease so a crashed manager frees the space for a replacement promptly; the holder
- *  renews at ~half it, leaving a 2× margin so a brief GC/scheduling pause never self-evicts a healthy
- *  manager. Tune here (independent of the delivery lease above). */
+ *  than the delivery lease so a crashed manager frees the space for a replacement promptly. Tune here
+ *  (independent of the delivery lease above); the holder's pacing inside this window is
+ *  {@link MANAGER_LEASE_RENEW_MS} / {@link MANAGER_LEASE_ATTEMPT_MS}. */
 export const MANAGER_LEASE_TTL_MS = 10_000;
+
+/** How often the holder refreshes its manager lease, and the deadline it gives each attempt.
+ *
+ *  THESE TWO NUMBERS ARE ONE BUDGET, and neither means anything alone. The TTL above is the whole
+ *  window a holder has to prove it is still there. Renewing at TTL/2 with the request deadline left
+ *  at the JetStream default (5s, which is also TTL/2) puts exactly ONE attempt inside the window and
+ *  lets that attempt's own deadline consume the entire remainder — so a single slow round trip is
+ *  terminal, by construction, on a holder that is otherwise healthy. At TTL/4 with a deadline under
+ *  the period, four attempts fit inside the window and no single one of them can spend it.
+ *
+ *  They are CLIENT-SIDE PACING ONLY. Unlike the TTL, which is written into the bucket at `cotal up`
+ *  and so has to be reconciled on an existing mesh (see {@link ttlBuckets}), changing these two
+ *  touches no stored config and needs no migration. */
+export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;
+export const MANAGER_LEASE_ATTEMPT_MS = 2_000;
 
 /** Bucket-level `max_bytes` cap on the derived membership feed (`cotal_membership_<space>`). The
  *  per-agent keying keeps each value tiny (a handful of channel patterns), so 64 MiB bounds the footprint

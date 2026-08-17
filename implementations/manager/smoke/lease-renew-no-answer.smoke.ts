@@ -2,30 +2,28 @@
  * A LEASE RENEW THAT GETS NO ANSWER IS NOT PROOF THE LEASE WAS LOST.
  * Run: pnpm smoke:lease-renew   (needs nats-server on PATH; boots its own broker)
  *
- * THIS IS A REPRODUCTION FIRST. While the defect stands the graded cell FAILS — the manager ends its
- * own process — and it is the only proof the fix works; it becomes the regression test once the fix
- * lands. It is deliberately written the way round that goes RED on today's code, so a fix cannot be
- * declared without turning it.
+ * THIS IS A REPRODUCTION FIRST. It was written against the defect and observed RED on it — the manager
+ * ended its own process — and turning it is the only proof the fix works.
  *
- * THE DEFECT. `renewLease` (manager.ts) treats ANY throw from the CAS renew as the lease being lost
- * and fail-closes the whole instance: it clears the timer, tears down every agent it manages, and
- * calls `process.exit(1)`. One of the things that throws there is a JetStream request timeout — no
- * answer within 5s. No answer proves nothing about the key. It does not prove the write failed, it
+ * THE DEFECT. `renewLease` treated ANY throw from the CAS renew as the lease being lost and
+ * fail-closed the whole instance: cleared the timer, tore down every agent it managed, and called
+ * `process.exit(1)`. One of the things that throws there is a JetStream request timeout — no answer
+ * within the deadline. No answer proves nothing about the key. It does not prove the write failed, it
  * does not prove the key expired, and it does not prove anyone else took it. The write may even have
  * LANDED, with only the acknowledgement lost.
  *
- * WHY THAT IS NOT THEORETICAL. The budget leaves no room for a second opinion: bucket TTL 10s
- * (`MANAGER_LEASE_TTL_MS`), renew every TTL/2 = 5s, and the JetStream request timeout is the library
- * default 5s, never overridden. Exactly one renew attempt fits inside the TTL and its timeout
- * consumes the entire remainder, so a single round trip that stalls is terminal.
+ * WHY THAT WAS NOT THEORETICAL. The budget left no room for a second opinion: bucket TTL 10s, renew
+ * every TTL/2 = 5s, and the JetStream request deadline at the library default 5s, never overridden.
+ * Exactly one attempt fitted inside the TTL and its own deadline consumed the entire remainder, so a
+ * single round trip that stalled was terminal.
  *
  * HOW THIS REPRODUCES IT WITHOUT DOCTORING ANYTHING. The child is a real manager with a real
  * endpoint; the parent puts a TCP relay between it and the broker and stalls ONE DIRECTION —
  * broker-to-manager — for one renew cycle. So the renew PUBLISH arrives at the broker and is applied
  * (the key is rewritten, its TTL restarts), and only the acknowledgement is held back. That is the
  * sharpest form of the case: at the moment the manager fail-closes, the key is present, is its own,
- * and carries a revision NEWER than the one the manager was holding. It killed itself over a lease
- * it had just successfully renewed.
+ * and carries a revision NEWER than the one the manager was holding. On the defect it killed itself
+ * over a lease it had just successfully renewed.
  *
  * STALLING RATHER THAN DROPPING is deliberate. Cutting the connection would make the client
  * reconnect and would be a different failure; holding bytes on an otherwise healthy socket is the
@@ -35,7 +33,12 @@
  * THE STALL IS SYNCHRONISED TO THE MANAGER'S OWN RENEW CLOCK, not to an offset from `start()`
  * returning. The lease timer is armed partway through startup and the rest of startup takes a
  * variable second or two, so an offset from the parent's view would drift into the wrong cycle. The
- * child announces each revision change instead, and the parent stalls from mid-cycle.
+ * child announces each revision change instead, and the parent stalls from late in a cycle.
+ *
+ * THE STALL IS SIZED OFF THE SHIPPED BUDGET, not off a hardcoded number, and it covers ONE renew
+ * deadline rather than one TTL. That bound matters in both directions: shorter and no renew would
+ * time out at all, longer and the manager would be right to fail closed, because a holder that has
+ * been unable to reach the broker for a whole TTL genuinely can no longer prove it holds its key.
  *
  * THE SAMPLER READS THE BROKER DIRECTLY, not through the relay, so what it reports is the broker's
  * own truth and not a second view of the stall being measured.
@@ -58,7 +61,7 @@ import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
   createSpaceAuth, mintCreds, newIdentity, standaloneConnectOpts, setupSpaceStreams,
-  managerBucket, managerLeaseKey,
+  managerBucket, managerLeaseKey, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_RENEW_MS, MANAGER_LEASE_ATTEMPT_MS,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { bootBroker } from "./_boot-broker.js";
@@ -152,14 +155,16 @@ try {
   check("it renewed at least once before the stall, so the renew loop is live and the stall lands on a cycle",
     reported().length > 0, { reported: reported() });
 
-  // Mid-cycle: the next tick is ~2.5s away and the stall outlives its 5s timeout by a clear margin,
-  // so the timeout cannot be raced by the acknowledgement arriving just as the timer fires.
-  await wait(2_500);
+  // ONE ROUND TRIP, not one TTL. The stall is sized off the shipped budget and started as LATE in the
+  // cycle as it safely can be, so the blackout covers exactly one renew's deadline and no more. It has
+  // to be that tight: a manager that cannot reach the broker for a whole TTL genuinely can no longer
+  // prove it holds its key, and fail-closing on THAT is correct. This probe is about the other case.
+  await wait(Math.max(0, MANAGER_LEASE_RENEW_MS - 400));
   const samples: LeaseSample[] = [];
   const sampler = setInterval(() => { void readLease(instanceId).then((s) => { if (s) samples.push(s); }); }, 300);
   const heldBefore = reported().at(-1);
   const stallStart = Date.now();
-  await proxy.stall(9_000);
+  await proxy.stall(400 + MANAGER_LEASE_ATTEMPT_MS + 1_500);
   const stallEnd = Date.now();
   const outcome = await Promise.race([exited, wait(4_000).then(() => "still serving" as const)]);
   clearInterval(sampler);
@@ -170,6 +175,12 @@ try {
   const duringStall = samples.filter((s) => s.atMs > stallStart + 500 && s.atMs <= stallEnd);
   const learnedDuringStall = reported().filter((r) => r.atMs > stallStart + 500 && r.atMs <= stallEnd);
   const storedLast = duringStall.at(-1);
+
+  // What the manager itself said about the incident. Printed rather than asserted: the cells grade
+  // behaviour, and the operator-facing wording is the thing a reader wants in front of them when
+  // deciding whether the message names what it proved.
+  console.log("\nwhat the manager said about it:");
+  for (const line of err.split("\n").filter((l) => /liveness lease/.test(l))) console.log(`  ${line.trim()}`);
 
   console.log("");
   check("CONTROL: a renew LANDED at the broker during the stall — the stored revision advanced past what the manager last held",
@@ -185,7 +196,20 @@ try {
   // that produced no answer is the only thing that changed, and it is not evidence of anything.
   check("A RENEW THAT GOT NO ANSWER MUST NOT TERMINATE THE MANAGER: the key was present, its own, and NEWER than what the manager held, and it kept serving",
     outcome === "still serving",
-    { outcome, managerHeldAtExit: /^HELD (\d+)$/m.exec(out)?.[1], stderrTail: err.slice(-300) });
+    { outcome, managerHeldAtExit: /^HELD (\d+)$/m.exec(out)?.[1], stderrTail: err.slice(-400) });
+
+  // D3, and it is not hypothetical: a renew whose reply is late runs past the next tick, because the
+  // re-read that follows it has a deadline of its own. A second renew started there reads the SAME
+  // cached revision, CASes against a sequence the first one legitimately moved, and is refused — a
+  // conflict this instance manufactured about itself. Measured at 3 runs out of 3 before the guard.
+  check("NO SELF-INFLICTED CAS CONFLICT: only one renew is ever in flight, so the manager never CASes against a sequence it moved itself",
+    !/wrong last sequence/.test(err), err.slice(-400));
+
+  // The budget as a budget. A deadline that can outlive its own period, or a period that leaves room
+  // for a single attempt inside the TTL, is what made one slow round trip terminal in the first place.
+  check("THE RENEW BUDGET HAS SLACK: several attempts fit inside the lease TTL, and no single attempt can outlive its own period",
+    MANAGER_LEASE_RENEW_MS * 2 <= MANAGER_LEASE_TTL_MS && MANAGER_LEASE_ATTEMPT_MS < MANAGER_LEASE_RENEW_MS,
+    { ttlMs: MANAGER_LEASE_TTL_MS, renewEveryMs: MANAGER_LEASE_RENEW_MS, attemptDeadlineMs: MANAGER_LEASE_ATTEMPT_MS });
 
   child.kill("SIGKILL");
 } finally {
