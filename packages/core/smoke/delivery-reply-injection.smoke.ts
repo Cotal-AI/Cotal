@@ -31,6 +31,7 @@ import {
   DEV_OWNER,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -50,9 +51,10 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `delivery-inject-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-inject-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 const noop = { commitAcl: async () => {}, reissueAcl: async () => {}, provisionDmInbox: async () => {}, provisionDlvInbox: async () => {}, provisionTaskQueue: async () => {} };
 let daemon: CotalEndpoint | undefined;
@@ -127,4 +129,5 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
