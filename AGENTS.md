@@ -88,12 +88,12 @@ suites — currently the broker ownership that kills a spawned `nats-server` whe
 *signalled* rather than only when it returns. Never published and never imported by shipped code
 (enforced by `pnpm smoke:core-boundary`); it has no `dist`, so there is no build step and no
 compiled second copy that can disagree with the source.
-- `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language — its grammar, the
+- `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language: its grammar, the
 interpreter's sequential core and concurrency scopes, the step journal, the effect interface a
 host implements, and the simulator and dry run that exercise a program with no broker. Depends
 on nothing else in the repo; it knows about effects, not about NATS.
 - `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
-the mesh — the mesh handler binding the effect interface onto the real planes, the durable step
+the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.
 - `**@cotal-ai/connector-core**` (`extensions/connector-core`): the shared MCP-bridge runtime:
 the mesh agent, the `cotal_*` tool specs (incl. `cotal_spawn` / `cotal_persona` /
