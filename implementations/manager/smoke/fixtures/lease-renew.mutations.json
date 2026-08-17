@@ -1,5 +1,6 @@
 {
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:lease-renew",
+  "progressPattern": "^  ok   ",
   "mutations": [
     {
       "name": "PREDICTED KILLED (1 red) - D1: a renew that got no answer fail-closes the manager again, without re-reading the key",
