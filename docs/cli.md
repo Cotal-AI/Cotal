@@ -558,15 +558,22 @@ cotal attach --name <n> [--on <instance>] [--space <s>]
 | `--name <n>` | — | Managed agent to stop / attach (required) |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
 
-These are operator clients over the running manager's control plane. `ps` lists managed agents with
-their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
-renders each managed agent's last credential-refresh outcome, fail-closed.
+These are operator clients over the running manager's control plane. `ps` prints two facts per
+managed agent, because they answer different questions: the process fact from the manager's own
+runtime handle (`running` with its uptime, or `exited` with how long it ran), and the mesh fact from
+the roster (`idle` / `working` / `waiting` / `mesh offline`, or `not in roster` when the seat has no
+presence row at all: a seat that has not joined yet, or one that never did). A seat can be `running` and `mesh offline` at once: the process is alive and
+its presence has lapsed. On a user-auth mesh `ps` also renders each managed agent's last
+credential-refresh outcome, fail-closed.
 
 **Mode split (chosen up front, never try-scatter-then-degrade):**
 
 - **Static / open mesh.** Bare `ps` is a **class scatter**: it freezes the live manager class from
   the records registry, merges every registered instance's agents grouped and attributed per
-  instance, and a non-answering instance is shown `unreachable` (never silently omitted).
+  instance, and a non-answering instance is shown as `registered, no answer within the deadline`
+  (never silently omitted). That label is the whole claim: the instance is registered and did not
+  answer. It does not say the host is down, because a dead host never deregisters itself and a
+  live one can be slow; if it is gone, deregister it.
   `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
   rather than falling through: a well-formed id that no live manager carries is reported as
   `manager instance <id> did not answer` (nothing else is asked), and a credential without that

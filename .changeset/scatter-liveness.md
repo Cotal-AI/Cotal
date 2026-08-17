@@ -50,10 +50,12 @@ the probe could not run at all, and only then deletes both keys at the revisions
 the registry on age or on silence. Registering over a deregistration tombstone now works on both keys,
 so a deregistered instance re-registers normally on its next start, with its epoch advancing.
 
-**Rows say what is true.** A registration the broker affirms is gone no longer renders as a
-network-flavoured `unreachable`. It states that the registration is stale and prints the command that
-removes it. A probe that was refused, and one that was never sent, each read differently again, because
-they are facts about this command rather than about the instance.
+**Rows split by what was actually established.** A silent instance already printed as registered with
+no answer rather than as unreachable. Now that a probe exists, the four cases behind that one sentence
+are distinguished: a registration the broker affirms is gone says the registration is stale and prints
+the command that removes it, a probe that was refused and one that was never sent each say so, because
+both are facts about the command rather than about the instance, and asked-and-silent keeps the wording
+it has, since a slow host and a wedged one are the same observation.
 
 **And one layer down, the same shape.** The manager writes `.cotal/manager.pid` itself rather than
 having it written by whatever spawned it, so a supervisor started by a container entrypoint, by cron, or

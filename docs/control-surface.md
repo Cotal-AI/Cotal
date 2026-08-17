@@ -104,8 +104,8 @@ states `not-executed` in its `outcome` field; a refusal that omits the field, or
 not run. `ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
-results with per-instance attribution. A non-answering instance is labelled unreachable,
-never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs) (scatter) and [cli.md](cli.md).
+results with per-instance attribution. A non-answering instance is labelled as registered
+with no answer within the deadline, never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs) (scatter) and [cli.md](cli.md).
 
 The expected set comes from the **registry**, which records registration rather than liveness.
 An instance that crashes never deregisters, so it stays in the set and the gather has nothing
