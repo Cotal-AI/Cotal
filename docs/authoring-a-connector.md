@@ -26,7 +26,8 @@ const myConnector: Connector = {
       env: { /* COTAL_* wiring from opts */ },
     };
   },
-  // optional: listModels, supportsModelVariant, supportsResume, transcriptChannel, pluginRoot
+  // optional: listModels, supportsModelVariant, supportsResume, transcriptChannel,
+  //           eventChannel, pluginRoot
 };
 
 registry.register(myConnector);          // runs on import — that's what makes it "plug in"
@@ -37,7 +38,11 @@ model, prompt…), return a `LaunchSpec` (the command, args, and environment) wh
 the broker as that mesh node. Everything else on the interface is optional and default-deny: declare
 `supportsModelVariant`/`supportsResume` only if you honor them (a request for one you don't declare
 fails loud before any provisioning), list `requires` so a missing CLI fails with a clear message, and
-implement `listModels` only if you want a selector catalog. See the `Connector` interface in
+implement `listModels` only if you want a selector catalog. Implement `eventChannel` only if your
+session publishes a structured event plane: it names the channel the manager grants that session
+publish rights on, so the grant and the subject the session publishes to come from one function
+rather than two that can drift, and `--events` refuses a connector that does not implement it. See
+the `Connector` interface in
 [`packages/core/src/connector.ts`](../packages/core/src/connector.ts) and the OpenCode connector in
 [`extensions/connector-opencode/`](../extensions/connector-opencode/) for a complete worked example.
 
