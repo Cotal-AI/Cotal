@@ -23,6 +23,19 @@ let dmSel = null; // { peer, with } when a Direct-messages thread is open
 let agentSel = null; // peer id when an Agent Detail drill-down is open (else selected/dmSel drive the view)
 let activity = []; // {mode, msg} ring buffer for the all-activity view
 let channelMsgs = []; // messages for the selected channel
+// The shape-B bootstrap for each of the two merge sites: this page opens the live feed and only then
+// fetches the backfill, so a frame's `seq` order is the consumer's problem. One machine per
+// bootstrap, re-armed BEFORE its fetch starts, so frames arriving during the fetch are held rather
+// than ordered against a baseline that has not been established yet.
+let feedOrder = window.COTAL_EVENT_ORDER.create();
+let channelOrder = window.COTAL_EVENT_ORDER.create();
+// Gap and prefix notes, newest last, keyed for the surface that draws them. Kept rather than logged:
+// a gap that only reaches the console is a gap nobody sees.
+let orderNotes = [];
+function noteOrder(notes) {
+  for (const n of notes) orderNotes.push(n);
+  if (orderNotes.length > 50) orderNotes = orderNotes.slice(-50);
+}
 let modes = new Set(MODES); // delivery modes currently shown
 let paused = false; // freeze auto-scroll so a value can be read
 let expandAll = false; // channel-wide: expand every clamped message body (else per-message toggle)
@@ -756,10 +769,22 @@ async function select(key) {
   if (key !== "*") {
     const seq = ++loadSeq;
     channelMsgs = [];
+    // ARMED BEFORE THE FETCH IS ISSUED, which is the whole ordering. Re-armed on every selection
+    // because each one is a fresh two-phase bootstrap: a new history read, and a live tap that is
+    // already delivering into it.
+    channelOrder = window.COTAL_EVENT_ORDER.create();
     renderCenter();
     const msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();
     if (seq !== loadSeq) return;
-    channelMsgs = msgs;
+    const settled = channelOrder.backfill(msgs);
+    noteOrder(settled.notes);
+    // Same merge as the activity feed and for the same reason: chat that arrived live during this
+    // fetch is only in `channelMsgs`, released frames are only in `settled.emit`, and an assignment
+    // either way round drops one of them.
+    const merged = settled.emit.slice();
+    const ids = new Set(merged.map((m) => m && m.id));
+    for (const m of channelMsgs) if (m && !ids.has(m.id)) merged.push(m);
+    channelMsgs = merged.slice(-500);
   }
   renderCenter();
   renderRail();
@@ -776,6 +801,10 @@ function selectDM(peer, w) {
 }
 
 async function refresh() {
+  // Re-armed at the TOP, before the first await, because everything below it is the fetch half of the
+  // bootstrap and the live feed is already open. `refresh()` runs on every SSE open, so a reconnect
+  // is a new bootstrap: a new backfill, and a new buffer to hold what arrives during it.
+  feedOrder = window.COTAL_EVENT_ORDER.create();
   roster = await (await fetch("/api/roster")).json();
   refreshDerived();
   const list = await (await fetch("/api/channels")).json();
@@ -807,10 +836,35 @@ async function refresh() {
   } else if (selected !== "*") {
     select(selected);
   } else {
+    // CAPTURED BEFORE THE FETCH IS AWAITED, and that order is the fix. `onMessage` pushes into this
+    // array while the request is in flight; the assignment below rebinds `activity` to the fetched
+    // page, so without holding a reference first, every live arrival during the fetch is dropped on
+    // the floor. Retention hid that for chat, because the backfill re-read the same messages from
+    // the broker and they came back. Event channels are no longer in this backfill, by the server's
+    // filter, so for a frame there is nothing to come back and the old assignment was a silent
+    // deletion of exactly the traffic this lane exists to make visible.
+    const live = activity;
     activity = await (await fetch("/api/activity?limit=200")).json();
     // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
     // requested, so the payload claim is overwritten at ingress rather than downstream.
     for (const e of activity) if (e?.msg) e.msg.channel = e.channel;
+    // MERGED, NOT ASSIGNED OVER. This read `activity = await fetch(...)`, which DISCARDED every live
+    // entry `onMessage` had appended while the fetch was in flight. Retention hid it: the backfill
+    // re-read the same messages from the broker, so the overwritten arrivals came back. Event
+    // channels are no longer in that backfill, by the filter above, so for a frame there is nothing
+    // to come back and the assignment would be a silent deletion of exactly the traffic this lane
+    // exists to make visible. The two halves of this change are that tightly coupled: the filter is
+    // what turns the pre-existing overwrite into a loss, and this is what makes the filter safe.
+    const settled = feedOrder.backfill(activity);
+    noteOrder(settled.notes);
+    // Live frames were HELD by the machine and come back inside `settled.emit` in seq order; live
+    // chat passed straight through and is only in `live`. Both have to survive, so the backfill is
+    // the BASE and unseen live arrivals are appended after it, newest last, deduped by id against
+    // what the backfill already carried.
+    const merged = settled.emit.slice();
+    const ids = new Set(merged.map((e) => e && e.msg && e.msg.id));
+    for (const e of live) if (e && e.msg && !ids.has(e.msg.id)) merged.push(e);
+    activity = merged.slice(-500);
     renderCenter();
   }
 }
@@ -835,8 +889,15 @@ function onMessage(entry) {
   // A conditional trust rule is not a trust rule. "Overwrite when I have something better" leaves
   // the untrusted value in place exactly when the trusted one is missing.
   msg.channel = entry.channel;
-  if (!activity.some((e) => e.msg.id === msg.id)) {
-    activity.push(entry);
+  // ORDERED, NOT JUST DEDUPED. Message-id dedupe answers "have I seen this exact message"; it cannot
+  // answer "is a frame missing between these two", because the thing that would say so is `seq`. A
+  // frame arriving before the backfill it belongs after is HELD here and released by `backfill()` in
+  // `seq` order; everything else passes through and is deduped by id exactly as before.
+  const fed = feedOrder.live(entry);
+  noteOrder(fed.notes);
+  for (const e of fed.emit) {
+    if (activity.some((a) => a.msg.id === e.msg.id)) continue;
+    activity.push(e);
     if (activity.length > 500) activity.shift();
   }
   if (mode === "unicast" && !dms.some((m) => m.id === msg.id)) {
@@ -849,8 +910,14 @@ function onMessage(entry) {
     const ch = channels.get(msg.channel);
     channels.set(msg.channel, { ...(ch ?? {}), messages: (ch?.messages ?? 0) + 1 });
     if (!dmSel && selected === msg.channel) {
-      channelMsgs.push(msg);
-      if (channelMsgs.length > 500) channelMsgs.shift();
+      // The selected-channel view runs the same race: `select()` fetches this channel's history with
+      // the feed already open, so a live frame can arrive before the retained range it follows.
+      const sel = channelOrder.live(msg);
+      noteOrder(sel.notes);
+      for (const m of sel.emit) {
+        channelMsgs.push(m);
+        if (channelMsgs.length > 500) channelMsgs.shift();
+      }
     } else {
       unread.set(msg.channel, (unread.get(msg.channel) ?? 0) + 1);
     }

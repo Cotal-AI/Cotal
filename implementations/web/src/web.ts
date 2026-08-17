@@ -6,11 +6,13 @@ import { dirname, join } from "node:path";
 import {
   CotalEndpoint,
   deliveryOf,
+  isEventChannel,
   parseSubject,
   spacePrefix,
   mintCreds,
   newIdentity,
   clearChannel,
+  type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
 import {
@@ -112,6 +114,12 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   // frame is as likely to arrive on the graph's detail row as in the console body, and a kind that
   // draws on one page and shows a marker on the other is worse than one that shows a marker on both.
   "/agui-frame.js": { path: join(here, "web/agui-frame.js"), type: jsType },
+  // The shape-B bootstrap: this page taps live before it reads history, so a frame's `seq` order has
+  // to be imposed by the consumer. Served to `/` only. The graph page reads the backfill into
+  // transient glow and "recently active" buffers and keeps no feed a live arrival appends to, so it
+  // has no merge to order; giving it the machine anyway would imply an ordering guarantee on a
+  // surface where nothing consumes one.
+  "/event-order.js": { path: join(here, "web/event-order.js"), type: jsType },
   "/md.js": { path: join(here, "web/md.js"), type: jsType },
   "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },
@@ -119,6 +127,67 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   "/vendor/marked.umd.js": { path: join(here, "web/vendor/marked.umd.js"), type: jsType },
   "/vendor/purify.min.js": { path: join(here, "web/vendor/purify.min.js"), type: jsType },
 };
+
+/** What the two backfill routes need from an endpoint. Narrow on purpose: it is the seam the filter
+ *  is measured through, and a mock satisfying six methods it never calls would prove less. */
+export interface ActivitySource {
+  listChannels(): Promise<{ channel: string; messages: number; config?: unknown }[]>;
+  channelHistory(channel: string, opts: { limit: number }): Promise<CotalMessage[]>;
+  dmHistory(opts: { limit: number }): Promise<CotalMessage[]>;
+}
+
+/** The channels this dashboard LISTS and BACKFILLS: chat only.
+ *
+ * WHY AN AGENT'S EVENT CHANNEL IS NOT ONE OF THEM. `listChannels()` derives a row from every
+ * retained concrete subject and the chat stream caps per subject rather than by age, so the list
+ * grows by one row per agent that has ever run and those rows never age out. Unfiltered, the channel
+ * sidebar is buried under machine streams, the graph page grows a hub node for each, and
+ * `/api/activity` issues one `channelHistory` round trip per event channel and then merges the
+ * results into a global top-N that a human reading chat did not ask for. That is a cost that scales
+ * with the number of agents ever run, which is the wrong axis entirely.
+ *
+ * FILTERED BEFORE THE FETCH, NOT AFTER, AND THE ORDER IS THE CLAIM. Filtering the merged output
+ * would still pay every round trip and then discard the bytes. The console applies the identical
+ * rule at the identical point (`mesh-view.ts` filters `listChannels()` before `channelHistory`), and
+ * the two surfaces share this classifier rather than each spelling the convention, so they cannot
+ * disagree about what a channel is.
+ *
+ * WHAT IS NOT FILTERED, DELIBERATELY, IN TWO PLACES. The live SSE tap still carries frames, marked
+ * rather than dropped: dropping them would delete the only traffic this release taught the surface
+ * to draw, and delete it silently. And `/api/channels/<name>/history` still serves an event channel
+ * when a caller names one, because that route answers a question about a channel the caller already
+ * identified; a filter there would mean the dashboard could render a frame it could never fetch. */
+export function chatOnly<T extends { channel: string }>(rows: readonly T[]): T[] {
+  return rows.filter((row) => !isEventChannel(row.channel));
+}
+
+/** The all-activity backfill: recent chat history merged with DM history, oldest-first, capped.
+ *
+ * Extracted from the route so the filter above is reachable by a test that can see WHICH channels
+ * were asked for, which is the only evidence that separates filtering before the fetch from
+ * filtering after it. The route is a thin caller. */
+export async function activityBackfill(
+  ep: ActivitySource,
+  limit: number,
+): Promise<({ mode: "chat"; channel: string; msg: CotalMessage } | { mode: "unicast"; msg: CotalMessage })[]> {
+  const chans = chatOnly(await ep.listChannels());
+  // Each message is tagged with the channel this server REQUESTED, so the backfill path does
+  // not depend on the payload claim either.
+  const chat = (
+    await Promise.all(
+      chans.map(async (ch) =>
+        (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({
+          mode: "chat" as const,
+          channel: ch.channel,
+          msg,
+        })),
+      ),
+    )
+  ).flat();
+  const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));
+  const all = [...chat, ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
+  return all.slice(-limit);
+}
 
 /** A live observability dashboard for a space, served over HTTP + SSE. A read-only
  *  observer endpoint (invisible to peers) feeds the page presence, channel history,
@@ -307,7 +376,7 @@ export async function web(args: ParsedArgs): Promise<void> {
     if (path === "/api/channels") {
       // Resolve defaults at the endpoint so every web client renders the same channel policy the
       // core applies; the registry's `config` holds only per-channel overrides.
-      const channels = await ep.listChannels();
+      const channels = chatOnly(await ep.listChannels());
       return json(res, channels.map(({ channel, messages, config }) => ({
         channel,
         messages,
@@ -335,23 +404,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       // worth doing, with a test encoding the counterexample above, and it is not this change.
       // Correctness first: fetch a full page per channel and merge.
       const limit = query.get("limit") ? Number(query.get("limit")) : 200;
-      const chans = await ep.listChannels();
-      // Each message is tagged with the channel this server REQUESTED, so the backfill path does
-      // not depend on the payload claim either.
-      const chat = (
-        await Promise.all(
-          chans.map(async (ch) =>
-            (await ep.channelHistory(ch.channel, { limit })).map((msg) => ({
-              mode: "chat" as const,
-              channel: ch.channel,
-              msg,
-            })),
-          ),
-        )
-      ).flat();
-      const dms = (await ep.dmHistory({ limit })).map((msg) => ({ mode: "unicast" as const, msg }));
-      const all = [...chat, ...dms].sort((a, b) => a.msg.ts - b.msg.ts);
-      return json(res, all.slice(-limit));
+      return json(res, await activityBackfill(ep, limit));
     }
     if (path === "/api/dms") {
       // DM history for the Direct-messages lens (god-view); the client groups it by peer/pair.
