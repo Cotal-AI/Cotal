@@ -9,9 +9,8 @@
  *
  * That is the same false-green door `smoke:mutation-reachable` was built to close, entered through
  * the side it does not watch: that guard asserts a suite imports its OWN package by source path and
- * says nothing about a CROSS-PACKAGE dependency resolving to `dist/`. Found by fmae-rev-test,
- * confirmed by fmae-rev-eng and fmae-rev-wal, on cells I had written one commit earlier while
- * describing that exact hazard in a handover document.
+ * says nothing about a CROSS-PACKAGE dependency resolving to `dist/`. Found in review, on cells
+ * written one commit earlier by someone describing that exact hazard at the time.
  *
  * The arrangement, not a reminder: the rule's cells live beside the rule and import `../src/`. A
  * mutation here cannot miss them, and no build has to have happened first.

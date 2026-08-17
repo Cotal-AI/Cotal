@@ -36,7 +36,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { randomUUID } from "node:crypto";
-import { CotalEndpoint, isCasLoss, isReachable, mintLifecycleUid } from "../src/index.js";
+import { CotalEndpoint, isCasLoss, isReachable, mintLifecycleUid, type CotalMessage, type Delivery } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
@@ -116,8 +116,7 @@ try {
   // fenced the FIRST publish onto an empty subject. A one-line regression keeping `expect` when
   // `expected === 0` and omitting it otherwise left the suite at 20 passed, 0 failed while OCC was
   // gone for every append after the first — two writers could interleave on one subject with the
-  // loser STORING instead of CAS-losing. Found by fmae-rev-test, reproduced by fmae-rev-wal,
-  // fmae-rev-eng, fmae-rev-sec and by me. The shipped code has always set the expectation, so this
+  // loser STORING instead of CAS-losing. The shipped code has always set the expectation, so this
   // was never a live product defect; it was a GATE defect on the path the system lives in after
   // bootstrap.
   //
@@ -136,8 +135,8 @@ try {
   // ── a DIFFERENT principal does NOT race us: chatSubject puts the publisher's identity BEFORE
   //    the channel, so w2 writes its own subject whose tip is genuinely 0. The first draft of this
   //    smoke asserted a cross-principal CAS loss and FAILED — correctly. The fence is per subject,
-  //    i.e. per principal per channel, which is exactly what §5.5's one-emitter-per-principal rule
-  //    relies on. Keeping it as a positive check so the separation is proved, not assumed. ──
+  //    i.e. per principal per channel. Keeping it as a positive check so the separation is proved,
+  //    not assumed. ──
   const ep2 = new CotalEndpoint({ space: SPACE, servers: `nats://127.0.0.1:${PORT}`, card: { name: "w2", kind: "agent", id: "w2_p" }, channels: [CH], lifecycleUid: mintLifecycleUid() });
   ep2.on("error", () => {});
   await ep2.start();
@@ -145,7 +144,7 @@ try {
   c("a different principal writes its OWN subject (expected=0 still valid there)", other.ack.duplicate === false && other.ack.seq > 0, other.ack);
 
   // ── the REAL race is dual-connect on ONE principal: same card, same subject, same expectation.
-  //    This is the case §5.4 names — one of the two takes a CAS loss and halts. ──
+  //    One of the two takes a CAS loss and halts. ──
   const twin = new CotalEndpoint({ space: SPACE, servers: `nats://127.0.0.1:${PORT}`, card: { name: "w1", kind: "agent", id: "w1_p" }, channels: [CH], lifecycleUid: mintLifecycleUid() });
   twin.on("error", () => {});
   await twin.start();
@@ -171,7 +170,7 @@ try {
   await throws("empty parts refused", () => ep.multicastExpecting({ channel: CH, parts: [], id: randomUUID(), expectedLastSubjectSeq: 0 }), (e) => !isCasLoss(e));
 
   // ── the CLASSIFIER PAIR, asserted directly rather than only through whatever the broker happens
-  //    to return. §5.4 classifies a CAS loss on the 10071/10164 pair via `isCasLoss`, never on
+  //    to return. A CAS loss is classified on the 10071/10164 pair via `isCasLoss`, never on
   //    message text. Every live cell above happened to produce 10071 ONLY, so dropping 10164 from
   //    the classifier left this suite fully green — the pair was documented and half-tested.
   //    These two cells are the cheapest possible guard and they cost no broker round-trip. ──
@@ -180,6 +179,42 @@ try {
   c("isCasLoss does NOT classify an unrelated JetStream code", !isCasLoss({ code: 10003 }));
   c("isCasLoss is code-driven, not text-driven — a matching description alone is not a CAS loss",
     !isCasLoss({ message: "wrong last sequence: 1" }));
+
+  // ── THE ENVELOPE ITSELF, read off the wire rather than off the return value. Every other cell in
+  //    this file asserts `message.id` and nothing else, so a `casEnvelope` that dropped `space`,
+  //    `from`, `channel` and the optional fields left the whole suite green: measurement and publish
+  //    still could not DIVERGE, because both were consistently wrong. Sharing one builder proves
+  //    agreement, never correctness. A subscriber is the only witness that can tell them apart. ──
+  const seen: CotalMessage[] = [];
+  ep2.on("message", (m: CotalMessage, d: Delivery) => { seen.push(m); d.ack(); });
+  const envId = randomUUID();
+  const envCtx = randomUUID();
+  // `first` is the last frame that STORED on this principal's subject; everything after it on this
+  // subject was refused, so its seq is the live tip.
+  const sent = await ep.multicastExpecting({
+    channel: CH, parts: [{ kind: "text", text: "envelope-probe" }], id: envId,
+    expectedLastSubjectSeq: first.ack.seq, mentions: ["W2"], replyTo: id1, contextId: envCtx,
+  });
+  // Storing at all is the assertion: the expectation is per SUBJECT and `ack.seq` is the STREAM
+  // sequence, and other principals wrote to this stream in between, so the two do not differ by one.
+  c("the envelope probe stored against the live tip", sent.ack.duplicate === false && sent.ack.seq > first.ack.seq, sent.ack);
+
+  for (let i = 0; i < 100 && !seen.some((m) => m.id === envId); i++) await wait(50);
+  const rx = seen.find((m) => m.id === envId);
+  c("the published envelope ARRIVES at a subscriber", rx !== undefined, `saw ${seen.length} message(s)`);
+  c("it carries the space", rx?.space === SPACE, rx?.space);
+  c("it carries the sending principal", typeof rx?.from?.id === "string" && rx.from.id.length > 0 && rx.from.name === "w1", rx?.from);
+  c("it carries the channel it was published to", rx?.channel === CH, rx?.channel);
+  c("it carries the parts", rx?.parts?.[0]?.kind === "text" && (rx.parts[0] as { text: string }).text === "envelope-probe", rx?.parts);
+  c("it carries a timestamp", typeof rx?.ts === "number" && rx.ts > 0, rx?.ts);
+  // The three optional fields travel or they do not; a builder that silently drops them loses a
+  // reply thread and a mention with no error anywhere.
+  c("it carries replyTo", rx?.replyTo === id1, rx?.replyTo);
+  c("it carries contextId", rx?.contextId === envCtx, rx?.contextId);
+  c("it carries normalized mentions", Array.isArray(rx?.mentions) && rx.mentions.includes("w2"), rx?.mentions);
+  c("the returned message describes the SAME envelope the subscriber got",
+    sent.message.id === rx?.id && sent.message.channel === rx?.channel && sent.message.space === rx?.space,
+    { returned: sent.message.channel, received: rx?.channel });
 
   // ── ordinary multicast is UNTOUCHED: additive change, no existing caller behaves differently ──
   const plain = await ep.multicast("ordinary", { channel: CH });
