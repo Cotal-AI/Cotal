@@ -1178,14 +1178,6 @@ class Interpreter {
   }
 
   /**
-   * The concurrency combinators.
-   *
-   * Each pushes a scope frame whose occurrence is allocated HERE, synchronously, in code that is
-   * already deterministic. Each branch then gets its own key namespace, so two branches running
-   * the same named effect cannot race for a counter, and replay reproduces both regardless of
-   * which one finished first.
-   */
-  /**
    * The `branchDigest`, over the arms a settled `race` will never be walked into.
    *
    * STRUCTURE, NOT TEXT AND NOT POSITION. Acorn nodes carry `start`/`end`, and an edit anywhere
@@ -1216,6 +1208,14 @@ class Interpreter {
       );
   }
 
+  /**
+   * The concurrency combinators.
+   *
+   * Each pushes a scope frame whose occurrence is allocated HERE, synchronously, in code that is
+   * already deterministic. Each branch then gets its own key namespace, so two branches running
+   * the same named effect cannot race for a counter, and replay reproduces both regardless of
+   * which one finished first.
+   */
   async callScope(name: string, argNodes: AnyNode[], env: Env, frame: Frame): Promise<unknown> {
     const spec = PRIMITIVES[name];
     if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
