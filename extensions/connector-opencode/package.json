@@ -27,8 +27,9 @@
     "@cotal-ai/core": ">=0.1.0"
   },
   "devDependencies": {
-    "@cotal-ai/core": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@opencode-ai/plugin": "^1.16.2",
     "esbuild": "^0.28.0",
     "tsx": "^4.22.4"
