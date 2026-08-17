@@ -94,6 +94,9 @@ importers:
       '@cotal-ai/pi':
         specifier: workspace:*
         version: link:../extensions/pi
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../packages/smoke-kit
       '@cotal-ai/web':
         specifier: workspace:*
         version: link:../implementations/web
@@ -171,6 +174,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -189,6 +195,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@modelcontextprotocol/sdk':
         specifier: ^1.29.0
         version: 1.29.0(zod@4.4.3)
@@ -253,6 +262,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@opencode-ai/plugin':
         specifier: ^1.16.2
         version: 1.16.2
@@ -384,6 +396,9 @@ importers:
         specifier: ^4.4.3
         version: 4.4.3
     devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@types/react':
         specifier: ^19.0.0
         version: 19.2.17

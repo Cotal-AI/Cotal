@@ -42,6 +42,7 @@ import { createRequire } from "node:module";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { MeshAgent, startControlServer, type InboxItem } from "@cotal-ai/connector-core";
 import { createClaudeHandle, createWakePolicy } from "../src/hooks.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = fileURLToPath(new URL(".", import.meta.url));
 /** The real per-event hook entry Claude Code runs, and the loader that can execute its TS. */
@@ -75,9 +76,10 @@ const RETRY_DEADLINE_MS = 5_000;
 const NUDGE_RETRY_FIRST_MS = 1_000;
 const TOKEN = "wake-path-test-token";
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-ccwake-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const socketPath = join(dir, "control.sock");
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -674,5 +676,6 @@ try {
   srv.kill("SIGKILL");
   await sleep(200);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);

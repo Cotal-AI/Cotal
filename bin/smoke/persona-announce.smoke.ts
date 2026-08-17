@@ -76,6 +76,7 @@ import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { MeshAgent, cotalToolSpecs, type AgentConfig } from "@cotal-ai/connector-core";
 import { Manager } from "@cotal-ai/manager";
 import { PermissionViolationError } from "@nats-io/transport-node";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -127,7 +128,7 @@ check(
 
 const space = `personaann-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-personaann-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
@@ -136,6 +137,7 @@ writeFileSync(
   serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }),
 );
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 /** The settle window. Cell 3 receives inside it on this same harness, which is what licenses cell 2
  *  to read an empty mailbox as silence rather than as impatience. */
@@ -513,4 +515,5 @@ try {
   await mgr.stop().catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
