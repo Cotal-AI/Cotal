@@ -130,6 +130,19 @@ try {
       full.env?.COTAL_CODEX_PROMPT === "greet the operator",
   );
 
+  // A prompt is trimmed on the way in, and a prompt with no text refuses the launch (never dropped).
+  check(
+    "prompt is trimmed",
+    codexConnector.buildLaunch({ space: "s", name: "n", prompt: "  greet  " }).env?.COTAL_CODEX_PROMPT === "greet",
+  );
+  let emptyPromptRefused = false;
+  try {
+    codexConnector.buildLaunch({ space: "s", name: "n", prompt: "   " });
+  } catch (e) {
+    emptyPromptRefused = /empty/.test(String((e as Error).message));
+  }
+  check("an empty prompt refuses the launch", emptyPromptRefused);
+
   // User-mode auth rail + the one-identity-plane rule.
   const user = codexConnector.buildLaunch({
     space: "s",

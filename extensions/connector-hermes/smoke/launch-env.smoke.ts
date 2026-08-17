@@ -96,6 +96,13 @@ assert.ok(!("SOME_UNRELATED_SECRET" in env), "unrelated env secrets must not be 
 for (const key of EXCLUDED)
   assert.ok(!HERMES_PROVIDER_KEYS.includes(key), `${key} is both allow-listed and excluded`);
 
+// An initial prompt has no carrier into the gateway yet: it is refused at launch, never dropped.
+assert.throws(
+  () => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", prompt: "greet the operator" }),
+  /initial prompt/,
+  "a prompt the connector cannot submit must refuse the launch",
+);
+
 console.log(
   `launch-env smoke: ${HERMES_PROVIDER_KEYS.length} provider keys forwarded, ${EXCLUDED.length} exclusions held, P3 boundary intact`,
 );

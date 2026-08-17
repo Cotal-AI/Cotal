@@ -573,7 +573,18 @@ for (const assistant of [
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "high" }), /variant/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", mcpServers: { x: { command: "x" } } }), /MCP/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", launchOptions: { offline: true } }), /launch options/);
-    checks += 5;
+    // `--prompt` is Pi's positional initial message: delivered as the LAST argument (Pi's parser
+    // takes any bare argument as a message, so it must follow every value-taking flag), and a
+    // prompt Pi would misread (empty, an option, a file reference) refuses the launch.
+    const prompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", prompt: "  say hello  " });
+    ok(prompted.args[prompted.args.length - 1] === "say hello", "the initial prompt is Pi's last positional argument, trimmed");
+    ok(prompted.args.indexOf("--model") === prompted.args.length - 3, "the prompt follows the value-taking flags");
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "   " }), /empty/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "-p run" }), /cannot start with/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize" }), /cannot start with/);
+    const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model" }).args;
+    ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
+    checks += 11;
   } finally {
     if (previousGroq === undefined) delete process.env.GROQ_API_KEY;
     else process.env.GROQ_API_KEY = previousGroq;

@@ -85,6 +85,10 @@ export const hermesConnector: Connector = {
     if (opts.resume)
       throw new Error("the Hermes connector does not support resuming an existing session (resume)");
     if (opts.variant) throw new Error("the Hermes connector does not support model variants (variant)");
+    // Same rule for the initial prompt: the gateway has no first-turn carrier wired, and a prompt
+    // that is accepted and never submitted leaves the operator waiting on a turn that never starts.
+    if (opts.prompt !== undefined)
+      throw new Error("the Hermes connector does not support an initial prompt (prompt): its first turn is not wired yet");
     // The Hermes launcher reads a FIXED set of env vars, so it has no generic launch-option surface —
     // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
     if (opts.launchOptions && Object.keys(opts.launchOptions).length)

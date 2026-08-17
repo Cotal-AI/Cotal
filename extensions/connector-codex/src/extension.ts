@@ -156,7 +156,14 @@ export const codexConnector: Connector = {
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
     if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the host's transcript mirror
-    if (opts.prompt) env.COTAL_CODEX_PROMPT = opts.prompt; // auto-submitted first turn
+    // The auto-submitted first turn. A prompt with no text in it cannot be submitted, so refuse the
+    // launch rather than start a seat that quietly ignores what the operator passed.
+    if (opts.prompt !== undefined) {
+      const prompt = opts.prompt.trim();
+      if (!prompt)
+        throw new Error("codex connector: an initial prompt was given but it is empty, there is no first turn to submit");
+      env.COTAL_CODEX_PROMPT = prompt;
+    }
     // The host picks TUI vs headless from its own stdout, and COTAL_CODEX_TUI overrides that. The
     // child's env is an ALLOW-LIST, so without forwarding it by name the override would silently
     // do nothing.
