@@ -7,8 +7,9 @@
  *     @cotal-ai/core and @cotal-ai/workspace get linked to this binary's copies (provenance
  *     proves it); help + <TAB> list `web` from the manifest cache.
  *  C. `cotal up --detach` (JWT auth), then foreground and detached `cotal web`: the dashboard
- *     serves /, /app.js (packaged assets), and /api/meta over HTTP against the live mesh. Detached
- *     launch is PID-bound, root-pinned, logged, ready before return, and owned by `down`.
+ *     refuses an unauthenticated request, exchanges its single-use launch link for a session, and
+ *     over that session serves /, /app.js (packaged assets), and /api/meta against the live mesh.
+ *     Detached launch is PID-bound, root-pinned, logged, ready before return, and owned by `down`.
  *  D. `ext remove @cotal-ai/web`; `web` is unknown again.
  *
  * Needs dist built (the packages install per their `files: ["dist"]`), `nats-server` + npm on
@@ -109,17 +110,32 @@ try {
     });
     let webErr = "";
     webChild.stderr?.on("data", (d: Buffer) => (webErr += d.toString()));
-    let page: Response | undefined;
-    for (let i = 0; i < 30 && !page; i++) {
+    // `web.session` is written only after listen() succeeded, so its appearance is the readiness
+    // signal. Polling the port cannot be one any more: it answers before and after the console is
+    // ready, with the same refusal either way.
+    const sessionPath = join(root, ".cotal", "web.session");
+    let launch: { launchUrl?: unknown } | undefined;
+    for (let i = 0; i < 30 && launch === undefined; i++) {
       await sleep(1000);
-      page = await fetch(`http://127.0.0.1:${WEB_PORT}/`).catch(() => undefined);
+      if (existsSync(sessionPath)) launch = JSON.parse(readFileSync(sessionPath, "utf8"));
     }
-    ok("the extension `web` command serves the dashboard", page?.status === 200, webErr.slice(-400));
-    const html = await page!.text();
+    const launchUrl = typeof launch?.launchUrl === "string" ? launch.launchUrl : undefined;
+    ok("the console publishes its single-use launch link", launchUrl !== undefined, webErr.slice(-400));
+    const unauthenticated = await fetch(`http://127.0.0.1:${WEB_PORT}/`);
+    ok("the dashboard refuses a request with no session", unauthenticated.status === 401, unauthenticated.status);
+    // Spend the token ONCE and ride the session it mints. Presenting `?k=` a second time earns
+    // `launch-token-already-used`, a different refusal that reads exactly like the first.
+    const exchange = await fetch(launchUrl!, { redirect: "manual" });
+    const session = /(?:^|,\s*)cotal_web_session=([^;]+)/.exec(exchange.headers.get("set-cookie") ?? "")?.[1];
+    ok("the launch link is accepted once and mints a session", exchange.status === 302 && session !== undefined, exchange.status);
+    const authed = { cookie: `cotal_web_session=${session}` };
+    const page = await fetch(`http://127.0.0.1:${WEB_PORT}/`, { headers: authed });
+    ok("the extension `web` command serves the dashboard", page.status === 200, webErr.slice(-400));
+    const html = await page.text();
     ok("dashboard page is the real asset (packaged via files:[dist])", /<html|<!doctype/i.test(html) && html.length > 200, html.slice(0, 120));
-    const appJs = await fetch(`http://127.0.0.1:${WEB_PORT}/app.js`);
+    const appJs = await fetch(`http://127.0.0.1:${WEB_PORT}/app.js`, { headers: authed });
     ok("static asset /app.js serves", appJs.status === 200);
-    const meta = (await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`)).json()) as { space?: string; pid?: number };
+    const meta = (await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`, { headers: authed })).json()) as { space?: string; pid?: number };
     const foregroundPid = Number(readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim());
     ok("live /api/meta answers with the mesh's space and serving pid", meta.space === SPACE && meta.pid === foregroundPid && alive(foregroundPid), meta);
     const removeLive = cotal(["ext", "remove", "@cotal-ai/web"]);
@@ -159,7 +175,10 @@ try {
     const webPid = Number(readFileSync(join(root, ".cotal", "web.pid"), "utf8").trim());
     const reportedPid = Number(detached.stdout.match(/\(pid (\d+)\)/)?.[1]);
     ownPids.push(webPid);
-    const detachedMeta = await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`)).json() as { space?: string; pid?: number };
+    // The readiness nonce, not a session: this is the detached PARENT's own path, a header that is
+    // never consumed precisely because the parent may poll many times.
+    const readiness = JSON.parse(readFileSync(join(root, ".cotal", "web.session"), "utf8")).readiness as string;
+    const detachedMeta = await (await fetch(`http://127.0.0.1:${WEB_PORT}/api/meta`, { headers: { "x-cotal-readiness": readiness } })).json() as { space?: string; pid?: number };
     ok("detached child preserves the implicit parent target across same-root registry ambiguity", detachedMeta.space === SPACE && detachedMeta.pid === webPid && reportedPid === webPid && alive(webPid), detachedMeta);
     ok("detached launch creates a private diagnostic log", existsSync(logPath) && (statSync(logPath).mode & 0o777) === 0o600 && /Cotal web/.test(readFileSync(logPath, "utf8")));
 
