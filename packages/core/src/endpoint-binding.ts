@@ -33,7 +33,7 @@ import {
 } from "./endpoint-subjects.js";
 import type { RecordKindDef } from "./endpoint-records.js";
 import { AUTHORITY_KIND_DEFS, callerReadableRecordKind } from "./endpoint-records.js";
-import { epjStreamName, epfStreamName, canonDurable } from "./endpoint-journal.js";
+import { epjStreamName, epfStreamName, canonDurable, IDEMPOTENCY_HORIZON_MS_DEFAULT, RESULT_RETENTION_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT } from "./endpoint-journal.js";
 import { recordsBucket } from "./endpoint-records.js";
 
 // Re-exported so the binding module presents the complete §13.12 name table even though the
@@ -114,15 +114,82 @@ export const EP_AUTH_MARKER_TTL_MS = 60 * 60 * 1000;
 export interface EndpointStreamOptions {
   /** Age bound on EPJ (default {@link EP_SUBMISSION_MAX_AGE_MS}). Floor: canonicalizer recovery lag. */
   submissionMaxAgeMs?: number;
-  /** Age bound on EPF; 0/omitted = no age eviction (facts are the canonical record; horizons
-   *  are enforced by policy above the broker, never by silently losing facts under a horizon). */
+  /** Age bound on EPF; 0/omitted = no age eviction (facts are the canonical record; a horizon is
+   *  never realized by silently losing facts under it). A positive value below the declared
+   *  idempotency horizon is REFUSED at creation — see {@link assertFactRetentionFloor}. */
   factMaxAgeMs?: number;
+  /** The space's DECLARED idempotency horizon (§13.4 item 6; default
+   *  {@link IDEMPOTENCY_HORIZON_MS_DEFAULT}). Declared rather than compiled in, for the same reason
+   *  the admission ceiling is: a space that retains decisions longer must have its fact retention
+   *  measured against ITS horizon, not against this module's default. */
+  idempotencyHorizonMs?: number;
+  /** The space's DECLARED result retention (§13.6 item 5; default
+   *  {@link RESULT_RETENTION_MS_DEFAULT}). A goal's full terminal payload lives on EPF, so this is
+   *  a second term in the §13.12 floor, not a separate store's policy. */
+  resultRetentionMs?: number;
+  /** The space's DECLARED receipt retention (§13.10; default {@link RECEIPT_RETENTION_MS_DEFAULT},
+   *  90 d). **The LARGEST of the three terms by two orders of magnitude**, which is exactly why the
+   *  floor cannot be the horizon alone: a config at the 24 h horizon passed the old check and
+   *  evicted receipts on day one of ninety. */
+  receiptRetentionMs?: number;
   /** Age bound on EPE (default {@link EP_EVENT_MAX_AGE_MS}). */
   eventMaxAgeMs?: number;
   /** Age bound on EPT_REQ + EPR (default {@link EP_INGRESS_MAX_AGE_MS}). Floor: writer recovery lag. */
   ingressMaxAgeMs?: number;
   /** Age bound on EPT (default {@link EP_TIMER_MAX_AGE_MS}). Floor: max deadline + margin. */
   timerMaxAgeMs?: number;
+}
+
+/**
+ * The §13.12 RETENTION FLOOR on decision facts, enforced at the only site that exists.
+ *
+ * SPEC:3203-3205 requires EPF retention ≥ max(idempotency horizon, result retention, receipt retention), and §13.12 states it by OUTCOME: no
+ * removal cause may drop a protected fact early. The §13.4 idempotency horizon is realized BY that
+ * retention and never by a clock — the create-only CAS returns the recorded decision for exactly as
+ * long as the fact exists. So a fact age below the horizon does not shorten a guarantee, it deletes
+ * the mechanism: once the decision fact is evicted, a redelivered submission finds no winner to
+ * read and is accepted as NEW WORK, which is the failure SPEC:1718 names in as many words.
+ *
+ * WHY THIS IS A THROW AND NOT A CLAMP. The field's own contract was that horizons are "enforced by
+ * policy above the broker, never by silently losing facts under a horizon" — and nothing was above
+ * the broker: `IDEMPOTENCY_HORIZON_MS_DEFAULT` was exported with no readers anywhere in the tree, so
+ * the constant naming the horizon participated in nothing. A delegation to a layer that does not
+ * exist is an unenforced invariant with a comment on it, and the comment is what stops anyone
+ * noticing. Refusing the configuration is not contrary to that position but the only implementation
+ * of it: a throw at creation loses no facts; it declines a setup that would.
+ */
+export function assertFactRetentionFloor(
+  factMaxAgeMs: number | undefined,
+  terms: { horizonMs: number; resultRetentionMs?: number; receiptRetentionMs?: number } | number,
+): void {
+  // THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON ALONE ("`EPF_<space>`
+  // retention >= max(idempotency horizon, result retention, receipt retention), because the
+  // acceptance fact is the durable reconstruction source for receipts"). Checking only the horizon
+  // admitted the exact config a caller would write first — `factMaxAgeMs` at the 24 h default —
+  // and evicted receipts on day one of their ninety. A guard that passes the most likely wrong
+  // value is worse than no guard: it certifies it.
+  const t = typeof terms === "number" ? { horizonMs: terms } : terms;
+  const named: [string, number][] = [
+    ["idempotencyHorizonMs", t.horizonMs],
+    ["resultRetentionMs", t.resultRetentionMs ?? RESULT_RETENTION_MS_DEFAULT],
+    ["receiptRetentionMs", t.receiptRetentionMs ?? RECEIPT_RETENTION_MS_DEFAULT],
+  ];
+  for (const [name, v] of named)
+    if (!Number.isSafeInteger(v) || v <= 0)
+      throw new Error(`${name} ${JSON.stringify(v)} is not a positive safe integer (§13.12 retention floor)`);
+  if (factMaxAgeMs === undefined || factMaxAgeMs === 0) return; // no age eviction: the floor cannot be breached
+  if (!Number.isSafeInteger(factMaxAgeMs) || factMaxAgeMs < 0)
+    throw new Error(`factMaxAgeMs ${JSON.stringify(factMaxAgeMs)} is not a non-negative safe integer`);
+  // Report the term that BINDS, not the max: "below 7776000000" tells an operator nothing about
+  // which promise it broke, and the three terms differ by orders of magnitude.
+  const [binding, floor] = named.reduce((a, b) => (b[1] > a[1] ? b : a));
+  if (factMaxAgeMs < floor)
+    throw new Error(
+      `factMaxAgeMs ${factMaxAgeMs} is below the declared ${binding} ${floor}: EPF facts would be evicted `
+      + `while that promise still stands — a redelivered submission whose decision fact has gone is accepted `
+      + `as NEW WORK rather than resolved to its recorded decision, and a receipt whose acceptance fact has `
+      + `gone can no longer be reconstructed (SPEC:3203-3205, §13.12 "Streams and retention")`,
+    );
 }
 
 /**
@@ -143,6 +210,12 @@ export async function createEndpointStreams(
   opts: EndpointStreamOptions = {},
 ): Promise<void> {
   const p = spacePrefix(space);
+  // Refused BEFORE the first stream exists, so a breaching config never leaves a half-built space.
+  assertFactRetentionFloor(opts.factMaxAgeMs, {
+    horizonMs: opts.idempotencyHorizonMs ?? IDEMPOTENCY_HORIZON_MS_DEFAULT,
+    ...(opts.resultRetentionMs !== undefined ? { resultRetentionMs: opts.resultRetentionMs } : {}),
+    ...(opts.receiptRetentionMs !== undefined ? { receiptRetentionMs: opts.receiptRetentionMs } : {}),
+  });
   // EPJ — raw submissions, untrusted, at-least-once. NO allow_direct (nothing reads it but the
   // canonicalizer's durable and harness MSG.GET); duplicate window pinned to the server minimum.
   await jsm.streams.add({
@@ -203,7 +276,7 @@ export async function createEndpointStreams(
   // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
   // (an acked item leaves the WorkQueue, an in-flight one remains readable — exactly the
   // predicate) is a FENCING read that gates the re-enqueue decision, so it goes leader-served
-  // STREAM.MSG.GET (SPEC 13.6:1797-1799), never a follower-servable Direct Get whose stale miss
+  // STREAM.MSG.GET (§13.9 "Work-pool reconciliation probe"), never a follower-servable Direct Get whose stale miss
   // would re-arm settled work. Nothing else reads EPW: the pool workers drain it via the
   // WorkQueue consumer (CONSUMER.MSG.NEXT), not by subject read.
   await jsm.streams.add({
@@ -974,7 +1047,7 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   const p = spacePrefix(space);
   const records = recordsBucket(space);
   const publish = [
-    // ONE terminal subject per goal (SPEC:1394, the §13.9 "Result/receipt/terminal/resume facts"
+    // ONE terminal subject per goal (the §13.9 "Result/receipt/terminal/resume facts"
     // row): the exact-arity `…result` leaf, never an `…result.*` epoch-scoped variant — a per-epoch
     // subject hid a legitimate pre-restart winner from every reader.
     `${p}.epf.${e}.goal.*.*.*.*.result`,
@@ -985,6 +1058,17 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
     `$KV.${records}.goal.${e}.>`,
     `$KV.${records}.cp.${e}.>`,
     `$KV.${records}.lease.${e}.>`,
+    // §13.9 "Claim / action / checkpoint commits" — puts SIX kinds on this row, not three, and says why in the row itself: the three
+    // coordination kinds "are enumerated HERE because a shared registry profile does not confer a
+    // grant — a kind absent from this enumeration is default-denied however it is registered". They
+    // were built on the Model-B overlay instead, where one connection happens to bind and commit,
+    // so the omission is invisible for exactly as long as that overlay is the only caller. A commit
+    // principal minted from this builder alone would be silently denied the launch election, the
+    // name claim, and the cutover manifest — the failure arriving as a broker denial at commit time,
+    // in the one place the journal rail has already promised the caller a durable answer.
+    `$KV.${records}.goaleff.${e}.>`,
+    `$KV.${records}.epname.${e}.>`,
+    `$KV.${records}.epmig.${e}`,
     `${JSAPI}.STREAM.MSG.GET.${epfStreamName(space)}`,
     `${JSAPI}.STREAM.MSG.GET.${recordsKvStreamName(space)}`,
     `${JSAPI}.INFO`,
@@ -1005,8 +1089,13 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
  *  connection is broker-DENIED every goal write, which is the item-2 privilege separation (the
  *  dedicated writer is minted on a distinct connection, the serve rails stay serve-only). All of
  *  commitPrincipalGrants' D32 residuals carry unchanged (payload-blind create-only publish; raw
- *  `$KV` cannot enforce the per-key CAS the substrate layers on; the two body-selected
- *  `STREAM.MSG.GET` reads expose EPF + records space-wide). The reply inbox is connection-scoped
+ *  `$KV` cannot enforce the per-key CAS the substrate layers on). **THREE body-selected
+ *  `STREAM.MSG.GET` reads, not two**: EPF and records space-wide from the commit-principal base,
+ *  PLUS the own-gate read on the AUTHORITY store (`KV_cotal_auth_<space>`) added here. That third
+ *  one is the widest of the three and it was missing from this list while the builder emitted it —
+ *  a residual you do not name is a residual nobody weighs. It makes this the only endpoint-side
+ *  principal that reads the credential/gate store, which is why the D32 matrix audit now carries it
+ *  as an explicit holder-set entry. The reply inbox is connection-scoped
  *  (`_INBOX_<connId>.>`). The `eff`/`wrk`/`receipt`/`cp`/`lease` families in the commit-principal
  *  base are inert for a goal-only endpoint (the manager writes none) but are the commit-principal
  *  profile's standard ceiling; a tighter goal-only ceiling is a follow-up if the panel prefers it. */
@@ -1020,6 +1109,13 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   // index subtree; the goal-writer holds NO records CONSUMER.CREATE (the boot sweep enumerates the
   // index over the PROVISIONER, never this standing connection).
   const indexRow = `$KV.${recordsBucket(space)}.goalidx.${e}.>`;
+  // The three journal-action coordination kinds (`goaleff` the at-most-one-launch election,
+  // `epname` the durable name claim, `epmig` the cutover manifest) are NOT added here: §13.9
+  // "Claim / action / checkpoint commits" puts them on the commit row, so they arrive
+  // through `commitPrincipalGrants` above and this
+  // overlay inherits them. They were duplicated here while the commit builder listed only three of
+  // the six, which made the overlay look like their source — a grant the SPEC gives every commit
+  // principal reading as a privilege of this one profile.
   // must-5 (a) — the own-gate currency belt: the manager reads its OWN issuance gate
   // (`epgate.<e>.<iid>`) over this connection before the first-terminal-fact CAS and skips a
   // superseded commit. The auth store is `allow_direct=false`, so the read is a body-selected
@@ -1040,7 +1136,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
  *  serving a session is gone. So it is standing and renewable, while the rails it records are
  *  per-session, exact-subject, and die with their session ({@link import("./provision.js").Profile}
  *  `session-serving` / `session-caller`). An earlier revision fused the two into one standing
- *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2526 ("no
+ *  credential carrying `eps.<endpoint>.*.<epoch>.{in,out}`, which contradicted §13.9:2753 ("no
  *  standing EPS grant exists on either side") and let one credential read and write every live
  *  session's bytes at that epoch. Splitting on the lifetime boundary is what removes the wildcard:
  *  the standing half no longer has rails to widen.

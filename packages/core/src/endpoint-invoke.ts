@@ -17,9 +17,9 @@
  *    the schema the caller validated against.
  */
 import { randomBytes } from "node:crypto";
-import type { NatsConnection, Subscription } from "@nats-io/transport-node";
+import { PermissionViolationError, type NatsConnection, type Subscription } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED } from "./endpoint-envelope.js";
 import { compileContract, type CompiledContract } from "./schema-profile.js";
 import {
   contractStoreContext, fetchContractClosure, contractRefToHex, contractArtifactDigestHex,
@@ -96,7 +96,24 @@ export async function describeEndpoint(
   };
   let sub: Subscription | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
+  /** The status stream itself, kept because `stop()`, not `return()`, is what releases it. */
+  let statusStream: { [Symbol.asyncIterator](): AsyncIterator<{ type: string; error?: unknown }>; stop(err?: Error): void } | undefined;
+  let statusIter: AsyncIterator<{ type: string; error?: unknown }> | undefined;
   try {
+    // REGISTER THE PERMISSION WATCH BEFORE THE PUBLISH IT IS WATCHING: `nc.status()` registers its
+    // listener at CALL time, so one created after `nc.publish` cannot see a violation dispatched in
+    // between, and that dropped event is indistinguishable from the silence this watch exists to
+    // eliminate.
+    //
+    // RELEASE IS `stop()`, NOT `return()`. The stream is a `QueuedIterator` parked on an internal
+    // signal await, so a queued `return()` does not run until the NEXT status event — which on a
+    // healthy connection may never come, leaking one listener per resolve. `status()` is typed as a
+    // bare `AsyncIterable`, so `stop` is reached structurally and its absence fails loud HERE rather
+    // than leaking quietly.
+    statusStream = nc.status() as typeof statusStream;
+    if (typeof statusStream?.stop !== "function")
+      throw new EpEnvelopeError("unavailable", "the NATS connection's status() stream does not expose stop(); the describe's permission watch cannot be released and would leak a listener per resolve");
+    statusIter = statusStream[Symbol.asyncIterator]();
     const got = new Promise<{ body: Record<string, unknown>; responder: { instanceId: string; epoch: number } }>((resolve, reject) => {
       sub = nc.subscribe(epCallerReplyFilter(space, caller), {
         callback: (err, msg) => {
@@ -119,9 +136,37 @@ export async function describeEndpoint(
       });
       nc.publish(subject, enc.encode(JSON.stringify(env)));
     });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`)), deadlineMs); });
-    const { body: reply, responder } = await Promise.race([got, timeout]);
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no describe reply from ${endpoint} within ${deadlineMs}ms`, [{ kind: EP_UNANSWERED, endpoint, command: "describe" }])), deadlineMs); });
+    // A REFUSED PUBLISH MUST NOT MASQUERADE AS AN ABSENT RESPONDER. `nc.publish` is fire-and-forget:
+    // when the credential lacks the subject the broker answers the CONNECTION asynchronously and the
+    // publish returns normally, so the only observable is a deadline that reads as "that endpoint
+    // isn't there". The two need opposite responses — mint the grant vs. find the responder.
+    //
+    // Watch only for OUR subject, and do not race the whole status stream: the connection is shared,
+    // and another component's denial or an unrelated transport error must not fail this describe.
+    const denied = new Promise<never>((_, reject) => {
+      void (async () => {
+        // Driven by hand rather than `for await` so the `finally` below can CLOSE it: `nc.status()`
+        // is connection-lived, and a `for await` parks on the next event and outlives the describe,
+        // leaking one listener per resolve.
+        const it = statusIter!;
+        for (;;) {
+          const { value: s, done } = await it.next();
+          if (done === true || s === undefined) return;
+          if (s.type !== "error") continue;
+          if (s.error instanceof PermissionViolationError && s.error.subject === subject) {
+            reject(new EpEnvelopeError("permission-denied",
+              `the describe for ${endpoint} was REFUSED BY THE BROKER, not unanswered: this caller's credential does not authorize publishing to "${subject}"${opts.instanceId !== undefined ? ` (the instance rail for ${opts.instanceId}: an instance-addressed call needs a credential minted with that instance, not a class-rail one)` : ""}. The responder may be perfectly healthy; the grant is what is missing (SPEC 13.2)`));
+            return;
+          }
+        }
+      })().catch(() => { /* the status stream ending is not a describe failure; the deadline still governs */ });
+    });
+    const { body: reply, responder } = await Promise.race([got, timeout, denied]);
     if (reply.ok !== true) {
+      // A responder ANSWERED with a refusal: it is rethrown under the responder's own code (which
+      // may be `unavailable`) and deliberately without the EP_UNANSWERED marker the deadline above
+      // carries, so a consumer keyed on that marker never reads an answering responder as absent.
       const e = reply.error as { code?: string; message?: string } | undefined;
       throw new EpEnvelopeError((e?.code as never) ?? "unavailable", `describe(${endpoint}) failed: ${e?.message ?? "unknown"}`);
     }
@@ -129,6 +174,11 @@ export async function describeEndpoint(
   } finally {
     sub?.unsubscribe();
     if (timer !== undefined) clearTimeout(timer);
+    // Release on EVERY exit, success included. `stop()` resolves the generator's signal and its
+    // `iterClosed`, which is what the transport splices the listener on; `return()` is kept only to
+    // settle the parked `next()` it wakes.
+    statusStream?.stop();
+    void statusIter?.return?.(undefined);
   }
 }
 
@@ -322,9 +372,17 @@ export async function invokeCommand(
       // The old text's remedy is also not executable by the surfaces that print it most (`stop`,
       // `despawn` and `attach` have no adopt path and no pin), so it advised an action the caller
       // could not take. Say which case this is, and stop asserting a cause that is usually wrong.
+      // The marker, not the prose, is what stops an automatic re-invoke: reaching here means a
+      // responder ANSWERED (executed or refused; the reply does not say which), so a retry is a
+      // second attempt that may duplicate an effect rather than a repair. Callers that recover
+      // from `failed-precondition` by re-resolving must consult `respondedButUnbound`.
+      // The remedy is stated in core vocabulary (address one instance), never as a CLI flag: core
+      // cannot know whether its caller has one, and most `invokeService` callers (a connector's
+      // tools, a manifest deploy) do not. The CLI names its own flag when it renders this.
       throw new EpEnvelopeError("failed-precondition", service.pinnedInstanceId !== undefined
-        ? `the ${service.endpoint} instance ${instanceId} answered but this handle is PINNED to ${service.pinnedInstanceId}; a pinned call names its instance and never accepts another (SPEC 13.2)`
-        : `the ${service.endpoint} instance ${instanceId} won the class queue but this UNPINNED handle resolved against ${service.responder.instanceId}; the describe and the invoke are separate trips through the same queue, so in a multi-instance space this is an ordinary split and not necessarily a supersession - the handle cannot currently adopt a different winner (SPEC 13.2)`);
+        ? `the ${service.endpoint} instance ${instanceId} answered but this handle is PINNED to ${service.pinnedInstanceId}; a pinned call names its instance and never accepts another. ${instanceId} did receive and answer the request, so if "${command}" mutates, that effect may already have landed - verify before re-issuing (SPEC 13.2)`
+        : `the ${service.endpoint} instance ${instanceId} won the class queue but this UNPINNED handle resolved against ${service.responder.instanceId}; the describe and the invoke are separate trips through the same queue, so in a multi-instance space this is an ordinary split and not necessarily a supersession - the handle cannot currently adopt a different winner. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${instanceId} received the request and answered it, possibly after this error was raised. For a read that is harmless and re-issuing is safe; if "${command}" mutates, verify the outcome ('ps'/'inspect'/roster) before re-issuing, because a retry that assumes failure duplicates the effect. A call that addresses one instance does not split (SPEC 13.2)`,
+        [{ kind: EP_UNBOUND_RESPONDER, endpoint: service.endpoint, command, answeredBy: instanceId, boundTo: service.responder.instanceId, pinned: service.pinnedInstanceId !== undefined }]);
     }
     return service.responder.epoch;
   };
@@ -335,11 +393,28 @@ export async function invokeCommand(
   const route = service.pinnedInstanceId !== undefined
     ? { mode: "inst" as const, instanceId: service.pinnedInstanceId, epoch: service.responder.epoch }
     : { mode: "one" as const };
+  // The bind travels WITH the request, so the responder can refuse before running the command
+  // rather than leaving `describeBound` to report the split afterwards. It is sent exactly when
+  // this handle's own resolve is the currency reference — that is the caller saying "this
+  // incarnation or none", and it is the same population the check below already refuses. A caller
+  // that supplied its own `currentEpoch` is asking a REGISTRY whether the answerer is current, and
+  // deliberately accepts any current member; binding it would refuse calls that succeed today.
+  const bind = opts.currentEpoch === undefined
+    ? { instanceId: service.pinnedInstanceId ?? service.responder.instanceId, epoch: service.responder.epoch }
+    : undefined;
   return epCall(nc, space, route, {
     endpoint: service.endpoint, command, contract: resolved.contract, caller,
     ...(sendArgs !== undefined ? { args: sendArgs } : {}),
     ...(opts.target ? { target: opts.target } : {}),
-  }, { deadlineMs: opts.deadlineMs ?? 10_000, currentEpoch: opts.currentEpoch ?? describeBound });
+    ...(bind !== undefined ? { bind } : {}),
+  }, {
+    deadlineMs: opts.deadlineMs ?? 10_000,
+    currentEpoch: opts.currentEpoch ?? describeBound,
+    // What the currency hook returns decides how a stale-epoch refusal is worded and marked: the
+    // describe-bound default is this handle's own bind (a responder ahead of it is a successor and
+    // the handle is the stale side); a caller-supplied hook is a registry read by epCall's contract.
+    currencyReference: opts.currentEpoch ? "registry" : "bind",
+  });
 }
 
 /** Submit an ACTION command and FOLLOW its goal to the terminal (P2 item 2, 2b): since 2a a
@@ -383,7 +458,13 @@ export async function submitAndFollowGoal(
       waiters.set(goalId, () => { clearTimeout(t); resolve(terminals.get(goalId)); });
     });
     if (terminal === undefined)
-      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" produced no terminal within ${deadlineMs}ms; read its outcome with 'ps'/'inspect' (SPEC 13.6)` } } };
+      // WHAT THIS PROVED: nothing about the goal. The goal was ACCEPTED (the submit above returned
+      // ok); only its terminal did not arrive here in time, which a slow runtime or a dropped
+      // progress subscription produces just as readily as a real failure. Observed live: seats that
+      // reported this had already come up and were messaging peers. So say the deadline is about
+      // the WAIT, not the work, and warn about the one action that turns a false negative into real
+      // damage: a retry, which submits a SECOND goal and duplicates whatever the first one did.
+      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "deadline-exceeded", message: `the goal "${goalId}" was accepted but produced no terminal within ${deadlineMs}ms; this is a timeout on the WAIT, not evidence the goal failed - it may already have succeeded, and may still succeed. Read its outcome with 'ps'/'inspect' before acting; do NOT retry on this alone, a retry submits a second goal and duplicates the effect (SPEC 13.6)` } } };
     if (terminal.state === "succeeded")
       return { ...attributed, reply: { ...attributed.reply, ok: true, ...(terminal.data !== undefined ? { data: terminal.data } : { data: undefined }), error: undefined } };
     const d = (terminal.data ?? {}) as { error?: unknown; reason?: unknown };

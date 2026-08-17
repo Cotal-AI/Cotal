@@ -192,6 +192,30 @@ try {
   check("an incomplete CONNZ sweep does NOT prune existing membership", [...afterBad.out.keys()].sort().join(",") === beforeKeys, [...afterBad.out.keys()]);
   check("an incomplete CONNZ sweep does NOT advance the freshness heartbeat", afterBad.asOf === before.asOf, { before: before.asOf, after: afterBad.asOf });
 
+  // --- teardown must not INVENT an error. `stop()` used to clear the timers and drain both connections
+  // without waiting for a poll already running, so that poll died on a connection pulled out from under
+  // it and its catch logged `poll failed ... connection closed` — for an ordinary shutdown, after the
+  // caller believed teardown was done. Graded here because the cost is not cosmetic: a false error in a
+  // teardown path reads as a leak to whoever greps the log next, and this one did exactly that.
+  //
+  // Driven the way the defect occurs and not by hand: `poll()` is started WITHOUT being awaited (which is
+  // how every real caller drives it, off a timer or a trigger), so a reconcile is genuinely in flight when
+  // `stop()` lands. The broker here is healthy and the account is the right one, so ANY `poll failed` in
+  // this arm is manufactured by the teardown and nothing else.
+  await feed.stop();
+  const logged: string[] = [];
+  const td = await startMembershipFeed({
+    servers: SERVERS, space, accountId: auth.account.pub, observerCreds, rwCreds,
+    intervalMs: 60_000, log: (m) => logged.push(m),
+  });
+  void td.poll();
+  await wait(25);
+  await td.stop();
+  await wait(400); // a poll drained out from under would have thrown and logged well inside this
+  check("stop() waits for a poll already in flight — teardown logs no manufactured failure",
+    logged.filter((m) => m.startsWith("poll failed")).length === 0, logged);
+  feed = undefined;
+
   console.log(`\nMEMBERSHIP-FEED SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {

@@ -32,7 +32,7 @@ import {
   canonicalizerGrants, canonicalizerWorkGrants, activatorGrants, activatorContext, readPoolOccupancy,
   effectsBindGrants, recordWriterGrants, timerWriterGrants,
   poolOwnerBindGrants, readerBindGrants, provisionerConsumerGrants,
-  commitPrincipalGrants, goalWriterGrants, contractPublisherGrants,
+  commitPrincipalGrants, goalWriterGrants, contractPublisherGrants, recordAtomicKey,
   eptSubject, epwSubject, epjSubject, appendSubmission,
   AUTHORITY_KIND_DEFS, callerReadableRecordKind,
   BASELINE_DELIVERY_COMMANDS, BASELINE_SELF_LIFECYCLE_COMMANDS, SPAWN_CREATE_COMMANDS, SPAWN_OWNER_LIFECYCLE_COMMANDS,
@@ -41,11 +41,15 @@ import {
   EP_AUTHZ_MODES, isEpAuthzMode, VOID_SCHEMA, VOID_SCHEMA_ARTIFACT_DIGEST, contractDigest,
   EP_ERROR_CODES, RESERVED_COMMANDS,
   type EpCaller, type RecordKindDef,
+  assertFactRetentionFloor, IDEMPOTENCY_HORIZON_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
-const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
+// A PASSING CELL PRINTS: `mutation-proof` counts `✓` marks to tell "the mutation applied and no
+// cell caught it" apart from "the run died before reaching the cell". A suite silent on success
+// reports zero marks, so that protection is inert while the runner still prints a count.
+const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown) => { try { fn(); c(n, false, "no throw"); } catch { c(n, true); } };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -272,52 +276,107 @@ c("a reader bind grant is INFO/MSG.NEXT/ACK on the reader's own stream, never cr
   readerBindGrants(recordsKvStreamName(SPACE), recordReaderConfig(SPACE, { uid: UID, grantId: "g1", index: 0, subtree: recSubtree })).length === 3);
 // ── D14: the commit principal + contract publisher (§13.9 matrix rows, exact strings) ──
 const CONN = "ibxsmoke0123456789";
-c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the three record-key prefixes + the two leader-served fencing reads), never dec/quar",
+const COMMIT_ROWS = [
+  "cotal.epbind.epf.manager.goal.*.*.*.*.result",
+  "cotal.epbind.epf.manager.eff.>",
+  "cotal.epbind.epf.manager.receipt.>",
+  "cotal.epbind.epf.manager.wrk.>",
+  "cotal.epbind.epf.manager.cp.>",
+  "$KV.cotal_records_epbind.goal.manager.>",
+  "$KV.cotal_records_epbind.cp.manager.>",
+  "$KV.cotal_records_epbind.lease.manager.>",
+  // §13.9 "Claim / action / checkpoint commits" enumerates SIX record kinds on this row, not three. These were built on the Model-B
+  // overlay instead, where one connection binds AND commits, so nothing noticed for as long as that
+  // overlay was the only caller — and a commit principal minted from this builder alone would be
+  // denied the launch election, the name claim, and the cutover manifest at commit time.
+  "$KV.cotal_records_epbind.goaleff.manager.>",
+  "$KV.cotal_records_epbind.epname.manager.>",
+  "$KV.cotal_records_epbind.epmig.manager",
+  "$JS.API.STREAM.MSG.GET.EPF_epbind",
+  "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
+  "$JS.API.INFO",
+];
+c("the commit principal's rows are exactly the two §13.9 matrix rows (five fact families, the goal terminal at its EXACT-ARITY leaf with no epoch-scoped variant + the SIX record-key prefixes §13.9 `Claim / action / checkpoint commits` (SPEC:2912) enumerates + the two leader-served fencing reads), never dec/quar",
   (() => {
     const g = commitPrincipalGrants(SPACE, "manager", CONN);
-    return JSON.stringify(g.publish) === JSON.stringify([
-      "cotal.epbind.epf.manager.goal.*.*.*.*.result",
-      "cotal.epbind.epf.manager.eff.>",
-      "cotal.epbind.epf.manager.receipt.>",
-      "cotal.epbind.epf.manager.wrk.>",
-      "cotal.epbind.epf.manager.cp.>",
-      "$KV.cotal_records_epbind.goal.manager.>",
-      "$KV.cotal_records_epbind.cp.manager.>",
-      "$KV.cotal_records_epbind.lease.manager.>",
-      "$JS.API.STREAM.MSG.GET.EPF_epbind",
-      "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
-      "$JS.API.INFO",
-    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
+    return JSON.stringify(g.publish) === JSON.stringify(COMMIT_ROWS)
+      && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
       && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET"));
   })());
+// AN EXACT-LIST CELL NAMES ONE ASSERTION FOR EVERY ROW IN IT. Three separate mutations — drop
+// `goaleff`, drop `epname`, widen `epmig` to a subtree — all reddened the same conjunctive cell, so
+// the suite went red without being able to say which grant died. Per-row cells below; the exact
+// list above still holds the CLOSURE (nothing extra), which per-row membership cannot.
+for (const kind of ["goaleff", "epname", "epmig"] as const) {
+  const row = kind === "epmig" ? "$KV.cotal_records_epbind.epmig.manager" : `$KV.cotal_records_epbind.${kind}.manager.>`;
+  c(`the commit principal holds the \`${kind}\` key EXACTLY as §13.9 \`Claim / action / checkpoint commits\` (SPEC:2912) spells it (\`epmig\` is ONE key, never a subtree)`,
+    commitPrincipalGrants(SPACE, "manager", CONN).publish.includes(row), row);
+}
+// ── the three journal-action coordination kinds ────────────────────────────────────────────
+// Registration and grant are TWO claims and this needed both. A registry entry pins a key
+// grammar and confers no authority; the grant builder decides the commit path's records keys BY
+// KIND and default-denies anything it does not name. Either half alone ships something that looks
+// present and does nothing, which is why each is asserted separately below.
+for (const [kind, quals] of [["goaleff", 6], ["epname", 2], ["epmig", 1]] as const) {
+  const def = RECORD_KINDS[kind as keyof typeof RECORD_KINDS];
+  c(`\`${kind}\` is a REGISTERED core record kind`, def !== undefined && def.kind === kind, def);
+  c(`\`${kind}\` is UNSPLIT (an atomic coordination row, no .spec/.status)`, def?.split === false, def?.split);
+  c(`\`${kind}\` is written by the commit path`,
+    def?.writers.spec === "commit-path" && def?.writers.status === "commit-path", def?.writers);
+  c(`\`${kind}\` pins ${quals} qualifier(s)`, def?.qualifiers.length === quals, def?.qualifiers.length);
+}
+// The GRAMMARS, built rather than described — a key grammar stated in a comment is not a key.
+c("`goaleff` keys on the caller triple, the goalId AND the acceptance generation",
+  recordAtomicKey(RECORD_KINDS.goaleff, ["manager", "u_abc", "worker", "u".repeat(26), "g1", "77"])
+  === `goaleff.manager.u_abc.worker.${"u".repeat(26)}.g1.77`);
+// Keyed by the NAME, not by a caller: two callers racing for one name MUST contend on one key, and
+// a caller-scoped grammar would make that contention impossible by construction.
+c("`epname` keys on the NAME, with no caller triple",
+  recordAtomicKey(RECORD_KINDS.epname, ["manager", "worker-7"]) === "epname.manager.worker-7");
+c("`epmig` is ONE key per endpoint", recordAtomicKey(RECORD_KINDS.epmig, ["manager"]) === "epmig.manager");
+
+// RAISED, NOT SETTLED — and asserted so it cannot merge unnoticed. These three are ordinary
+// (non-authority) kinds, so `callerReadableRecordKind` admits them and the reader-config seam would
+// accept a durable over their subtrees. For `goaleff` that mirrors `goalidx`, whose key also
+// carries the caller triple. For `epname` and `epmig` it does NOT: their keys carry no caller, so
+// an admitted filter is endpoint-wide — every name claim, and the cutover manifest. Whether that is
+// correct is an authority decision inside an authority change, so it is pinned here at today's
+// answer rather than quietly chosen; if the ruling narrows it, this cell dies and says so.
+for (const kind of ["goaleff", "epname", "epmig"])
+  c(`TODAY: \`${kind}\` is caller-readable (non-authority) — pinned here, decided at grant-issuance time`,
+    callerReadableRecordKind(kind) === true);
+
+const GW = goalWriterGrants(SPACE, "manager", CONN);
 c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the goal `.bind` leaf, the must-5 reconcile-index write, and the must-5 own-gate read — nothing else",
-  (() => {
-    const g = goalWriterGrants(SPACE, "manager", CONN);
-    return JSON.stringify(g.publish) === JSON.stringify([
-      "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
-      "$KV.cotal_records_epbind.goalidx.manager.>",
-      "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
-      "cotal.epbind.epf.manager.goal.*.*.*.*.result",
-      "cotal.epbind.epf.manager.eff.>",
-      "cotal.epbind.epf.manager.receipt.>",
-      "cotal.epbind.epf.manager.wrk.>",
-      "cotal.epbind.epf.manager.cp.>",
-      "$KV.cotal_records_epbind.goal.manager.>",
-      "$KV.cotal_records_epbind.cp.manager.>",
-      "$KV.cotal_records_epbind.lease.manager.>",
-      "$JS.API.STREAM.MSG.GET.EPF_epbind",
-      "$JS.API.STREAM.MSG.GET.KV_cotal_records_epbind",
-      "$JS.API.INFO",
-    ]) && JSON.stringify(g.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`])
-      // the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
-      && g.publish[0] === "cotal.epbind.epf.manager.goal.*.*.*.*.bind"
-      // must-5: the reconcile-index write is key-pinned to THIS endpoint's index subtree, and the
-      // own-gate read is the auth store's leader MSG.GET (the goal-writer holds NO records CONSUMER
-      // authority — the boot sweep enumerates the index over the provisioner, never this connection)
-      && g.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>")
-      && g.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind")
-      && !g.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET") || r.includes("CONSUMER."));
-  })());
+  JSON.stringify(GW.publish) === JSON.stringify([
+    "cotal.epbind.epf.manager.goal.*.*.*.*.bind",
+    "$KV.cotal_records_epbind.goalidx.manager.>",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind",
+    ...COMMIT_ROWS,
+  ]) && JSON.stringify(GW.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`]), GW.publish);
+// SPELLED AS A COMPOSITION, not as a re-listing. The three coordination kinds were written out here
+// as well as on the commit row, which made this overlay look like their source; they are §13.9
+// "Claim / action / checkpoint commits" commit-row grants that every commit principal holds, and this profile only INHERITS them. Reusing
+// `COMMIT_ROWS` is what makes that structural rather than a claim in a comment: the day the commit
+// row changes, this cell moves with it or fails, and it cannot drift into a private copy again.
+// the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
+c("the `.bind` leaf is the goal-writer's FIRST row — the privilege that separates it from a serve credential",
+  GW.publish[0] === "cotal.epbind.epf.manager.goal.*.*.*.*.bind");
+// must-5: the reconcile-index write is key-pinned to THIS endpoint's index subtree, and the own-gate
+// read is the auth store's leader MSG.GET (the goal-writer holds NO records CONSUMER authority — the
+// boot sweep enumerates the index over the provisioner, never this standing connection).
+c("the must-5 reconcile-index write is key-pinned to THIS endpoint's index subtree",
+  GW.publish.includes("$KV.cotal_records_epbind.goalidx.manager.>"));
+c("the must-5 own-gate read is the auth store's leader MSG.GET",
+  GW.publish.includes("$JS.API.STREAM.MSG.GET.KV_cotal_auth_epbind"));
+c("the goal-writer forges no decision and binds no consumer",
+  !GW.publish.some((r) => r.includes(".dec.") || r.includes(".quar.") || r.includes("DIRECT.GET") || r.includes("CONSUMER.")));
+// `epmig` is ONE key per endpoint, so its row is the exact key and NOT a `.>` subtree: a wildcard
+// here would grant an endpoint-wide namespace for a single-key kind. Asserted NEGATIVELY as well,
+// because `includes(exact)` stays true when a widened row is added ALONGSIDE it.
+c("`epmig` reaches the goal-writer as ONE key, never widened to a subtree",
+  GW.publish.includes("$KV.cotal_records_epbind.epmig.manager")
+  && !GW.publish.includes("$KV.cotal_records_epbind.epmig.manager.>"));
 c("the contract publisher's rows are exactly the §13.9 publication + subject-confined read-back (no STREAM.INFO, no MSG.GET, no consumer authority)",
   (() => {
     const g = contractPublisherGrants(SPACE, CONN);
@@ -378,6 +437,88 @@ throws("a branded config with a post-mint deliver_subject refuses (family consum
     return provisionerConsumerGrants([{ stream: epwStreamName(SPACE), config: cfg }]);
   });
 
+// ── the §13.12 fact-retention floor (broker-free) ───────────────────────────────────────────────
+// The horizon is realized BY retention and never by a clock: the create-only CAS returns the
+// recorded decision for exactly as long as the fact exists. So a fact age under the horizon does
+// not shorten a guarantee, it removes the mechanism — and a redelivered submission whose fact has
+// been evicted is accepted as NEW WORK.
+//
+// THIS CHECK EXISTS BECAUSE THE INVARIANT WAS DELEGATED TO A LAYER THAT DID NOT EXIST. The field's
+// contract said horizons are "enforced by policy above the broker", and nothing was above the
+// broker: the constant naming the horizon had ZERO readers in the tree. The cell below pins that
+// directly, because an exported constant with no readers is a claim nobody is making, and it is
+// the cheapest possible signal for "an invariant that was described and never wired".
+const HORIZON = 24 * 60 * 60 * 1000;
+c("the horizon constant is what the floor is measured against — it now has a READER, which is the "
+  + "whole tell: before this check it was exported and read by nothing, so the invariant it names "
+  + "participated in no code path at all",
+  IDEMPOTENCY_HORIZON_MS_DEFAULT === HORIZON, IDEMPOTENCY_HORIZON_MS_DEFAULT);
+throws("a fact age BELOW the horizon is refused at creation, not clamped and not accepted",
+  () => assertFactRetentionFloor(HORIZON - 1, HORIZON));
+throws("and a wildly short one is refused the same way (a minute against a day)",
+  () => assertFactRetentionFloor(60_000, HORIZON));
+// The two values that must NOT throw, without which the check is "refuse every configuration" and
+// every positive cell above still passes.
+// A BARE CALL IS NOT A CELL, and the harness is what taught me: these were written as
+// `assertFactRetentionFloor(x, y); c(label, true)`, so a mutant that made one of them THROW killed
+// the process before the named cell could print. Two mutants graded WRONG-RED — "exited 1 but never
+// printed the expected failure" — at 105 marks against a 151 baseline, which is the mark count doing
+// exactly the job it exists for. It is the mirror of a bare `throws` passing on the wrong refusal:
+// there the cell is green for the wrong reason, here the cell never runs at all.
+type FloorTerms = number | { horizonMs: number; resultRetentionMs?: number; receiptRetentionMs?: number };
+const admitsFloor = (label: string, factMaxAgeMs: number | undefined, terms: FloorTerms) => {
+  try { assertFactRetentionFloor(factMaxAgeMs, terms); c(label, true); }
+  catch (e) { c(label, false, (e as Error).message); }
+};
+/** A refusal whose MESSAGE must name a thing. `throws` proves only that something threw, and three
+ *  terms that all throw are indistinguishable to it. */
+const throwsMsg = (label: string, fn: () => unknown, needle: string) => {
+  try { fn(); c(label, false, "expected a throw, got a value"); }
+  catch (e) { const m = String((e as Error).message); c(label, m.includes(needle), m); }
+};
+admitsFloor("an OMITTED fact age is admitted: no age eviction means the floor cannot be breached", undefined, HORIZON);
+admitsFloor("and an explicit 0 is admitted for the same reason — 0 is the documented no-eviction "
+  + "spelling, not a zero-length retention", 0, HORIZON);
+// THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON. This pair used to read
+// "a fact age EXACTLY at the horizon is admitted" and it was WRONG — 24 h of EPF retention evicts
+// the 90-day receipts whose reconstruction source the acceptance fact IS. A reviewer found it by
+// reading the spec sentence the row cited rather than the row. The lesson generalises past this
+// cell: **the guard passed the value a caller was most likely to write first**, which is worse than
+// no guard, because it certifies it.
+throws("a fact age exactly at the IDEMPOTENCY HORIZON is refused — the horizon is not the floor",
+  () => assertFactRetentionFloor(HORIZON, HORIZON));
+admitsFloor("a fact age exactly at the FLOOR (the largest term, receipt retention) is admitted: "
+  + "`below`, not `at or below`", RECEIPT_RETENTION_MS_DEFAULT, HORIZON);
+admitsFloor("and a longer retention is admitted (SPEC's floor is a minimum, never a target)",
+  RECEIPT_RETENTION_MS_DEFAULT * 2, HORIZON);
+// WHICH TERM BINDS is part of the contract, not decoration: the three differ by two orders of
+// magnitude, so "below 7776000000" leaves an operator guessing which promise it broke.
+throwsMsg("the refusal NAMES the binding term (receipt retention, not the horizon it is not)",
+  () => assertFactRetentionFloor(HORIZON, HORIZON), "declared receiptRetentionMs");
+throwsMsg("and when a DECLARED term is the largest, that one is named instead",
+  () => assertFactRetentionFloor(RECEIPT_RETENTION_MS_DEFAULT, { horizonMs: RECEIPT_RETENTION_MS_DEFAULT * 3 }),
+  "declared idempotencyHorizonMs");
+admitsFloor("a declared receipt retention BELOW the default lowers the floor with it — the terms are "
+  + "declared, never compiled in", 2 * HORIZON,
+  { horizonMs: HORIZON, resultRetentionMs: HORIZON, receiptRetentionMs: 2 * HORIZON });
+// The horizon is DECLARED, never compiled in — the same lesson as the admission ceiling. A space
+// retaining decisions for a year must have its fact age measured against ITS horizon, and this cell
+// is the one that fails if the floor is ever hardcoded to the module default.
+//
+// IT DID NOT USED TO BE. Written as "48h of facts under a 90-day declared horizon", it proved
+// nothing about the declared term: 90 days is EXACTLY the receipt default, so the receipt term
+// bound the floor and 48h was refused whether the declared horizon was read or replaced by the
+// module constant. Hardcoding the horizon left the cell green. **A cell that varies one term to a
+// value another term already reaches cannot tell the two apart** — the fact age has to land in the
+// gap the declared term opens ABOVE every default, or the defaults answer for it.
+throws("the floor is measured against the DECLARED horizon, not this module's default: 100 days of "
+  + "facts is refused under a 120-day declared horizon, though it clears every default",
+  () => assertFactRetentionFloor(100 * HORIZON, 120 * HORIZON));
+throws("a non-positive declared horizon is refused rather than treated as absent",
+  () => assertFactRetentionFloor(HORIZON, 0));
+throws("a fractional fact age is refused (a wire duration is a safe integer)",
+  () => assertFactRetentionFloor(HORIZON + 0.5, HORIZON));
+
 // ── the resources + live behaviors (real broker) ──
 const PORT = await pickFreePort();
 const sd = mkdtempSync(join(tmpdir(), "cotal-epbind-"));
@@ -392,9 +533,35 @@ try {
   const jsm = await jetstreamManager(nc);
   const kvm = new Kvm(nc);
 
-  await createEndpointStreams(jsm, kvm, SPACE);
-  await createEndpointStreams(jsm, kvm, SPACE); // identical re-run: idempotent, no throw
-  c("createEndpointStreams is idempotent", true);
+  // A BARE CALL IS NOT A CELL. These two were `await …; await …; c("is idempotent", true)`, so a
+  // mutant that made EITHER call throw ended the run with no assertion name on it — and the FIRST
+  // call is not the idempotence claim at all, it is the setup. Split and named: a failure now says
+  // which of the two broke.
+  await (async () => {
+    try { await createEndpointStreams(jsm, kvm, SPACE); c("createEndpointStreams builds the space resources", true); }
+    catch (e) { c("createEndpointStreams builds the space resources", false, (e as Error).message); }
+  })();
+  await (async () => {
+    try { await createEndpointStreams(jsm, kvm, SPACE); c("an identical re-run is idempotent", true); }
+    catch (e) { c("an identical re-run is idempotent", false, (e as Error).message); }
+  })();
+
+  // REACH, not just behaviour. Every floor cell above calls the validator DIRECTLY, and a validator
+  // that is exported and never invoked passes all of them — the same shape as registering a record
+  // kind without granting it. This one goes through the real entry point, and it must refuse BEFORE
+  // touching the broker: a config that breaches the floor may not leave a half-built space behind.
+  {
+    const breaching = { space: `${SPACE}-floor`, factMaxAgeMs: 60_000 };
+    let threw: Error | undefined;
+    try { await createEndpointStreams(jsm, kvm, breaching.space, { factMaxAgeMs: breaching.factMaxAgeMs }); }
+    catch (e) { threw = e as Error; }
+    c("createEndpointStreams REFUSES a fact age below the floor — the floor is reached from the real entry point",
+      threw !== undefined && /below the declared receiptRetentionMs/.test(threw.message), threw?.message);
+    // …and refused EARLY: no stream of that space exists, so the breach never half-built anything.
+    let leaked = false;
+    try { await jsm.streams.info(epfStreamName(breaching.space)); leaked = true; } catch { /* absent, as required */ }
+    c("and it refused BEFORE creating anything — the breaching space has no EPF stream", !leaked);
+  }
 
   // Config assertions — the §13.12 table, read back from the broker.
   const cfg = async (name: string) => (await jsm.streams.info(name)).config;
@@ -402,13 +569,30 @@ try {
   c("EPJ has NO Direct Get (nothing reads it but the canonicalizer + harness MSG.GET)", !epj.allow_direct);
   c("EPJ's duplicate window is pinned to the server minimum, never the 120s default",
     epj.duplicate_window === nanos(EPJ_DUPLICATE_WINDOW_MS));
-  c("EPF serves Direct Get (the last-by-subject fact reads)", (await cfg(epfStreamName(SPACE))).allow_direct === true);
+  const epf = await cfg(epfStreamName(SPACE));
+  c("EPF serves Direct Get (the last-by-subject fact reads)", epf.allow_direct === true);
+  // THE RETENTION FLOOR IS THE AGE TERM ONLY, AND THE RULE IS WIDER THAN THE AGE TERM. SPEC:3189-3195
+  // forbids "not only age eviction below the horizon but every conforming alternative that erases it
+  // while `MaxAge` still passes": a finite MaxMsgs/MaxBytes/MaxMsgsPerSubject with DiscardOld, a
+  // per-message TTL, rollup/compaction, or a retention-policy change. The floor validator checks the
+  // age term and nothing else, so the ledger row read FIXED while four of the five causes were
+  // unguarded — a reviewer caught the overclaim.
+  //
+  // These are not settable through `EndpointStreamOptions` today, and THAT IS THE WEAKER CLAIM: it
+  // is a fact about the option surface, and it stops being true the first time someone adds an
+  // option. Asserted here against the config the broker actually holds, so it is a fact about the
+  // stream — and it reddens on the widening rather than on the incident.
+  c("EPF has NO non-age removal cause: unlimited count/bytes/per-subject, no message TTL, no rollup, Limits retention (SPEC:3189-3195)",
+    epf.max_msgs === -1 && epf.max_bytes === -1 && epf.max_msgs_per_subject === -1
+    && !epf.allow_msg_ttl && !epf.allow_rollup_hdrs && epf.retention === "limits",
+    { max_msgs: epf.max_msgs, max_bytes: epf.max_bytes, max_msgs_per_subject: epf.max_msgs_per_subject,
+      allow_msg_ttl: epf.allow_msg_ttl, allow_rollup_hdrs: epf.allow_rollup_hdrs, retention: epf.retention });
   const eptReq = await cfg(eptReqStreamName(SPACE));
   c("EPT_REQ has message schedules DISABLED", !eptReq.allow_msg_schedules);
   const ept = await cfg(eptStreamName(SPACE));
   c("EPT has message schedules ENABLED", ept.allow_msg_schedules === true);
   const epw = await cfg(epwStreamName(SPACE));
-  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC 13.6:1797-1799)",
+  c("EPW is a WorkQueue with NO Direct Get (the reconciliation probe is fencing → leader-served STREAM.MSG.GET only, SPEC:2931, §13.9 `Work-pool reconciliation probe`)",
     epw.retention === "workqueue" && epw.allow_direct === false);
   const epc = await cfg(epcStreamName(SPACE));
   c("EPC has no age eviction (artifacts are permanent)", epc.allow_direct === true && epc.max_age === 0);

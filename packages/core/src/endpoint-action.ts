@@ -166,7 +166,7 @@ export function goalRefOf(request: ParsedEpRequest, goalId: string): GoalRef {
   return { endpoint: request.endpoint, caller: { owner: c.owner, actor: c.actor, uid: c.uid }, goalId: assertIdToken(goalId, "goalId") };
 }
 
-/** The goal's terminal-result fact subject — the ONE subject SPEC:1394 reserves,
+/** The goal's terminal-result fact subject — the ONE subject SPEC:1433 reserves (§13.2 reserved subjects, `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`),
  *  `epf.<e>.goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`, with NO epoch token.
  *
  *  An earlier revision epoch-scoped this (`…result.<execEpoch>`) to fence a live-superseded
@@ -669,7 +669,7 @@ export async function transitionGoal(
  *  state, and the crash reconciler for a commit that fenced the fact but died before projecting.
  *  Cross-checks the fact's fingerprint against the persisted spec (a terminal fact whose
  *  fingerprint disagrees with the accepted goal is a garbled authority chain). One goal has ONE
- *  terminal subject (SPEC:1394), so the projection follows the one committed fact — there is no
+ *  terminal subject (§13.2 reserved subjects), so the projection follows the one committed fact — there is no
  *  epoch to resolve and no per-epoch variant of "the winner". */
 export async function projectGoalTerminal(ctx: ActionContext, ref: GoalRef): Promise<GoalStatusValue> {
   assertCtx(ctx);
@@ -819,7 +819,7 @@ export function parseGoalResultFact(raw: unknown, subject: string, ref: GoalRef)
 }
 
 /** Read the goal's cached terminal outcome (`undefined` = not terminal yet). ONE goal, ONE
- *  terminal subject (SPEC:1394), read exactly (never a wildcard `last_by_subj` — the append-shadow
+ *  terminal subject (§13.2 reserved subjects), read exactly (never a wildcard `last_by_subj` — the append-shadow
  *  lesson): a committed terminal is surfaced to every reader, in every incarnation, forever. */
 export async function readGoalResult(ctx: ActionContext, ref: GoalRef): Promise<GoalResultFact | undefined> {
   assertCtx(ctx);
@@ -843,7 +843,7 @@ async function commitTerminalFact(
     ...(snapshotData !== undefined ? { data: snapshotData } : {}),
     ...(committer !== undefined ? { committer } : {}), ts: now,
   };
-  // ONE terminal subject per goal (SPEC:1394). First fact wins GLOBALLY: a late or superseded
+  // ONE terminal subject per goal (§13.2 reserved subjects). First fact wins GLOBALLY: a late or superseded
   // committer loses the create-only CAS and reads the winner, rather than winning a private
   // per-epoch subject of its own that hides the real outcome from everyone else.
   const subject = goalResultSubject(ctx.space, snap);
