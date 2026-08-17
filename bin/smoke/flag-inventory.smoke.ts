@@ -134,6 +134,16 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: ["endpoint:string", "instance:string", "server:string", "space:string"],
     positionals: false,
   },
+  // The guarded exit for a REGISTRATION whose host is gone (SPEC 13.5: a deleted `svc` spec is the
+  // deregistration). Its sibling above repairs a frozen gate; this removes a record that nothing in
+  // the model expires, and it is a local operator command for the same reason: the instance it is
+  // about answers nothing, so there is no endpoint to serve the repair. Same four flags, because
+  // both name one instance of one endpoint on one mesh. No `--force`: the record goes only when the
+  // broker affirms nothing is subscribed on that instance's own rail.
+  "deregister-instance": {
+    flags: ["endpoint:string", "instance:string", "server:string", "space:string"],
+    positionals: false,
+  },
   // Read-only listing of the manager's spawn backends (pty + installed/known runtime providers).
   runtimes: { flags: [], positionals: false },
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
