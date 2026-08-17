@@ -220,6 +220,7 @@
     "smoke:ep-contract-store": "tsx packages/core/smoke/endpoint-contract-store.smoke.ts",
     "smoke:ep-invoke": "tsx packages/core/smoke/endpoint-invoke.smoke.ts",
     "smoke:ep-serve": "tsx packages/core/smoke/endpoint-serve.smoke.ts",
+    "smoke:broker-teardown": "tsx packages/core/smoke/broker-teardown.smoke.ts",
     "smoke:bind-fence": "tsx packages/core/smoke/bind-fence.smoke.ts",
     "smoke:unfenced-responder": "tsx packages/core/smoke/unfenced-responder.smoke.ts",
     "smoke:ep-serve-gate": "tsx packages/core/smoke/endpoint-serve-gate.smoke.ts",

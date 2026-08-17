@@ -1,0 +1,42 @@
+{
+  "suite": "packages/core/smoke/broker-teardown.smoke.ts",
+  "guard": "a smoke broker owned through the helper dies when its suite is SIGNALLED, not only when the suite returns",
+  "command": "pnpm smoke:broker-teardown",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/fixtures/broker-teardown.mutations.json",
+  "why": [
+    "ONE MUTATION, AND IT REMOVES OWNERSHIP, NOT A HOOK. Two earlier fixtures here came back UNGRADABLE:",
+    "one disabled the SIGINT/SIGTERM/SIGHUP handlers, one disabled the `exit` handler, and the suite",
+    "stayed 14/14 through both. Both verdicts were correct and the diagnosis was mine to find.",
+    "",
+    "WHAT THOSE TWO NON-KILLS ESTABLISHED, which no single run could have. The hooks are INDEPENDENTLY",
+    "SUFFICIENT under `tsx`. If a signal listener exists, tsx delivers the signal and the handler reaps.",
+    "If none exists, tsx converts the signal into an ordinary exit and the `exit` handler reaps: measured",
+    "directly, a fixture registering only `process.on(\"exit\")`, sent SIGTERM at its own pid, printed",
+    "`EXIT HANDLER RAN code=143`. So disabling either one alone leaves the other doing the work, and a",
+    "mutation on either hook can only ever be UNGRADABLE. The property under test is that the broker is",
+    "OWNED; which hook carries it out is an implementation detail of the runner.",
+    "",
+    "THE SUITE'S POSITIVE CONTROL IS WHAT MAKES THE KILL MEAN SOMETHING. Cell 1 runs the identical",
+    "fixture WITHOUT ownership and asserts the broker SURVIVES, so the suite is known to be able to see a",
+    "leak. This mutation makes every cell take the control's path, so the control MUST stay green while",
+    "the owned cells flip. A mutation that reddened the control too would be measuring the ambient",
+    "behaviour rather than the helper.",
+    "",
+    "WHAT THIS DOES NOT PROVE, and the suite prints it rather than leaving it to be assumed. The signal",
+    "handlers are UNOBSERVED under `tsx`: they are kept for a runner that does not intercept, where a",
+    "default-disposition signal would skip `exit` entirely, and no cell here exercises that runner.",
+    "SIGKILL is uncatchable under either, which cell 5 asserts as a fact rather than omitting. And the",
+    "helper only ever fires if the signal REACHES the suite process, which is two node processes below",
+    "`pnpm`; a supervisor that kills the top pid alone never signals it."
+  ],
+  "mutations": [
+    {
+      "name": "the broker is never taken into ownership, so nothing tears it down when the suite is killed",
+      "file": "packages/core/smoke/_broker-teardown.ts",
+      "find": "  owned.add(entry);",
+      "replace": "  void entry;",
+      "expectRed": "✗ FAIL: SIGTERM: the owned broker is gone",
+      "cell": "✗ FAIL: SIGTERM: the owned broker is gone"
+    }
+  ]
+}
