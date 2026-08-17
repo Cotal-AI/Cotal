@@ -47,6 +47,16 @@ const SESSION_COOKIE = "cotal_web_session";
 /** Lower-case because Node lower-cases incoming header names; matching on a capitalised literal
  *  would never fire and would look like a working check. */
 const READINESS_HEADER = "x-cotal-readiness";
+/** The ONLY path the readiness nonce opens. Shared with the route below so the gate and the route
+ *  cannot drift into disagreeing about which path that is. */
+const READINESS_PATH = "/api/meta";
+/** The request path, without the query. This DUPLICATES the handler's own parse, deliberately: the
+ *  statements ahead of the gate are pinned to an exact literal parse, because an initializer there is
+ *  code that runs before the gate is consulted. So the gate derives the path itself rather than being
+ *  handed one, and the two must be edited together. */
+function pathOf(req: IncomingMessage): string {
+  return (req.url ?? "/").split("?")[0];
+}
 /** Where a detached parent (and an operator who lost the printed link) finds the launch URL. Written
  *  0600 beside the pidfile — the same place and the same trust boundary as the rest of this mesh's
  *  local process state. */
@@ -100,7 +110,8 @@ export function makeAuthGate(port: number) {
   //
   // Two secrets rather than exempting `/api/meta`, and the difference matters: an exempt route is
   // permanently unauthenticated for everyone, and the next person to add a field to it will not know
-  // that. A second credential is scoped to the caller that needs it and dies with the process.
+  // that. A second credential is scoped to the caller that needs it, opens only that one path, and
+  // dies with the process.
   const readinessNonce = randomBytes(32).toString("base64url");
   const sessions = new Set<string>();
   // The full ORIGIN, not the host: `https://localhost:7799` and `http://localhost:7799` are
@@ -128,8 +139,12 @@ export function makeAuthGate(port: number) {
         if (normalized === undefined || !allowedOrigins.has(normalized)) return { refuse: CROSS_ORIGIN };
       }
 
+      // Scoped to the one path its only caller polls. The nonce is never consumed and lives as long
+      // as the process, so accepting it on every path would leave `web.session` holding a standing
+      // full-surface credential beside a link this command calls single-use.
       const readiness = req.headers[READINESS_HEADER];
-      if (typeof readiness === "string" && secretEquals(readiness, readinessNonce)) return undefined;
+      if (pathOf(req) === READINESS_PATH && typeof readiness === "string" && secretEquals(readiness, readinessNonce))
+        return undefined;
 
       const session = cookieValue(req.headers.cookie, SESSION_COOKIE);
       if (session !== undefined && sessions.has(session)) return undefined;
@@ -162,6 +177,10 @@ export const webProcess: LocalProcess = {
   label: "web dashboard",
   order: 40,
   pidFile: "web.pid",
+  // `web.session` holds the readiness nonce, which is accepted for this process's whole lifetime.
+  // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
+  // credential outlives the process it authenticates.
+  artifacts: ["web.session"],
   // The dashboard starts target-resolved from any directory and claims its pidfile under the
   // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
   rootedAt: "target",
@@ -414,7 +433,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       req.on("close", () => clients.delete(res));
       return;
     }
-    if (path === "/api/meta") return json(res, { space, pid: process.pid });
+    if (path === READINESS_PATH) return json(res, { space, pid: process.pid });
     if (path === "/api/roster") return json(res, ep.getRoster());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.

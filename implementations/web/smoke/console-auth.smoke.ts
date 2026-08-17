@@ -41,8 +41,11 @@ const read = (rel: string) => readFileSync(fileURLToPath(new URL(rel, import.met
 
 const PORT = 7799;
 const q = (s = "") => new URLSearchParams(s);
-type Req = { headers: Record<string, string | undefined> };
-const req = (headers: Record<string, string | undefined> = {}): Req => ({ headers });
+type Req = { headers: Record<string, string | undefined>; url: string };
+// `url` matters only to the readiness nonce, which opens ONE path; every other cell is
+// path-independent and takes the default.
+const META = "/api/meta";
+const req = (headers: Record<string, string | undefined> = {}, url = "/"): Req => ({ headers, url });
 
 // ── 1. WHAT THE GATE DECIDES ────────────────────────────────────────────────────────────────────
 {
@@ -158,11 +161,19 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
 // and the next person to add a field to it will not know that.
 {
   const gate = makeAuthGate(PORT);
-  check("the readiness nonce is accepted",
-    gate.check(req({ "x-cotal-readiness": gate.readinessNonce }) as never, q()) === undefined);
+  check("the readiness nonce is accepted on the one path it opens",
+    gate.check(req({ "x-cotal-readiness": gate.readinessNonce }, META) as never, q()) === undefined);
+  // The nonce is never consumed and lives as long as the process, so a nonce good everywhere would
+  // make `web.session` a standing full-surface credential sitting beside a single-use link. Every
+  // negative below carries the RIGHT path, so what refuses them is the comparison and not the route.
+  check("a VALID readiness nonce on any other path is refused (it opens /api/meta, not the surface)",
+    (() => {
+      const r = gate.check(req({ "x-cotal-readiness": gate.readinessNonce }, "/") as never, q());
+      return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
+    })());
   check("a WRONG readiness nonce is refused (the check is a comparison, not a presence test)",
     (() => {
-      const r = gate.check(req({ "x-cotal-readiness": "wrong" }) as never, q());
+      const r = gate.check(req({ "x-cotal-readiness": "wrong" }, META) as never, q());
       return r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED;
     })());
   // SAME-LENGTH negatives. Every wrong secret in this suite was the string `wrong`, which differs in
@@ -181,14 +192,14 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   check("NON-VACUITY: the nonce sweep covers EVERY index, not a sample",
     nonceIdx.length === gate.readinessNonce.length && nonceIdx.length > 3, { n: nonceIdx.length });
   const nonceSurvivors = nonceIdx.filter((i) => {
-    const r = gate.check(req({ "x-cotal-readiness": flip(gate.readinessNonce, i) }) as never, q());
+    const r = gate.check(req({ "x-cotal-readiness": flip(gate.readinessNonce, i) }, META) as never, q());
     return !(r !== undefined && "refuse" in r && r.refuse === UNAUTHENTICATED);
   });
   check("a same-length readiness nonce differing at ANY SINGLE index is refused (content, not length, not some bytes)",
     nonceSurvivors.length === 0, { acceptedAtPositions: nonceSurvivors });
   check("the readiness nonce does NOT consume the launch token (the parent polls; the browser still needs it)",
     (() => {
-      gate.check(req({ "x-cotal-readiness": gate.readinessNonce }) as never, q());
+      gate.check(req({ "x-cotal-readiness": gate.readinessNonce }, META) as never, q());
       const after = gate.check(req() as never, q(`k=${gate.launchToken}`));
       return after !== undefined && "exchange" in after;
     })());
@@ -224,7 +235,7 @@ const req = (headers: Record<string, string | undefined> = {}): Req => ({ header
   {
     const g6 = makeAuthGate(PORT);
     const evilReady = g6.check(
-      req({ origin: "https://evil.example", "x-cotal-readiness": g6.readinessNonce }) as never, q());
+      req({ origin: "https://evil.example", "x-cotal-readiness": g6.readinessNonce }, META) as never, q());
     check("a cross-origin request carrying a VALID readiness nonce is still refused as `cross-origin`",
       evilReady !== undefined && "refuse" in evilReady && evilReady.refuse === CROSS_ORIGIN, evilReady);
   }
