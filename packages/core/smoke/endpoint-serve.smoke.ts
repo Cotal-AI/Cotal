@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
-  isReachable, EpEnvelopeError,
+  isReachable, EpEnvelopeError, registryReadFailed, unansweredRequest,
   openRecordsBucket,
   parseServiceSpec, parseServiceStatus, assertServiceNameAuthority,
   registerServiceInstance, writeServiceStatus, freezeExpectedSet,
@@ -967,6 +967,14 @@ try {
     });
     await rejects("epScatterService charges the freeze against the deadline (a stalled enumeration is deadline-exceeded)",
       () => epScatterService(nc, stalledJsm, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
+    {
+      // The stalled freeze is the CALLER's registry read failing before any request goes out: it
+      // carries EP_REGISTRY_READ_FAILED and never EP_UNANSWERED, so a consumer does not print a
+      // reachability verdict for a read that asked nobody.
+      let e: unknown;
+      try { await epScatterService(nc, stalledJsm, SPACE, opC("status"), { deadlineMs: 200 }); } catch (err) { e = err; }
+      c("a stalled freeze is marked EP_REGISTRY_READ_FAILED (the caller's own registry read), not EP_UNANSWERED", registryReadFailed(e) && !unansweredRequest(e), e);
+    }
 
     // a REAL mid-scatter re-registration: the production reconciler observes the revision
     // advance the reply rail cannot see and classifies `registration` churn (§13.5)

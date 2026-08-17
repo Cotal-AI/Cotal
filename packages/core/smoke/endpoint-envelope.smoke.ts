@@ -160,6 +160,39 @@ rejects("a non-reverse-DNS detail kind is bad-request", "bad-request",
 rejects("reply version skew is unsupported-version", "unsupported-version",
   () => parseEndpointReply({ v: 0, id: "r", ok: true }));
 
+// ── §13.3 error.outcome: the field a conformant peer sends and this parser used to drop ──
+// `pickError` REBUILDS the error rather than passing it through, so a field it does not name is
+// discarded. Discarding THIS one is not a lossy round-trip, it is a changed meaning: §13.3 says an
+// omitted `outcome` MUST be read as `unknown`, so dropping a peer's `not-executed` downgrades a
+// PROOF that nothing ran into an ABSENCE of evidence, at the parser, for a caller that did
+// everything right. Graded on the way IN because that is the direction where the other
+// implementation is the one being wronged and cannot tell.
+const outcomeReply = parseEndpointReply({ v: 1, id: "req-o", ok: false,
+  error: { code: "failed-precondition", message: "not this incarnation", outcome: "not-executed" } });
+c("a peer's `outcome: not-executed` SURVIVES the parse — it is not rebuilt away",
+  outcomeReply.error?.outcome === "not-executed", outcomeReply.error);
+const execReply = parseEndpointReply({ v: 1, id: "req-o2", ok: false,
+  error: { code: "internal", message: "the handler ran and then failed", outcome: "executed" } });
+c("...and so does `executed`, which is the one that must never be read as a refusal",
+  execReply.error?.outcome === "executed", execReply.error);
+// Absence stays absence. The parser must not MANUFACTURE `unknown`: §13.3 puts that reading on the
+// consumer, and a parser that fills it in makes "the peer said unknown" and "the peer said nothing"
+// indistinguishable on the wire, which is a different fact.
+c("an omitted outcome stays omitted — the parser does not invent `unknown`",
+  errReply.error !== undefined && !("outcome" in errReply.error), errReply.error);
+rejects("an unrecognised outcome is bad-request, not passed through and not coerced", "bad-request",
+  () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "internal", message: "x", outcome: "maybe" } }));
+rejects("...and neither is a non-string outcome", "bad-request",
+  () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "internal", message: "x", outcome: 0 } }));
+// The other direction: what THIS implementation emits. The bind fence refuses before dispatching to
+// the handler, which §13.3 says MUST carry `not-executed` — and a conformant peer that has never
+// heard of `ai.cotal.ep.bind-refused` reads only this field, so emitting the marker without the
+// outcome is exactly what makes two implementations disagree about whether the command ran.
+c("toEpError() carries the outcome the fence sets",
+  new EpEnvelopeError("failed-precondition", "x", undefined, "not-executed").toEpError().outcome === "not-executed");
+c("...and omits it entirely on a caller-raised refusal, which is not a reply",
+  !("outcome" in new EpEnvelopeError("internal", "x").toEpError()));
+
 const ev = parseEndpointEvent({ v: 1, topic: "ev.ai_cotal_lifecycle.started", ts: 1720500000000, data: null });
 c("event parses (a null data field IS data)", ev.topic.startsWith("ev.") && ev.data === null);
 rejects("an event without data is bad-request", "bad-request", () => parseEndpointEvent({ v: 1, topic: "t", ts: 1 }));

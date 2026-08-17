@@ -12,6 +12,7 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   isPublishPermissionDenied,
+  unansweredRequest,
   type EpAttributedReply,
   type EpVerbTarget,
   type ControlReply,
@@ -780,10 +781,20 @@ export class MeshAgent extends EventEmitter {
     try {
       r = await this.ep.invokeService(BASELINE_LIFECYCLE_ENDPOINT, command, clean && Object.keys(clean).length ? clean : undefined, opts);
     } catch (e) {
+      // The verdict "nobody answered" comes from core's answer-provenance marker, NEVER from the
+      // catalog code. `deadline-exceeded` has two producers that call for opposite responses: the
+      // describe drew no reply at all (nothing ran, and the likely causes are a manager down or a
+      // capability this credential does not hold), or a goal was ACCEPTED and its terminal did not
+      // arrive in time - where a responder took the request and the effect may already have landed.
+      // Keying on the code told every caller the first story for both, which is the peer-side twin
+      // of the blanket "no manager reachable" the CLI used to print, and it is the more dangerous
+      // half: this surface is read by agents, and "no responder answered" invites the retry that
+      // duplicates a spawn. Only the marker distinguishes them, and core sets it exactly where it
+      // observed silence.
       if (e instanceof EpEnvelopeError)
         return {
           ok: false,
-          error: e.code === "deadline-exceeded"
+          error: unansweredRequest(e)
             ? `${e.message} (no responder answered - a manager may be down, or this credential holds no "${command}" capability and the broker denied the request)`
             : `${e.code}: ${e.message}`,
         };
