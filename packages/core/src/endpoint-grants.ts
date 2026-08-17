@@ -179,6 +179,55 @@ export const MANAGER_ADMIN_COMMANDS = Object.freeze([
 export const GOAL_BEARING_COMMANDS = Object.freeze(["spawn", "launch"] as const);
 const GOAL_BEARING_SET: ReadonlySet<string> = new Set(GOAL_BEARING_COMMANDS);
 
+/** RETRY SAFETY (§13.2): commands a client may execute a SECOND time after a responded-but-unbound
+ *  split, because a second execution is observably indistinguishable from one. Read only by
+ *  {@link isRepeatSafeCommand}, for `Endpoint.invokeService`.
+ *
+ *  An allowlist rather than a denylist so it fails CLOSED: an unclassified command surfaces the
+ *  split to its caller instead of running twice. A denylist would auto-retry the next admin command
+ *  someone adds above, silently.
+ *
+ *  Keyed by endpoint, not by bare command name, because `invokeService` is endpoint-agnostic: a
+ *  flat name list would hand a third-party endpoint's `list` or `ps` a judgement made about the
+ *  manager's. An unknown endpoint has no repeat-safe commands.
+ *
+ *  Written out literally rather than derived from {@link MANAGER_READ_COMMANDS}, because retry
+ *  safety and grant tiers answer different questions and must be able to disagree. `models` is the
+ *  case that forces it: it reads a catalog unless called with `{refresh: true}`, which shells out
+ *  and rewrites a cache, so the answer turns on an ARGUMENT this table cannot see. Per-command
+ *  argument rules here would be the fail-open shape again, so `models` is simply not listed.
+ *  Convergence is not sufficient either: `despawn` converges, but its second run despawns whatever
+ *  now holds the name.
+ *
+ *  **THIS TABLE MUST NOT SURVIVE `protocol.v: 2`.** §13.7 `effect` is the command author's own
+ *  declaration, and allowlist-says-safe could then contradict author-declares-`write`. It cannot
+ *  reach the wire in this tree — `endpoint-serve.ts` pins the descriptor to `v: { const: 1 }` — so
+ *  this table stands in for a field no responder here can emit rather than competing with one, and
+ *  it derives nothing from a descriptor, which is the part §13.7 forbids. `smoke:unfenced-responder`
+ *  tripwires that pin so the version cannot move without this table being named. */
+export const REPEAT_SAFE_COMMANDS: Readonly<Record<string, readonly string[]>> = Object.freeze({
+  [BASELINE_LIFECYCLE_ENDPOINT]: Object.freeze(["status", "ps", "inspect"]),
+  [BASELINE_DELIVERY_ENDPOINT]: Object.freeze(["list"]),
+});
+/** `describe` is a read on every endpoint by construction, so it is repeat-safe without one: no
+ *  handler can be attached to it (`serveEndpoint` throws on any def naming it, and a cluster
+ *  document declaring it is invalid at registration), and the machinery builds the answer. The
+ *  residual: it is authorization-scoped, so a future `describe` that consumed a grant or quota
+ *  would be a write and this line would be wrong. */
+const REPEAT_SAFE_ANY_ENDPOINT = "describe";
+// PRIVATE module-load snapshot: the predicate reads THIS, never the live export, so a post-import
+// mutation of the exported table cannot widen what the client is willing to run twice.
+const REPEAT_SAFE_SNAP: ReadonlyMap<string, ReadonlySet<string>> = new Map(
+  Object.entries(REPEAT_SAFE_COMMANDS).map(([endpoint, commands]) => [endpoint, new Set(commands)]),
+);
+/** True only for a command whose re-execution is observably harmless on THAT endpoint
+ *  ({@link REPEAT_SAFE_COMMANDS}). An unknown endpoint, or an unlisted command, is not repeat-safe:
+ *  the intended default, not an oversight. */
+export function isRepeatSafeCommand(endpoint: string, command: string): boolean {
+  if (command === REPEAT_SAFE_ANY_ENDPOINT) return true;
+  return REPEAT_SAFE_SNAP.get(endpoint)?.has(command) === true;
+}
+
 // PRIVATE module-load snapshots of the command vocabularies: the builders below map over THESE,
 // never the live exports, so the minted surface survives even a hypothetical defeat of the
 // freezes above (the seam-snapshot half of the afa715b closure pattern).

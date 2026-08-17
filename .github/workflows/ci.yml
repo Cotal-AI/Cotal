@@ -33,12 +33,22 @@ jobs:
         run: pnpm build
       - name: Docs bundle in sync
         run: pnpm check:docsbundle
+      # Broker-free and network-free, and it reads the BUILT connector, so it belongs after Build.
+      # It was reachable from `check` and executed by nothing, which is how it sat red on main.
+      - name: Docs smoke
+        run: pnpm smoke:docs
       - name: Unit tests
         run: pnpm test
       - name: View smoke
         run: pnpm smoke:view
       - name: Verify Claude connector package
         run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run
+      # Grades the convention, not one suite: every file that defaults COTAL_SERVERS with `||=`
+      # must also print what it resolved. Pure — reads sources, spawns nothing, dials nothing.
+      # Placed here rather than in the smoke:ci chain so the chain migration lands without a
+      # rebase; `gate-inventory` counts a suite named in a workflow as reached.
+      - name: Broker disclosure
+        run: pnpm smoke:broker-disclosure
 
   smoke:
     name: smoke (shard ${{ matrix.shard }}/4)

@@ -2,7 +2,7 @@ import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, t
 import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit } from "../lib/control.js";
 import { attachClient, detachKey, meshSessionTransport } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -53,7 +53,7 @@ export async function stop(args: ParsedArgs): Promise<void> {
   const on = await pinForTarget(v, "cotal stop");
   const t = await resolveControlTarget(v, "control-caller-admin", on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, on);
+  const reply = await askManager(t.space, t.server, "stop", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   failIfNotOk(reply);
   // User mesh: a stop IS a grant revoke (rows are runtime grants — a non-running agent holds no
   // standing mint secret); a respawn re-grants automatically. Say so, so the operator's
@@ -113,13 +113,14 @@ async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promis
 /** Resolve `--on` for a targeted verb: an explicit pin wins; otherwise locate the seat. Returns the
  *  instance to address, or exits with an error that says WHICH case the miss was. */
 async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Promise<string | undefined> {
-  if (v.on) return v.on;
+  const on = onInstanceOrExit(v.on, verb);
+  if (on !== undefined) return on;
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
   // The honest error #383 asked for: name the search, not just the absence.
   const missed = loc.unreachable.length
-    ? ` ${loc.unreachable.length} manager instance(s) did not answer (${loc.unreachable.map((i) => i.slice(0, 8)).join(", ")}), so it may be hosted by one of those — retry, or \`${verb} --on <instance>\` if you know where it is.`
+    ? ` ${loc.unreachable.length} manager instance(s) did not answer (${loc.unreachable.join(", ")}), so it may be hosted by one of those: retry, or \`${verb} --on <instance>\` (the whole id, as printed) if you know where it is.`
     : "";
   console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
   process.exit(1);
@@ -153,13 +154,14 @@ function printAgentRow(r: AgentRow, indent = ""): void {
 
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
+  const on = onInstanceOrExit(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
-  const t = await resolveControlTarget(v, "control-caller-privileged", v.on);
+  const t = await resolveControlTarget(v, "control-caller-privileged", on);
   // `--on <instance>`: pin ps to ONE manager instance's `inst` route (P2 item 3 multi-manager) — a
   // single-manager view. Same path for both modes (no freeze; no scatter).
-  if (v.on) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, v.on);
+  if (on !== undefined) {
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, { instanceId: on });
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
@@ -184,7 +186,9 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // the freeze rows; every registered instance is attributed, and a non-answering one is labeled
   // unreachable (pin 3).
   if (t.auth.bearer) {
-    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner");
+    // `ps` has `--on` and did not pass it on this branch (the pinned branch returned above), so a
+    // split may name it as the remedy: the pin is declared, empty.
+    const reply = await askManager(t.space, t.server, "ps", undefined, t.auth, "owner", undefined, {});
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
@@ -215,8 +219,15 @@ export async function ps(args: ParsedArgs): Promise<void> {
     return;
   }
   // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
+  //
+  // The header prints the FULL instance id, not a prefix. This block runs only in a multi-manager
+  // space (precisely when the split makes `--on <instance>` the one way to address a manager) and
+  // `--on` takes nothing but the whole 26-32 char lifecycle token (`assertLifecycleToken`). An
+  // abbreviated header therefore showed the operator an id that the very next command refuses
+  // (`"4ik6rb0e" is not a valid lifecycle token`), with the full value printed nowhere: the remedy
+  // was named and then withheld. Width costs one line here; the prefix cost the flag entirely.
   for (const inst of instances) {
-    const label = `manager ${inst.instanceId.slice(0, 8)}`;
+    const label = `manager ${inst.instanceId}`;
     if (!inst.reachable) {
       console.log(`${c.bold(label)}  ${c.red("unreachable")}`);
       continue;
@@ -245,7 +256,7 @@ export async function attach(args: ParsedArgs): Promise<void> {
   const on = await pinForTarget(v as never, "cotal attach");
   const t = await resolveControlTarget(v, "control-caller-admin", on);
   const reach = t.auth.bearer ? "owner" : "any";
-  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, on);
+  const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   failIfNotOk(reply);
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive

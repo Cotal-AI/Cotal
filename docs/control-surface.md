@@ -84,8 +84,21 @@ A space can run more than one manager. Each manager persists a stable logical in
 across restarts and advances its process epoch when it comes back, so callers address a
 specific manager without caring which process currently serves it. An untargeted spawn
 rides class anycast (any manager may accept, and the acceptance records which one did);
-`cotal spawn --on <instance>` pins one instance by its exact id. There are no ordinal
-aliases: a display may show a short label, but routing always uses the exact id. `ps` and
+`cotal spawn <persona> --detach --on <instance>` pins one instance by its exact id (a
+foreground spawn has no manager to pin and refuses the flag). There are no ordinal
+aliases and no short forms: wherever a display names an instance you can address, it prints
+the whole id, because `--on` takes nothing else.
+
+The resolve and the invoke are separate trips through the same anycast queue, so in a
+multi-manager space an unpinned call can land on an instance the caller did not resolve. Every
+call carries the incarnation it resolved against, and a manager that is not that incarnation
+**refuses before running the command** — so the failure an operator sees says the command did
+not run, and re-issuing it cannot duplicate the effect. That is the difference that matters for
+a mutation: the older behaviour detected the mismatch on the reply, after the manager had
+already acted, and could only tell you to go and check. `--on` still matters for reaching a
+specific manager (`ps`, `stop`, `attach`, `spawn --detach`), but it is no longer what stands
+between a split and a duplicated spawn. Against a manager older than this fence the refusal is
+still after the fact, and its message says so. `ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled unreachable,

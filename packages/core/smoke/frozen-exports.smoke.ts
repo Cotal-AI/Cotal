@@ -114,5 +114,24 @@ c(`every exported array (${arrays}) and plain-object (${objects}) collection in 
   c(`"./session-browser" is a faithful re-export (every export === the barrel's, so no off-barrel collection)`, offBarrel.length === 0, offBarrel);
 }
 
+// REACHABILITY, which the freeze scan above cannot give you. That scan walks arrays and plain
+// objects; these three modules export only FUNCTIONS, so it is structurally blind to them and its
+// green says nothing either way — the counts are identical whether or not they are exported. The
+// journal action rail is only usable by a consumer if the barrel actually re-exports it, so assert
+// that directly, by identity, rather than inferring it from a pass that cannot see it.
+{
+  const rail: Array<[string, Record<string, unknown>]> = [
+    ["endpoint-goaleff", await import("../src/endpoint-goaleff.js") as Record<string, unknown>],
+    ["endpoint-epname", await import("../src/endpoint-epname.js") as Record<string, unknown>],
+    ["endpoint-effects", await import("../src/endpoint-effects.js") as Record<string, unknown>],
+  ];
+  for (const [name, mod] of rail) {
+    const own = Object.keys(mod);
+    const unreachable = own.filter((k) => mod[k] !== (core as Record<string, unknown>)[k]);
+    c(`\`${name}\` is reachable from the barrel: every runtime export is === the barrel's same-named export`,
+      own.length > 0 && unreachable.length === 0, { own, unreachable });
+  }
+}
+
 console.log(`\nFROZEN-EXPORTS SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed; ${arrays} arrays + ${objects} plain-objects scanned)`);
 if (fail > 0) process.exit(1);
