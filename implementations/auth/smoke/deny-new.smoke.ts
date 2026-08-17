@@ -35,6 +35,7 @@ import { credRowKey, finalizeAgentMint, markLedgerRowRevoked, stageAgentMint } f
 import { authorityWriterGrants, openAuthorityClient } from "../src/authority-client.js";
 import { ROOT_CREDENTIAL_TTL_MS } from "../src/root-credential.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -59,10 +60,11 @@ async function rejects(name: string, fn: () => Promise<unknown>, needle?: string
 const space = `denynew-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
-const tmp = mkdtempSync(join(tmpdir(), "cotal-denynew-"));
+const tmp = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const dir = join(tmp, "state");
 writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, tmp);
 
 const ISS = "https://auth.cotal.test";
 const OWNER = deriveOwnerToken("s".repeat(32), "better-auth|human-1");
@@ -184,4 +186,5 @@ try {
   srv.kill();
   await awaitExit(srv);
   rmSync(tmp, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

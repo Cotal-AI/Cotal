@@ -34,6 +34,7 @@
     "@nats-io/kv": "^3.4.0"
   },
   "devDependencies": {
+    "@cotal-ai/smoke-kit": "workspace:*",
     "better-auth": "^1.6.23"
   },
   "files": [

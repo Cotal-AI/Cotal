@@ -34,6 +34,7 @@ import { registryStores } from "../src/lifecycle-registry.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import type { CommitValue } from "../src/admission-mediator.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -73,7 +74,7 @@ const mkReq = (cc: { owner: string; actor: string; uid: string }): MediatedReque
   mediatedRequestFromSubject(`cotal.${SPACE}.epj.${EP}.admit.${cc.owner}.${cc.actor}.${cc.uid}`);
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-medsmoke-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
 listen: 127.0.0.1:${PORT}
@@ -81,6 +82,7 @@ jetstream { store_dir: ${JSON.stringify(sd)} }
 accounts { APP: { jetstream: enabled, users = [ { user: "auth", password: "pw" } ] } }
 `);
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 let nc: NatsConnection | undefined;
 try {
@@ -495,6 +497,7 @@ try {
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nADMISSION MEDIATOR SMOKE OK ✅  (${ok} passed, ${fail} failed)` : `\nADMISSION MEDIATOR SMOKE FAILED ❌  (${ok} passed, ${fail} failed)`);

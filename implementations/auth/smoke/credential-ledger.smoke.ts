@@ -47,6 +47,7 @@ import {
   type EvictPrincipal, type ReconcileSessionPair,
 } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -70,7 +71,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-credledger-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // A conf broker with a REAL system account (CONNZ + KICK live) and an APP account holding the
 // trusted-auth user plus two victim users whose usernames are principal NAME-forms — CONNZ
 // surfaces a static user's name as `authorized_user`, which `principalFromConnz` resolves to
@@ -95,6 +96,7 @@ accounts {
 }
 `);
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 let nc: NatsConnection | undefined, sysObserver: NatsConnection | undefined, sysEvictor: NatsConnection | undefined,
   victim1: NatsConnection | undefined, victim2: NatsConnection | undefined, servingConn: NatsConnection | undefined, wedgeConn: NatsConnection | undefined;
@@ -541,6 +543,7 @@ try {
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nCREDENTIAL LEDGER SMOKE OK ✅  (${ok} passed, ${fail} failed)` : `\nCREDENTIAL LEDGER SMOKE FAILED ❌  (${ok} passed, ${fail} failed)`);

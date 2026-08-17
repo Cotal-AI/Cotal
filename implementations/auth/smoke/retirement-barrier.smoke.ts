@@ -34,6 +34,7 @@ import { runAgentRetirementBarrier, resumeAgentRetirement, settlementForIntent, 
 import { drainRepairPrincipals } from "../src/drain-repair.js";
 import { workPoolContext } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -71,7 +72,7 @@ const PORT = await pickFreePort();
 // about to close the frontier; the drain-repair fence must cluster-verified-evict it first.
 const OP_H = "h".repeat(26);
 const APPLIER_USER = drainRepairPrincipals(OP_H)[0]!.principal.replace(".", "-"); // local.epapl_<hash> -> local-epapl_<hash>
-const sd = mkdtempSync(join(tmpdir(), "cotal-retire-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(sd, "server.conf"), `
 port: ${PORT}
 listen: 127.0.0.1:${PORT}
@@ -92,6 +93,7 @@ accounts {
 }
 `);
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 let nc: NatsConnection | undefined, sysObserver: NatsConnection | undefined, sysEvictor: NatsConnection | undefined,
   victim: NatsConnection | undefined;
@@ -712,6 +714,7 @@ try {
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nRETIREMENT BARRIER SMOKE OK ✅  (${ok} passed, ${fail} failed)` : `\nRETIREMENT BARRIER SMOKE FAILED ❌  (${ok} passed, ${fail} failed)`);
