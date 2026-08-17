@@ -12,6 +12,8 @@ import {
   dmStream,
   taskStream,
   presenceBucket,
+  principalKey,
+  DEV_OWNER,
   type Delivery,
 } from "./src/index.js";
 
@@ -72,13 +74,20 @@ await wait(300);
 await a.anycast("builder", "build the thing");
 await wait(300);
 
-// Durability: a DM sent to carol BEFORE she connects must still arrive (the stream holds it).
-const carolId = randomUUID();
-await a.unicast(carolId, "stored while you were away");
+// Durability: a DM sent to carol BEFORE she connects must still arrive.
+// NOTE: this case currently FAILS and the assertion below is left as it is on purpose. The
+// message is stored, but carol's durable is created past it, so she never sees it; the
+// authenticated sibling passes the same test only because it provisions her durable first.
+// Whether open mode is meant to deliver this at all is the open question in #534, and it is
+// not settled by editing the expectation here.
+// Addressed by PRINCIPAL (<owner>.<actor>), not by a bare id: the owner+actor cutover made a
+// bare id an invalid recipient, and the actor token must be dash-free to be a valid token.
+const carolActor = randomUUID().replace(/-/g, "");
+await a.unicast(principalKey(DEV_OWNER, carolActor).key, "stored while you were away");
 await wait(200);
 const carol = new CotalEndpoint({
   space,
-  card: { id: carolId, name: "carol", role: "tester", kind: "agent" },
+  card: { id: carolActor, name: "carol", role: "tester", kind: "agent" },
   heartbeatMs: 500,
   ttlMs: 2000,
 });
