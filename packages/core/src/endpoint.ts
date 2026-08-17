@@ -26,7 +26,7 @@ import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
 import { assertValidName } from "./resolve.js";
-import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS } from "./streams.js";
+import { createSpaceStreams, dmDurableConfig, dlvDurableConfig, taskDurableConfig, fanoutDurableConfig, inboxReaderConfig, MAX_MSGS_PER_SUBJECT, MANAGER_LEASE_TTL_MS, MANAGER_LEASE_ATTEMPT_MS } from "./streams.js";
 import {
   jetstream,
   jetstreamManager,
@@ -2589,7 +2589,11 @@ export class CotalEndpoint extends EventEmitter {
   private async managerLeaseRegistry(): Promise<KV> {
     if (!this.nc) throw new Error("endpoint not started");
     if (this.managerLeaseKv) return this.managerLeaseKv;
-    const kvm = new Kvm(this.nc);
+    // A JetStream client of its own, so every operation on this bucket carries the lease budget's
+    // attempt deadline rather than the library default. The default is TTL/2, which would let one
+    // attempt spend the whole renew window (see MANAGER_LEASE_ATTEMPT_MS). Scoped to this bucket:
+    // every op on it is a single small keyed request, and nothing else shares this client.
+    const kvm = new Kvm(jetstream(this.nc, { timeout: MANAGER_LEASE_ATTEMPT_MS }));
     if (this.authed) {
       this.managerLeaseKv = await kvm.open(managerBucket(this.space));
     } else {
@@ -2617,6 +2621,17 @@ export class CotalEndpoint extends EventEmitter {
    *  Throws if the revision moved (lost the lease). Returns the new revision. */
   async renewManagerLease(info: Omit<ManagerLeaseInfo, "since">, revision: number): Promise<number> {
     return (await this.managerLeaseRegistry()).update(managerLeaseKey(info.instanceId), this.encodeManagerLease({ ...info, since: Date.now() }), revision);
+  }
+  /** Read THIS instance's OWN lease key, keyed (not the `lease.*` sweep {@link readManagerLease} does).
+   *
+   *  `undefined` means the key IS NOT THERE — a definite absence, established by a completed read.
+   *  A read that could not be completed THROWS instead, so a caller can tell "it is gone" from "I could
+   *  not find out". That distinction is the whole point of the method: a renew that got no answer has
+   *  proved nothing, and only a definite answer here may be acted on. */
+  async readOwnManagerLease(instanceId: string): Promise<{ info: ManagerLeaseInfo; revision: number } | undefined> {
+    const e = await (await this.managerLeaseRegistry()).get(managerLeaseKey(instanceId));
+    if (!e || e.operation !== "PUT") return undefined;
+    return { info: JSON.parse(new TextDecoder().decode(e.value)) as ManagerLeaseInfo, revision: e.revision };
   }
   /** Release THIS instance's key on clean shutdown so a same-id restart re-acquires immediately. CAS-guarded
    *  by `revision`: if we already LOST it (renew gap) the stored revision has moved, the conditional delete
