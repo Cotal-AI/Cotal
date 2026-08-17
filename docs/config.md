@@ -76,7 +76,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode) | none (open mode) |
 | `COTAL_LINK` | connector session | `cotal://token@host/space` join link: supplies server, auth, space | none |
 | `COTAL_AGENT_FILE` | connector session | Path to a persona file: supplies name, role, kind, channels | none |
-| `COTAL_SUBSCRIBE` | connector session | Active channel read set | agent file / link, else `general` |
+| `COTAL_SUBSCRIBE` | connector session | Active channel read set | agent file / link, else no channels |
 | `COTAL_ALLOW_SUBSCRIBE` | connector session | Read ACL (channels the agent *may* read) | = `COTAL_SUBSCRIBE` |
 | `COTAL_ALLOW_PUBLISH` | connector session | Post ACL (channels the agent *may* post to) | deny (empty) |
 | `COTAL_MODEL` | connector session | Model label (display metadata) | agent file's `model:`, else none |

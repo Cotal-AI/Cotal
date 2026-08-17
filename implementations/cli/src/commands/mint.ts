@@ -250,8 +250,9 @@ async function provisionForMint(
   try {
     await prov.start();
     // `subscribe` is a launcher's BOOT channel set; an out-of-band client declares its channels at
-    // connect, so here it is the read ACL itself (provisionAgent defaults it to `general` and refuses
-    // one outside the ACL - passing the ACL keeps a scoped mint scoped, never widened to `general`).
+    // connect, so here it is the read ACL itself (provisionAgent refuses a boot channel outside the
+    // ACL - passing the ACL keeps the footprint exactly as wide as the mint, and no wider). With no
+    // --allow-subscribe both are empty: the cred carries no channel row at all, DMs still work.
     return await provisionAgent(prov, auth, identity, { ...opts, subscribe: opts.allowSubscribe });
   } finally {
     await prov.stop().catch(() => {});

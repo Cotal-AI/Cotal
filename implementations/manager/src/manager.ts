@@ -3011,7 +3011,7 @@ export class Manager {
       subscribe = opts.subscribe ?? def.subscribe;
       // Defaulted the same way the loader/provisioner do — minted into the creds (the broker
       // boundary); runtime durable joins are re-authorized against the committed ACL by the daemon.
-      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? ["general"];
+      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? [];
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
       variant = opts.variant ?? def.variant;
@@ -3238,8 +3238,8 @@ export class Manager {
         prompt,
         // The SAME access set the creds were minted from (above) — forwarded so the session's
         // runtime read/post set matches its credentials. Without this a manifest-spawned agent
-        // (materialized persona has no access frontmatter) falls back to `["general"]`, which its
-        // scoped creds deny, and it joins nothing.
+        // (materialized persona has no access frontmatter) has no channel set to read and joins
+        // nothing, even though its creds authorize the manifest's channels.
         subscribe,
         allowSubscribe,
         allowPublish,

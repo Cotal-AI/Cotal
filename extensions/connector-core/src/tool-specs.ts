@@ -196,6 +196,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
   // use them, instead of discovering the denial by trying. cotal_despawn stays (its no-name
   // self-despawn is granted to all). controlFailure remains the backstop if a wire denial slips by.
   const canSpawn = !config.creds || (config.capabilities?.includes("spawn") ?? false);
+  // The default broadcast target, the same one the endpoint resolves: the first CONCRETE channel of
+  // the read set (a wildcard subscription like `team.>` is not a destination). Undefined when the
+  // agent is on no channel, in which case there IS no default and a send without one is refused.
+  const defaultChannel = config.subscribe.find(isConcreteChannel);
   const specs: CotalToolSpecDecl[] = [
     {
       name: "cotal_orientation",
@@ -352,7 +356,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .string()
           .optional()
           .describe(
-            `Channel to send on (default: ${config.subscribe.find(isConcreteChannel) ?? "general"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
+            `Channel to send on (${defaultChannel ? `default: ${defaultChannel}` : "REQUIRED: you are on no channel, so there is no default and an omitted channel is refused - join one first"}). Concrete only, not a wildcard like team.>; reply on the channel you received a message on.`,
           ),
         mentions: z
           .array(z.string())
@@ -565,7 +569,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_leave",
       title: "Cotal: leave a channel",
       description:
-        "Unsubscribe from a channel mid-session; you stop receiving its messages. You can't leave your only channel.",
+        "Unsubscribe from a channel mid-session; you stop receiving its messages. Leaving your LAST channel is allowed: you stay on the mesh, visible on the roster and reachable by DM and anycast, you just read no channel. You then have no default send channel, so cotal_send refuses a call with no channel until you join one.",
       schema: {
         channel: z.string().describe("The channel to leave."),
       },

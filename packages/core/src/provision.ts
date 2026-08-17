@@ -488,8 +488,10 @@ export interface MintOpts {
    *  by the caller). Minted as per-channel single-filter history-consumer create grants
    *  (`CONSUMER.CREATE.<CHAT>.<chathist_id>.<chat.*.ch>`) — the broker boundary on chat **history**
    *  reads (join-backfill / focus-recall). Each is run through the chat-subject builder so a
-   *  wildcard subtree `team.>` becomes `chat.*.team.>`. Defaults to `["general"]`. The live read is the
-   *  agent's own native `sub.allow` over `chat.*.<channel>` (also minted from this list, below). */
+   *  wildcard subtree `team.>` becomes `chat.*.team.>`. Omitted or empty ⇒ NO channel read rows at
+   *  all (the cred carries no chat history grant and no `chat.*.<ch>` sub row); DM, presence,
+   *  anycast and the control rails are unaffected. The live read is the agent's own native
+   *  `sub.allow` over `chat.*.<channel>` (also minted from this list, below). */
   allowSubscribe?: string[];
   /** Post ACL — channels an "agent" may publish to (the agent file's `allowPublish`, already
    *  resolved by the caller). Each becomes a `chat.<id>.<ch>` publish grant. **Default-deny**:
@@ -631,7 +633,7 @@ function userValidDates(kind: CredentialKind, opts: MintOpts): { exp?: number } 
 export interface ProvisionOpts extends MintOpts {
   /** The active read set: the channels the agent subscribes to (live core-sub) at boot, and whose
    *  `durable`-class ones the agent self-joins for a Plane-3 backstop at connect (via the delivery
-   *  daemon). Must be ⊆ `allowSubscribe`. Defaults to `["general"]`. */
+   *  daemon). Must be ⊆ `allowSubscribe`. Omitted or empty ⇒ no boot channels at all. */
   subscribe?: string[];
   /** Record this agent's read ACL so it can participate in durable delivery (default true). A durable
    *  backstop needs the agent's read ACL in the registry — the server-side delivery daemon re-authorizes
@@ -740,7 +742,9 @@ export async function provisionAgentDurables(
   opts: ProvisionOpts = {},
 ): Promise<string[]> {
   const uid = assertLifecycleToken(pr.lifecycleUid); // hard cut: every provisioned footprint is lifecycle-keyed (SPEC 13.1)
-  const subscribe = opts.subscribe?.length ? opts.subscribe : ["general"];
+  // An omitted/empty read set means NO channels (it does not mean `general`): a caller that names
+  // no channel gets a footprint with no channel membership and, below, a cred with no channel row.
+  const subscribe = opts.subscribe ?? [];
   const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : subscribe;
   // Reject channel names the wire layer would rewrite (the pre-created filter rides token() too).
   for (const ch of [...subscribe, ...allowSubscribe]) assertValidChannel(ch);
@@ -1061,7 +1065,11 @@ export function permissionsFor(
   if (profile !== "agent")
     throw new Error(`permissionsFor: unhandled profile "${profile}" - add an explicit arm, do not fall through to agent`);
   const allowPublish = opts.allowPublish ?? []; // post ACL — DEFAULT-DENY (publish must be declared)
-  const allowSubscribe = opts.allowSubscribe?.length ? opts.allowSubscribe : ["general"]; // read ACL
+  // Read ACL — DEFAULT-DENY for channels, exactly like allowPublish above. Omitted or empty mints
+  // NO channel row: no per-channel history-consumer create grant and no `chat.*.<ch>` sub.allow.
+  // The DM/presence/anycast/control rows below are unconditional, so a channel-less agent is still
+  // a full mesh participant, reachable by DM and visible on the roster.
+  const allowSubscribe = opts.allowSubscribe ?? [];
   // Re-assert at the mint chokepoint (covers mint/spawn paths that bypass the file loader): a policy
   // channel must equal its wire token, or the minted grant would alias the logical ACL.
   for (const ch of [...allowSubscribe, ...allowPublish]) assertValidChannel(ch);

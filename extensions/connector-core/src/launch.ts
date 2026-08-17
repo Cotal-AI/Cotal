@@ -119,9 +119,9 @@ export function launchEnv(
 /** The agent's resolved access policy as `COTAL_*` env, when present. Forwarded by each connector
  *  so the spawned session's runtime read/post set matches the creds the manager minted from the
  *  same policy. Without it a manifest-spawned agent — whose materialized persona carries no access
- *  frontmatter — falls back to `["general"]`, which its scoped creds deny, so it joins nothing.
- *  Empty/absent lists are omitted: the connector then defers to the persona file or the `general`
- *  baseline (the no-channel case), preserving the persona-spawn path unchanged. */
+ *  frontmatter — has no channel set to read, so it joins nothing even though its creds authorize
+ *  channels. Empty/absent lists are omitted: the connector then defers to the persona file or the
+ *  join link, preserving the persona-spawn path unchanged. */
 export function aclEnv(opts: {
   subscribe?: string[];
   allowSubscribe?: string[];

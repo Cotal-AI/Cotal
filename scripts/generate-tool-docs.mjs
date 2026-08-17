@@ -16,7 +16,9 @@ const here = dirname(fileURLToPath(import.meta.url));
 const out = join(here, "..", "docs", "mcp-tools.md");
 
 // A representative config: open-mode-ish (no creds ⇒ the capability-gated tools are
-// included and marked below), default channel `general`.
+// included and marked below), subscribed to `general` so channel-defaulted arguments render a
+// concrete example. Channels are NOT a default: an agent whose persona lists none joins none, and
+// its `cotal_send` renders "no default" instead. The preamble below says so.
 const config = {
   space: "main",
   name: "you",
@@ -161,7 +163,7 @@ lines.push(
 );
 lines.push("");
 lines.push(
-  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below assume the standard `general` setup; channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
+  "The tools are defined once, platform-neutrally, in `@cotal-ai/connector-core` and rendered onto each host's native tool API (an MCP server for [Claude Code](connect-claude.md) and [Codex](connect-codex.md), native plugin tools for [OpenCode](connect-opencode.md), [Hermes](connect-hermes.md), and [pi](connect-pi.md)), so the surface cannot drift across connectors. Argument defaults shown below are rendered for an agent subscribed to `general`; an agent reads only the channels its persona lists, so one that lists none has no default channel at all and `cotal_send` requires an explicit `channel`. Channel-scoped calls are bounded by your ACLs ([channels & permissions](channels-and-permissions.md)).",
 );
 lines.push("");
 lines.push(

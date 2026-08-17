@@ -7,7 +7,8 @@
  *   role: builder
  *   description: …
  *   tags: [edit, test]
- *   subscribe: [general]       # channels this agent actively reads at boot (the live set)
+ *   subscribe: [general]       # channels this agent actively reads at boot (the live set);
+ *                              #   omit ⇒ NO channels (reachable by DM only)
  *   allowSubscribe: [general]  # read ACL — channels it MAY read; omit ⇒ same as `subscribe`
  *   allowPublish: [general]    # post ACL — channels it may publish to; omit ⇒ DENY (default-deny)
  *   model: opus                # optional CLI/model override
@@ -37,7 +38,9 @@ export interface AgentDef {
   description?: string;
   tags?: string[];
   /** The *active* read set: channels this agent subscribes to at boot (the live chat-durable
-   *  filter; mutable at runtime via join/leave). Must be ⊆ {@link allowSubscribe}. Default `[general]`. */
+   *  filter; mutable at runtime via join/leave). Must be ⊆ {@link allowSubscribe}. Omitted or
+   *  empty ⇒ NO channels: an agent reads exactly the channels it lists, and a file that names
+   *  none joins none (it stays reachable by DM, presence and anycast). List `general` to get it. */
   subscribe?: string[];
   /** The read **ACL**: channels this agent *may* read (auth mode → minted as per-channel
    *  history-consumer create grants; the live durable's filter is also held within it). Entries
@@ -157,8 +160,12 @@ export function loadAgentFile(path: string): AgentDef {
       throw new Error(`agent file ${path}: ${(e as Error).message}`);
     }
   // Invariant (fail-loud at load): the active read set must be within the read ACL. Defaults:
-  // subscribe ⇒ [general]; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
-  const effSubscribe = subscribe?.length ? subscribe : ["general"];
+  // subscribe ⇒ NOTHING; allowSubscribe ⇒ subscribe (read exactly what you subscribe to).
+  // An omitted or empty read set means NO channels, not `general`: a file that names no channel
+  // gets none, and the agent is reachable by DM/presence/anycast only. The old default put every
+  // persona that forgot the field onto `general`, including DM-only reviewers and probes, and
+  // minted the matching channel read row into its credential — a channel nobody chose.
+  const effSubscribe = subscribe ?? [];
   const effAllow = allowSubscribe?.length ? allowSubscribe : effSubscribe;
   for (const ch of effSubscribe)
     if (!channelInAllow(effAllow, ch))

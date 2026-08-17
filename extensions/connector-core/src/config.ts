@@ -118,7 +118,9 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
   if (!name)
     throw new Error("COTAL_NAME, COTAL_AGENT_FILE or COTAL_LINK is required — a Cotal session needs an explicit identity from its launcher");
   const subscribe = splitList(env.COTAL_SUBSCRIBE);
-  const resolvedSubscribe = subscribe.length ? subscribe : (def?.subscribe ?? link?.channels ?? ["general"]);
+  // Read set: env > persona file > join link. No implicit channel at the end of that chain — a
+  // session whose launcher, persona and link all name none joins none (DM-reachable, not on `general`).
+  const resolvedSubscribe = subscribe.length ? subscribe : (def?.subscribe ?? link?.channels ?? []);
   const allowSub = splitList(env.COTAL_ALLOW_SUBSCRIBE);
   const resolvedAllowSub = allowSub.length ? allowSub : (def?.allowSubscribe ?? resolvedSubscribe);
   // Fail loud on an inconsistent env override (the agent-file loader already checks the file): the

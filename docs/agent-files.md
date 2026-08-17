@@ -12,7 +12,7 @@ name: dave              # → COTAL_NAME / card.name
 role: builder           # → COTAL_ROLE / card.role (presence + anycast address)
 description: …          # → card.description
 tags: [edit, test]      # → card.tags ("what it can do")
-subscribe: [general, team.backend]     # channels it reads at boot
+subscribe: [general, team.backend]     # channels it reads at boot (omit = none)
 allowSubscribe: [general, team.>]      # read ACL (omit = same as subscribe)
 allowPublish: [general, team.backend]  # post ACL (omit = none, default-deny)
 model: opus             # optional model override
@@ -38,7 +38,7 @@ Authoritative shape: [`agent-file.ts`](../packages/core/src/agent-file.ts).
 | `kind` | `agent` \| `endpoint` | Participation class; default `agent`. |
 | `description` | string | One-line summary → `card.description`. |
 | `tags` | string[] | Capability tags → `card.tags`. |
-| `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. Default `[general]`. |
+| `subscribe` | string[] | The **active read set**: channels subscribed at boot (mutable at runtime via join/leave). Must be ⊆ `allowSubscribe`. **Omitted ⇒ no channels**: an agent reads exactly what it lists, and one that lists none joins none (still reachable by DM, anycast and presence). List `general` if you want it. |
 | `allowSubscribe` | string[] | The **read ACL**: channels it *may* read. Wildcard subtrees allowed (`team.>`). Omitted ⇒ same as `subscribe`. |
 | `allowPublish` | string[] | The **post ACL**: channels it may publish to. **Omitted ⇒ deny**; posting is the dangerous capability, declare it explicitly. |
 | `quiet` | string[] | Per-channel attention *default*: ambient stays buffered and pull-only until `cotal_inbox`; `@mention`s remain automatic. Concrete channels within the read ACL. |
