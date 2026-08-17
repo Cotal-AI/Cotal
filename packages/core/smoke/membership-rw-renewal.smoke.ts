@@ -32,6 +32,7 @@ import {
   MEMBERSHIP_FEED_KEY, type MembershipFeedHandle,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const enc = (s: string) => new TextEncoder().encode(s);
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -46,9 +47,18 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 const space = `member-rw-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const rogue = await createSpaceAuth(space); // a DIFFERENT operator, absent from server.conf → the broker refuses its signatures
-const dir = mkdtempSync(join(tmpdir(), "cotal-member-rw-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
-const startBroker = (): ChildProcess => spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+// Ownership lives INSIDE the factory, so every restart is covered by construction rather than by
+// each call site remembering. Owning only the first child would leave the LIVE broker unowned
+// after a restart while the suite still read as migrated: ownership held on a dead pid.
+let releaseBroker = (): void => {};
+const startBroker = (): ChildProcess => {
+  releaseBroker();
+  const p = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+  releaseBroker = teardownOnSignal(p, dir);
+  return p;
+};
 let srv = startBroker();
 
 const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
@@ -267,6 +277,7 @@ try {
   try { await feed?.stop(); } catch { /* draining */ }
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
   await wait(200);
 }
 process.exit(fail ? 1 : 0);
