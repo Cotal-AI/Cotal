@@ -76,6 +76,12 @@ function arm(): void {
   // default-disposition SIGTERM terminates without running an `exit` handler at all, and there the
   // signal handlers are the only thing left. The suite prints that they are UNOBSERVED here rather
   // than letting a green run imply this runner proved them.
+  //
+  // READ THIS BEFORE DELETING EITHER ONE. These two are JOINTLY graded, never individually, because
+  // tsx converts an unhandled signal into an exit; the suite cannot tell the legs apart and a
+  // mutation on either is UNGRADABLE by construction. Under a runner that does not convert, each leg
+  // is load-bearing alone. So deleting the signal registration is green here and silently broken
+  // anywhere else, and nothing will tell you.
   process.on("exit", reap);
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     // A NAMED handler removed with `process.off`, never `removeAllListeners`: this helper is meant to
