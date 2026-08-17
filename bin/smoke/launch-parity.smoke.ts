@@ -38,7 +38,7 @@ process.env.COTAL_CAPABILITIES = "spawn";
  *  Types are erased at runtime, so this list is the golden — a StartAgentOpts change must
  *  consciously edit it. */
 const START_OP_KEYS = new Set([
-  "name", "identity", "agent", "role", "config", "model", "variant", "launchOptions", "resume", "transcript", "cwd",
+  "name", "identity", "agent", "role", "config", "model", "variant", "launchOptions", "resume", "transcript", "events", "cwd",
   "prompt", "subscribe", "allowSubscribe", "allowPublish", "shareTools",
 ]);
 
@@ -52,6 +52,7 @@ const flagToOpKey: Record<string, string> = {
   "allow-subscribe": "allowSubscribe",
   "allow-publish": "allowPublish",
   "no-transcript": "transcript",
+  "no-events": "events",
 };
 
 // 1 — spawn parses the whole shared grammar.
@@ -83,6 +84,12 @@ for (const p of toolParams) {
 // `resume` stays deliberately OFF the peer-facing tool (host-transcript disclosure — see the
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
 assert.ok(!toolParams.includes("resume"), "cotal_spawn must not expose resume (deferred, #159)");
+// `events` is likewise OFF the peer-facing tool, and deliberately so. Arming another session's
+// event plane publishes that session's full tool inputs and outputs to a channel, so the option
+// needs an admin precheck that runs BEFORE connector resolution or any grant mutation, and that
+// precheck does not exist yet. Asserting the absence is what keeps "not built" from drifting into
+// "built and unguarded" by way of a one-line schema addition.
+assert.ok(!toolParams.includes("events"), "cotal_spawn must not expose events until the admin precheck exists");
 
 // 4 — every launch client outlives the manager's readiness wait (#159 B1). The tier rule forbids
 // the clients importing READINESS_TIMEOUT_MS, so the relation is enforced here, by test.

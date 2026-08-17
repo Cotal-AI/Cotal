@@ -224,6 +224,7 @@ async function spawnDetached(
   values: FlagValues<typeof spawnFlags>,
   positionals: string[],
   transcript: boolean | undefined,
+  events: boolean | undefined,
   launchOptions: Record<string, string> | undefined,
 ): Promise<void> {
   // WHICH file the manager loads — the exact foreground precedence (`--config` > positional >
@@ -259,6 +260,10 @@ async function spawnDetached(
     allowPublish: splitFlag(values["allow-publish"]),
     // Tri-state: true (--transcript), false (--no-transcript, explicit), absent → manager default.
     transcript,
+    // Same tri-state for the event plane. It rides its own key rather than sharing the transcript's:
+    // the two are independent surfaces with independent grants, and folding them would mean asking
+    // for one silently authorized the other.
+    events,
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
@@ -324,12 +329,16 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // false (--no-transcript, explicit), undefined (absent). Foreground treats absent as off;
   // detached forwards the tri-state so absent defers to the manager's default.
   const transcript = values.transcript ? true : values["no-transcript"] ? false : undefined;
+  // The AG-UI event plane is OFF by default and opts in exactly as the mirror does. The flag ARMS
+  // the emitter; the manager separately grants publish on the channel the connector names. Both are
+  // required, which is what stops a hand-written grant from turning events on by itself.
+  const events = values.events ? true : values["no-events"] ? false : undefined;
 
   // `--detach`: the SAME grammar, launched by the manager into a detached PTY. The persona is
   // resolved manager-side (its workspace root owns `.cotal/agents`); flags ride the control
   // request and override the file exactly as the foreground path does.
   if (values.detach) {
-    return spawnDetached(values, positionals, transcript, cliLaunchOptions);
+    return spawnDetached(values, positionals, transcript, events, cliLaunchOptions);
   }
   // `--creds` names a CONTROL-CALLER credential (reach an off-registry manager) — meaningless for
   // a foreground launch, which provisions the agent's own creds. Fail loud, never ignore.
@@ -550,6 +559,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
       // the positional prompt alongside `--resume … --fork-session`); an unsupported connector throws.
       resume: values.resume,
       transcript,
+      events,
       mcpServers,
     });
 

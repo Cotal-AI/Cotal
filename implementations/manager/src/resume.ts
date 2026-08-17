@@ -67,6 +67,7 @@ const agent = z.strictObject({
     allowPublish: stringList.optional(),
     capabilities: z.array(z.string().min(1).max(256)).max(64).optional(),
     transcript: z.boolean(),
+    events: z.boolean(),
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
     unresolvedLaunchOptionKeys: z.array(label).max(64).optional(),
