@@ -1,86 +1,27 @@
 {
   "grades": "tool",
-  "guard": "the completion check runs ahead of EVERY verdict, not only ahead of the red one",
+  "guard": "a declared completion marker downgrades a KILLED to INCONCLUSIVE, and only for a suite that declared one",
   "command": "node scripts/mutation-proof.selftest.mjs",
   "progressPattern": "✓",
-  "completionMarker": "an absolute --config path is read where it is",
+  "completionMarker": "MUTATION-PROOF SELF-TEST PASSED",
+  "why": "This file used to grade a failure-vocabulary constant that no longer exists. `main` replaced that whole approach with a baseline-transcript comparison, which answers the same question without a grader guessing a suite's output conventions, so the constant and its six mutations went with it. What remains is the one behaviour that survived the merge on its own merits, and it is graded by exactly the two cells that pin it.",
   "mutations": [
     {
       "name": "the completion check is disabled outright",
       "file": "scripts/mutation-proof.mjs",
       "find": "if (marker !== undefined && !r.output.includes(marker)) {",
       "replace": "if (false) {",
-      "expectRed": "a run that never reaches the suite's end is INCONCLUSIVE, not KILLED",
-      "note": "Disabling the check outright is BROADER than the cell it would like to name: in a fail-fast suite the earlier incomplete-run cell fires first, so this is graded on that one and the clean-exit direction is graded by the ordering mutation below, which is the narrow one."
+      "expectRed": "a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early",
+      "cell": "a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early"
     },
     {
-      "name": "THE ORDERING: the completion check applies only to a red run, as it did before",
+      "name": "THE OPT-IN: the check stops asking whether the suite asked for it",
       "file": "scripts/mutation-proof.mjs",
       "find": "if (marker !== undefined && !r.output.includes(marker)) {",
-      "replace": "if (marker !== undefined && !r.output.includes(marker) && r.status !== 0) {",
-      "expectRed": "a CLEAN exit that never reached the region is INCONCLUSIVE, not SURVIVED"
-    },
-    {
-      "name": "a run that printed nothing is blamed on the assertion instead",
-      "file": "scripts/mutation-proof.mjs",
-      "find": "why: r.output.trim() === \"\"",
-      "replace": "why: false",
-      "expectRed": "a run with NO OUTPUT is named as never having started"
-    },
-    {
-      "name": "an exit code alone is enough for a PASS again",
-      "file": "scripts/mutation-proof.mjs",
-      "find": "    if (r.status === 0 && !printedFailures) {",
-      "replace": "    if (r.status === 0) {",
-      "expectRed": "a suite whose teardown forces exit 0 over real failures is not a SURVIVED"
-    },
-    {
-      "name": "the failure vocabulary is widened until it fires on a clean run",
-      "file": "scripts/mutation-proof.mjs",
-      "find": "const FAILURE_EVIDENCE = \"(?:^|[\\\\s:])(?:✗|FAIL\\\\b|FAILED\\\\b|AssertionError)|\\\\b[1-9]\\\\d* failed\\\\b\";",
-      "replace": "const FAILURE_EVIDENCE = \"failed\";",
-      "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
-      "note": "A pattern matching the word 'failed' anywhere fires on the summary line of a CLEAN run ('0 failed'), which turns every genuine survivor into a WRONG-RED. Narrowness is the whole design of this default."
-    },
-    {
-      "name": "the word boundary after FAIL is relaxed away",
-      "file": "scripts/mutation-proof.mjs",
-      "find": "FAIL\\\\b|FAILED\\\\b",
-      "replace": "FAIL|FAILED\\\\b",
-      "expectRed": "the word boundary after FAIL is load-bearing: a cell LABEL containing `FAILING` is not a failure",
-      "cell": "the word boundary after FAIL is load-bearing: a cell LABEL containing `FAILING` is not a failure",
-      "note": "A real near-miss from a neighbouring lane, not an invented string: a passing cell whose LABEL says FAILING would become evidence that the suite failed, which turns a genuine SURVIVED into a WRONG-RED and hides the finding a kill set exists to produce.",
-      "completionMarker": "an absolute --config path is read where it is"
-    },
-    {
-      "name": "FAILED is matched case-insensitively",
-      "file": "scripts/mutation-proof.mjs",
-      "find": "FAILED\\\\b|AssertionError",
-      "replace": "[Ff][Aa][Ii][Ll][Ee][Dd]\\\\b|AssertionError",
-      "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
-      "cell": "...while a change nothing tests is still SURVIVED on that same suite",
-      "note": "The other measured near-miss. Prose about a failed REPLY is ordinary suite vocabulary; the verdict word is the shouted one. RE-AIMED after the first run graded it WRONG-RED at 20 marks. Broader than the cell it named: the fixture's own output carries lowercase `failed` prose, so a case-insensitive vocabulary reddens the SURVIVED cell at mark 20 before the boundary cell at mark 25 is ever reached, and this file stops at its first red. That is the STRONGER proof, not a weaker one -- the harm is demonstrated on a real run rather than on a string this file typed for itself -- and the boundary cell stays as the statement of WHICH boundary carried it.",
-      "completionMarker": "an absolute --config path is read where it is"
-    },
-    {
-      "name": "the non-zero anchor on the failure count is dropped",
-      "file": "scripts/mutation-proof.mjs",
-      "find": "\\\\b[1-9]\\\\d* failed\\\\b",
-      "replace": "\\\\b\\\\d* failed\\\\b",
-      "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
-      "cell": "...while a change nothing tests is still SURVIVED on that same suite",
-      "note": "`0 failed` is what every clean run of a counting suite prints, so without the anchor the grader reads a green summary as a failure and no counting suite can ever report SURVIVED. RE-AIMED after the first run graded it WRONG-RED at 20 marks, and for the same reason: `0 failed` is what the fixture's own clean run prints, so dropping the anchor reddens the SURVIVED cell first. A mutation must be no broader than the cell it names, and in a fail-fast file `no broader` is decided by ordering, not by intent.",
-      "completionMarker": "an absolute --config path is read where it is"
-    },
-    {
-      "name": "the vocabulary is WIDENED by a word these four strings do not contain",
-      "file": "scripts/mutation-proof.mjs",
-      "find": "AssertionError)|",
-      "replace": "AssertionError|PANIC)|",
-      "expectRed": "...and it is EXACTLY the measured pattern, so a relaxation these strings miss still fails here",
-      "cell": "...and it is EXACTLY the measured pattern, so a relaxation these strings miss still fails here",
-      "note": "The reason the literal is pinned at all. This change is invisible to every behaviour cell above -- none of the four strings contains PANIC -- and it is still a guessed convention entering a grader that is only allowed to carry a measured one. Without the pin it survives.",
-      "completionMarker": "an absolute --config path is read where it is"
+      "replace": "if (!r.output.includes(marker)) {",
+      "expectRed": "...and THE SAME RUN with no marker declared is still KILLED, so this is opt-in and not a new default",
+      "cell": "...and THE SAME RUN with no marker declared is still KILLED, so this is opt-in and not a new default",
+      "note": "With no marker declared this reads `includes(undefined)`, which is false, so every unmarked suite starts grading INCONCLUSIVE. That is the exact regression the control cell exists to catch, and it is what `a real red followed by a crash is still KILLED` would silently lose. Aimed at the control rather than at the feature, because a feature cell going red proves the feature is wired and only the control proves it did not become global."
     }
   ]
 }

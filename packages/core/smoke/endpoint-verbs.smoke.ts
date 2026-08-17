@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { connect, headers } from "@nats-io/transport-node";
 import type { NatsConnection, Subscription } from "@nats-io/transport-node";
 import {
-  isReachable, EpEnvelopeError,
+  isReachable, EpEnvelopeError, respondedButUnbound, EP_UNBOUND_RESPONDER, unansweredRequest, registryReadFailed, EP_UNANSWERED,
   compileContract,
   parseEpSubject, epReplySubject, epeSubject, spacePrefix,
   epCall, epCast, epWatchEvents, epScatter,
@@ -37,6 +37,12 @@ const rejects = async (n: string, fn: () => Promise<unknown>, code?: string) => 
   }
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+/** Run `fn` and hand back what it threw (undefined if it resolved), for cells that grade the error's
+ *  details and not just its code. */
+const caught = async (fn: () => Promise<unknown>): Promise<unknown> => { try { await fn(); return undefined; } catch (e) { return e; } };
+/** The {@link EP_UNBOUND_RESPONDER} detail on a thrown error, if any. */
+const unboundDetail = (e: unknown): Record<string, unknown> | undefined =>
+  e instanceof EpEnvelopeError ? (e.details ?? []).find((d) => d.kind === EP_UNBOUND_RESPONDER) : undefined;
 
 const SPACE = "epverbs";
 const ENDPOINT = "demo";
@@ -187,6 +193,20 @@ try {
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }), "failed-precondition");
   await rejects("scatter BOUNDS a never-settling reconcile as unavailable (deadline mandatory, no hung scatter)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, EpRegistrationState>>(() => { /* never settles */ }) }), "unavailable");
+  {
+    // Both reconcile failures are the CALLER's registry read failing after the gather ran (members may
+    // all have answered): marked EP_REGISTRY_READ_FAILED, never EP_UNANSWERED, so a consumer does not
+    // pronounce on the members' reachability for a read of its own.
+    const hung = await caught(() => epScatter(nc, SPACE, opFor(), { deadlineMs: 150, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: () => new Promise<Map<string, EpRegistrationState>>(() => { /* never settles */ }) }));
+    c("a never-settling reconcile is marked EP_REGISTRY_READ_FAILED, not EP_UNANSWERED", registryReadFailed(hung) && !unansweredRequest(hung), hung);
+    const unread = await caught(() => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new Error("kv down"); } }));
+    c("an unreadable reconcile is marked EP_REGISTRY_READ_FAILED, not EP_UNANSWERED", registryReadFailed(unread) && !unansweredRequest(unread), unread);
+    // The hook is an untrusted boundary: its OWN bare `unavailable` is the read failing, normalized
+    // to failed-precondition and marked like any other unreadable reconcile. It used to pass through
+    // unmarked because the catch keyed the pass-through on the code, not on the bound's marker.
+    const hookUnavail = await caught(() => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }], reconcileRegistration: async () => { throw new EpEnvelopeError("unavailable", "kv gateway down"); } }));
+    c("a hook's own bare `unavailable` is normalized to failed-precondition AND marked EP_REGISTRY_READ_FAILED (no unmarked pass-through)", hookUnavail instanceof EpEnvelopeError && hookUnavail.code === "failed-precondition" && registryReadFailed(hookUnavail), hookUnavail);
+  }
   await rejects("scatter FAILS LOUD when the reconcile omits a frozen slot (incomplete read can't authorize completion)",
     () => epScatter(nc, SPACE, opFor(), { deadlineMs: 120, expected: [{ instanceId: A, registrationRevision: 1, epoch: EP }, { instanceId: B, registrationRevision: 1, epoch: EP }], reconcileRegistration: okReconcile({ [A]: 1 }) }), "failed-precondition");
   await rejects("scatter FAILS LOUD when the reconcile reports a below-frozen revision (non-monotonic/buggy read)",
@@ -279,6 +299,13 @@ try {
   await rejects("epCall with NO responder rejects `unavailable` (SPEC 13.5), not deadline-exceeded",
     () => epCall(nc, SPACE, { mode: "inst", instanceId: "9".repeat(26), epoch: 1 }, opFor(), { deadlineMs: 400 }), "unavailable");
   {
+    // The broker's no-responders control is the one `unavailable` that OBSERVED silence: it carries
+    // EP_UNANSWERED naming the call, the marker a consumer keys its reachability verdict on.
+    const e = await caught(() => epCall(nc, SPACE, { mode: "inst", instanceId: "9".repeat(26), epoch: 1 }, opFor(), { deadlineMs: 400 }));
+    const d = e instanceof EpEnvelopeError ? (e.details ?? []).find((x) => x.kind === EP_UNANSWERED) : undefined;
+    c("no-responder `unavailable` is marked EP_UNANSWERED with the call it names", unansweredRequest(e) && d?.endpoint === ENDPOINT && d?.command === "ping", e);
+  }
+  {
     // A selected responder knows the nonce and can forge a 503 status header on its OWN normal reply
     // subject. That must NOT be read as the broker's no-responders control (which lands only on the
     // reserved `_nr._nr._nr` sentinel reply-to): the forged 503 takes the ordinary attributed-reply path.
@@ -295,9 +322,21 @@ try {
   }
   {
     const sub = respond(nc, instFilter, () => [{ instanceId: IID, epoch: 9, ok: true, data: { which: "stale" } }]); // replies at a DIFFERENT epoch
-    await rejects("epCall rejects a STALE-epoch reply as `expired` (§13.2: callers reject stale replies)",
-      () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 500 }), "expired");
+    const e = await caught(() => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 500 }));
     await sub.drain();
+    c("epCall rejects a STALE-epoch reply as `expired` (§13.2: callers reject stale replies)",
+      e instanceof EpEnvelopeError && e.code === "expired", e instanceof Error ? e.message.slice(0, 120) : e);
+    // The refusal is raised AFTER an attributed reply, so it carries the responder-answered marker
+    // (a retry is a second attempt), with both epochs and the rail, and it says which side is stale:
+    // the responder is AHEAD of what this caller holds, so it is a successor and the caller's handle
+    // is the stale side. Graded on the `inst` rail directly: the `one` rail is graded below, and a
+    // regression that unmarked only one call site must not hide behind the other.
+    const d = unboundDetail(e);
+    c("...carrying the responder-answered marker on the `inst` rail", respondedButUnbound(e), e instanceof Error ? e.message.slice(0, 160) : e);
+    c("...whose details name the instance, both epochs, the pinned rail, and that the reference is this handle's BIND",
+      d?.answeredBy === IID && d?.boundTo === IID && d?.answeredEpoch === 9 && d?.heldEpoch === 3 && d?.reference === "bind" && d?.pinned === true, d);
+    c("...and the message says the responder is a SUCCESSOR (answered 9 > bound 3): the handle is the stale side",
+      e instanceof Error && /SUCCESSOR/.test(e.message) && !/SUPERSEDED incarnation/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
   }
   {
     const sub = respond(nc, instFilter, () => [{ instanceId: "2".repeat(26), epoch: 3, ok: true, data: { which: "wrong" } }]); // replies as a DIFFERENT instance
@@ -309,6 +348,9 @@ try {
     const sub = respond(nc, instFilter, () => []); // subscriber exists but never replies -> slow, not absent
     await rejects("epCall with a live-but-silent responder rejects deadline-exceeded (distinct from unavailable)",
       () => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 250 }), "deadline-exceeded");
+    // The reply deadline elapsing is the other producer that observed silence: marked EP_UNANSWERED.
+    const e = await caught(() => epCall(nc, SPACE, { mode: "inst", instanceId: IID, epoch: 3 }, opFor(), { deadlineMs: 250 }));
+    c("reply-deadline `deadline-exceeded` is marked EP_UNANSWERED", unansweredRequest(e), e);
     await sub.drain();
   }
   await rejects("epCall whose args fail its own input contract refuses bad-request BEFORE publish",
@@ -332,7 +374,7 @@ try {
   }
 
   // epCall `one` (queue anycast): the caller cannot pin an instance up front, so it MUST supply a
-  // currentEpoch hook; the queue winner's currency is CHECKED, not assumed (§13.2:1187-1189).
+  // currentEpoch hook; the queue winner's currency is CHECKED, not assumed (§13.2, the stale-reply rejection rule).
   const oneFilter = `${spacePrefix(SPACE)}.ep.one.>`;
   const OID = "7".repeat(26);
   {
@@ -343,9 +385,31 @@ try {
   }
   {
     const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 4, ok: true, data: { which: "stale" } }]); // answers at epoch 4
-    await rejects("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2:1187-1189)",
-      () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 5 }), "expired");
+    const e = await caught(() => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 5 }));
     await sub.drain();
+    c("epCall `one` rejects a superseded-incarnation reply as `expired` (currentEpoch=5 > answered 4, §13.2, the stale-reply rejection rule)",
+      e instanceof EpEnvelopeError && e.code === "expired", e instanceof Error ? e.message.slice(0, 120) : e);
+    // A caller-supplied `currentEpoch` is a REGISTRY read by this verb's contract (nothing of the
+    // caller's is a bind), and the responder is BEHIND it: a superseded incarnation still connected
+    // answered, so the reply is what is rejected. The marker says the reference is the registry and
+    // carries no `boundTo`, and the message makes no claim about a handle.
+    const d = unboundDetail(e);
+    c("...carrying the responder-answered marker on the `one` rail, unpinned, with both epochs and a REGISTRY reference (no boundTo)",
+      respondedButUnbound(e) && d?.answeredBy === OID && d?.answeredEpoch === 4 && d?.heldEpoch === 5 && d?.reference === "registry" && d?.boundTo === undefined && d?.pinned === false, d);
+    c("...and the message says a SUPERSEDED incarnation answered (answered 4 < registry 5), never that a handle is stale",
+      e instanceof Error && /SUPERSEDED incarnation/.test(e.message) && !/SUCCESSOR|handle/.test(e.message), e instanceof Error ? e.message.slice(0, 200) : e);
+  }
+  {
+    // The registry read can also LAG a restart: the responder answers AHEAD of the read. That is not
+    // a stale handle (there is none), and the message must not tell the caller to re-resolve.
+    const sub = respond(nc, oneFilter, () => [{ instanceId: OID, epoch: 9, ok: true, data: { which: "ahead" } }]); // answers at epoch 9
+    const e = await caught(() => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 500, currentEpoch: () => 4 }));
+    await sub.drain();
+    const d = unboundDetail(e);
+    c("epCall `one` rejects a reply AHEAD of the registry read as `expired`, marked, reference registry",
+      e instanceof EpEnvelopeError && e.code === "expired" && d?.reference === "registry" && d?.answeredEpoch === 9 && d?.heldEpoch === 4, d);
+    c("...and the message says the READ lags, not that a handle is stale (no re-resolve advice, no SUCCESSOR)",
+      e instanceof Error && /ahead of the registry read/.test(e.message) && !/SUCCESSOR|handle|re-resolve/.test(e.message), e instanceof Error ? e.message.slice(0, 220) : e);
   }
   await rejects("epCall on the `one` rail WITHOUT currentEpoch refuses bad-request (queue winner is not implicitly current)",
     () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 200, currentEpoch: undefined as unknown as () => number }), "bad-request");
@@ -358,6 +422,10 @@ try {
       () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 800, currentEpoch: () => { throw new TypeError("registry exploded"); } }), "internal");
     await rejects("epCall `one` refuses a NaN currentEpoch value as failed-precondition, never mislabeled `expired` staleness",
       () => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 800, currentEpoch: () => Number.NaN }), "failed-precondition");
+    // A `deadline-exceeded` raised AFTER the reply arrived (the currency read never settled) observed
+    // no silence: it is NOT marked EP_UNANSWERED, so the code alone never earns a reachability verdict.
+    const e = await caught(() => epCall(nc, SPACE, { mode: "one" }, opFor(), { deadlineMs: 300, currentEpoch: () => new Promise<number>(() => { /* never settles */ }) }));
+    c("a currency-read deadline after a valid reply is `deadline-exceeded` WITHOUT EP_UNANSWERED (the reply arrived)", e instanceof EpEnvelopeError && e.code === "deadline-exceeded" && !unansweredRequest(e), e);
     await sub.drain();
   }
 

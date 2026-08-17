@@ -83,6 +83,7 @@ export const MODEL_PROVIDER_KEYS = [
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
   "NOUS_API_KEY",
+  "NEBIUS_API_KEY",
 ] as const;
 
 /** Build the base env a spawned agent runs with: the OS allow-list plus any named keys the

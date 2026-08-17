@@ -12,11 +12,26 @@
  *   - the suite dies EARLY for an unrelated reason → red, but not the red you claimed
  *   - the run never reached the new check at all → green that never executed the test
  *   - the restore silently fails                 → the next person inherits a broken tree
+ *   - the mutation applied and the run NEVER SAW IT → the file changed; the thing under test read a
+ *                                                  DIFFERENT copy of it. `@cotal-ai/core` resolves
+ *                                                  to `dist/`, so a suite under `implementations/*`
+ *                                                  audits the last BUILD, not `src`. Measured: two
+ *                                                  authority changes to `endpoint-binding.ts` left
+ *                                                  the 59-cell matrix audit fully green; with a
+ *                                                  core build prepended, the same two mutations
+ *                                                  KILLED on the assertions predicted for them.
+ *                                                  Give such a mutation a `command` that builds
+ *                                                  first — AND an `afterRestore` that rebuilds, or
+ *                                                  the tree keeps a `dist/` compiled FROM THE
+ *                                                  MUTANT after the source is put back. `dist/` is
+ *                                                  gitignored, so git cannot be the recovery for it,
+ *                                                  and the repo's own freshness check is an mtime
+ *                                                  ORDERING test that a newer-but-wrong build passes.
  *
  * Each of those has happened. This runs the experiment so that none of them can pass as a result.
  *
  * Usage:
- *   node scripts/mutation-proof.mjs --config mutations.json   (relative to --cwd, or an absolute path)
+ *   node scripts/mutation-proof.mjs --config mutations.json
  *   node scripts/mutation-proof.mjs --file <path> --find <str> --replace <str> \
  *        --command "pnpm smoke:x" --expect-red "<substring of the failing assertion>"
  *
@@ -27,7 +42,7 @@ import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync } from "n
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
-import { join, isAbsolute } from "node:path";
+import { join, resolve } from "node:path";
 
 const C = { red: "\x1b[31m", green: "\x1b[32m", yellow: "\x1b[33m", dim: "\x1b[2m", off: "\x1b[0m" };
 const say = (s = "") => process.stdout.write(`${s}\n`);
@@ -35,7 +50,7 @@ const sha = (p) => createHash("sha256").update(readFileSync(p)).digest("hex");
 
 function usage(msg) {
   say(`${C.red}${msg}${C.off}\n`);
-  say(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(2, 27).join("\n").replace(/^ \* ?/gm, ""));
+  say(readFileSync(new URL(import.meta.url)).toString().split("\n").slice(2, 40).join("\n").replace(/^ \* ?/gm, ""));
   process.exit(2);
 }
 
@@ -94,29 +109,55 @@ function run(command, cwd, timeoutMs) {
  * Convention-bound by nature, so it is advisory unless the caller supplies `progressPattern`.
  */
 const progressCount = (output, pattern) => {
-  const re = new RegExp(pattern ?? "✓", "g");
+  // `m`, not just `g`: a caller-supplied pattern that anchors with `^` (the natural way to say "a
+  // progress line", since a suite's marks are line-initial) matches ONCE without it — against the
+  // start of the whole transcript. The floor then compares 1 to 1 forever and silently never fires,
+  // while the baseline banner prints "1 progress marks" as though it had measured something.
+  const re = new RegExp(pattern ?? "✓", "gm");
   return (output.match(re) ?? []).length;
 };
 
+/** Keys a mutation may carry. An unknown key is an ERROR, not a shrug: this tool exists because
+ *  every step of the experiment has a way to lie, and "the field I set was quietly ignored" is one
+ *  of them — a mis-spelled `expectRed` turns a graded proof into an ungraded red. */
+const MUTATION_KEYS = new Set([
+  "name", "file", "find", "replace", "expectRed", "command", "allowMultiple", "afterRestore",
+  // Read outside this file: `cell` names the assertion a coverage pass requires, `note` and
+  // `cellTemplate` are read by `mutation-coverage.mjs`. They were rejected here while being
+  // genuinely consumed, which errored every mutation in every config that carries one.
+  "cell", "note", "cellTemplate", "completionMarker",
+]);
+
 /**
- * What counts as a suite SAYING IT FAILED, independent of its exit code.
+ * Keys a config may carry at the TOP level, checked for exactly the reason the mutation keys are.
  *
- * Deliberately narrow: this only ever downgrades a green, so a false positive here turns a genuine
- * survivor into a visible WRONG-RED rather than into silence — but a check that fires on innocent
- * text is a check people route around, so it matches only unambiguous verdict vocabulary: a `✗`
- * marker, a FAIL/FAILED word, an `AssertionError`, or a summary counting a NON-ZERO failure ("0
- * failed" is exactly what a clean run prints). Override per config or per mutation with
- * `failurePattern` when a suite spells its verdicts some other way.
+ * The allowlist above was watching the level where nothing was wrong. `completionMarker` is a
+ * top-level key that two configs in this repo set and that no version of this tool had ever read:
+ * a field silently ignored for as long as it has existed, which is precisely the failure the
+ * mutation-key check was written to prevent, one level up and unwatched.
  */
-const FAILURE_EVIDENCE = "(?:^|[\\s:])(?:✗|FAIL\\b|FAILED\\b|AssertionError)|\\b[1-9]\\d* failed\\b";
+const CONFIG_KEYS = new Set([
+  // Read here.
+  "command", "mutations", "progressPattern", "minTicks", "completionMarker",
+  // Read by `mutation-coverage.mjs`, which grades the same configs from the other side. The
+  // allowlist is the union across the toolchain, because a key this file ignores is not thereby
+  // unused, and rejecting one would break the sibling rather than catch a typo.
+  "suite", "guard", "grades", "kind", "unkillable", "why", "proveWith",
+  // Read by NOTHING, on purpose: prose an operator leaves for the next reader. Listed rather than
+  // tolerated, so that "no tool reads this" is a stated property instead of the thing you discover
+  // when you wonder why setting it changed nothing.
+  "_note", "resolved", "redundant", "ungradable",
+]);
 
 function proveOne(m, opts) {
   const cwd = opts.cwd;
   const path = join(cwd, m.file);
-  const label = m.name ?? m.label ?? `${m.file}: ${m.find.slice(0, 48).replace(/\n/g, "⏎")}`;
+  const label = m.name ?? `${m.file}: ${m.find.slice(0, 48).replace(/\n/g, "⏎")}`;
   say(`\n${C.dim}────────────────────────────────────────────────────────${C.off}`);
   say(`${label}`);
 
+  const unknown = Object.keys(m).filter((k) => !MUTATION_KEYS.has(k));
+  if (unknown.length) return { label, verdict: "ERROR", why: `unknown mutation key(s): ${unknown.join(", ")}` };
   if (!existsSync(path)) return { label, verdict: "ERROR", why: `target file not found: ${m.file}` };
 
   const before = readFileSync(path, "utf8");
@@ -128,15 +169,34 @@ function proveOne(m, opts) {
   if (hits > 1 && !m.allowMultiple) {
     return { label, verdict: "ERROR", why: `target appears ${hits}× in ${m.file}; pass allowMultiple to mutate them all, or narrow it` };
   }
+  // Declared mandatory at the top of this file since the first version, enforced only now. Without
+  // it the sole reach evidence is the tick floor, whose default is 1 — so a mutant that crashed the
+  // suite after its second mark out of four graded KILLED, exactly as if it had reddened the check.
+  // "It went red" and "it went red for my reason" really are the same exit code until you say which.
+  if (!m.expectRed) {
+    return { label, verdict: "ERROR", why: "no expectRed: name the assertion this mutation must redden, or the verdict is an accusation about nothing" };
+  }
 
   const backup = join(tmpdir(), `mutation-proof-${createHash("sha1").update(path).digest("hex").slice(0, 12)}.bak`);
   copyFileSync(path, backup);
   const shaBefore = sha(path);
 
+  // Restoring the FILE is not restoring the TREE when the command under test compiles it. The sha
+  // check below proves the source is byte-identical again; it says nothing about a `dist/` the run
+  // produced from the mutant, which is gitignored and therefore outside the recovery this tool
+  // insists on before it starts. `afterRestore` runs AFTER the source is back, so whatever it
+  // regenerates is regenerated from the original.
   const restore = () => {
     copyFileSync(backup, path);
     const ok = sha(path) === shaBefore;
     rmSync(backup, { force: true });
+    if (ok && m.afterRestore) {
+      const rr = run(m.afterRestore, cwd, opts.timeoutMs);
+      if (rr.status !== 0) {
+        say(`${C.red}  afterRestore FAILED (exit ${rr.status}): derived artefacts may still be built from the mutant${C.off}`);
+        return false;
+      }
+    }
     return ok;
   };
 
@@ -158,84 +218,139 @@ function proveOne(m, opts) {
 
     if (r.timedOut) return { label, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
 
-    // THE COMPLETION CHECK COMES FIRST, FOR EVERY VERDICT — NOT ONLY FOR THE RED ONE.
-    // One branch above KILLED passes the two obvious controls (a crash with no output, a crash
-    // mid-cell) and fails the two that matter. A mutant that exits 0 before ever reaching the region
-    // grades SURVIVED, and a survivor is an ACCUSATION that the suite has a hole, made about code
-    // the run never entered. The red side is the same asymmetry mirrored: a genuine early cell
-    // failure whose text happens to contain the named string, plus a stop before the region, is a
-    // plausible-looking kill with a real cell name attached.
+    // ---- FIRST QUESTION, ON EVERY PATH: did this run actually execute the check being graded? ---
     //
-    // An incomplete run is not a kill and it is not a survival. It is an absence of evidence, and
-    // the only verdict that says so is INCONCLUSIVE.
+    // It used to be asked last, and only on the path where it could not matter. A matched
+    // `expectRed` short-circuited the floor outright, on the reasoning that a printed assertion IS
+    // direct evidence the suite reached it. The reasoning is right; the implementation was not.
+    // `output.includes(expectRed)` is a substring search over the whole transcript, and a suite that
+    // prints `✓ <label>` on PASS satisfies it with a GREEN line. So a mutation that left the named
+    // cell untouched and crashed the suite somewhere else graded KILLED, with the tool quoting back
+    // the label of an assertion that had just succeeded. Measured, not argued: in the rig, a mutant
+    // that made an unrelated guard THROW, named against a cell that passed, was reported
+    // `KILLED — red, and named: <that cell>`.
+    //
+    // The fix keeps the right reasoning and gets the evidence right. The question is not "was the
+    // label printed" but "did the named assertion CHANGE STATE", and the baseline run is the
+    // control that answers it: the line the label appears on when the suite is green is known, so a
+    // mutated run whose only occurrences are that same line has proved nothing about that cell.
+    // That is strictly stronger than the tick floor AND it is direct, so it does not reintroduce the
+    // false negative the floor caused on a suite's first assertion. Its one blind spot is a harness
+    // that prints byte-identical text on pass and on fail; such a harness cannot be graded by any
+    // signal this tool has, and no heuristic here should pretend otherwise.
+    // EXIT STATUS IS CORROBORATION, NEVER THE EVIDENCE — in BOTH directions, and the second one was
+    // found the same way as the first. A teardown that calls `process.exit(0)` after the suite has
+    // printed real failures and set `exitCode = 1` produces a green status over a red run; graded on
+    // status alone that is SURVIVED, and the tool says "the suite PASSED with the implementation
+    // broken" about a suite that printed `✗ FAIL: <the named cell>`. Measured in the rig before this
+    // was written. The failure direction is the cheap one — it accuses a working test instead of
+    // blessing a broken one — but in a kill set it is exactly the verdict that makes someone rewrite
+    // a test that already worked.
+    //
+    // So both branches ask the SAME question of the named assertion's own line, and only the answer
+    // differs: a KILL needs a line the green run does not print, a SURVIVOR needs the line the green
+    // run does print. Deliberately NOT adopted here: a rule requiring the suite to print its own
+    // summary, a zero-failure count in it, or an incompleteness marker. Those need the grader to know
+    // a suite's output convention, this tool grades hundreds of suites it did not write, and a guessed
+    // convention is the `progressPattern` mistake again. The baseline transcript is convention-free
+    // and answers the same question.
+    const short = opts.minTicks !== undefined && ticks < opts.minTicks;
+    const baseTicks = opts.baseTicksBy?.get(m.command ?? opts.command) ?? 0;
+    const named = r.output.split("\n").filter((l) => l.includes(m.expectRed));
+    const baseHits = new Set(
+      (opts.baseOutputBy?.get(m.command ?? opts.command) ?? "").split("\n").filter((l) => l.includes(m.expectRed)),
+    );
+    // `baseHits` empty = the label appears ONLY on failure in this harness (a throw-only suite). Then
+    // its absence from a green run is normal and carries no information, so these checks stay off.
+    if (r.status === 0) {
+      // Green after barely running is not a survivor — it is a run that never reached the check,
+      // which is the fourth lie listed at the top of this file.
+      if (short) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0 but reached only ${ticks} progress marks (expected ≥ ${opts.minTicks}) — the suite did not run far enough for its pass to mean anything`, ticks };
+      }
+      if (baseHits.size > 0 && named.length === 0) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0 but never printed the named assertion at all (the green run prints it) — the cell did not run, so its "pass" is about nothing`, ticks };
+      }
+      const changed = named.find((l) => !baseHits.has(l));
+      if (changed !== undefined) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0, but the named assertion did NOT print what it prints when green (${JSON.stringify(changed.trim())}) — the suite noticed and something swallowed the exit code; a green status is not a pass`, ticks };
+      }
+      // The remaining swallow: OTHER cells reddened, the NAMED one stayed green, and teardown
+      // returned 0. Every check above passes — the named assertion is intact and prints exactly
+      // what it prints when green — so the run reads as a survivor. But SURVIVED is a claim that
+      // the SUITE PASSED, and it did not.
+      //
+      // NOTE THE DIRECTION, because it is the whole design. FEWER marks than the green run means
+      // cells that print on a pass did not print here. EQUAL to the green run is what a GENUINE
+      // survivor looks like — measured, not assumed: rewording a refusal message no cell reads, in
+      // a file this suite loads by RELATIVE specifier so it provably sees the change, survives at
+      // exactly 156 of 156. So a rule that made an exact-baseline survivor inconclusive would make
+      // a true SURVIVED unreportable, and a true SURVIVED is the finding a kill set exists to
+      // produce. Mark count cannot tell "never saw the mutation" from "saw it and does not care";
+      // both are silent by construction. That question is answered by the module SPECIFIER, not here.
+      if (baseTicks > 0 && ticks < baseTicks) {
+        return { label, verdict: "INCONCLUSIVE",
+          why: `exited 0 with ${ticks} progress marks against the green run's ${baseTicks} — the named assertion held, but cells that print when green did not print here, so the suite did NOT pass and something swallowed the exit code`, ticks };
+      }
+      // A SURVIVED whose named assertion never appears in the GREEN run either is still a survivor
+      // for a throw-only suite (nothing prints on a pass, so absence carries no information) — but
+      // it is ALSO what you get when the mutation ran the WRONG SUITE, or when `expectRed` has a
+      // typo. Measured: a mutation merged between two config files lost its per-mutation `command`,
+      // inherited the file default, and ran a suite that does not contain the cell at all; it
+      // reported SURVIVED at exactly the baseline, and the baseline was another suite's. The verdict
+      // stays — for a throw-only suite it is correct — but it may not stay SILENT about which of the
+      // two it is, because the operator is the only one who can tell them apart.
+      const blind = baseHits.size === 0
+        ? " — NOTE: the named assertion appears nowhere in the green run either, so either this suite"
+          + " prints nothing on a pass (absence is normal) or it does not contain that cell at all"
+          + " (wrong `command`, or a stale `expectRed`). Check before trusting this verdict."
+        : "";
+      return { label, verdict: "SURVIVED",
+        why: `the suite PASSED with the implementation broken — it does not test this${blind}`, ticks };
+    }
+
+    if (named.length === 0) {
+      return { label, verdict: "WRONG-RED",
+        why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}`, ticks };
+    }
+    if (baseHits.size > 0 && named.every((l) => baseHits.has(l))) {
+      return { label, verdict: "WRONG-RED",
+        why: `exited ${r.status}, but the named assertion printed exactly what it prints when GREEN `
+           + `(${JSON.stringify(named[0].trim())}) — it did not go red, so this red is some other failure`, ticks };
+    }
+    // Last question, and ONLY here: did the run reach its own end?
+    //
+    // Everything above is stronger than this and runs first. A KILLED at this point means the named
+    // assertion printed a line the green run does not print, which is direct evidence the cell went
+    // red. The residual case is a stop BEFORE the region that happens to emit a novel line
+    // mentioning the cell — a stack frame naming it, a wrapper echoing the label — which satisfies
+    // every condition above. It is narrow, and unlike the cases above it has not been reproduced
+    // here; a terminal marker is convention-free and costs one substring test, so it is offered
+    // rather than assumed.
+    //
+    // DELIBERATELY OPT-IN, and deliberately last. `a real red followed by a crash is still KILLED`
+    // is a pinned cell in the self-test and it is right: the red already happened and a later crash
+    // does not retract it. Declaring a `completionMarker` says "in THIS suite, a run that did not
+    // finish is not evidence I want counted", which is a stricter bargain a suite opts into. With no
+    // marker declared, grading is exactly main's, so the pinned cell keeps its meaning.
     const marker = m.completionMarker ?? opts.completionMarker;
     if (marker !== undefined && !r.output.includes(marker)) {
       return {
         label,
         verdict: "INCONCLUSIVE",
         why: r.output.trim() === ""
-          // Naming this case separately is not cosmetic. Graded as a red-for-the-wrong-reason, it
-          // reads "your assertion never printed", which sends a reader to re-aim a mutation that is
-          // aimed correctly; the truth is that nothing ran at all.
+          // Named apart from the general case on purpose. Folded together it reads "your assertion
+          // never printed", which sends a reader to re-aim a mutation that is aimed correctly.
+          // Nothing ran at all.
           ? `the run produced NO OUTPUT — it never started, so this says nothing about any cell (exit ${r.status})`
-          : `the run never printed ${JSON.stringify(marker)}, so it stopped before the region under test; a verdict here would be about the stop, not about one cell (exit ${r.status})`,
+          : `red and named, but the run never printed ${JSON.stringify(marker)}, so it stopped before finishing and this suite asked not to count an unfinished run (exit ${r.status})`,
         ticks,
       };
     }
-
-    // AN EXIT CODE IS NOT A PASS. A suite's own teardown gets the last word on the way out, and a
-    // cleanup handler that calls `process.exit(0)` overrides the `process.exitCode = 1` the suite
-    // set for itself — measured in the wild by another lane, and reproduced here: a counting suite
-    // printed "✗ FAIL: the guard refuses zero" and "2 passed, 1 failed", and exited 0. Graded on the
-    // exit code alone that is a SURVIVED, which publishes "the suite does not test this" about a
-    // check the suite had just caught. A suite cannot defend against its own teardown; the grader
-    // has to. So a PASS needs POSITIVE evidence: exit 0, the run's own terminal marker, and no
-    // failure printed anywhere in the output.
-    const failRe = new RegExp(m.failurePattern ?? opts.failurePattern ?? FAILURE_EVIDENCE, "m");
-    const printedFailures = failRe.test(r.output);
-    if (r.status === 0 && !printedFailures) {
-      return {
-        label,
-        verdict: "SURVIVED",
-        why: "the suite PASSED with the implementation broken — it does not test this",
-        ticks,
-      };
-    }
-    // Exit 0 WITH failures printed is not a survival, and it is not automatically a kill either: it
-    // is a red whose exit code cannot be trusted, so it goes through the same naming below. Falling
-    // straight to INCONCLUSIVE instead would be a false negative on a test that just did its job,
-    // and the repair anyone reaches for after one of those is to weaken the test.
-    const untrusted = r.status === 0 ? " (the suite exited 0 while printing failures — its own teardown overrode the code)" : "";
-    // Red is necessary but not sufficient: it has to be red for the reason claimed, or an unrelated
-    // early failure reads as proof.
-    if (m.expectRed && !r.output.includes(m.expectRed)) {
-      return {
-        label,
-        verdict: "WRONG-RED",
-        why: `exited ${r.status} but never printed the expected failure: ${JSON.stringify(m.expectRed)}${untrusted}`,
-        ticks,
-      };
-    }
-    // The tick floor is a HEURISTIC for "did it get far enough to be about my check", and it must
-    // never overrule direct evidence. A matched `expectRed` IS that evidence: the suite printed the
-    // assertion we named. Letting the heuristic win graded a correct proof as WRONG-RED whenever the
-    // mutation targeted the suite's FIRST assertion — a false negative on a working test, which is
-    // the expensive direction, because the fix someone reaches for is to weaken the test.
-    if (!m.expectRed && opts.minTicks !== undefined && ticks < opts.minTicks) {
-      return {
-        label,
-        verdict: "WRONG-RED",
-        why: `died after only ${ticks} progress marks (expected ≥ ${opts.minTicks}) and no expectRed was given, so there is nothing to tie this red to your check`,
-        ticks,
-      };
-    }
-    // A named red says the assertion fired. It does not say the SUITE RAN — which is why the marker
-    // check above runs before any of this. Per mutation first: a fail-fast suite has no single line
-    // that always prints, so each mutation names the marker just UPSTREAM of the region it breaks.
-    // The marker must be independent of the outcome the mutation changes — a line that only prints
-    // on success means absence proves the mutation WORKED, and every genuine kill would be graded
-    // INCONCLUSIVE instead.
-    return { label, verdict: "KILLED", why: `${m.expectRed ? `red, and named: ${m.expectRed}` : `red (exit ${r.status})`}${untrusted}`, ticks };
+    return { label, verdict: "KILLED", why: `red, and named: ${m.expectRed}`, ticks };
   } catch (e) {
     restore();
     return { label, verdict: "ERROR", why: `harness threw: ${e.message}` };
@@ -254,38 +369,14 @@ let opts = {
   minTicks: a["min-ticks"] === undefined ? undefined : Number(a["min-ticks"]),
 };
 
-/**
- * The key set is CLOSED, because an ignored key is the quietest way to lose a check. A misspelt
- * `expectRed` leaves nothing behind: the strongest grade this tool makes silently stops being made,
- * and every mutation then reports KILLED on any red at all — including an unrelated early crash.
- * "Red alone is not proof" was reachable by one typo in a file nobody re-reads after it goes green.
- *
- * `label` is accepted as an alias for `name` rather than rejected: it is what most configs in
- * flight use, and rejecting it would print the fallback label instead of the intent their author
- * wrote. The rest are annotations tools other than this one read; they are listed so that
- * carrying one is a decision rather than a typo that happens to survive.
- */
-const MUTATION_KEYS = [
-  "name", "label", "file", "find", "replace", "expectRed", "allowMultiple", "command",
-  "cell", "cellTemplate", "completionMarker", "failurePattern", "id", "note",
-];
-
 if (a.config) {
-  // An ABSOLUTE config path is used as given. Joining it to the repo root turns `/tmp/x.json` into
-  // `<repo>/tmp/x.json` and dies on ENOENT, leaving two ways to run a config: put it in the tree
-  // (dirtying the tree this tool then refuses) or reach it with `../../../`. A harness whose own
-  // escape hatch is the only way to grade it is untested by construction. Relative paths resolve
-  // against `cwd`.
-  const cfgPath = isAbsolute(a.config) ? a.config : join(cwd, a.config);
-  const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
+  // `resolve`, not `join`: an ABSOLUTE --config path joined to cwd becomes a nonexistent path under
+  // the repo, and the tool dies on ENOENT with the two paths glued together.
+  const cfg = JSON.parse(readFileSync(resolve(cwd, a.config), "utf8"));
+  const unknownCfg = Object.keys(cfg).filter((k) => !CONFIG_KEYS.has(k));
+  if (unknownCfg.length) usage(`config has unknown top-level key(s): ${unknownCfg.join(", ")}`);
   mutations = cfg.mutations ?? usage("config has no `mutations` array");
-  for (const m of mutations) {
-    for (const k of Object.keys(m)) {
-      if (!MUTATION_KEYS.includes(k))
-        usage(`mutation ${JSON.stringify(m.name ?? m.label ?? m.file)} carries the unknown key ${JSON.stringify(k)}. This tool would ignore it — and if it is a misspelt "expectRed", every mutation below would report KILLED on any red at all. Known keys: ${MUTATION_KEYS.join(", ")}`);
-    }
-  }
-  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks, completionMarker: cfg.completionMarker ?? opts.completionMarker, failurePattern: cfg.failurePattern ?? opts.failurePattern };
+  opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks, completionMarker: cfg.completionMarker ?? opts.completionMarker };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {
   mutations = [{ file: a.file, find: a.find, replace: a.replace, expectRed: a["expect-red"] }];
 } else {
@@ -295,80 +386,89 @@ if (!opts.command) usage("no --command given (and none in the config)");
 
 assertCleanTree(cwd, a["allow-dirty"] !== undefined);
 
-// EVERY TARGET IS CHECKED BEFORE ANY SUITE RUNS, because a stale anchor is what a REPAIR leaves
-// behind and a repair is exactly what you run this tool after.
-//
-// `proveOne` already refuses an absent or ambiguous target — but per mutation, after the baseline
-// and after every earlier mutation has run the suite. A config whose first mutation is stale
-// therefore costs a full pass to find out, and the finding lands as one ERROR line among N verdicts
-// where a reader scanning for KILLED/SURVIVED does not see it: the guard went UNGRADED while the run
-// still looked healthy, and only the trailing tally disagreed. That happened three times in one day
-// in this tree, twice on the same mutation, the second time after the rule about it was written
-// down — because the rule was about how to READ the log, and reading correctly still costs the run.
-//
-// So it is asked up front, and all of them are reported at once rather than one per pass: a repair
-// usually disarms several anchors, and finding them one run at a time is the same discovery paid
-// for repeatedly.
-{
-  const stale = [];
-  for (const m of mutations) {
-    const path = join(cwd, m.file);
-    if (!existsSync(path)) { stale.push([m, `file not found: ${m.file}`]); continue; }
-    const hits = countOccurrences(readFileSync(path, "utf8"), m.find);
-    if (hits === 0) stale.push([m, `target string not found in ${m.file}`]);
-    else if (hits > 1 && !m.allowMultiple) stale.push([m, `target appears ${hits}× in ${m.file}`]);
-  }
-  if (stale.length > 0) {
-    say(`${C.red}REFUSING: ${stale.length} of ${mutations.length} mutation(s) name a target this tree does not have.${C.off}`);
-    say("Nothing would have been mutated for these, so their guards would go UNGRADED while the run looked healthy.");
-    for (const [m, why] of stale) say(`  ${C.dim}- ${m.name ?? m.label ?? m.find.slice(0, 48).replace(/\n/g, "⏎")}: ${why}${C.off}`);
-    say("Re-anchor them to the code as it is now — or, if the guard they grade has stopped being observable, retire them with the reason.");
-    process.exit(6);
-  }
-}
-
 // A baseline is not optional: a suite that is ALREADY red grades every mutation as KILLED.
-say(`${C.dim}baseline: ${opts.command}${C.off}`);
-const base = run(opts.command, cwd, opts.timeoutMs);
-const baseTicks = progressCount(base.output, opts.progressPattern);
-if (base.status !== 0) {
-  say(`${C.red}REFUSING: the suite is red BEFORE any mutation (exit ${base.status}).${C.off}`);
-  say("Every mutation would grade as KILLED for a reason that has nothing to do with the mutation.");
-  process.exit(4);
-}
-say(`${C.green}baseline green${C.off} (${baseTicks} progress marks)`);
-
-// The reached-the-region protection is OPT-IN BY STRING MATCH, and a suite that prints its own
-// glyph — `ok`, `PASS`, anything but `✓` — scores zero marks and has that protection SILENTLY
-// DISABLED while every verdict still prints correctly. It fails open and says nothing, which is the
-// misspelt-key defect one layer out: in the output parser rather than in the config schema, where
-// the closed key set cannot see it.
 //
-// A suite with no marks is still gradable IF every mutation names a `completionMarker`, which is
-// the same protection stated per mutation instead of counted. What is not gradable is a run with
-// neither: then "the mutation applied and nothing caught it" and "the run died before reaching the
-// cell" produce an identical SURVIVED, and a survivor batch is exactly where that matters.
-if (baseTicks === 0) {
-  const unprotected = mutations.filter((m) => (m.completionMarker ?? opts.completionMarker) === undefined);
-  if (unprotected.length > 0) {
-    say(`${C.red}REFUSING: the baseline scored 0 progress marks and ${unprotected.length} mutation(s) name no completionMarker.${C.off}`);
-    say(`This suite prints no ${JSON.stringify(opts.progressPattern ?? "✓")}, so the reached-the-assertion guard counted nothing —`);
-    say("a SURVIVED here would be indistinguishable from a run that died before the cell.");
-    for (const m of unprotected) say(`  ${C.dim}- ${m.name ?? m.label ?? m.find.slice(0, 48)}${C.off}`);
-    say("Give each a completionMarker printed UPSTREAM of the mutated region, or --progress-pattern the glyph this suite actually prints.");
-    process.exit(5);
+// ONE BASELINE PER DISTINCT COMMAND, because a mutation may name its own (`m.command`). Baselining
+// only the top-level one left every mutation that ran a DIFFERENT suite with no proof its suite was
+// green beforehand — and compared its progress marks against a tally from an unrelated suite, so
+// the "did the run reach the check" floor was being applied across suites that count different
+// things. Both protections silently covered a fraction of the set and reported as if they covered
+// all of it.
+const commands = [...new Set(mutations.map((m) => m.command ?? opts.command))];
+const baseTicksBy = new Map();
+// The green transcript is kept, not just its tally: it is the control that says what each named
+// assertion looks like when it PASSES, which is the only way to tell a red line from a green one
+// without guessing at a suite's marker convention.
+opts.baseOutputBy = new Map();
+opts.baseTicksBy = baseTicksBy;
+for (const cmd of commands) {
+  say(`${C.dim}baseline: ${cmd}${C.off}`);
+  const base = run(cmd, cwd, opts.timeoutMs);
+  const ticks = progressCount(base.output, opts.progressPattern);
+  if (base.status !== 0) {
+    say(`${C.red}REFUSING: \`${cmd}\` is red BEFORE any mutation (exit ${base.status}).${C.off}`);
+    say("Every mutation running it would grade as KILLED for a reason that has nothing to do with the mutation.");
+    process.exit(4);
   }
-  say(`${C.dim}  0 marks, but every mutation names a completionMarker — graded on those instead.${C.off}`);
+  // A suite that emits no marks has NO reached-the-assertion protection, whatever else it printed.
+  // Say so out loud rather than letting the floor quietly not apply.
+  say(`${C.green}baseline green${C.off} (${ticks} progress marks)`
+    + (ticks === 0 ? ` ${C.yellow}— no progress marks: the reached-the-check floor cannot apply to this suite${C.off}` : ""));
+  baseTicksBy.set(cmd, ticks);
+  opts.baseOutputBy.set(cmd, base.output);
 }
-
-if (opts.minTicks === undefined && baseTicks > 0) {
+if (opts.minTicks === undefined && [...baseTicksBy.values()].some((t) => t > 0)) {
   // Default the floor just under the baseline: a mutated run that dies much earlier failed for
   // some other reason, and a run that never reaches the check is not evidence about it.
   opts.minTicks = 1;
 }
 
 const results = [];
-for (const m of mutations) results.push(proveOne(m, opts));
+for (const m of mutations) {
+  // Report each verdict's marks against ITS OWN suite's baseline. Two suites count different
+  // things, so "8 marks (baseline 24)" across a suite boundary reads as a run that died early
+  // when it may have run to completion.
+  results.push({ ...proveOne(m, opts), file: m.file, command: m.command ?? opts.command,
+    baseTicks: baseTicksBy.get(m.command ?? opts.command) });
+}
+
+// ---- APPLIES IS NOT MUTATES: a SURVIVED needs a positive control in the same file ----------
+//
+// The identical-file check upstream proves the mutation APPLIED — the bytes changed. It cannot
+// prove the mutation MUTATED. A mutant can install cleanly and alter no behaviour at all:
+// prepend a duplicate object key and the last occurrence still wins; edit a branch nothing
+// takes; reword a string no code reads. It compiles, it applies, the suite passes, and the tool
+// says SURVIVED — an accusation against the suite for a change that never happened. An
+// `ANCHOR NOT FOUND` guard cannot catch this, because the anchor WAS found.
+//
+// Output comparison does NOT settle it, and this is the trap worth naming: a GENUINE survivor
+// also produces output identical to the green run. Measured — rewording a refusal message no
+// cell reads survives at exactly 156 of 156, byte-identical. So "no observable difference"
+// is the signature of BOTH the mutant that did nothing and the suite that does not care.
+// Silence cannot separate them, in either direction.
+//
+// What does separate them is a POSITIVE CONTROL: another mutation in the SAME FILE that came
+// back KILLED in this same run. A kill proves the suite reaches that file at runtime — not
+// merely that it loads it, which the module specifier already told us. With such a control, a
+// SURVIVED in that file is a real finding about the suite's coverage. Without one, the two
+// explanations are indistinguishable and the honest verdict is that we cannot grade it.
+const killedFiles = new Set(results.filter((r) => r.verdict === "KILLED").map((r) => r.file));
+for (const r of results) {
+  if (r.verdict !== "SURVIVED") continue;
+  if (killedFiles.has(r.file)) {
+    r.why += ` · positive control: another mutation in ${r.file} was KILLED in this run, so the`
+      + " suite provably reaches this file at runtime and this survivor is a real coverage gap";
+    continue;
+  }
+  r.verdict = "UNGRADABLE";
+  r.why = `the suite passed with this mutation applied, but NO mutation in ${r.file} was killed in`
+    + " this run, so nothing here shows the suite reaches that file at runtime. `Applies` and"
+    + " `mutates` are different properties and only the first was checked: a mutant that changed"
+    + " no behaviour (a shadowed duplicate, a dead branch, an unread string) produces exactly this"
+    + " result, and so does a suite that genuinely does not test the code. Add a mutation to the"
+    + " same file that MUST redden a named cell; if that one is killed, this verdict becomes"
+    + " SURVIVED and is reportable.";
+}
 
 say(`\n${C.dim}════════════════════════════════════════════════════════${C.off}`);
 let bad = 0;
@@ -376,8 +476,11 @@ for (const r of results) {
   const good = r.verdict === "KILLED";
   if (!good) bad++;
   const colour = good ? C.green : r.verdict === "SURVIVED" ? C.red : C.yellow;
+  // UNGRADABLE is not a softer SURVIVED. It says the run produced no evidence either way, so it
+  // counts against a clean result exactly as loudly — otherwise the cheapest way to a green
+  // report would be to write mutants that do nothing.
   say(`${colour}${r.verdict.padEnd(12)}${C.off} ${r.label}`);
-  say(`  ${C.dim}${r.why}${r.ticks !== undefined ? ` · ${r.ticks} marks (baseline ${baseTicks})` : ""}${C.off}`);
+  say(`  ${C.dim}${r.why}${r.ticks !== undefined ? ` · ${r.ticks} marks (baseline ${r.baseTicks ?? "?"})` : ""}${C.off}`);
 }
 say("");
 if (bad === 0) {

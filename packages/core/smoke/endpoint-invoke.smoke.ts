@@ -12,7 +12,7 @@
  * outgoing request's nonce + id off the subject/body and synchronously delivers crafted replies.
  * No broker. Run: pnpm smoke:ep-invoke
  */
-import { describeEndpoint, epReplySubject, parseEpSubject, type EpCaller } from "../src/index.js";
+import { describeEndpoint, epReplySubject, parseEpSubject, unansweredRequest, type EpCaller } from "../src/index.js";
 
 const enc = new TextEncoder(), dec = new TextDecoder();
 let pass = 0, fail = 0;
@@ -48,6 +48,30 @@ function fakeNc(crafted: (req: { nonce: string; id: string }) => Array<{ subject
       const req = { nonce: parsed.nonce, id: body.id };
       // deliver on the next tick so describeEndpoint's promise is armed
       queueMicrotask(() => { for (const m of crafted(req)) cb?.(null, m); });
+    },
+    // The describe watches this stream to tell a broker-REFUSED publish from an unanswered one, so
+    // the double has to model it or it stops being a NatsConnection. Modelled after the real
+    // transport's QueuedIterator, INCLUDING the part that matters: a healthy connection emits no
+    // status, so `next()` parks, and only `stop()` releases it: a queued `return()` on a parked
+    // generator does not run until the next event, which is exactly the leak this shape exists to
+    // keep honest. A double that settled on `return()` would let that regression back in silently.
+    status() {
+      let release: (() => void) | undefined;
+      const stopped = new Promise<void>((r) => { release = r; });
+      return {
+        stop() { release?.(); },
+        [Symbol.asyncIterator]() {
+          return {
+            async next(): Promise<IteratorResult<{ type: string; error?: unknown }>> {
+              await stopped;
+              return { done: true, value: undefined };
+            },
+            async return(): Promise<IteratorResult<{ type: string; error?: unknown }>> {
+              return { done: true, value: undefined };
+            },
+          };
+        },
+      };
     },
   } as unknown as Parameters<typeof describeEndpoint>[0];
 }
@@ -97,6 +121,22 @@ console.log("describe REQUEST-BINDING (freelance HIGH #1):");
 {
   const nc = fakeNc(() => [reply(ATTACKER, "y".repeat(24), "someid000000000000000000")]);
   await rejects("with only an injected (wrong-nonce) reply present, describe times out - never adopts the attacker", () => describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { deadlineMs: 300 }), "deadline-exceeded");
+  // The deadline is the one describe failure that observed NO answer: it carries EP_UNANSWERED.
+  let e: unknown;
+  try { await describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { deadlineMs: 300 }); } catch (err) { e = err; }
+  c("the describe deadline is marked EP_UNANSWERED (nothing answered on our nonce)", unansweredRequest(e), e);
+}
+
+// 4b) A responder ANSWERS the describe with ok:false: it is rethrown under the responder's own code
+//     (`unavailable` here, as core's describe handler produces when its trusted auth view failed) and
+//     WITHOUT the EP_UNANSWERED marker. A consumer keyed on the marker never reads it as absence;
+//     one keyed on the code did, and printed "no manager reachable" for an answering manager.
+{
+  const nc = fakeNc((req) => [reply(HONEST, req.nonce, req.id, false)]);
+  let e: unknown;
+  try { await describeEndpoint(nc, SPACE, ENDPOINT, CALLER, { deadlineMs: 2000 }); } catch (err) { e = err; }
+  c("an answered ok:false describe rethrows under the responder's own code (`unavailable`)", (e as { code?: string })?.code === "unavailable", e);
+  c("an answered ok:false describe is NOT marked EP_UNANSWERED (the code alone is not evidence of silence)", !unansweredRequest(e), e);
 }
 
 // 5) Sanity: the honest reply alone resolves.

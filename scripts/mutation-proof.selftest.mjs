@@ -31,6 +31,15 @@ const check = (name, cond, extra) => {
   console.log(`  ✓ ${name}`);
 };
 
+// A verdict is a FIELD, not a substring. The tool prints it as `verdict.padEnd(12)` at the start
+// of its own line, and the prose legitimately names other verdicts — the UNGRADABLE explanation
+// ends "...this verdict becomes SURVIVED and is reportable". So `stdout.includes("SURVIVED")`
+// matched the EXPLANATION of an UNGRADABLE, and two checks here stayed green while the tool had
+// reclassified their fixtures out from under them. Read the field, not the page.
+const stripAnsi = (s) => s.replace(/\[[0-9;]*m/g, "");
+const verdictIs = (out, v) =>
+  out.split("\n").some((l) => stripAnsi(l).startsWith(v + " "));
+
 // ---- a fixture repo: one guard, one suite that depends on it, one that does not ----------------
 mkdirSync(join(root, "src"), { recursive: true });
 writeFileSync(
@@ -76,6 +85,30 @@ check("a killed mutation exits 0 and reports KILLED", r.status === 0 && r.stdout
 check("...and a multi-line target matches (the compiled shape of a guard)", !r.stdout.includes("not found"));
 
 // 2. THE ONE THAT MATTERS: a mutation the suite does NOT catch must be reported, not passed.
+// Paired with a KILLING control in the SAME FILE, which is what licenses the SURVIVED verdict:
+// the kill proves the suite reaches `src/impl.js` at runtime, so a survivor there is a real
+// coverage gap rather than a mutant that changed nothing. See 2b for the unpaired case.
+writeFileSync(join(root, "survivor-with-control.json"), JSON.stringify({
+  command: `${process.execPath} suite.mjs`,
+  mutations: [
+    { name: "control: the guard itself", file: "src/impl.js", find: "if (n > 10)\n    return false;",
+      replace: "if (false)\n    return false;", expectRed: "oversized values are refused" },
+    { name: "the survivor", file: "src/impl.js", find: "'untouched'", replace: "'mutated'",
+      expectRed: "never printed" },
+  ],
+}));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm survivor-control", { cwd: root });
+r = runTool(["--config", "survivor-with-control.json"]);
+check("a SURVIVED mutation is reported and exits non-zero", r.status !== 0 && verdictIs(r.stdout, "SURVIVED"), r.stdout.slice(-300));
+check("...and it cites the positive control that licenses the verdict",
+  r.stdout.includes("positive control") && verdictIs(r.stdout, "KILLED"), r.stdout.slice(-400));
+
+// 2b. APPLIES IS NOT MUTATES. The same survivor with NO control in the file is UNGRADABLE, not
+// SURVIVED. A mutant can install cleanly and change nothing — a shadowed duplicate key, a dead
+// branch — and that produces a passing suite exactly as a genuine coverage gap does. Output
+// comparison cannot separate them: a true survivor is byte-identical to the green run too. With
+// no kill anywhere in the file, the run has no evidence either way, and UNGRADABLE says so
+// instead of accusing the suite.
 r = runTool([
   "--command", `${process.execPath} suite.mjs`,
   "--file", "src/impl.js",
@@ -83,7 +116,10 @@ r = runTool([
   "--replace", "'mutated'",
   "--expect-red", "never printed",
 ]);
-check("a SURVIVED mutation is reported and exits non-zero", r.status !== 0 && r.stdout.includes("SURVIVED"), r.stdout.slice(-300));
+check("an unpaired survivor is UNGRADABLE, not SURVIVED",
+  r.status !== 0 && verdictIs(r.stdout, "UNGRADABLE") && !verdictIs(r.stdout, "SURVIVED"), r.stdout.slice(-400));
+check("...and UNGRADABLE still exits non-zero, so it is never a cheap green",
+  r.status !== 0, r.stdout.slice(-200));
 
 // 3. A target that does not exist must ERROR, never silently grade.
 r = runTool([
@@ -92,11 +128,7 @@ r = runTool([
   "--find", "this string is not in the file",
   "--replace", "x",
 ]);
-// The cell asserts the INTENT — an absent target never grades anything — rather than the exact
-// word one surface prints, because the refusal is free to move between a per-mutation ERROR line
-// and an upfront refusal without the property changing.
-check("an absent target is refused, not graded", r.status !== 0 && r.stdout.includes("not found"), r.stdout.slice(-300));
-check("...and nothing is graded under it", !r.stdout.includes("mutation(s) did not produce"), r.stdout.slice(-300));
+check("an absent target is an ERROR, not a verdict", r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("not found"));
 
 // 4. An ambiguous target must ERROR: the experiment must change only what was named.
 r = runTool([
@@ -174,187 +206,342 @@ r = runTool([
 ]);
 check("a named red at the FIRST assertion is KILLED, not WRONG-RED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
 
-// 7d. A CONFIG KEY THE TOOL DOES NOT KNOW IS REFUSED BY NAME. This is the quietest failure the
-// tool has: a misspelt `expectRed` is not an error, it is an ABSENT `expectRed`, and every mutation
-// under it then reports KILLED on any red at all — including a crash that never reached the guard.
-// So the mutation below is the same mutation as cell 1, and the ONLY difference is the typo.
-const cfgPath = join(root, "mut.json");
-const baseMutation = {
-  name: "the oversize guard is disabled",
-  file: "src/impl.js",
-  find: "if (n > 10)\n    return false;",
-  replace: "if (false)\n    return false;",
-};
-writeFileSync(cfgPath, JSON.stringify({
-  command: `${process.execPath} suite.mjs`,
-  mutations: [{ ...baseMutation, expectRedd: "oversized values are refused" }],
-}));
-execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg", { cwd: root });
-r = runTool(["--config", "mut.json"]);
-check("a misspelt config key is refused, and NAMED", r.status !== 0 && r.stdout.includes("expectRedd"), r.stdout.slice(-300));
-check("...and the run does not proceed to grade anything", !r.stdout.includes("mutation(s)"), r.stdout.slice(-300));
-
-// `label` is what most configs in flight already write, so it is an ALIAS rather than an unknown:
-// rejecting it would redden them all, and ignoring it printed the fallback label instead of the
-// intent their author wrote.
-writeFileSync(cfgPath, JSON.stringify({
-  command: `${process.execPath} suite.mjs`,
-  mutations: [{ ...baseMutation, name: undefined, label: "the oversize guard is disabled", expectRed: "oversized values are refused" }],
-}));
-execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg2", { cwd: root });
-r = runTool(["--config", "mut.json"]);
-check("`label` names the mutation the way `name` does", r.status === 0 && r.stdout.includes("the oversize guard is disabled"), r.stdout.slice(-300));
-
-// 7e. An ABSOLUTE config path is used as given, not joined to the repo root. A config that grades
-// this tool cannot live in the tree, since committing it dirties the tree the tool then refuses, so
-// without this the only way to run one is the tool's own `--allow-dirty` escape hatch.
-const outside = join(mkdtempSync(join(tmpdir(), "mutation-selftest-cfg-")), "outside.json");
-writeFileSync(outside, JSON.stringify({
-  command: `${process.execPath} suite.mjs`,
-  mutations: [{ ...baseMutation, expectRed: "oversized values are refused" }],
-}));
-r = runTool(["--config", outside]);
-check("an absolute --config path is read where it is, not under the repo root", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-300));
-
-// 7f. A suite that dies before its own end is INCONCLUSIVE, not a kill. The mutation below reddens
-// the named assertion AND stops the suite before it finishes — which is what a mutant that crashes
-// the run looks like, and it is not evidence about one cell.
-writeFileSync(outside, JSON.stringify({
-  command: `${process.execPath} suite.mjs`,
-  completionMarker: "  ✓ done",
-  mutations: [{ ...baseMutation, expectRed: "oversized values are refused" }],
-}));
-r = runTool(["--config", outside]);
-check("a run that never reaches the suite's end is INCONCLUSIVE, not KILLED",
-  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("KILLED"), r.stdout.slice(-400));
-
-// 7g. THE MIRROR OF 7f, AND THE ONE THE ORDERING DECIDES. 7f only needs the completion check to sit
-// above KILLED. This needs it above SURVIVED as well: the mutant ends the run with exit 0 before the
-// region is ever entered, so the suite "passes" — and SURVIVED is an ACCUSATION that the suite has a
-// hole, made about code that never executed.
-writeFileSync(outside, JSON.stringify({
-  command: `${process.execPath} suite.mjs`,
-  completionMarker: "  ✓ done",
-  mutations: [{
-    name: "the run ends cleanly before the region under test",
-    file: "src/impl.js",
-    find: "if (n > 10)\n    return false;",
-    replace: "process.exit(0);",
-    expectRed: "oversized values are refused",
-  }],
-}));
-r = runTool(["--config", outside]);
-check("a CLEAN exit that never reached the region is INCONCLUSIVE, not SURVIVED",
-  r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
-
-// 7h. A run that printed nothing at all says THAT, rather than blaming the assertion for not
-// printing. Same verdict either way, but the reason is what a reader acts on: "your assertion never
-// printed" sends them to re-aim a mutation that is aimed correctly.
-writeFileSync(outside, JSON.stringify({
-  command: `${process.execPath} suite.mjs`,
-  completionMarker: "  ✓ done",
-  mutations: [{
-    name: "the module ends the process at import, silently",
-    file: "src/impl.js",
-    find: "export const unrelated = () => 'untouched';",
-    replace: "process.exit(9);",
-    expectRed: "oversized values are refused",
-  }],
-}));
-r = runTool(["--config", outside]);
-check("a run with NO OUTPUT is named as never having started", r.stdout.includes("NO OUTPUT"), r.stdout.slice(-400));
-
-// 7i. AN EXIT CODE IS NOT A PASS. A counting suite that sets `process.exitCode = 1` and then calls
-// a teardown which exits 0 hands the grader a clean code over a run that printed real failures.
-// Graded on the code alone that is a SURVIVED — "the suite does not test this", published about a
-// check the suite had just caught. The suite cannot defend against its own teardown; the grader has
-// to, by requiring positive evidence of a pass rather than the absence of a red one.
+// 7d. THE GREEN LINE THAT READ AS A RED. Suites here print `✓ <label>` on pass and `✗ FAIL: <label>`
+// on fail — the SAME label both ways. `expectRed` was matched with a substring search over the whole
+// transcript, so a mutation that left the named cell PASSING and crashed the suite somewhere else
+// satisfied it with the pass line, and the tool reported `KILLED — red, and named: <that cell>`.
+// A matched label is only evidence if the line it sits on is not the line a green run prints.
 writeFileSync(
-  join(root, "count.mjs"),
+  join(root, "paired.mjs"),
   [
-    "import { admit } from './src/impl.js';",
-    "let passed = 0, failed = 0;",
-    "const c = (n, ok) => { if (ok) { passed++; console.log(`  ✓ ${n}`); } else { failed++; console.log(`  ✗ FAIL: ${n}`); } };",
-    "c('oversized values are refused', admit(50) === false);",
-    "console.log(`  ✓ done: ${passed} passed, ${failed} failed`);",
-    "process.exitCode = failed > 0 ? 1 : 0;",
-    "process.exit(0);   // the teardown gets the last word",
+    "import { admit, unrelated } from './src/impl.js';",
+    "const c = (n, v) => { console.log(v ? `  ✓ ${n}` : `  ✗ FAIL: ${n}`); if (!v) process.exitCode = 1; };",
+    "c('the guard refuses an oversized value', admit(50) === false);",
+    "if (unrelated() !== 'untouched') throw new Error('the unrelated helper blew up');",
+    "c('the unrelated helper is untouched', admit(7) === true);",
     "",
   ].join("\n"),
 );
-execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm count", { cwd: root });
-writeFileSync(outside, JSON.stringify({
-  command: `${process.execPath} count.mjs`,
-  completionMarker: "  ✓ done",
-  mutations: [{ ...baseMutation, expectRed: "oversized values are refused" }],
+// 7e. Green after barely running is not a survivor. A mutated run that exits 0 having emitted no
+// progress marks never reached the check, and "the suite passed" is a claim about a suite that did
+// not run. The completion question has to be asked BEFORE the pass is believed, not after.
+writeFileSync(
+  join(root, "bails.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "if (admit(50) !== false) process.exit(0);",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+writeFileSync(
+  join(root, "unknown-key.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    mutations: [{ label: "typo: the key is `name`", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
+  }),
+);
+writeFileSync(
+  join(root, "no-expect.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    mutations: [{ name: "unnamed red", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)" }],
+  }),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm more", { cwd: root });
+
+r = runTool([
+  "--command", `${process.execPath} paired.mjs`,
+  "--file", "src/impl.js",
+  "--find", "'untouched'",
+  "--replace", "'mutated'",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("a label matched on a PASS line is WRONG-RED, not KILLED",
+  r.status !== 0 && r.stdout.includes("WRONG-RED") && r.stdout.includes("prints when GREEN"), r.stdout.slice(-400));
+
+r = runTool([
+  "--command", `${process.execPath} bails.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("green with zero progress marks is INCONCLUSIVE, not SURVIVED",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
+// 7e-bis. THE DELIBERATE NON-CHANGE, pinned so nobody "fixes" it later. A mutation that reddens the
+// named cell for real AND THEN crashes the suite is KILLED, not INCONCLUSIVE. A harness that
+// harvests a kill set by counting FAIL lines must call that inconclusive — the crash adds a second
+// FAIL line and inflates its count. This grader asks one question per mutation, about one named
+// assertion, and that assertion demonstrably went from its green line to its red line BEFORE the
+// crash. The crash destroys evidence about the cells that never ran; it does not retract the
+// evidence about the cell that did.
+r = runTool([
+  "--command", `${process.execPath} paired.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;\n  if (n === 7) throw new Error('and then a crash');",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("a real red followed by a crash is still KILLED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
+
+// 7e-quater. THE SAME RUN, UNDER A SUITE THAT OPTED IN — and the control that keeps the cell above
+// meaning what it says. `completionMarker` lets a suite declare "a run of mine that did not finish
+// is not evidence I want counted", which is a STRICTER bargain than the default, not a correction
+// to it. The two cells differ in exactly one config field, so if the opt-in ever stops being an
+// opt-in and becomes global, the control goes red and says so.
+writeFileSync(
+  join(root, "marked.mjs"),
+  [
+    "import { admit, unrelated } from './src/impl.js';",
+    "const c = (n, v) => { console.log(v ? `  ✓ ${n}` : `  ✗ FAIL: ${n}`); if (!v) process.exitCode = 1; };",
+    "c('the guard refuses an oversized value', admit(50) === false);",
+    "if (unrelated() !== 'untouched') throw new Error('the unrelated helper blew up');",
+    "c('the unrelated helper is untouched', admit(7) === true);",
+    "console.log('SELFTEST SUITE DONE');",
+    "",
+  ].join("\n"),
+);
+const crashAfterRed = {
+  name: "reddens the named cell for real, then crashes before the suite ends",
+  file: "src/impl.js",
+  find: "if (n > 10)\n    return false;",
+  replace: "if (false)\n    return false;\n  if (n === 7) throw new Error('and then a crash');",
+  expectRed: "the guard refuses an oversized value",
+};
+writeFileSync(
+  join(root, "completion-optin.json"),
+  JSON.stringify({ command: `${process.execPath} marked.mjs`, completionMarker: "SELFTEST SUITE DONE", mutations: [crashAfterRed] }),
+);
+writeFileSync(
+  join(root, "completion-control.json"),
+  JSON.stringify({ command: `${process.execPath} marked.mjs`, mutations: [crashAfterRed] }),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm completion", { cwd: root });
+r = runTool(["--config", "completion-optin.json"]);
+check("a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early",
+  r.status !== 0 && verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("SELFTEST SUITE DONE"), r.stdout.slice(-400));
+r = runTool(["--config", "completion-control.json"]);
+check("...and THE SAME RUN with no marker declared is still KILLED, so this is opt-in and not a new default",
+  r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
+
+// 7e-ter. EXIT STATUS IS NOT THE EVIDENCE, THE OTHER WAY ROUND. A teardown that calls
+// `process.exit(0)` after the suite printed real failures and set `exitCode = 1` hands the grader a
+// green status over a red run. Graded on status alone that reads SURVIVED — "the suite PASSED with
+// the implementation broken" — about a suite that printed `✗ FAIL:` on the very cell being graded.
+writeFileSync(
+  join(root, "swallow.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "let fail = 0;",
+    "const c = (n, v) => { if (v) console.log(`  ✓ ${n}`); else { fail++; console.log(`  ✗ FAIL: ${n}`); } };",
+    // A preamble cell that stays green, so the mutated run still clears the tick floor and this arm
+    // measures the swallowed exit code rather than an early death.
+    "c('the preamble ran', true);",
+    "c('the guard refuses an oversized value', admit(50) === false);",
+    "if (fail > 0) process.exitCode = 1;",
+    "process.on('exit', () => { process.exit(0); });",
+    "",
+  ].join("\n"),
+);
+// 7e-quater. And the mirror hole on the same branch: a green run that never printed the named cell
+// at all. Nothing failed, so nothing is red — but the cell did not run, so its "pass" is about
+// nothing, and a survivor claim needs the cell to have executed and stayed green.
+writeFileSync(
+  join(root, "skips.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "console.log('  ✓ the preamble ran');",
+    "if (admit(50) !== false) process.exit(0);",
+    "console.log('  ✓ the guard refuses an oversized value');",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm swallow", { cwd: root });
+
+r = runTool([
+  "--command", `${process.execPath} swallow.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("exit 0 after a REAL named red is INCONCLUSIVE, not SURVIVED",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("swallowed the exit code")
+  && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
+r = runTool([
+  "--command", `${process.execPath} skips.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard refuses an oversized value",
+]);
+check("a green run that never printed the named cell is INCONCLUSIVE, not SURVIVED",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("never printed the named assertion")
+  && !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+
+// 7e-sexies. THE LAST SWALLOW ON THIS BRANCH, and the one every check above waves through: OTHER
+// cells go red, the NAMED cell stays green and prints exactly what it prints when green, teardown
+// returns 0. The named assertion is intact, so the run reads as a survivor — but SURVIVED claims
+// the SUITE passed, and it did not. Discriminated convention-free by mark count against baseline.
+writeFileSync(
+  join(root, "collateral.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "let fail = 0;",
+    "const c = (n, v) => { if (v) console.log(`  ✓ ${n}`); else { fail++; console.log(`  ✗ FAIL: ${n}`); } };",
+    // The named cell does not read the mutated branch at all, so it survives the mutation intact.
+    "c('the guard admits a small value', admit(1) === true);",
+    // These do, and they are the ones that redden.
+    "c('some other cell', admit(50) === false);",
+    "c('and another', admit(99) === false);",
+    "if (fail > 0) process.exitCode = 1;",
+    "process.on('exit', () => { process.exit(0); });",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm collateral", { cwd: root });
+r = runTool([
+  "--command", `${process.execPath} collateral.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "the guard admits a small value",
+]);
+check("exit 0 with the named cell green but FEWER marks than the green run is INCONCLUSIVE",
+  r.status !== 0 && r.stdout.includes("INCONCLUSIVE") && r.stdout.includes("progress marks against the green run")
+  && !r.stdout.includes("SURVIVED"), r.stdout.slice(-500));
+
+// 7e-septies. THE NEGATIVE CONTROL FOR IT, and the reason the rule reads `fewer` and not `at or
+// fewer`. A GENUINE survivor sits at EXACTLY the baseline: a guard nothing tests, removed, changes
+// no cell and moves no mark. Making an exact-baseline survivor inconclusive would make a true
+// SURVIVED unreportable — and a true SURVIVED is the finding a kill set exists to produce.
+writeFileSync(
+  join(root, "indifferent.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    "let fail = 0;",
+    "const c = (n, v) => { if (v) console.log(`  ✓ ${n}`); else { fail++; console.log(`  ✗ FAIL: ${n}`); } };",
+    "c('the guard admits a small value', admit(1) === true);",
+    "c('and a second cell that also ignores the branch', admit(2) === true);",
+    "if (fail > 0) process.exitCode = 1;",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm indifferent", { cwd: root });
+// Paired with a control this suite DOES catch, in the same file: breaking `return true` reddens
+// `the guard admits a small value`. The kill proves `indifferent.mjs` reaches src/impl.js at
+// runtime, so the exact-baseline survivor beside it is a real coverage gap and not an inert mutant.
+writeFileSync(join(root, "indifferent.json"), JSON.stringify({
+  command: `${process.execPath} indifferent.mjs`,
+  mutations: [
+    { name: "control: break what this suite DOES read", file: "src/impl.js",
+      find: "  return true;", replace: "  return false;",
+      expectRed: "FAIL: the guard admits a small value" },
+    { name: "the indifferent guard", file: "src/impl.js",
+      find: "if (n > 10)\n    return false;", replace: "if (false)\n    return false;",
+      expectRed: "the guard admits a small value" },
+  ],
 }));
-r = runTool(["--config", outside]);
-check("a suite whose teardown forces exit 0 over real failures is not a SURVIVED",
-  !r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
-check("...and the untrustworthy exit code is named in the verdict",
-  r.stdout.includes("teardown overrode the code"), r.stdout.slice(-400));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm indifferent-cfg", { cwd: root });
+r = runTool(["--config", "indifferent.json"]);
+check("a genuine survivor at EXACTLY the baseline still reports SURVIVED",
+  r.status !== 0 && verdictIs(r.stdout, "SURVIVED") && !verdictIs(r.stdout, "INCONCLUSIVE"), r.stdout.slice(-500));
 
-// And the mirror, so the requirement cannot be satisfied by never reporting SURVIVED again: a
-// genuinely untested change on the SAME suite still comes back SURVIVED.
-writeFileSync(outside, JSON.stringify({
-  command: `${process.execPath} count.mjs`,
-  completionMarker: "  ✓ done",
-  mutations: [{
-    name: "an untested function is changed",
-    file: "src/impl.js",
-    find: "'untouched'",
-    replace: "'mutated'",
-    expectRed: "oversized values are refused",
-  }],
+// 7e-octies. THE SURVIVOR THAT IS ABOUT NOTHING. An empty baseline hit-set turns the survivor checks
+// off, because a suite that prints nothing on a pass makes the label's absence uninformative. It is
+// also exactly what a mutation running the WRONG SUITE looks like — the cell is not there to print.
+// The verdict stays SURVIVED (for a throw-only suite it is right) and must NAME the ambiguity.
+writeFileSync(
+  join(root, "silent.mjs"),
+  [
+    "import { admit } from './src/impl.js';",
+    // Prints NOTHING on a pass; throws on a failure. Nothing here reads the mutated branch.
+    "if (admit(1) !== true) { console.log('  \u2717 FAIL: the guard admits a small value'); process.exit(1); }",
+    "",
+  ].join("\n"),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm silent", { cwd: root });
+// Paired with a control, for the same reason as 7e-septies: without a kill in this file the run
+// cannot tell an inert mutant from an untested one, and the ambiguity being reported here is a
+// DIFFERENT one (silent-on-pass vs wrong-suite). Both notes must survive together.
+writeFileSync(join(root, "silent.json"), JSON.stringify({
+  command: `${process.execPath} silent.mjs`,
+  mutations: [
+    { name: "control: break what this suite DOES read", file: "src/impl.js",
+      find: "  return true;", replace: "  return false;",
+      expectRed: "FAIL: the guard admits a small value" },
+    { name: "the unread branch", file: "src/impl.js",
+      find: "if (n > 10)\n    return false;", replace: "if (false)\n    return false;",
+      expectRed: "the guard admits a small value" },
+  ],
 }));
-r = runTool(["--config", outside]);
-check("...while a change nothing tests is still SURVIVED on that same suite",
-  r.stdout.includes("SURVIVED"), r.stdout.slice(-400));
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm silent-cfg", { cwd: root });
+r = runTool(["--config", "silent.json"]);
+check("a survivor whose cell never printed in the GREEN run is SURVIVED and says the absence is ambiguous",
+  r.status !== 0 && verdictIs(r.stdout, "SURVIVED") && r.stdout.includes("appears nowhere in the green run"),
+  r.stdout.slice(-500));
 
-rmSync(dirname(outside), { recursive: true, force: true });
-rmSync(cfgPath);
-execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm cfg-gone", { cwd: root });
+// 7e-quinquies. RESTORING THE FILE IS NOT RESTORING THE TREE. When the command under test compiles
+// the mutated source, the run leaves a build artefact made FROM THE MUTANT; the sha check proves
+// only that the source is byte-identical again, and a `dist/` is gitignored, so the git recovery
+// this tool insists on before it starts does not cover it. `afterRestore` runs after the source is
+// back, so whatever it regenerates is regenerated from the original.
+writeFileSync(
+  join(root, "compile.mjs"),
+  [
+    "import { readFileSync, writeFileSync } from 'node:fs';",
+    "writeFileSync('built.txt', readFileSync('src/impl.js', 'utf8'));",
+    "",
+  ].join("\n"),
+);
+writeFileSync(join(root, "built.txt"), readFileSync(join(root, "src/impl.js"), "utf8"));
+writeFileSync(
+  join(root, "after.json"),
+  JSON.stringify({
+    command: `${process.execPath} compile.mjs && ${process.execPath} suite.mjs`,
+    mutations: [{
+      name: "leaves a build artefact behind",
+      file: "src/impl.js", find: "if (n > 10)\n    return false;", replace: "if (false)\n    return false;",
+      expectRed: "oversized values are refused",
+      afterRestore: `${process.execPath} compile.mjs`,
+    }],
+  }),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm compile", { cwd: root });
+r = runTool(["--config", "after.json"]);
+check("afterRestore regenerates derived output from the RESTORED source",
+  r.stdout.includes("KILLED")
+  && readFileSync(join(root, "built.txt"), "utf8") === readFileSync(join(root, "src/impl.js"), "utf8"),
+  { stdout: r.stdout.slice(-300) });
 
-// 7j. THE FAILURE VOCABULARY IS PINNED AS A LITERAL, not merely exercised.
-//
-// The rule this cell exists for: a cross-suite grader MAY carry a content check if it MEASURES the
-// convention, and MAY NOT carry a guessed one. This pattern was measured — 19 suites, zero false
-// positives — but a measurement ages the moment someone relaxes the regex, and a loosened copy is a
-// guessed convention again wearing the measurement's credibility. So the literal itself is asserted.
-//
-// It is ONE RELAXATION from a false red, and the two near-misses below are real strings found in a
-// neighbouring lane's suites, not invented ones. They clear only because of a word boundary and a
-// case. Delete either and a passing cell's own LABEL becomes evidence that the suite failed — which
-// downgrades a genuine SURVIVED into a WRONG-RED and hides the finding a kill set exists to produce.
-{
-  const PINNED = "(?:^|[\\s:])(?:✗|FAIL\\b|FAILED\\b|AssertionError)|\\b[1-9]\\d* failed\\b";
-  const src = readFileSync(TOOL, "utf8");
-  const m = /^const FAILURE_EVIDENCE = "(.*)";$/m.exec(src);
-  check("the failure vocabulary is a single literal the self-test can find", m !== null);
-  // Through JSON.parse, because the file holds the SOURCE form (`\\s`) and the pattern is what that
-  // source means (`\s`). Comparing the two forms directly would fail on a correct file, which is the
-  // kind of check that gets deleted rather than fixed.
-  const literal = JSON.parse(`"${m[1]}"`);
-  const re = new RegExp(literal, "m");
-  const fires = (s) => re.test(s);
+// 7f. A mis-spelled key is silently dropped by every JSON reader. In an instrument whose whole
+// premise is that each step of the experiment has a way to lie, a `label:` that should have been
+// `name:` — or an `expectred:` that should have been `expectRed:` — is one of them.
+r = runTool(["--config", "unknown-key.json"]);
+check("an unknown mutation key is an ERROR, not a shrug",
+  r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("unknown mutation key"), r.stdout.slice(-300));
 
-  // BEHAVIOUR FIRST, THE LITERAL LAST, and the order is the point. This file stops at its first red,
-  // so whichever cell comes first is the one a relaxation gets named by. Put the pin first and every
-  // relaxation reports "the literal changed" — true, and useless. Put the behaviour first and the
-  // relaxation is named by the thing it broke, with the pin left as the backstop that catches a
-  // change these four strings happen not to distinguish.
-  check("it fires on the vocabulary it was measured over",
-    fires("  ✗ FAIL: the thing") && fires("FAILED\n") && fires("AssertionError: nope") && fires("3 failed"),
-    "one of the four real verdict shapes stopped matching");
-  check("...and not on a clean summary, because `0 failed` is what a green run prints",
-    !fires("migrate.smoke: 48 passed, 0 failed"));
-  check("the word boundary after FAIL is load-bearing: a cell LABEL containing `FAILING` is not a failure",
-    !fires("  ✓ IF THIS CELL IS FAILING BECAUSE YOU DELETED THE SWEEP, read the note above"));
-  check("the case sensitivity of FAILED is load-bearing: `a failed reply` in a label is not a failure",
-    !fires("  ✓ a failed reply with data is bad-request"));
-  check("...and it is EXACTLY the measured pattern, so a relaxation these strings miss still fails here",
-    literal === PINNED, { found: literal, pinned: PINNED });
-}
+// 7g. Mandatory since the first version's header, unenforced until now.
+r = runTool(["--config", "no-expect.json"]);
+check("a mutation with no expectRed is refused",
+  r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("no expectRed"), r.stdout.slice(-300));
+
+// 7h. `^  ✓` is the natural way to write "a progress line", and without the `m` flag it matched the
+// start of the transcript exactly once — so the floor compared 1 against 1 for every suite that
+// anchored, and the banner reported "1 progress marks" as though it had counted.
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--progress-pattern", "^  ✓",
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+check("an anchored progress pattern counts per LINE, not once per transcript",
+  r.stdout.includes("baseline green") && r.stdout.includes("(3 progress marks)"), r.stdout.slice(0, 300));
 
 // 8. The tree is left exactly as found, after all of that.
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();

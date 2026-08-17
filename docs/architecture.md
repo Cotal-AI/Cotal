@@ -184,9 +184,10 @@ laterally; the manager only births and configures them.
 - **Instance addressing.** One space can hold more than one manager. Each keeps a stable
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal
-  spawn --on <instance>` pins one instance; an untargeted spawn rides class anycast and the
-  acceptance records which instance took it. `ps` and `status` scatter across every
-  registered instance and label a non-answering one unreachable, never dropping it.
+  spawn <persona> --detach --on <instance>` pins one instance (`ps`, `stop` and `attach` take
+  the same flag); an untargeted spawn rides class anycast and the acceptance records which
+  instance took it. `ps` and `status` scatter across every registered instance and label a
+  non-answering one unreachable, never dropping it.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
