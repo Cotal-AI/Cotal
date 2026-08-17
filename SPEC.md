@@ -2522,9 +2522,13 @@ derived**. It MOVES on the four launch-resolving edges, `launching → live`, `r
 `launching → draining`, and `relaunching → draining`: the row's full `executor` incarnation becomes
 its `runtimeOwner` and `launchAttemptId` is cleared, recorded at the moment it becomes true. Both
 fields of the incarnation move together, because an `instanceId` without its `processEpoch` names a
-process rather than the run of it that holds the handle table. On every other edge into `live`,
-`preserved`, or `draining` it is CARRIED unchanged. It is never
-reconstructed from any other row, because a supported deployment mode has no such row to read and a
+process rather than the run of it that holds the handle table. On the three edges that neither
+create the row nor resolve a launch, `live → preserved`, `live → draining`, and
+`preserved → draining`, it is CARRIED unchanged. The one creation edge that produces a `live` row,
+the cutover backfill, INSTALLS it instead, read from the incumbent's own live gate row: a cutover
+that cannot read one MUST record a casualty rather than backfill, because a `live` row whose owner
+is unknown puts an unevaluable value into the durable record that every later release reads. Except
+on that edge it is never reconstructed from any other row, because a supported deployment mode has no such row to read and a
 predicate that cannot be evaluated on a supported path either refuses forever or falls back to
 absence. An `instanceId` alone will not stand in: an identity is not an incarnation, and a
 restarted process under the same identity holds an empty handle table, which is the absence of
