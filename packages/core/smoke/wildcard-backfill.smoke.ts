@@ -26,6 +26,7 @@ import {
   type CotalMessage, type Delivery, type MessageMeta,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // Fresh OS-assigned port per run: a fixed port lets a leaked broker from a crashed prior run serve
 // stale JetStream state to the next run (reads as a flaky gate). A fresh port isolates each run even
@@ -58,8 +59,9 @@ function recorder(name: string, id: string, channels: string[]) {
 }
 const has = (got: Rec[], text: string) => got.filter((g) => g.text === text);
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-wbk-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -155,5 +157,6 @@ try {
     setTimeout(resolve, 3000);
   });
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);

@@ -1,5 +1,110 @@
 # @cotal-ai/web
 
+## 0.19.0
+
+### Minor Changes
+
+- a1bc784: Display an agent event frame, and separate event channels from chat.
+
+  An `ag-ui.frame` part carries no text part by design, so every surface that renders a message as
+  flat text drew one as `[unrenderable part kind "ag-ui.frame"]`. A renderer now folds a frame's
+  events into readable lines: streamed text and reasoning deltas accumulate into one line rather than
+  one line each, a tool call reports its name, its arguments and its result, and a stream that ended
+  without its terminator is flushed and marked truncated instead of being dropped. An event type this
+  build does not know is named rather than skipped, because a skipped event is a hole in a transcript
+  that still looks complete. It registers through the part-renderer seam, so the standard resolves it
+  by the part's own kind and never learns what the vocabulary means.
+
+  The renderer is loaded by the composition root rather than by a connector. Connectors are removable
+  extensions materialized on demand, and no surface that renders imports one, so a provider that
+  registered only inside a connector would be absent from every process that draws.
+
+  The event channel's name and its classifier move into the standard, beside the frame's identity.
+  Both are things a reader needs in order to recognise an agent's stream without knowing which adapter
+  produced it, and the two surfaces that most need to classify cannot reach an extension package at
+  all. The constructor is re-exported from its former home, so no caller changes.
+
+  The classifier is now a derivation rather than a prefix test, and the two disagree on names a real
+  mesh produces. Nothing reserves the `events.` prefix, so a channel a human created and talks on
+  answered yes to "does this start with `events.`" and was swept out of the chat pane it was sent to.
+  A name that does not resolve to a principal is no longer treated as machine traffic, which returns
+  those channels to the view, and leaves a malformed publisher visible rather than hidden. The
+  collision is narrowed rather than closed: a chat channel whose remainder is itself principal shaped
+  is still indistinguishable from an agent's stream, and closing that means reserving the prefix on
+  the wire.
+
+  The console keeps event channels out of the channel strip and out of the history prefill. The order
+  matters more than the result: the channel list carries one entry per retained subject, so filtering
+  after the fetch would read history for every event channel and discard it, which is unbounded work
+  to display nothing. Live rows are marked rather than dropped, because hiding them would delete the
+  only traffic this change taught the console to draw.
+
+  The dashboard gains the same rendering through a per-kind lookup, so its dispatcher stays ignorant
+  of every kind anyone teaches it. A renderer that throws, returns a non-string, or shares a name with
+  an inherited object method is reported by name instead of blanking the body. The browser cannot
+  import the shared renderer, so the two implementations are held together by an executable
+  equivalence check rather than by intent.
+
+  The example harness records a message through the shared renderer instead of keeping only its text
+  parts, so a message whose content is not text is no longer written to the transcript as an empty
+  string and scored as an agent that said nothing.
+
+  No connector emits a frame yet, and no transcript mirror is removed. Display lands first on purpose:
+  a cutover shipped before a renderer would replace a readable mirror with a part every surface shows
+  as a marker.
+
+- b3295d2: The membership pill said "unreadable" while the layout kept acting on the snapshot it had just
+  disowned: `hide empty` was gated on `feed.available`, which an unreadable feed leaves true, so a hub
+  was still collapsed as empty on the strength of a reading the page could no longer make. Hiding now
+  requires the feed to be authoritative, meaning available and readable. The snapshot itself is kept:
+  `asOf` still records when the feed was last read successfully, which is true and worth showing.
+
+### Patch Changes
+
+- c3dd6a5: fix(web): route on the channel the broker policed, not the one the publisher claimed
+
+  The browser dashboard decided which channel a message belonged to by reading `msg.channel` off the
+  payload. That field is written by the publisher, and the broker polices **subjects**, not payload
+  fields, so a sender could put any channel name in a message body and have the dashboard file it
+  into that channel's transcript, including a channel the sender had no permission to publish to.
+
+  The verified channel was already available and was being discarded: the observer parses the subject
+  to recover the authenticated sender, then dropped the rest of it. Routing now uses the channel
+  derived from the subject the broker actually enforced. Where no authoritative channel exists
+  (direct messages and anycast carry none), the publisher's claim is cleared rather than trusted, so a
+  forged value cannot survive into a transcript, a channel list, or an unread badge.
+
+  Two rendering fixes ride along, because a message whose content vanishes is the same class of defect
+  one surface over. A part kind the surface has no renderer for previously produced an empty body, so
+  a message with content displayed as a blank line; it now renders a marker naming the kind, and a
+  part carrying data keeps that data instead of having it replaced by the marker. A surface that
+  prints a marker while dropping the content looks like successful rendering, which is precisely the
+  failure being removed. The two dashboard surfaces now share one parts renderer so they cannot drift
+  apart on what a part looks like; that drift is how the original defect reached both of them.
+
+  **Limits worth stating.** The new suites drive the served JavaScript directly: they execute the
+  shipped handler and backfill functions and assert message content and destination, but no cell opens
+  a browser or asserts rendered HTML, so this proves the routing and the renderer's return value, not
+  that either survives to the pixels. Rendering of external observer/UI event frames, and the filter
+  that selects them, are separate work and are untouched here. The dashboard's loopback HTTP surface
+  is unauthenticated and this change does not alter that; a failed membership read still renders as a
+  successful empty result, so a viewer cannot distinguish "nobody is subscribed" from "the read
+  failed". Both predate this change and are named so the routing fix is not mistaken for making that
+  surface safe.
+
+- 0e44e37: fix(web): tell the browser a membership read failed instead of serving it as empty
+
+  The dashboard's `/api/membership` route answered a failed read with `{asOf: undefined, members: []}`
+  and a 200. `JSON.stringify` drops a key whose value is `undefined`, so those bytes are
+  `{"members":[]}`, byte-identical to a successful read of a space where nobody is subscribed. The
+  graph then reported the feed as `membership: traffic-only`, which asserts that the mesh publishes no
+  membership feed, when the truth was that the read did not answer.
+
+  A failed read now carries a 503 and names its condition; the two server-sent-event paths emit a
+  named event instead of swallowing the rejection; and the page stops manufacturing an empty snapshot
+  from a failed fetch or a non-200. The freshness pill gains an `unreadable` state, tested before
+  `traffic-only` so a refusal cannot borrow that phrase.
+
 ## 0.18.0
 
 ## 0.17.0

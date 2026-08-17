@@ -60,6 +60,7 @@ import {
   type EpCaller, type GoalRef, type ParsedEpRequest, type ActionContext,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -89,8 +90,9 @@ c("a goal's terminal subject is the ONE flat SPEC:1433 (§13.2 reserved subjects
   && !/\.result\.\d+$/.test(goalResultSubject(SPACE, ref("g1"))));
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epfence-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 const newGoal = async (ctx: ActionContext, id: string, acceptedEpoch: number | undefined): Promise<GoalRef> => {
   const g = ref(id);
@@ -232,6 +234,7 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`${fail === 0 ? "GOAL TERMINAL ATTRIBUTION SMOKE OK ✅" : "GOAL TERMINAL ATTRIBUTION SMOKE FAILED ❌"}  (${ok} passed, ${fail} failed)`);

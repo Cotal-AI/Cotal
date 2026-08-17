@@ -28,6 +28,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, probeConnect } from "../src/endpoint.js";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REFUSING = "nats://127.0.0.1:1"; // closed loopback port: answers RST
@@ -99,7 +100,7 @@ if (fail.length) { console.log("\nfixture preconditions failed — the rest woul
 // A dialable broker, for the inverse control. Own scratch dir; the pid is recorded AT CREATION and
 // is the only pid this file will ever signal.
 // ---------------------------------------------------------------------------
-const scratch = mkdtempSync(join(tmpdir(), "cotal-probe-teardown-"));
+const scratch = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const port = await new Promise<number>((resolve) => {
   const srv = createServer();
   srv.listen(0, "127.0.0.1", () => {
@@ -111,6 +112,7 @@ const DIALABLE = `nats://127.0.0.1:${port}`;
 writeFileSync(join(scratch, "nats.conf"),
   `host: "127.0.0.1"\nport: ${port}\nstore_dir: "${join(scratch, "store")}"\njetstream: enabled\n`);
 const broker = spawn("nats-server", ["-c", join(scratch, "nats.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, scratch);
 const BROKER_PID = broker.pid!;
 
 try {
@@ -198,8 +200,12 @@ try {
     child.signal === null && child.status === 0, { status: child.status, signal: child.signal, stderr: child.stderr?.slice(0, 400) });
 } finally {
   const comm = spawnSync("ps", ["-p", String(BROKER_PID), "-o", "comm="], { encoding: "utf8" }).stdout.trim();
-  if (comm === "nats-server") process.kill(BROKER_PID, "SIGTERM");
+  // Same wide window as bind-fence: SIGTERM asks for a graceful shutdown, which flushes JetStream
+  // into the very tree the next line walks. The pid check stays — it is what proves the process
+  // under this pid is still the broker — and the handle is what we wait on.
+  if (comm === "nats-server") await killAndAwaitExit(broker, "SIGTERM");
   rmSync(scratch, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail.length === 0

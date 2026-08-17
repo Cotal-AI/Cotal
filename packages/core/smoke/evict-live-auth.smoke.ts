@@ -42,6 +42,7 @@ import {
   deriveOwnerToken, grantActor, revokeActor, ledgerAclResolver, ledgerAuthorizeConnect,
 } from "@cotal-ai/auth";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -72,12 +73,13 @@ const observerCreds = await mintMembershipObserverCreds(auth, observerId);
 const evictorCreds = await mintConnectionEvictorCreds(auth, evictorId);
 
 const callout = await createCalloutAuth({ space, operatorSeed: auth.operator.seed, accountPub: auth.account.pub });
-const dir = mkdtempSync(join(tmpdir(), "cotal-evictlive-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(
   join(dir, "server.conf"),
   serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js"), extraAccounts: [{ pub: callout.account.pub, jwt: callout.account.jwt }] }),
 );
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {
     if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
@@ -341,7 +343,7 @@ try {
   {
     const pA = 21000 + Math.floor(Math.random() * 20000);
     const [pB, cA, cB] = [pA + 1, pA + 2, pA + 3];
-    const cdir = mkdtempSync(join(tmpdir(), "cotal-evictlive-cluster-"));
+    const cdir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
     const conf = (name: string, port: number, cport: number, routes: string) => [
       `port: ${port}`, `server_name: ${name}`,
       `cluster { name: livetest, listen: 127.0.0.1:${cport} ${routes} }`,
@@ -352,6 +354,10 @@ try {
     writeFileSync(join(cdir, "b.conf"), conf("evclB", pB, cB, `, routes: [ "nats-route://127.0.0.1:${cA}" ]`));
     const srvA = spawn("nats-server", ["-c", join(cdir, "a.conf")], { stdio: "ignore" });
     const srvB = spawn("nats-server", ["-c", join(cdir, "b.conf")], { stdio: "ignore" });
+    // BOTH cluster nodes are owned, with their shared cluster dir. Owning one of two would leave
+    // the other holding its port after a signal, while the run read as cleaned up.
+    const releaseA = teardownOnSignal(srvA, cdir);
+    const releaseB = teardownOnSignal(srvB, cdir);
     let sysNc: NatsConnection | undefined;
     try {
       let upA = false;
@@ -369,6 +375,8 @@ try {
       await awaitExit(srvA);
       await awaitExit(srvB);
       rmSync(cdir, { recursive: true, force: true });
+      releaseA();
+      releaseB(); // last for the nested cluster
     }
   }
 
@@ -383,6 +391,7 @@ try {
   srv.kill("SIGKILL"); // exact PID — never pkill nats-server
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
   rmSync(ledgerDir, { recursive: true, force: true });
 }
 process.exit(process.exitCode ?? 0);

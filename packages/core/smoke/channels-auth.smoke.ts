@@ -1,8 +1,10 @@
 import { strict as assert } from "node:assert";
-import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync } from "node:fs";
+import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { pickFreePort } from "./_free-port.js";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable,
   setupSpaceStreams, seedChannelRegistry, provisionAgent, CotalEndpoint,
@@ -21,8 +23,14 @@ import {
 // No external server (spins its own JWT-auth nats-server).
 // Scratch lives under the OS temp dir (NOT a hardcoded POSIX `/tmp/*`, which on Windows resolves
 // drive-relative and hands nats-server.exe a bogus storeDir) so the suite is portable.
-const dir = mkdtempSync(join(tmpdir(), "cotal-authcheck-"));
-const space = "authcheck", port = 4227, server = `nats://127.0.0.1:${port}`, storeDir = join(dir, "nats"), conf = join(dir, "authcheck.conf"), log = join(dir, "authcheck.log");
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+// An OS-assigned port, not the 4227 this suite used to hardcode. Two concurrent runs collided by
+// construction, and the collision did not report itself as one: the second broker died with
+// `bind: address already in use` in its own log, the suite then reached the FIRST run's broker,
+// whose trust chain rejected these creds, and the failure surfaced as `AuthorizationError:
+// Authorization Violation` from deep inside the test. Reproduced before this line changed.
+const port = await pickFreePort();
+const space = "authcheck", server = `nats://127.0.0.1:${port}`, storeDir = join(dir, "nats"), conf = join(dir, "authcheck.conf"), log = join(dir, "authcheck.log");
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const textOf = (m: CotalMessage) => m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
 
@@ -31,12 +39,22 @@ const auth = await createSpaceAuth(space);
 writeFileSync(conf, serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir }));
 const fd = openSync(log, "w");
 const child = spawn("nats-server", ["-c", conf], { stdio: ["ignore", fd, fd] });
-process.on("exit", () => child.kill("SIGTERM"));
+// Owned, so a SIGNALLED run takes the broker and the store dir with it. The `process.on("exit")`
+// hook this replaces killed the broker and left the directory, which is why four days of leaked
+// dirs went unnoticed: the loud half of the defect was silenced and the quiet half accumulated.
+const releaseBroker = teardownOnSignal(child, dir);
 
 const mgrCreds = await mintCreds(auth, newIdentity(), "provisioner");
 let up = false;
-for (let i = 0; i < 50; i++) { if (await isReachable(server, { creds: mgrCreds })) { up = true; break; } await sleep(200); }
-if (!up) throw new Error(`server not up:\n${readFileSync(log, "utf8")}`);
+for (let i = 0; i < 50; i++) {
+  // OUR child, before reachability. `isReachable` answers true against a FOREIGN broker squatting
+  // the port, so waiting on reachability alone is what turned a bind failure into an authorization
+  // error above. Our server exits within ~100ms of a failed bind, so it is visible right here.
+  if (child.exitCode !== null) break;
+  if (await isReachable(server, { creds: mgrCreds })) { up = true; break; }
+  await sleep(200);
+}
+if (!up) throw new Error(`server not up (exit ${child.exitCode}):\n${readFileSync(log, "utf8")}`);
 
 await setupSpaceStreams({ servers: server, space, creds: mgrCreds });
 await seedChannelRegistry({ servers: server, space, creds: mgrCreds, file: { defaults: { replay: false }, channels: { log: { replay: true }, incident: { replay: true } } } });
@@ -128,5 +146,15 @@ await dlv.stop();
 await poster.stop();
 await sup.stop();
 await mgr.stop();
-child.kill("SIGTERM");
+// The store dir goes too. Its absence here is the whole reason this suite leaked: it passed, said
+// so, and left a directory behind on every green run.
+//
+// The 200ms pause that used to stand here was a GUESS at how long a graceful shutdown takes, and the
+// guess was too small: modelled on a fixture that flushes JetStream for 250ms after SIGTERM, removing
+// the tree after a fixed 200ms still walked into live writes. `bind-fence` proved the same window is
+// real in CI, dying on ENOTEMPTY with every cell already green. Waiting for the exit is not a longer
+// pause, it is the end of guessing.
+await killAndAwaitExit(child, "SIGTERM");
+rmSync(dir, { recursive: true, force: true });
+releaseBroker(); // last: ownership is held until this teardown has actually finished
 process.exit(0);
