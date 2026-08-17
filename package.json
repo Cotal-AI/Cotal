@@ -206,6 +206,7 @@
     "smoke:agui-emitter": "tsx extensions/connector-core/smoke/agui-emitter.smoke.ts",
     "smoke:agui-retry-duplicate": "tsx extensions/connector-core/smoke/agui-retry-duplicate.smoke.ts",
     "smoke:agui-holder": "tsx extensions/connector-core/smoke/agui-holder.smoke.ts",
+    "smoke:agui-close-run": "tsx extensions/connector-core/smoke/agui-close-run.smoke.ts",
     "smoke:ep-work": "tsx packages/core/smoke/endpoint-work.smoke.ts",
     "smoke:ep-virtual": "tsx packages/core/smoke/endpoint-virtual.smoke.ts",
     "smoke:ep-action": "tsx packages/core/smoke/endpoint-action.smoke.ts",
