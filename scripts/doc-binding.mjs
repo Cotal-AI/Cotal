@@ -26,6 +26,7 @@
 import ts from "typescript";
 import { execFileSync } from "node:child_process";
 import { readFileSync, existsSync } from "node:fs";
+import { pathToFileURL } from "node:url";
 
 /**
  * Every declaration the parser can hang a JSDoc on, in source order, with whether one is bound to
@@ -155,14 +156,45 @@ if (process.argv.includes("--self-test")) {
   process.exit(fail === 0 ? 0 : 1);
 }
 
+// Importing this file must not run it. `pairs` and `diffPairs` are worth reusing from another
+// checker, and a module that shells out to git the moment it is imported cannot be.
+const RUN_AS_CLI = import.meta.url === pathToFileURL(process.argv[1] ?? "").href;
+if (RUN_AS_CLI) {
+
 const ref = process.argv[2];
 if (ref === undefined) {
   console.error("usage: pnpm doc-binding <ref> | pnpm doc-binding --self-test");
   process.exit(2);
 }
 
-const files = execFileSync("git", ["diff", "--name-only", ref], { encoding: "utf8" })
-  .split("\n").filter((f) => f.endsWith(".ts") || f.endsWith(".mts"));
+// THE REF MUST BE AN ANCESTOR, and this is the guard that costs the most to learn the hard way.
+// `git diff <ref>` compares the ref's TIP to the working tree, so a branch that is merely behind
+// reports everything the ref gained since they parted as though this branch had removed it. On a
+// branch a few weeks stale that is dozens of confident findings about files it never opened. The
+// merge base is the only ref for which "what changed" means what the reader thinks it means.
+try {
+  execFileSync("git", ["merge-base", "--is-ancestor", ref, "HEAD"], { stdio: "ignore" });
+} catch {
+  console.error(
+    `${ref} is not an ancestor of HEAD, so a comparison against it would report that ref's own `
+    + `changes as this branch's losses. Pass the merge base instead:\n`
+    + `  pnpm doc-binding $(git merge-base ${ref} HEAD)`,
+  );
+  process.exit(2);
+}
+
+let files;
+try {
+  files = execFileSync("git", ["diff", "--name-only", ref], { encoding: "utf8" })
+    .split("\n").filter((f) => f.endsWith(".ts") || f.endsWith(".mts"));
+} catch (e) {
+  // A shallow clone reaches here: the ref exists as a name and its commit is not in the pack. Exit
+  // 2 rather than 1, because 1 means "a declaration lost its doc" and a crash must not be readable
+  // as a finding.
+  console.error(`could not diff against ${ref}: ${(e && e.message) || e}\n`
+    + `A shallow checkout cannot reach the base commit; fetch with depth 0 before running this.`);
+  process.exit(2);
+}
 
 let checked = 0, decls = 0, lost = 0, gone = 0, quiet = 0;
 for (const f of files) {
@@ -187,3 +219,5 @@ for (const f of files) {
 console.log(`\n${lost === 0 ? "NOTHING LOST A DOC" : "DOCS LOST"}  ${checked} files, ${decls} declarations, `
   + `${lost} lost, ${gone} documented-and-gone, ${quiet} changes not counted`);
 process.exit(lost === 0 ? 0 : 1);
+
+}
