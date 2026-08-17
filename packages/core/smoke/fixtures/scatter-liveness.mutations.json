@@ -2,6 +2,13 @@
   "command": "pnpm smoke:scatter-liveness",
   "mutations": [
     {
+      "name": "PREDICTED KILLED (1 red) - the probe's deadline timer holds the event loop again, so a command whose gather has already finished waits out every LIVE instance's probe budget before it can exit - the 4.0s `cotal ps` regression, measured",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      timer.unref?.();",
+      "replace": "",
+      "expectRed": "a probe with its whole budget still to run adds NOTHING to the resources keeping this process alive"
+    },
+    {
       "name": "PREDICTED KILLED (>=1 red) - the settlement check runs only on a VERDICT, never on a REPLY, so the field shape (corpse affirmed first, live instance answering later) goes back to paying the whole deadline",
       "file": "packages/core/src/endpoint-verbs.ts",
       "find": "        else if (settled()) finish(true);",

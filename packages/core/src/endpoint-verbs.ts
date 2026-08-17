@@ -202,6 +202,17 @@ export async function epProbeInstanceInterest(
   try {
     return await new Promise<EpInstanceLiveness>((resolve) => {
       timer = setTimeout(() => resolve("unknown"), deadlineMs);
+      // A PROBE MUST NEVER BE THE REASON A PROCESS IS STILL RUNNING. Against a LIVE instance no
+      // answer ever comes back — the request is a cast and §13.5 forbids the responder replying to
+      // one — so this timer runs its full budget on every healthy instance, every time. Wired into
+      // `cotal ps` that was measured at 4.0 extra seconds AFTER the last row was printed (12.8s
+      // with the probe against 8.8s without it, on a healthy two-manager mesh): the gather had long
+      // since finished, and the only verdict that changes anything is `gone`, which a caller who
+      // has already gathered can no longer use. Unref makes the timer stop holding the loop open
+      // WITHOUT changing the probe: it still settles `unknown` at the budget for anyone still
+      // waiting on it, because the connection this needs is itself an open handle, and a caller
+      // still using that connection is therefore still running.
+      timer.unref?.();
       sub = nc.subscribe(noRespReplyTo, {
         callback: (err, msg) => { resolve(err === null && isNoRespondersMsg(msg) ? "gone" : "unknown"); },
       });

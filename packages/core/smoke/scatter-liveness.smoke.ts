@@ -41,7 +41,7 @@ import {
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 34;
+const EXPECTED_CELLS = 36;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -282,6 +282,32 @@ try {
   {
     const v = await epProbeInstanceInterest(nc, SPACE, ENDPOINT, B, caller, { deadlineMs: 150 });
     c("and a genuinely absent instance is still GONE at the same short budget (the probe is not just timing out)", v === "gone", { v });
+  }
+
+  // ── 6. an in-flight probe is not a reason to still be running ──────────────────────────────────
+  console.log("6. an in-flight probe holds nothing open");
+  // MEASURED, not theorised. Against a LIVE instance the probe is never answered (a cast is never
+  // replied to), so its deadline timer runs the FULL budget every time. Wired into `cotal ps` that
+  // kept the command alive for 4.0 seconds after its last row was printed, on a healthy mesh with
+  // no dead registration in it at all: 12.8s with the probe against 8.8s with it switched off, same
+  // tree, same mesh, two runs each. The gather had already finished, and the only verdict that
+  // changes anything is `gone`, which a caller that has already gathered can no longer use. So the
+  // timer must not be what keeps the loop alive - and it must still settle for anyone waiting.
+  {
+    const held = nc.subscribe(`${spacePrefix(SPACE)}.ep.inst.*.${A}.>`, { callback: () => { /* never answers */ } });
+    await wait(100);
+    const timers = (): number => process.getActiveResourcesInfo().filter((r) => r === "Timeout").length;
+    const before = timers();
+    const inFlight = epProbeInstanceInterest(nc, SPACE, ENDPOINT, A, caller, { deadlineMs: 2_000 });
+    const during = timers();
+    c("a probe with its whole budget still to run adds NOTHING to the resources keeping this process alive",
+      during === before, { before, during });
+    const t0 = Date.now();
+    const v = await inFlight;
+    const elapsed = Date.now() - t0;
+    await held.drain();
+    c("...and it still settles UNKNOWN at its budget: the timer stopped holding the loop, it did not stop running",
+      v === "unknown" && elapsed >= 1_900, { v, elapsed });
   }
 
   await nc.drain();
