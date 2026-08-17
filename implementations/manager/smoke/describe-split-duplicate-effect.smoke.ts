@@ -177,6 +177,42 @@ try {
   check("CONSERVATION: every trial is accounted for — an effect, or a refusal stating it did not run",
     accounted.length === N, { accounted: accounted.length, effects: answered.length, N });
 
+  // THE SPLIT, FORCED. Everything above waits for the class queue to hand the invoke to someone
+  // other than the describe winner, which is the run's luck and not this fixture's choice — so on
+  // its own this probe can decline to grade, and a suite that declines is not chain-safe.
+  //
+  // Here the bind is made to name an incarnation that CANNOT be serving: the handle's cached
+  // resolve is rewritten to a freshly minted lifecycle id belonging to no manager. Every responder
+  // is then the wrong one, so the pre-effect refusal is not raced for — it is guaranteed. This
+  // needs a valid lifecycle token, not a nonsense string: the responder parses `bind.instanceId`
+  // before comparing it, and a malformed one is refused as bad-request by a different path
+  // entirely, which would prove nothing about the fence.
+  const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const bound = cache.get(MANAGER_ENDPOINT);
+  check("the caller holds a resolved handle to rewrite (the forced case can be set up at all)",
+    bound !== undefined, { cached: [...cache.keys()] });
+  let forcedRecoveries = 0, forcedEffects = 0, forcedOk = false;
+  if (bound !== undefined) {
+    bound.responder.instanceId = mintLifecycleUid();
+    const forcedName = `epsplit-forced-${randomUUID().slice(0, 6)}`;
+    recoveriesThisTrial = 0;
+    try {
+      const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
+        { name: forcedName, persona: "forced-split probe" }, { deadlineMs: 15_000 });
+      forcedOk = r.reply.ok === true;
+    } catch { forcedOk = false; }
+    forcedRecoveries = recoveriesThisTrial;
+    forcedEffects = [root1, root2].filter((r) => existsSync(agentFilePath(r, forcedName))).length;
+  }
+  console.log(`\n1b. the split FORCED rather than awaited (bind names a non-serving incarnation)`);
+  console.log(`     pre-effect refusals repaired: ${forcedRecoveries}   effects: ${forcedEffects}   caller saw ok: ${forcedOk}`);
+  // A recovery is emitted ONLY on a reply the caller read as refused-before-effect, so counting one
+  // proves the responder produced the marked refusal — this is the fence, observed and not inferred.
+  check("FORCED SPLIT IS FENCED: the wrongly-bound call was refused before it ran, then repaired",
+    forcedRecoveries === 1, { forcedRecoveries });
+  check("FORCED SPLIT LEAVES ONE EFFECT: the repair re-issued once and the write landed exactly once",
+    forcedEffects === 1 && forcedOk, { forcedEffects, forcedOk });
+
   const dupes = trials.filter((t) => t.both);
   const dupeSilent = dupes.filter((t) => t.callerSaw === "ok");
 
@@ -220,8 +256,13 @@ try {
 
   // A zero is only evidence if a split actually happened, and the signature differs by tip: on an
   // unfenced tip a split shows as a duplicate or a throw; on a fenced one as a bind-refused refusal
-  // or a recovery that healed it invisibly. All four zero means the queue never split and this run
-  // grades nothing — which is not the same as the defect being absent.
+  // or a recovery that healed it invisibly. All zero means the queue never split and the natural
+  // sample grades nothing — which is not the same as the defect being absent.
+  //
+  // `recoveriesTotal` includes the FORCED case, which is the point: the forced split does not
+  // depend on the run's luck, so this suite can no longer reach the state where it declines to
+  // answer. The guard stays because it still distinguishes "the natural sample was thin" from
+  // "the fixture is broken" — if even the forced split leaves no trace, nothing here is graded.
   const splitSeen = dupes.length + trials.filter((t) => t.callerSaw === "throw").length + bindRefused + recoveriesTotal;
   if (splitSeen === 0) {
     fail++;
