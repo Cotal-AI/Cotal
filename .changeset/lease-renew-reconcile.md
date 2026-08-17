@@ -18,9 +18,15 @@ A failed renew is now a question rather than a verdict. The manager re-reads its
 separates "it is gone" from "I could not find out", and fails closed only on proof: the key is
 absent, or it is present and holds a different process. When the key is still its own the manager
 adopts whatever revision the broker actually has and keeps serving, saying so. When no answer is
-available at all the bound is time rather than attempts, because past one whole TTL without a
-confirmation the key may have expired and been re-acquired, so the instance can no longer claim to
+available at all the bound is time rather than attempts, because past one whole TTL without a renew
+that landed the key may have expired and been re-acquired, so the instance can no longer claim to
 hold it and stops on that ground, in those words.
+
+That window runs from the last write that actually restarted the key's TTL, and only such a write
+refills it. A re-read that finds the key present, still its own, and at the SAME revision is a real
+answer and the manager does keep serving on it, but it did not touch the key, so it cannot buy the
+holder more time. Reading a key is not refreshing it, and treating the two alike would let an
+instance whose writes are all being dropped serve on reads forever.
 
 Waiting is only safe if there is room to wait, so the renew budget gained slack. The TTL is
 unchanged and no stored config moves, but the holder now renews at a quarter of it rather than a

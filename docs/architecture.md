@@ -194,9 +194,11 @@ laterally; the manager only births and configures them.
   write may even have landed with only the acknowledgement lost. So the manager re-reads the key
   before deciding. It keeps serving when the key is still its own, adopting whatever revision the
   broker actually has, and shuts itself down only on proof: the key is gone, or it now holds a
-  different process. Failing to confirm the key *at all* for longer than the TTL is its own
-  reason to stop, and it says so in those words. Either way that stops one instance, never the
-  space; a sibling manager keeps serving.
+  different process. Going longer than the TTL with no refresh that *landed* is its own reason
+  to stop, and it says so in those words. That window runs from the last write that actually
+  restarted the key's TTL: a re-read that finds the key unchanged is a real answer and the
+  manager keeps serving on it, but reading a key does not refresh it, so it buys no extra time.
+  Either way that stops one instance, never the space; a sibling manager keeps serving.
 - **Attach is a mesh session.** The console and dashboard discover agents over the **mesh**
   (presence, `ps`). `cotal attach` no longer hands back a `127.0.0.1` URL: it redeems a
   one-use, holder-bound session offer, and the terminal bytes stream over the mesh on
