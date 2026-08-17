@@ -1,5 +1,5 @@
 {
-  "command": "pnpm smoke:pid",
+  "command": "pnpm smoke:pid-contract",
   "mutations": [
     {
       "name": "PREDICTED KILLED (>=2 red) - every live pid reads as a manager, so a recycled pid belonging to an unrelated process is treated as the running supervisor and gets signalled by a stop",
