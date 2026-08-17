@@ -64,7 +64,7 @@ const throws = (name: string, fn: () => unknown, code?: string) => {
 /** Declared, not implied: a live suite can end early in ways that redden no cell — a broker that
  *  never came up, a hang the runner kills, a top-level rejection — and `fail === 0` reads as PASS
  *  in every one of them, with the exit code to match. */
-const EXPECTED_CELLS = 27;
+const EXPECTED_CELLS = 28;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -110,6 +110,7 @@ const EP = "manager";
 const IID_A = "a".repeat(26);
 const IID_B = "b".repeat(26);
 const IID_LIAR = "c".repeat(26);
+const IID_LIAR2 = "d".repeat(26); // the same forgery, with the outcome field left off
 const GHOST = "g".repeat(26); // a well-formed instance id that serves nothing
 const EPOCH = 1;
 const caller: EpCaller = { owner: "u_op", actor: "cli", uid: "u".repeat(26) };
@@ -162,7 +163,7 @@ try {
   /** Bring one instance up: register, publish READY, authorize the serve artifact, serve `poke`
    *  with a handler that COUNTS its entries. The count is the whole instrument — it is what turns
    *  "a refusal came back" into "and the command did not run". */
-  const runs: Record<string, number> = { [IID_A]: 0, [IID_B]: 0, [IID_LIAR]: 0 };
+  const runs: Record<string, number> = { [IID_A]: 0, [IID_B]: 0, [IID_LIAR]: 0, [IID_LIAR2]: 0 };
   const bring = async (instanceId: string, handler?: EpCommandDef["handler"]) => {
     const reg = await registerServiceInstance(kv as KV, { spec, instanceId, registrant: asOp, authority, space: SPACE, barrier: barrierFor(instanceId), readClusterArtifact });
     await writeServiceStatus(kv as KV, { endpoint: EP, instanceId, epoch: EPOCH, readProcessEpoch: () => EPOCH, status: { epoch: EPOCH, state: SERVICE_READY, observedSpecRevision: reg.registrationRevision } });
@@ -290,11 +291,9 @@ try {
   // The marker is a body field, so a responder could always emit one after doing the work; what
   // stops that from becoming a free "nothing ran" is the caller cross-checking it against the
   // reply SUBJECT, which the broker pins.
-  // The liar states `not-executed` as well as the marker, which is now the ONLY shape that reaches
-  // the coherence checks at all: they are gated on `replyRefusedBeforeEffect`, and a refusal that
-  // omits the outcome no longer satisfies it. That makes this the maximally credible forgery rather
-  // than a weaker one, so the cell tests a stronger case than before. A forger has no reason to omit
-  // a field that costs nothing to set, and one that does omit it is now inert instead of honored.
+  // The liar states `not-executed` as well as the marker, which makes it the maximally credible
+  // forgery: it is the shape that would license a re-issue if the caller believed it. The cell
+  // below it grades the opposite end, a refusal with the outcome left off, and both are checked.
   const liar = await bring(IID_LIAR, () => {
     runs[IID_LIAR]++;
     throw new EpEnvelopeError("failed-precondition", "I did not run this (I did)", [
@@ -307,6 +306,25 @@ try {
       { endpoint: EP, command: "poke", contract, caller, args: { n: 1 }, bind: { instanceId: IID_LIAR, epoch: EPOCH } },
       { deadlineMs: 8000, currentEpoch: registryEpoch }), "internal");
   c("...and the liar did run, which is the point: the marker alone is not proof", runs[IID_LIAR] === 1, runs[IID_LIAR]);
+
+  // THE SAME FORGERY WITH THE OUTCOME LEFT OFF. Requiring `not-executed` is what stops a caller
+  // ACTING on this reply, and that half is settled. It must not also decide whether the reply is
+  // CHECKED: the contradiction here is between the body and the reply subject the broker pins, and
+  // it is just as flatly a contradiction whether or not an outcome field is present. Gating the
+  // checks on the outcome let a forger skip them by omitting a field, so the least credible reply
+  // got the least scrutiny.
+  const liar2 = await bring(IID_LIAR2, () => {
+    runs[IID_LIAR2]++;
+    throw new EpEnvelopeError("failed-precondition", "I did not run this (I did), and I will not say so", [
+      { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR2, epoch: EPOCH }, servedBy: { instanceId: GHOST, epoch: EPOCH } },
+    ]);
+  });
+  await rejects("a bind refusal that OMITS the outcome is still checked against its attribution, not waved through",
+    () => epCall(nc, SPACE, { mode: "inst", instanceId: IID_LIAR2, epoch: EPOCH },
+      { endpoint: EP, command: "poke", contract, caller, args: { n: 1 }, bind: { instanceId: IID_LIAR2, epoch: EPOCH } },
+      { deadlineMs: 8000, currentEpoch: registryEpoch }), "internal");
+  await liar2.stop();
+
   // Off the class queue before section 6, or it wins some of those calls and answers them with
   // its fake refusal — which would be counted as neither served-by-A nor refused-by-B.
   await liar.stop();

@@ -1,0 +1,44 @@
+{
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:lease-renew",
+  "progressPattern": "^  ok   ",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (1 red) - D1: a renew that got no answer fail-closes the manager again, without re-reading the key",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const verdict = await this.reconcileLease();\n",
+      "replace": "        await this.failClosedOnLeaseLoss(why);\n        const verdict = await this.reconcileLease();\n",
+      "expectRed": "A RENEW THAT GOT NO ANSWER MUST NOT TERMINATE THE MANAGER"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - D3: the next tick may start a second renew while one is in flight, on the same cached revision",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (this.leaseRenewInFlight) return;\n",
+      "replace": "",
+      "expectRed": "NO SELF-INFLICTED CAS CONFLICT"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - B1: a re-read at the SAME revision refills the unconfirmed budget again, so the budget is measured from the last observation instead of the last TTL-refreshing write",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          if (landed) this.leaseConfirmedAt = performance.now();\n",
+      "replace": "          this.leaseConfirmedAt = performance.now();\n",
+      "expectRed": "A RE-READ AT THE SAME REVISION MUST NOT BUY MORE TIME"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - D2a: the renew period goes back to TTL/2, so a single attempt fills the window again",
+      "file": "packages/core/src/streams.ts",
+      "find": "export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;\n",
+      "replace": "export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 2;\n",
+      "expectRed": "THE RENEW BUDGET HAS SLACK",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - D2b: the attempt deadline goes back to the library default, so an attempt can outlive its own period",
+      "file": "packages/core/src/streams.ts",
+      "find": "export const MANAGER_LEASE_ATTEMPT_MS = 2_000;\n",
+      "replace": "export const MANAGER_LEASE_ATTEMPT_MS = 5_000;\n",
+      "expectRed": "THE RENEW BUDGET HAS SLACK",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ],
+  "_note": "THE SUITE LOADS dist FOR CORE. It imports `@cotal-ai/core`, whose exports point at ./dist/index.js, so mutating packages/core/src leaves the module the run actually uses untouched; the command rebuilds core from the mutated source, and `afterRestore` rebuilds it from the restored source so dist is not left carrying the last mutant. The two manager mutations need neither: the child loads ../src/manager.js through tsx. D2a and D2b are graded on the numbers rather than on behaviour ON PURPOSE - each leaves the reconcile in place, so the manager still survives the stall and every behavioural cell still passes while the slack that makes waiting safe is gone. Arithmetic is the only thing that catches that, and saying so is better than a behavioural cell that would not. ONE CHANGE IN THIS PR IS DELIBERATELY UNGRADED, and saying so is better than letting the kill count imply otherwise: the unconfirmed-lease window is measured on `performance.now()` rather than `Date.now()`, so an NTP correction or a suspend/resume cannot shorten it and let an instance serve past the TTL with no proof. No cell here can catch a revert of that, because reddening it needs the process clock to step backwards mid-run, and the only ways to arrange that are to doctor the code under test or to move the machine's clock. The initial value is -Infinity so the default is fail-closed either way, and that part IS reachable: preserve-state drives the lease-loss exit with no confirmation ever recorded and still fail-closes, now naming the reason."
+}

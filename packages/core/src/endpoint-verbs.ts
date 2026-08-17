@@ -20,7 +20,7 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_BIND_REFUSED, registryReadFailed, replyRefusedBeforeEffect, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_BIND_REFUSED, registryReadFailed, bindRefusalMarked, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
   type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail,
   type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock,
 } from "./endpoint-envelope.js";
@@ -333,7 +333,12 @@ export async function epCall(
     // that says nothing about whether the command ran. Cross-checked against the SUBJECT first: a
     // reply attributed to the very incarnation the caller bound cannot coherently claim it is not
     // that incarnation (§13.3).
-    if (attributed.reply.ok === false && replyRefusedBeforeEffect(attributed.reply.error)) {
+    // Gated on the marker's PRESENCE, not on the outcome. Whether the caller may act on this
+    // refusal is a separate question, settled downstream by `replyRefusedBeforeEffect`; whether the
+    // reply is coherent is settled here, and a reply that omits the outcome is no less obliged to
+    // agree with its own attribution. Gating both on the same predicate let a refusal buy its way
+    // out of the checks by leaving a field off.
+    if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error)) {
       if (op.bind === undefined)
         throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} replied with a bind refusal to a request that carried no bind`);
       const r = attributed.responder;
