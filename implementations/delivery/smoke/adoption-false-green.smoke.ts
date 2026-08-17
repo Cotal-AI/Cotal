@@ -51,6 +51,7 @@ import {
   serverConfig,
   setupSpaceStreams,
 } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -86,10 +87,17 @@ async function scenario(tag: string, rogueComponent: "delivery" | "membership"):
   const obsCreds = await mintMembershipObserverCreds(auth, newIdentity());
   const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 
-  const dir = mkdtempSync(join(tmpdir(), `cotal-adopt-fg-${tag}-`));
+  // The token first so a reaper can still recognize this tree after a SIGKILLed run, the rail's tag
+  // kept after it so a leak that IS found still says which scenario made it.
+  const dir = mkdtempSync(join(tmpdir(), `${SMOKE_BROKER_TOKEN}${tag}-`));
   writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port, storeDir: join(dir, "js") }));
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
-  cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); });
+  // Owned, so a SIGNALLED run takes the broker and its store dir with it: `cleanups` drains in a
+  // `finally` and this suite registers no signal handler, so before this line a SIGINT left both.
+  // SIGKILL stays SIGKILL: 20 trials each on one fixture, SIGTERM then an immediate rmSync hit
+  // ENOTEMPTY 3 times and SIGKILL zero, since only the graceful shutdown flushes JetStream.
+  const releaseBroker = teardownOnSignal(srv, dir);
+  cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); releaseBroker(); });
 
   let up = false;
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) { up = true; break; } await wait(200); }

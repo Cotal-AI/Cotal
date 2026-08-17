@@ -26,6 +26,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -67,10 +68,15 @@ const cleanups: Array<() => void> = [];
 try {
   const port = await pickFreePort();
   const servers = `nats://127.0.0.1:${port}`;
-  const dir = mkdtempSync(join(tmpdir(), "cotal-adopt-strand-"));
+  const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
   writeFileSync(join(dir, "nats.conf"), `port: ${port}\n`);
   const srv = spawn("nats-server", ["-c", join(dir, "nats.conf")], { stdio: "ignore" });
-  cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); });
+  // Owned, so a SIGNALLED run takes the broker and its store dir with it: `cleanups` drains in a
+  // `finally` and this suite registers no signal handler, so before this line a SIGINT left both.
+  // SIGKILL stays SIGKILL: 20 trials each on one fixture, SIGTERM then an immediate rmSync hit
+  // ENOTEMPTY 3 times and SIGKILL zero, since only the graceful shutdown flushes JetStream.
+  const releaseBroker = teardownOnSignal(srv, dir);
+  cleanups.push(() => { srv.kill("SIGKILL"); rmSync(dir, { recursive: true, force: true }); releaseBroker(); });
   let up: NatsConnection | undefined;
   for (let i = 0; i < 50; i++) { try { up = await connect({ servers, maxReconnectAttempts: 0 }); break; } catch { await wait(200); } }
   if (!up) throw new Error("nats-server did not come up");
