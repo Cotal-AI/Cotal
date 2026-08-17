@@ -38,6 +38,7 @@ import {
   setupSpaceStreams,
   waitForDeliveryLease,
 } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -69,9 +70,12 @@ const space = `dlv-renew-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const obsCreds = await mintMembershipObserverCreds(auth, newIdentity()); // while the $SYS seed is in memory
 const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity()); // same in-memory-$SYS-only window
-const dir = mkdtempSync(join(tmpdir(), "cotal-dlv-renew-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+// Owned, so a SIGNALLED run takes the broker and its store dir with it: the `finally` below is this
+// suite's only teardown and no signal handler is registered.
+const releaseBroker = teardownOnSignal(srv, dir);
 
 // The daemon's ISOLATED workspace root — findCotalRoot(cwd) lands here, so the membership feed's
 // creds/config come from THIS staging, never the developer's real .cotal.
@@ -206,12 +210,14 @@ try {
 } finally {
   try { await sup?.stop(); } catch { /* draining */ }
   try { if (daemon && !daemonExited) daemon.kill("SIGKILL"); } catch { /* gone */ }
-  srv.kill("SIGKILL");
-  await new Promise<void>((resolve) => {
-    if (srv.exitCode !== null || srv.signalCode !== null) return resolve();
-    srv.once("exit", () => resolve());
-    setTimeout(resolve, 3000);
-  });
+  // This suite had already worked out that the removal must not race a broker still writing, and
+  // hand-rolled the wait; the helper IS that wait, so the local copy goes. What it buys is small and
+  // worth naming rather than overstating: the copy resolved on a 3s timer whether or not the broker
+  // had exited, where the helper waits on the exit itself and only stops waiting after a bounded
+  // escalation. Since the signal here is already SIGKILL that escalation is a no-op, so this still
+  // returns unconfirmed if a broker somehow outlives it. Shared, not perfected.
+  await killAndAwaitExit(srv, "SIGKILL");
   rmSync(dir, { recursive: true, force: true });
   rmSync(root, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

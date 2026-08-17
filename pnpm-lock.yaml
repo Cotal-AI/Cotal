@@ -434,6 +434,9 @@ importers:
         specifier: workspace:*
         version: link:../../packages/workspace
     devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@nats-io/transport-node':
         specifier: ^3.4.0
         version: 3.4.0
