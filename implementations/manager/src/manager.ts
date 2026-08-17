@@ -481,12 +481,6 @@ interface ManagedAgent {
   terminalizing?: boolean;
 }
 
-/**
- * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
- * It serves control requests on the "manager" service and spawns/kills agents
- * through a pluggable {@link Runtime} (pty by default). It does NOT proxy agent
- * mesh traffic — terminal I/O streams over its own attach endpoint instead.
- */
 
 /** Runtime hooks the spawn-as-action serve path (P2 item 2) injects into {@link Manager.startAgent}.
  *  Roster boot and the blocking callers pass none (unchanged behavior). */
@@ -570,6 +564,12 @@ export async function epAwaitReply(
   }
 }
 
+/**
+ * The agent supervisor: a long-lived mesh node that owns agent process lifecycle.
+ * It serves control requests on the "manager" service and spawns/kills agents
+ * through a pluggable {@link Runtime} (pty by default). It does NOT proxy agent
+ * mesh traffic — terminal I/O streams over its own attach endpoint instead.
+ */
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
@@ -2512,16 +2512,6 @@ export class Manager {
       : `unsafe name ${JSON.stringify(name)} (allowed: letters, digits, _ -)`;
   }
 
-  /** First free name in the series `base`, `base-2`, `base-3`, … — checked against live slots,
-   *  in-flight (reserved) slots, names held pending retirement, AND the live mesh roster. The
-   *  roster check covers occupants this manager does not manage (a foreground `cotal spawn`, a
-   *  connector session, another manager's agent): allocating their name would mint a sibling the
-   *  broker/auth then refuses to admit, surfacing as a 30s launch-uncertain black hole instead of
-   *  the auto-number the join path gives. Presence is ADVISORY (SPEC §6) — this is an availability
-   *  choice at allocation, never an authority check (the broker still enforces): a stale
-   *  still-live-looking row only costs a numbered suffix, and a missed freshly-joined occupant is
-   *  still refused downstream exactly as before. Offline rows do NOT occupy — a properly retired
-   *  name stays reusable. */
   /** The roster's LIVE occupant names (status !== offline) — occupants this manager may NOT manage
    *  (a foreground `cotal spawn`, a connector session, ANOTHER manager's agent). Allocating over any
    *  of them mints a sibling the broker/auth then refuses to admit, surfacing as the 30s launch-
@@ -2540,6 +2530,16 @@ export class Manager {
     return this.agents.has(name) || this.reserved.has(name) || this.retiring.has(name) || live.has(name);
   }
 
+  /** First free name in the series `base`, `base-2`, `base-3`, … — checked against live slots,
+   *  in-flight (reserved) slots, names held pending retirement, AND the live mesh roster. The
+   *  roster check covers occupants this manager does not manage (a foreground `cotal spawn`, a
+   *  connector session, another manager's agent): allocating their name would mint a sibling the
+   *  broker/auth then refuses to admit, surfacing as a 30s launch-uncertain black hole instead of
+   *  the auto-number the join path gives. Presence is ADVISORY (SPEC §6) — this is an availability
+   *  choice at allocation, never an authority check (the broker still enforces): a stale
+   *  still-live-looking row only costs a numbered suffix, and a missed freshly-joined occupant is
+   *  still refused downstream exactly as before. Offline rows do NOT occupy — a properly retired
+   *  name stays reusable. */
   private uniqueName(base: string): string {
     const live = this.liveRosterNames();
     return firstFreeName(base, (n) => this.nameInUse(n, live));
@@ -3882,11 +3882,6 @@ export class Manager {
     return undefined;
   }
 
-  /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),
-   *  residual 2). The DM/DLV consumer-create surface — the irreducible onboarding power — lives only for
-   *  this window, never as a standing grant on the long-lived supervisor. A provision-only endpoint
-   *  (no presence/consume/channel-watch) connected with memory-only `provisioner` creds; it sets its own
-   *  `inboxPrefix` so JS-API replies land on the `_INBOX_<id>.>` the provisioner cred subscribes. */
   /** Run one static §13.1 lifecycle OPERATION over an ephemeral, key-pinned `lifecycle-executor`
    *  connection (Unit B): the credential's grants name exactly ONE incarnation's head/uid/gate/
    *  cred-family/slot keys, so the write authority exists only for this operation's window and
@@ -5009,6 +5004,11 @@ export class Manager {
     return undefined;
   }
 
+  /** Open a short-lived PROVISIONER connection, run the onboarding ops on it, and drain it (closure (ii),
+   *  residual 2). The DM/DLV consumer-create surface — the irreducible onboarding power — lives only for
+   *  this window, never as a standing grant on the long-lived supervisor. A provision-only endpoint
+   *  (no presence/consume/channel-watch) connected with memory-only `provisioner` creds; it sets its own
+   *  `inboxPrefix` so JS-API replies land on the `_INBOX_<id>.>` the provisioner cred subscribes. */
   private async withProvisioner<T>(fn: (prov: CotalEndpoint) => Promise<T>): Promise<T> {
     if (!this.auth) throw new Error("withProvisioner: no space auth (an open mesh has no scoped creds)");
     const identity = newIdentity();
