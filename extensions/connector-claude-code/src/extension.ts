@@ -106,8 +106,13 @@ export const claudeConnector: Connector = {
 
     // A leading positional is claude's first message, auto-submitted on start —
     // so a driving session can greet the operator the moment it joins.
-    const args = opts.prompt
-      ? [opts.prompt, "--dangerously-load-development-channels", CHANNEL_REF]
+    // A prompt with no text in it cannot be submitted as a turn: refuse the launch rather than start
+    // a seat that quietly ignores what the operator passed (same rule as the other connectors).
+    const prompt = opts.prompt === undefined ? undefined : opts.prompt.trim();
+    if (prompt === "")
+      throw new Error("claude connector: an initial prompt was given but it is empty, there is no first turn to submit");
+    const args = prompt
+      ? [prompt, "--dangerously-load-development-channels", CHANNEL_REF]
       : ["--dangerously-load-development-channels", CHANNEL_REF];
 
     // Pre-allow fetching the public Cotal docs so a doc-grounded persona (e.g. david)
