@@ -46,6 +46,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { isReachable, reconcileSpaceTtls, presenceBucket, deliveryBucket, managerBucket } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertEphemeralBroker, scrubAmbientBrokerEnv } from "./_ephemeral-only.js";
 
 // Fence layer 4 first: this environment carries the LIVE broker in COTAL_SERVERS, and this suite
@@ -60,9 +61,10 @@ const SERVERS = `nats://127.0.0.1:${PORT}`;
 assertEphemeralBroker(SERVERS);
 const space = `ttlexpiry-${randomUUID().slice(0, 8)}`;
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-ttlexpiry-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), `port: ${PORT}\njetstream { store_dir: "${join(dir, "js")}" }\n`);
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 let pass = 0, fail = 0;
 const check = (n: string, v: boolean, x?: unknown) => { v ? (pass++, console.log(`  ✓ ${n}`)) : (fail++, console.log(`  ✗ FAIL: ${n}`, x ?? "")); };
 
@@ -109,5 +111,6 @@ try {
   srv.kill("SIGKILL");
   await sleep(200);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(fail === 0 ? 0 : 1);
