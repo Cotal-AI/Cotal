@@ -241,6 +241,23 @@ writeFileSync(
     mutations: [{ label: "typo: the key is `name`", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "oversized values are refused" }],
   }),
 );
+// A key a sibling tool reads is not an unknown key.
+writeFileSync(
+  join(root, "sibling-keys.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    mutations: [{ name: "carries the keys the coverage pass reads", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "the guard refuses an oversized value", cell: "the guard refuses an oversized value", note: "prose for the next reader" }],
+  }),
+);
+// ...and the control, because a widened allowlist that refuses nothing is a removal, not a fix.
+writeFileSync(
+  join(root, "unknown-top-key.json"),
+  JSON.stringify({
+    command: `${process.execPath} suite.mjs`,
+    complitionMarker: "a real typo of a real key",
+    mutations: [{ name: "fine", file: "src/impl.js", find: "if (n > 10)", replace: "if (false)", expectRed: "the guard refuses an oversized value" }],
+  }),
+);
 writeFileSync(
   join(root, "no-expect.json"),
   JSON.stringify({
@@ -483,6 +500,19 @@ check("afterRestore regenerates derived output from the RESTORED source",
 r = runTool(["--config", "unknown-key.json"]);
 check("an unknown mutation key is an ERROR, not a shrug",
   r.status !== 0 && r.stdout.includes("ERROR") && r.stdout.includes("unknown mutation key"), r.stdout.slice(-300));
+
+// The claim is exactly "these keys no longer make a mutation ungradable", so that is what this
+// asserts: no ERROR, and a real verdict reached. Which verdict depends on where in this file the
+// fixture sits and is not the property under test — asserting KILLED here would pin the fixture's
+// position rather than the allowlist.
+r = runTool(["--config", "sibling-keys.json"]);
+check("...but a key a SIBLING tool reads is not unknown, and the mutation is GRADED rather than refused",
+  !r.stdout.includes("unknown mutation key") && !r.stdout.includes("ERROR")
+    && /KILLED|SURVIVED|WRONG-RED|INCONCLUSIVE|UNGRADABLE/.test(r.stdout), r.stdout.slice(-300));
+
+r = runTool(["--config", "unknown-top-key.json"]);
+check("...and a mis-spelled TOP-LEVEL key is refused, at the level the silent ignore actually lived at",
+  r.status !== 0 && r.stdout.includes("complitionMarker"), r.stdout.slice(-300));
 
 // 7g. Mandatory since the first version's header, unenforced until now.
 r = runTool(["--config", "no-expect.json"]);

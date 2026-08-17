@@ -120,7 +120,21 @@ const progressCount = (output, pattern) => {
 /** Keys a mutation may carry. An unknown key is an ERROR, not a shrug: this tool exists because
  *  every step of the experiment has a way to lie, and "the field I set was quietly ignored" is one
  *  of them — a mis-spelled `expectRed` turns a graded proof into an ungraded red. */
-const MUTATION_KEYS = new Set(["name", "file", "find", "replace", "expectRed", "command", "allowMultiple", "afterRestore"]);
+const MUTATION_KEYS = new Set([
+  "name", "file", "find", "replace", "expectRed", "command", "allowMultiple", "afterRestore",
+  // Read by `mutation-coverage.mjs`: the allowlist covers the toolchain, not this one file.
+  "cell", "note", "cellTemplate",
+]);
+
+/** Top-level config keys, checked for the same reason the mutation keys are. */
+const CONFIG_KEYS = new Set([
+  // Read here.
+  "command", "mutations", "progressPattern", "minTicks",
+  // Read by `mutation-coverage.mjs`.
+  "suite", "guard", "grades", "kind", "unkillable", "why", "proveWith",
+  // Read by nothing: prose for the next reader, listed so that is a stated property.
+  "completionMarker", "_note", "resolved", "redundant", "ungradable",
+]);
 
 function proveOne(m, opts) {
   const cwd = opts.cwd;
@@ -317,6 +331,8 @@ if (a.config) {
   // `resolve`, not `join`: an ABSOLUTE --config path joined to cwd becomes a nonexistent path under
   // the repo, and the tool dies on ENOENT with the two paths glued together.
   const cfg = JSON.parse(readFileSync(resolve(cwd, a.config), "utf8"));
+  const unknownCfg = Object.keys(cfg).filter((k) => !CONFIG_KEYS.has(k));
+  if (unknownCfg.length) usage(`config has unknown top-level key(s): ${unknownCfg.join(", ")}`);
   mutations = cfg.mutations ?? usage("config has no `mutations` array");
   opts = { ...opts, command: cfg.command ?? opts.command, progressPattern: cfg.progressPattern ?? opts.progressPattern, minTicks: cfg.minTicks ?? opts.minTicks };
 } else if (a.file && a.find !== undefined && a.replace !== undefined) {
