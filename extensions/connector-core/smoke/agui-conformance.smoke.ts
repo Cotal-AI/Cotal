@@ -48,8 +48,14 @@
  * | M18 | drop the `cotal` spread from `toolCallEnd` ALONE | `and on EVERY one the `cotal` key SURVIVES the parse rather than being stripped` |
  *
  * All nine landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the
- * code that runs), all nine killed exactly their predicted set and nothing else, and the restore
- * was verified by a clean `git status` plus a return to the baseline tally.
+ * code that runs), and all nine were KILLED on the named cell above, each predicted before its run.
+ *
+ * **The ledger is executable, not a story about a run somebody once did.** The nine live in
+ * `smoke/fixtures/agui-conformance.mutations.json`, so `pnpm mutation-proof --config` re-runs them
+ * and `smoke:mutation-fixtures` fails the moment an anchor stops matching its source exactly once.
+ * A prose ledger goes stale silently; a fixture announces it. Every anchor is a code-only window
+ * for the same reason: an anchor that spans a docblock is disarmed by anyone tidying prose, and
+ * nothing about a comment edit could announce that it had disabled a guard.
  *
  * **M18 is the passthrough sweep's justification, and it was EXECUTED rather than argued.** The
  * obvious defence of replacing a one-schema sample with a fourteen-schema sweep is "the sample
