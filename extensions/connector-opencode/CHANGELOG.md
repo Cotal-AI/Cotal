@@ -1,5 +1,35 @@
 # @cotal-ai/connector-opencode
 
+## 0.19.0
+
+### Minor Changes
+
+- 4e8d776: The `cotal_*` tools now refuse an argument they do not model instead of silently
+  dropping it. A call carrying an unmodelled key (`owner` or `actor` alongside the
+  real arguments) previously succeeded with that key stripped before the tool ran,
+  so the caller was told nothing and the tool did something other than what was
+  asked. It is now refused by name, on every adapter and on every tool: the MCP
+  renderers and pi publish a closed schema and the host rejects the call, while
+  OpenCode and Hermes pass the caller's object through untouched and are closed at
+  the connector's own dispatch. Tools that take no arguments are closed too: they
+  were previously published with no schema at all, so a host had nothing to check
+  against and forwarded the extras to be dropped, as is `cotal_inbox`, whose
+  arguments four of the connectors replace with their own. Behaviourally breaking
+  for any caller that was relying on extra keys being ignored. Every refusal names
+  the rejected keys; where the connector is the one refusing it also lists the
+  arguments the tool accepts, or says it takes none.
+
+### Patch Changes
+
+- 885c82e: `cotal spawn --agent opencode --prompt <text>` now submits that text as the session's first turn.
+  The connector built its launch spec without ever reading the prompt, so an OpenCode seat accepted
+  the flag, joined the roster, loaded its persona, and then sat idle until something else woke it.
+  The prompt now rides the child environment to the in-process plugin, which submits it once, after
+  the session exists and the mesh link is up, and never again on a later readiness event. Peer
+  traffic that arrives during boot stays buffered and is delivered when that first turn ends, so the
+  operator's prompt really is the first turn. An initial prompt with no text in it is refused at
+  launch instead of being accepted and dropped.
+
 ## 0.18.0
 
 ## 0.17.0
