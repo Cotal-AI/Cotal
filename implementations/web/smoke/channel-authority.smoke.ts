@@ -414,6 +414,15 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
   };
   const c = createContext(ctx);
   runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });
+  if (file.includes("app.js")) {
+    // The single-flight state the shipped backfill reads. TAKEN FROM THE FILE, not restated here: one
+    // bootstrap must pair with one settle, so coalescing overlapping callers is part of the backfill
+    // path, and a hand-written stand-in would let this harness keep running after the real declaration
+    // changed underneath it.
+    const decls = read("../src/web/app.js").match(/^let (?:refreshing|selecting) = .*$/gm) ?? [];
+    assert.equal(decls.length, 2, "app.js must declare the single-flight state this harness runs");
+    runInContext(decls.join("\n"), c, { filename: "app.js (state)" });
+  }
   runInContext(`${code}\n__p = ${fnName}();`, c, { filename: file });
   await (ctx.__p as Promise<void>);
   // `entries` is returned rather than `ctx.activity` ON PURPOSE. In `app.js` the backfill assigns

@@ -92,22 +92,54 @@
     const chainOf = (key) => {
       let c = chains.get(key);
       if (!c) {
-        c = { baseline: undefined, next: undefined, prefixIncomplete: false, faulted: false, seen: new Set() };
+        c = { baseline: undefined, next: undefined, prefixIncomplete: false, faulted: false, released: false, seen: new Set() };
         chains.set(key, c);
       }
       return c;
     };
 
-    /** Admit one frame against an armed chain. Returns the notes it produced. */
-    const admit = (c, key, seq) => {
+    /** Admit one frame against an armed chain. Returns the notes it produced.
+     *
+     *  `straddle` marks the ONE frame per chain whose predecessor lies on the other side of the
+     *  bootstrap seam, and it changes what a hole MEANS rather than merely how it is worded. See
+     *  {@link STRADDLE} below. */
+    const admit = (c, key, seq, straddle) => {
       const notes = [];
       if (c.seen.has(seq)) return { emit: false, notes };
       c.seen.add(seq);
       if (seq > c.next) {
-        // The fault. Named with both ends so a reader can see WHAT is missing, not merely that
+        // Both ends are named either way, so a reader sees WHAT is missing rather than only that
         // something is.
-        notes.push({ type: "gap", key, expected: c.next, got: seq, missing: seq - c.next });
-        c.faulted = true;
+        const hole = { key, expected: c.next, got: seq, missing: seq - c.next };
+        if (straddle) {
+          // STRADDLE: THE ONE HOLE THIS PAGE CANNOT ATTRIBUTE, and calling it a fault was a measured
+          // false positive on healthy traffic.
+          //
+          // The two halves of the bootstrap are two independent reads with no shared cut: a live
+          // subscription, and a history request. Nothing makes the point the read was served equal
+          // the point the tap began delivering, and on this page the fetch is issued before the tap
+          // is even open. So a frame published inside that window is in NEITHER half, and the first
+          // buffered frame of a chain can therefore sit above the retained range's top by more than
+          // one with nothing lost by the broker at all. Reported as a fault, it latched `faulted`
+          // forever on a stream that was fine, and the frame that filled the hole a moment later did
+          // not clear it.
+          //
+          // A fault that fires on healthy traffic is worse than no fault at all, because it teaches
+          // the reader to ignore the one signal that matters. So this is reported as its own kind,
+          // named as unconfirmed on the surface, and it does NOT set `faulted`. What it is not is
+          // silence: the page says it could not establish the join, rather than saying nothing was
+          // missing.
+          //
+          // ONLY THE FIRST RELEASED FRAME OF A CHAIN GETS THIS TREATMENT. Every later buffered frame
+          // arrived through the SAME tap as the one before it, and a subscription delivers a subject
+          // in order, so a number missing BETWEEN two buffered frames was never delivered while the
+          // page was listening. That is a real loss and takes the hard path below, exactly like a
+          // post-boundary hole.
+          notes.push({ type: "boundary-hole", ...hole });
+        } else {
+          notes.push({ type: "gap", ...hole });
+          c.faulted = true;
+        }
       }
       if (seq >= c.next) c.next = seq + 1;
       return { emit: true, notes };
@@ -162,6 +194,29 @@
           c.next = highest + 1;
           c.prefixIncomplete = c.baseline > FIRST_SEQ;
           if (c.prefixIncomplete) notes.push({ type: "prefix-incomplete", key, baseline: c.baseline });
+          // THE RETAINED RANGE IS AUDITED, NOT JUST ITS ENDS. Recording the minimum, the maximum and
+          // the set is enough to place the baseline and to dedupe, and it is NOT enough to notice that
+          // the middle is missing: a batch of 1, 2, 5 has a baseline of 1 and a frontier of 6, and
+          // every later frame follows contiguously, so the chain reads healthy forever while two
+          // frames are gone. A discontinuity that exists only inside retained history is still a
+          // discontinuity after the baseline, and it is the one kind no live arrival will ever
+          // reveal, because nothing after it is out of order.
+          //
+          // Reported as runs rather than per missing number, so losing a thousand frames is one note
+          // naming both ends instead of a thousand notes burying it. The walk stops at `highest`,
+          // which is in the set by construction, so a run always terminates on a present frame.
+          let run = 0;
+          for (let s = c.baseline + 1; s <= highest; s++) {
+            if (!c.seen.has(s)) {
+              run++;
+              continue;
+            }
+            if (run > 0) {
+              notes.push({ type: "gap", key, expected: s - run, got: s, missing: run });
+              c.faulted = true;
+              run = 0;
+            }
+          }
         }
 
         // Phase two: release what the tap delivered while the fetch was in flight. Sorted by `seq`
@@ -184,7 +239,11 @@
             if (c.prefixIncomplete)
               notes.push({ type: "prefix-incomplete", key, baseline: c.baseline });
           }
-          const r = admit(c, key, h.frame.seq);
+          // The seam is crossed once per chain: this frame's predecessor is retained history (or
+          // nothing), every later one's predecessor came through the same tap it did.
+          const straddle = !c.released;
+          c.released = true;
+          const r = admit(c, key, h.frame.seq, straddle);
           for (const n of r.notes) notes.push(n);
           if (r.emit) rows.push(h.entry);
         }

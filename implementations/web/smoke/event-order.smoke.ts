@@ -133,6 +133,7 @@ const seqsOf = (rows: unknown[]): (number | string)[] =>
   });
 const gaps = (notes: Note[]) => notes.filter((n) => n.type === "gap");
 const prefixNotes = (notes: Note[]) => notes.filter((n) => n.type === "prefix-incomplete");
+const straddles = (notes: Note[]) => notes.filter((n) => n.type === "boundary-hole");
 
 console.log("event-order smoke");
 
@@ -395,16 +396,28 @@ console.log("event-order smoke");
 // during it is invisible for the life of the page. That was introduced by the buffering itself, since
 // the code this replaced simply left the live arrivals in place on a failed fetch. So this section
 // runs the REAL `refresh()` and `select()` out of `app.js`, with a fetch that rejects.
+//
+// The harness this builds is shared with §13, §14 and §15, which need the same thing: the shipped
+// bootstrap, driven, rather than a restatement of it.
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
   const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select"]);
+  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml"]);
+  // The single-flight state the shipped functions read. TAKEN FROM THE FILE, not restated: a
+  // hand-written `let refreshing = null` here would let the harness keep passing after the real
+  // declaration changed, and a bootstrap that coalesces is the whole of blocker 1.
+  const wantedState = new Set(["refreshing", "selecting"]);
   const fns: string[] = [];
+  const state: string[] = [];
   sf.forEachChild((n) => {
     if (ts.isFunctionDeclaration(n) && n.name && wanted.has(n.name.text)) fns.push(appSrc.slice(n.getStart(sf), n.end));
+    if (ts.isVariableStatement(n))
+      for (const d of n.declarationList.declarations)
+        if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
   });
   // Pinned first: a short extraction would make every cell below vacuous.
-  ok("12.1 all four shipped functions are extractable", fns.length === 4, fns.length);
+  ok("12.1 all five shipped functions are extractable", fns.length === 5, fns.length);
+  ok("12.1b and the in-flight state they coalesce on", state.length === 2, state);
 
   type Ctx = Record<string, unknown> & {
     activity: unknown[];
@@ -436,7 +449,7 @@ console.log("event-order smoke");
     const c = createContext(ctx);
     runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
     runInContext("feedOrder = window.COTAL_EVENT_ORDER.create(); channelOrder = window.COTAL_EVENT_ORDER.create();", c);
-    runInContext(fns.join("\n"), c, { filename: "app.js" });
+    runInContext([...state, ...fns].join("\n"), c, { filename: "app.js" });
     (ctx as Record<string, unknown>).__ctx = c;
     return ctx as unknown as Ctx;
   };
@@ -475,6 +488,196 @@ console.log("event-order smoke");
     ok("12.10 nothing is left held on that path either", ctx.channelOrder.pendingCount === 0);
     ok("12.11 and it too surfaces the failure", ctx.orderNotes.some((n) => n.type === "backfill-failed"));
   }
+
+  // ── 13. TWO BOOTSTRAPS AT ONCE, which the stock startup performs on every load ──────────────────
+  // Arming a machine and settling it are the two ends of ONE bootstrap. When `refresh()` could be
+  // re-entered between them, the second call rebound `feedOrder` and the first machine, holding
+  // whatever the tap had delivered in that window, became unreachable: its buffer was never drained
+  // and never merged. This is not a hypothetical schedule. The page ends with `refresh(); connect();`
+  // and `connect()`'s open handler calls `refresh()` again, so the second call is the norm, and a
+  // reconnect flap repeats it.
+  {
+    // The structural half: the two call sites this race needs both exist in the shipped file.
+    const startup = /\n\s*refresh\(\);\n\s*connect\(\);/.test(appSrc);
+    const onOpen = /addEventListener\("open",[\s\S]{0,120}?refresh\(\);/.test(appSrc);
+    ok("13.1 the shipped startup calls refresh() and then connect()", startup);
+    ok("13.2 and connect()'s open handler calls refresh() again", onOpen);
+  }
+  {
+    const ctx = page("resolve");
+    const c = (ctx as unknown as { __ctx: ReturnType<typeof createContext> }).__ctx;
+    // Both calls are in flight together, with a frame arriving in between, exactly as the tap would
+    // deliver one between the startup call and the open handler's.
+    (ctx as Record<string, unknown>).__E = frame(7);
+    runInContext("__p = refresh();", c);
+    const first = ctx.feedOrder; // the machine the FIRST call armed, captured while it is in flight
+    runInContext("onMessage(__E);", c);
+    runInContext("__p2 = refresh();", c);
+    await (ctx.__p as Promise<void>).catch(() => undefined);
+    await ((ctx as Record<string, unknown>).__p2 as Promise<void>).catch(() => undefined);
+    ok("13.3 the second call did NOT arm a rival machine", ctx.feedOrder === first);
+    ok("13.4 so the frame held by the first one still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+    ok("13.5 and nothing is left held", ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
+  }
+  {
+    // The same race on the channel view, which `refresh()` drives itself: it calls `select(selected)`
+    // on every poll, so two bootstraps for the SAME open channel overlap routinely.
+    const ctx = page("resolve");
+    const c = (ctx as unknown as { __ctx: ReturnType<typeof createContext> }).__ctx;
+    ctx.selected = "events.local.alice";
+    (ctx as Record<string, unknown>).__E = frame(7);
+    runInContext('__p = select("events.local.alice");', c);
+    const first = ctx.channelOrder; // armed by the first selection, captured while it is in flight
+    runInContext("onMessage(__E);", c);
+    runInContext('__p2 = select("events.local.alice");', c);
+    await (ctx.__p as Promise<void>).catch(() => undefined);
+    await ((ctx as Record<string, unknown>).__p2 as Promise<void>).catch(() => undefined);
+    ok("13.6 a second selection of the same channel shares the bootstrap", ctx.channelOrder === first);
+    ok("13.7 so its held frame reaches the channel view", ctx.channelMsgs.length === 1, ctx.channelMsgs.length);
+    ok("13.8 and nothing is left held there either", ctx.channelOrder.pendingCount === 0);
+    ok("13.9 CONTROL: the refresh path is what calls select on a poll", /\n\s*select\(selected\);/.test(appSrc));
+  }
+
+  // ── 14. THE BOUNDARY PASSES ON EVERY BRANCH, not only on all-activity ──────────────────────────
+  // `feedOrder` is re-armed at the top of `refresh()` unconditionally, and the settle used to live
+  // inside the `selected === "*"` branch. So for a reader sitting on a channel, a DM or an agent
+  // drill-down, every live frame was held by a machine that would never settle: absent from the feed,
+  // then discarded wholesale by the next poll's re-arm. A `finally` is the only placement that covers
+  // all four branches AND a throw from any earlier request.
+  for (const branch of ["channel", "dm", "agent"] as const) {
+    const ctx = page("resolve");
+    if (branch === "channel") ctx.selected = "team.backend";
+    if (branch === "dm") ctx.dmSel = { peer: "p", with: "q" };
+    if (branch === "agent") ctx.agentSel = "p";
+    await drive(ctx, "refresh()", frame(9));
+    ok(`14.${branch === "channel" ? 1 : branch === "dm" ? 3 : 5} the boundary passes with a ${branch} open`, ctx.feedOrder.settled === true);
+    ok(`14.${branch === "channel" ? 2 : branch === "dm" ? 4 : 6} and the held frame is not stranded`, ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
+  }
+  {
+    // An EARLIER request throwing, which the failure arm around `/api/activity` never covered:
+    // `/api/roster` is the first fetch in the function and it was unguarded.
+    const ctx = page("resolve");
+    (ctx as Record<string, unknown>).fetch = async (u: string) => {
+      if (u.includes("/api/roster")) throw new Error("network down");
+      return { ok: true, json: async () => [] };
+    };
+    await drive(ctx, "refresh()", frame(9));
+    ok("14.7 a throw from the FIRST request still settles the boundary", ctx.feedOrder.settled === true);
+    ok("14.8 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+  }
+
+  // ── 15. THE NOTES ARE DRAWN, which is a different claim from computing them ─────────────────────
+  // The notes were collected into an array nothing read: the machine detected a missing frame and the
+  // page said nothing. A gap that reaches only an unused variable is the same silence this lane exists
+  // to remove, one layer up, and it is also what decides whether treating a failed read as an empty
+  // history is an honest degrade or a quiet one.
+  {
+    const c = createContext({ orderNotes: [] as Note[] });
+    runInContext(fns.find((f) => f.startsWith("function orderNoticeHtml")) as string, c);
+    const html = (notes: Note[]) => {
+      (c as unknown as { orderNotes: Note[] }).orderNotes = notes;
+      return runInContext("orderNoticeHtml()", c) as string;
+    };
+    ok("15.1 an ordinary feed draws no notice", html([]) === "");
+    const gapHtml = html([{ type: "gap", expected: 4, got: 7, missing: 3 }]);
+    ok("15.2 a gap is drawn, and says how many frames are missing", /\b3\b/.test(gapHtml) && /missing/.test(gapHtml), gapHtml);
+    const prefixHtml = html([{ type: "prefix-incomplete", baseline: 900 }]);
+    ok("15.3 an evicted prefix is drawn too", prefixHtml !== "" && /not retained/.test(prefixHtml), prefixHtml);
+    // THE ONE THAT ALWAYS HAPPENS ON A LATE JOIN MUST NOT READ LIKE THE ONE THAT MUST NEVER BE
+    // IGNORED. Collapsing them into one banner would spend the reader's attention on retention.
+    ok("15.4 and the two are not the same statement", gapHtml !== prefixHtml && !/missing/.test(prefixHtml));
+    const straddleHtml = html([{ type: "boundary-hole", expected: 4, got: 5, missing: 1 }]);
+    ok("15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss", /unconfirmed/.test(straddleHtml) && !/missing/.test(straddleHtml), straddleHtml);
+    const failHtml = html([{ type: "backfill-failed" } as Note]);
+    ok("15.6 a failed history read is drawn, so the empty-batch settle is not a silent degrade", /history unavailable/.test(failHtml), failHtml);
+    ok("15.7 a fault is marked as one, and not by colour alone", /order-notice fault/.test(gapHtml) && !/fault/.test(prefixHtml));
+
+    // The rendering half: the feed views actually call it. Without this the function could be dead.
+    const drawn = new Set<string>();
+    sf.forEachChild((n) => {
+      if (ts.isFunctionDeclaration(n) && n.name && /^render(AllActivity|Channel)$/.test(n.name.text))
+        if (appSrc.slice(n.getStart(sf), n.end).includes("orderNoticeHtml()")) drawn.add(n.name.text);
+    });
+    ok("15.8 the all-activity view draws it", drawn.has("renderAllActivity"), [...drawn]);
+    ok("15.9 the channel view draws it", drawn.has("renderChannel"), [...drawn]);
+    ok("15.10 and the page styles it", readFileSync(join(webSrc, "index.html"), "utf8").includes(".order-notice"));
+  }
+}
+
+// ── 16. A HOLE INSIDE THE RETAINED BATCH, which no live arrival will ever reveal ─────────────────
+// The minimum, the maximum and the membership set place the baseline and dedupe, and they are not
+// enough to notice that the middle is missing. A batch of 1, 2, 5 has baseline 1 and frontier 6, and
+// every frame after it follows contiguously, so the chain reads healthy forever while two frames are
+// gone. It is the one discontinuity the live path cannot expose, because nothing after it is out of
+// order.
+{
+  const o = API.create();
+  const settled = o.backfill([frame(1), frame(2), frame(5)]);
+  ok("16.1 a hole inside the batch IS reported", gaps(settled.notes).length === 1, settled.notes);
+  ok("16.2 naming both ends and the count", gaps(settled.notes)[0]?.expected === 3 && gaps(settled.notes)[0]?.got === 5 && gaps(settled.notes)[0]?.missing === 2);
+  ok("16.3 and the chain is faulted", o.state(o.chainKeys[0])?.faulted === true);
+  ok("16.4 every retained frame is still drawn", seqsOf(settled.emit).join(",") === "1,2,5");
+  ok("16.5 the frontier is still past the highest", o.state(o.chainKeys[0])?.next === 6);
+
+  // CONTROL: the same walk over a complete batch reports nothing, so 16.1 is not a check that fires
+  // on everything.
+  const o2 = API.create();
+  ok("16.6 CONTROL: a complete batch reports no gap", gaps(o2.backfill([frame(1), frame(2), frame(3)]).notes).length === 0);
+  // A run of one, and two runs, so the report is per BREAK and not per missing number: losing a
+  // thousand frames must be one note naming both ends, not a thousand notes burying it.
+  const o3 = API.create();
+  ok("16.7 a single missing frame is one note", gaps(o3.backfill([frame(1), frame(3)]).notes).length === 1);
+  const o4 = API.create();
+  const two = gaps(o4.backfill([frame(1), frame(3), frame(5)]).notes);
+  ok("16.8 two breaks are two notes", two.length === 2, two);
+  ok("16.9 each naming its own ends", two[0]?.expected === 2 && two[0]?.got === 3 && two[1]?.expected === 4 && two[1]?.got === 5);
+  // Below the baseline is retention, not loss, and must never be reported as a break.
+  const o5 = API.create();
+  const late = o5.backfill([frame(900), frame(901)]);
+  ok("16.10 nothing below the baseline is reported", gaps(late.notes).length === 0, late.notes);
+  ok("16.11 that arm reports the evicted prefix instead", prefixNotes(late.notes).length === 1);
+  // The batch is ts-sorted, so the walk must not depend on row order.
+  const o6 = API.create();
+  ok("16.12 an unsorted batch is walked by seq, not by row", gaps(o6.backfill([frame(5), frame(1), frame(2)]).notes).length === 1);
+}
+
+// ── 17. THE ONE HOLE THIS PAGE CANNOT ATTRIBUTE, and the one it can ─────────────────────────────
+// The live tap and the history read are two reads with no shared cut, and on this page the fetch is
+// issued before the tap is open. So the FIRST buffered frame of a chain can sit above the retained
+// top by more than one with nothing lost at all. Reported as a fault it latched forever on healthy
+// traffic, and the frame that filled the hole did not clear it. Reported as nothing, the page would be
+// claiming an answer it does not have. It is reported as its own kind, and only for the frame that
+// straddles the seam.
+{
+  const o = API.create();
+  o.live(frame(1004)); // buffered while the fetch is in flight
+  const settled = o.backfill([frame(1000), frame(1001), frame(1002)]);
+  ok("17.1 the straddling hole is NOT a gap", gaps(settled.notes).length === 0, settled.notes);
+  ok("17.2 it is reported as its own kind", straddles(settled.notes).length === 1, settled.notes);
+  ok("17.3 naming both ends, so it is not a vague warning", straddles(settled.notes)[0]?.expected === 1003 && straddles(settled.notes)[0]?.got === 1004);
+  ok("17.4 and it does NOT latch the chain as faulted", o.state(o.chainKeys[0])?.faulted === false, o.state(o.chainKeys[0]));
+  // The frame that fills it arrives a moment later. Under the fault reading this cleared nothing.
+  const fill = o.live(frame(1003));
+  ok("17.5 the frame that fills it is admitted", fill.emit.length === 1);
+  ok("17.6 without reporting a gap", gaps(fill.notes).length === 0, fill.notes);
+  ok("17.7 and the chain is still not faulted", o.state(o.chainKeys[0])?.faulted === false);
+  ok("17.8 the stream continues clean", gaps(o.live(frame(1005)).notes).length === 0);
+
+  // ONLY THE FRAME THAT STRADDLES THE SEAM. Every later buffered frame arrived through the SAME tap
+  // as the one before it, and a subscription delivers a subject in order, so a number missing between
+  // two buffered frames was never delivered while the page was listening: a real loss.
+  const o2 = API.create();
+  o2.live(frame(1004));
+  o2.live(frame(1006));
+  const s2 = o2.backfill([frame(1000), frame(1002)]);
+  ok("17.9 a hole between two BUFFERED frames is a gap", gaps(s2.notes).some((g) => g.expected === 1005 && g.got === 1006), s2.notes);
+  ok("17.10 the straddling one is still only unconfirmed", straddles(s2.notes).length === 1, straddles(s2.notes));
+  ok("17.11 and the batch-internal one is a gap too", gaps(s2.notes).some((g) => g.expected === 1001 && g.got === 1002));
+  ok("17.12 so that chain IS faulted", o2.state(o2.chainKeys[0])?.faulted === true);
+  // CONTROL: after the boundary there is no such window, so a hole in live traffic is a hard fault.
+  const o3 = API.create();
+  o3.backfill([frame(10)]);
+  ok("17.13 CONTROL: a post-boundary hole is a gap, not an unconfirmed one", gaps(o3.live(frame(12)).notes).length === 1 && straddles(o3.live(frame(20)).notes).length === 0);
 }
 
 console.log(`event-order smoke: ${cells - failed} passed, ${failed} failed`);
