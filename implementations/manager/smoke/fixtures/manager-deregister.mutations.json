@@ -13,14 +13,14 @@
       "file": "implementations/manager/src/deregister-instance.ts",
       "find": "      if (!unansweredRequest(e)) return { state: \"unestablishable\", detail: `the probe itself failed: ${(e as Error).message}` };",
       "replace": "",
-      "expectRed": "an UNESTABLISHABLE probe refuses, and not with the same condition as silence"
+      "expectRed": "a probe whose publishes the broker REFUSES is unestablishable, never silence"
     },
     {
       "name": "PREDICTED KILLED (1 red) - the guard runs AFTER the delete instead of before it, so the record is already gone by the time a live instance is found to be alive",
       "file": "implementations/manager/src/deregister-instance.ts",
       "find": "  const probe = await opts.probeInstance();",
       "replace": "  const probe: InstanceProbe = { state: \"silent\", detail: \"guard skipped\" };",
-      "expectRed": "the probe found it SILENT rather than assuming it"
+      "expectRed": "and the live manager's registration is untouched by the refusal"
     },
     {
       "name": "PREDICTED KILLED (1 red) - a removal that removed nothing reports as a removal, so `absent` stops being distinguishable from a real delete and a repeat run claims a second one",

@@ -22,12 +22,16 @@
  * shipping a manager that can be stopped once and never started again — the first draft did exactly
  * that on the status key, and section 2 is what caught it.
  *
- * THE COUNT WAS PREDICTED AT 16 AND IS 21. Recorded rather than re-cut backwards: three cells were
- * added while writing, each because the fixture refused to build without them — the open-mesh
- * restart pair (an auth-mesh restart needs the delivery daemon as its eviction oracle, which is not
- * what this suite is about) and the credential-boundary pair (the scatter's own credential turned
- * out to be unable to delete, which is the right answer and now an assertion rather than an
- * assumption). Every claim in the original 16 is still asserted.
+ * THE COUNT WAS PREDICTED AT 16 AND IS 23. Recorded rather than re-cut backwards. Five of the seven
+ * came from the fixture refusing to build without them: the open-mesh restart pair (an auth-mesh
+ * restart needs the delivery daemon as its eviction oracle, which is not what this suite is about),
+ * the credential-boundary pair (the scatter's own credential turned out to be unable to delete,
+ * which is the right answer and is now an assertion rather than an assumption), and the recovery
+ * cell on the status key. The last two came from the mutation pass: section 9 established the
+ * unestablishable verdict from a HAND-BUILT probe result, so nothing tested how the real probe
+ * classifies a refusal, and a probe whose publishes are refused going quiet is precisely the input
+ * that would delete a live manager's record. Section 10 produces that refusal for real. Every claim
+ * in the original 16 is still asserted.
  *
  * Run: pnpm smoke:manager-deregister   (needs nats-server + node on PATH; boots its own JWT broker)
  */
@@ -53,7 +57,7 @@ import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } from "../src/deregister-instance.js";
 
-const EXPECTED_CELLS = 21;
+const EXPECTED_CELLS = 23;
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -286,7 +290,24 @@ try {
   check("an UNESTABLISHABLE probe refuses, and not with the same condition as silence",
     broken?.condition === "liveness-unestablishable", broken?.message?.slice(0, 120));
 
-  console.log("10. the affirmative rail check is not just a timeout in disguise");
+  console.log("10. a probe the BROKER refuses is not a dead instance either");
+  // The shape section 9 builds by hand, produced for real. The guard's own credential is missing the
+  // instance's rail, so both of its questions are refused - and a refused publish does not fail, it
+  // goes quiet. If that quiet reached the guard as silence, the operator verb would delete the
+  // registration of a manager that is alive and answering, on nothing but a credential gap. The
+  // instance probed here is the LIVE one, so a wrong answer is a wrong DELETE.
+  const blind = await openObserver([]); // a privileged instrument with no instance rows at all
+  const blindProbe = await makeInstanceProbe(blind.nc, {
+    space: SPACE, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE, caller: blind.caller,
+    describeDeadlineMs: 2_000, interestDeadlineMs: 1_500,
+  })();
+  await blind.nc.drain().catch(() => blind.nc.close());
+  check("a probe whose publishes the broker REFUSES is unestablishable, never silence",
+    blindProbe.state === "unestablishable", blindProbe);
+  check("...and it says the probe itself failed, so the operator repairs the credential and not the manager",
+    /the probe itself failed/.test(blindProbe.detail), blindProbe.detail);
+
+  console.log("11. the affirmative rail check is not just a timeout in disguise");
   check("the broker reports the corpse's rail GONE and the live manager's rail present",
     (await epProbeInstanceInterest(nc, SPACE, MANAGER_ENDPOINT, IID_CORPSE, caller, { deadlineMs: 2_000 })) === "gone" &&
     (await epProbeInstanceInterest(nc, SPACE, MANAGER_ENDPOINT, IID_LIVE, caller, { deadlineMs: 2_000 })) !== "gone");
