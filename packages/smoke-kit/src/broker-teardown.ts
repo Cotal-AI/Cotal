@@ -48,9 +48,26 @@
 import type { ChildProcess } from "node:child_process";
 import { rmSync } from "node:fs";
 
-/** The one minted token. A broker started through this helper is recognizable after its owner is
- *  SIGKILLed; a broker started around it is not, so a reaper is only ever as complete as migration. */
-export const SMOKE_BROKER_TOKEN = "cotal-smoke-broker-";
+/** The stable half of the token: what marks a store dir as a smoke broker's at all. */
+export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
+
+/**
+ * The minted token: the prefix plus THIS PROCESS'S PID, so the dir records not just "a smoke broker"
+ * but "whose". A broker started through this helper is recognizable after its owner is SIGKILLed; a
+ * broker started around it is not, so a reaper is only ever as complete as migration.
+ *
+ * THE PID IS HERE BECAUSE MARKING THE BROKER WAS NOT ENOUGH, and the gap was live rather than
+ * theoretical. A reaper matching the prefix alone claims every migrated suite's broker, not every
+ * LEAKED one, and two suites run concurrently on a shared box constantly. Reproduced: a second lane
+ * minting through this token and holding its broker with the owner still alive was listed for the
+ * kill by a prefix-only reaper. It would have SIGKILLed a live broker mid-run and reddened that lane
+ * with a diagnosis pointing at its own code, which is the "worse than no reaper" case exactly.
+ *
+ * Every call site keeps working unchanged, because this is still just a `mkdtemp` prefix. Sites that
+ * append their own tag after it still match, since the owner is parsed from the pid segment rather
+ * than from the whole name.
+ */
+export const SMOKE_BROKER_TOKEN = `${SMOKE_BROKER_PREFIX}${process.pid}-`;
 
 /**
  * Kill a broker and DO NOT RETURN until it is actually gone, so the caller's `rmSync` cannot race a

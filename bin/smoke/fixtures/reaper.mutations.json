@@ -1,47 +1,51 @@
 {
   "suite": "bin/smoke/reaper.smoke.ts",
-  "guard": "the reaper kills what carries the smoke token and leaves every other broker alone",
+  "guard": "the reaper kills a smoke broker only when its recorded owner is dead, and leaves every other broker alone",
   "command": "pnpm smoke:reaper",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/fixtures/reaper.mutations.json",
   "why": [
-    "THE OBVIOUS MUTATION IS DELIBERATELY NOT USED HERE, and the reason is worth more than the",
-    "mutation would have been. The natural way to prove the token filter is to delete it, so the",
-    "reaper claims every nats-server it can see. That mutation is correct in principle and dangerous",
-    "in practice: mutation-proof runs the real suite against the real machine, and on a developer box",
-    "that mutation does not fail a test, it kills every unrelated broker on the host. Measured on one",
-    "box while writing this: 15 live nats-server processes, of which the reaper claims 1. An",
-    "over-match mutation would have killed the other 14, several of them belonging to other people's",
-    "work. A test that damages the machine to prove a point is not a test worth running.",
+    "THE FIRST MUTATION IS THE ONE THIS FILE EXISTS FOR. An earlier version of this reaper matched the",
+    "token alone, and a tokened broker is not a leaked broker: the token records which suite minted the",
+    "tree, not that the suite is done with it. Two lanes run smokes on a shared box constantly, and the",
+    "prefix-only version was REPRODUCED listing a live lane's broker for the kill. It would have",
+    "SIGKILLed a running broker mid-suite and reddened that lane with a diagnosis pointing at its own",
+    "code. The untokened negative control could never have caught that, because the victim is tokened.",
+    "So the owner-liveness check is the load-bearing guard here, and disabling it must redden the",
+    "owner-alive control specifically.",
     "",
-    "SO THE FILTER IS MUTATED BY SWAPPING WHICH TOKEN IT SELECTS ON, not by removing it. That keeps",
-    "the blast radius inside this suite's own two fixture brokers while still grading exactly the",
-    "property under test: that the surviving broker survives BECAUSE of what its path says and not by",
-    "accident of ordering, timing, or the reaper simply killing the first thing it found. It flips",
-    "both controls at once, which is the point. A mutation that reddened only the positive control",
-    "would leave open that the reaper kills indiscriminately and the negative control never noticed.",
+    "A MUTATION CAN BE DANGEROUS TO RUN, WHICH IS ITSELF PART OF THE DESIGN. mutation-proof executes",
+    "the real suite against the real machine. The obvious mutation, deleting the prefix filter so the",
+    "reaper claims every nats-server it sees, is NOT used: measured on one box, it would kill 14",
+    "unrelated brokers rather than fail a test. Even the owner-check mutation below has a real blast",
+    "radius, since with it disabled the reaper claims any TOKENED broker regardless of owner, which is",
+    "precisely another lane's live broker. Before running this fixture, confirm no tokened broker on",
+    "the box belongs to anyone else (`reapSmokeBrokers({dryRun:true})` reporting ownedLive 0 with no",
+    "concurrent smoke run is the check). A test that damages the machine to prove a point is not a",
+    "test worth running, and that constraint shaped which mutations exist here rather than being an",
+    "excuse for having fewer.",
     "",
-    "THE SECOND MUTATION SEPARATES REPORTING FROM ACTING. The reaper both kills a process and returns",
-    "a list naming it, and those are two claims that a single green cell could conflate. Removing the",
-    "kill while leaving the bookkeeping intact reddens the positive control alone and leaves 'the",
-    "killed broker is named in the report' green, which is precisely the false green this file exists",
-    "to make impossible: a reaper that reports a clean sweep it never performed."
+    "THE SECOND MUTATION SEPARATES REPORTING FROM ACTING. The reaper both kills a process and returns a",
+    "list naming it, and a single green cell could conflate those. Removing the kill while leaving the",
+    "bookkeeping intact reddens the positive control alone and leaves 'the killed broker is named in",
+    "the report' green, which is exactly the false green this file exists to make impossible: a reaper",
+    "that reports a clean sweep it never performed."
   ],
   "mutations": [
     {
-      "name": "the filter selects on the control prefix instead of the smoke token, so the wrong broker is claimed",
+      "name": "the owner-liveness check is disabled, so a tokened broker is claimed while its owner is still running",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": "  const mine = rows.filter((r) => r.args.includes(SMOKE_BROKER_TOKEN));",
-      "replace": "  const mine = rows.filter((r) => r.args.includes(\"cotal-reaper-control-\"));",
-      "expectRed": "✗ FAIL: NEGATIVE CONTROL: the untokened broker is untouched",
-      "cell": "✗ FAIL: NEGATIVE CONTROL: the untokened broker is untouched"
+      "find": "    if (alive(Number(owner[1]))) { ownedLive++; continue; } // someone is still using it",
+      "replace": "    if (false) { ownedLive++; continue; }",
+      "expectRed": "✗ FAIL: NEGATIVE CONTROL: a tokened broker whose owner is ALIVE is untouched",
+      "cell": "✗ FAIL: NEGATIVE CONTROL: a tokened broker whose owner is ALIVE is untouched"
     },
     {
       "name": "the reaper reports the kill without performing it",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
       "find": "      process.kill(pid, \"SIGKILL\");",
       "replace": "      void pid;",
-      "expectRed": "✗ FAIL: POSITIVE CONTROL: the token-carrying broker is killed",
-      "cell": "✗ FAIL: POSITIVE CONTROL: the token-carrying broker is killed"
+      "expectRed": "✗ FAIL: POSITIVE CONTROL: the broker whose owner is DEAD is killed",
+      "cell": "✗ FAIL: POSITIVE CONTROL: the broker whose owner is DEAD is killed"
     }
   ]
 }

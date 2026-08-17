@@ -31,10 +31,13 @@
  */
 import { execFileSync } from "node:child_process";
 
-/** The token minted by `@cotal-ai/smoke-kit`. Duplicated as a literal on purpose: this file runs from
- *  the CI runner before any workspace build, so it must not depend on a built package. The smoke
- *  suite for this reaper asserts the two are equal, so the duplication cannot drift unnoticed. */
-export const SMOKE_BROKER_TOKEN = "cotal-smoke-broker-";
+/** The stable half of the token minted by `@cotal-ai/smoke-kit`. Duplicated as a literal on purpose:
+ *  this file runs from the CI runner before any workspace build, so it must not depend on a built
+ *  package. The smoke suite asserts the two are equal, so the duplication cannot drift unnoticed. */
+export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
+
+/** The owner's pid, as the kit stamps it into the store dir: `cotal-smoke-broker-<pid>-<random>`. */
+const OWNER_RE = /cotal-smoke-broker-(\d+)-/;
 
 /**
  * Every live `nats-server`, as `{ pid, args }`. POSIX only, via `ps`.
@@ -77,9 +80,25 @@ const alive = (pid) => {
 /**
  * Kill every `nats-server` whose argv carries the smoke token, and report what was seen.
  *
- * Returns `{ inspected, reaped, unclaimable, supported }`. `reaped` names the pids actually killed;
- * `unclaimable` counts the live brokers this reaper deliberately made no claim on, which is the
- * number that keeps a quiet run honest.
+ * A TOKENED BROKER IS NOT A LEAKED ONE. The token says which suite minted the tree; it does not say
+ * that suite is finished with it. Two lanes run smokes on a shared box constantly, so a reaper that
+ * matched the prefix alone would claim every migrated suite's broker, live owner included.
+ * Reproduced before this guard existed: a second lane holding its broker with the owner still alive
+ * was listed for the kill, which would have SIGKILLed a live broker mid-run and reddened that lane
+ * with a diagnosis pointing at its own code. The untokened negative control could never have caught
+ * it, because the victim is tokened. So the owner's liveness, not the token, decides.
+ *
+ * PID REUSE IS THE LIMIT AND IT FAILS SAFE. If the owner's pid has been recycled by an unrelated
+ * process, this reads the owner as alive and declines to reap, so a genuine orphan waits for a later
+ * sweep. The error is a delayed cleanup, never a wrong kill, which is the direction this has to fail.
+ *
+ * A tokened broker in the OLD format (no pid segment) is reported and NOT killed: its owner cannot be
+ * established, and an unknown owner is not the same as a dead one.
+ *
+ * Returns `{ inspected, reaped, ownedLive, unparseable, unclaimable, supported }`. `reaped` names the
+ * pids actually killed; `ownedLive` counts tokened brokers whose owner is still running; `unclaimable`
+ * counts every live broker this reaper deliberately made no claim on, which is the number that keeps
+ * a quiet run honest.
  *
  * `dryRun` returns the exact same set without signalling anything, so the claim a reaper makes can be
  * read before it is acted on. It is the honest way to answer "what would this kill on my machine",
@@ -87,23 +106,36 @@ const alive = (pid) => {
  */
 export function reapSmokeBrokers({ dryRun = false } = {}) {
   const rows = listNatsServers();
-  if (rows === undefined) return { inspected: 0, reaped: [], unclaimable: 0, supported: false };
+  if (rows === undefined) {
+    return { inspected: 0, reaped: [], ownedLive: 0, unparseable: 0, unclaimable: 0, supported: false };
+  }
 
-  const mine = rows.filter((r) => r.args.includes(SMOKE_BROKER_TOKEN));
+  const tokened = rows.filter((r) => r.args.includes(SMOKE_BROKER_PREFIX));
   const reaped = [];
-  for (const { pid, args } of mine) {
+  let ownedLive = 0, unparseable = 0;
+  for (const { pid, args } of tokened) {
+    const owner = OWNER_RE.exec(args);
+    if (!owner) { unparseable++; continue; } // pre-fix format: owner unknown, which is not owner dead
+    if (alive(Number(owner[1]))) { ownedLive++; continue; } // someone is still using it
     if (!alive(pid)) continue;
-    if (dryRun) { reaped.push({ pid, args }); continue; } // reports the exact set it WOULD kill
+    if (dryRun) { reaped.push({ pid, args, owner: Number(owner[1]) }); continue; }
     try {
       // SIGKILL, not SIGTERM. There is no tree to remove here, so nothing is racing a graceful
       // flush, and a broker that already ignored its owner's teardown has earned the uncatchable one.
       process.kill(pid, "SIGKILL");
-      reaped.push({ pid, args });
+      reaped.push({ pid, args, owner: Number(owner[1]) });
     } catch (e) {
       console.error(`smoke broker reaper: could not kill pid ${pid}: ${e.message}`);
     }
   }
-  return { inspected: rows.length, reaped, unclaimable: rows.length - mine.length, supported: true };
+  return {
+    inspected: rows.length,
+    reaped,
+    ownedLive,
+    unparseable,
+    unclaimable: rows.length - reaped.length,
+    supported: true,
+  };
 }
 
 /** One line when there is nothing to say, a named list when there is. */
@@ -113,7 +145,9 @@ export function reportReaped(label, result) {
     return;
   }
   if (result.reaped.length === 0) {
-    console.log(`  [reaper] no leaked smoke brokers after ${label} (${result.inspected} nats-server live, ${result.unclaimable} not claimable by token)`);
+    const owned = result.ownedLive > 0 ? `, ${result.ownedLive} owned by a live process` : "";
+    const old = result.unparseable > 0 ? `, ${result.unparseable} tokened with no owner recorded` : "";
+    console.log(`  [reaper] no leaked smoke brokers after ${label} (${result.inspected} nats-server live, ${result.unclaimable} not claimed${owned}${old})`);
     return;
   }
   console.log(`  [reaper] ✗ ${label} LEAKED ${result.reaped.length} broker(s) it had already been asked to own:`);
