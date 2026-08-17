@@ -65,6 +65,7 @@ import { CotalEndpoint, isReachable, mintLifecycleUid, type Part } from "@cotal-
 import { AguiEmitter, AguiEmitterHalted, aguiFrame, runFinished, runStarted } from "../src/agui.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0,
   fail = 0;
@@ -82,8 +83,25 @@ const OWNER = "local";
 const ACTOR = "aaa";
 const PRINCIPAL_KEY = `${OWNER}.${ACTOR}`;
 
-const root = mkdtempSync(join(tmpdir(), "agui-retry-dup-"));
+const root = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const procs: ChildProcess[] = [];
+// One release per broker, and NO store dir attached to any of them. That omission is the whole
+// decision, so it is written down rather than left to be inferred.
+//
+// This suite's own teardown is stronger than the helper's. It kills by pid, WAITS in a bounded
+// loop until every proc reports a terminal status, ASSERTS that as a cell, and only then removes
+// the tree, because the removal must not race a process still writing into it. The helper's reap
+// has no such wait: it kills and removes per entry in set order. So attaching `root` to any one
+// entry would let a signalled run delete the tree while later-iterated brokers are still dying,
+// reintroducing exactly the race the loop below exists to prevent. There is also no principled
+// choice of WHICH entry should carry it, and an arbitrary one is a design smell rather than a
+// detail.
+//
+// The consequence is deliberate: a signalled run kills every broker and LEAVES the tree. That is
+// not an oversight, it is the minted token doing its job. Ownership covers the processes; the
+// token covers the tree, by making it matchable to a reaper afterwards. Neither covers both, and
+// this suite is the one place where paying that price is cheaper than weakening the teardown.
+const releases: Array<() => void> = [];
 
 /**
  * Assert on the URL ACTUALLY DIALLED, before anything is dialled.
@@ -118,7 +136,9 @@ const startStandalone = async (tag: string): Promise<string> => {
   const port = await freePort();
   const conf = join(root, `${tag}.conf`);
   writeFileSync(conf, [`port: ${port}`, `server_name: ${tag}`, `jetstream { store_dir: "${join(root, tag)}" }`].join("\n"));
-  procs.push(spawn("nats-server", ["-c", conf], { stdio: "ignore" }));
+  const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+  procs.push(broker);
+  releases.push(teardownOnSignal(broker));
   const url = `nats://127.0.0.1:${port}`;
   for (let i = 0; i < 200; i++) {
     if (await isReachable(url)) return url;
@@ -145,7 +165,9 @@ const startCluster = async (tag: string): Promise<string> => {
       `  port: ${routePorts[i]}`,
       `  routes: [${routes}] }`,
     ].join("\n"));
-    procs.push(spawn("nats-server", ["-c", conf], { stdio: "ignore" }));
+    const broker = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+    procs.push(broker);
+    releases.push(teardownOnSignal(broker));
   }
   const url = `nats://127.0.0.1:${ports[0]}`;
   let up = false;
@@ -357,6 +379,8 @@ try {
   const alive = procs.filter((p) => p.exitCode === null && p.signalCode === null).length;
   c("teardown: every broker this suite started is dead before its scratch dir is removed", alive === 0, alive);
   rmSync(root, { recursive: true, force: true });
+  // Last, after the verified kill and the removal above have both finished.
+  for (const release of releases) release();
 }
 
 console.log(`agui-retry-duplicate smoke: ${ok} passed, ${fail} failed`);
