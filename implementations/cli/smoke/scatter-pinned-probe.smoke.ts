@@ -20,6 +20,11 @@
  * fast" is a correlation: something else could have ended the gather, and a suite that only ever
  * observes the fast path cannot tell.
  *
+ * AND THE ATTRIBUTION ITSELF IS A CELL (section 6). Naming the refused instance is only useful if
+ * the name is right: lifecycle tokens are variable-length, so one frozen id can be a strict prefix
+ * of another, and a refusal matched anywhere inside the subject text was charged to both. Section 6
+ * builds that pair and requires one refusal to stay one instance's.
+ *
  * Run: pnpm smoke:scatter-pinned-probe   (needs nats-server + node on PATH; boots its own JWT broker)
  */
 import { randomUUID } from "node:crypto";
@@ -45,7 +50,7 @@ import { Manager } from "../../manager/src/manager.js";
 import { pinnedLivenessProbe } from "../src/lib/control.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const EXPECTED_CELLS = 17; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered
+const EXPECTED_CELLS = 21; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered, +4 for section 6's prefix/superstring pair (review)
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -198,6 +203,35 @@ try {
   const armedMs = Date.now() - tArmed;
   check("WITH it, the gather ends as soon as the corpse is accounted for", armedMs < 1_000 && rArmed.missing.includes(IID_CORPSE), { armedMs, blindMs, missing: rArmed.missing });
   check("and no permission violation was raised on the granted connection", violations.every((v) => !v.includes(granted.caller.actor)), violations);
+
+  console.log("6. one refusal is ONE instance's refusal, even when another frozen id is its prefix");
+  // FOUND BY REVIEW, and it is a wrong ANSWER rather than a slow one. A lifecycle token is
+  // `[a-z0-9]{26,32}`, so one frozen id can be a strict prefix of another; attribution used to test
+  // whether the refused subject CONTAINED an id, and a single refusal on the longer rail was then
+  // charged to both. The operator is told the CLI could not ask about a manager it never published
+  // for, and that manager's row reads `probe-refused` on evidence from someone else's rail.
+  //
+  // The ids are FABRICATED and pinned in the credential, not registered: what is under test is the
+  // attribution of a broker refusal to a rail, which needs no instance behind it. The credential
+  // carries the SHORTER id's rail and not the longer one's, so the broker refuses exactly one probe
+  // and the shorter id's own probe can still be answered - by the broker, with the no-responders
+  // verdict its empty rail earns.
+  const PREFIX_ID = "p".repeat(26);
+  const LONGER_ID = `${PREFIX_ID}9`;
+  const pairConn = await openPinned([PREFIX_ID]);
+  const pairViolations: string[] = [];
+  const pair = pinnedLivenessProbe(pairConn.nc, {
+    space: SPACE, endpoint: MANAGER_ENDPOINT, caller: pairConn.caller,
+    pinned: new Set([PREFIX_ID, LONGER_ID]), probeDeadlineMs: 3_000, report: (l) => pairViolations.push(l),
+  });
+  await pair.probeLiveness(LONGER_ID);
+  check("the refusal of the LONGER id produces exactly ONE violation line, not one per id inside it",
+    pairViolations.length === 1, pairViolations);
+  check("...attributed to the instance whose rail was actually refused", pairViolations[0]?.includes(`instance ${LONGER_ID}:`), pairViolations);
+  check("...and that id's row says probe-refused (the attribution happened at all)", pair.livenessOf(LONGER_ID) === "probe-refused", pair.livenessOf(LONGER_ID));
+  const prefixVerdict = await pair.probeLiveness(PREFIX_ID);
+  check("THE POINT: the id that is a PREFIX of the refused one keeps its own verdict, from its own rail",
+    prefixVerdict === "gone" && pair.livenessOf(PREFIX_ID) === "gone", { prefixVerdict, row: pair.livenessOf(PREFIX_ID), pairViolations });
 } finally {
   for (const nc of conns) { try { await nc.drain(); } catch { /* ignore */ } }
   await live?.stop().catch(() => {});

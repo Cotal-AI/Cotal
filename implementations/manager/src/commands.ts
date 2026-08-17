@@ -310,8 +310,12 @@ async function runReconcileGate(args: ParsedArgs): Promise<void> {
  * TWO CREDENTIALS, because they are two different authorities and neither implies the other:
  *  - a `control-caller-privileged` instrument PINNED to the instance, which is what can ask the
  *    instance's own rail whether anything is there (the guard);
- *  - an `endpoint-serve-executor` pinned to the same instance, whose grants name exactly that
- *    registration's two records keys (the delete).
+ *  - an `endpoint-serve-executor` pinned to the same instance, which carries that registration's
+ *    two records keys (the delete). NAMED RESIDUAL: this is the existing registration profile, so
+ *    it also carries the endpoint's governance head and the rest of the serve-mint footprint —
+ *    wider than the two keys used here. It is minted locally by an operator who already holds the
+ *    space seed, is one-shot, and never leaves this command; narrowing the profile is a
+ *    `provision.ts` change with its own review.
  */
 async function runDeregisterInstance(args: ParsedArgs): Promise<void> {
   const v = args.values as Values;
@@ -424,7 +428,7 @@ const managerCommands: Command[] = [
     name: "deregister-instance",
     group: "Manager",
     summary:
-      "remove the service registration of an instance whose host is gone - refuses if it answers, so a live one is never removed [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>]",
+      "remove the service registration of an instance whose host is gone - removes only what the broker affirms gone (nothing subscribed on its rail), and refuses if it answers or is merely quiet [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>]",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space the instance is registered in (default: this folder's auth space)" },
       { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },

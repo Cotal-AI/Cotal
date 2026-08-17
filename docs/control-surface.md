@@ -143,9 +143,12 @@ its lease tears down fail-closed and deliberately does not deregister: it is not
 its own record at that point, and the incarnation that took the lease from it is.
 
 For the instance that cannot cooperate, an operator names it:
-`cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It refuses if
-the instance answers a describe, refuses if the probe could not run at all, and otherwise removes
-the record at the revision it read. Nothing sweeps the registry on an age threshold or on silence.
+`cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
+record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
+that instance's own rail. It refuses if the instance answers a describe, refuses if the probe could
+not run at all, and refuses if the instance is merely quiet, because a hung process still holds its
+subscriptions and is therefore not affirmed gone. Nothing sweeps the registry on an age threshold
+or on silence.
 An instance that is deregistered while it is merely wedged re-registers over the tombstone on its
 next start, which is what makes the operator's decision a recoverable one.
 

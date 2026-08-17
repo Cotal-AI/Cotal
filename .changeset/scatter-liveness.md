@@ -35,7 +35,9 @@ the publish returns normally, so a refused probe is silent and silence is what a
 looks like. Core cannot tell those apart because core does not know what the credential carries. So
 `epScatterService` forwards a caller-supplied hook and never invents one, and the CLI supplies a closure
 that returns `unknown` without publishing for any id outside its pinned set, and reports a refusal the
-broker raises anyway instead of letting it expire into a timeout. `cotal ps` freezes the class on its
+broker raises anyway instead of letting it expire into a timeout. That refusal is attributed to the
+instance its own subject names, parsed as an exact route token, so one refusal is never charged to a
+second frozen instance whose id happens to be a prefix of the refused one. `cotal ps` freezes the class on its
 first connection, re-mints an instrument pinned to exactly the frozen ids, and resolves and scatters on
 a second. `instancePinnedInstrumentCapabilities` accepts several ids as well as one; each still emits
 its own concrete rows, so no wildcard instance is minted and the existing boundary on instance
@@ -45,10 +47,14 @@ addressing is unchanged.
 `svc` spec and status keys, so an instance that was shut down leaves no row behind; a manager that loses
 its lease still tears down fail-closed and deliberately does not deregister, because at that point it is
 not the authority on its own record. For the host that cannot cooperate, `cotal deregister-instance
---instance <id>` removes the record: it asks the instance first and refuses if it answers, refuses if
-the probe could not run at all, and only then deletes both keys at the revisions it read. Nothing sweeps
-the registry on age or on silence. Registering over a deregistration tombstone now works on both keys,
-so a deregistered instance re-registers normally on its next start, with its epoch advancing.
+--instance <id>` removes the record, on the same evidence the scatter acts on and no weaker: it asks the
+instance first and refuses if it answers, refuses if the probe could not run at all, refuses if the
+instance is merely quiet, and deletes both keys at the revisions it read only when the broker affirms
+that nothing is subscribed on that instance's own rail. Silence is never the evidence, because a wedged
+process still holds its subscriptions and an unanswered describe is what a dead host, a hung one and a
+slow one all look like. A dead process holds no subscription, so a real corpse still deletes. Nothing
+sweeps the registry on age or on silence. Registering over a deregistration tombstone now works on both
+keys, so a deregistered instance re-registers normally on its next start, with its epoch advancing.
 
 **Rows split by what was actually established.** A silent instance already printed as registered with
 no answer rather than as unreachable. Now that a probe exists, the four cases behind that one sentence
@@ -66,4 +72,5 @@ never signalled.
 
 This does not help against an instance that is connected but not answering. A hung responder holds its
 subscriptions and is indistinguishable from a slow one, so it still costs the full deadline, which is
-the correct result. A scatter with no probe wired behaves exactly as before.
+the correct result, and the removal verb refuses it for the same reason rather than unregistering a
+process that is still running. A scatter with no probe wired behaves exactly as before.

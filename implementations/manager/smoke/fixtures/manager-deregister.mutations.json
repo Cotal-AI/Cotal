@@ -9,6 +9,20 @@
       "expectRed": "deregistering a LIVE manager is REFUSED because it answered"
     },
     {
+      "name": "PREDICTED KILLED (>=2 red) - THE SECURITY TRAP: the guard stops refusing an instance the broker did NOT affirm gone, so an operator deregisters a process that is hung rather than dead - it is still running, still holding its rail, and its registration is deleted out from under it",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "  if (probe.state === \"unknown\")",
+      "replace": "  if (false)",
+      "expectRed": "the verb REFUSES it: silence is not the evidence a record is removed on"
+    },
+    {
+      "name": "PREDICTED KILLED (>=2 red) - the probe classifies every unanswered describe as gone regardless of what the broker said about the rail, which is the pre-review guard: silence, not absence",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "      return interest === \"gone\"",
+      "replace": "      return true || interest === \"gone\"",
+      "expectRed": "a registration whose rail STILL HAS A SUBSCRIBER probes UNKNOWN, never gone"
+    },
+    {
       "name": "PREDICTED KILLED (1 red) - a probe that FAILED reads as a probe that went unanswered, so a refused publish or an unreachable broker is treated as a dead instance",
       "file": "implementations/manager/src/deregister-instance.ts",
       "find": "      if (!unansweredRequest(e)) return { state: \"unestablishable\", detail: `the probe itself failed: ${(e as Error).message}` };",

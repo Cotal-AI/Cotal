@@ -22,16 +22,23 @@
  * shipping a manager that can be stopped once and never started again — the first draft did exactly
  * that on the status key, and section 2 is what caught it.
  *
- * THE COUNT WAS PREDICTED AT 16 AND IS 23. Recorded rather than re-cut backwards. Five of the seven
- * came from the fixture refusing to build without them: the open-mesh restart pair (an auth-mesh
- * restart needs the delivery daemon as its eviction oracle, which is not what this suite is about),
- * the credential-boundary pair (the scatter's own credential turned out to be unable to delete,
- * which is the right answer and is now an assertion rather than an assumption), and the recovery
- * cell on the status key. The last two came from the mutation pass: section 9 established the
- * unestablishable verdict from a HAND-BUILT probe result, so nothing tested how the real probe
+ * THE COUNT WAS PREDICTED AT 16 AND IS 28. Recorded rather than re-cut backwards. Five of the first
+ * seven came from the fixture refusing to build without them: the open-mesh restart pair (an
+ * auth-mesh restart needs the delivery daemon as its eviction oracle, which is not what this suite
+ * is about), the credential-boundary pair (the scatter's own credential turned out to be unable to
+ * delete, which is the right answer and is now an assertion rather than an assumption), and the
+ * recovery cell on the status key. The next two came from the mutation pass: section 9 established
+ * the unestablishable verdict from a HAND-BUILT probe result, so nothing tested how the real probe
  * classifies a refusal, and a probe whose publishes are refused going quiet is precisely the input
- * that would delete a live manager's record. Section 10 produces that refusal for real. Every claim
- * in the original 16 is still asserted.
+ * that would delete a live manager's record. Section 10 produces that refusal for real.
+ *
+ * THE LAST FIVE ARE SECTION 12, and they came from review rather than from the fixture. The guard
+ * as first written passed on "asked, and nothing came back" — and silence is what a dead host, a
+ * WEDGED process and a slow one all look like. A reviewer produced an unanswered describe against a
+ * manager that was up, and the verb deleted a LIVE registration. The guard now removes a record
+ * only on the broker affirming nothing is subscribed on that instance's rail, section 12 is the
+ * hung shape built for real, and its last cell is the positive control that the corpse this whole
+ * change exists for still deletes. Every claim in the original 16 is still asserted.
  *
  * Run: pnpm smoke:manager-deregister   (needs nats-server + node on PATH; boots its own JWT broker)
  */
@@ -49,15 +56,15 @@ import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, recordsBucket,
   freezeExpectedSet, resolveService, scatterCommand, epProbeInstanceInterest,
-  instancePinnedInstrumentCapabilities,
+  instancePinnedInstrumentCapabilities, spacePrefix, endpointToken,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
-import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe } from "../src/deregister-instance.js";
+import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe, type InstanceProbe } from "../src/deregister-instance.js";
 
-const EXPECTED_CELLS = 23;
+const EXPECTED_CELLS = 28;
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -215,7 +222,7 @@ try {
   try {
     await deregisterEndpointInstance({
       kv: await new Kvm(nc).open(recordsBucket(SPACE)), endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE,
-      probeInstance: async () => ({ state: "silent", detail: "fixture: the guard is not what is under test here" }),
+      probeInstance: async () => ({ state: "gone", detail: "fixture: the guard is not what is under test here" }),
       log: () => {},
     });
   } catch (e) {
@@ -253,7 +260,7 @@ try {
     probeInstance: makeInstanceProbe(nc!, { space: SPACE, endpoint: MANAGER_ENDPOINT, instanceId: IID_CORPSE, caller, describeDeadlineMs: 2_000 }),
     log: () => {},
   }));
-  check("the probe found it SILENT rather than assuming it", report.probe.state === "silent", report.probe);
+  check("the probe found it GONE on the broker's own verdict rather than assuming it", report.probe.state === "gone", report.probe);
   check("...and the broker's own rail check is in the evidence the operator sees",
     /broker reports nothing subscribed/.test(report.probe.detail), report.probe.detail);
   check("the removal names the revisions it deleted, not just that it deleted", report.removedSpecRevision > 0 && report.removedStatusRevision !== undefined, report);
@@ -311,6 +318,67 @@ try {
   check("the broker reports the corpse's rail GONE and the live manager's rail present",
     (await epProbeInstanceInterest(nc, SPACE, MANAGER_ENDPOINT, IID_CORPSE, caller, { deadlineMs: 2_000 })) === "gone" &&
     (await epProbeInstanceInterest(nc, SPACE, MANAGER_ENDPOINT, IID_LIVE, caller, { deadlineMs: 2_000 })) !== "gone");
+
+  console.log("12. SILENCE IS NOT DEATH: a registration whose rail still holds a subscriber is REFUSED");
+  // THE STATE UNDER TEST, and the one a reviewer used to delete a live registration: an unanswered
+  // describe is what a dead host, a WEDGED process and a slow one all look like. A hung process
+  // holds every subscription it registered, so the broker cannot affirm its rail empty - and a verb
+  // that removed a record on silence would unregister a process that is still running, out from
+  // under an operator who cannot see it.
+  //
+  // THE FIXTURE IS THAT SHAPE FOR REAL, never an injected verdict: a real registration, its serving
+  // connection dropped, and a subscriber standing on its `inst` rail that answers nothing. It runs
+  // on the OPEN mesh for the reason section 2 does - the credential system is not the variable in
+  // this classification (sections 5 and 6 prove the auth-mesh credential path end to end), and only
+  // an open mesh lets a stranger hold the subscription that a hung process's own connection holds.
+  const hungRoot = mkRoot("hung");
+  rmSync(join(hungRoot, ".cotal", "auth"), { recursive: true, force: true });
+  recordMesh({ space: openSpace, server: OPEN_SERVERS, root: hungRoot, mode: "open", ts: new Date().toISOString() });
+  const hungNc = await connect({ servers: OPEN_SERVERS, maxReconnectAttempts: 0 });
+  let hung: InstanceType<typeof Manager> | undefined = new Manager({ space: openSpace, servers: OPEN_SERVERS, runtime: "pty", workspaceRoot: hungRoot });
+  await hung.start();
+  const IID_HUNG = (hung as unknown as MgrPriv).managerInstanceId;
+  await ((hung as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  await wait(500);
+  const hungCaller: EpCaller = { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() };
+  const hungKv = await new Kvm(hungNc).open(recordsBucket(openSpace));
+  const hungFrozen = async (): Promise<string[]> =>
+    (await freezeExpectedSet(await jetstreamManager(hungNc, { checkAPI: false }), openSpace, MANAGER_ENDPOINT)).map((f) => f.instanceId);
+  const hungProbe = (): (() => Promise<InstanceProbe>) => makeInstanceProbe(hungNc, {
+    space: openSpace, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, caller: hungCaller,
+    describeDeadlineMs: 2_000, interestDeadlineMs: 1_500,
+  });
+  // The wedged process's own subscription, standing in for it: registered on the instance's rail,
+  // answering nothing. `>` is the same span the serve connection held.
+  const holding = hungNc.subscribe(`${spacePrefix(openSpace)}.ep.inst.${endpointToken(MANAGER_ENDPOINT)}.${IID_HUNG}.>`, { callback: () => {} });
+  await wait(200);
+  check("a registration whose rail STILL HAS A SUBSCRIBER probes UNKNOWN, never gone", (await hungProbe()()).state === "unknown");
+  let refusedHung: InstanceDeregisterRefused | undefined;
+  try {
+    await deregisterEndpointInstance({ kv: hungKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, probeInstance: hungProbe(), log: () => {} });
+  } catch (e) {
+    refusedHung = e as InstanceDeregisterRefused;
+  }
+  check("the verb REFUSES it: silence is not the evidence a record is removed on",
+    refusedHung?.condition === "instance-not-affirmed-gone", refusedHung?.message);
+  check("...and it prints what was observed, so the operator repairs the process and not the record",
+    /slow or hung, not gone, and NOTHING WAS REMOVED/.test(refusedHung?.message ?? ""), refusedHung?.message?.slice(0, 200));
+  check("THE POINT: the registration of a process that is still running is untouched", (await hungFrozen()).includes(IID_HUNG), IID_HUNG);
+  // THE POSITIVE CONTROL, and it is what keeps the refusal above from being a verb that refuses
+  // everything: the ONLY thing that changes is the subscription. Same command, same record, same
+  // credential - and the corpse this whole change exists for still deletes.
+  holding.unsubscribe();
+  await wait(300);
+  const nowGone = await deregisterEndpointInstance({ kv: hungKv, endpoint: MANAGER_ENDPOINT, instanceId: IID_HUNG, probeInstance: hungProbe(), log: () => {} });
+  // This delete empties the open mesh's class, and the freeze REFUSES to represent an empty class
+  // (§13.5: an empty registry is never an empty scatter success) - so "not a member" is read the
+  // same way section 1 reads it, and the removal itself is asserted on the revisions it reports.
+  const stillFrozen = await hungFrozen().then((ids) => ids.includes(IID_HUNG)).catch(() => false);
+  check("with the subscription gone, the SAME command on the SAME record removes it",
+    nowGone.probe.state === "gone" && nowGone.removedSpecRevision > 0 && !stillFrozen, { probe: nowGone.probe, stillFrozen });
+  await hung.stop().catch(() => {});
+  hung = undefined;
+  await hungNc.drain().catch(() => hungNc.close());
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
   await live?.stop().catch(() => {});

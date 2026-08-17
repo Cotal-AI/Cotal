@@ -9,6 +9,7 @@ import {
   instancePinnedInstrumentCapabilities,
   invokeCommand,
   mintCreds,
+  parseEpSubject,
   respondedButUnbound,
   unansweredRequest,
   registryReadFailed,
@@ -25,7 +26,7 @@ import {
   type Profile,
   type SpaceAuth,
 } from "@cotal-ai/core";
-import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { PermissionViolationError, connect, type NatsConnection } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
   authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
@@ -417,6 +418,23 @@ async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (
   }
 }
 
+/** The instance a REFUSED SUBJECT names, or `undefined` when that subject is not one of this
+ *  probe's requests at all.
+ *
+ *  The id is read as a whole subject TOKEN, through the same §13.9 grammar parser that built the
+ *  subject, and never matched inside the text. Lifecycle tokens are `[a-z0-9]{26,32}`, so one
+ *  frozen id can be a PREFIX of another (26 chars and the same 26 plus a suffix are both legal),
+ *  and a substring test then attributes one broker refusal to two instances: the operator is told
+ *  the CLI could not ask about a manager it never published for, and that instance's probe settles
+ *  as `probe-refused` on evidence that belongs to a different rail. Parsing removes the class of
+ *  mistake rather than one instance of it: the endpoint and the route mode must match too, so a
+ *  violation on any other plane, endpoint, or route is not this probe's and is not attributed. */
+function probedInstanceOf(subject: string, endpoint: string): string | undefined {
+  const parsed = parseEpSubject(subject);
+  if (parsed === null || parsed.plane !== "request" || parsed.route !== "inst") return undefined;
+  return parsed.endpoint === endpoint ? parsed.instanceId : undefined;
+}
+
 /** Watch a connection's status stream for the broker's own PERMISSION VIOLATIONS and attribute each
  *  to the instance whose rail it names.
  *
@@ -425,13 +443,21 @@ async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (
  *  does not fail, it goes quiet, and quiet is exactly what a live-but-slow instance looks like. The
  *  whole probe would then read as `unknown`, the deadline would be paid in full, and the operator
  *  would be told the manager was slow when the truth was that this CLI never asked. So the
- *  violation is caught, attributed by the instance id inside the subject, reported on stderr once,
- *  and used to settle that probe immediately instead of letting it expire.
+ *  violation is caught, attributed to the instance its subject names, reported on stderr once, and
+ *  used to settle that probe immediately instead of letting it expire.
  *
- *  Attribution is by SUBSTRING of the frozen ids, deliberately: the violation's text is the
- *  broker's, not ours, and a lifecycle token is long and unique enough that its appearance in a
- *  refused subject identifies the instance without parsing a message format we do not own. */
-function watchProbeRefusals(nc: NatsConnection, ids: readonly string[], report: (line: string) => void): { refused: (id: string) => Promise<void>; wasRefused: (id: string) => boolean } {
+ *  ATTRIBUTION IS STRUCTURAL, not textual. The client types a permission violation as
+ *  `PermissionViolationError` and carries the refused SUBJECT as a field, so nothing here parses
+ *  the broker's prose: the subject goes through {@link probedInstanceOf} and yields one exact id or
+ *  none. NAMED RESIDUAL: a connection error the client does not type as a permission violation is
+ *  not attributed, and that probe expires into `unknown` at its budget — the behaviour that existed
+ *  before this watch, which is slower and never wrong. */
+function watchProbeRefusals(
+  nc: NatsConnection,
+  what: { endpoint: string; ids: readonly string[] },
+  report: (line: string) => void,
+): { refused: (id: string) => Promise<void>; wasRefused: (id: string) => boolean } {
+  const ids = new Set(what.ids);
   const settle = new Map<string, () => void>();
   const already = new Set<string>();
   const pending = new Map<string, Promise<void>>();
@@ -448,14 +474,13 @@ function watchProbeRefusals(nc: NatsConnection, ids: readonly string[], report: 
     try {
       for await (const s of nc.status()) {
         if (s.type !== "error") continue;
-        const text = String((s as { error?: Error }).error?.message ?? "");
-        if (!/permission|authorization/i.test(text)) continue;
-        for (const id of ids) {
-          if (!text.includes(id) || already.has(id)) continue;
-          already.add(id);
-          report(`! the broker refused this command's liveness probe for manager instance ${id}: ${text}`);
-          settle.get(id)?.();
-        }
+        const err = (s as { error?: unknown }).error;
+        if (!(err instanceof PermissionViolationError)) continue;
+        const id = probedInstanceOf(err.subject, what.endpoint);
+        if (id === undefined || !ids.has(id) || already.has(id)) continue;
+        already.add(id);
+        report(`! the broker refused this command's liveness probe for manager instance ${id}: ${err.message}`);
+        settle.get(id)?.();
       }
     } catch {
       /* the connection closed; the scatter is over and there is nothing left to attribute */
@@ -503,7 +528,7 @@ export function pinnedLivenessProbe(
 } {
   const deadlineMs = opts.probeDeadlineMs ?? PROBE_DEADLINE_MS;
   const report = opts.report ?? ((line: string) => console.error(c.dim(line)));
-  const refusals = watchProbeRefusals(nc, [...opts.pinned], report);
+  const refusals = watchProbeRefusals(nc, { endpoint: opts.endpoint, ids: [...opts.pinned] }, report);
   const verdicts = new Map<string, ScatterInstanceLiveness>();
   return {
     probeLiveness: async (instanceId: string): Promise<EpInstanceLiveness> => {

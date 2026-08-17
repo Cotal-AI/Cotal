@@ -11,14 +11,14 @@
     {
       "name": "PREDICTED KILLED (>=1 red) - a refused probe stops settling, so the gather waits out the broker's refusal as if it were an instance thinking about it, which is the invisible failure this whole layer exists to prevent",
       "file": "implementations/cli/src/lib/control.ts",
-      "find": "          settle.get(id)?.();",
+      "find": "        settle.get(id)?.();",
       "replace": "",
       "expectRed": "and the row says the probe was REFUSED, distinct from an instance that stayed silent"
     },
     {
       "name": "PREDICTED KILLED (1 red) - the refusal is no longer announced, so an operator sees a slow command and no reason for it",
       "file": "implementations/cli/src/lib/control.ts",
-      "find": "          report(`! the broker refused this command's liveness probe for manager instance ${id}: ${text}`);",
+      "find": "        report(`! the broker refused this command's liveness probe for manager instance ${id}: ${err.message}`);",
       "replace": "",
       "expectRed": "the broker's refusal is REPORTED, not left to expire into silence"
     },
@@ -28,6 +28,13 @@
       "find": "      verdicts.set(instanceId, verdict === \"gone\" ? \"gone\" : refusals.wasRefused(instanceId) ? \"probe-refused\" : \"unknown\");",
       "replace": "      verdicts.set(instanceId, verdict === \"gone\" ? \"gone\" : \"unknown\");",
       "expectRed": "and the row says the probe was REFUSED, distinct from an instance that stayed silent"
+    },
+    {
+      "name": "PREDICTED KILLED (>=2 red) - attribution goes back to matching an id ANYWHERE in the refused subject, so one broker refusal is charged to every frozen id that is a prefix of the refused one and that instance's row reads probe-refused on another rail's evidence",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "        const id = probedInstanceOf(err.subject, what.endpoint);\n        if (id === undefined || !ids.has(id) || already.has(id)) continue;\n        already.add(id);\n        report(`! the broker refused this command's liveness probe for manager instance ${id}: ${err.message}`);\n        settle.get(id)?.();",
+      "replace": "        for (const id of ids) {\n          if (!err.subject.includes(id) || already.has(id)) continue;\n          already.add(id);\n          report(`! the broker refused this command's liveness probe for manager instance ${id}: ${err.message}`);\n          settle.get(id)?.();\n        }",
+      "expectRed": "the refusal of the LONGER id produces exactly ONE violation line, not one per id inside it"
     },
     {
       "name": "PREDICTED KILLED (>=1 red) - an id that was never handed to the hook reports as an ordinary silent instance rather than as un-asked, so a fact about the command is printed as a fact about the instance",
