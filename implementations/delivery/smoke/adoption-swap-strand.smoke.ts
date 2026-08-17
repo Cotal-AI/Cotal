@@ -12,7 +12,7 @@
  * succeeded. The fix moves `scheduleResidentSwap()` to AFTER `Promise.all` settles in
  * `handleDeliveryAdmin`, immediately before the reply is returned+responded.
  *
- * This isolates that exact timing with REAL nats connections (the shape ss-rev-engineer used to prove
+ * This isolates that exact timing with REAL nats connections (the shape review used to prove
  * the strand): a responder receives a request and either arms `nc.reconnect()` BEFORE responding (the
  * pre-fix pattern) or responds first and arms it AFTER (the fix), with a slow "other proof" window in
  * between. The requester uses the manager's 15s bound.
