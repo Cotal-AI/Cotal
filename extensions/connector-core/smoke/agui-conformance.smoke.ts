@@ -333,6 +333,34 @@ try {
 c("a synthesized 3-turn sequence brackets cleanly", bracketErr === "", bracketErr);
 c("and the machine reports itself closed at the end", brackets.open === false);
 
+// RUN_ERROR CLOSES A RUN, AND ONLY THIS EXERCISES IT. Every sequence above ends in RUN_FINISHED, so
+// the machine's RUN_ERROR arm was reachable by the mapped-subset table and reached by nothing:
+// deleting it left this suite fully green. A turn that ends in an error is a turn, and if the arm
+// were dropped the event would fall to `default` and be refused as unmapped, so a real error would
+// look like a vocabulary violation to every consumer.
+let errCloseErr = "";
+const errBrackets = new AguiBrackets();
+try {
+  errBrackets.accept(runStarted({ threadId: "sess-e", runId: "turn-e", timestamp: TS }));
+  errBrackets.accept(textMessageStart({ messageId: "m-e", timestamp: TS }));
+  errBrackets.accept(textMessageEnd({ messageId: "m-e", timestamp: TS }));
+  errBrackets.accept(runError({ message: "boom", timestamp: TS, code: "E1" }));
+  errBrackets.assertClosed();
+} catch (e) { errCloseErr = (e as Error).message; }
+c("a run that ends in RUN_ERROR closes cleanly, and the machine reports itself closed",
+  errCloseErr === "" && errBrackets.open === false, errCloseErr);
+
+// The inverse, so the cell above cannot pass against a machine that simply ignores RUN_ERROR: an
+// error must refuse to close over ids it left open, exactly as RUN_FINISHED does.
+refuses("RUN_ERROR while a tool call is still open is refused, like any other close",
+  () => {
+    const b = new AguiBrackets();
+    b.accept(runStarted({ threadId: "sess-e2", runId: "turn-e2", timestamp: TS }));
+    b.accept(toolCallStart({ toolCallId: "tc-e2", toolCallName: "read", timestamp: TS }));
+    b.accept(runError({ message: "boom", timestamp: TS, code: "E1" }));
+  },
+  /while still open/);
+
 // THE PROPERTY THAT MATTERS FOR SPLIT FRAMES: a frame is NOT required to be self-bracketed, because
 // an oversized frame splits on event boundaries with each part carrying its own seq. A machine that
 // demanded per-frame balance would forbid a split the plan mandates — so this feeds ONE turn as two
@@ -351,6 +379,18 @@ try {
   c("mid-split, the machine reports the run still OPEN", splitBrackets.open === true);
   c("mid-split, the reasoning id opened in the FIRST frame is still outstanding",
     splitBrackets.snapshot().reasoning.join(",") === "th9#0", splitBrackets.snapshot());
+  // THE RESTART, DRIVEN RATHER THAN DESCRIBED. `snapshot()` and `restore()` are the pair the WAL
+  // persists so a mid-turn restart continues instead of refusing its first event, and until this
+  // cell existed the claim was a story: deleting a whole id set from `restore` left this suite
+  // green. So the second frame is fed to a machine REBUILT from the first machine's snapshot, and
+  // it must finish the turn that the original opened.
+  const resumed = AguiBrackets.restore(splitBrackets.snapshot());
+  c("a machine RESTORED from a snapshot carries the outstanding reasoning id across the restart",
+    resumed.snapshot().reasoning.join(",") === "th9#0" && resumed.open === true, resumed.snapshot());
+  for (const e of splitB) resumed.accept(e);
+  resumed.assertClosed();
+  c("and the restored machine closes the turn the original opened", resumed.open === false);
+
   for (const e of splitB) splitBrackets.accept(e);
   splitBrackets.assertClosed();
 } catch (e) { splitErr = (e as Error).message; }
@@ -524,6 +564,16 @@ const frame = aguiFrame({ threadId: "sess-1", runId: "turn-1", epoch: "ep-1", se
 c("a frame declares its kind and protocol", frame.kind === AGUI_FRAME_KIND && frame.protocol === AGUI_PROTOCOL,
   [frame.kind, frame.protocol]);
 c("the protocol string names the pinned version", AGUI_PROTOCOL === "ag-ui/0.0.57", AGUI_PROTOCOL);
+
+// THE WIRE KIND IS PINNED TO A LITERAL, NOT COMPARED WITH ITSELF. Every other cell here reads
+// `AGUI_FRAME_KIND` on both sides, so renaming the constant kept the whole suite green while the
+// value that identifies a frame ON THE WIRE changed underneath it. That is the vacuous-parity shape:
+// an assertion whose two sides move together tests nothing. `ag-ui.frame` is a value consumers key
+// on and a value already written into a published protocol document, so it is spelled out ONCE here
+// and any change to it must come through this line.
+c("the frame's wire kind is the literal `ag-ui.frame`", AGUI_FRAME_KIND === "ag-ui.frame", AGUI_FRAME_KIND);
+c("and a built frame carries that literal, not merely the constant",
+  aguiFrame({ threadId: "t", runId: "r", epoch: "e", seq: 0, events: turn(1) }).kind === "ag-ui.frame");
 c("seq 0 is legal — the first frame of a writer is not a missing frame", frame.seq === 0);
 
 refuses("a frame with no events is refused rather than published as a gap-free no-op",
@@ -541,14 +591,17 @@ refuses("an empty threadId is refused", () => aguiFrame({ threadId: "", runId: "
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 7. TWO PRINCIPALS THROUGH ONE CHANNEL STAY SEPARATE — AT THE ENVELOPE LAYER
 //
-//    ⚠️ Read the header warning before reading these cells. This is NOT channel isolation. That is
-//    a scope statement, not a statement about the tree: channel isolation DOES exist at this commit
-//    — the channel keys on the principal (`events.<owner>.<actor>`) and the header names the three
-//    suites that prove it. This comment used to say isolation "does not exist at this commit",
-//    which the re-key made false and which no cell here could catch, because a comment asserting
-//    something outside its own function is a test nobody wrote. What IS asserted below is the
-//    envelope half, which survives the re-key: two writers sharing one subject remain attributable,
-//    because every frame carries its own writer identity.
+//    ⚠️ Read the header warning before reading these cells. This is NOT channel isolation, and at
+//    this commit there is no channel derivation in the tree to be isolated: `transcriptChannel` is
+//    still the only channel convention here. What IS asserted below is the envelope half, and it is
+//    the half that survives whatever the channel is later keyed on: two writers sharing one subject
+//    remain attributable, because every frame carries its own writer identity.
+//
+//    THIS COMMENT HAS BEEN WRONG IN BOTH DIRECTIONS ALREADY, WHICH IS THE POINT. It once claimed
+//    isolation did not exist when it did, and then claimed it did when it does not, and no cell here
+//    could catch either, because a comment asserting something outside its own function is a test
+//    nobody wrote. Grade it against the tree before trusting it, and when the channel lands, this is
+//    one of the two places to correct, not one.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 const alpha = aguiFrame({ threadId: "sess-alpha", runId: "turn-1", epoch: "epoch-alpha", seq: 0, events: turn(1) });
 const beta  = aguiFrame({ threadId: "sess-beta",  runId: "turn-1", epoch: "epoch-beta",  seq: 0, events: turn(1) });

@@ -63,6 +63,27 @@
       "find": "    type: AGUI_EVENT_TYPE.TOOL_CALL_END,\n    toolCallId: o.toolCallId,\n    timestamp: o.timestamp,\n    ...(o.cotal ? { cotal: o.cotal } : {}),",
       "replace": "    type: AGUI_EVENT_TYPE.TOOL_CALL_END,\n    toolCallId: o.toolCallId,\n    timestamp: o.timestamp,",
       "expectRed": "the `cotal` key SURVIVES the parse rather than being stripped"
+    },
+    {
+      "name": "M19 the RUN_ERROR arm of the close branch is dropped, so a run that ends in an error is refused as unmapped instead of closing",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (t === AGUI_EVENT_TYPE.RUN_FINISHED || t === AGUI_EVENT_TYPE.RUN_ERROR) {",
+      "replace": "    if (t === AGUI_EVENT_TYPE.RUN_FINISHED) {",
+      "expectRed": "a run that ends in RUN_ERROR closes cleanly, and the machine reports itself closed"
+    },
+    {
+      "name": "M20 restore drops the reasoning id set, so a mid-turn restart silently loses what the WAL persisted",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    for (const id of s.reasoning) b.reasoning.add(id);",
+      "replace": "",
+      "expectRed": "a machine RESTORED from a snapshot carries the outstanding reasoning id across the restart"
+    },
+    {
+      "name": "M21 the frame is built with a kind that is not the wire literal, which every self-comparing cell accepts",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  return {\n    kind: AGUI_FRAME_KIND,\n    protocol: AGUI_PROTOCOL,",
+      "replace": "  return {\n    kind: \"ag-ui.frame.v2\" as typeof AGUI_FRAME_KIND,\n    protocol: AGUI_PROTOCOL,",
+      "expectRed": "and a built frame carries that literal, not merely the constant"
     }
   ]
 }

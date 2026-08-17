@@ -71,5 +71,25 @@ export const AGUI_EVENT_TYPE = Object.freeze({
  * is actively failing to parse.
  */
 export function isAguiFramePart(part: unknown): boolean {
-  return typeof part === "object" && part !== null && (part as { kind?: unknown }).kind === AGUI_FRAME_KIND;
+  if (typeof part !== "object" || part === null) return false;
+  // READING A PROPERTY CAN THROW, AND "NEVER THROWS" HAS TO SURVIVE THAT TO BE A PROMISE. A getter
+  // or a Proxy trap runs arbitrary code on a plain `.kind`, and this predicate is called on every
+  // part of every message a surface renders, so one hostile object would take the surface down over
+  // somebody else's mail.
+  //
+  // STATED HONESTLY: no wire input can be such an object. Parts arrive through `JSON.parse`, which
+  // produces plain data with no accessors, so this is not a live attack being defended. It is a
+  // signature taking `unknown` being made to mean it, because a function that accepts `unknown` and
+  // throws on some of it is a trap for the next caller, and the contract this file implements says
+  // "never throws" in those words.
+  //
+  // Returning `false` here is not a silent degrade, which is the thing this project refuses: `false`
+  // is the correct routing answer for an object whose kind cannot be read, and the loud half of the
+  // pair is `parseAguiFrame`, which refuses by name. Routing quietly and validating loudly is the
+  // whole reason these are two functions.
+  try {
+    return (part as { kind?: unknown }).kind === AGUI_FRAME_KIND;
+  } catch {
+    return false;
+  }
 }
