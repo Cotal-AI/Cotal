@@ -336,6 +336,14 @@ function proveOne(m, opts) {
     // does not retract it. Declaring a `completionMarker` says "in THIS suite, a run that did not
     // finish is not evidence I want counted", which is a stricter bargain a suite opts into. With no
     // marker declared, grading is exactly main's, so the pinned cell keeps its meaning.
+    //
+    // THE MARKER MUST BE A LINE THE SUITE PRINTS WHETHER IT PASSES OR FAILS — a counting suite's
+    // summary line, not its success banner. Measured the wrong way round first: pointed at this
+    // tool's own self-test with the marker set to `MUTATION-PROOF SELF-TEST PASSED`, every genuine
+    // kill graded INCONCLUSIVE, because a fail-fast suite exits at the first red and a success
+    // banner is by construction the one line a killed run never reaches. A success marker inverts
+    // this check into a machine for discarding exactly the evidence it was added to protect. A
+    // fail-fast suite with no line common to both outcomes should not declare one at all.
     const marker = m.completionMarker ?? opts.completionMarker;
     if (marker !== undefined && !r.output.includes(marker)) {
       return {
