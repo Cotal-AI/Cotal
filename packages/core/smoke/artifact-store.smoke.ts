@@ -34,11 +34,13 @@ import {
   ARTIFACT_STORE_MAX_BYTES,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const SPACE = "artstore";
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-artstore-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 const servers = `nats://127.0.0.1:${PORT}`;
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -254,6 +256,7 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\nartifact-store: ${ok} passed, ${fail} failed`);
