@@ -23,15 +23,17 @@ import { execSync } from "node:child_process";
 /**
  * The config list is DISCOVERED from the tree, never a remembered list of directories: a config
  * that moves would otherwise drop out of both numerator and denominator at once, leaving a ratio
- * that is still plausible and no longer about the same suites.
+ * that is still plausible and no longer about the same suites. The pattern is any `mutations/`
+ * directory rather than `smoke/mutations/`, because a config that grades a TOOL sits beside the
+ * tool and a pattern keyed on where configs usually live cannot see the one that lives elsewhere.
  */
 const args = process.argv.slice(2);
 const configs = args.length
   ? args
-  : execSync("git ls-files '*/smoke/mutations/*.json'", { encoding: "utf8" }).split("\n").filter(Boolean);
+  : execSync("git ls-files '*mutations/*.json'", { encoding: "utf8" }).split("\n").filter(Boolean);
 
 if (configs.length === 0) {
-  console.error("no mutation configs found under any smoke/mutations/ directory");
+  console.error("no mutation configs found under any mutations/ directory");
   process.exit(1);
 }
 
