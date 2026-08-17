@@ -1,0 +1,73 @@
+{
+  "suite": "implementations/manager/smoke/events-grant-acl.smoke.ts",
+  "guard": "the AG-UI event grant names the principal the manager allocated, is minted only when the launch armed the plane, and is carried forward, arming included, by the record a restart reads",
+  "command": "pnpm smoke:events-grant",
+  "completionMarker": "EVENTS-GRANT/ACL SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/events-grant-acl.json",
+  "why": [
+    "The failure this guard exists for is quiet in every direction that matters. A grant keyed on the",
+    "display name is a well-formed subject that parses back to a well-formed principal, so nothing",
+    "downstream rejects it; it simply authorizes two agents onto one stream the first time the manager",
+    "auto-numbers a collision. A grant minted unconditionally looks identical to a correct one on any",
+    "agent that did arm. And a record that carries the channel but drops the arming flag brings a",
+    "session back holding publish rights it will never use, which reads as a working system with an",
+    "empty panel.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the manager by relative source path (../src/manager.js), so",
+    "the bytes mutated are the bytes graded: no dist in the path, no build in the command. Its",
+    "package-name imports are core's own vocabulary (eventChannel, principalKey, DEV_OWNER), which is",
+    "the point of two cells here, and is not what any mutation below touches.",
+    "",
+    "NOT PROVED HERE, named rather than implied. The suite reads the preservation inventory; it does",
+    "not run the resume rail. That is deliberate and it is a real limit: a resume ADOPTS the",
+    "credential the spawn wrote and refuses when the adopted authority stops matching the inventory,",
+    "so what a restart can lose is the record, which is what these cells read. A defect in the resume",
+    "rail's own re-launch would not be caught here."
+  ],
+  "mutations": [
+    {
+      "name": "G1 key the grant on the display name, the mistake the whole derivation exists to prevent",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
+      "replace": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: name })];",
+      "expectRed": "the display name does NOT appear in the granted channel",
+      "cell": "the display name does NOT appear in the granted channel",
+      "note": "The name is in scope at this line and reads as the obvious identifier, which is exactly why this is the authoring error to fence. Every other positive cell about the channel would still pass a prefix or round-trip test on the result."
+    },
+    {
+      "name": "G2 mint the grant for every spawn, armed or not",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
+      "replace": "allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
+      "expectRed": "no event channel is granted when events are off",
+      "cell": "no event channel is granted when events are off",
+      "note": "An unconditional grant satisfies every cell about the armed agent. Only the unarmed sibling sees it."
+    },
+    {
+      "name": "G3 no grant at all",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
+      "replace": "void events;",
+      "expectRed": "exactly one event channel is granted",
+      "cell": "exactly one event channel is granted"
+    },
+    {
+      "name": "G4 the restart record keeps the channel but drops the arming",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "events: a.launch.events,",
+      "replace": "events: false,",
+      "expectRed": "the inventory carries the arming flag, not just the grant",
+      "cell": "the inventory carries the arming flag, not just the grant",
+      "note": "The half of a restart that leaves no visible damage: the resumed session still holds the grant, connects fine, and publishes nothing."
+    },
+    {
+      "name": "G5 the refusal keeps the reserved name",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (events && !connector.eventChannel) {\n      this.reserved.delete(name); // release the just-reserved name on this fail-fast path",
+      "replace": "    if (events && !connector.eventChannel) {",
+      "expectRed": "the refusal releases the reserved name",
+      "cell": "the refusal releases the reserved name",
+      "note": "A leaked reserve is silent: the next spawn of that persona is auto-numbered and nothing says why."
+    }
+  ]
+}
