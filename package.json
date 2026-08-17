@@ -99,6 +99,7 @@
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
     "smoke:opencode-coop": "tsx extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
     "smoke:opencode-transcript": "tsx extensions/connector-opencode/smoke/transcript-mirror.smoke.ts",
+    "smoke:opencode-boot-prompt": "tsx extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
     "smoke:attach": "tsx implementations/manager/smoke/attach.smoke.ts",
     "smoke:mesh-attach": "tsx implementations/manager/smoke/mesh-attach.smoke.ts",
     "smoke:mesh-attach-plane": "tsx implementations/manager/smoke/mesh-attach-plane.smoke.ts",

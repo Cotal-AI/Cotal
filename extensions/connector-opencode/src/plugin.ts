@@ -99,6 +99,13 @@ export const cotal: Plugin = async () => {
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let interruptIntent: { sessionID?: string; expires: number } | undefined;
+  let stopping = false; // dispose/shutdown ran — stop waiting on anything that may never arrive
+  // The auto-submitted first turn (`cotal spawn --prompt`), handed over by the connector in the
+  // child env. Undelivered, it HOLDS THE FLOOR in drive(): peer traffic that lands during boot stays
+  // buffered (completeTurn drives it when the boot turn ends), so the operator's prompt is genuinely
+  // this session's first turn rather than a batch that raced it. Cleared by the one drive that
+  // carries it, so no later readiness event can issue a second boot turn.
+  let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
   // Transcript mirror → `tr-<name>`: opt-in via COTAL_TRANSCRIPT (the connector's buildLaunch / the
   // manager set it for managed sessions; a personal opencode never mirrors). EVENT-DRIVEN — fed from
   // the OpenCode event hook below (message.updated → assistant roles, message.part.updated → parts)
@@ -127,6 +134,7 @@ export const cotal: Plugin = async () => {
   // hijacked or absent control plane.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
   const shutdown = async (): Promise<void> => {
+    stopping = true;
     try {
       controlServer?.close();
     } catch {
@@ -247,6 +255,7 @@ export const cotal: Plugin = async () => {
    *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
   async function drive(override?: string): Promise<void> {
     if (driving || busy) return;
+    if (bootPrompt !== undefined) return; // the boot turn goes first; this batch waits in the inbox
     driving = true;
     try {
       const id = await ensureSession();
@@ -289,6 +298,26 @@ export const cotal: Plugin = async () => {
       driving = false;
     }
   }
+
+  /** Submit the boot prompt as this session's FIRST turn — exactly one, ever. It waits for the
+   *  session to exist (there is nothing to prompt into before that) and for the mesh link to be up,
+   *  because that turn also orients the agent on the mesh and answers back there. `bootPrompt` is
+   *  cleared in the same synchronous step that drives it — nothing awaits in between — so a later
+   *  readiness event cannot issue a second boot turn, and the floor is released even when there is
+   *  no session to drive into. drive() itself never prompts into a running turn. */
+  void (async () => {
+    if (bootPrompt === undefined) return;
+    const id = await sessionReady;
+    while (!stopping && !agent.connected) await new Promise((r) => setTimeout(r, 100).unref?.());
+    if (stopping || bootPrompt === undefined) return;
+    const text = bootPrompt;
+    bootPrompt = undefined;
+    if (!id) {
+      log("initial prompt not submitted — this session was never created");
+      return;
+    }
+    await drive(text);
+  })();
 
   /** Ack exactly the surfaced ids. Quiet ambient may be physically interleaved ahead of them, and
    *  overflow may already have removed some; MeshAgent marks every confirmed id handled while only
@@ -467,6 +496,7 @@ export const cotal: Plugin = async () => {
     },
 
     dispose: async () => {
+      stopping = true;
       try {
         controlServer?.close();
       } catch {
