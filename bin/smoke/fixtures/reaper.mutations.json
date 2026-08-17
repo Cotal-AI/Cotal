@@ -1,0 +1,47 @@
+{
+  "suite": "bin/smoke/reaper.smoke.ts",
+  "guard": "the reaper kills what carries the smoke token and leaves every other broker alone",
+  "command": "pnpm smoke:reaper",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/fixtures/reaper.mutations.json",
+  "why": [
+    "THE OBVIOUS MUTATION IS DELIBERATELY NOT USED HERE, and the reason is worth more than the",
+    "mutation would have been. The natural way to prove the token filter is to delete it, so the",
+    "reaper claims every nats-server it can see. That mutation is correct in principle and dangerous",
+    "in practice: mutation-proof runs the real suite against the real machine, and on a developer box",
+    "that mutation does not fail a test, it kills every unrelated broker on the host. Measured on one",
+    "box while writing this: 15 live nats-server processes, of which the reaper claims 1. An",
+    "over-match mutation would have killed the other 14, several of them belonging to other people's",
+    "work. A test that damages the machine to prove a point is not a test worth running.",
+    "",
+    "SO THE FILTER IS MUTATED BY SWAPPING WHICH TOKEN IT SELECTS ON, not by removing it. That keeps",
+    "the blast radius inside this suite's own two fixture brokers while still grading exactly the",
+    "property under test: that the surviving broker survives BECAUSE of what its path says and not by",
+    "accident of ordering, timing, or the reaper simply killing the first thing it found. It flips",
+    "both controls at once, which is the point. A mutation that reddened only the positive control",
+    "would leave open that the reaper kills indiscriminately and the negative control never noticed.",
+    "",
+    "THE SECOND MUTATION SEPARATES REPORTING FROM ACTING. The reaper both kills a process and returns",
+    "a list naming it, and those are two claims that a single green cell could conflate. Removing the",
+    "kill while leaving the bookkeeping intact reddens the positive control alone and leaves 'the",
+    "killed broker is named in the report' green, which is precisely the false green this file exists",
+    "to make impossible: a reaper that reports a clean sweep it never performed."
+  ],
+  "mutations": [
+    {
+      "name": "the filter selects on the control prefix instead of the smoke token, so the wrong broker is claimed",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "  const mine = rows.filter((r) => r.args.includes(SMOKE_BROKER_TOKEN));",
+      "replace": "  const mine = rows.filter((r) => r.args.includes(\"cotal-reaper-control-\"));",
+      "expectRed": "✗ FAIL: NEGATIVE CONTROL: the untokened broker is untouched",
+      "cell": "✗ FAIL: NEGATIVE CONTROL: the untokened broker is untouched"
+    },
+    {
+      "name": "the reaper reports the kill without performing it",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "      process.kill(pid, \"SIGKILL\");",
+      "replace": "      void pid;",
+      "expectRed": "✗ FAIL: POSITIVE CONTROL: the token-carrying broker is killed",
+      "cell": "✗ FAIL: POSITIVE CONTROL: the token-carrying broker is killed"
+    }
+  ]
+}
