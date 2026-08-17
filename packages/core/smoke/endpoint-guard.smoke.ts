@@ -27,6 +27,7 @@ import {
   type EpCaller, type GoalRef, type SignerAnchor, type AnchorResolver, type GuardCallSeam, type ActionContext,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -126,8 +127,9 @@ await rejects("the guard call and obligation verification share ONE gate budget 
 
 // ── the hold wiring over the checkpoint pause primitive (real broker) ──
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epguard-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 try {
   let up = false;
   for (let i = 0; i < 50 && !up; i++) { up = await isReachable(`nats://127.0.0.1:${PORT}`); if (!up) await wait(100); }
@@ -459,6 +461,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\nENDPOINT GUARD SMOKE ${fail === 0 ? "OK ✅ " : "FAILED ❌ "} (${ok} passed, ${fail} failed)`);

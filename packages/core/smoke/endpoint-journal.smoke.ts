@@ -23,6 +23,7 @@ import {
   type AcceptanceFact, type RejectionFact, type QuarantineFact, type ParsedEpRequest, type EpCaller,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 // A PASSING CELL PRINTS. It used to be silent, and silence is not free: `mutation-proof` counts
@@ -440,8 +441,9 @@ throws("size preflight refuses an acceptance that cannot fit", () => assertFactF
 
 // ── the decision CAS + plain appends (real broker) ──
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epjrn-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -521,5 +523,6 @@ try {
   if (broker.pid) { try { process.kill(broker.pid, "SIGKILL"); } catch { /* gone */ } }
   await wait(200);
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
   process.exit(process.exitCode ?? 0);
 }

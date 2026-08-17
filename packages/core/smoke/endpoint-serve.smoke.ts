@@ -40,6 +40,7 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 /** READING THIS SUITE'S OUTPUT — the reporting is INVERTED and the inversion is a trap.
  *
@@ -269,8 +270,9 @@ const freezeErr = async (jsmStub: unknown): Promise<{ code?: string; message: st
 
 // ── live broker ──
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epserve-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -1009,6 +1011,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\nENDPOINT SERVE SMOKE ${fail === 0 ? "OK ✅" : "FAILED ❌"}  (${ok} passed, ${fail} failed)`);
