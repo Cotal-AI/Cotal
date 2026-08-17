@@ -1,0 +1,54 @@
+{
+  "suite": "bin/smoke/mutation-fixtures.smoke.ts",
+  "guard": "every mutation anchor is present, unique, and free of prose",
+  "command": "pnpm smoke:mutation-fixtures",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/fixtures/mutation-fixtures.mutations.json",
+  "why": [
+    "This suite's subject is DATA, not code, so the mutations break a fixture rather than an",
+    "implementation. That is what makes them provable at all: disabling a guard here would make the",
+    "suite report FEWER problems and exit GREEN, which is the wrong direction for a proof. Breaking",
+    "an anchor is the direction that reddens.",
+    "",
+    "One mutation per diagnosis, because the four are repaired differently and a suite that told",
+    "them apart in its head but not in its output would be no use to the person reading it. Each",
+    "expectRed names the diagnosis line itself; none of the four strings is printed on a green run,",
+    "so a mutation that reddens for an unrelated reason cannot be mistaken for a kill.",
+    "",
+    "The subject is this repo's own restore-mtime fixture rather than another lane's, so a graded",
+    "run cannot leave someone else's file mid-edit if the tool dies between mutation and restore."
+  ],
+  "mutations": [
+    {
+      "name": "an anchor goes dead - the source moved and the find no longer matches",
+      "file": "scripts/mutations/restore-mtime.json",
+      "find": "      \"find\": \"    if (ok) utimesSync(path, atimeBefore, mtimeBefore);\",",
+      "replace": "      \"find\": \"    if (ok) utimesSync(path, THIS TEXT IS NOT IN THE SOURCE);\",",
+      "expectRed": "ANCHOR IS DEAD",
+      "cell": "ANCHOR IS DEAD"
+    },
+    {
+      "name": "an anchor goes ambiguous - it matches many sites while claiming one",
+      "file": "scripts/mutations/restore-mtime.json",
+      "find": "      \"find\": \"    if (ok) utimesSync(path, atimeBefore, mtimeBefore);\",\n      \"replace\": \"    if (ok) utimesSync(path, new Date(), new Date());\",",
+      "replace": "      \"find\": \"restore\",\n      \"replace\": \"restore\",",
+      "expectRed": "ANCHOR IS AMBIGUOUS",
+      "cell": "ANCHOR IS AMBIGUOUS"
+    },
+    {
+      "name": "an anchor reaches for the nearest comment, which a docs commit can disarm",
+      "file": "scripts/mutations/restore-mtime.json",
+      "find": "      \"find\": \"    if (ok) utimesSync(path, atimeBefore, mtimeBefore);\",\n      \"replace\": \"    if (ok) utimesSync(path, new Date(), new Date());\",\n",
+      "replace": "      \"find\": \"  // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime\",\n      \"replace\": \"  // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime\",\n",
+      "expectRed": "ANCHOR SPANS A COMMENT",
+      "cell": "ANCHOR SPANS A COMMENT"
+    },
+    {
+      "name": "an anchor names a file that is not there",
+      "file": "scripts/mutations/restore-mtime.json",
+      "find": "      \"file\": \"scripts/mutation-proof.mjs\",\n      \"find\": \"    if (ok) utimesSync(path, atimeBefore, mtimeBefore);\",",
+      "replace": "      \"file\": \"scripts/mutation-proof-that-was-renamed.mjs\",\n      \"find\": \"    if (ok) utimesSync(path, atimeBefore, mtimeBefore);\",",
+      "expectRed": "TARGET FILE MISSING",
+      "cell": "TARGET FILE MISSING"
+    }
+  ]
+}
