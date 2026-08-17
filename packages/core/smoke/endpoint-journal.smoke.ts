@@ -228,7 +228,7 @@ admits("c8 a string spelling out a name is CONTENT, never structure", { id: "r",
 admits("c8 quoted braces and a trailing backslash are content too",
   { id: "req-1", args: { a: '{"a":1}', b: "x\\", c: [{ k: 1 }, { k: 2 }], d: { k: 3 } } });
 
-// c10 — OUT-OF-RANGE NUMBERS, the fourth I-JSON condition SPEC:1654-1655 names and the last one
+// c10 — OUT-OF-RANGE NUMBERS, the fourth I-JSON condition SPEC §13.4 names and the last one
 // this module did not enforce. Found the same way c8 was and NOT the way the rest of this file was:
 // by reading what the SPEC names against what the code can produce. No mutant could have found it,
 // and that is a property of the class rather than of the effort — the evidence is destroyed by

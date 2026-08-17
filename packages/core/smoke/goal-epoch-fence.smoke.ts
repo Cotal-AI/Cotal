@@ -4,7 +4,7 @@
  * WHAT THIS SUITE USED TO ASSERT, and why it was replaced. It encoded the epoch-scoped terminal
  * subject `…result.<execEpoch>`: one create-only subject per executor epoch, so a superseded
  * manager's terminal landed where no current reader looked. That mechanism was BOTH
- * non-conformant (SPEC:1433 (§13.2 reserved subjects) reserves the flat `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`
+ * non-conformant (SPEC §13.2 (reserved subjects) reserves the flat `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`
  * with no epoch token) AND actively wrong. It conflated two different jobs:
  *   - as a READ fence it produced WRONG ANSWERS. The window is "commit the terminal, then die
  *     before projecting it", where the pre-restart fact is the LEGITIMATE outcome, not a corpse's
