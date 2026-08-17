@@ -50,6 +50,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { CotalEndpoint, chatStream, isReachable, mintLifecycleUid } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -57,8 +58,9 @@ const c = (n: string, v: boolean, extra?: unknown) => {
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const root = mkdtempSync(join(tmpdir(), "cas-preflight-cluster-"));
+const root = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const procs: ChildProcess[] = [];
+const releases: Array<() => void> = [];
 const ports: number[] = [];
 const cluster: number[] = [];
 
@@ -75,7 +77,11 @@ try {
       `  port: ${cluster[i]}`,
       `  routes: [${routes.split(",").map((r) => `"${r}"`).join(",")}] }`,
     ].join("\n"));
-    procs.push(spawn("nats-server", ["-c", conf], { stdio: "ignore" }));
+    // Every node of the cluster is owned, not just the first: a signalled run that reaped one
+    // of three and left two would read as cleaned up while two brokers held their ports.
+    const proc = spawn("nats-server", ["-c", conf], { stdio: "ignore" });
+    procs.push(proc);
+    releases.push(teardownOnSignal(proc, root));
   }
 
   let up = false;
@@ -167,6 +173,7 @@ try {
 } finally {
   for (const p of procs) p.kill("SIGKILL");
   rmSync(root, { recursive: true, force: true });
+  for (const release of releases) release(); // last: ownership held until cleanup has finished
 }
 
 console.log(`cas-preflight-cluster smoke: ${ok} passed, ${fail} failed`);
