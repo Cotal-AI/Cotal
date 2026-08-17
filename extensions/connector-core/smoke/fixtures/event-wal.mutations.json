@@ -1,0 +1,26 @@
+{
+  "command": "pnpm smoke:event-wal",
+  "mutations": [
+    {
+      "name": "W1 the nonzero-frontier-carries-its-cursor guard is dropped, so a recovery adopts at the current end and the unread appended record is skipped with no seq gap",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "  if ((f.seq > 0 || f.lastSubjectSeq > 0) && typeof f.sourceCursor !== \"string\")\n    throw new WalCorruptError(path, \"a nonzero frontier carries its sourceCursor\", JSON.stringify(f));",
+      "replace": "",
+      "expectRed": "[F2] a NONZERO frontier with its sourceCursor deleted is refused"
+    },
+    {
+      "name": "W2 the both-zero-or-both-nonzero frontier guard is dropped, so a pair no shipped transition can produce loads",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "  if ((f.seq === 0) !== (f.lastSubjectSeq === 0))\n    throw new WalCorruptError(path, \"frontier.seq and lastSubjectSeq are both zero or both nonzero\", JSON.stringify(f));",
+      "replace": "",
+      "expectRed": "[F2] a MIXED frontier pair (seq 0, lastSubjectSeq 7) is impossible and refused"
+    },
+    {
+      "name": "W3 the pending-shape guard is dropped, so an absent key is silently read as an explicit null and an uncertain frame is reclassified as clean",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "  if (doc.pending !== null && typeof doc.pending !== \"object\")\n    throw new WalCorruptError(path, \"pending is present (null or an object)\",\n      doc.pending === undefined ? \"the key is absent, which is not the same as null\" : typeof doc.pending);",
+      "replace": "",
+      "expectRed": "[F3] a document whose `pending` KEY IS ABSENT is refused, not read as null"
+    }
+  ]
+}
