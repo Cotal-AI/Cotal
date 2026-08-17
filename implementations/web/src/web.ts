@@ -180,7 +180,7 @@ export const webProcess: LocalProcess = {
   // `web.session` holds the readiness nonce, which is accepted for this process's whole lifetime.
   // The exit handler removes it, but an exit handler does not run on SIGKILL — so without this the
   // credential outlives the process it authenticates.
-  artifacts: ["web.session"],
+  artifacts: [SESSION_FILE],
   // The dashboard starts target-resolved from any directory and claims its pidfile under the
   // TARGET mesh's root (`conn.root` below); `cotal down web` must resolve the same mesh.
   rootedAt: "target",

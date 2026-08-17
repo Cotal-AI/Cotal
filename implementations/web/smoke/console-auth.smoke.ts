@@ -29,7 +29,7 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
 import ts from "typescript";
-import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate } from "../src/web.js";
+import { CROSS_ORIGIN, LAUNCH_TOKEN_ALREADY_USED, UNAUTHENTICATED, makeAuthGate, webProcess } from "../src/web.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -724,6 +724,23 @@ check("…and the LENGTH-MISMATCH branch still does the work before failing, so 
   check("…AND the readiness nonce, the second credential `--detach` polls with (without it the parent sends no header and never sees ready)",
     written.readiness === "n", written);
   rmSync(dir, { recursive: true, force: true });
+}
+
+// ── 7. THE SESSION FILE IS SWEPT WITH THE PROCESS ───────────────────────────────────────────────
+// The exit handler removes `web.session`, but an exit handler does not run on SIGKILL, and the file
+// holds a credential accepted for the whole life of the process. `artifacts` is what `down` sweeps
+// once the process is confirmed gone.
+//
+// STRUCTURAL ONLY, and the limit is the point: this proves the entry is DECLARED and correct, not
+// that the sweep runs. The end-to-end case needs a killed process and a real `down`, which is a
+// lifecycle suite and is tracked separately. What it does kill is the failure that is otherwise
+// SILENT — an absent entry, a typo, or a path that matches nothing, all of which leave every other
+// cell in this file green while `down` sweeps nothing.
+{
+  check("`web.session` is declared as a process artifact, so `down` sweeps it when the exit handler did not",
+    (webProcess.artifacts ?? []).includes("web.session"), webProcess.artifacts);
+  check("CONTROL: the artifact check is not vacuous — a file that is not declared is not found",
+    !(webProcess.artifacts ?? []).includes("web.session.not-declared"), webProcess.artifacts);
 }
 
 console.log(`\nCONSOLE AUTH SMOKE OK ✅  (${pass} passed, 0 failed)`);
