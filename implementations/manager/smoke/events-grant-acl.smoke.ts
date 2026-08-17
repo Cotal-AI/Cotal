@@ -197,9 +197,14 @@ try {
     const { parseResumeControlArgs } = await import("../src/resume.js");
     const entry = JSON.parse(JSON.stringify({ ...preserved, agents: [preserved!.agents[0]] }));
     delete entry.agents[0].launch.events;
-    const parsed = parseResumeControlArgs({ attemptId: "old-record", inventory: entry });
-    check("an inventory written before the event plane still parses", parsed.inventory.agents.length === 1, parsed);
-    check("and its agent reads as unarmed rather than being refused", parsed.inventory.agents[0]?.launch.events === false, parsed.inventory.agents[0]?.launch);
+    // The refusal this cell is about is a THROW, so it has to be caught here: an uncaught one would
+    // abort the suite before either assertion printed, and a cell that never runs cannot fail.
+    let parsed: ReturnType<typeof parseResumeControlArgs> | null = null;
+    let refusal: string | null = null;
+    try { parsed = parseResumeControlArgs({ attemptId: "old-record", inventory: entry }); }
+    catch (e) { refusal = String((e as Error).message); }
+    check("an inventory written before the event plane still parses", parsed?.inventory.agents.length === 1, refusal ?? parsed);
+    check("and its agent reads as unarmed rather than being refused", parsed?.inventory.agents[0]?.launch.events === false, refusal ?? parsed?.inventory.agents[0]?.launch);
   }
 } finally {
   await stopBroker();
