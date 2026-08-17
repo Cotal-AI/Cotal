@@ -1711,7 +1711,7 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // the provisioner holds no value-write on any of them (goal facts ride the scoped goal-writer cred).
   // WFJ joins them without joining "the seven": it is the workflow step journal, a RUNTIME layer
   // over the control surface rather than one of the §13.12 endpoint streams, and it is listed here
-  // for exactly one reason — `ensureEndpointStreams` creates it, so a provisioner without its
+  // for exactly one reason — `createEndpointStreams` creates it, so a provisioner without its
   // CREATE/INFO rows fails the ensure. Create-or-verify only; the provisioner appends nothing (a
   // run's entries ride the per-run driver grant, which is minted per run and never space-wide).
   const endpointStreams = [epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName, wfjStreamName].map((f) => f(space));
