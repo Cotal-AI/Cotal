@@ -58,9 +58,9 @@ export interface LaunchOpts {
    *  config, env); a connector with no option surface fails loud. Fed by `--opt k=v`, a persona's
    *  `launchOptions:` mapping, or a manifest `launchOptions:` — merged per key. */
   launchOptions?: Record<string, unknown>;
-  /** An initial message for the session to act on the moment it starts. Connectors
-   *  that support an auto-submitted first prompt (Claude Code) deliver it; others
-   *  ignore it. Used to make a driving session greet the operator on launch. */
+  /** An initial message for the session to act on the moment it starts (`cotal spawn --prompt`).
+   *  A connector delivers it as the harness's first turn or throws at launch; it never ignores it,
+   *  because an operator who passed a prompt is waiting on the turn it starts. */
   prompt?: string;
   /** An OPAQUE prior-session handle to FORK FROM when launching — never reused, never resolved by
    *  core. Like `creds` / `configPath`, this is a HOST-LOCAL pointer (into e.g. `~/.claude`), NOT a
