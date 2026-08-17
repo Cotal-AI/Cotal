@@ -317,6 +317,7 @@
     "smoke:backup-usermode:live": "tsx bin/smoke/backup-usermode-live.smoke.ts",
     "smoke:backup-faults:live": "tsx bin/smoke/backup-faults-live.smoke.ts",
     "smoke:registry-staging": "tsx packages/core/smoke/registry-staging.smoke.ts",
+    "smoke:import-remedy": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/import-remedy.smoke.ts",
     "smoke:materialize-concurrency": "pnpm --filter @cotal-ai/workspace... build && tsx packages/workspace/smoke/materialize-concurrency.smoke.ts",
     "smoke:setup-failloud": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/setup-failloud.smoke.ts",
     "smoke:agent-skills": "pnpm --filter @cotal-ai/workspace... build && tsx implementations/cli/smoke/agent-skills.smoke.ts",

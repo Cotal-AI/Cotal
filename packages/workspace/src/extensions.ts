@@ -181,8 +181,9 @@ export interface BoundExtensionPeer {
   readonly destination: string;
 }
 
-/** Locate a shared package in this host's module graph. */
-function hostPackageDir(name: string): string {
+/** Locate a shared package in this host's module graph. Exported so a failed import can name the
+ *  EXACT peer copy the binder linked, rather than a second resolution that might not be the same one. */
+export function hostPackageDir(name: string): string {
   let dir = dirname(fileURLToPath(import.meta.resolve(name)));
   for (;;) {
     const pj = join(dir, "package.json");

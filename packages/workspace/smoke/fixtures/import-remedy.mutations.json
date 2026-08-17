@@ -1,0 +1,53 @@
+{
+  "suite": "packages/workspace/smoke/import-remedy.smoke.ts",
+  "guard": "a missing-export import failure names WHICH install is behind, and only prescribes `cotal ext add` when the extension is the older side",
+  "command": "pnpm smoke:import-remedy",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/workspace/smoke/fixtures/import-remedy.mutations.json",
+  "why": [
+    "TWO MUTATIONS, ONE PER GUARD: which side is behind, and which command fixes that side.",
+    "",
+    "THE FIRST REINSTATES THE DEFECT. Ranking every lockstep pair as `extension-behind`",
+    "is exactly the shipped behaviour this change removes: the message prescribes `cotal ext add` for",
+    "a skew whose behind side is the CORE, so the operator runs a command that cannot add an export to",
+    "an older core. The mutation does not merely make a cell fail; it puts the wrong remedy back.",
+    "",
+    "IT MUST STILL TYPECHECK. The suite's command builds @cotal-ai/workspace with tsc before it runs,",
+    "so a mutant that fails to compile would turn the suite red at the BUILD, not at an assertion, and",
+    "red-for-the-wrong-reason proves nothing. Substituting one argument of the comparison keeps every",
+    "branch reachable and the types intact, so the red that arrives is the assertion's own.",
+    "",
+    "THE DECLARED-FLOOR CELL STAYS GREEN UNDER IT, and that is the point of the anchor's narrowness.",
+    "`declaredFloor` returns before this comparison, so cell 2 still names the core as behind while",
+    "cell 1 flips. A mutation that reddened both would not have told us which input carried the",
+    "verdict.",
+    "",
+    "THE SECOND COVERS THE REMEDY'S OWN BRANCH. Naming the right side is only half the message; the",
+    "command has to match what the resolved path IS. Forcing the installed-copy branch hands a source",
+    "checkout an `npm i -g` it must not run, which is a wrong prescription of the same family as the",
+    "one this change removes. It reddens the checkout cells, and it is the only mutation here whose",
+    "kill lands on a hand-built input as well as an end-to-end one.",
+    "",
+    "WHAT THIS DOES NOT PROVE. The lockstep ranking is only meaningful because every first-party",
+    "package moves in one `fixed` changeset group; it is gated on a `@cotal-ai/` scope for that reason",
+    "and says so in the message. It cannot rank a third-party extension against core, and the suite's",
+    "`unrankable` cells assert that it refuses to try rather than that it gets those right."
+  ],
+  "mutations": [
+    {
+      "name": "the lockstep side comparison is dropped, so every skew is blamed on the extension again",
+      "file": "packages/workspace/src/import-diagnosis.ts",
+      "find": "  const order = comparePeerVersions(extVersion, peerVersion);",
+      "replace": "  const order = comparePeerVersions(\"0.0.0\", peerVersion);",
+      "expectRed": "✗ FAIL: lockstep, extension newer: names the CORE as behind",
+      "cell": "✗ FAIL: lockstep, extension newer: names the CORE as behind"
+    },
+    {
+      "name": "every path is treated as an installed copy, so a source checkout is told to `npm i -g`",
+      "file": "packages/workspace/src/import-diagnosis.ts",
+      "find": "  const installed = /(^|[/\\\\])node_modules[/\\\\]/.test(peerPath);",
+      "replace": "  const installed = peerPath.length >= 0;",
+      "expectRed": "✗ FAIL: source checkout: prescribes a rebuild, never `npm i -g`",
+      "cell": "✗ FAIL: source checkout: prescribes a rebuild, never `npm i -g`"
+    }
+  ]
+}
