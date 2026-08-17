@@ -41,6 +41,7 @@ import {
 import { putSpaceAuth, saveManagerInstanceIdentity, workspaceSecretStore } from "@cotal-ai/workspace";
 import { executePrincipalLiveness } from "../../delivery/src/evict-exec.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // ---------------------------------------------------------------------------
 // FIRST ACTION: this drives a command that revokes credentials and evicts connections. Refuse the
@@ -81,7 +82,7 @@ const auth = await createSpaceAuth(space);
 const observerCreds = await mintMembershipObserverCreds(auth, newIdentity());
 const evictorCreds = await mintConnectionEvictorCreds(auth, newIdentity());
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-gate391cli-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // THE SEEDED WORKSPACE ROOT the command will resolve from: its own scratch dir, never the
 // operator's. `findCotalRoot()` walks up for a `.cotal/`, so an unanchored cwd would reach the real
 // mesh root — the command runs with cwd set HERE, and this directory is what it must find.
@@ -93,6 +94,7 @@ writeFileSync(
   serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }),
 );
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 5000): Promise<void> =>
   new Promise((resolve) => {
     if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
@@ -301,5 +303,6 @@ try {
   srv.kill("SIGKILL");
   await awaitExit(srv);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(process.exitCode ?? 0);

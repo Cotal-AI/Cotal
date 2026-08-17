@@ -15,6 +15,7 @@
  */
 import { spawn } from "node:child_process";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createServer, Socket } from "node:net";
@@ -27,7 +28,7 @@ const freePort = (): Promise<number> => new Promise((res, rej) => { const s = cr
 
 const SPACE = "wslistener";
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), "cotal-wsl-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 process.on("exit", () => { try { rmSync(dir, { recursive: true, force: true }); } catch { /* best effort */ } });
 
 // ---- A. the config shape ---------------------------------------------------------------------
@@ -47,6 +48,10 @@ console.log("B. a live broker accepts a browser-style WebSocket and speaks NATS 
 writeFileSync(join(dir, "server.conf"), cfg);
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
 process.on("exit", () => srv.kill("SIGKILL"));
+// The exit handler above is what a signal reaches under `tsx`, which converts one into an ordinary
+// exit. Under a runner that does not convert, a default-disposition signal skips `exit` entirely and
+// nothing here would run, so ownership covers that case too.
+const releaseBroker = teardownOnSignal(srv, dir);
 
 // Wait for the NATS TCP port to come up.
 let up = false;
@@ -70,4 +75,5 @@ c("a WebSocket connects to the ws port and the broker speaks NATS (INFO on conne
 
 console.log(`\nconsole-ws-listener: ${ok} passed, ${fail} failed`);
 srv.kill("SIGKILL");
+releaseBroker(); // last: the exit handler above still removes the tree
 process.exit(fail ? 1 : 0);

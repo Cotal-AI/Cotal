@@ -35,6 +35,7 @@ import type { Connector, LaunchOpts, LaunchSpec } from "@cotal-ai/core";
 import { Manager } from "../src/manager.js";
 import { registry } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../.."); // worktree root — the agent process runs here so `@cotal-ai/core` resolves
@@ -58,13 +59,14 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 
 const space = `life-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-life-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // seeds the FS composition; the manager's start() reads it via getSpaceAuth(this.secrets) (FS default)
 for (const n of ["w1", "w2", "bad1", "idle1", "nouid1", "wrong1", "wrongreg1", "bypass1"]) writeFileSync(join(workspaceRoot, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\n---\n`);
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 const DM = dmStream(space), DLV = dlvStream(space);
 const provId = newIdentity();
@@ -274,5 +276,6 @@ try {
   srv.kill("SIGKILL");
   await wait(300);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
   process.exit(process.exitCode ?? 0);
 }
