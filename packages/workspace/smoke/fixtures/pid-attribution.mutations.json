@@ -1,0 +1,34 @@
+{
+  "command": "pnpm smoke:pid",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (>=2 red) - every live pid reads as a manager, so a recycled pid belonging to an unrelated process is treated as the running supervisor and gets signalled by a stop",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  return /(^|\\s)supervise(\\s|$)/.test(command);",
+      "replace": "  return command.length >= 0;",
+      "expectRed": "an unrelated command line is NOT a manager"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - `supervise` matches anywhere in the argv rather than as its own word, so a path or a flag containing it counts as a manager",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  return /(^|\\s)supervise(\\s|$)/.test(command);",
+      "replace": "  return command.includes(\"supervise\");",
+      "expectRed": "an unrelated command line is NOT a manager"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - a live pid is trusted without attributing it at all, so the FOREIGN state disappears and a stale record naming a live stranger reads as a healthy manager",
+      "file": "implementations/cli/src/lib/manager-proc.ts",
+      "find": "  return { state: commandIsCotalSupervisor(cmd.command) ? \"alive\" : \"foreign\", pid, command: cmd.command };",
+      "replace": "  return { state: \"alive\", pid, command: cmd.command };",
+      "expectRed": "a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - the real process-argv read is replaced by an unreadable answer, so nothing is ever attributed and every live pid stays trusted: the cell that names a stranger has to be executing the actual reader on this platform to notice",
+      "file": "packages/workspace/src/pid.ts",
+      "find": "  if (r.status === 0 && out !== \"\") return { kind: \"command\", command: out };",
+      "replace": "  if (r.status === 0 && out !== \"\") return { kind: \"unreadable\", why: \"mutant\" };",
+      "expectRed": "a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager"
+    }
+  ],
+  "_note": "The suite imports `../src/pid.js` and `../../../implementations/cli/src/lib/manager-proc.js` RELATIVELY, so both mutated files are the modules under test and no build step belongs here. Mutation 4 targets the POSIX `ps` branch, which is the one this machine executes; the linux `/proc` branch and the win32 branch are not covered by these four and neither is claimed to be."
+}
