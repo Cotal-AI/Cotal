@@ -1429,8 +1429,9 @@ export class CotalEndpoint extends EventEmitter {
           // reason the repair could not be attempted.
           //
           // The code must be the refusal's own (`failed-precondition` for a different instance,
-          // `expired` for a later epoch); the marker on any other code is incoherent, so it is
-          // rejected rather than trusted (§13.3).
+          // `expired` for the same instance at ANY other epoch — the fence does not compare
+          // direction, so a superseded incarnation still answering produces it too); the marker on
+          // any other code is incoherent, so it is rejected rather than trusted (§13.3).
           const raw = r.reply.error?.code;
           const refusalCode = raw === "expired" ? ("expired" as const)
             : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;

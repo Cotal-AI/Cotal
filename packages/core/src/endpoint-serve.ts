@@ -148,10 +148,11 @@ function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity)
     boundTo: { instanceId: b.instanceId, epoch: b.epoch },
     servedBy: { instanceId: identity.instanceId, epoch: identity.epoch },
   };
-  // §13.3 requires the outcome, not just the marker. `bind-refused` is this implementation's own
-  // vocabulary and `outcome` is the spec's, so a conformant peer that has never heard of the detail
-  // reads only the latter; emitting one without the other is what makes two implementations
-  // disagree about whether the command ran.
+  // §13.3: a responder refusing BEFORE dispatching to the handler MUST carry `not-executed`, and
+  // an omitted outcome MUST be read as `unknown` — so the marker alone is not enough. `bind-refused`
+  // is this implementation's vocabulary and `outcome` is the spec's, so a conformant peer that has
+  // never heard of the detail reads only the latter; emitting one without the other is what makes
+  // two implementations disagree about whether the command ran.
   if (b.instanceId !== identity.instanceId)
     throw new EpEnvelopeError("failed-precondition",
       `this request reached ${identity.endpoint} instance ${identity.instanceId}, but the caller bound to ${b.instanceId}; the class queue chose a different member and "${env.op.command}" WAS NOT RUN - no effect of it exists here. Re-resolve and re-issue, or address one instance (SPEC 13.2)`,
