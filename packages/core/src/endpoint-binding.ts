@@ -162,7 +162,7 @@ export function assertFactRetentionFloor(
   factMaxAgeMs: number | undefined,
   terms: { horizonMs: number; resultRetentionMs?: number; receiptRetentionMs?: number } | number,
 ): void {
-  // THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON ALONE (SPEC:3203-3206: "`EPF_<space>`
+  // THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON ALONE ("`EPF_<space>`
   // retention >= max(idempotency horizon, result retention, receipt retention), because the
   // acceptance fact is the durable reconstruction source for receipts"). Checking only the horizon
   // admitted the exact config a caller would write first — `factMaxAgeMs` at the 24 h default —
@@ -1111,7 +1111,7 @@ export function goalWriterGrants(space: string, endpoint: string, connId: string
   const indexRow = `$KV.${recordsBucket(space)}.goalidx.${e}.>`;
   // The three journal-action coordination kinds (`goaleff` the at-most-one-launch election,
   // `epname` the durable name claim, `epmig` the cutover manifest) are NOT added here: §13.9
-  // "Claim / action / checkpoint commits" (SPEC:2912) puts them on the commit row, so they arrive
+  // "Claim / action / checkpoint commits" puts them on the commit row, so they arrive
   // through `commitPrincipalGrants` above and this
   // overlay inherits them. They were duplicated here while the commit builder listed only three of
   // the six, which made the overlay look like their source — a grant the SPEC gives every commit

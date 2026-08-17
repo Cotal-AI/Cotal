@@ -53,11 +53,7 @@ function invalid(what: string): never {
   throw new ContractInvalidError(`cluster document does not validate: ${what}`);
 }
 
-/** One command's REGISTERED declaration (§13.7): everything the serve boundary enforces about
- *  it comes from here, out of digest-verified bytes. `modes` is present exactly when
- *  `targeted` — a targeted command admits ONLY its declared modes, an untargeted command
- *  admits ONLY the untargeted form (default-deny both ways, §13.2/§13.7). */
-/** The declared admission ceiling for an action command's submissions: what the canonicalizer
+/** The declared admission ceiling for a journal-class command's submissions: what the canonicalizer
  *  refuses BEFORE deciding. It lives in the digest-verified registered surface rather than in a
  *  constant so that two conforming implementations cannot decide the same bytes differently and
  *  durably, and so a caller can see what will be refused before submitting. */
@@ -67,6 +63,10 @@ export interface EpAdmissionCeiling {
   maxItems: number;
 }
 
+/** One command's REGISTERED declaration (§13.7): everything the serve boundary enforces about
+ *  it comes from here, out of digest-verified bytes. `modes` is present exactly when
+ *  `targeted` — a targeted command admits ONLY its declared modes, an untargeted command
+ *  admits ONLY the untargeted form (default-deny both ways, §13.2/§13.7). */
 export interface ClusterCommand {
   name: string;
   class: EpClass;
