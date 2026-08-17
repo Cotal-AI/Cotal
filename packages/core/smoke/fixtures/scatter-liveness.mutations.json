@@ -1,0 +1,48 @@
+{
+  "command": "pnpm smoke:scatter-liveness",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (1 red) - the probe's deadline timer holds the event loop again, so a command whose gather has already finished waits out every LIVE instance's probe budget before it can exit - the 4.0s `cotal ps` regression, measured",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      timer.unref?.();",
+      "replace": "",
+      "expectRed": "a probe with its whole budget still to run adds NOTHING to the resources keeping this process alive"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - the settlement check runs only on a VERDICT, never on a REPLY, so the field shape (corpse affirmed first, live instance answering later) goes back to paying the whole deadline",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "        else if (settled()) finish(true);",
+      "replace": "        else if (false) finish(true);",
+      "expectRed": "and ended THERE, not at the 3000ms deadline"
+    },
+    {
+      "name": "PREDICTED KILLED (>=3 red) - a gone verdict is never recorded, so no gather can ever end early and the fix is inert",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "          gone.add(instanceId);\n",
+      "replace": "",
+      "expectRed": "the gather ends WELL before the deadline once the corpse is affirmed gone"
+    },
+    {
+      "name": "PREDICTED KILLED (6 red) - EVERY verdict licenses the early finish, so live/unknown/garbled all shorten the gather and a slow-but-alive instance becomes a fast wrong 'unreachable' - THE TRAP",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "          if (verdict !== \"gone\" || ended) return;",
+      "replace": "          if (ended) return;",
+      "expectRed": "unknown for a slow-but-alive instance: its reply is COUNTED, arriving late rather than lost"
+    },
+    {
+      "name": "PREDICTED KILLED (2 red) - the probe reads its own TIMEOUT as death, which is the absence-of-evidence defect the whole design refuses",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      timer = setTimeout(() => resolve(\"unknown\"), deadlineMs);",
+      "replace": "      timer = setTimeout(() => resolve(\"gone\"), deadlineMs);",
+      "expectRed": "an instance that HOLDS a subscription but never answers is UNKNOWN, never gone"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - an incomplete finish no longer opens the post-T rail, so a straggler from a wrongly-gone slot is dropped instead of reported late (pin 3)",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      if (incomplete) deadlinePassed = true;\n",
+      "replace": "",
+      "expectRed": "the wrongly-gone instance's reply is reported LATE (the post-T rail stayed open)"
+    }
+  ],
+  "_note": "This suite imports `../src/index.js` RELATIVELY, so it loads SOURCE and not `dist`. The dist/src rule that made the pin re-cut report three false SURVIVORs does not apply here, and the config deliberately does NOT rebuild core: adding a build step would be cargo-culting a fix for a problem this suite does not have. Verified by mutation 2, which is inert unless the mutated source is the module under test."
+}

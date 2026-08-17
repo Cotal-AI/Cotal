@@ -10,7 +10,8 @@
  * the DEFAULT class scatter (`cotal ps`): it freezes the live class from the records registry and
  * scatters `ps` on the `all` rail, so the merged view shows BOTH managers with their OWN agent
  * attributed per instance (manager 1 ⇒ a1, manager 2 ⇒ a2 — never merged or cross-attributed). A
- * severed manager is then labeled UNREACHABLE (a missing slot), never omitted (pin 3).
+ * severed manager (its serving connection dropped under it, the crash shape: a clean stop now
+ * deregisters and leaves no slot to report) is then labeled UNREACHABLE, never omitted (pin 3).
  *
  * Run: pnpm smoke:manager-multi-live   (needs nats-server + node on PATH; boots its own JWT broker)
  */
@@ -73,7 +74,7 @@ const mkRoot = (tag: string, agentName: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -124,8 +125,13 @@ try {
     scatter.missing.length === 0 && scatter.complete === true, scatter.missing);
 
   console.log("3. a severed manager is labeled UNREACHABLE, never omitted (pin 3)");
-  await m2.stop(); // the svc record is NOT deregistered (stays READY) — a crash-shape unreachability
-  m2 = undefined;
+  // THE CRASH SHAPE, and it has to be built rather than borrowed from a stop. A manager's clean
+  // stop now DEREGISTERS itself (§13.5), so a stopped instance is not a class member at all and
+  // there is no slot left to report — which is the right outcome for a stop and the wrong fixture
+  // for pin 3. Pin 3 is about the instance that leaves its registration behind, so its serving
+  // connection is dropped under it: connections go, nothing is written, the record stays READY.
+  // The manager object is kept for the teardown below, which still stops its agent.
+  await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
   await wait(500);
   const scatter2 = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000 });
   check("the live manager still answers with its agent a1", names2(scatter2, IID1)[0] === "a1", names2(scatter2, IID1));

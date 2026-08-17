@@ -26,7 +26,8 @@ import { jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER,
-  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand,
+  openRecordsBucket, freezeExpectedSet, resolveService, scatterCommand, instancePinnedInstrumentCapabilities,
+  epProbeInstanceInterest,
   type EpCaller,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
@@ -59,7 +60,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 
-type MgrPriv = { managerInstanceId: string };
+type MgrPriv = { managerInstanceId: string; serviceServe?: { nc: NatsConnection } };
 const kids: ReturnType<typeof spawn>[] = [];
 let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
@@ -88,7 +89,13 @@ try {
   const callerId = newIdentity();
   const callerUid = mintLifecycleUid();
   const caller: EpCaller = { owner: DEV_OWNER, actor: callerId.id, uid: callerUid };
-  const callerCreds = await mintCreds(auth, callerId, "control-caller-privileged", { lifecycleUid: callerUid });
+  // Pinned to the frozen class, which is the shape the CLI mints after its freeze-then-mint pass:
+  // an exact-iid row per instance, no wildcard. Without these rows the scatter's liveness probe is
+  // refused at the broker and the severed-instance case below serves out its whole budget.
+  const callerCreds = await mintCreds(auth, callerId, "control-caller-privileged", {
+    lifecycleUid: callerUid,
+    endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", [IID1, IID2]),
+  });
   nc = await connect({ servers: SERVERS, ...standaloneConnectOpts({ creds: callerCreds, tls: false }), maxReconnectAttempts: 0 });
 
   console.log("1. the instrument FREEZES the expected set (its scoped §13.9 records read)");
@@ -111,21 +118,67 @@ try {
   check("no instance is missing when both are live (complete coverage)", r1.missing.length === 0 && r1.complete === true, r1.missing);
 
   console.log("3. a severed manager is labeled UNREACHABLE, never omitted (pin 3), deadline-bounded");
-  await m2.stop(); // tear down the serve loop; the svc record is NOT deregistered (stays READY)
-  m2 = undefined;
+  // SEVER BY CLOSING THE SERVE CONNECTION, not by stopping the manager. A clean `stop()` now
+  // DEREGISTERS the instance (the other half of this change), which removes the record and dissolves
+  // the exact state this section exists to test. A host that dies writes nothing: its connections
+  // drop and its registration stays READY forever. Closing the serve connection under the manager
+  // reproduces that on the rails that matter, and nothing else here reproduces it at all.
+  await ((m2 as unknown as MgrPriv).serviceServe as { nc: NatsConnection }).nc.close();
+  m2 = undefined; // left unstopped on purpose: a stop would deregister the corpse this section needs
   await wait(500);
   // The freeze STILL names IID2 (READY record, no deregistration): a severed instance is not silently
   // dropped from the expected set.
   const frozen2 = await freezeExpectedSet(jsm, SPACE, MANAGER_ENDPOINT);
   check("the severed instance is STILL frozen (READY record, no clean deregister)",
     new Set(frozen2.map((f) => f.instanceId)).has(IID2), frozen2);
+  // THE CONTROL, run FIRST and against the same corpse: no `probeLiveness`, so the gather has only
+  // its two original exits and must serve out the whole budget. It is what makes the timing cell
+  // below an attribution rather than a coincidence, and it is also the assertion that the probe is
+  // the CALLER's to supply: if anything below `scatterCommand` invented a probe of its own, this
+  // scatter would come back fast and this cell would fail.
+  const tControl = Date.now();
+  const rControl = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000 });
+  const controlElapsed = Date.now() - tControl;
+  check("WITHOUT a caller-supplied liveness hook the gather pays the full deadline (the defect, reproduced)",
+    controlElapsed >= 2_900 && rControl.missing.includes(IID2), { controlElapsed, budgetMs: 3_000, missing: rControl.missing });
   const t0 = Date.now();
-  const r2 = await scatterCommand(nc, SPACE, service, "ps", undefined, { deadlineMs: 3_000 });
+  const r2 = await scatterCommand(nc, SPACE, service, "ps", undefined, {
+    deadlineMs: 3_000,
+    // Exactly the shape the CLI supplies after its freeze-then-pinned-mint pass: the caller owns the
+    // probe because the caller owns the grant it publishes under.
+    probeLiveness: (instanceId) => epProbeInstanceInterest(nc!, SPACE, MANAGER_ENDPOINT, instanceId, caller, { deadlineMs: 3_000 }),
+  });
   const elapsed = Date.now() - t0;
   check("the live instance still answered (its reply is present)", r2.replies.has(IID1), [...r2.replies.keys()]);
   check("the severed instance is reported UNREACHABLE (a missing slot), NEVER omitted (pin 3)",
     r2.missing.includes(IID2) && r2.complete === false, { missing: r2.missing, complete: r2.complete });
   check("the scatter is deadline-bounded — a dead instance does not hang the gather", elapsed < 8_000, { elapsed });
+  // THE CELL ABOVE PASSES ON THE DEFECT, and did for as long as it existed: the budget is 3000ms
+  // and the bound is 8000ms, so "the gather paid its deadline in full" — the thing `ps` was slow
+  // for — reads as ~3050ms and sails through. It proves the gather is BOUNDED; its name promises
+  // FAST. Kept as-is (bounded is still worth asserting) and joined by the claim it was read as
+  // making.
+  //
+  // THE END-TO-END PROOF for the liveness probe, and it has to be here rather than in
+  // `smoke:scatter-liveness`. That suite hands `epScatter` its hook directly, which proves the
+  // gather DEPENDS on a verdict but not that any real caller produces one — mutation-proof says so
+  // itself. Nothing is handed in here: a real `scatterCommand` over a real broker, against a manager
+  // severed exactly as a crash severs it (its serve connection dropped, svc record left READY),
+  // under the instrument's own credential.
+  //
+  // WHAT MAKES IT REACHABLE IS THE CREDENTIAL. The probe publishes `describe` on the target's
+  // `ep.inst.…` rail, so a credential holding no instance rows has its publish refused, no
+  // no-responders frame comes back, the verdict is `unknown`, and `unknown` licenses nothing. The
+  // pinned capabilities minted above are what make this cell possible, and `cotal ps` now mints the
+  // same shape for itself: it freezes the class on one connection and re-mints against exactly those
+  // ids before scattering on a second. That pass costs one local JWT signature (22-45ms measured),
+  // not the 3.2s a full target re-resolve cost when this was first attempted and withdrawn.
+  //
+  // A HUNG instance still costs the full deadline, and that is correct: it holds its subscriptions,
+  // so the broker reports interest, so no verdict is produced. "Connected but slow" and "connected
+  // but wedged" are the same observation, and neither is death.
+  check("a severed instance is affirmed gone by the BROKER, so the gather ends instead of serving out its budget",
+    elapsed < 1_500, { elapsed, budgetMs: 3_000, controlElapsed });
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
   await m2?.stop().catch(() => {});

@@ -291,3 +291,7 @@ smoke:view-events-filter
 smoke:event-order
 smoke:web-events-filter
 smoke:reaper
+smoke:scatter-liveness
+smoke:service-dereg
+smoke:manager-deregister
+smoke:scatter-pinned-probe
