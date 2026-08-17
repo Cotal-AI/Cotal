@@ -4509,7 +4509,7 @@ export class Manager {
     // itself (`iid`, written at accept), which is the honest coordinate: a same-instanceId restart
     // inherits its predecessor's orphans, and a goal accepted by a DIFFERENT (possibly still-live)
     // sibling is left for its owner. This replaces the goal spec's `executor` pin, which existed
-    // only to epoch-scope the terminal subject and is gone with it (SPEC:1433, §13.2 reserved subjects).
+    // only to epoch-scope the terminal subject and is gone with it (§13.2 reserved subjects).
     if (acceptedByIid !== this.managerInstanceId) {
       console.error(`goal reconcile ${ref.goalId}: accepted by instance "${acceptedByIid}", not this incarnation "${this.managerInstanceId}"; left for its owner (never a cross-instance settle)`);
       return;

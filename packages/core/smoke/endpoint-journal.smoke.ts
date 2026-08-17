@@ -303,7 +303,7 @@ c("c5 and that cause is no-canonical-form, not no-usable-id",
 
 // c6 — the ONLY ceiling-adjacent outcome that produces a caller-addressed decision fact. It is a
 // rejection rather than a quarantine for exactly one reason: the fingerprint exists by then, so
-// there is a caller-scoped subject to write the answer to (SPEC:1677-1679).
+// there is a caller-scoped subject to write the answer to.
 // AND IT IS REACHABLE WITHOUT CONTRIVANCE, which is why the two paths differ at all: the
 // fingerprint replaces `auth` with a DIGEST, so a one-character secret becomes 71 characters and
 // the canonical form is larger than the bytes that arrived. Measured here: 91 raw, 229 canonical.

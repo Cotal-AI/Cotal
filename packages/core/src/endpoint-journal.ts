@@ -162,7 +162,7 @@ function measure(value: unknown): { depth: number; items: number } {
  *  that fails before a fingerprint exists quarantines, because there is no caller-addressed
  *  subject to write a decision to. Once a fingerprint EXISTS the caller is addressable, so a
  *  breach becomes a REJECTION — a durable, caller-visible answer rather than a message they never
- *  hear about (SPEC:1677-1679). */
+ *  hear about. */
 /**
  * Duplicate object names in the RAW bytes, which no post-parse check can see.
  *

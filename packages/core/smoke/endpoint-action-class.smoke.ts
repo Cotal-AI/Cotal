@@ -1,6 +1,6 @@
 /** The ACTION COMPOSITE: its declaration in the cluster document, and the two envelope checks it
- *  gates: the `class` field row (SPEC:1465, `MUST equal the command's declared class`) and the
- *  `goalId` row (SPEC:1467, a MUST for a command whose contract declares the action composite).
+ *  gates: the `class` field row (`MUST equal the command's declared class`) and the
+ *  `goalId` row (a MUST for a command whose contract declares the action composite).
  *  ANCHORED BY PHRASE AS WELL AS LINE. This header cited :1446/:1448 — a subject-grammar
  *  sentence and a blank line — while the body of this same file cited :1465/:1467 correctly. A
  *  line number is a derived value nothing re-derives; the phrase is the thing itself.
@@ -181,7 +181,7 @@ admits("a non-action request WITHOUT goalId is admitted",
 //    it against these cells; it passed.
 //
 //    The fix is not a stronger assertion, it is DECORRELATION: a journal-class command that does
-//    NOT declare the action composite. Every action command's submissions are journal (SPEC:1465),
+//    NOT declare the action composite. Every action command's submissions are journal,
 //    and that is emphatically not the converse — the composite is a command MARKER, and journal is
 //    a class that plenty of non-action commands use. These two cells are the only place in the
 //    suite where the two inputs disagree, and they are therefore the only place either is tested.

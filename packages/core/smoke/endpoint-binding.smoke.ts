@@ -285,7 +285,7 @@ const COMMIT_ROWS = [
   "$KV.cotal_records_epbind.goal.manager.>",
   "$KV.cotal_records_epbind.cp.manager.>",
   "$KV.cotal_records_epbind.lease.manager.>",
-  // SPEC:2912 (§13.9 "Claim / action / checkpoint commits") enumerates SIX record kinds on this row, not three. These were built on the Model-B
+  // §13.9 "Claim / action / checkpoint commits" enumerates SIX record kinds on this row, not three. These were built on the Model-B
   // overlay instead, where one connection binds AND commits, so nothing noticed for as long as that
   // overlay was the only caller — and a commit principal minted from this builder alone would be
   // denied the launch election, the name claim, and the cutover manifest at commit time.
@@ -356,7 +356,7 @@ c("the self-mediated goal-writer (P2 item 2) is the commit principal PLUS the go
   ]) && JSON.stringify(GW.subscribe) === JSON.stringify([`_INBOX_${CONN}.>`]), GW.publish);
 // SPELLED AS A COMPOSITION, not as a re-listing. The three coordination kinds were written out here
 // as well as on the commit row, which made this overlay look like their source; they are §13.9
-// "Claim / action / checkpoint commits" (SPEC:2912) commit-row grants that every commit principal holds, and this profile only INHERITS them. Reusing
+// "Claim / action / checkpoint commits" commit-row grants that every commit principal holds, and this profile only INHERITS them. Reusing
 // `COMMIT_ROWS` is what makes that structural rather than a claim in a comment: the day the commit
 // row changes, this cell moves with it or fails, and it cannot drift into a private copy again.
 // the item-2 privilege separation: the goal-writer carries the `.bind` leaf the serve cred never does
@@ -479,7 +479,7 @@ const throwsMsg = (label: string, fn: () => unknown, needle: string) => {
 admitsFloor("an OMITTED fact age is admitted: no age eviction means the floor cannot be breached", undefined, HORIZON);
 admitsFloor("and an explicit 0 is admitted for the same reason — 0 is the documented no-eviction "
   + "spelling, not a zero-length retention", 0, HORIZON);
-// THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON (SPEC:3203-3206). This pair used to read
+// THE FLOOR IS A MAX OVER THREE TERMS, NOT THE HORIZON. This pair used to read
 // "a fact age EXACTLY at the horizon is admitted" and it was WRONG — 24 h of EPF retention evicts
 // the 90-day receipts whose reconstruction source the acceptance fact IS. A reviewer found it by
 // reading the spec sentence the row cited rather than the row. The lesson generalises past this

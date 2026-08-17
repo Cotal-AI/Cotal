@@ -276,7 +276,7 @@ export async function createEndpointStreams(
   // EPW — work pools, one item per subject. NO allow_direct: the §13.6 reconciliation probe
   // (an acked item leaves the WorkQueue, an in-flight one remains readable — exactly the
   // predicate) is a FENCING read that gates the re-enqueue decision, so it goes leader-served
-  // STREAM.MSG.GET (SPEC:2931, §13.9 "Work-pool reconciliation probe"), never a follower-servable Direct Get whose stale miss
+  // STREAM.MSG.GET (§13.9 "Work-pool reconciliation probe"), never a follower-servable Direct Get whose stale miss
   // would re-arm settled work. Nothing else reads EPW: the pool workers drain it via the
   // WorkQueue consumer (CONSUMER.MSG.NEXT), not by subject read.
   await jsm.streams.add({
@@ -1047,7 +1047,7 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
   const p = spacePrefix(space);
   const records = recordsBucket(space);
   const publish = [
-    // ONE terminal subject per goal (SPEC:2910, the §13.9 "Result/receipt/terminal/resume facts"
+    // ONE terminal subject per goal (the §13.9 "Result/receipt/terminal/resume facts"
     // row): the exact-arity `…result` leaf, never an `…result.*` epoch-scoped variant — a per-epoch
     // subject hid a legitimate pre-restart winner from every reader.
     `${p}.epf.${e}.goal.*.*.*.*.result`,
@@ -1058,7 +1058,7 @@ export function commitPrincipalGrants(space: string, endpoint: string, connId: s
     `$KV.${records}.goal.${e}.>`,
     `$KV.${records}.cp.${e}.>`,
     `$KV.${records}.lease.${e}.>`,
-    // SPEC:2912 — §13.9 "Claim / action / checkpoint commits" — puts SIX kinds on this row, not three, and says why in the row itself: the three
+    // §13.9 "Claim / action / checkpoint commits" — puts SIX kinds on this row, not three, and says why in the row itself: the three
     // coordination kinds "are enumerated HERE because a shared registry profile does not confer a
     // grant — a kind absent from this enumeration is default-denied however it is registered". They
     // were built on the Model-B overlay instead, where one connection happens to bind and commit,

@@ -13,7 +13,7 @@
  *
  * RETARGETED, along with `manager-restart-fence`, whose inverted pair this suite carries at 3c. It
  * used to assert that the predecessor's terminal was FENCED — invisible to the current-epoch reader
- * — under the epoch-scoped subject `…result.<execEpoch>`. That subject is gone (SPEC:1433, §13.2 reserved subjects, reserves a
+ * — under the epoch-scoped subject `…result.<execEpoch>`. That subject is gone (§13.2 reserved subjects, reserves a
  * flat `…result` leaf) and the assertion was wrong: a verified eviction kills the predecessor, but
  * it does not retract what the predecessor already durably committed, and the pre-restart fact is
  * usually the real outcome rather than a corpse's guess. It now asserts the opposite and stronger
