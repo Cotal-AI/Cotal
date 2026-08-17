@@ -18,6 +18,9 @@
  * module they may depend on, never a core export.
  */
 
+import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
+
 /** A Node/POSIX-signalable pid: a positive INTEGER within the signed 32-bit range `process.kill`
  *  accepts (it throws `ERR_INVALID_ARG_TYPE`/`ERR_OUT_OF_RANGE` outside it). Anything else -
  *  fractional, non-numeric, non-positive, oversized - is undefined: UNATTRIBUTABLE, never a pid to
@@ -63,4 +66,81 @@ export function probeLiveness(pid: number): "alive" | "dead" | "unknown" {
   } catch (e) {
     return livenessFromErrno((e as NodeJS.ErrnoException).code);
   }
+}
+
+// ---- the manager's own record ------------------------------------------------------------------
+
+/** `.cotal/manager.pid` — the running manager's pid. The NAME lives here, in the tier both the CLI
+ *  (which reads it to decide whether to start one) and the manager daemon (which writes it on
+ *  start) already depend on, because a file written under one constant and read under another is
+ *  the same defect as no record at all. */
+export const MANAGER_PIDFILE = "manager.pid";
+
+/** `.cotal/manager.delivery-aware` — the sibling marker proving the live manager is a build that
+ *  does NOT host Plane-3. Written and removed with the pidfile; it carries the pid it was written
+ *  for, so a stale marker cannot be paired with a different manager. */
+export const MANAGER_DELIVERY_AWARE_MARKER = "manager.delivery-aware";
+
+// ---- ATTRIBUTION: is the live process behind this record actually ours? -------------------------
+
+/** What was read about ONE pid's command line, three-valued for the same reason liveness is:
+ *  "it is something else" and "I could not look" are different facts and only the first may be
+ *  acted on. */
+export type ProcessCommand =
+  /** The process's argv, as the OS reports it. */
+  | { kind: "command"; command: string }
+  /** No such process — the pid died between the liveness probe and this read, or never existed. */
+  | { kind: "gone" }
+  /** This platform, sandbox, or permission set cannot answer. NOT "it is foreign". */
+  | { kind: "unreadable"; why: string };
+
+/** The command-line reader as a DEPENDENCY, for the same reason {@link LivenessProbe} is one: a
+ *  test cannot conjure a live foreign process at a chosen pid, and `unreadable` is reachable only
+ *  on platforms the test host may not be. */
+export type CommandReader = (pid: number) => ProcessCommand;
+
+/**
+ * Read one pid's command line.
+ *
+ * `/proc` on Linux (no subprocess, no PATH dependency, NUL-separated argv); `ps -p <pid> -o
+ * command=` elsewhere on POSIX. Windows has neither and is `unreadable` — deliberately, and
+ * harmlessly, because of the asymmetry the callers enforce: attribution may only ever DOWNGRADE a
+ * record on affirmative evidence that the live process is something else, so a platform that cannot
+ * look behaves exactly as every platform did before this existed.
+ */
+export function readProcessCommand(pid: number): ProcessCommand {
+  if (process.platform === "win32") return { kind: "unreadable", why: "no process-argv source on win32" };
+  if (process.platform === "linux") {
+    try {
+      // argv is NUL-separated and NUL-terminated; the trailing empty field is dropped by the trim.
+      return { kind: "command", command: readFileSync(`/proc/${pid}/cmdline`, "utf8").replace(/\0/g, " ").trim() };
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === "ENOENT" || code === "ESRCH") return { kind: "gone" };
+      return { kind: "unreadable", why: `/proc/${pid}/cmdline: ${code ?? (e as Error).message}` };
+    }
+  }
+  const r = spawnSync("ps", ["-p", String(pid), "-o", "command="], { encoding: "utf8" });
+  if (r.error) return { kind: "unreadable", why: `ps: ${r.error.message}` };
+  const out = (r.stdout ?? "").trim();
+  if (r.status === 0 && out !== "") return { kind: "command", command: out };
+  if (r.status === 1) return { kind: "gone" }; // ps exits 1 when no process matches
+  return { kind: "unreadable", why: `ps exited ${String(r.status)}${out ? `: ${out}` : ""}` };
+}
+
+/**
+ * Does this command line belong to a Cotal manager?
+ *
+ * The test is the `supervise` ARGV TOKEN, which is the manager daemon's own subcommand and is
+ * present however it was started — by `cotal up`'s detached re-exec, by a container entrypoint, by
+ * cron, or typed by hand. Matching the token rather than a path keeps it true across a global
+ * install, a `tsx bin/cotal.ts` dev run, and a bundled binary, none of which agree on argv[0].
+ *
+ * IT FAILS TOWARD "OURS". A process whose argv merely mentions the word reads as a manager, and the
+ * cost of that is exactly today's behaviour (a live pid is trusted). The cost of the opposite error
+ * — calling a real manager foreign — is a second manager launched onto a live one, so the loose
+ * direction is the safe one and is chosen deliberately.
+ */
+export function commandIsCotalSupervisor(command: string): boolean {
+  return /(^|\s)supervise(\s|$)/.test(command);
 }

@@ -219,7 +219,7 @@ export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: s
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune.
  */
-export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { instanceId?: string } = {}): Promise<Connection> {
+export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
   if (flags.creds) {
     const space = flags.space ?? DEFAULT_SPACE;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"

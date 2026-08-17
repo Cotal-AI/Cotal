@@ -4,7 +4,11 @@ import {
   BASELINE_LIFECYCLE_ENDPOINT,
   EpEnvelopeError,
   GOAL_BEARING_COMMANDS,
+  epProbeInstanceInterest,
+  freezeExpectedSet,
+  instancePinnedInstrumentCapabilities,
   invokeCommand,
+  mintCreds,
   respondedButUnbound,
   unansweredRequest,
   registryReadFailed,
@@ -16,10 +20,13 @@ import {
   standaloneConnectOpts,
   type ControlReply,
   type EpCaller,
+  type EpInstanceLiveness,
   type EpVerbTarget,
   type Profile,
+  type SpaceAuth,
 } from "@cotal-ai/core";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
+import { jetstreamManager } from "@nats-io/jetstream";
 import {
   authDir, endpointAuth, findCotalRoot, isWorkspaceTargetError, loadSpaceAuth, resolveMeshTarget,
   pruneStaleMeshes, renderWorkspaceError, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
@@ -69,7 +76,7 @@ export async function resolveControlTarget(
    *  only, exactly as before. It has to arrive HERE rather than at the invoke: the instrument is
    *  minted during this resolve, and a credential cannot gain a rail after it is issued. */
   instanceId?: string,
-): Promise<{ space: string; server: string; auth: ControlAuth }> {
+): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth }> {
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
@@ -131,6 +138,12 @@ export async function resolveControlTarget(
     space: conn.space,
     server: conn.server,
     auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
+    // The resolved mesh's trust material, carried FORWARD rather than re-loaded from disk by
+    // whoever needs it: {@link scatterManager} re-mints its one-shot instrument against the frozen
+    // instance ids, and a second `loadSpaceAuth` there would be a second answer to "which space's
+    // seed" for one command. Absent for an open mesh (no credential system) and for raw
+    // off-registry creds (no seed to mint from) — both of which simply do not re-mint.
+    ...(conn.auth ? { spaceAuth: conn.auth } : {}),
   };
 }
 
@@ -357,57 +370,272 @@ export async function askManager(
   return askManagerEp(space, server, op, args, openAuth, reach, timeoutMs, pin);
 }
 
+/** What this CLI established about a silent instance's LIVENESS, as opposed to its answer. Kept
+ *  separate from `reachable` because they are different questions and folding them is what let a
+ *  registration outlive its host unnoticed:
+ *   - `gone` — the BROKER answered no-responders on that instance's own rail. Affirmative: the
+ *     record claims a live instance and there is nothing behind it, so the row can say so and name
+ *     the deregistration.
+ *   - `unknown` — a probe went out and nothing came back. A live-but-slow host and a wedged one are
+ *     the same observation from here, so nothing is claimed.
+ *   - `not-probed` — no probe was PUBLISHED for it: it is outside this credential's pinned set (it
+ *     registered after the freeze this instrument was minted against), or this command had no
+ *     probe path at all (user mode holds no instance rails).
+ *   - `probe-refused` — the broker refused the probe publish. The grant is missing, which is a
+ *     local misconfiguration and NOT a statement about the instance; it is named on stderr rather
+ *     than left to expire into `unknown`. */
+export type ScatterInstanceLiveness = "gone" | "unknown" | "not-probed" | "probe-refused";
+
 /** One instance's slot in a class scatter (P2 item 3): a REACHABLE instance carries its attributed
  *  reply (`data` on ok, `error` on a per-instance failure); an UNREACHABLE one (a frozen slot that
- *  produced no on-time reply — a severed/stalled manager) is reported, NEVER omitted (SPEC §13.5 pin 3). */
+ *  produced no on-time reply — a severed/stalled manager) is reported, NEVER omitted (SPEC §13.5 pin 3),
+ *  and carries what the liveness probe established about it ({@link ScatterInstanceLiveness}). */
 export interface ScatterInstanceReply {
   instanceId: string;
   reachable: boolean;
   data?: unknown;
   error?: string;
+  /** Set on unreachable slots only: a slot that ANSWERED needs no liveness verdict. */
+  liveness?: ScatterInstanceLiveness;
 }
 export type ScatterReply = { ok: true; instances: ScatterInstanceReply[] } | { ok: false; error: string };
 
-/** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default): one short-lived connection, a fresh
- *  UNPINNED {@link resolveService} (any instance answers `describe` for the shared command surface),
- *  then {@link scatterCommand} — freeze the live class from the records registry, publish once on the
- *  `all` rail, and gather one attributed reply per instance. Every frozen instance is accounted for:
- *  a reachable one carries its reply, a non-answering one is labeled unreachable (never omitted). */
-async function askManagerScatterEp(
-  space: string,
-  server: string,
-  op: string,
-  auth: ControlAuth,
-  timeoutMs?: number,
-): Promise<ScatterReply> {
-  const mapped = EP_COMMANDS[op];
-  if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
-  if (mapped.targeted) return { ok: false, error: `${op} is targeted and cannot be scattered across instances` };
-  const caller = auth.epCaller!;
+/** Open one short-lived control connection under whichever of the three auth shapes this command
+ *  holds (static creds / user bearer + sentinel / bare open mesh) and hand it to `fn`. Extracted so
+ *  the scatter's TWO connections cannot drift in their connect options: they differ in credential
+ *  and in nothing else. */
+async function withControlConnection<T>(server: string, auth: ControlAuth, fn: (nc: NatsConnection) => Promise<T>): Promise<T> {
   const nc = await connect({
     servers: server,
     ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: auth.tls === true } : auth.bearer ? { bearer: auth.bearer, sentinelCreds: auth.sentinelCreds, tls: auth.tls === true } : { tls: auth.tls === true }),
     maxReconnectAttempts: 0,
   });
   try {
-    const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
-    const result = await scatterCommand(nc, space, service, mapped.command, undefined, {
-      deadlineMs: timeoutMs ?? 8_000,
-      reconcileDeadlineMs: 3_000,
-    });
-    const instances: ScatterInstanceReply[] = [];
-    for (const [instanceId, ar] of result.replies) {
-      if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
-      else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error" });
+    return await fn(nc);
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
+}
+
+/** Watch a connection's status stream for the broker's own PERMISSION VIOLATIONS and attribute each
+ *  to the instance whose rail it names.
+ *
+ *  A refused publish is invisible where it matters. The violation is delivered on the CONNECTION,
+ *  asynchronously, while the publish itself returns normally — so a liveness probe with no grant
+ *  does not fail, it goes quiet, and quiet is exactly what a live-but-slow instance looks like. The
+ *  whole probe would then read as `unknown`, the deadline would be paid in full, and the operator
+ *  would be told the manager was slow when the truth was that this CLI never asked. So the
+ *  violation is caught, attributed by the instance id inside the subject, reported on stderr once,
+ *  and used to settle that probe immediately instead of letting it expire.
+ *
+ *  Attribution is by SUBSTRING of the frozen ids, deliberately: the violation's text is the
+ *  broker's, not ours, and a lifecycle token is long and unique enough that its appearance in a
+ *  refused subject identifies the instance without parsing a message format we do not own. */
+function watchProbeRefusals(nc: NatsConnection, ids: readonly string[], report: (line: string) => void): { refused: (id: string) => Promise<void>; wasRefused: (id: string) => boolean } {
+  const settle = new Map<string, () => void>();
+  const already = new Set<string>();
+  const pending = new Map<string, Promise<void>>();
+  const refused = (id: string): Promise<void> => {
+    if (already.has(id)) return Promise.resolve();
+    let p = pending.get(id);
+    if (!p) {
+      p = new Promise<void>((resolve) => settle.set(id, resolve));
+      pending.set(id, p);
     }
-    // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped (pin 3).
-    for (const instanceId of result.missing) instances.push({ instanceId, reachable: false });
-    return { ok: true, instances };
+    return p;
+  };
+  void (async () => {
+    try {
+      for await (const s of nc.status()) {
+        if (s.type !== "error") continue;
+        const text = String((s as { error?: Error }).error?.message ?? "");
+        if (!/permission|authorization/i.test(text)) continue;
+        for (const id of ids) {
+          if (!text.includes(id) || already.has(id)) continue;
+          already.add(id);
+          report(`! the broker refused this command's liveness probe for manager instance ${id}: ${text}`);
+          settle.get(id)?.();
+        }
+      }
+    } catch {
+      /* the connection closed; the scatter is over and there is nothing left to attribute */
+    }
+  })();
+  return { refused, wasRefused: (id: string) => already.has(id) };
+}
+
+/**
+ * THE §13.5 LIVENESS HOOK this CLI hands to a scatter, and the record of what it established.
+ *
+ * It is built HERE and not in core because it is entirely a statement about this caller's
+ * CREDENTIAL. A probe publishes on an instance's own rail, and only the layer that minted the
+ * credential knows which instance rails it carries; core cannot know, and a core that guessed would
+ * publish requests the broker must refuse — invisibly, since a refused publish looks exactly like a
+ * slow instance from the caller's side.
+ *
+ * TWO RULES, and both are about not asking questions this credential cannot ask:
+ *  - an id OUTSIDE the pinned set gets `unknown` WITHOUT PUBLISHING. The scatter re-freezes the
+ *    class on its own connection, so it can name an instance that registered after the freeze this
+ *    credential was minted against. That instance is NEW, not dead, and the right answer for it is
+ *    the deadline — reached without sending a request that would be refused.
+ *  - an id INSIDE the set that the broker refuses anyway settles IMMEDIATELY on the violation
+ *    rather than expiring into `unknown` at the budget, and is reported by name.
+ *
+ * Only `gone` ever licenses anything downstream, so every mistake this can make is a slower and
+ * more truthful answer, never a faster wrong one.
+ */
+export function pinnedLivenessProbe(
+  nc: NatsConnection,
+  opts: {
+    space: string;
+    endpoint: string;
+    caller: EpCaller;
+    /** The exact ids this connection's credential holds `inst` rails for. */
+    pinned: ReadonlySet<string>;
+    probeDeadlineMs?: number;
+    /** Where a refusal is announced. Defaults to stderr; the suite captures it. */
+    report?: (line: string) => void;
+  },
+): {
+  probeLiveness: (instanceId: string) => Promise<EpInstanceLiveness>;
+  /** What was established about one silent slot, for the row that will describe it. */
+  livenessOf: (instanceId: string) => ScatterInstanceLiveness;
+} {
+  const deadlineMs = opts.probeDeadlineMs ?? PROBE_DEADLINE_MS;
+  const report = opts.report ?? ((line: string) => console.error(c.dim(line)));
+  const refusals = watchProbeRefusals(nc, [...opts.pinned], report);
+  const verdicts = new Map<string, ScatterInstanceLiveness>();
+  return {
+    probeLiveness: async (instanceId: string): Promise<EpInstanceLiveness> => {
+      if (!opts.pinned.has(instanceId)) {
+        verdicts.set(instanceId, "not-probed");
+        return "unknown";
+      }
+      const verdict = await Promise.race([
+        epProbeInstanceInterest(nc, opts.space, opts.endpoint, instanceId, opts.caller, { deadlineMs }),
+        refusals.refused(instanceId).then((): EpInstanceLiveness => "unknown"),
+      ]);
+      verdicts.set(instanceId, verdict === "gone" ? "gone" : refusals.wasRefused(instanceId) ? "probe-refused" : "unknown");
+      return verdict;
+    },
+    // A slot with no recorded verdict was never handed to the hook at all, which is a different fact
+    // from "probed and silent" and prints as one.
+    livenessOf: (instanceId: string): ScatterInstanceLiveness =>
+      verdicts.get(instanceId) ?? (opts.pinned.has(instanceId) ? "unknown" : "not-probed"),
+  };
+}
+
+/** The tier a scatter re-mints at. Only ONE tier can scatter — the freeze read is a privileged row
+ *  and the admin tier is denied it deliberately — so this is a constant rather than a parameter, and
+ *  it is named here so the re-mint below can never silently widen: it reproduces the credential the
+ *  caller already resolved with, pinned, never a higher one. */
+const SCATTER_PROFILE: Profile = "control-caller-privileged";
+
+/** How long a single liveness probe waits for the broker's no-responders answer. It is NOT a tuning
+ *  knob and cannot make the command wrong: the only verdict that changes anything is `gone`, and
+ *  giving up early yields `unknown`, which leaves the full gather deadline standing exactly as it
+ *  did before the probe existed. Sized to be generous against a busy broker while still expiring
+ *  well inside the gather. */
+const PROBE_DEADLINE_MS = 5_000;
+
+/** The ep-rail CLASS SCATTER (P2 item 3, `cotal ps` default).
+ *
+ * TWO connections, because a connection's permissions are fixed at authentication and this command
+ * cannot know which instance rails it needs until it has read the registry:
+ *
+ *   0. FREEZE the live class from the records registry (the same §13.9 read the scatter itself
+ *      does), then close. This yields the exact instance ids this invocation will address.
+ *   1. RE-MINT the one-shot instrument LOCALLY, pinned to exactly those ids, and run the
+ *      unpinned {@link resolveService} + {@link scatterCommand} on it — now the §13.5 liveness probe
+ *      can publish on each frozen instance's own rail and the gather can end as soon as every slot
+ *      has either answered or been affirmed gone by the broker.
+ *
+ * THE COST IS THE MINT, NOT A ROUND TRIP. `mintCreds` is a local JWT signature against the space
+ * seed already in hand (measured at 22-45ms here); the extra connection is the only wire cost. The
+ * earlier attempt at this measured 3.2s because it re-ran the whole target resolve (registry read,
+ * preflight, stale-prune) to get a pinned credential, and shipped a regression to fix a hypothesis.
+ * This re-mints and nothing else.
+ *
+ * NO WILDCARD INSTANCE ROW is minted, which is the invariant the whole two-connection shape exists
+ * to preserve: the pin is a list of exact ids known before the mint, the same precondition `--on`
+ * satisfies with one id.
+ *
+ * WHERE THERE IS NO SEED THERE IS NO PROBE, and the deadline stands. A user-mode bearer and a raw
+ * off-registry cred cannot re-mint, so their frozen slots are `not-probed` and say so. This is not
+ * a silent degrade: it is the pre-existing behaviour, and the row prints which of the two it is.
+ */
+async function askManagerScatterEp(
+  space: string,
+  server: string,
+  op: string,
+  auth: ControlAuth,
+  spaceAuth: SpaceAuth | undefined,
+  timeoutMs?: number,
+): Promise<ScatterReply> {
+  const mapped = EP_COMMANDS[op];
+  if (!mapped) return { ok: false, error: `unknown manager op "${op}" (no v0.4 command mapping)` };
+  if (mapped.targeted) return { ok: false, error: `${op} is targeted and cannot be scattered across instances` };
+
+  // ---- connection 0: freeze the class. A registry read that fails here fails the command with the
+  // registry's own verdict (never the managers'), which `epRailFailure` already words.
+  let pinnedIds: string[];
+  try {
+    pinnedIds = await withControlConnection(server, auth, async (nc) => {
+      // `checkAPI: false` for the same reason `scatterCommand` uses it: the freeze rides the scoped
+      // §13.9 records rows, never an account-level JetStream probe.
+      const jsm = await jetstreamManager(nc, { checkAPI: false });
+      return (await freezeExpectedSet(jsm, space, BASELINE_LIFECYCLE_ENDPOINT)).map((f) => f.instanceId);
+    });
   } catch (e) {
     const { error } = epRailFailure(e);
     return { ok: false, error: error ?? "error" };
-  } finally {
-    await nc.drain().catch(() => nc.close());
+  }
+
+  // ---- the LOCAL pinned re-mint. An OPEN mesh has no credential system, so its bare connection can
+  // already publish anywhere and needs no mint to probe; an auth mesh with the space seed re-mints;
+  // anything else keeps the credential it arrived with and does not probe.
+  const openMesh = !auth.creds && !auth.bearer;
+  let probeAuth = auth;
+  let caller = auth.epCaller!;
+  let probed: ReadonlySet<string> = openMesh ? new Set(pinnedIds) : new Set();
+  if (spaceAuth && auth.creds) {
+    const identity = newIdentity();
+    const uid = mintLifecycleUid();
+    probeAuth = {
+      ...auth,
+      creds: await mintCreds(spaceAuth, identity, SCATTER_PROFILE, {
+        lifecycleUid: uid,
+        endpointCapabilities: instancePinnedInstrumentCapabilities("privileged", pinnedIds),
+      }),
+    };
+    caller = { owner: DEV_OWNER, actor: identity.id, uid };
+    probed = new Set(pinnedIds);
+  }
+
+  // ---- connection 1: resolve + scatter, with the probe closure this credential can actually back.
+  try {
+    return await withControlConnection(server, probeAuth, async (nc) => {
+      const { probeLiveness, livenessOf } = pinnedLivenessProbe(nc, { space, endpoint: BASELINE_LIFECYCLE_ENDPOINT, caller, pinned: probed });
+      const service = await resolveService(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, { deadlineMs: 10_000 });
+      const result = await scatterCommand(nc, space, service, mapped.command, undefined, {
+        deadlineMs: timeoutMs ?? 8_000,
+        reconcileDeadlineMs: 3_000,
+        probeLiveness,
+      });
+      const instances: ScatterInstanceReply[] = [];
+      for (const [instanceId, ar] of result.replies) {
+        if (ar.reply.ok === true) instances.push({ instanceId, reachable: true, data: ar.reply.data });
+        else instances.push({ instanceId, reachable: true, error: ar.reply.error?.message ?? ar.reply.error?.code ?? "error" });
+      }
+      // A frozen instance that never answered is UNREACHABLE — surfaced, never silently dropped
+      // (pin 3) — and now carries WHY it is silent, as far as this command could establish it.
+      for (const instanceId of result.missing)
+        instances.push({ instanceId, reachable: false, liveness: livenessOf(instanceId) });
+      return { ok: true, instances };
+    });
+  } catch (e) {
+    const { error } = epRailFailure(e);
+    return { ok: false, error: error ?? "error" };
   }
 }
 
@@ -415,20 +643,24 @@ async function askManagerScatterEp(
  *  the attributed results — the `cotal ps` default in a multi-manager space (P2 item 3). Auth shapes
  *  match {@link askManager}: a minted instrument or user bearer rides its own caller triple; a raw
  *  pre-1c `--creds` file is refused loud; an OPEN mesh synthesizes a DEV_OWNER triple and connects
- *  bare (the broker enforces nothing, so the records freeze reads freely). */
+ *  bare (the broker enforces nothing, so the records freeze reads freely). `spaceAuth` is the
+ *  resolved mesh's trust material from {@link resolveControlTarget}: present ⇒ the scatter re-mints
+ *  its instrument pinned to the frozen instance ids and can probe their liveness; absent ⇒ it runs
+ *  exactly as it did before and every silent slot is reported `not-probed`. */
 export async function scatterManager(
   space: string,
   server: string,
   op: string,
   auth: ControlAuth = {},
+  spaceAuth?: SpaceAuth,
   timeoutMs?: number,
 ): Promise<ScatterReply> {
   if (auth.epCaller && (auth.creds || (auth.bearer && auth.sentinelCreds)))
-    return askManagerScatterEp(space, server, op, auth, timeoutMs);
+    return askManagerScatterEp(space, server, op, auth, spaceAuth, timeoutMs);
   if (auth.creds)
     return { ok: false, error: `this --creds file predates the v0.4 control surface (no endpoint-serve rows); re-mint it with a current cotal, or drive the manager from its project folder (\`cotal ps\`) which mints the instrument for you` };
   const openAuth: ControlAuth = { epCaller: { owner: DEV_OWNER, actor: newIdentity().id, uid: mintLifecycleUid() } };
-  return askManagerScatterEp(space, server, op, openAuth, timeoutMs);
+  return askManagerScatterEp(space, server, op, openAuth, spaceAuth, timeoutMs);
 }
 
 export function failIfNotOk(reply: ControlReply): void {

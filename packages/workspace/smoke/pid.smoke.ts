@@ -24,7 +24,10 @@ import { spawn } from "node:child_process";
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { livenessFromErrno, parsePid, probeLiveness } from "../src/pid.js";
+import {
+  commandIsCotalSupervisor, livenessFromErrno, parsePid, probeLiveness, readProcessCommand,
+  type CommandReader,
+} from "../src/pid.js";
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -56,6 +59,25 @@ await new Promise<void>((r) => dead.once("exit", () => r()));
 const deadPid = dead.pid!;
 check("a just-exited child reads dead", probeLiveness(deadPid) === "dead", deadPid);
 
+// ── ATTRIBUTION: reading a live pid's command, and what may be concluded from it ───────────────
+// The mirror of the liveness rule one question over. Liveness says the pid exists; attribution says
+// whether what exists is OURS. Both fail toward the old behaviour on doubt, and the pure predicate
+// is separated from the OS read for the same reason `livenessFromErrno` is: a fixture that cannot
+// be produced on the test host must not be the only guard on a branch.
+check("a supervise argv is recognised", commandIsCotalSupervisor("node /usr/local/bin/cotal supervise --space main"));
+check("...at the end of the line too (no trailing flags)", commandIsCotalSupervisor("node bin/cotal.ts supervise"));
+check("...and through a dev tsx invocation", commandIsCotalSupervisor("node --import tsx bin/cotal.ts supervise --runtime pty"));
+for (const other of ["vim SPEC.md", "node server.js", "/usr/bin/supervised-thing --x", "cotal up", ""])
+  check(`an unrelated command line is NOT a manager (${JSON.stringify(other)})`, !commandIsCotalSupervisor(other), other);
+// SUBSTRING IS NOT ENOUGH, and this is the cell that says so: the token test is what keeps
+// `supervised-thing` above from reading as a manager, so a rewrite to `includes("supervise")`
+// resolves a stranger to ours and the attribution stops attributing.
+check("this very process is readable and is NOT a manager", (() => {
+  const r = readProcessCommand(process.pid);
+  return r.kind === "command" && !commandIsCotalSupervisor(r.command);
+})(), readProcessCommand(process.pid));
+check("a pid with no process behind it reads GONE, never as a command", readProcessCommand(deadPid).kind === "gone", { deadPid, got: readProcessCommand(deadPid) });
+
 // ── THE CALLERS, which are the actual change ──────────────────────────────────────────────────
 // Driven through a real pidfile in a real cotal root, not by calling the predicate by hand: the
 // defect being guarded is a caller reading the contract in the wrong DIRECTION, so the caller has
@@ -63,18 +85,39 @@ check("a just-exited child reads dead", probeLiveness(deadPid) === "dead", deadP
 const root = mkdtempSync(join(tmpdir(), "cotal-pidcaller-"));
 mkdirSync(join(root, ".cotal"), { recursive: true });
 const prevCwd = process.cwd();
+/** Long-lived children this suite spawns as fixtures; killed in the finally, counted, never leaked. */
+const strays: ReturnType<typeof spawn>[] = [];
 try {
   process.chdir(root);
-  const { managerUp } = await import("../../../implementations/cli/src/lib/manager-proc.js");
+  const { managerUp, managerLiveness } = await import("../../../implementations/cli/src/lib/manager-proc.js");
   const { deliveryUp } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
 
   const mgrPid = join(root, ".cotal", "manager.pid");
   const delPid = join(root, ".cotal", "delivery.pid");
 
-  writeFileSync(mgrPid, `${process.pid}\n`);
+  // A REAL live process that reads as a manager: `supervise` is in its argv, exactly as every route
+  // to a running manager puts it there. It is a real process, not a stand-in, because the point of
+  // attribution is that the caller looks at what is actually behind the pid — and this test runner
+  // (whose argv is a smoke script) is then a genuine FOREIGN fixture, needing no mock either.
+  const supervisorish = spawn(process.execPath, ["-e", "setInterval(() => {}, 1e9)", "supervise"], { stdio: "ignore" });
+  strays.push(supervisorish);
+  await new Promise((r) => setTimeout(r, 300)); // let it exec, so `ps` sees the final argv
+  const supervisorPid = supervisorish.pid as number;
+
+  writeFileSync(mgrPid, `${supervisorPid}\n`);
   writeFileSync(delPid, `${process.pid}\n`);
-  check("managerUp is TRUE for a live pid", managerUp() === true);
+  check("managerUp is TRUE for a live pid running a manager", managerUp() === true, supervisorPid);
   check("deliveryUp is TRUE for a live pid", deliveryUp() === true);
+
+  // THE RECORD THAT OUTLIVED ITS PROCESS. `.cotal/manager.pid` held 1940925 on a box whose live
+  // supervisor was 3883139: the recorded process had exited, and the number is eventually reused by
+  // something unrelated. `kill(pid, 0)` says "alive" for that stranger forever, so every reader
+  // reports a healthy manager that does not exist. This runner IS such a stranger: alive, recorded,
+  // and provably not a manager.
+  writeFileSync(mgrPid, `${process.pid}\n`);
+  check("a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager", managerLiveness() === "foreign", process.pid);
+  check("and managerUp is FALSE for it, so a start path is not blocked forever by a stranger", managerUp() === false);
+  writeFileSync(mgrPid, `${supervisorPid}\n`);
 
   writeFileSync(mgrPid, `${deadPid}\n`);
   writeFileSync(delPid, `${deadPid}\n`);
@@ -89,7 +132,6 @@ try {
   // The tri-state the boolean cannot express. `unknown` is deliberately absent here: no
   // parsePid-accepted input produces one on a real kernel, and the note at the end says so rather
   // than a cell pretending to cover it.
-  const { managerLiveness } = await import("../../../implementations/cli/src/lib/manager-proc.js");
   const { deliveryLiveness } = await import("../../../implementations/cli/src/lib/delivery-proc.js");
   check("managerLiveness reports ABSENT with no pidfile (distinct from dead)", managerLiveness() === "absent");
   writeFileSync(mgrPid, "not-a-pid\n");
@@ -100,8 +142,8 @@ try {
   check("an EMPTY pidfile is ABSENT (a husk), not unattributable", managerLiveness() === "absent");
   writeFileSync(mgrPid, `${deadPid}\n`);
   check("managerLiveness reports DEAD for a proven-dead pid", managerLiveness() === "dead", deadPid);
-  writeFileSync(mgrPid, `${process.pid}\n`);
-  check("managerLiveness reports ALIVE for a live pid", managerLiveness() === "alive");
+  writeFileSync(mgrPid, `${supervisorPid}\n`);
+  check("managerLiveness reports ALIVE for a live pid running a manager", managerLiveness() === "alive", supervisorPid);
   check("deliveryLiveness reports DEAD for a proven-dead pid", (writeFileSync(delPid, `${deadPid}\n`), deliveryLiveness()) === "dead", deadPid);
 
   // ── THE UNKNOWN BRANCH, driven deterministically ────────────────────────────────────────────
@@ -114,6 +156,9 @@ try {
 
   writeFileSync(mgrPid, `${process.pid}\n`); // a LIVE holder, the dual review proved was overwritten
   check("managerLiveness surfaces UNKNOWN rather than folding it to a boolean", managerLiveness(stuck) === "unknown");
+  // An `unknown` liveness is never attributed: there is no process established to look at. This
+  // pins that the command read is not what produces the verdict here — a reader that ran anyway
+  // would resolve this record (a live pid, not a manager) to `foreign` and lose the refusal below.
   const before = readFileSync(mgrPid, "utf8");
   let refused: string | undefined;
   try {
@@ -163,9 +208,13 @@ try {
   writeFileSync(mgrPid, `${process.pid}\n`);
   writeFileSync(join(root, ".cotal", "manager.delivery-aware"), `${process.pid}\n`);
   const beforeStop = readFileSync(mgrPid, "utf8");
+  // The record names a MANAGER for these cells: the injected probe supplies the liveness and this
+  // supplies the attribution, so the EPERM rule below is graded on the signal path and not on
+  // whether the fixture pid happens to look like a manager.
+  const asManager: CommandReader = () => ({ kind: "command", command: "node /usr/local/bin/cotal supervise --space main" });
   let stopRefused: string | undefined;
   try {
-    await stopManager(alive, refuseSignal);
+    await stopManager(alive, refuseSignal, asManager);
   } catch (e) {
     stopRefused = (e as Error).message;
   }
@@ -177,7 +226,7 @@ try {
   // A signal that is ACCEPTED is still not a death. The record goes only on proven death.
   let outlived: string | undefined;
   try {
-    await stopManager(alive, () => {}); // accepted, but the probe keeps saying alive
+    await stopManager(alive, () => {}, asManager); // accepted, but the probe keeps saying alive
   } catch (e) {
     outlived = (e as Error).message;
   }
@@ -299,6 +348,7 @@ try {
     check(`and its record survives (${JSON.stringify(hostile)})`, existsSync(delPid), hostile);
   }
 } finally {
+  for (const s of strays) { try { s.kill("SIGKILL"); } catch { /* already gone */ } }
   process.chdir(prevCwd);
   rmSync(root, { recursive: true, force: true });
 }

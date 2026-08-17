@@ -715,6 +715,45 @@ afterwards and its normal takeover runs end to end.
 There is no `--force`, and no path that discards gate state: the only way this reopens a gate is by
 proving the holder is gone and then completing the operation properly.
 
+## deregister-instance
+
+```bash
+cotal deregister-instance [--space <s>] [--server <url>] [--endpoint <e>] [--instance <id>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` | this folder's auth space | Space the instance is registered in |
+| `--server <url>` | the local mesh | Broker URL |
+| `--endpoint <e>` | `manager` | Endpoint the instance serves |
+| `--instance <id>` | this folder's persisted manager instance | Instance id, the whole id as `cotal ps` prints it |
+
+**When you need this.** The service registry records *registration*, not liveness, and nothing in
+the model expires a row. A manager that stops cleanly removes its own registration. One whose host
+died without writing anything cannot, so its record goes on claiming a live instance forever: every
+class scatter in that space freezes the dead slot in, and `cotal ps`, `stop` and `attach` each pay
+their whole deadline waiting for a machine that is never coming back. A laptop that was reimaged, a
+container that was deleted, a box that will not be back on the network: those registrations have no
+other exit.
+
+This command is that exit. It asks the instance first, and only "asked, and nothing came back"
+passes the guard. Then it deletes the registration's two records keys, each pinned to the revision
+it read, and prints what it removed.
+
+**It refuses rather than guesses**, and says which check stopped it:
+
+| Refusal | What it means | What to do |
+|---|---|---|
+| `instance-answered` | The instance answered a pinned describe. It is alive | Nothing to repair. If it is wedged rather than gone, stop the process first; its own clean stop removes the record |
+| `liveness-unestablishable` | The probe itself failed, so nothing was learned | Fix the probe's path (credential, broker) and re-run. A probe that could not run is never read as death |
+| `not-registered` | No registration at that coordinate | Check `--instance` and `--endpoint`. This takes the whole id, never a prefix |
+| `superseded` | The record moved between the read and the delete | Something is writing to it. Nothing was removed; re-observe before retrying |
+
+There is no `--force` and no sweep: silence is not death, and a rule that removed rows on silence
+would eventually remove a live instance that was merely slow. An operator names one instance, and
+the guard's job is to show them they named a dead one. Removal is not a one way door either. The
+same instance re-registers over the tombstone on its next start, under the same identity.
+
 ## runtimes
 
 ```bash

@@ -2,7 +2,7 @@ import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, t
 import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness } from "../lib/control.js";
 import { attachClient, detachKey, meshSessionTransport } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -100,7 +100,7 @@ async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promis
   // manual escape hatch there, and docs/cli.md says so rather than this failing mysteriously.
   const probe = await resolveControlTarget(v, "control-caller-privileged");
   if (probe.auth.bearer) return { kind: "unpinned" };
-  const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth);
+  const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
   const reachable = scatter.instances.filter((i) => i.reachable);
   const unreachable = scatter.instances.filter((i) => !i.reachable).map((i) => i.instanceId);
@@ -124,6 +124,39 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
     : "";
   console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
   process.exit(1);
+}
+
+/**
+ * What one SILENT manager instance's row says. The wording lives here, in the CLI, and not in the
+ * scatter that produced the fact: core reports a frozen slot that did not answer, and turning that
+ * into a sentence for an operator is a rendering decision.
+ *
+ * "unreachable" was the old word for all four of these, and it was a network verdict this client
+ * never held. What it actually knows is narrower and more useful — whether it ASKED the broker
+ * about the instance, and what the broker said:
+ *
+ *  - `gone`: the broker itself reports nothing subscribed on that instance's rail. The registration
+ *    outlived its host, which never happens on its own and never heals on its own, so the row names
+ *    the verb that removes it.
+ *  - `unknown`: asked, nothing came back. "Alive but slow" and "wedged" are the same observation,
+ *    and neither is death — so this row still says only what happened.
+ *  - `not-probed` / `probe-refused`: this command could not ask. That is a fact about the command,
+ *    not the instance, and saying so is what keeps a local gap from reading as a remote fault.
+ */
+function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanceId: string): string {
+  if (liveness === "gone")
+    return (
+      c.red("registration is stale") +
+      c.dim(` (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)`) +
+      c.dim(`\n  ↳ remove the record: cotal deregister-instance --instance ${instanceId}`)
+    );
+  const why =
+    liveness === "probe-refused"
+      ? " (its liveness could not be probed: the broker refused this command's probe, named above)"
+      : liveness === "not-probed"
+        ? " (its liveness was not probed: this command holds no probe grant for it)"
+        : " (either the host is alive and slow, or it died and its registration was never removed)";
+  return c.red("registered, no answer within the deadline") + c.dim(why);
 }
 
 /** Render one managed-agent row (status + optional auth-health line), indented for the per-manager
@@ -199,7 +232,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  const scatter = await scatterManager(t.space, t.server, "ps", t.auth);
+  const scatter = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
   if (!scatter.ok) {
     console.error(c.red(`✗ ${scatter.error}`));
     process.exit(1);
@@ -229,7 +262,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
   for (const inst of instances) {
     const label = `manager ${inst.instanceId}`;
     if (!inst.reachable) {
-      console.log(`${c.bold(label)}  ${c.red("unreachable")}`);
+      console.log(`${c.bold(label)}  ${silentManagerRow(inst.liveness, inst.instanceId)}`);
       continue;
     }
     if (inst.error) {
