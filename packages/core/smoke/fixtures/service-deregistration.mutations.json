@@ -20,7 +20,7 @@
       "file": "packages/core/src/endpoint-service.ts",
       "find": "  return stored ? updateRecordEntry(kv, key, status, stored.revision) : createRecordEntry(kv, key, status);",
       "replace": "  return createRecordEntry(kv, key, status);",
-      "expectRed": "and its STATUS converges again over the status tombstone"
+      "expectRed": "a status deleted and then written again is a rewrite over its own tombstone"
     },
     {
       "name": "PREDICTED KILLED (1 red) - a deregistration that outlived its own record no longer advances the epoch, so a predecessor that survived its deregistration keeps a current-epoch authority",

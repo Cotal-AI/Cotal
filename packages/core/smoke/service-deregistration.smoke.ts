@@ -27,11 +27,13 @@
  * 4. IDEMPOTENCE. Deregistering twice is not an error, and neither is deregistering something that
  *    was never registered — both are `absent`, so a shutdown path racing an operator cannot fail.
  *
- * THE COUNT WAS PREDICTED AT 21 AND IS 20. Recorded rather than quietly re-cut: two of the
- * predicted cells were the same assertions counted twice while sketching sections 4 and 5, not
- * cells that were dropped. Every claim written down before the first run is still asserted below.
- * The twentieth was added afterwards, by the mutation pass: the status half of section 6 was being
- * proved by a bare `await` that would have thrown mid-run rather than by a cell that names it.
+ * THE COUNT WAS PREDICTED AT 21 AND IS 21, by a route worth recording rather than presenting as a
+ * clean hit. Two of the predicted cells turned out to be the same assertions counted twice while
+ * sketching sections 4 and 5, so the first run stood at 19. The two that replaced them came out of
+ * the mutation pass: the status key's tombstone rewrite was being proved TWICE by bare `await`s
+ * that would throw mid-run, ten cells before the section that owns the claim, and a suite that dies
+ * cannot say which claim fell. Each is now a cell. Every claim written down before the first run is
+ * still asserted below.
  *
  * WHAT THE FIRST RUN FOUND, which is the reason to write the recovery cells before the code: the
  * spec key's create-only fence had an exact twin on the STATUS key. With only the spec side fixed,
@@ -56,7 +58,7 @@ import {
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 20;
+const EXPECTED_CELLS = 21;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -174,8 +176,13 @@ try {
     merged !== undefined && merged.status === undefined, merged === undefined ? "absent" : Object.keys(merged));
   const notFrozen = new Set((await freezeExpectedSet(jsm, SPACE, ENDPOINT)).map((f) => f.instanceId));
   c("...and the freeze already skips it: registered, not converged, never a live member", !notFrozen.has(IID_NEVER), [...notFrozen]);
-  // Now the OTHER order's half-state, built by hand: a status with its spec gone.
-  await converge(kv, IID_NEVER, halfLive.registrationRevision);
+  // Now the OTHER order's half-state, built by hand: a status with its spec gone. Getting there
+  // means writing a status that was just deleted, which is the status key's own tombstone rewrite:
+  // the FIRST place this suite touches it, so it is a cell here rather than a bare await that would
+  // end the run ten cells before the one that owns the claim.
+  const backAgain = await errOf(() => converge(kv, IID_NEVER, halfLive.registrationRevision));
+  c("a status deleted and then written again is a rewrite over its own tombstone, not a conflict",
+    backAgain.message === "NO THROW", backAgain);
   await deleteRecordEntry(kv, specKey, (await kv.get(specKey))!.revision);
   const torn = await errOf(() => readRecord(kv, RECORD_KINDS.svc, [ENDPOINT, IID_NEVER], { deadlineMs: 500 }));
   c("status-without-spec (the state the OTHER order passes through) is TORN and readers REFUSE it",
