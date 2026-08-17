@@ -1,0 +1,26 @@
+{
+  "grades": "tool",
+  "guard": "the allowlist admits the keys a sibling tool reads, and still refuses a mis-spelled one at BOTH levels",
+  "command": "node scripts/mutation-proof.selftest.mjs",
+  "progressPattern": "✓",
+  "why": "A widened allowlist that no longer refuses anything is a removal wearing a fix's commit message. Each mutation removes one half of the pair, and the cell it reddens is the half that would have gone silently missing.",
+  "mutations": [
+    {
+      "name": "the sibling tool's keys are rejected again",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "  \"cell\", \"note\", \"cellTemplate\",\n",
+      "replace": "",
+      "expectRed": "...but a key a SIBLING tool reads is not unknown, and the mutation is GRADED rather than refused",
+      "cell": "...but a key a SIBLING tool reads is not unknown, and the mutation is GRADED rather than refused",
+      "note": "Restores the state this change fixes: configs carrying the coverage pass's keys grade ERROR instead of being graded."
+    },
+    {
+      "name": "the top-level check is dropped, leaving only the level that was never wrong",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "  if (unknownCfg.length) usage(`config has unknown top-level key(s): ${unknownCfg.join(\", \")}`);\n",
+      "replace": "",
+      "expectRed": "...and a mis-spelled TOP-LEVEL key is refused, at the level the silent ignore actually lived at",
+      "cell": "...and a mis-spelled TOP-LEVEL key is refused, at the level the silent ignore actually lived at"
+    }
+  ]
+}

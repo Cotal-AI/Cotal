@@ -7,14 +7,15 @@
  * Run: pnpm smoke:ep-journal   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import {
   isReachable, EpEnvelopeError,
-  submissionFingerprint, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
+  submissionFingerprint, decideAdmission, hasOutOfRangeNumber, epfDecisionSubject, epfQuarantineSubject, epfGoalBindSubject,
+  epfEffectSubject, parseEffectFact,
   epjStreamName, epfStreamName, canonDurable,
   parseDecisionFact, parseQuarantineFact, assertFactFits,
   appendSubmission, publishFactCreateOnly, readLastFact,
@@ -24,8 +25,21 @@ import {
 import { pickFreePort } from "./_free-port.js";
 
 let ok = 0, fail = 0;
-const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
+// A PASSING CELL PRINTS. It used to be silent, and silence is not free: `mutation-proof` counts
+// `✓` marks to tell "the mutation applied and nothing caught it" apart from "the run died before
+// reaching the cell", and a suite that prints nothing on success reports zero marks — so that
+// protection was inert here while the runner reported a number as though it applied. Every mutant
+// aimed at this file was graded on its named red alone. The named red is direct evidence and those
+// kills stand; the floor that backs it up simply was not there, and nothing said so.
+const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; console.log(`  ✓ ${n}`); } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const throws = (n: string, fn: () => unknown) => { try { fn(); c(n, false, "no throw"); } catch { c(n, true); } };
+/** Assert a throw AND that it is about the right thing. A bare `throws` passes on a refusal for the
+ *  WRONG reason, which matters wherever two guards can refuse the same fixture — the cells below
+ *  cross a discriminant check and a closed-key check, and a bare throw cannot tell which fired. */
+const refusesWith = (n: string, fn: () => unknown, matching: RegExp) => {
+  try { fn(); c(n, false, "did NOT throw"); }
+  catch (e) { const m = (e as Error).message; c(n, matching.test(m), { expected: String(matching), got: m }); }
+};
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const UID = "u".repeat(26);
@@ -60,6 +74,248 @@ c("wrong-typed carried auth is fingerprinted AS CARRIED, never collapsed onto ab
   && submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint !== f1.fingerprint
   && submissionFingerprint({ ...sub1, auth: null }, subj).fingerprint !== submissionFingerprint({ ...sub1, auth: 123 }, subj).fingerprint);
 
+// ── admission: the CLOSED outcome table against a DECLARED ceiling (broker-free) ──
+// Every ceiling here is a parameter read from a declaration, never a constant. That is the whole
+// point of the declared ceiling: two conforming implementations must not be able to decide the same bytes
+// differently and durably, and a constant compiled into one of them can.
+const CEIL = { maxBytes: 4096, maxDepth: 8, maxItems: 64 };
+const bytes = (v: unknown) => new TextEncoder().encode(JSON.stringify(v));
+const admit = (body: unknown, over: Partial<typeof CEIL> = {}, raw?: Uint8Array) =>
+  decideAdmission(raw ?? bytes(body), body, subj, { ...CEIL, ...over });
+
+// c1 — the RAW-byte ceiling, decided BEFORE parsing. Parsing is the work the ceiling exists to
+// refuse, so a ceiling evaluated after it has already paid the cost it was meant to avoid.
+const overRaw = admit(sub1, {}, new Uint8Array(CEIL.maxBytes + 1));
+c("c1 raw bytes over maxBytes quarantine", overRaw.outcome === "quarantine", overRaw);
+c("c1 names the size cause", overRaw.outcome === "quarantine" && overRaw.cause === "submission-too-large", overRaw);
+
+// c2/c3 — depth and member counts, on the PARSED value.
+let deep: unknown = 1;
+for (let i = 0; i < 12; i++) deep = { n: deep };
+const overDeep = admit({ ...sub1, args: deep });
+c("c2 depth over maxDepth quarantines", overDeep.outcome === "quarantine", overDeep);
+c("c2 names the depth cause", overDeep.outcome === "quarantine" && overDeep.cause === "submission-too-deep", overDeep);
+const overItems = admit({ ...sub1, args: { list: Array.from({ length: 200 }, (_, i) => i) } });
+c("c3 item count over maxItems quarantines", overItems.outcome === "quarantine", overItems);
+c("c3 names the item cause", overItems.outcome === "quarantine" && overItems.cause === "submission-too-many-items", overItems);
+
+// c4 — DETERMINISM, which is what makes wall time non-semantic. The same submission decides the
+// same way on every delivery, and a submission inside every ceiling is NEVER quarantined however
+// long a worker takes: nothing in the decision reads a clock, so there is no elapsed time for a
+// redelivery to disagree about.
+const first = admit(sub1), second = admit(sub1);
+c("c4 the same submission decides identically on redelivery",
+  JSON.stringify(first) === JSON.stringify(second), { first, second });
+c("c4 a within-ceiling submission is ADMITTED, never quarantined", first.outcome === "admit", first);
+// AND THE TWO ASSERTIONS ABOVE CANNOT SEE A CLOCK, which mutation-proof demonstrated rather than
+// argued: injecting `if (Date.now() % 2 === 0) return quarantine` SURVIVED both of them. Two calls
+// microseconds apart agree with each other whatever the clock says, and the admit assertion is a
+// coin flip that lands right half the time — a cell that reddens on half its runs is worse than no
+// cell, because the half that passes reads as proof.
+//
+// So determinism is asserted where it is actually decidable: the decision path must contain no
+// clock read at all. A source-level assertion is a weaker KIND of claim than a behavioural one,
+// and it is the strongest claim that is true here — the function takes no clock, so there is no
+// clock to inject and nothing behavioural to observe. Injecting one reddens this every time.
+// THE SPAN IS THE WHOLE CALLEE SET, AND IT HAS BEEN TOO NARROW TWICE. It first began at
+// `decideAdmission`, missing `measure()`. Widened to `measure(`, it STILL missed
+// `submissionFingerprint` — which `decideAdmission` also calls, which sits above `measure`, and
+// into which a day-bucket clock could be added while every behavioural cell agreed all day and the
+// regex passed because the clock was before `spanFrom`. A reviewer found that; I had already
+// "fixed" this once and recorded the fix as complete.
+// The lesson is not "pick a wider marker". It is that a source-span claim is only as wide as the
+// text it reads, and the author is the worst judge of where the text ends, because the author is
+// choosing the marker from the same mental model that produced the gap.
+// `canonical.ts` is the one dependency outside this file; checked once, by hand, and it reads no
+// clock — recorded here because a hand check that is not written down has to be redone by the reader.
+const decisionSource = readFileSync(new URL("../src/endpoint-journal.ts", import.meta.url), "utf8");
+const spanFrom = decisionSource.indexOf("export function submissionFingerprint");
+const spanTo = decisionSource.indexOf("\n// ---- fact shapes");
+// A marker that moved would make `slice` silently return the wrong region — and an empty region
+// passes the regex trivially. The cell must fail loudly rather than pass vacuously.
+if (spanFrom < 0 || spanTo < 0 || spanTo <= spanFrom)
+  throw new Error(`c4 cannot locate the decision path in endpoint-journal.ts (from=${spanFrom} to=${spanTo}) — the markers moved; fix the span, do not delete the cell`);
+const decidePath = decisionSource.slice(spanFrom, spanTo);
+c("c4 the decision path reads no clock (the property, asserted where it is decidable)",
+  !/Date\.now|new Date|performance\.now|hrtime/.test(decidePath), `${decidePath.length} bytes spanned`);
+c("c4 admission carries the fingerprint the caller can correlate on",
+  first.outcome === "admit" && first.fingerprint === submissionFingerprint(sub1, subj).fingerprint);
+
+// c5 — no usable `id`, and it is a DISTINCT cause from the ceilings. Both quarantine; they are
+// different facts about the submission, and an operator who cannot tell them apart cannot tell a
+// misconfigured caller from a corrupt one.
+const noId = admit({ ...sub1, id: undefined });
+c("c5 a submission with no usable id quarantines", noId.outcome === "quarantine", noId);
+c("c5 the cause is DISTINCT from every ceiling cause",
+  noId.outcome === "quarantine" && noId.cause === "no-usable-id", noId);
+// c5b — NON-EMPTY IS NOT USABLE, and the previous cells only ever tested ABSENT and EMPTY. The id
+// becomes a subject token, so an id outside the token grammar addresses no subject at all, exactly
+// as a missing one does not. Before this, `bad.id` was ADMITTED here and threw at the subject
+// builder later — a submission defect converted into an internal error at a boundary that had
+// already said yes. Found by a reviewer, not by the six ceiling mutants that pass either way.
+for (const badId of ["bad.id", "has space", "x".repeat(200), "UPPER!", "tab\there"]) {
+  const r = admit({ ...sub1, id: badId });
+  c(`c5b a malformed non-empty id (${JSON.stringify(badId)}) quarantines no-usable-id`,
+    r.outcome === "quarantine" && r.cause === "no-usable-id", r);
+}
+c("c5b and a WELL-FORMED id still admits — the check refuses a grammar, not every id",
+  admit({ ...sub1, id: "req-1" }).outcome === "admit");
+
+// c7 — PRECEDENCE. Each cell above tests ONE breach in isolation, and isolated cells cannot pin an
+// ORDER: move the unparseable check ahead of the raw-byte ceiling and every one of them stays
+// green. The order is load-bearing — the raw ceiling exists to refuse work BEFORE paying for it —
+// so the overlaps are asserted directly. Each row below breaches two rules at once and names which
+// one must win.
+const tooBigUnparseable = decideAdmission(new Uint8Array(CEIL.maxBytes + 1), undefined, subj, CEIL);
+c("c7 raw-bytes BEFORE unparseable: oversized junk is too-large, not no-usable-id",
+  tooBigUnparseable.outcome === "quarantine" && tooBigUnparseable.cause === "submission-too-large", tooBigUnparseable);
+let deepWide: unknown = Array.from({ length: 200 }, (_, i) => i);
+for (let i = 0; i < 12; i++) deepWide = { n: deepWide };
+const depthAndItems = admit({ ...sub1, args: deepWide });
+c("c7 depth BEFORE items when both breach",
+  depthAndItems.outcome === "quarantine" && depthAndItems.cause === "submission-too-deep", depthAndItems);
+const itemsAndNoId = admit({ ...sub1, id: undefined, args: { list: Array.from({ length: 200 }, (_, i) => i) } });
+c("c7 items BEFORE no-usable-id when both breach",
+  itemsAndNoId.outcome === "quarantine" && itemsAndNoId.cause === "submission-too-many-items", itemsAndNoId);
+const noIdAndSurrogate = admit({ ...sub1, id: undefined, args: { s: "\uD800" } });
+c("c7 no-usable-id BEFORE no-canonical-form when both breach",
+  noIdAndSurrogate.outcome === "quarantine" && noIdAndSurrogate.cause === "no-usable-id", noIdAndSurrogate);
+
+// c8 — DUPLICATE NAMES, which no post-parse check can see. `JSON.parse('{"id":"a","id":"b"}')`
+// yields `{id:"b"}` and reports nothing, so a submission two conforming implementations could read
+// DIFFERENTLY arrived here looking ordinary. The module claimed this cause from the day it was
+// written and the case was UNREACHABLE — not untested, unrepresentable. A reviewer found it; no
+// mutant aimed at this file could have, because a mutation of an unreachable branch survives.
+const dupRaw = new TextEncoder().encode('{"id":"req-1","id":"req-2","op":{"endpoint":"manager","command":"spawn"}}');
+const dupDecided = decideAdmission(dupRaw, JSON.parse(new TextDecoder().decode(dupRaw)), subj, CEIL);
+c("c8 duplicate object names quarantine as no-canonical-form",
+  dupDecided.outcome === "quarantine" && dupDecided.cause === "no-canonical-form", dupDecided);
+// The raw bytes carry THREE names and the parsed value has TWO. That difference IS the finding,
+// so the cell states both sides rather than a bare count I could get wrong — and did: I first
+// wrote 3, which is the number in the bytes, not the number that survives the parse.
+c("c8 and the parsed value alone CANNOT show it — the duplicate is gone before the decision sees it",
+  Object.keys(JSON.parse(new TextDecoder().decode(dupRaw))).length === 2
+  && (JSON.parse(new TextDecoder().decode(dupRaw)) as { id: string }).id === "req-2");
+// Nested, so the scanner is not merely checking the top level.
+const dupNested = new TextEncoder().encode('{"id":"req-1","args":{"a":1,"a":2}}');
+c("c8 a duplicate NESTED name is caught too",
+  decideAdmission(dupNested, JSON.parse(new TextDecoder().decode(dupNested)), subj, CEIL).cause === "no-canonical-form");
+// THE NEGATIVE SIDE, which is what stops the scanner degenerating into "refuse everything".
+// Each fixture below is BUILT and then serialised, never hand-escaped — my first attempt at writing
+// those escapes by hand produced invalid JSON.
+//
+// A NEGATIVE CELL IS ONLY WORTH ITS MUTANT. My first two negatives both asserted `admit` on one
+// fixture of sibling objects and quoted braces, and BOTH survived the mutants aimed at them:
+// running the mutated scanner directly showed the sibling case takes the same path with the frame
+// pop removed, and the quoted-brace case takes the same path with escape handling removed. The
+// mutants were sound — they broke the scanner on OTHER inputs — so the fixture was the weak part,
+// and the cell that named siblings was describing a mechanism the pop does not implement. Sibling
+// frames are safe either way, because names are recorded on the top frame and each `{` pushes a
+// fresh one. What the pop actually protects is the shape below: an inner object CLOSES, and its
+// names must not still be in scope for the outer one.
+const admits = (label: string, body: unknown) => {
+  const raw = new TextEncoder().encode(JSON.stringify(body));
+  const d = decideAdmission(raw, JSON.parse(new TextDecoder().decode(raw)), subj, CEIL);
+  c(label, d.outcome === "admit", d);
+};
+admits("c8 a name reappearing at the OUTER level after an inner object closes is legal",
+  { id: "req-1", args: { k: 1 }, k: 2 });
+admits("c8 and the same after an ARRAY of objects closes", { id: "req-1", c: [{ k: 1 }], k: 2 });
+// A string whose CONTENTS spell a name and a separator. If escapes stop being honoured the string
+// terminates at its first `\"` and the rest of it is read as structure, which invents a second
+// top-level `id` that was never there.
+admits("c8 a string spelling out a name is CONTENT, never structure", { id: "r", a: '":"x", "id', b: 2 });
+admits("c8 quoted braces and a trailing backslash are content too",
+  { id: "req-1", args: { a: '{"a":1}', b: "x\\", c: [{ k: 1 }, { k: 2 }], d: { k: 3 } } });
+
+// c10 — OUT-OF-RANGE NUMBERS, the fourth I-JSON condition SPEC §13.4 names and the last one
+// this module did not enforce. Found the same way c8 was and NOT the way the rest of this file was:
+// by reading what the SPEC names against what the code can produce. No mutant could have found it,
+// and that is a property of the class rather than of the effort — the evidence is destroyed by
+// `JSON.parse` before any guard could run, so a mutant aimed at a post-parse branch SURVIVES, and a
+// survivor here is indistinguishable from a suite hole.
+//
+// The literal has to be spelled into the JSON TEXT: there is no JS value for it to be built from,
+// because the value that would build it is already the wrong one.
+const withNumber = (lit: string) => JSON.stringify({ ...sub1, args: { n: 0 } }).replace('"n":0', `"n":${lit}`);
+const decideText = (json: string) => decideAdmission(new TextEncoder().encode(json), JSON.parse(json), subj, CEIL);
+const numberQuarantines = (label: string, lit: string) => {
+  const d = decideText(withNumber(lit));
+  c(label, d.outcome === "quarantine" && d.cause === "no-canonical-form", d);
+};
+
+// THE DEFECT, stated as what the caller loses rather than as a cause code. This one is not a
+// submission two implementations MIGHT read differently: it is one THIS implementation already read
+// differently from what was sent, and admitting it binds the altered value durably and forever.
+c("c10 the precision case really does change value on the way through — the cell's whole reason",
+  JSON.parse(withNumber("12345678901234567890")).args.n === 12345678901234567000
+  && String(JSON.parse(withNumber("12345678901234567890")).args.n) !== "12345678901234567890");
+numberQuarantines("c10 a number past 2^53 has no interoperable value and quarantines", "12345678901234567890");
+numberQuarantines("c10 overflow to Infinity quarantines", "1e400");
+numberQuarantines("c10 underflow to zero quarantines", "1e-400");
+numberQuarantines("c10 a denormal that rounds to a DIFFERENT denormal quarantines", "4e-324");
+// THE LIMIT OF THE OBVIOUS INSTRUMENT, asserted rather than described, because the whole failure
+// family this campaign kept finding is a title that implies a class it does not cover. A
+// safe-integer test is the instrument anyone would reach for first, and on the underflow case it
+// does not merely fail to flag it — it passes AFFIRMATIVELY on the corpse of the value.
+c("c10 and a safe-integer test would have said YES to the underflow case: 1e-400 parses to exactly "
+  + "0, and Number.isSafeInteger(0) is true — round-trip stability is the predicate, not magnitude",
+  JSON.parse(withNumber("1e-400")).args.n === 0 && Number.isSafeInteger(JSON.parse(withNumber("1e-400")).args.n));
+
+// THE NEGATIVE SIDE. Without these the scanner is "refuse every number", which would quarantine
+// every real submission and pass every positive cell above.
+const numberAdmits = (label: string, lit: string) => {
+  const d = decideText(withNumber(lit));
+  c(label, d.outcome === "admit", d);
+};
+// 0.1 is NOT exactly representable in binary, and it is legal: RFC 8785 canonicalises from the
+// double, and every conforming reader round-trips this literal to the same one. Magnitude is not
+// the question; stability is.
+numberAdmits("c10 0.1 is admitted — inexact in binary, but round-trip stable in every reader", "0.1");
+numberAdmits("c10 the largest safe integer is admitted", "9007199254740991");
+numberAdmits("c10 a large number that IS exactly representable is admitted", "1e21");
+numberAdmits("c10 a differently-SPELLED same value is admitted (1.50 is 1.5)", "1.50");
+numberAdmits("c10 and so is 15e-1, and 1e2, and -0 (RFC 8785 serialises -0 as 0)", "15e-1");
+numberAdmits("c10 exponent spelling does not make a number out of range", "1e2");
+numberAdmits("c10 -0 is a legal spelling of zero, not a value that changed", "-0");
+// The digits are CONTENT. If the scanner stops skipping strings, this quarantines and every caller
+// carrying a long digit string in an argument is refused.
+c("c10 the SAME digits inside a string are content, never a number",
+  decideText(JSON.stringify({ ...sub1, args: { n: "12345678901234567890" } })).outcome === "admit");
+c("c10 …asserted on the scanner directly, so the claim is about the skip and not about the caller",
+  hasOutOfRangeNumber('{"a":"12345678901234567890"}').outOfRange === false
+  && hasOutOfRangeNumber('{"a":12345678901234567890}').outOfRange === true);
+// THE LIMIT OF THE SCANNER ITSELF, same shape as c8's: it reads the RAW BYTES. A caller path that
+// hands `decideAdmission` a parsed body which did not come from these bytes is not covered by any
+// cell above, because there are no bytes to scan.
+c("c10 the scan is a claim about the BYTES: a body not derived from them is outside every cell above",
+  decideAdmission(new TextEncoder().encode(JSON.stringify(sub1)),
+    { ...sub1, args: { n: 12345678901234567890 } }, subj, CEIL).outcome === "admit");
+
+const unparseable = decideAdmission(new Uint8Array([0xff, 0xfe]), undefined, subj, CEIL);
+c("c5 unparseable bytes take the same distinct cause",
+  unparseable.outcome === "quarantine" && unparseable.cause === "no-usable-id", unparseable);
+c("c5 a lone surrogate has no canonical form and says so",
+  admit({ ...sub1, args: { s: "\uD800" } }).outcome === "quarantine");
+const surrogate = admit({ ...sub1, args: { s: "\uD800" } });
+c("c5 and that cause is no-canonical-form, not no-usable-id",
+  surrogate.outcome === "quarantine" && surrogate.cause === "no-canonical-form", surrogate);
+
+// c6 — the ONLY ceiling-adjacent outcome that produces a caller-addressed decision fact. It is a
+// rejection rather than a quarantine for exactly one reason: the fingerprint exists by then, so
+// there is a caller-scoped subject to write the answer to.
+// AND IT IS REACHABLE WITHOUT CONTRIVANCE, which is why the two paths differ at all: the
+// fingerprint replaces `auth` with a DIGEST, so a one-character secret becomes 71 characters and
+// the canonical form is larger than the bytes that arrived. Measured here: 91 raw, 229 canonical.
+const authed = { v: 1, id: "req-c6", op: { endpoint: "manager", command: "spawn" }, class: "journal", auth: "s" };
+c("c6 the canonical form can EXCEED the raw bytes (auth becomes a digest)",
+  bytes(authed).byteLength < new TextEncoder().encode(JSON.stringify(submissionFingerprint(authed, subj).object)).byteLength);
+const post = admit(authed, { maxBytes: 150 });
+c("c6 a post-canonical breach REJECTS, never quarantines", post.outcome === "reject", post);
+c("c6 the rejection is resource-exhausted", post.outcome === "reject" && post.code === "resource-exhausted", post);
+c("c6 and it carries the fingerprint that makes the caller addressable",
+  post.outcome === "reject" && post.fingerprint.startsWith("sha256:"), post);
+
 // ── fact shapes + consuming-boundary validation (broker-free) ──
 // Every consuming boundary proves body↔subject agreement, so the parsers take the authenticated
 // fact subject. These are the same subjects the CAS below publishes on.
@@ -77,6 +333,32 @@ const pooled: AcceptanceFact = { ...acc, route: "pool.builds", workExpiry: 1_720
 c("a pool-routed acceptance carries its workExpiry", (parseDecisionFact(pooled, accSubj) as AcceptanceFact).workExpiry === 1_720_600_100_000);
 throws("a pool route WITHOUT workExpiry refuses", () => parseDecisionFact({ ...acc, route: "pool.builds" }, accSubj));
 throws("an effects route WITH workExpiry refuses", () => parseDecisionFact({ ...acc, workExpiry: 5 }, accSubj));
+// c9 — THE EFFECT COMPLETION UNION'S `outcome` DISCRIMINANT, which nothing in this tree read.
+// Found by a static sweep of every refusal code the source can emit against every suite in the
+// repo: `"ran"` was the one literal with ZERO occurrences in 301 suite files. It is not this change's
+// behaviour and predates this branch — but it sits in the file J1 hardens, and the refusal below
+// was unasserted, so a mutation could delete it and no suite anywhere would notice.
+//
+// THE SHARPER HALF IS WHAT THE SOURCE CLAIMS ABOUT ITS READERS. The union's doc comment says every
+// member declares its outcome "so ... every reader is forced to read the outcome". The two readers
+// that exist test `"cancelled" in fact` — the STRUCTURAL check the discriminant was added to make
+// unnecessary. The claim is about callers, and no caller honours it. Asserted here at the parser,
+// where it is decidable, rather than left as a sentence about code elsewhere.
+const effSubj = epfEffectSubject("demo", "manager", caller, "eff-1");
+const effRan = { v: 1, id: "eff-1", fingerprint: f1.fingerprint, caller: { id: "u_abc.worker", lifecycleUid: UID }, sourceSeq: 7, ts: 1_720_600_000_000, outcome: "ran" };
+c("c9 a `ran` effect fact parses AND carries the discriminant", parseEffectFact(effRan, effSubj).outcome === "ran");
+refusesWith("c9 an effect fact with NO outcome refuses, naming the discriminant",
+  () => parseEffectFact({ ...effRan, outcome: undefined }, effSubj), /outcome must be/);
+refusesWith("c9 an effect fact claiming a foreign outcome refuses, naming the discriminant",
+  () => parseEffectFact({ ...effRan, outcome: "ok" }, effSubj), /outcome must be/);
+// The comment promises a member cannot claim one outcome while carrying the other's fields. That is
+// the closed-key check, and it is a DIFFERENT rule from the discriminant — so it gets its own cell
+// in each direction rather than riding on the one above.
+refusesWith("c9 `ran` carrying the cancelled block refuses on CLOSED KEYS, not on the discriminant",
+  () => parseEffectFact({ ...effRan, cancelled: { opId: "op-1", target: { owner: "u_abc", actor: "worker", lifecycleUid: UID } } }, effSubj), /unknown field|closed|cancelled/);
+refusesWith("c9 and `cancelled` WITHOUT its block refuses",
+  () => parseEffectFact({ ...effRan, outcome: "cancelled" }, effSubj), /cancelled/);
+
 const rej: RejectionFact = {
   v: 1, id: "req-1", decision: "rejected", fingerprint: f1.fingerprint,
   error: { code: "conflict", detail: "same id, different fingerprint" },
@@ -197,6 +479,22 @@ try {
   const w3 = await publishFactCreateOnly(js, epfDecisionSubject("epjrn", subj2, "req-1"),
     assertFactFits({ ...rej, caller: { id: "u_zed.worker", lifecycleUid: caller2.uid } }, 1024 * 1024));
   c("the same id under another caller is a DIFFERENT subject and wins", w3.won);
+
+  // THE LOSER'S READ IS BY SUBJECT, AND ONLY NOW IS THAT DECIDABLE. The assertion above cannot
+  // fail: create-only leaves EXACTLY ONE fact on `dSubj`, so any read that returns anything at all
+  // returns the winner, and a read with no last-by-subject semantics would have passed it. The
+  // stream's newest message is now w3's REJECTION on another caller's subject — a different
+  // decision, on a different subject, with the same request id. Re-reading `dSubj` here is the
+  // first point at which "reads the winner" and "reads the latest thing in the stream" give
+  // different answers, so it is the first point at which the claim is worth making.
+  // Read RAW and assert before parsing. `parseDecisionFact` validates the fact against the subject
+  // it was asked for and throws on a mismatch — correct, but a throw makes the SCENARIO red rather
+  // than this cell, and a red that is not the named assertion is not evidence for this claim.
+  const reread = await readLastFact(jsm, epfStreamName("epjrn"), dSubj) as { decision?: unknown } | undefined;
+  c("the loser's read is scoped to its SUBJECT, not to the stream's newest fact",
+    reread?.decision === "accepted", { reread, streamNewestIs: "w3 rejection on subj2" });
+  const stillWinner = parseDecisionFact(reread, dSubj);
+  c("and it still parses against the subject it was read for", stillWinner.decision === "accepted");
 
   // Quarantine + goal-bind families: disjoint namespaces, same create-only discipline.
   const qSubj = epfQuarantineSubject("epjrn", "manager", seq);

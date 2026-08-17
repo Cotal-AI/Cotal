@@ -6,7 +6,19 @@ on:
     branches:
       - main
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# A new push to a PR supersedes the run already going; a merge to main does not.
+#
+# The group expression is unchanged — only what happens to the run holding it. Without
+# `cancel-in-progress` the superseded run keeps the group and its replacement is created with
+# ZERO JOBS and sits pending, which reads as "queued and about to start" rather than "starved".
+#
+# Deliberately not unconditional: a main commit's CI result is the record for that commit, not a
+# preview of the next, and a cancelled run leaves a merge ungradable — neither red nor green.
+# Superseding is only right where the earlier answer has stopped being interesting, which is true
+# of a PR revision and false of a merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Same coverage as before, fanned across parallel jobs so wall-clock is the slowest job, not the sum:
 #   • unit  — typecheck + build + unit tests + the broker-free view/pack checks (fast).
@@ -33,12 +45,22 @@ jobs:
         run: pnpm build
       - name: Docs bundle in sync
         run: pnpm check:docsbundle
+      # Broker-free and network-free, and it reads the BUILT connector, so it belongs after Build.
+      # It was reachable from `check` and executed by nothing, which is how it sat red on main.
+      - name: Docs smoke
+        run: pnpm smoke:docs
       - name: Unit tests
         run: pnpm test
       - name: View smoke
         run: pnpm smoke:view
       - name: Verify Claude connector package
         run: pnpm --filter @cotal-ai/connector-claude-code pack --dry-run
+      # Grades the convention, not one suite: every file that defaults COTAL_SERVERS with `||=`
+      # must also print what it resolved. Pure — reads sources, spawns nothing, dials nothing.
+      # Placed here rather than in the smoke:ci chain so the chain migration lands without a
+      # rebase; `gate-inventory` counts a suite named in a workflow as reached.
+      - name: Broker disclosure
+        run: pnpm smoke:broker-disclosure
 
   smoke:
     name: smoke (shard ${{ matrix.shard }}/4)

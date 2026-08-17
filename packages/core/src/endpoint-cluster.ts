@@ -53,6 +53,16 @@ function invalid(what: string): never {
   throw new ContractInvalidError(`cluster document does not validate: ${what}`);
 }
 
+/** The declared admission ceiling for a journal-class command's submissions: what the canonicalizer
+ *  refuses BEFORE deciding. It lives in the digest-verified registered surface rather than in a
+ *  constant so that two conforming implementations cannot decide the same bytes differently and
+ *  durably, and so a caller can see what will be refused before submitting. */
+export interface EpAdmissionCeiling {
+  maxBytes: number;
+  maxDepth: number;
+  maxItems: number;
+}
+
 /** One command's REGISTERED declaration (§13.7): everything the serve boundary enforces about
  *  it comes from here, out of digest-verified bytes. `modes` is present exactly when
  *  `targeted` — a targeted command admits ONLY its declared modes, an untargeted command
@@ -67,6 +77,17 @@ export interface ClusterCommand {
   inputDigest: string;
   outputDigest: string;
   traits?: string[];
+  /** The ACTION COMPOSITE marker. Present only as `true`; absence means "not an action". It is a
+   *  command marker and NOT a class — an action command's submissions are `journal`,
+   *  but the marker is what makes `goalId` a MUST on the envelope. */
+  action?: true;
+  /** Declared iff the command is `journal`-class, which is what makes it accept submissions: the
+   *  marker is irrelevant here, and the canonicalizer reads the ceiling from this field, never
+   *  from a constant. */
+  admissionCeiling?: EpAdmissionCeiling;
+  /** The acceptance-relative readiness bound, iff the command declares bounded readiness (§13.6).
+   *  Persisted into the acceptance because it is goal state, not the request's decision deadline. */
+  readinessDeadlineMs?: number;
 }
 
 /** The §13.7 cluster document: `{ urn, revision, attributes[], commands[], events[] }`.
@@ -132,11 +153,57 @@ export function parseClusterDocument(raw: unknown): ClusterDocument {
       }
       traits = [...(cmd.traits as string[])];
     }
+    // THE ACTION COMPOSITE. `action` is present-or-absent, never `false`: two ways to say "not an
+    // action" is a second source for one fact, and the reader would have to know which one this
+    // document used. Presence is CLOSED per command — a parser decides `action`, `admissionCeiling`
+    // and `readinessDeadlineMs` from the current bytes with no knowledge of who wrote them.
+    let action: true | undefined;
+    if (cmd.action !== undefined) {
+      if (cmd.action !== true)
+        invalid(`command "${name}" action ${JSON.stringify(cmd.action)} is not true (the action composite is present or absent; "false" is a second way to say absent)`);
+      if (cmd.class !== "journal")
+        invalid(`command "${name}" declares the action composite but class "${cmd.class}": an action command's submissions are journal-class (SPEC 13.7)`);
+      action = true;
+    }
+    // THE CEILING KEYS ON THE CLASS, NEVER ON THE MARKER (SPEC §13.7). The MUST is on an
+    // endpoint that accepts JOURNAL-CLASS SUBMISSIONS, and the action composite is a marker on top
+    // of that class rather than the thing that creates it — so a `class: "journal"` command with no
+    // marker receives submissions exactly like an action command does. This keyed on `action` and
+    // therefore did two wrong things to that command at once: it required no ceiling, and it
+    // REFUSED one, on the stated ground that the command "cannot receive" submissions. That ground
+    // was false two files away — `endpoint-service.ts` derives the journal rail's bind rows from
+    // `class === "journal"` across the surface (`journalClass`), and refuses a non-journal class at
+    // the virtual-endpoint seam; neither reads the marker.
+    let admissionCeiling: EpAdmissionCeiling | undefined;
+    if (cmd.class === "journal") {
+      const ceil = isRec(cmd.admissionCeiling) ? cmd.admissionCeiling : invalid(`journal-class command "${name}" must declare admissionCeiling {maxBytes, maxDepth, maxItems}: the canonicalizer reads its ceilings from the digest-verified surface, never from a constant`);
+      const nums: Record<string, number> = {};
+      for (const f of ["maxBytes", "maxDepth", "maxItems"] as const) {
+        const v = ceil[f];
+        if (typeof v !== "number" || !Number.isSafeInteger(v) || v <= 0)
+          invalid(`command "${name}" admissionCeiling.${f} ${JSON.stringify(v)} is not a positive safe integer`);
+        nums[f] = v;
+      }
+      admissionCeiling = { maxBytes: nums.maxBytes, maxDepth: nums.maxDepth, maxItems: nums.maxItems };
+    } else if (cmd.admissionCeiling !== undefined) {
+      invalid(`ephemeral command "${name}" declares admissionCeiling: an ephemeral command receives no journal submissions, so a ceiling on it is unreadable by anything`);
+    }
+    let readinessDeadlineMs: number | undefined;
+    if (cmd.readinessDeadlineMs !== undefined) {
+      if (!action)
+        invalid(`command "${name}" declares readinessDeadlineMs without the action composite: readiness is goal state and only an action command has a goal`);
+      if (typeof cmd.readinessDeadlineMs !== "number" || !Number.isSafeInteger(cmd.readinessDeadlineMs) || cmd.readinessDeadlineMs < 0)
+        invalid(`command "${name}" readinessDeadlineMs ${JSON.stringify(cmd.readinessDeadlineMs)} is not a non-negative safe integer (SPEC 13.11)`);
+      readinessDeadlineMs = cmd.readinessDeadlineMs;
+    }
     return {
       name, class: cmd.class, targeted: cmd.targeted,
       ...(modes ? { modes } : {}),
       capability: cmd.capability, inputDigest: cmd.inputDigest, outputDigest: cmd.outputDigest,
       ...(traits ? { traits } : {}),
+      ...(action ? { action } : {}),
+      ...(admissionCeiling ? { admissionCeiling } : {}),
+      ...(readinessDeadlineMs !== undefined ? { readinessDeadlineMs } : {}),
     };
   });
   return { urn: o.urn, revision: o.revision, attributes: [...o.attributes], commands, events: [...o.events] };

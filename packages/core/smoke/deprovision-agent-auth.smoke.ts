@@ -167,7 +167,7 @@ try {
   // ---- THE D15 BARRIERS (SPEC 13.1): a same-name SUCCESSOR is untouchable by the retired
   // lifecycle's teardown — by NAME DISJOINTNESS (the replay names only A's uid) and by the
   // BROKER (A's cred is denied on B's exact names). ----
-  // FRONTIER PROBE setup (SPEC :467 / 13.1): a DM published to the ALIAS while no successor
+  // FRONTIER PROBE setup (SPEC §8 / §13.1): a DM published to the ALIAS while no successor
   // exists (between A's retirement and B's provisioning) must NOT flow to B — B's dm durable
   // starts at the activation frontier captured at ITS provisioning. Publish DM1 now, DM2 after.
   const insp = await (async () => {

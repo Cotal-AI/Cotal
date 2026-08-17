@@ -480,6 +480,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
 | `--allow-publish <a,b>` | deny | Post-ACL override |
 | `--detach`, `-d` | off | Launch via the manager into a detached PTY (reattach with `cotal attach`) |
+| `--on <instance>` | class anycast | With `--detach` only: pin the launch to one manager instance id (the whole id, as `ps` prints it). Refused on a foreground spawn (no manager to pin), with `-f` (a manifest deploy launches through the manager class queue), and when empty |
 | `--file <cotal.yaml>`, `-f` | — | Deploy a manifest onto the running mesh |
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
@@ -555,7 +556,7 @@ cotal attach --name <n> [--on <instance>] [--space <s>]
 |---|---|---|
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
-| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space) |
+| `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
 
 These are operator clients over the running manager's control plane. `ps` lists managed agents with
 their mesh status (`starting…` / `working` / `waiting` / `offline`); on a user-auth mesh it also
@@ -566,7 +567,14 @@ renders each managed agent's last credential-refresh outcome, fail-closed.
 - **Static / open mesh.** Bare `ps` is a **class scatter**: it freezes the live manager class from
   the records registry, merges every registered instance's agents grouped and attributed per
   instance, and a non-answering instance is shown `unreachable` (never silently omitted).
-  `--on <instance>` pins the read to one exact instance id instead.
+  `--on <instance>` pins the read to one exact instance id instead. A wrong pin fails loud
+  rather than falling through: a well-formed id that no live manager carries is reported as
+  `manager instance <id> did not answer` (nothing else is asked), and a credential without that
+  instance's rail is reported as refused by the broker, not as an unresponsive manager. A manager
+  that answers with a refusal is shown with its own cause; "no manager reachable" is said only when
+  nothing answered at all. If the scatter's own registry read fails (the freeze or the reconcile),
+  `ps` says the manager registry could not be read rather than pronouncing on the managers, which
+  may all be up.
 
 **`stop` and `attach` route by seat locality.** A seat can only be stopped or attached by the
 manager actually running it, and the class queue does not know which one that is. So on a

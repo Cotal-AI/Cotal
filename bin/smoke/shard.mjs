@@ -4,15 +4,14 @@
  *
  *   node bin/smoke/shard.mjs <shardIndex> <shardCount>
  *
- * The list is derived from the `smoke:ci` script in package.json — the ONE source of truth, so a
- * smoke added there is automatically distributed (no shard membership to hand-maintain). Round-robin
+ * The list is read from `bin/smoke/ci-suites.txt` — the ONE source of truth, so a smoke added there
+ * is automatically distributed (no shard membership to hand-maintain). Round-robin
  * (index % count) interleaves the list, which balances runtime better than contiguous slices.
  * Each smoke runs in its own `pnpm` subprocess (separate broker/ports) exactly as the serial chain
  * does; the shards run on SEPARATE runners, so there is no cross-smoke port contention within a shard.
  */
-import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
-import { fileURLToPath } from "node:url";
+import { readCiSuites } from "./ci-suites.mjs";
 
 const shard = Number(process.argv[2]);
 const count = Number(process.argv[3]);
@@ -21,12 +20,10 @@ if (!Number.isInteger(shard) || !Number.isInteger(count) || count < 1 || shard <
   process.exit(2);
 }
 
-const pkg = JSON.parse(readFileSync(fileURLToPath(new URL("../../package.json", import.meta.url)), "utf8"));
-const chain = pkg.scripts?.["smoke:ci"];
-if (!chain) { console.error("no `smoke:ci` script in package.json"); process.exit(2); }
-
-// "pnpm a && pnpm b && …" → ["pnpm a", "pnpm b", …]
-const all = chain.split("&&").map((s) => s.trim()).filter(Boolean);
+// An EMPTY chain is an error, not a fast green: a runner that finds no suites and exits 0 reports
+// the same thing as a runner that passed all of them.
+const all = readCiSuites().map((s) => `pnpm ${s}`);
+if (all.length === 0) { console.error(`no suites in bin/smoke/ci-suites.txt`); process.exit(2); }
 const mine = all.filter((_, i) => i % count === shard);
 
 console.log(`smoke:ci shard ${shard}/${count} — ${mine.length} of ${all.length} smokes:\n  ${mine.join("\n  ")}\n`);

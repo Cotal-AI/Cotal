@@ -18,7 +18,8 @@ import {
 import { credsClaims, credsFingerprint, credsRenewalDelayMs, idFromCreds } from "./identity.js";
 import { inspectCredHealth } from "./provision.js";
 import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedService } from "./endpoint-invoke.js";
-import { EpEnvelopeError } from "./endpoint-envelope.js";
+import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect } from "./endpoint-envelope.js";
+import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
@@ -452,11 +453,24 @@ export class CotalEndpoint extends EventEmitter {
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
    *  `failed-precondition` currency refusal (the described incarnation was superseded). */
   private readonly resolvedServices = new Map<string, ResolvedService>();
+  /** How many calls {@link invokeService} has silently recovered from a bind refusal (§13.2) — the
+   *  class-queue splits this endpoint hit and survived.
+   *
+   *  Counted because it is recovered: handling the split is what makes it invisible, so this is the
+   *  only evidence the split rate exists. Always on, never behind a flag — a counter you have to
+   *  enable is not there when the thing you needed it for happened. */
+  private splitsRecovered = 0;
 
   /** This endpoint's wire principal (owner + actor tokens, §13.2) — what its minted grant rows
    *  pin. Public so a caller can build owner-mode target blocks for {@link invokeService}. */
   get principal(): { owner: string; actor: string } {
     return { owner: this.owner, actor: this.actor };
+  }
+
+  /** Class-queue splits this endpoint has hit and silently survived ({@link splitsRecovered}).
+   *  Pull it, or listen for `split-recovered` — the event can be missed, the count cannot. */
+  get splitRecoveryCount(): number {
+    return this.splitsRecovered;
   }
 
   /** The endpoint's own lifecycle UID, REQUIRED for every lifecycle-keyed messaging resource; absent
@@ -1355,11 +1369,22 @@ export class CotalEndpoint extends EventEmitter {
   /** GENERIC v0.4 service invoke over this endpoint's own connection (P2 item 1, 1c.2b): resolve
    *  the named endpoint's registered surface — describe, §13.7 store fetch, digest-verified
    *  recompile ({@link resolveService}; cached per endpoint name) — and invoke one command. The
-   *  resolve is describe-bound currency: when a DIFFERENT instance answers a later invoke
-   *  (`failed-precondition`, a restart/supersede), the cache is dropped and resolved ONCE more
-   *  against the current incarnation. Errors from the responder come back structurally on the
-   *  attributed reply (`reply.ok === false`); transport/validation refusals throw
-   *  {@link EpEnvelopeError}. */
+   *  resolve is describe-bound currency, and a call that reaches the wrong incarnation is recovered
+   *  two ways depending on WHO caught it — the difference between knowing the command did not run
+   *  and only knowing someone answered:
+   *   - the RESPONDER fenced it on the request's `bind` (§13.2, an `ok:false` reply marked
+   *     {@link replyRefusedBeforeEffect}): the command did not run, so the bind is dropped and the
+   *     call re-issued ONCE for any command. If that re-issue cannot be resolved, the refusal
+   *     surfaces — still saying the command did not run — naming the resolve failure as why the
+   *     repair could not be attempted.
+   *   - this CLIENT caught it on the reply ({@link respondedButUnbound}: a different instance,
+   *     `failed-precondition`; the same instance at any other epoch, `expired`), which is what a
+   *     responder too old to know the field produces. A live instance received and answered it, so
+   *     the bind is dropped but the call is re-issued only for a command on the
+   *     {@link isRepeatSafeCommand} allowlist; anything else surfaces, since a second attempt could
+   *     duplicate its effect.
+   *  Errors from the responder come back structurally on the attributed reply
+   *  (`reply.ok === false`); transport/validation refusals throw {@link EpEnvelopeError}. */
   async invokeService(
     endpoint: string,
     command: string,
@@ -1379,11 +1404,99 @@ export class CotalEndpoint extends EventEmitter {
     const invokeOpts = { ...(opts.target ? { target: opts.target } : {}), ...(opts.deadlineMs !== undefined ? { deadlineMs: opts.deadlineMs } : {}) };
     const doInvoke = async (): Promise<EpAttributedReply> => {
       try {
-        return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        const r = await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        // THE RESPONDER FENCED IT (§13.2 `ai.cotal.ep.bind-refused`): a class member saw the call
+        // was bound to a different incarnation and refused BEFORE running the command.
+        //
+        // Handled here rather than below because it arrives as an ordinary `ok:false` REPLY, not a
+        // throw, so the `respondedButUnbound` recovery never sees it — a long-lived client would
+        // otherwise keep its stale bind and meet the same refusal forever.
+        //
+        // The re-issue is NOT gated on {@link isRepeatSafeCommand}: the responder states the command
+        // did not run, so this is a FIRST attempt, not a second. Exactly once; a second refusal
+        // surfaces.
+        if (r.reply.ok === false && replyRefusedBeforeEffect(r.reply.error)) {
+          // Counted before it is repaired: a recovery that leaves no trace takes the split rate with it.
+          this.splitsRecovered++;
+          this.emit("split-recovered", {
+            endpoint, command, servedBy: r.responder, splitsRecovered: this.splitsRecovered,
+          });
+          this.resolvedServices.delete(endpoint);
+          // A FAILED RE-ISSUE RETHROWS THE ORIGINAL REFUSAL, not the resolve error: if the endpoint
+          // has since retired, the resolve times out and the caller would otherwise get `no describe
+          // reply within 10000ms` — about a describe it never asked for — losing the one fact that
+          // says its handle is stale AND that nothing ran. The resolve failure is named as the
+          // reason the repair could not be attempted.
+          //
+          // The code must be the refusal's own (`failed-precondition` for a different instance,
+          // `expired` for the same instance at ANY other epoch — the fence does not compare
+          // direction, so a superseded incarnation still answering produces it too); the marker on
+          // any other code is incoherent, so it is rejected rather than trusted (§13.3).
+          const raw = r.reply.error?.code;
+          const refusalCode = raw === "expired" ? ("expired" as const)
+            : raw === "failed-precondition" ? ("failed-precondition" as const) : undefined;
+          if (refusalCode === undefined)
+            throw new EpEnvelopeError("internal", `${endpoint}.${command} came back marked as refused before it ran, but with code ${String(raw)}; the fence produces only failed-precondition or expired (SPEC 13.2)`, r.reply.error?.details);
+          // ONLY THE RESOLVE IS WRAPPED — do not widen this `try` to cover the re-issue. A re-issue
+          // that PUBLISHED AND RAN can still throw (an unfenced responder answers and the post-reply
+          // currency check raises `respondedButUnbound`); wrapping that as the first hop's refusal
+          // would hand the caller `WAS NOT RUN` for a command that executed, and its next attempt
+          // would be a second one believing it was the first. A re-issue that fails on its own terms
+          // must propagate its OWN error, because `respondedButUnbound` asserts the opposite of what
+          // the fence's marker does: a responder answered and the effect may have landed.
+          let reissueTarget;
+          try {
+            reissueTarget = await resolve();
+          } catch (reissue) {
+            throw new EpEnvelopeError(
+              refusalCode,
+              `${endpoint}.${command} WAS NOT RUN - the incarnation that received it refused it before any effect, and the re-issue could not be resolved: ${reissue instanceof Error ? reissue.message : String(reissue)}. Re-resolve and re-issue when the endpoint is reachable (SPEC 13.2)`,
+              r.reply.error?.details,
+            );
+          }
+          return await invokeCommand(nc, this.space, reissueTarget, command, args, invokeOpts);
+        }
+        return r;
       } catch (e) {
-        if (!(e instanceof EpEnvelopeError) || e.code !== "failed-precondition") throw e;
-        // The describe-bound incarnation is gone (restart/supersede) — re-resolve once, then invoke
-        // against the CURRENT one; a second failure is the real state and throws.
+        if (!(e instanceof EpEnvelopeError)) throw e;
+        // DO NOT auto-retry a command a responder already ANSWERED. This path covers the responders
+        // WITHOUT the fence above: they ignore `bind`, run the command, and the error is raised
+        // afterwards, so core cannot tell a repair from a duplicate and the allowlist is the only
+        // guard left. (`failed-precondition` here is not only supersession — it also fires when a
+        // DIFFERENT live instance wins the class queue and replies, an ordinary split.)
+        //
+        // Dropping the retry outright is not an option: in a two-manager space roughly half of all
+        // class-queue calls split, so every other `ps` would surface an error this absorbs, and
+        // re-running a read costs nothing.
+        //
+        // So it is gated on an ALLOWLIST (`REPEAT_SAFE_COMMANDS`), keyed by ENDPOINT because this
+        // method is endpoint-agnostic. Polarity matters more than membership: an allowlist fails
+        // CLOSED. Not a `GOAL_BEARING_COMMANDS`-only gate — `purge` is neither goal-bearing nor
+        // convergent, and its second run deletes messages published after the first completed, so
+        // the boundary is "changes anything", which core cannot see: commands carry no idempotency
+        // declaration and every manager command shares `class: "ephemeral"`.
+        //
+        // Keyed on the MARKER, not the error code, because the same fact has two producers: a
+        // DIFFERENT instance answering (`failed-precondition`) and the SAME instance at ANY OTHER
+        // EPOCH (`expired`) — epoch inequality, not "a successor", so a superseded incarnation
+        // still answering produces it too. Same rule for both, or a long-lived client stays bound
+        // to a dead epoch while every call reaches whoever is actually there.
+        if (respondedButUnbound(e)) {
+          // Drop the stale bind FIRST, whichever way this goes: it names an incarnation that is not
+          // the one answering, so every later call would reuse it and meet the same refusal. This is
+          // not a retry — nothing is re-issued by it, and for a command that is not repeat-safe the
+          // next call is the caller's, made after it has verified.
+          this.resolvedServices.delete(endpoint);
+          if (!isRepeatSafeCommand(endpoint, command)) throw e;
+          return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
+        }
+        // An UNMARKED `failed-precondition` is the resolve's own refusal, raised before any command
+        // was published, so re-resolving once is a repair. The `replyRefusedBeforeEffect` half keeps
+        // out the refusal THIS method raises after a failed re-issue: it carries that same code, and
+        // would otherwise fall into the re-resolve below as a THIRD attempt at a command whose
+        // second could not even be resolved. A marker means the disposition is already decided,
+        // whichever code carries it.
+        if (e.code !== "failed-precondition" || replyRefusedBeforeEffect(e.toEpError())) throw e;
         this.resolvedServices.delete(endpoint);
         return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);
       }
@@ -2055,7 +2168,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Idempotent-PER-LIFECYCLE create of a `dm_<o>-<a>-<uid>` durable with its ACTIVATION FRONTIER
-   *  (SPEC :467). Info-first: an existing durable (a manager-restart re-provision of the SAME uid, or
+   *  (SPEC §8). Info-first: an existing durable (a manager-restart re-provision of the SAME uid, or
    *  the same lifecycle's own restart) is kept as-is, preserving the ORIGINAL frontier — the
    *  activation moment never moves. A fresh lifecycle captures the DM stream's current `last_seq` and
    *  starts delivery at frontier+1, so a same-alias successor inherits none of the predecessor's
@@ -3652,7 +3765,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.doRegister || !this.kv) return; // observers watch but never publish their own record
     const p: Presence = {
       card: this.card,
-      // SPEC §6/:315: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
+      // SPEC §6: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
       // omitted only where the endpoint has none (a pure operator/daemon connection never registers).
       ...(this.ownLifecycleUid !== undefined ? { lifecycleUid: this.ownLifecycleUid } : {}),
       status: this.status,

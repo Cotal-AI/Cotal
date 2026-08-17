@@ -28,6 +28,38 @@ const MCP_CJS = resolve(PLUGIN_ROOT, "dist", "mcp.cjs");
  * wakes on incoming peer messages. Self-registers on import; the manager resolves it
  * by agent type "claude".
  */
+/**
+ * Refuse a model this connector cannot serve, at LAUNCH, the way an unsupported `variant` is
+ * refused below.
+ *
+ * THE INCIDENT, because the cost was not the crash it did not cause. `model:` on an agent file is
+ * honoured by the opencode connector and was a dead letter here: this connector pushed whatever it
+ * was given straight through to `claude`. Two review seats were spawned as
+ * `claude --model xai/grok-4.6`, which `claude` cannot serve. They did not fail closed - they came
+ * up on a Claude model, reported for hours under a grok label, and their operator's written claim
+ * of two-vendor corroboration was false in a way nothing observable to them could reveal. The
+ * seats were in fact the same family as the agent grading their output.
+ *
+ * SO THE FAILURE MODE THIS CLOSES IS NOT "wrong model", IT IS "wrong model, silently, with a
+ * confident label attached". A launch that refuses costs one spawn. A launch that mislabels costs
+ * every conclusion drawn from that seat, retroactively, and there is no artifact in the session to
+ * catch it with - the environment variable says grok, and only the process's own argv disagrees.
+ *
+ * The discriminator is the provider-prefixed `provider/model` form that other runtimes use, since
+ * an allow-list of Claude model names would need editing every time one ships and would fail
+ * closed on a model that works. `arn:` is exempt: a Bedrock inference-profile ARN legitimately
+ * carries a slash and `claude` does serve it.
+ */
+function assertServableModel(model: string): void {
+  if (!model.includes("/") || model.startsWith("arn:")) return;
+  throw new Error(
+    `claude connector: cannot serve model ${JSON.stringify(model)} - a "provider/model" specifier ` +
+      `belongs to another runtime (use the opencode connector for it). Refusing at launch: passing ` +
+      `it through starts a session on a DIFFERENT model than the one named, and everything that ` +
+      `session produces would carry the wrong attribution.`,
+  );
+}
+
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
@@ -129,6 +161,7 @@ export const claudeConnector: Connector = {
     }
     // The `--model` flag wins over the agent file, and applies even with no agent file.
     if (model) {
+      assertServableModel(model);
       args.push("--model", model);
       env.COTAL_MODEL = model;
     }

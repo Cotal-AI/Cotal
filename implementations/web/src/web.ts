@@ -94,6 +94,12 @@ function releasePid(path: string): void {
 // OWN files, so a published/seeded copy is self-contained and never reaches into node_modules at
 // runtime — which is what lets web ship as a bundled first-party extension, seeded like the connectors.
 const jsType = "text/javascript; charset=utf-8";
+
+/** The one condition name for "the membership read did not answer", shared by the HTTP body and the
+ *  SSE event so a browser matches ONE token and a test asserts the same token the server emits.
+ *  Exported for the same reason `PAGE` is: a test that restates it only agrees with itself. */
+export const MEMBERSHIP_READ_FAILED = "membership-read-failed";
+
 /** Exported so a test can resolve what the browser is actually served, rather than restating the
  *  route table in its own source and agreeing with itself. */
 export const PAGE: Record<string, { path: string; type: string }> = {
@@ -119,9 +125,15 @@ export async function web(args: ParsedArgs): Promise<void> {
   // seed. The dashboard is a loopback HTTP process; holding the space signing seed (`auth` — it can
   // mint ANY identity/role) for the whole session would make a dashboard compromise = full account
   // control. Instead pre-mint ONE scoped `channel-purger` cred for the only write path (channel delete
-  // = filtered CHAT purge + a channel-registry key delete) and let the seed fall out of scope here, so
-  // it isn't reachable from the request handlers. `--creds` / open mode have no seed → the connection
-  // creds carry the purge rights.
+  // = filtered CHAT purge + a channel-registry key delete), then EXPLICITLY narrow the `Connection`
+  // the request handlers close over so it no longer carries `auth` (see the drop below, just after
+  // the mint). `--creds` / open mode have no seed → the connection creds carry the purge rights.
+  //
+  // This paragraph used to say the seed "falls out of scope here". IT DID NOT: `conn` stayed in
+  // scope for the whole function and the delete path referenced it inside the handler, so the seed
+  // was reachable from the request handlers for as long as this comment claimed it was not. The
+  // mitigation is now performed rather than described — the correction is stated instead of quietly
+  // overwritten, because a comment that was wrong once is worth flagging to whoever reads it next.
   //
   // USER MODE: the god view rides an exchange-gated "admin" VIEW bearer (ledger scope "admin",
   // fresh-checked at every mint and every connect) — standing via a bearer SOURCE so the tap
@@ -148,6 +160,26 @@ export async function web(args: ParsedArgs): Promise<void> {
     process.once("exit", () => releasePid(pidPath));
   }
   const purgeCreds = !user && conn.auth ? await mintCreds(conn.auth, newIdentity(), "channel-purger") : conn.creds;
+
+  // THE SEED IS DROPPED HERE, AND THIS IS THE LINE THAT MAKES THE CLAIM ABOVE TRUE.
+  //
+  // The header above has always said the account seed "isn't reachable from the request handlers".
+  // It was NOT true: `conn` is bound at the top of `web()` and was referenced INSIDE
+  // `handleRequest` (the `userViewAuth(conn, …)` call on the delete path), so the handler closed
+  // over the whole `Connection` — including `conn.auth`, the `SpaceAuth` carrying the broker
+  // operator seed and the account seed/signingSeed that can mint ANY identity or role. The
+  // mitigation was described in a comment and never implemented; that gap is what D3 recorded.
+  //
+  // The last use of `conn.auth` is the line above, so from this point the handler needs a
+  // Connection WITHOUT it. `userViewAuth` reads only `bearer`/`userAuth`/`root`/`space` and never
+  // touches `auth`, so nothing downstream loses anything. `auth` is optional on `Connection`, so
+  // the narrowed value is still a `Connection` and the compiler keeps it that way.
+  //
+  // HONEST LIMIT, so this is not read as more than it is: this is DEFENSE IN DEPTH, not a claim of
+  // unexploitability. An attacker with code execution in this process can reach the heap, where
+  // lexical scope means nothing. What it does buy is that the DOCUMENTED mitigation is now real,
+  // and that a future edit reaching for `conn` inside the handler has to notice this line first.
+  const { auth: _accountSeedIsNotForRequestHandlers, ...connForHandlers } = conn;
 
   // Observer: never registers presence, never consumes an inbox — invisible to peers.
   const ep = new CotalEndpoint({
@@ -193,7 +225,11 @@ export async function web(args: ParsedArgs): Promise<void> {
   // degrades to traffic-only. The admin cred carries the read grant; agents never do.
   let membershipWatch: { stop(): void } | undefined;
   const pushMembership = debounce(() => {
-    void ep.readMembership().then((m) => broadcast("membership", m)).catch(() => {});
+    // A swallowed rejection here left the graph showing its LAST GOOD snapshot indefinitely, which
+    // is worse than the HTTP case: the display was not merely empty, it was stale and confident.
+    void ep.readMembership()
+      .then((m) => broadcast("membership", m))
+      .catch((e) => broadcast(MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }));
   }, 150);
   try {
     membershipWatch = await ep.watchMembership(pushMembership);
@@ -239,7 +275,9 @@ export async function web(args: ParsedArgs): Promise<void> {
       send(res, "roster", ep.getRoster());
       // Seed this client's graph with the current membership snapshot (the live tap only carries
       // post-connect traffic; membership is state, so a fresh client needs it explicitly).
-      void ep.readMembership().then((m) => { if (!res.writableEnded) send(res, "membership", m); }).catch(() => {});
+      void ep.readMembership()
+        .then((m) => { if (!res.writableEnded) send(res, "membership", m); })
+        .catch((e) => { if (!res.writableEnded) send(res, MEMBERSHIP_READ_FAILED, { reason: (e as Error).message }); });
       req.on("close", () => clients.delete(res));
       return;
     }
@@ -247,9 +285,20 @@ export async function web(args: ParsedArgs): Promise<void> {
     if (path === "/api/roster") return json(res, ep.getRoster());
     if (path === "/api/membership") {
       // Authoritative who-is-subscribed (broker-sourced); {asOf, members:[{id,live,durable,observedAt}]}.
-      // An unavailable feed returns an empty snapshot so the graph cleanly degrades to traffic-only.
+      //
+      // A FAILED READ IS NOT AN EMPTY ONE, AND THIS USED TO RETURN THE SAME BYTES FOR BOTH. The catch
+      // answered `{asOf: undefined, members: []}` with a 200, which `JSON.stringify` serialises as
+      // `{"members":[]}` — byte-identical to a successful read of a space where nobody is subscribed,
+      // because a key whose value is `undefined` is DROPPED, so the one field that might have
+      // separated them never reached the wire. The browser then had no way to tell "nobody
+      // subscribed" from "I could not find out", and the graph asserted the first.
+      //
+      // The refusal now names its own condition and carries a non-200, so a caller that checks
+      // neither still cannot mistake it for data.
       try { return json(res, await ep.readMembership()); }
-      catch { return json(res, { asOf: undefined, members: [] }); }
+      catch (e) {
+        return json(res, { error: MEMBERSHIP_READ_FAILED, reason: (e as Error).message }, 503);
+      }
     }
     if (path === "/api/channels") {
       // Resolve defaults at the endpoint so every web client renders the same channel policy the
@@ -326,7 +375,7 @@ export async function web(args: ParsedArgs): Promise<void> {
         // User mode mints a one-shot channel-purger VIEW per delete — the ledger is re-checked at
         // this click, and a mid-session revoke becomes this handler's 400, never a dead dashboard.
         const result = user
-          ? await userViewAuth(conn, "channel-purger").then((p: UserViewAuth) =>
+          ? await userViewAuth(connForHandlers, "channel-purger").then((p: UserViewAuth) =>
               clearChannel({ servers: server, space, channel, bearer: p.bearer, sentinelCreds: p.sentinelCreds }),
             )
           : await clearChannel({ servers: server, space, channel, creds: purgeCreds });
@@ -545,8 +594,8 @@ function webUrl(port: number): string {
   return port === WEB_PORT ? WEB_URL : `http://127.0.0.1:${port}/`;
 }
 
-function json(res: ServerResponse, data: unknown): void {
-  res.writeHead(200, { "content-type": "application/json" });
+function json(res: ServerResponse, data: unknown, status = 200): void {
+  res.writeHead(status, { "content-type": "application/json" });
   res.end(JSON.stringify(data));
 }
 

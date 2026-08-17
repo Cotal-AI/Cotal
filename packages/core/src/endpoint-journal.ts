@@ -62,6 +62,11 @@ export function epfEffectSubject(space: string, endpoint: string, caller: EpCall
  *  decision-fact retention, never by a clock: the create-only CAS returns the recorded decision
  *  for exactly as long as the fact exists. */
 export const IDEMPOTENCY_HORIZON_MS_DEFAULT = 24 * 60 * 60 * 1000;
+/** §13.6 item 5: a goal's full terminal payload is retained at least this long (default 24 h). */
+export const RESULT_RETENTION_MS_DEFAULT = 24 * 60 * 60 * 1000;
+/** §13.10: receipt retention, default **90 d** — the largest term in the §13.12 EPF floor by two
+ *  orders of magnitude, and the one a floor written against the horizon alone silently drops. */
+export const RECEIPT_RETENTION_MS_DEFAULT = 90 * 24 * 60 * 60 * 1000;
 
 // ---- the semantic fingerprint (§13.4 item 2) -------------------------------------------------
 
@@ -96,6 +101,281 @@ export function submissionFingerprint(
   }
   object.caller = { id: `${subject.caller.owner}.${subject.caller.actor}`, lifecycleUid: subject.caller.uid };
   return { object, fingerprint: contractDigest(object) }; // contractDigest throws on non-I-JSON → quarantine
+}
+
+// ---- admission: the CLOSED outcome table (§13.4 item 2, §13.7 `admissionCeiling`) ------------------------
+
+/** Why a submission was quarantined. CLOSED and mutually exclusive: a reader branches on the
+ *  cause without knowing the order the canonicalizer evaluated its checks in.
+ *
+ *  `no-usable-id` is deliberately DISTINCT from the three ceiling causes. Both end in quarantine,
+ *  but they are different facts about the submission — one says "you sent more than this endpoint
+ *  admits", the other says "these bytes name no request at all" — and an operator who cannot tell
+ *  them apart cannot tell a misconfigured caller from a corrupt one. */
+export type AdmissionQuarantineCause =
+  | "submission-too-large"      // raw bytes over the declared ceiling, decided BEFORE parsing
+  | "submission-too-deep"
+  | "submission-too-many-items"
+  | "no-canonical-form"         // parses, but carries values with no interoperable RFC 8785 form
+  | "no-usable-id";             // unparseable, or parseable with no `id` to address a decision to
+
+/** The closed set of admission outcomes. Exactly three, and the third is the only one that
+ *  produces a caller-addressed decision fact: a quarantine has no fingerprint to address one
+ *  with, which is the whole reason the two paths differ. */
+export type AdmissionOutcome =
+  | { outcome: "quarantine"; cause: AdmissionQuarantineCause; detail: string }
+  | { outcome: "reject"; code: "resource-exhausted"; detail: string; fingerprint: string; object: Record<string, unknown> }
+  | { outcome: "admit"; fingerprint: string; object: Record<string, unknown> };
+
+/** Depth and member/item counts of a parsed JSON value, measured in one walk.
+ *  Iterative rather than recursive: the input is untrusted and a recursive walk would blow the
+ *  JS stack on a deeply nested submission — which is a CRASH, not a decision, and this endpoint's
+ *  entire contract is that every submission reaches a durable decision. */
+function measure(value: unknown): { depth: number; items: number } {
+  let depth = 0, items = 0;
+  const stack: Array<{ v: unknown; d: number }> = [{ v: value, d: 1 }];
+  while (stack.length > 0) {
+    const { v, d } = stack.pop()!;
+    if (d > depth) depth = d;
+    if (Array.isArray(v)) {
+      items += v.length;
+      for (const child of v) stack.push({ v: child, d: d + 1 });
+    } else if (v !== null && typeof v === "object") {
+      const entries = Object.values(v as Record<string, unknown>);
+      items += entries.length;
+      for (const child of entries) stack.push({ v: child, d: d + 1 });
+    }
+  }
+  return { depth, items };
+}
+
+/**
+ * Duplicate object names in the RAW bytes, which no post-parse check can see.
+ *
+ * `JSON.parse('{"id":"a","id":"b"}')` yields `{id:"b"}` and reports nothing. So a submission that
+ * two conforming implementations could read DIFFERENTLY — one taking the first name, one the last —
+ * arrives at the decision looking perfectly ordinary. That is the precise failure the declared ceiling
+ * exists to prevent: two implementations deciding the same bytes differently and DURABLY.
+ *
+ * The module has claimed duplicate names as a `no-canonical-form` cause since it was written, and
+ * the case was UNREACHABLE — not untested, unrepresentable, because the seam handed the decision a
+ * value from which the duplicate had already been erased. Found by a reviewer, not by any of the
+ * mutants aimed at this file.
+ *
+ * A scanner, not a regex: strings can contain braces, colons and escaped quotes, and a recogniser
+ * that succeeds on a prefix is a parser that lies. This walks the bytes once and tracks a name set
+ * per open object. It runs only on input already inside the byte ceiling.
+ */
+export function hasDuplicateNames(text: string): { duplicate: true; name: string } | { duplicate: false } {
+  const stack: Array<Set<string> | null> = []; // Set = object frame, null = array frame
+  let i = 0;
+  const n = text.length;
+  let expectName = false;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === '"') {
+      // Read one complete string, honouring escapes, so its contents can never be mistaken for
+      // structure. `\\` must consume both characters or a trailing `\"` reads as an open quote.
+      let j = i + 1, out = "";
+      while (j < n) {
+        const cj = text[j];
+        if (cj === "\\") { out += text[j + 1] ?? ""; j += 2; continue; }
+        if (cj === '"') break;
+        out += cj; j++;
+      }
+      if (j >= n) return { duplicate: false }; // unterminated: not our error to report
+      const top = stack[stack.length - 1];
+      if (expectName && top instanceof Set) {
+        if (top.has(out)) return { duplicate: true, name: out };
+        top.add(out);
+        expectName = false;
+      }
+      i = j + 1;
+      continue;
+    }
+    if (ch === "{") { stack.push(new Set()); expectName = true; i++; continue; }
+    if (ch === "[") { stack.push(null); expectName = false; i++; continue; }
+    if (ch === "}" || ch === "]") { stack.pop(); expectName = false; i++; continue; }
+    if (ch === ",") { expectName = stack[stack.length - 1] instanceof Set; i++; continue; }
+    i++;
+  }
+  return { duplicate: false };
+}
+
+/** The exact decimal value a JSON number literal denotes, as a comparable key: sign, significant
+ *  digits, and scale. `1.50`, `1.5` and `15e-1` all key the same because they ARE the same number;
+ *  `-0` and `0` key the same because RFC 8785 serialises both as `0`. A literal that is not a JSON
+ *  number keys to itself, so it can never compare equal to a normalised one. */
+function decimalValueKey(literal: string): string {
+  const m = /^(-?)(\d+)(?:\.(\d+))?(?:[eE]([+-]?\d+))?$/.exec(literal);
+  if (!m) return `?${literal}`;
+  const [, sign, int, frac = "", exp = "0"] = m;
+  const digits = (int + frac).replace(/^0+/, "");
+  if (digits === "") return "0";
+  const trimmed = digits.replace(/0+$/, "");
+  return `${sign}${trimmed}e${Number(exp) - frac.length + (digits.length - trimmed.length)}`;
+}
+
+/**
+ * Out-of-range numbers in the RAW bytes — the fourth I-JSON condition SPEC §13.4 names
+ * ("unparseable, duplicate object names, lone surrogate, out-of-range number") and the only one
+ * this module did not enforce.
+ *
+ * WHY RAW BYTES, and why no mutant could ever have found this. `JSON.parse('12345678901234567890')`
+ * yields `12345678901234567000` and reports nothing: the caller sent one number and the durable
+ * decision binds a different one. After the parse the information is GONE, so a mutant aimed at a
+ * post-parse branch would have SURVIVED and read as a suite hole. This class is not reachable by
+ * mutation by construction; it is reached by asking what the SPEC names and whether the code can
+ * produce it at all.
+ *
+ * THE PREDICATE IS ROUND-TRIP STABILITY, not a safe-integer test, and the difference is not
+ * academic: `1e-400` parses to exactly `0`, and `Number.isSafeInteger(0)` is `true` — the underflow
+ * case does not merely escape a safe-integer test, it passes one AFFIRMATIVELY while the value it
+ * came from has been destroyed. Stability is also the right criterion on its own terms: RFC 8785
+ * canonicalises from the double, so two implementations agree exactly when the literal survives
+ * text → double → text. `0.1` is therefore fine (it is not exactly representable, but its shortest
+ * round-trip form is `0.1` in every conforming reader); `12345678901234567890` is not.
+ *
+ * A scanner for the same reason `hasDuplicateNames` is one: digits inside a string are not numbers,
+ * and a recogniser that succeeds on a prefix is a parser that lies.
+ */
+export function hasOutOfRangeNumber(
+  text: string,
+): { outOfRange: true; literal: string; reads: string } | { outOfRange: false } {
+  let i = 0;
+  const n = text.length;
+  while (i < n) {
+    const ch = text[i];
+    if (ch === '"') {
+      let j = i + 1;
+      while (j < n) {
+        if (text[j] === "\\") { j += 2; continue; }
+        if (text[j] === '"') break;
+        j++;
+      }
+      if (j >= n) return { outOfRange: false }; // unterminated: not our error to report
+      i = j + 1;
+      continue;
+    }
+    if (ch === "-" || (ch >= "0" && ch <= "9")) {
+      let j = i;
+      if (text[j] === "-") j++;
+      while (j < n && text[j] >= "0" && text[j] <= "9") j++;
+      if (text[j] === ".") { j++; while (j < n && text[j] >= "0" && text[j] <= "9") j++; }
+      if (text[j] === "e" || text[j] === "E") {
+        j++;
+        if (text[j] === "+" || text[j] === "-") j++;
+        while (j < n && text[j] >= "0" && text[j] <= "9") j++;
+      }
+      const literal = text.slice(i, j);
+      const value = Number(literal);
+      // OVERFLOW AND NaN NEED NO SEPARATE TEST, and this is measured rather than argued: a mutation
+      // that deleted an `!Number.isFinite(value) ||` guard here SURVIVED the whole suite with every
+      // cell green, including the overflow one. `String(Infinity)` is `"Infinity"`, which is not a
+      // number literal and so keys to itself — it can never equal a normalised key. The guard was
+      // stating an intent the comparison already enforced, and a guard that guards nothing reads to
+      // the next person as though something depends on it.
+      if (decimalValueKey(literal) !== decimalValueKey(String(value)))
+        return { outOfRange: true, literal, reads: String(value) };
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return { outOfRange: false };
+}
+
+/** Decide ONE submission against the command's DECLARED `admissionCeiling`.
+ *
+ *  The ceiling is a parameter and never a constant, because two conforming implementations must
+ *  not be able to decide the same bytes differently and durably. That is also why nothing here
+ *  reads a clock: the outcome is a function of the bytes and the declaration alone, so a
+ *  redelivery of the same submission reaches the same durable answer however long any worker
+ *  took. A watchdog may re-deliver; it may never decide.
+ *
+ *  ORDER IS PART OF THE CONTRACT, and the reason is the fingerprint. The raw-byte ceiling is
+ *  evaluated BEFORE parsing, because parsing is the work the ceiling exists to refuse. Everything
+ *  that fails before a fingerprint exists quarantines, because there is no caller-addressed
+ *  subject to write a decision to. Once a fingerprint EXISTS the caller is addressable, so a
+ *  breach becomes a REJECTION — a durable, caller-visible answer rather than a message they never
+ *  hear about. */
+export function decideAdmission(
+  rawBytes: Uint8Array,
+  parsedBody: unknown,
+  subject: ParsedEpRequest,
+  ceiling: { maxBytes: number; maxDepth: number; maxItems: number },
+): AdmissionOutcome {
+  if (rawBytes.byteLength > ceiling.maxBytes)
+    return { outcome: "quarantine", cause: "submission-too-large",
+      detail: `${rawBytes.byteLength} raw bytes over the declared maxBytes ${ceiling.maxBytes}` };
+
+  if (parsedBody === undefined)
+    return { outcome: "quarantine", cause: "no-usable-id", detail: "bytes do not parse as JSON" };
+
+  const { depth, items } = measure(parsedBody);
+  if (depth > ceiling.maxDepth)
+    return { outcome: "quarantine", cause: "submission-too-deep",
+      detail: `depth ${depth} over the declared maxDepth ${ceiling.maxDepth}` };
+  if (items > ceiling.maxItems)
+    return { outcome: "quarantine", cause: "submission-too-many-items",
+      detail: `${items} members/items over the declared maxItems ${ceiling.maxItems}` };
+
+  const id = (parsedBody !== null && typeof parsedBody === "object" && !Array.isArray(parsedBody))
+    ? (parsedBody as Record<string, unknown>).id : undefined;
+  if (typeof id !== "string" || id.length === 0)
+    return { outcome: "quarantine", cause: "no-usable-id",
+      detail: "no `id`: there is no caller-scoped subject to address a decision to" };
+  // NON-EMPTY IS NOT USABLE. The id becomes a SUBJECT TOKEN — `epf.<e>.dec.<owner>.<actor>.<uid>.<id>`
+  // — so an id outside the token grammar has no subject to address a decision to, exactly as an
+  // absent one does not. This check was missing while `assertIdToken` was already imported into this
+  // file and used two functions away: `bad.id` admitted here and threw at the subject builder later,
+  // turning a submission defect into an internal error at a boundary that had already accepted it.
+  try { assertIdToken(id, "submission id"); }
+  catch (e) {
+    return { outcome: "quarantine", cause: "no-usable-id",
+      detail: `\`id\` is not within the token grammar, so it names no subject: ${(e as Error).message}` };
+  }
+
+  // DUPLICATE NAMES, decided from the RAW bytes because the parsed value cannot show them. Placed
+  // after the id check so the causes stay ordered by what the operator can act on, and before the
+  // fingerprint because a submission two implementations could read differently has no canonical
+  // form to fingerprint.
+  let rawText: string | undefined;
+  try { rawText = new TextDecoder("utf-8", { fatal: false }).decode(rawBytes); } catch { rawText = undefined; }
+  if (rawText !== undefined) {
+    const dup = hasDuplicateNames(rawText);
+    if (dup.duplicate)
+      return { outcome: "quarantine", cause: "no-canonical-form",
+        detail: `duplicate object name ${JSON.stringify(dup.name)}: two conforming implementations `
+              + `may read this submission differently, so it has no interoperable canonical form` };
+
+    // OUT-OF-RANGE NUMBERS, same cause and the same reason: decided from the raw bytes because the
+    // parsed value has already lost the evidence. This one is not a submission two implementations
+    // MIGHT read differently — it is one THIS implementation has already read differently from what
+    // the caller wrote, and admitting it binds the altered value durably.
+    const num = hasOutOfRangeNumber(rawText);
+    if (num.outOfRange)
+      return { outcome: "quarantine", cause: "no-canonical-form",
+        detail: `number ${num.literal} has no interoperable I-JSON value: it reads back as `
+              + `${num.reads}, so the decision would bind a value the caller did not send` };
+  }
+
+  let object: Record<string, unknown>, fingerprint: string;
+  try {
+    ({ object, fingerprint } = submissionFingerprint(parsedBody, subject));
+  } catch (e) {
+    return { outcome: "quarantine", cause: "no-canonical-form", detail: (e as Error).message };
+  }
+
+  // POST-CANONICAL. The canonical form is what an acceptance embeds and what every consumer
+  // re-derives, so it is the form the ceiling has to hold for. A breach here is REJECTED rather
+  // than quarantined for one reason only: the fingerprint exists, so the caller can be told.
+  const canonicalBytes = new TextEncoder().encode(JSON.stringify(object)).byteLength;
+  if (canonicalBytes > ceiling.maxBytes)
+    return { outcome: "reject", code: "resource-exhausted", fingerprint, object,
+      detail: `canonical form is ${canonicalBytes} bytes, over the declared maxBytes ${ceiling.maxBytes}` };
+
+  return { outcome: "admit", fingerprint, object };
 }
 
 // ---- fact shapes (§13.4 items 3 and 5) and their consuming-boundary validators ---------------
