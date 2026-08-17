@@ -8,7 +8,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "./_broker-teardown.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 // `unowned` is the POSITIVE CONTROL: identical in every respect except that it does not take
 // ownership, so it reproduces the leak. Without it, the owned cells could pass against a broker that

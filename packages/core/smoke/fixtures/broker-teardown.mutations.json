@@ -32,7 +32,7 @@
   "mutations": [
     {
       "name": "the broker is never taken into ownership, so nothing tears it down when the suite is killed",
-      "file": "packages/core/smoke/_broker-teardown.ts",
+      "file": "packages/smoke-kit/src/broker-teardown.ts",
       "find": "  owned.add(entry);",
       "replace": "  void entry;",
       "expectRed": "✗ FAIL: SIGTERM: the owned broker is gone",

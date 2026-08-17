@@ -45,6 +45,9 @@
     "smoke:backup:live": "tsx smoke/backup-live.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
+  "devDependencies": {
+    "@cotal-ai/smoke-kit": "workspace:*"
+  },
   "dependencies": {
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/jwt": "0.0.10-5",

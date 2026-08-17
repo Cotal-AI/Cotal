@@ -92,9 +92,16 @@ try {
   //    that the leak HAPPENS. It is not a leak detector and it does not guard anything; it keeps
   //    passing whether or not the teardown works, which is exactly its job. So it goes red in one
   //    interesting case: somebody fixed the leak AT ITS SOURCE, and an unowned broker no longer
-  //    outlives its signalled parent. If that is what you just did, this cell is correct to fail and
-  //    the right response is to delete it and the cells it was propping up, not to make it pass
-  //    again. Confirm it first: run the fixture in `unowned` mode by hand and watch the broker's pid.
+  //    outlives its signalled parent. If that is what you just did, this cell is correct to fail.
+  //    Confirm it first: run the fixture in `unowned` mode by hand and watch the broker's pid. Then
+  //    re-derive whether the helper is still needed, and RETIRE THIS CELL ONLY.
+  //
+  //    Not the cells below it, which is what an earlier draft of this comment said and had wrong.
+  //    They do go vacuous when the leak cannot happen, but vacuous is not the same as retired. A
+  //    retired check matches nothing BY CONSTRUCTION and reads healthy while measuring nothing;
+  //    these still spawn a real fixture, signal a real pid, and read liveness from the OS, so they
+  //    go red the moment a source fix is reverted. Deleting them would let that revert restore the
+  //    leak in silence, which is the one failure class a fresh CI box can never witness.
   {
     const s = await start("unowned");
     process.kill(s.selfPid, "SIGTERM");

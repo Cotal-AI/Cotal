@@ -16,6 +16,7 @@ import { join } from "node:path";
 import { CotalEndpoint, isReachable, mintLifecycleUid } from "@cotal-ai/core";
 import { MeshAgent } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -23,8 +24,9 @@ const servers = `nats://127.0.0.1:${PORT}`;
 const space = "hostsmoke";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-host-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -92,4 +94,5 @@ try {
   await peer.stop?.();
   srv.kill();
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
