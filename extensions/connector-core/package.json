@@ -15,6 +15,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./agui-render": {
+      "types": "./dist/agui-render.d.ts",
+      "import": "./dist/agui-render.js"
     }
   },
   "scripts": {

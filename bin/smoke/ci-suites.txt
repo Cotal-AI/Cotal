@@ -283,3 +283,8 @@ smoke:agui-holder
 smoke:opencode-boot-prompt
 smoke:import-remedy
 smoke:broker-teardown
+smoke:event-channel-classify
+smoke:agui-render
+smoke:agui-render-parity
+smoke:agui-frame-dispatch
+smoke:view-events-filter

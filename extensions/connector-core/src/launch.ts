@@ -14,7 +14,7 @@
  * secret access — HOME / XDG / platform config dirs are forwarded, so a child can still read
  * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
  */
-import { parsePrincipalKey, principalKey, type McpServerSpec } from "@cotal-ai/core";
+import { eventChannel, parsePrincipalKey, principalKey, type McpServerSpec } from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -203,93 +203,29 @@ export function transcriptChannel(name: string): string {
   return `tr-${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
 }
 
-/** The per-agent EVENT channel: `events.<owner>.<actor>` — keyed on the agent's PRINCIPAL. The
- *  SINGLE source of this connector convention: a connector publishes here (via
- *  {@link eventChannelForSession}) and a grant is derived from the same value, so the grant and the
- *  publish cannot drift. It lives in the connector layer, NOT core: an agent event stream is a
- *  connector feature, not the normative wire standard.
+/** The per-agent EVENT channel and its classifier, RE-EXPORTED FROM CORE.
  *
- *  **IT IS DESTINED TO REPLACE `transcriptChannel()` AND THE `tr-<name>` CONVENTION, AND AT THIS TIP
- *  IT HAS NOT.** Both functions exist here and `transcriptChannel` is still the one every connector
- *  calls. That is deliberate sequencing, not a coexistence design: an abolition means replaced, not
- *  both running, and the commit that cuts a connector over is the commit that deletes its mirror.
- *  Saying so here rather than describing the end state is the point, because a comment that
- *  describes the intended world instead of this one is how a reader concludes a migration already
- *  happened.
+ *  They were defined here, and they moved. The convention is one every connector publishes to and
+ *  every reader has to recognise, so it is a protocol shape rather than an adapter's choice, and it
+ *  now lives beside the frame's identity in `packages/core/src/event-channel.ts`. The comment that
+ *  used to sit here argued the opposite in those words: that an agent event stream is a connector
+ *  feature and a classifier for the convention belongs beside its constructor. The second half was
+ *  right and is why they moved TOGETHER; the first half was wrong, and the evidence is that the two
+ *  surfaces which most need to classify, the console's mesh view and the dashboard, cannot reach
+ *  this package at all.
  *
- *  The prefix moves from a glyph-line mirror to a namespace that can hold per-session sub-channels
- *  (`events.<owner>.<actor>.<session>`), which the flat old name could not: every session shared one
- *  channel and therefore one retention budget.
+ *  `isEventChannel` is no longer a prefix test. It derives the principal and refuses a name that
+ *  does not resolve to one, which is what retires the known limit this file used to document. The
+ *  reasoning for that direction is on the core function.
  *
- *  **A grant on `events.<owner>.<actor>` does NOT cover `events.<owner>.<actor>.<session>`** —
- *  `patternCovers` is false in both directions between `a` and `a.>`, so a caller needing both must
- *  mint BOTH patterns.
- *
- *  **NOTHING MINTS THE DESCENDANT PATTERN TODAY, AND NOTHING EMITS ON ONE.** Per-session
- *  sub-channels are a LATER step; the grant must be minted in the same change that starts emitting,
- *  not before and not after. Stated as an unbuilt future rather than a delegated duty because a
- *  comment asserting another component's behaviour is a test nobody wrote.
- *
- *  THE KEY IS THE PRINCIPAL BECAUSE THE DISPLAY NAME IS NOT AN IDENTITY. This function used to take
- *  `name` and reduce it to `[a-z0-9_-]`, which FUSED distinct principals onto one channel:
- *  `assertValidName` deliberately permits internal spaces and dots ("human display names like
- *  'Ada Lovelace'"), so `Alice Bob`, `Alice.Bob`, `alice bob` and `alice-bob` all collapsed to
- *  `events.alice-bob`, and case-folding collapsed `Alice` onto `alice` besides — 8 valid distinct
- *  names measured onto 3 channels. That was an ISOLATION defect, not a cosmetic one: the publish
- *  grant is minted FROM this value, so two distinct principals received the same grant and published
- *  to the same subject. Neither de-duplication path caught it — foreground `uniqueMeshName` and the
- *  manager's funnel both de-duplicate by exact roster NAME, never by resolved channel.
- *
- *  The name-keyed version answered that with a sanitiser plus a truncated SHA-256 digest, and could
- *  therefore only ever claim COLLISION-RESISTANCE — a defence that itself shipped two constructible
- *  collisions (a name that looked like a hashed image; unpaired surrogates fusing under UTF-8
- *  encoding). Keyed on the principal there is no lossy transform to defend: `assertValidOwnerToken`
- *  is `[A-Za-z0-9_]+` and FAILS LOUD rather than rewriting, and `.` separates the two tokens that
- *  cannot contain one. So distinct principals give distinct channels — INJECTIVE, by construction
- *  rather than by digest length. The sanitiser, the digest, and the disjointness argument that
- *  guarded them are deleted rather than carried forward.
- *
- *  THE DOT-FORM COSTS TWO SEGMENTS, deliberately. `principalKey().key` is `<owner>.<actor>`, so a
- *  channel is three tokens and `events.<owner>.>` is expressible and means OWNER-WIDE — every actor
- *  under one owner, not one agent's sessions. The single-token `name` form (`<owner>-<actor>`) would
- *  avoid that, but the dot-form is the canonical serialization every authority that enforces
- *  per-agent grants already checks against, and a second encoding of a principal is the drift this
- *  design refuses everywhere else.
- *
- *  Validation is `principalKey`'s own, reused rather than re-implemented: this function derives an
- *  AUTHORIZATION value and must not depend on a caller having validated first. */
-export function eventChannel(principal: { owner: string; actor: string }): string {
-  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;
-}
-
-/** The one place the `events.` convention is spelled. {@link eventChannel} and
- *  {@link isEventChannel} both read it, so the constructor and its classifier cannot drift apart —
- *  which is the only reason they are allowed to be two functions. */
-const EVENT_CHANNEL_PREFIX = "events.";
-
-/** Whether a channel name is an agent's structured-event channel rather than ordinary chat.
- *
- *  **THIS EXISTS BECAUSE {@link eventChannel} IS NOT INVERTIBLE FROM WHAT A READER HAS.** A surface
- *  classifying live traffic holds a `CotalMessage`, and `EndpointRef` carries `id`, `name` and
- *  `role` — **no owner/actor**. So a reader cannot rebuild the expected channel for a sender and
- *  compare; it can only ask a question about the name it was given. Without this, every consumer
- *  that wants to separate event traffic from chat has to re-spell `events.` locally, which is the
- *  duplication `partsToText` exists to document.
- *
- *  **IT LIVES HERE, NOT IN CORE, AND THAT IS THE SAME BOUNDARY {@link eventChannel} RESPECTS.**
- *  `packages/core/src/connector.ts` states the naming convention is the connector's and deliberately
- *  not the wire standard's. A classifier for that convention is the convention, so it belongs beside
- *  the constructor.
- *
- *  **KNOWN LIMIT, STATED RATHER THAN PAPERED OVER: this is a PREFIX test, not a validation.** It
- *  answers "is this addressed as an event channel", which is what a display filter needs. It does
- *  NOT verify that the remainder is a well-formed principal key, so a malformed `events.` name
- *  classifies as an event channel. A reader filtering a view wants that — an unparseable event
- *  channel is still not chat, and hiding it would make a malformed publisher invisible. A caller
- *  needing the principal must parse it and handle failure itself. */
-export function isEventChannel(channel: string | undefined): boolean {
-  return typeof channel === "string" && channel.startsWith(EVENT_CHANNEL_PREFIX);
-}
+ *  Re-exported rather than relocated silently, so every existing importer of `../src/launch.js`
+ *  keeps working and the move is not a breaking change to this package's surface. */
+export {
+  EVENT_CHANNEL_PREFIX,
+  eventChannel,
+  eventChannelPrincipal,
+  isEventChannel,
+} from "@cotal-ai/core";
 
 /** The event channel for a LIVE session, derived from the endpoint's own principal — what the
  *  broker will actually enforce against, never `config.name` and never the launch env.
