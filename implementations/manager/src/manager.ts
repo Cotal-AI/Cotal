@@ -3707,7 +3707,7 @@ export class Manager {
     // resolve "uncertain"; caught by the lifecycle e2e).
     const wanted = this.managedPrincipal(a);
     // READINESS LIFECYCLE FENCE (SPEC 13.1): match the exact principal AND the exact lifecycle uid
-    // the manager minted for THIS spawn (presence carries it, §6/:315). The endpoint's own
+    // the manager minted for THIS spawn (presence carries it, §6). The endpoint's own
     // register-only broker proof is gated on the CLIENT-authored `card.kind`, which a managed child
     // holding a valid agent credential could set to "endpoint" to skip - so it is defense-in-depth,
     // NOT the authority boundary. This equality is: the manager (not the child) owns the expected
