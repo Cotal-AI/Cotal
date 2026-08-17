@@ -1,5 +1,47 @@
 # @cotal-ai/workspace
 
+## 0.19.0
+
+### Patch Changes
+
+- 24687a3: Resolve a local project against the mesh recorded for its root, whatever spelling that root arrives
+  under.
+
+  `resolveMeshTarget` looks up the registry entry recorded for the current project root and honours its
+  `server` and `mode`. That lookup compared roots with `resolve()`, which normalizes separators and
+  `..`/`.` but does not collapse a symlink. A recorded root is whatever spelling the operator gave:
+  `cotal meshes add --root <dir>` runs its root through `resolve()` too, never realpath, so a project
+  recorded under one spelling of its directory and started under another read as _unrecorded_: its
+  recorded server and mode were discarded and it was silently retargeted to the default server. A
+  project started on `…:4333` resolved to `…:4222`, and a recorded open mesh minted credentials off
+  stale local auth state. Both comparisons now use the canonical root predicate the registry already
+  applies in `meshesForRoot`, which is now exported rather than reimplemented at each call site.
+
+- 17f14be: Name which install is behind when an extension fails to import a missing `@cotal-ai/*` export. The
+  error used to prescribe `cotal ext add <extension>` for every import failure, which reinstalls
+  whichever side is current: when the linked core is the older one, no reinstall of the extension can
+  supply the export, so the prescribed command changes nothing. It now names the missing symbol, the
+  peer copy that was actually linked (with its version and path), and the side that is behind. When the
+  core is behind, or is the same version but an older build, it prescribes an exact command for the
+  copy it just named: a pinned `npm i -g cotal-ai@<version>` for an installed copy, or a rebuild for a
+  source checkout, where that command would be wrong. It keeps the `cotal ext add` remedy only when the
+  extension is the older side, and refuses to name a side at all when the two cannot be ranked.
+- Updated dependencies [48c6631]
+- Updated dependencies [10d9cd6]
+- Updated dependencies [a1bc784]
+- Updated dependencies [a7267b3]
+- Updated dependencies [ce1c248]
+- Updated dependencies [5e95736]
+- Updated dependencies [19931dd]
+- Updated dependencies [6074c26]
+- Updated dependencies [87c4130]
+- Updated dependencies [cb9e1ad]
+- Updated dependencies [c038730]
+- Updated dependencies [758e1e3]
+- Updated dependencies [be624af]
+- Updated dependencies [8572a5d]
+  - @cotal-ai/core@0.19.0
+
 ## 0.18.0
 
 ### Minor Changes
