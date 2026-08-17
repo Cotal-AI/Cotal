@@ -61,16 +61,32 @@ function reap(): void {
 function arm(): void {
   if (armed) return;
   armed = true;
+  // WHICH OF THESE TWO ACTUALLY FIRES DEPENDS ON THE RUNNER, and it is not the one you would guess.
+  // Every suite here runs under `tsx`, which converts a terminating signal into an ordinary exit
+  // (measured: a fixture with NO signal listener, sent SIGTERM directly, still ran its `exit` handler
+  // and reported code 143). So on the runner these suites actually use, the `exit` registration below
+  // is the load-bearing one and the signal handlers are redundant.
+  //
+  // They are kept because the redundancy is one-directional: run the same file under plain `node`
+  // (a compiled suite, or a future runner that does not intercept), and a default-disposition SIGTERM
+  // terminates without ever running an `exit` handler, at which point the signal handlers are the
+  // only thing left. The suite says so in its own output rather than implying both are proven: the
+  // signal handlers are UNOBSERVED under `tsx`, not verified by it.
   process.on("exit", reap);
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
-    process.on(sig, () => {
+    // A NAMED handler removed with `process.off`, never `removeAllListeners`: this helper is meant to
+    // go into many suites, and removing every listener for a signal would silently disable cleanup a
+    // suite had already registered, then re-raise so the default kills the process before the
+    // disabled handler could ever matter.
+    const onSignal = (): void => {
       reap();
       // Registering a listener suppresses the default termination, so re-raise it after cleaning up:
       // a killed seat must still LOOK killed (exit status 128+signo), or a supervisor reading the
       // status learns the wrong thing about why it died.
-      process.removeAllListeners(sig);
+      process.off(sig, onSignal);
       process.kill(process.pid, sig);
-    });
+    };
+    process.on(sig, onSignal);
   }
 }
 

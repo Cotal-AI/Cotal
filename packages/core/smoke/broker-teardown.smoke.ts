@@ -168,6 +168,16 @@ try {
   // Nothing to release: every cell reaps its own broker above, including the two that leak on purpose.
 }
 
+// Stated because the cells above cannot show it, and silence here would read as coverage. Under
+// `tsx`, which is how every one of these suites runs, a terminating signal arrives as an ordinary
+// exit: a fixture with NO signal listener, sent SIGTERM directly, still runs its `exit` handler and
+// reports code 143. So the cells above are carried by the `exit` registration, and the helper's
+// SIGINT/SIGTERM/SIGHUP handlers are UNOBSERVED here, not passed. They exist for a runner that does
+// not intercept, where a default-disposition signal would skip `exit` entirely, and that runner is
+// not this one.
+console.log("\n  · the signal handlers themselves are UNOBSERVED under `tsx`, which delivers a signal");
+console.log("    as an ordinary exit. What these cells prove is the teardown, not which hook ran it.");
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
 console.log("SMOKE OK: broker-teardown");
