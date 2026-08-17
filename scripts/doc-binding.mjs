@@ -13,10 +13,15 @@
  *   pnpm doc-binding --self-test     grade this tool against its own four controls
  *   pnpm doc-binding <ref>           compare <ref> against the working tree
  *
- * `ABSENT -> *` pairs are new declarations and are counted but not reported as findings: a sweep
- * that treats them as either clean or broken drowns the ones that matter.
+ * ONLY A DECLARATION THAT HAD A DOC AND NOW HAS NONE IS A FINDING. Three classes are counted and
+ * not reported, because on any real diff they outnumber the findings by two orders of magnitude and
+ * a sweep that surfaces them buries the ones that matter: a new declaration (`ABSENT -> *`), an
+ * undocumented declaration that moved or went away (`false -> ABSENT`), and a doc being added
+ * (`false -> true`). A documented declaration that is no longer there (`true -> ABSENT`) is printed
+ * but does not fail the run: it is usually a move to another file, which the reader can confirm in
+ * a way this tool cannot, since it compares one file against itself.
  *
- * Exit 0 when no binding changed, 1 when one did, 2 on misuse.
+ * Exit 0 when nothing lost a doc, 1 when something did, 2 on misuse.
  */
 import ts from "typescript";
 import { execFileSync } from "node:child_process";
@@ -159,10 +164,12 @@ if (ref === undefined) {
 const files = execFileSync("git", ["diff", "--name-only", ref], { encoding: "utf8" })
   .split("\n").filter((f) => f.endsWith(".ts") || f.endsWith(".mts"));
 
-let checked = 0, decls = 0, lost = 0, added = 0;
+let checked = 0, decls = 0, lost = 0, gone = 0, quiet = 0;
 for (const f of files) {
   let before;
-  try { before = execFileSync("git", ["show", `${ref}:${f}`], { encoding: "utf8", maxBuffer: 32 << 20 }); }
+  // A file absent at the ref is new, and a new file cannot have lost a doc. `stderr: "ignore"`
+  // because git reports the absence on stderr and it is expected here, not a problem to surface.
+  try { before = execFileSync("git", ["show", `${ref}:${f}`], { encoding: "utf8", maxBuffer: 32 << 20, stdio: ["ignore", "pipe", "ignore"] }); }
   catch { continue; }
   if (!existsSync(f)) continue;
   const b = pairs(before, f);
@@ -170,14 +177,13 @@ for (const f of files) {
   checked += 1;
   decls += b.length;
   const changes = diffPairs(b, a);
-  const real = changes.filter((c) => c.was !== "ABSENT");
-  added += changes.length - real.length;
-  if (real.length > 0) {
-    lost += real.length;
-    console.log(`CHANGED ${f}`);
-    for (const c of real) console.log(`   ${c.decl}: ${c.was} -> ${c.now}`);
-  }
+  const stolen = changes.filter((c) => c.was === true && c.now === false);
+  const removed = changes.filter((c) => c.was === true && c.now === "ABSENT");
+  quiet += changes.length - stolen.length - removed.length;
+  if (stolen.length > 0 || removed.length > 0) console.log(`CHANGED ${f}`);
+  for (const c of stolen) { lost += 1; console.log(`   LOST A DOC  ${c.decl}`); }
+  for (const c of removed) { gone += 1; console.log(`   documented declaration no longer here, check where it moved: ${c.decl}`); }
 }
-console.log(`\n${lost === 0 ? "BINDING IDENTICAL" : "BINDING CHANGED"}  ${checked} files, ${decls} declarations, `
-  + `${lost} changed pairs, ${added} new declarations not counted`);
+console.log(`\n${lost === 0 ? "NOTHING LOST A DOC" : "DOCS LOST"}  ${checked} files, ${decls} declarations, `
+  + `${lost} lost, ${gone} documented-and-gone, ${quiet} changes not counted`);
 process.exit(lost === 0 ? 0 : 1);
