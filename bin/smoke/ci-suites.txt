@@ -270,3 +270,4 @@ smoke:auth
 smoke:mutation-fixtures
 smoke:agui-conformance
 smoke:agui-kind
+smoke:lease-renew
