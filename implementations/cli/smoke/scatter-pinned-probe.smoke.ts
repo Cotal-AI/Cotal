@@ -45,7 +45,7 @@ import { Manager } from "../../manager/src/manager.js";
 import { pinnedLivenessProbe } from "../src/lib/control.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 
-const EXPECTED_CELLS = 15; // predicted 14 before the run; the counter's positive control (3a) is the cell that was not foreseen
+const EXPECTED_CELLS = 17; // predicted 14: +1 for the counter's own positive control (3a), +2 for the never-asked fallback the mutation pass found uncovered
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0, fail = 0;
@@ -138,6 +138,18 @@ try {
     outsiderSent === 0, { outsiderSent });
   check("...and its row says NOT-PROBED, which is a fact about this command, not about the instance",
     narrow.livenessOf(OUTSIDER) === "not-probed", narrow.livenessOf(OUTSIDER));
+  // A row can also be asked about an instance the hook NEVER SAW: a gather that ends early never
+  // probes what already answered, and the scatter re-freezes on its own connection, so it can name
+  // an id this credential was not minted against. That fallback is a different branch from the
+  // verdicts recorded above, and the mutation pass found it uncovered, so it gets its own cells.
+  const unasked = pinnedLivenessProbe(asker.nc, {
+    space: SPACE, endpoint: MANAGER_ENDPOINT, caller: asker.caller,
+    pinned: new Set([IID_LIVE]), probeDeadlineMs: 2_000, report: () => {},
+  });
+  check("an id never handed to the hook, but inside the pinned set, reads UNKNOWN: nothing was established",
+    unasked.livenessOf(IID_LIVE) === "unknown", unasked.livenessOf(IID_LIVE));
+  check("...and one outside the set reads NOT-PROBED without the hook ever running",
+    unasked.livenessOf(OUTSIDER) === "not-probed", unasked.livenessOf(OUTSIDER));
 
   console.log("3. an id INSIDE the set is asked, and the broker answers about it");
   const pinnedBefore = asker.nc.stats().outMsgs;
