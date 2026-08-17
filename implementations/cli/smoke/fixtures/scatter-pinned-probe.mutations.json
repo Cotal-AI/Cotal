@@ -1,0 +1,41 @@
+{
+  "command": "pnpm smoke:scatter-pinned-probe",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (1 red) - the pinned-set gate goes, so the closure publishes a probe for an id its credential holds no rail for: the request the broker must refuse, sent anyway",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "      if (!opts.pinned.has(instanceId)) {\n        verdicts.set(instanceId, \"not-probed\");\n        return \"unknown\";\n      }",
+      "replace": "",
+      "expectRed": "and NOTHING left the connection for it"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - a refused probe stops settling, so the gather waits out the broker's refusal as if it were an instance thinking about it, which is the invisible failure this whole layer exists to prevent",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "          settle.get(id)?.();",
+      "replace": "",
+      "expectRed": "and the row says the probe was REFUSED, distinct from an instance that stayed silent"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - the refusal is no longer announced, so an operator sees a slow command and no reason for it",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "          report(`! the broker refused this command's liveness probe for manager instance ${id}: ${text}`);",
+      "replace": "",
+      "expectRed": "the broker's refusal is REPORTED, not left to expire into silence"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - a refused probe reports as an ordinary silent instance, so the row blames the instance for the credential's gap",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "      verdicts.set(instanceId, verdict === \"gone\" ? \"gone\" : refusals.wasRefused(instanceId) ? \"probe-refused\" : \"unknown\");",
+      "replace": "      verdicts.set(instanceId, verdict === \"gone\" ? \"gone\" : \"unknown\");",
+      "expectRed": "and the row says the probe was REFUSED, distinct from an instance that stayed silent"
+    },
+    {
+      "name": "PREDICTED KILLED (>=1 red) - an id that was never handed to the hook reports as an ordinary silent instance rather than as un-asked, so a fact about the command is printed as a fact about the instance",
+      "file": "implementations/cli/src/lib/control.ts",
+      "find": "      verdicts.get(instanceId) ?? (opts.pinned.has(instanceId) ? \"unknown\" : \"not-probed\"),",
+      "replace": "      verdicts.get(instanceId) ?? \"unknown\",",
+      "expectRed": "and its row says NOT-PROBED, which is a fact about this command, not about the instance"
+    }
+  ],
+  "_note": "The suite imports `../src/lib/control.js` RELATIVELY, so it loads the CLI SOURCE and no build step belongs here. The mutated file does import `@cotal-ai/core` from dist, but no mutation here touches core. Mutation 1 deletes the gate rather than inverting it so that the pinned path is untouched: the point is what leaves the connection for an UNPINNED id, and section 3's counter cell stays green to show the instrument still works."
+}
