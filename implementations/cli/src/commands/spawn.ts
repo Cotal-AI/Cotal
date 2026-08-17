@@ -59,7 +59,7 @@ import {
 import { c } from "../ui.js";
 import { completedFlagValue, completingFlagValue, hasCompletedFlagValue, positionalsForCompletion } from "../lib/completion.js";
 import { preflightOrExit, resolveTargetOrExit } from "../lib/connect.js";
-import { askManager, failIfNotOk, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
+import { askManager, failIfNotOk, onInstanceOrExit, resolveControlTarget, START_TIMEOUT_MS } from "../lib/control.js";
 import { listDeclaredChannels, listDeclaredRoles, listPersonas } from "../lib/personas.js";
 import { spawnManifest } from "./spawn-manifest.js";
 import { extensionNames } from "../ext-loader.js";
@@ -233,10 +233,11 @@ async function spawnDetached(
   const defaultPersona = defaultPersonaOverride();
   const ref = spawnPersonaRef(values.config, positionals);
   const managerConfigRef = values.config ?? (!positionals[0] && defaultPersona ? ref : undefined);
+  const on = onInstanceOrExit(values.on, "cotal spawn <persona> --detach");
   const t = await resolveControlTarget(
     { space: values.space, server: values.server, creds: values.creds },
     "control-caller-privileged",
-    values.on,
+    on,
   );
   provenance.read("mesh", `${t.space} (${t.server})`);
   console.error(c.dim("waiting for it to join the mesh (the manager replies on a real outcome - join, exit, or ~30s) …"));
@@ -261,7 +262,7 @@ async function spawnDetached(
     // #159 B1: the manager replies only on a REAL outcome (presence join / process exit / ~30s
     // readiness backstop) — the start request must outlive that window, not the 5s op default.
     // `--on <instance>` pins the spawn to that exact manager instance (P2 item 3 multi-manager).
-  }, t.auth, "owner", START_TIMEOUT_MS, values.on);
+  }, t.auth, "owner", START_TIMEOUT_MS, { instanceId: on });
   failIfNotOk(reply);
   const d = reply.data as { name: string; role?: string; agent: string; mode: string };
   console.log(
@@ -276,6 +277,14 @@ export async function spawn(args: ParsedArgs): Promise<void> {
 
   // `spawn -f cotal.yaml` is a distinct path: deploy a manifest onto a RUNNING mesh (additive,
   // ownership-scoped). The broker must already be reachable; bringing up a fresh mesh is `up -f`.
+  // `--on` is read only by the detached imperative launch. A foreground spawn runs the connector in
+  // this process (no manager to pin), and a manifest deploy launches every agent through the
+  // manager class queue (`spawnManifest` takes no instance). Both would have to ignore the flag;
+  // an ignored pin is a silent fallback, so refuse it where it cannot apply, as `--dry-run` is.
+  if (values.on !== undefined && (!values.detach || values.file)) {
+    console.error(c.red("✗ --on only applies to a detached imperative spawn (`cotal spawn <persona> --detach --on <instance>`); a foreground spawn has no manager to pin and a manifest deploy (-f) launches through the manager class queue"));
+    process.exit(1);
+  }
   if (values.file) {
     await spawnManifest(values.file, {
       dryRun: Boolean(values["dry-run"]),

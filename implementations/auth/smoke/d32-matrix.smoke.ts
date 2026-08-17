@@ -19,7 +19,20 @@
  * (5) cross-principal namespace disjointness (the canonicalizer's dec/quar/bind families never
  * overlap the commit principal's five fact families; per-kind record writers stay disjoint).
  *
- * KNOWN RECORDED GAPS (not failures): the record-writer and timer-writer PRINCIPAL profiles are
+ * KNOWN RECORDED GAPS (not failures): the CANONICALIZER principal holds neither of the two
+ * authorities SPEC gives it — the `epf.<e>.dec.>`/`.quar.>` fact publish (SPEC:1658-1663: the
+ * canonicalizer publishes the decision or quarantine fact and terminally acks only after it
+ * durably exists) nor the leader-served `STREAM.MSG.GET.EPF_<space>` of the row titled
+ * "Canonicalizer CAS-winner + terminal read" (SPEC:2907, which it needs to read the winning fact
+ * on redelivery). Its builders emit its EPJ consumer rows plus the EPW work publish, and the
+ * holder-set fixture below asserts that absence POSITIVELY by listing `canonicalizer:EPW_<space>`
+ * and no `canonicalizer:EPF_<space>`. That is correct today — no production path mints a
+ * canonicalizer principal at all — and it is recorded HERE rather than left to be inferred from a
+ * fixture, because an exact-list expectation reads as complete whether or not anyone checked. Its
+ * rows land with the canonicalizer's first real minting call site, never before: a grant reviewed
+ * against a fixture is graded by the fixture's author.
+ *
+ * Also: the record-writer and timer-writer PRINCIPAL profiles are
  * not yet composed in production (their daemons are post-D14 wiring), so the writer-table's
  * records/EPT currency-read rows (`STREAM.MSG.GET` for the processEpoch / generation-deadline
  * fences) have no emitting builder yet; when those daemons land, their rows join the fixture
@@ -27,7 +40,7 @@
  */
 import {
   canonicalizerGrants, canonicalizerWorkGrants, effectsBindGrants, recordWriterGrants, timerWriterGrants,
-  poolOwnerBindGrants, provisionerConsumerGrants, admissionMediatorGrants, retirementCleanerGrants,
+  poolOwnerBindGrants, provisionerConsumerGrants, admissionMediatorGrants, retirementCleanerGrants, goalWriterGrants,
   commitPrincipalGrants, contractPublisherGrants, activatorGrants, epCallerGrantRows, epServeGrantRows,
   RECORD_KINDS, epwStreamName, epjStreamName, eptReqStreamName, epfStreamName,
   poolConsumerConfig, canonConsumerConfig, effectsConsumerConfig, timerWriterConsumerConfig,
@@ -170,6 +183,43 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
     "$KV.cotal_records_d32m.goal.jobsrv.>",
     "$KV.cotal_records_d32m.cp.jobsrv.>",
     "$KV.cotal_records_d32m.lease.jobsrv.>",
+    // §13.9 "Claim / action / checkpoint commits" puts SIX record kinds on the commit row. The three coordination kinds were
+    // built on the Model-B overlay only, so this fixture pinned the wrong shape as "reviewed".
+    "$KV.cotal_records_d32m.goaleff.jobsrv.>",
+    "$KV.cotal_records_d32m.epname.jobsrv.>",
+    "$KV.cotal_records_d32m.epmig.jobsrv",
+    "$JS.API.STREAM.MSG.GET.EPF_d32m",
+    "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
+    "$JS.API.INFO",
+  ], subscribe: ["_INBOX_ibxconn0123456789.>"] },
+  // The SELF-MEDIATED GOAL-WRITER (P2 item 2). It was outside this file entirely while having a
+  // production mint, and that is the gap worth stating plainly: it IS reviewed — an exact-list cell
+  // in `packages/core/smoke/endpoint-binding.smoke.ts` pins every row of it — but the tests HERE are
+  // AGGREGATE ones. "No unreviewed principal appeared" iterates the principals this file builds;
+  // the STREAM.MSG.GET holder set is an exact list over the same set; the cross-principal
+  // disjointness greps compare the members of that set to each other. A profile absent from the set
+  // passes all of them by not being in them. **An exact-list expectation reads as complete whether
+  // or not anyone checked** — and this one holds THREE leader-served reads, including the
+  // authority store, which no other endpoint-side principal in the holder list has.
+  "goal-writer": { publish: [
+    "cotal.d32m.epf.jobsrv.goal.*.*.*.*.bind",
+    "$KV.cotal_records_d32m.goalidx.jobsrv.>",
+    // The three coordination kinds are NOT here: they are §13.9 "Claim / action / checkpoint commits" commit-row grants and this
+    // overlay inherits them below. `goalidx` stays, because it is not on that row at all.
+    "$JS.API.STREAM.MSG.GET.KV_cotal_auth_d32m",
+    "cotal.d32m.epf.jobsrv.goal.*.*.*.*.result",
+    "cotal.d32m.epf.jobsrv.eff.>",
+    "cotal.d32m.epf.jobsrv.receipt.>",
+    "cotal.d32m.epf.jobsrv.wrk.>",
+    "cotal.d32m.epf.jobsrv.cp.>",
+    "$KV.cotal_records_d32m.goal.jobsrv.>",
+    "$KV.cotal_records_d32m.cp.jobsrv.>",
+    "$KV.cotal_records_d32m.lease.jobsrv.>",
+    // §13.9 "Claim / action / checkpoint commits" puts SIX record kinds on the commit row. The three coordination kinds were
+    // built on the Model-B overlay only, so this fixture pinned the wrong shape as "reviewed".
+    "$KV.cotal_records_d32m.goaleff.jobsrv.>",
+    "$KV.cotal_records_d32m.epname.jobsrv.>",
+    "$KV.cotal_records_d32m.epmig.jobsrv",
     "$JS.API.STREAM.MSG.GET.EPF_d32m",
     "$JS.API.STREAM.MSG.GET.KV_cotal_records_d32m",
     "$JS.API.INFO",
@@ -326,7 +376,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   // P2 item 6: the manager's per-session SERVING credential — the EXACT mirror of `session-caller`
   // with the rail directions swapped, for ONE session. It replaces a STANDING writer that held
   // `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch, against
-  // SPEC 13.9:2526 ("no standing EPS grant exists on either side"). No KV and no JS-API at all: the
+  // SPEC:2753 ("no standing EPS grant exists on either side", §13.6 session credentials). No KV and no JS-API at all: the
   // serving side drives bytes, and the ledger belongs to the standing credential below.
   "session-serving": { publish: [
     `cotal.d32m.eps.manager.${SC_SID}.3.out`,
@@ -378,6 +428,7 @@ put("records-reader-bind", { publish: readerBindGrants(recordsKvStreamName(S), r
 put("mediator", admissionMediatorGrants(S, EPJ, CONN));
 put("cleaner", retirementCleanerGrants(S, EPJ, ["pa", "pb"], CONN));
 put("commit", commitPrincipalGrants(S, EPJ, CONN));
+put("goal-writer", goalWriterGrants(S, EPJ, CONN));
 put("contract-publisher", contractPublisherGrants(S, CONN));
 put("activator", activatorGrants(S, EPJ, "pa", CONN));
 put("caller", epCallerGrantRows(S, [cap], { owner: "u_abc", actor: "cli", uid: UID }));
@@ -493,6 +544,11 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     "mediator:KV_cotal_records_d32m", "mediator:EPF_d32m", "mediator:EPW_d32m",
     "cleaner:EPF_d32m",
     "commit:EPF_d32m", "commit:KV_cotal_records_d32m",
+    // The self-mediated goal-writer carries the commit principal's two reads AND a third:
+    // a bucket-blind leader read of the AUTHORITY store for its own gate row. It is the only
+    // endpoint-side principal in this list that reads `KV_cotal_auth`, and it is listed here
+    // so that fact is a reviewed entry rather than something a reader would have to derive.
+    "goal-writer:EPF_d32m", "goal-writer:KV_cotal_records_d32m", "goal-writer:KV_cotal_auth_d32m",
     "auth-writer:KV_cotal_auth_d32m", "auth-writer:KV_cotal_records_d32m",
     "auth-barrier:KV_cotal_auth_d32m", "auth-barrier:KV_cotal_records_d32m",
     "auth-connect-reader:KV_cotal_auth_d32m", "auth-connect-reader:KV_cotal_records_d32m",
@@ -508,6 +564,25 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   ]);
   c("the STREAM.MSG.GET holder set equals the enumerated trusted list exactly",
     holders.size === expected.size && [...holders].every((h) => expected.has(h)), [...holders].sort());
+}
+
+// (2b') EXACTLY ONE principal may hold BOTH sides of the goal fact chain. SPEC:2906 splits the
+// `.bind` leaf from the commit principal's `.result` and says so in the row itself ("no writer
+// overlap"); the self-mediated goal-writer (P2 item 2) unions them ON PURPOSE, because a Model-B
+// endpoint accepts and commits on one connection. That union is safe only while it is UNIQUE and
+// only while neither holder can also forge a DECISION — so both halves are asserted here rather
+// than left to the reader of a fixture. Assert the SET, not just the count: a second holder and a
+// different single holder would tie on a count alone.
+{
+  const both = allRows.reduce((acc, { principal, row }) => {
+    if (row.endsWith(".bind")) (acc[principal] ??= new Set()).add("bind");
+    if (row.endsWith(".result")) (acc[principal] ??= new Set()).add("result");
+    return acc;
+  }, {} as Record<string, Set<string>>);
+  const holders = Object.entries(both).filter(([, k]) => k.has("bind") && k.has("result")).map(([n]) => n).sort();
+  const decOrQuar = allRows.filter(({ principal, row }) => holders.includes(principal) && /\.(dec|quar)\./.test(row));
+  c("the goal-writer is the ONE principal holding both the `.bind` leaf and the `.result` terminal, and it can forge NO decision",
+    JSON.stringify(holders) === JSON.stringify(["goal-writer"]) && decOrQuar.length === 0, { holders, decOrQuar });
 }
 
 // (2c) Direct-Get tails are fully qualified; the body-selected records pair is auth-path-only.
@@ -531,8 +606,16 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   const canonSubjects = gen["canonicalizer"].publish.filter((r) => r.startsWith("cotal."));
   const commitSubjects = gen["commit"].publish.filter((r) => r.startsWith("cotal."));
   const overlaps = canonSubjects.flatMap((a) => commitSubjects.filter((b) => subjectsOverlap(a, b)).map((b) => `${a} ∩ ${b}`));
-  c("the canonicalizer's subject rows and the commit principal's do not INTERSECT (dec/quar/bind vs the five commit families; subsumption caught, not just exact dupes)",
-    overlaps.length === 0, overlaps);
+  // WHAT THIS COMPARES TODAY, said exactly, because the label used to name three families the set
+  // does not contain. `canonSubjects` resolves to ONE row — `cotal.<space>.epw.<e>.>` — since the
+  // canonicalizer's builders emit its EPJ consumer rows plus the EPW work publish and nothing else.
+  // The dec/quar/bind publish SPEC:1658-1663 gives the canonicalizer is not in any builder yet (see
+  // the recorded gap in this file's header), so it cannot be on either side of this intersection.
+  // The cell still earns its place — a builder broadened to an ancestor that SUBSUMES a foreign
+  // family fails here, which is its stated purpose — but it is a subsumption guard over the rows
+  // that exist, not the cross-family proof its old label advertised.
+  c("the canonicalizer's subject rows and the commit principal's do not INTERSECT (today: the EPW work publish vs the five EPF commit families; subsumption caught, not just exact dupes)",
+    overlaps.length === 0, { overlaps, canonSubjects, commitSubjects });
   // The commit families must not COVER a canonicalizer decision subject either (an open ancestor
   // `epf.<e>.>` would subsume `.dec.`/`.quar.` without containing the substring).
   const decQuar = [`cotal.${S}.epf.${EPJ}.dec.x`, `cotal.${S}.epf.${EPJ}.quar.x`];

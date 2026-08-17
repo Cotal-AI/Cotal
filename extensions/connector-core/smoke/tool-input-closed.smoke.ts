@@ -47,7 +47,16 @@ import type { MeshAgent } from "../src/agent.js";
 
 process.env.COTAL_SPACE ||= "toolclosed";
 process.env.COTAL_NAME ||= "closed-1";
+// `||=` KEEPS an already-set value, so this suite is loopback only where nothing set the
+// variable. In any shell that already exports COTAL_SERVERS — an agent's, an operator's — it
+// resolves to that instead, and an archived run gave no way to tell which. It names its target
+// now: a suite that names its target cannot silently change it. Measured, and true today: this
+// suite opens no TCP connection to the value at all (verified against a listener that counted
+// zero accepts), so the line discloses a CONFIG input, not traffic. If that ever stops being
+// true, this line is already where a reader would look.
+const brokerFromEnv = process.env.COTAL_SERVERS !== undefined;
 process.env.COTAL_SERVERS ||= "nats://127.0.0.1:4222";
+console.log(`• broker: ${process.env.COTAL_SERVERS} (${brokerFromEnv ? "INHERITED from the environment" : "suite default"})`);
 
 let failures = 0;
 const check = (label: string, ok: boolean, extra?: unknown): void => {

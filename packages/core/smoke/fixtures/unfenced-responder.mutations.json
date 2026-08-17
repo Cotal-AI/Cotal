@@ -1,0 +1,40 @@
+{
+  "command": "pnpm smoke:unfenced-responder",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (2 red, corrected from 4) - the allowlist gate removed, so the caller re-issues against a responder that already ran the command",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          if (!isRepeatSafeCommand(endpoint, command)) throw e;\n",
+      "replace": "",
+      "expectRed": "EXACTLY ONE ATTEMPT REACHED THE RESPONDER: the caller did not re-issue"
+    },
+    {
+      "name": "PREDICTED KILLED (3 red) - a failed re-issue surfaces the resolve's own timeout again, discarding the refusal",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          try {\n            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n          } catch (reissue) {",
+      "replace": "          if (false as boolean) {\n            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n          }\n          {\n            const reissue = await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n            return reissue as never;",
+      "expectRed": "it still states the command was not run"
+    },
+    {
+      "name": "PREDICTED KILLED (3 red) - the wrapped refusal falls into the unmarked re-resolve below and makes a THIRD attempt",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "        if (e.code !== \"failed-precondition\" || replyRefusedBeforeEffect(e.toEpError())) throw e;",
+      "replace": "        if (e.code !== \"failed-precondition\") throw e;",
+      "expectRed": "it still states the command was not run"
+    },
+    {
+      "name": "PREDICTED KILLED (2 red) - a refusal computed against another request is honored, so a forged boundTo moves the caller's hand",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      if (refusal.boundTo.instanceId !== op.bind.instanceId || refusal.boundTo.epoch !== op.bind.epoch)",
+      "replace": "      if (false as boolean)",
+      "expectRed": "a refusal whose boundTo the caller cannot derive is refused as internal"
+    },
+    {
+      "name": "PREDICTED KILLED (2 red) - a refusal claiming another server is honored, so a forged servedBy moves the caller's hand",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "      if (refusal.servedBy.instanceId !== r.instanceId || refusal.servedBy.epoch !== r.epoch)",
+      "replace": "      if (false as boolean)",
+      "expectRed": "a refusal whose servedBy the caller cannot derive is refused as internal"
+    }
+  ]
+}

@@ -22,6 +22,14 @@ const rejects = (n: string, code: string, fn: () => unknown) => {
   try { fn(); c(n, false, "no throw"); }
   catch (e) { c(n, e instanceof EpEnvelopeError && e.code === code, e instanceof EpEnvelopeError ? e.code : (e as Error).message); }
 };
+/** A BARE CALL IS NOT A CELL. The admitted directions here were written `fn(); c(label, true)`, so a
+ *  mutant that makes `fn()` throw ends the process before the cell is reached: the suite dies with a
+ *  stack trace and no assertion name on it, and the count it prints is whatever it got to. A named
+ *  failure is the only thing a grader can hold the implementation to. */
+const admits = (n: string, fn: () => unknown) => {
+  try { fn(); c(n, true); }
+  catch (e) { c(n, false, (e as Error).message); }
+};
 
 const UID = "u".repeat(26);
 const caller = { owner: "u_abc", actor: "worker", uid: UID };
@@ -109,10 +117,9 @@ const selfSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoin
 const handleSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "attach", target: { mode: "handle", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) }, caller, nonce: NONCE }));
 const bodyTarget = { owner: "u_abc", actor: "runner", lifecycleUid: "t".repeat(26) };
 
-checkRequestSubjectAgreement(req, untargeted);
-c("untargeted request agrees with its subject", true);
-checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, target: bodyTarget }), ownerSub);
-c("owner-mode request with a matching body target agrees", true);
+admits("untargeted request agrees with its subject", () => checkRequestSubjectAgreement(req, untargeted));
+admits("owner-mode request with a matching body target agrees",
+  () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, target: bodyTarget }), ownerSub));
 rejects("op.command disagreement is op-mismatch", "op-mismatch",
   () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, op: { ...goodReq.op, command: "stop" } }), untargeted));
 rejects("a body target on an untargeted subject is target-mismatch, never ignored", "target-mismatch",
@@ -134,8 +141,8 @@ rejects("the declared class must equal the contract class", "class-mismatch",
 const scatterSub = parse(epRequestSubject("demo", { route: { mode: "all" }, endpoint: "manager", command: "spawn", caller, nonce: NONCE }));
 rejects("a deadline-less cast on the scatter rail is bad-request (deadlineMs is a MUST for scatter)", "bad-request",
   () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false, deadlineMs: undefined }), scatterSub));
-checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false }), scatterSub);
-c("a scatter cast WITH a deadline agrees", true);
+admits("a scatter cast WITH a deadline agrees",
+  () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false }), scatterSub));
 
 // ── reply / event shapes ──
 const okReply = parseEndpointReply({ v: 1, id: "req-1", ok: true, data: { pid: 1 }, junk: 1 });
@@ -152,6 +159,39 @@ rejects("a non-reverse-DNS detail kind is bad-request", "bad-request",
   () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "internal", message: "x", details: [{ kind: "oops" }] } }));
 rejects("reply version skew is unsupported-version", "unsupported-version",
   () => parseEndpointReply({ v: 0, id: "r", ok: true }));
+
+// ── §13.3 error.outcome: the field a conformant peer sends and this parser used to drop ──
+// `pickError` REBUILDS the error rather than passing it through, so a field it does not name is
+// discarded. Discarding THIS one is not a lossy round-trip, it is a changed meaning: §13.3 says an
+// omitted `outcome` MUST be read as `unknown`, so dropping a peer's `not-executed` downgrades a
+// PROOF that nothing ran into an ABSENCE of evidence, at the parser, for a caller that did
+// everything right. Graded on the way IN because that is the direction where the other
+// implementation is the one being wronged and cannot tell.
+const outcomeReply = parseEndpointReply({ v: 1, id: "req-o", ok: false,
+  error: { code: "failed-precondition", message: "not this incarnation", outcome: "not-executed" } });
+c("a peer's `outcome: not-executed` SURVIVES the parse — it is not rebuilt away",
+  outcomeReply.error?.outcome === "not-executed", outcomeReply.error);
+const execReply = parseEndpointReply({ v: 1, id: "req-o2", ok: false,
+  error: { code: "internal", message: "the handler ran and then failed", outcome: "executed" } });
+c("...and so does `executed`, which is the one that must never be read as a refusal",
+  execReply.error?.outcome === "executed", execReply.error);
+// Absence stays absence. The parser must not MANUFACTURE `unknown`: §13.3 puts that reading on the
+// consumer, and a parser that fills it in makes "the peer said unknown" and "the peer said nothing"
+// indistinguishable on the wire, which is a different fact.
+c("an omitted outcome stays omitted — the parser does not invent `unknown`",
+  errReply.error !== undefined && !("outcome" in errReply.error), errReply.error);
+rejects("an unrecognised outcome is bad-request, not passed through and not coerced", "bad-request",
+  () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "internal", message: "x", outcome: "maybe" } }));
+rejects("...and neither is a non-string outcome", "bad-request",
+  () => parseEndpointReply({ v: 1, id: "r", ok: false, error: { code: "internal", message: "x", outcome: 0 } }));
+// The other direction: what THIS implementation emits. The bind fence refuses before dispatching to
+// the handler, which §13.3 says MUST carry `not-executed` — and a conformant peer that has never
+// heard of `ai.cotal.ep.bind-refused` reads only this field, so emitting the marker without the
+// outcome is exactly what makes two implementations disagree about whether the command ran.
+c("toEpError() carries the outcome the fence sets",
+  new EpEnvelopeError("failed-precondition", "x", undefined, "not-executed").toEpError().outcome === "not-executed");
+c("...and omits it entirely on a caller-raised refusal, which is not a reply",
+  !("outcome" in new EpEnvelopeError("internal", "x").toEpError()));
 
 const ev = parseEndpointEvent({ v: 1, topic: "ev.ai_cotal_lifecycle.started", ts: 1720500000000, data: null });
 c("event parses (a null data field IS data)", ev.topic.startsWith("ev.") && ev.data === null);

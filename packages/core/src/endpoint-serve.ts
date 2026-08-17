@@ -24,8 +24,8 @@ import {
 } from "./endpoint-subjects.js";
 import {
   EpEnvelopeError, parseEndpointRequest, checkRequestSubjectAgreement, assertClassMatches,
-  assertArgsValid, assertOutputValid,
-  type EndpointRequest, type EndpointReply, type EpClass,
+  assertArgsValid, assertOutputValid, EP_BIND_REFUSED,
+  type EndpointRequest, type EndpointReply, type EpClass, type EpBindRefusedDetail,
 } from "./endpoint-envelope.js";
 import { compileContract, assertCompiledContract, VOID_SCHEMA, type CompiledContract } from "./schema-profile.js";
 import { assertServeGrantAuthorized, type EpServeGrant } from "./endpoint-service.js";
@@ -119,6 +119,48 @@ export type EpLedgerAuthority = (args: {
   target: { owner: string; actor: string; lifecycleUid: string };
   op: { endpoint: string; command: string };
 }) => Promise<boolean> | boolean;
+
+/**
+ * §13.2/§13.3 INCARNATION ADMISSION — the responder's own answer to "am I the instance this
+ * caller bound to?", settled before anything else this request could cause.
+ *
+ * Without it a class-anycast caller learns the answer only from the reply, by which time the
+ * command has run: the effect lands on A while the caller, bound to B, is told the call failed.
+ * Nothing that runs on a reply can close that, so the guard has to be on this side of the wire.
+ *
+ * `bind` is a caller DECLARATION, never authority: it can only make this instance refuse a request
+ * the subject already routed here, so it narrows and never widens (§13.3 monotonic attenuation). A
+ * different instance is `failed-precondition` (the handle is not stale — the queue simply chose
+ * someone else); a different EPOCH on the same instance is `expired`, as everywhere else.
+ *
+ * Both refusals carry {@link EP_BIND_REFUSED}, meaning NOTHING RAN — true only while this stays
+ * ahead of every effect in `handle`, including the governed gate, which may consume a one-use
+ * priced proof.
+ */
+function assertBoundIncarnation(env: EndpointRequest, identity: EpServeIdentity): void {
+  const b = env.bind;
+  if (b === undefined) return;
+  if (b.instanceId === identity.instanceId && b.epoch === identity.epoch) return;
+  const detail: EpBindRefusedDetail = {
+    kind: EP_BIND_REFUSED,
+    endpoint: identity.endpoint,
+    command: env.op.command,
+    boundTo: { instanceId: b.instanceId, epoch: b.epoch },
+    servedBy: { instanceId: identity.instanceId, epoch: identity.epoch },
+  };
+  // §13.3: a responder refusing BEFORE dispatching to the handler MUST carry `not-executed`, and
+  // an omitted outcome MUST be read as `unknown` — so the marker alone is not enough. `bind-refused`
+  // is this implementation's vocabulary and `outcome` is the spec's, so a conformant peer that has
+  // never heard of the detail reads only the latter; emitting one without the other is what makes
+  // two implementations disagree about whether the command ran.
+  if (b.instanceId !== identity.instanceId)
+    throw new EpEnvelopeError("failed-precondition",
+      `this request reached ${identity.endpoint} instance ${identity.instanceId}, but the caller bound to ${b.instanceId}; the class queue chose a different member and "${env.op.command}" WAS NOT RUN - no effect of it exists here. Re-resolve and re-issue, or address one instance (SPEC 13.2)`,
+      [detail], "not-executed");
+  throw new EpEnvelopeError("expired",
+    `this request reached ${identity.endpoint} instance ${identity.instanceId} at epoch ${identity.epoch}, but the caller bound to epoch ${b.epoch} of the same instance; this incarnation is not the one it resolved against and "${env.op.command}" WAS NOT RUN - no effect of it exists here (SPEC 13.2)`,
+    [detail], "not-executed");
+}
 
 /** §13.3 target currency at the pre-effect seam, for EVERY body-targeted request (call or
  *  cast; a cast has effects too). Fail-closed: no resolver seam means targeted modes are
@@ -398,6 +440,11 @@ export function serveEndpoint(
     try {
       env = parseEndpointRequest(JSON.parse(dec.decode(msg.data)));
       checkRequestSubjectAgreement(env, parsed);
+      // §13.2 FIRST among the semantic gates, and deliberately ahead of the command's own class,
+      // contract, and args: whether this instance is the addressee at all is settled before
+      // anything is said about the command it names. It also has to precede the governed gate,
+      // which can consume a one-use priced proof — the refusal claims nothing ran, so nothing may.
+      assertBoundIncarnation(env, identity);
       assertClassMatches(env, def.class);
       bindContract(env, def);
       // §13.2: the command admits only its REGISTERED target modes — before args validation,

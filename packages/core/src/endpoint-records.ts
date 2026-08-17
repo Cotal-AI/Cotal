@@ -272,6 +272,43 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "commit-path", status: "commit-path" },
     mediation: "mediated",
   },
+  goaleff: {
+    // The at-most-one-launch election for ONE accepted action (§ S1): an atomic unsplit key,
+    // written CREATE-ONLY by the effects executor that wins it and advanced by revision-CAS through
+    // its phases. `<gen>` is the accepted submission's EPJ `sourceSeq` — the sequence it was
+    // delivered at, carried verbatim into the acceptance fact — and it is the ONLY discriminator
+    // available at the earliest coordinate: the sibling `goalidx` row is created BEFORE the bind
+    // and therefore before any decision fact exists, so no decision sequence can key it.
+    // The generation token also keeps this kind OUT of the one-use-forever trap `goalidx` is in: a
+    // lawful later acceptance under the same `goalId` gets a different `<gen>`, so it takes a fresh
+    // key rather than colliding with a permanent tombstone.
+    kind: "goaleff",
+    qualifiers: [qEndpoint, qOwner("cOwner"), qOwner("cActor"), qUid("cUid"), qId("goalId"), qId("gen")],
+    split: false,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
+  epname: {
+    // The durable claim on ONE agent name (§ S2): an atomic unsplit key, keyed by the NAME and NOT
+    // by a caller triple, because the thing being made exclusive IS the name — two callers racing
+    // for it must contend on one key, which a caller-scoped grammar would prevent by construction.
+    kind: "epname",
+    qualifiers: [qEndpoint, qId("nameToken")],
+    split: false,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
+  epmig: {
+    // The endpoint's cutover manifest (§ S5): an atomic unsplit key, ONE per endpoint — never one
+    // per caller and never one per run. It is the inventory a migration is performed against and
+    // the durable source of the name generation, which is what stops a generation being reused by
+    // a later run.
+    kind: "epmig",
+    qualifiers: [qEndpoint],
+    split: false,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   cp: {
     kind: "cp",
     qualifiers: [qEndpoint, qId("token")],
