@@ -2277,6 +2277,16 @@ session.
 
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
+**Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
+whose descriptor is pinned to `v: 1` cannot emit the field, and a caller resolving such a
+descriptor cannot read one, so in a `v: 1` deployment nothing turns on the declaration and the
+`v: 1` rule below is the whole of what governs. A reference implementation that has not moved to
+`2` therefore carries its repeat-safety knowledge somewhere off the wire, as a static allowlist of
+the commands it knows to be safe to repeat. Such an allowlist stands in for this field for exactly
+as long as no `v: 2` descriptor can exist, and it is superseded by the declaration the moment one
+can: allowlist-says-safe and author-declares-`write` are answers to the same question, and two
+answers to one question is one answer too many.
+
 `read` asserts that executing the command again **changes nothing the command is trying to
 change**: the state after two executions is the state after one, and any difference between their
 results is only the freshness a caller would see by asking twice. The state in question is not
@@ -2438,10 +2448,10 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `obl
 | `handle` | `handle.<issuerKeyId>.<id>` |
 | `contracts` | `contracts.<endpoint>` |
 | `goal` | `goal.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` |
-| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by the provisioner sweep so a superseded executor's orphaned goals settle; never caller-addressed) |
-| `goaleff` | `goaleff.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>.<gen>` (atomic; the at-most-one-launch election for one accepted action, written create-only by the effects executor that wins it and advanced by revision-CAS through its phases). `<gen>` is the accepted submission's **EPJ `sourceSeq`**, the sequence it was delivered at, carried verbatim into the acceptance fact; the only discriminator that exists at the EARLIEST coordinate, since `goalidx` is created before the bind and therefore before any decision fact exists, so a decision sequence cannot key it. The generation token is what keeps this kind out of the one-use-forever trap: a lawful later acceptance under the same `goalId` gets a different `<gen>` and a fresh key, never a permanent tombstone. Writer: the owning endpoint's **commit path** ONLY (§13.9), which is also the only holder that may settle a row on a sweep; the generic per-kind spec/status writer row does not reach it, because this kind is unsplit and has no `.spec`/`.status` to write |
-| `epname` | `epname.<endpoint>.<nameToken>` (atomic; the durable claim on one name, keyed by the NAME rather than by a caller triple, because the thing being made exclusive is the name and two callers must contend on one key). Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, so create-only for the claim and revision-CAS for every state change |
-| `epmig` | `epmig.<endpoint>` (atomic; the endpoint's cutover manifest: the inventory a migration is performed against, and the durable source of the name generation, so a generation is never reused by a later run). Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, and its qualifier profile is `[qEndpoint]` alone, one manifest per endpoint, never one per caller or per run |
+| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by the provisioner sweep so a superseded executor's orphaned goals settle; never caller-addressed). Writer: the **goal-writer** principal (§13.9), which is the commit principal plus the goal `.bind` leaf plus this index subtree, and NOT the bare commit principal, whose enumeration does not reach this kind. The two are separated because the index is created BEFORE the bind, so the principal that writes it is the one that also binds; a deployment that grants the index on the bare commit row has widened every commit principal to reach a key only the goal writer needs |
+| `goaleff` | `goaleff.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>.<gen>` (atomic; the at-most-one-launch election for one accepted action, written create-only by the effects executor that wins it and advanced by revision-CAS through its phases). `<gen>` is the accepted submission's **EPJ `sourceSeq`**, the sequence it was delivered at, carried verbatim into the acceptance fact; the only discriminator that exists at the EARLIEST coordinate, since `goalidx` is created before the bind and therefore before any decision fact exists, so a decision sequence cannot key it. The generation token is what keeps this kind out of the one-use-forever trap: a lawful later acceptance under the same `goalId` gets a different `<gen>` and a fresh key, never a permanent tombstone. Writer: the owning endpoint's **commit path** ONLY (§13.9), inherited by the goal-writer principal that composes it; the generic per-kind spec/status writer row does not reach it, because this kind is unsplit and has no `.spec`/`.status` to write. The value machine, including which actor may settle a row, is *The two coordination machines* below |
+| `epname` | `epname.<endpoint>.<nameToken>` (atomic; the durable claim on one name, keyed by the NAME rather than by a caller triple, because the thing being made exclusive is the name and two callers must contend on one key). Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, so create-only for the claim and revision-CAS for every state change. The state machine, its actor roles, and the claimant union are *The two coordination machines* below |
+| `epmig` | `epmig.<endpoint>` (atomic; the endpoint's cutover manifest: the inventory a migration is performed against, and the durable record of the cutover runs performed against it, so a run generation is never reused by a later run). That run generation is **scoped to cutover and is key material nowhere else**: the `<gen>` token in the `goaleff` grammar is the accepted submission's EPJ `sourceSeq` and only that, the `goal`, `goalidx`, and `goal….result` grammars carry no generation token at all, and an implementation that keys any of them from this manifest has built an election two conforming peers can never meet inside. Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, and its qualifier profile is `[qEndpoint]` alone, one manifest per endpoint, never one per caller or per run |
 | `cp` | `cp.<endpoint>.<token>` |
 | `lease` | `lease.<endpoint>.<pool>.<cOwner>.<cActor>.<cUid>.<id>` (the item's acceptance identity, §13.2) |
 | `lifecycle` | `lifecycle.<owner>.<actor>.<lifecycleUid>` (the §13.1 mapping detail) |
@@ -2459,6 +2469,80 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `obl
 
 Third-party kinds
 register under reverse-DNS kind names.
+
+**The two coordination machines.** `goaleff` and `epname` carry closed value machines. A row's
+legal field set is fixed per phase or per state, and a writer that presents a field the phase does
+not define, or omits one it does, is refused rather than accommodated: a single broad object with
+everything optional cannot express that a field is present exactly when a launch is in flight, and
+present-exactly-when is the only form in which those fields decide anything.
+
+`goaleff` has four phases: `claimed`, `launching`, `launched`, `settled`. Every row carries `v: 1`,
+the electing `executor` as an incarnation `{ instanceId, processEpoch }`, the `attemptId` nonce of
+the attempt that won the election, and `ts`. `launching` and `launched` additionally carry `addr`,
+the allocated address `{ nameToken, lifecycleUid }`; `settled` MAY carry it; `claimed` MUST NOT.
+The legal edges are `claimed → launching`, `claimed → settled`, `launching → launched`,
+`launching → settled`, and `launched → settled`. `settled` is terminal because no edge leaves it,
+which is the terminality rule itself rather than a separate check that could come to disagree with
+the table. The `executor` and `attemptId` do not move across an edge, and an allocated `addr` is
+never rewritten to a different one.
+
+Two actor roles take those edges. An **executor** may take any of them and MUST be the row's own
+executor at the row's own `attemptId`: a re-read that finds a foreign incarnation or a foreign
+nonce is a loss, never a licence to proceed. A **sweeper** acts for an executor it believes is gone
+and MAY take only the edges into `settled`, because advancing a launch phase on a dead executor's
+behalf is the split brain the election exists to prevent, and the resulting row is
+indistinguishable from the executor having advanced it. An actor presenting neither role is
+refused; an unrecognized role that falls through both checks is the most permissive possible answer
+to the question of who is acting.
+
+Every settle is gated on the goal's terminal fact **already existing**. Settling without one
+publishes a row asserting that a goal finished when nothing durable records that it did, so the
+terminal-first order is normative and the reverse order is never legal. A crash between the two is
+a row left un-settled with its terminal present, which is recoverable; the reverse would not be.
+
+`epname` has seven states: `claimed`, `launching`, `live`, `preserved`, `relaunching`, `draining`,
+`released`. Every row carries `v: 1`, `ts`, `state`, and `claimant`, which is either `null` or one
+of three kinds: an **action** claim `{ goalId, gen }`, a **direct** claim
+`{ instanceId, processEpoch, opId }`, or an **incumbent** claim `{ backfillId }` recorded by a
+cutover backfill. A launch in flight (`launching`, `relaunching`) additionally carries
+`lifecycleUid`, `launchAttemptId`, and the `executor` incarnation; a name that is up (`live`,
+`preserved`) carries `lifecycleUid` and `runtimeOwner`; `draining` carries `lifecycleUid`,
+`runtimeOwner`, and `enteredAt`; `claimed` and `released` carry the base fields alone.
+
+`runtimeOwner` is the incarnation that owns the handle table for the name, and it is **moved, never
+derived**. It is written at `launching → live` from the executor that made the launch call,
+recorded at the moment it becomes true, and every later edge carries it forward. It is not
+reconstructed from any other row, because a supported deployment mode has no such row to read and a
+predicate that cannot be evaluated on a supported path either refuses forever or falls back to
+absence. An `instanceId` alone will not stand in: an identity is not an incarnation, and a
+restarted process under the same identity holds an empty handle table, which is the absence of
+knowledge rather than knowledge of absence.
+
+Six actor roles take the `epname` edges. An **allocator** creates a claim (`→ claimed`, and
+`released → claimed`, so a released name is claimable again and the row is never deleted). A
+**claimant** drives its own launch (`claimed → launching → live`) and may abandon an unlaunched
+claim (`claimed → released`). A **holder**, identified by the row's `lifecycleUid`, drives the
+preserve cycle (`live → preserved → relaunching → live`). A **sweeper** may release an unlaunched
+claim and may move `launching`, `live`, `preserved`, or `relaunching` into `draining`. A
+**cutover** may establish a `live` incumbent directly, which is the backfill path. An **operator**
+has exactly one edge, `draining → released`.
+
+That last edge is operator-only by design rather than by omission. An ordinary release would
+require an actor attesting that a runtime is gone, and no such actor can exist: an owner still
+alive has no per-attempt handle to attest about, and a restarted one is a different incarnation.
+The edge is therefore removed rather than weakened, and `draining` is a state an operator clears by
+hand until a durable runtime-attempt token exists. Two consequences follow and are normative. A
+goal reaching a `succeeded` terminal does **not** release the name it holds; and release is a
+transition to `released`, never a delete, so the row survives to answer who held the name last.
+
+**The actor roles above are entitlements inside the value machines, not wire principals, and which
+principal may present each of them is unspecified: RAISED, NOT SETTLED.** The write grants on both
+kinds are the commit path and the goal-writer principal that composes it (§13.9). No sweeper,
+operator, allocator, or cutover principal is granted anywhere in this document, so this section
+does not say whether a conforming sweep runs under the commit principal or under a principal a
+deployment would have to add. An implementation MUST NOT read a role in these machines as
+conferring a grant, and a deployment that needs a distinct sweep identity is outside what this
+version specifies.
 
 **Descriptor and describe.** Each instance registers a **service record** (kind `svc`, key
 `svc.<endpoint>.<instanceId>`; the owner is determined by the name and recorded in the
@@ -2955,7 +3039,8 @@ keeps the read's result from silently falsifying the CAS or effect it feeds.
 | Accepted-fact consume (effects) | every instance's serve credential, on the endpoint's ONE shared durable | **bind-only** on the provisioner-pre-created pull durable `effD = eff_<e>` (exact filter `cotal.<space>.epf.<endpoint>.dec.>`, `AckExplicit`): `$JS.API.CONSUMER.INFO.EPF_<space>.<effD>`, `$JS.API.CONSUMER.MSG.NEXT.EPF_<space>.<effD>`, `$JS.ACK.EPF_<space>.<effD>.>`; instances **pull-compete on the shared durable** so each accepted decision is delivered to exactly one live instance (at-least-once): a per-instance consumer over the class-wide decision subtree would be broadcast, and every instance would duplicate the external effect. Effects consume canonical facts, never raw submissions (§13.4); a rejected/quarantined decision is ack-skipped, and so is any acceptance whose `route` is a pool (§13.4, the pool's worker path executes it; effects MUST NOT). **Ack barrier:** an effecting instance MUST ack a `dec` message ONLY after its effect is durably recorded, for an action command the terminal `goal….result` fact; for a **non-action `route:"effects"` journal command** a generic per-request **effect fact** `epf.<endpoint>.eff.<cO>.<cA>.<cUid>.<id>` (create-only CAS, written by the effecting instance's commit path before ack; every `route:"effects"` acceptance has exactly this durable effect-complete marker), never before; an ack-before-effect would let a crash drop journal work the at-least-once contract promised. A crash before the ack redelivers the decision to another competing instance, which observes the existing terminal fact (idempotent) or effects it | direct read, endpoint-scoped, work-shared |
 | Result/receipt/terminal/resume facts | the endpoint's commit principal | enumerated fact families, no subtraction and **never `dec.>`/`quar.>`** (canonicalizer-only): publish `epf.<endpoint>.goal.*.*.*.*.result` (the goal terminal result; the `.bind` leaf under `goal.>` is the canonicalizer's, row above), `epf.<endpoint>.eff.>` (per-request effect-complete fact for non-action `route:"effects"` commands, create-only CAS, §13.9 ack barrier), `epf.<endpoint>.receipt.>` (caller-scoped subjects, §13.2), `epf.<endpoint>.wrk.>` (per-item terminal, create-only CAS), `epf.<endpoint>.cp.>` (one-use resume CAS); read-back is FENCING (read service above: it gates create-only CAS emission and idempotent re-commit decisions), leader-served `$JS.API.STREAM.MSG.GET.EPF_<space>` (body-selected `last_by_subj` over exactly these five families; the follower-served per-family `DIRECT.GET` form is NOT granted) | mediated |
 | Live event progress (caller) | capability holder (per read capability) | a caller-owned **core subscription** to the granted `epe` subtrees (fully-qualified `cotal.<space>.epe.…` in `sub.allow`, Appendix B), incl. per-goal `epe.<endpoint>.*.*.goal.<cO>.<cA>.<cUid>.>`; safe because a core sub delivers only to the caller's own subscription, never a caller-chosen subject; durable catch-up/replay is the mediated read above, not a self-bound consumer | direct read; own subscription only |
-| Claim / action / checkpoint commits | the owning endpoint's commit path | its own record keys (`goal`/`cp`/`lease`/`goaleff`/`epname`/`epmig` grammars, §13.7, per the writer table; the three coordination kinds are enumerated HERE because a shared registry profile does not confer a grant; a kind absent from this enumeration is default-denied however it is registered) + the enumerated commit fact families of the Result row above, never `dec.>`/`quar.>`; its goal/checkpoint FENCING reads (the terminal-commit's spec read, epoch/deadline currency) are leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_records_<space>` (read service above; the records bucket's Direct Get is NON-fencing only) | mediated (validates fencing, lease clock, lifecycle, epoch) |
+| Claim / action / checkpoint commits | the owning endpoint's commit path | its own record keys (`goal`/`cp`/`lease`/`goaleff`/`epname`/`epmig` grammars, §13.7, per the writer table; the three coordination kinds are enumerated HERE because a shared registry profile does not confer a grant; a kind absent from this enumeration is default-denied however it is registered, and that default-deny binds every principal in this table, including the composed profile in the row below) + the enumerated commit fact families of the Result row above, never `dec.>`/`quar.>`; its goal/checkpoint FENCING reads (the terminal-commit's spec read, epoch/deadline currency) are leader-served `$JS.API.STREAM.MSG.GET.KV_cotal_records_<space>` (read service above; the records bucket's Direct Get is NON-fencing only) | mediated (validates fencing, lease clock, lifecycle, epoch) |
+| Goal-writer commits (journal-class actions) | the **goal-writer** principal: the commit principal of the row above, composed with three additions and nothing else | the composed profile is exactly (i) everything the commit row grants, inherited rather than restated, (ii) the per-goal first-wins bind leaf `epf.<endpoint>.goal.*.*.*.*.bind`, (iii) the reconcile index subtree `goalidx.<endpoint>.>` in the records bucket, key-pinned to this endpoint, and (iv) a currency read of its OWN issuance gate `epgate.<endpoint>.<instanceId>` before the first terminal-fact CAS, so a superseded writer declines to commit. That read carries the NAMED RESIDUAL this section requires of every bucket-blind read: the auth store is not Direct-Get enabled, so the read is a leader-served body-selected `STREAM.MSG.GET` that cannot be key-pinned to the single gate key, and the profile can therefore read any row of that bucket's gate and ledger METADATA, never bearer bytes. It is the same residual class the one-shot serve-executor profile carries, here on a standing connection, and it is a fast-fail belt rather than the fence; the durable fence is barrier revocation. `goalidx` is enumerated HERE and NOT on the commit row, because the index is written create-only BEFORE the goal binds, so the principal that writes it is the one that also binds; granting it on the bare commit row would widen every commit principal to a key only this profile needs. This profile holds NO records consumer create: the sweep that enumerates the index runs over the provisioner (row below), never over this standing connection, which is why an index write grant is not an index enumeration grant | mediated (as the commit row, plus the bind's create-only CAS per subject) |
 | Contract-artifact publication | the contract publisher principal | publish `epc.<digest-hex>` (`epc.*`), create-only per subject (`Nats-Expected-Last-Subject-Sequence: 0`; a digest subject is written at most once); read-back via the reader row below | mediated, immutable once published |
 | Contract-artifact read | trusted infra directly (`DIRECT.GET.EPC_<space>.cotal.<space>.epc.>`); untrusted callers via the read mediator | contract artifacts are content-addressed and public (verify-on-read is the tamper boundary, §13.7), so exposure is not the risk; the confused-deputy INJECTION is, so an untrusted caller's artifact fetch is mediated onto its own reply rail exactly like any other read; trusted infra fetches directly | mediated for callers / direct for infra |
 | Record write ingress (`epr`) | the owning instance | publish `epr.<endpoint>.<instanceId>.<epoch>.<kind>.<qualifier...>`; the instance's ONLY path to `svc`/`goal`/`cp` status writes; the epoch token is pinned by the serve credential, so the record writer reads the writing epoch from the broker-authenticated subject, never from payload | direct; epoch-pinned ingress to the mediated writer |
