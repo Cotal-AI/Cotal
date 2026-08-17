@@ -280,4 +280,6 @@ smoke:agui-wal-path
 smoke:agui-emitter
 smoke:agui-retry-duplicate
 smoke:agui-holder
+smoke:opencode-boot-prompt
+smoke:import-remedy
 smoke:broker-teardown

@@ -148,6 +148,20 @@ export const opencodeConnector: Connector = {
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
     if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the plugin's transcript mirror (parity with Claude)
+    // The auto-submitted first turn (`cotal spawn --prompt`). It rides the child ENV, the same
+    // carrier codex uses (COTAL_CODEX_PROMPT): the plugin runs inside `opencode serve`, which
+    // inherits this env, so the text reaches the one component that can issue a turn without going
+    // through argv (where the TUI would also see it) or through OPENCODE_CONFIG_CONTENT, which is
+    // opencode's own schema-validated surface and not ours to extend. A prompt with no text in it
+    // cannot be delivered as a turn, so refuse the launch rather than start a seat that ignores it.
+    if (opts.prompt !== undefined) {
+      const prompt = opts.prompt.trim();
+      if (!prompt)
+        throw new Error(
+          "opencode connector: an initial prompt was given but it is empty — there is no first turn to submit",
+        );
+      env.COTAL_OPENCODE_PROMPT = prompt;
+    }
     // Where serve.ts roots this agent's SQLite DB + serve pidfile. Pin it to the manager's
     // workspace root so a per-agent launch cwd (which the manager can point at any repo) doesn't
     // drop `.cotal/opencode/<name>` into the target tree. Standalone `cotal spawn` has no manager
