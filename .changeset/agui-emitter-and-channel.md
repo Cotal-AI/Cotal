@@ -33,5 +33,16 @@ recomputed here. A splitter that sized a frame itself would be measuring the fra
 measures the message, and the part it produced would be rejected, which turns a labelled truncation
 back into a silent loss.
 
+One emitter writes one principal's log, and that is enforced rather than described. The lock beside
+the log is acquired and held for the life of the process, so a second start on the same principal is
+refused by name; a lock whose recorded owner is provably gone is reclaimed, so one crash does not
+leave a principal unstartable, and a record naming another host or naming nobody checkable is
+refused rather than reclaimed on a guess. A lock cannot see a handle that predates it, so every
+durable replace also carries a generation the writer bumps and verifies: a handle holding an older
+view of the document is refused instead of overwriting a newer one. Without both, two logs opened on
+one file let the loser rewrite a folded frontier to a subject sequence the broker never assigned,
+which reads back as a healthy log and wedges every later publish. The document version moves to 3
+for that generation; older documents migrate forward, and there is no downgrade.
+
 Nothing in production emits yet: no connector constructs an emitter, and the transcript mirror is
 untouched.

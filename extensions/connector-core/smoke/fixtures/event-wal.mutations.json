@@ -21,6 +21,20 @@
       "find": "  if (doc.pending !== null && typeof doc.pending !== \"object\")\n    throw new WalCorruptError(path, \"pending is present (null or an object)\",\n      doc.pending === undefined ? \"the key is absent, which is not the same as null\" : typeof doc.pending);",
       "replace": "",
       "expectRed": "[F3] a document whose `pending` KEY IS ABSENT is refused, not read as null"
+    },
+    {
+      "name": "W4 the clobber refusal is dropped and the write path passes through again, so a stale handle rewrites a folded frontier to a tip the broker never assigned",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await this.assertNotClobbering();\n",
+      "replace": "",
+      "expectRed": "[G] THE STALE HANDLE'S TRANSITION FAILS, and by name"
+    },
+    {
+      "name": "W5 an absent generation is read as zero instead of refused, so a document with the guard stripped out of it loads and every later write compares against a value nobody wrote",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "  if (!isSafeNonNegInt(doc.gen))\n    throw new WalCorruptError(path, \"gen is a safe non-negative integer\", `found gen=${String(doc.gen)} on a v${String(doc.v)} document`);",
+      "replace": "  if (!isSafeNonNegInt(doc.gen)) return 0;",
+      "expectRed": "[G] a v3 document with `gen` STRIPPED is refused, not read as generation 0"
     }
   ]
 }

@@ -5,9 +5,18 @@
  *
  * ```
  * <workspaceRoot>/.cotal/events/<h(space)>/<h(principal)>/
- *     .lock                       one emitter per PRINCIPAL (not per thread)
+ *     .lock                       one emitter per PRINCIPAL (not per thread), HELD not computed
  *     <h(threadId)>/wal.json      ONE file per thread, atomically replaced
  * ```
+ *
+ * **`.lock` IS ACQUIRED, AND THE WORD "HELD" ABOVE IS THERE BECAUSE IT ONCE WAS NOT.** This comment
+ * claimed single-emitter exclusion from the day it was written while `lockPath` was only computed:
+ * no acquire anywhere, and the suites asserted the path's SHAPE rather than that anyone held it. A
+ * reviewer opened two logs on one file and watched the second one's stale handle rewrite the first
+ * one's folded frontier to a tip the broker never assigned. {@link acquirePrincipalLock} is the
+ * exclusion; the generation guard in `EventWal.write` is what refuses the stale write itself. Both,
+ * because a lock cannot see a handle that predates it and a generation cannot tell an operator that
+ * a second emitter is already running.
  *
  * **Every path component is hashed, and none of the unhashed values is a trusted path component.**
  * A space, a principal key and a native session id all come from outside this process, and a
@@ -22,10 +31,12 @@
  * threaded, or what to do when one was not; those are the connector's decisions and live at its
  * launch site, where a missing root can still fail loud with something a human can act on.
  */
-import { createHash } from "node:crypto";
-import { open } from "node:fs/promises";
+import { createHash, randomUUID } from "node:crypto";
+import { open, readFile, unlink, type FileHandle } from "node:fs/promises";
+import { hostname } from "node:os";
 import { dirname, join } from "node:path";
 import { ensureDirNoSymlink } from "@cotal-ai/core";
+import { openExclusiveNoFollow } from "./event-wal.js";
 
 /**
  * Thrown when a session that is going to publish events cannot say where its WAL belongs.
@@ -91,6 +102,11 @@ export interface EventWalLocation {
   walPath: string;
 }
 
+/** What {@link ensureEventWalDir} returns: the location, plus the lock it actually took for it. */
+export interface HeldEventWalLocation extends EventWalLocation {
+  lock: PrincipalLock;
+}
+
 /**
  * Resolve where this principal's WAL for this thread lives. Pure — no IO, no side effects.
  *
@@ -112,6 +128,158 @@ export function eventWalLocation(opts: {
     threadDir,
     walPath: join(threadDir, "wal.json"),
   };
+}
+
+/** Every refusal on the lock path is one of these, so a caller never mistakes it for an I/O blip. */
+export class PrincipalLockError extends Error {
+  constructor(readonly path: string, readonly invariant: string, detail: string) {
+    super(`event WAL principal lock at ${path} (${invariant}): ${detail}`);
+    this.name = "PrincipalLockError";
+  }
+}
+
+/** A HELD lock. It exists as an object only while this process owns the file. */
+export interface PrincipalLock {
+  readonly path: string;
+  /** Close the handle and remove the file. Idempotent: releasing twice is not an error. */
+  release(): Promise<void>;
+}
+
+/**
+ * Locks this process holds, keyed by path.
+ *
+ * **Acquiring the same principal's lock twice IN THIS PROCESS returns the SAME lock rather than
+ * refusing**, and that is a decision, not an oversight. The lock is per PRINCIPAL while the WAL
+ * directory chain is per THREAD, so a session that moves from one thread to the next under one
+ * principal calls {@link ensureEventWalDir} again — and the documented shape is one emitter per
+ * principal, one thread at a time. Refusing there would break the sequencing the design asks for.
+ * What that leaves uncovered inside one process, two `EventWal` objects open on one file, is not
+ * covered by a lock at all: it is refused on the write path by the generation guard in
+ * `EventWal.write`, which is where it has to be refused anyway, because a lock cannot see a stale
+ * handle that already holds it.
+ */
+const held = new Map<string, PrincipalLock>();
+
+/** Alive means "this pid resolves to a process", INCLUDING one this user may not signal. `EPERM` is
+ *  a live process owned by somebody else, and reading it as dead would reclaim a held lock. */
+function ownerIsAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+/** Create the lock file exclusively, or report that somebody already holds it. Never adopts. */
+async function createLockFile(path: string): Promise<FileHandle | undefined> {
+  try {
+    return await openExclusiveNoFollow(path);
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === "EEXIST") return undefined;
+    throw e;
+  }
+}
+
+/**
+ * Remove a lock whose owner is PROVABLY gone, or refuse.
+ *
+ * **A CRASH MUST NOT WEDGE THE PRINCIPAL FOREVER, AND A RECLAIM MUST NOT BE A GUESS.** An emitter
+ * that dies leaves its lock file behind; a lock that is never reclaimable turns one crash into a
+ * permanently unstartable principal, which is a worse failure than the one the lock prevents. So a
+ * reclaim is allowed, and it is fenced on three refusals rather than on optimism:
+ *
+ *  - an unreadable or unowned record is refused outright, never reclaimed. A file we cannot read is
+ *    not evidence that nobody holds it.
+ *  - a record naming ANOTHER HOST is refused: this process cannot observe liveness on a machine it
+ *    is not running on, and a shared filesystem is exactly where guessing would be wrong.
+ *  - a record naming a LIVE pid on this host is refused, which is the ordinary "already running"
+ *    answer an operator needs to see.
+ *
+ * The residual is pid reuse: a dead owner's pid can be re-issued to an unrelated process, so
+ * liveness is evidence and not proof. That residual is bounded rather than argued away, because the
+ * generation guard on the WAL's write path refuses a stale writer's clobber whether or not the lock
+ * was judged correctly. The lock decides who STARTS; the generation guard decides who may WRITE.
+ */
+async function reclaimIfOwnerIsGone(path: string): Promise<void> {
+  let raw: string;
+  try {
+    raw = await readFile(path, "utf8");
+  } catch (e) {
+    // Gone between the failed create and this read: somebody released it. The create that follows
+    // is what decides, and it decides by trying, not by assuming.
+    if ((e as NodeJS.ErrnoException).code === "ENOENT") return;
+    throw e;
+  }
+
+  let record: unknown;
+  try {
+    record = JSON.parse(raw);
+  } catch {
+    throw new PrincipalLockError(path, "the lock names its owner", "the file is not readable JSON, so its owner cannot be checked; refusing rather than reclaiming a lock that may be held");
+  }
+  const r = record as { pid?: unknown; host?: unknown };
+  if (!Number.isSafeInteger(r.pid) || (r.pid as number) <= 0 || typeof r.host !== "string" || r.host.length === 0)
+    throw new PrincipalLockError(path, "the lock names its owner", `the record carries pid=${String(r.pid)} host=${String(r.host)}, which names nobody checkable`);
+
+  const here = hostname();
+  if (r.host !== here)
+    throw new PrincipalLockError(path, "the recorded owner is on THIS host", `held by pid ${r.pid} on ${r.host} while this process runs on ${here}; liveness on another machine is not observable from here`);
+  if (ownerIsAlive(r.pid as number))
+    throw new PrincipalLockError(path, "the recorded owner is gone", `pid ${r.pid} on ${here} is still running and holds this principal's emitter`);
+
+  // The owner is gone. Removing the file is the reclaim; whether THIS process gets the lock is
+  // decided by the exclusive create that follows, so a second reclaimer racing here loses there.
+  await unlink(path).catch((e: NodeJS.ErrnoException) => {
+    if (e.code !== "ENOENT") throw e;
+  });
+}
+
+/**
+ * Take this principal's lock and HOLD IT for the life of the process.
+ *
+ * The handle stays open deliberately. A lock released at the end of the acquiring function is a
+ * lock that was never held, and the layout comment above has claimed single-emitter exclusion since
+ * this module was written while `lockPath` was only ever COMPUTED — a path in a struct standing in
+ * for a guarantee. This is that claim made real.
+ */
+export async function acquirePrincipalLock(lockPath: string): Promise<PrincipalLock> {
+  const already = held.get(lockPath);
+  if (already) return already;
+
+  let fh = await createLockFile(lockPath);
+  if (fh === undefined) {
+    await reclaimIfOwnerIsGone(lockPath);
+    fh = await createLockFile(lockPath);
+    if (fh === undefined)
+      throw new PrincipalLockError(lockPath, "the reclaimed lock is free when this process takes it", "another process created the lock between the reclaim and this open, and now holds this principal");
+  }
+
+  const record = JSON.stringify({ pid: process.pid, host: hostname(), token: randomUUID(), acquiredAt: new Date().toISOString() });
+  try {
+    await fh.writeFile(record, "utf8");
+    await fh.sync();
+  } catch (e) {
+    // A lock whose record never landed names nobody, and the refusals above would then refuse every
+    // later start rather than reclaim it. Undo the create before rethrowing.
+    await fh.close().catch(() => {});
+    await unlink(lockPath).catch(() => {});
+    throw e;
+  }
+
+  const lock: PrincipalLock = {
+    path: lockPath,
+    async release(): Promise<void> {
+      if (held.get(lockPath) !== lock) return;
+      held.delete(lockPath);
+      await fh.close().catch(() => {});
+      await unlink(lockPath).catch((e: NodeJS.ErrnoException) => {
+        if (e.code !== "ENOENT") throw e;
+      });
+    },
+  };
+  held.set(lockPath, lock);
+  return lock;
 }
 
 /**
@@ -159,14 +327,15 @@ async function fsyncDir(dir: string): Promise<void> {
  * that is about to do real work.
  *
  * Returns the WAL path, so a caller cannot resolve the location by one route and create it by
- * another.
+ * another — and the HELD principal lock with it, for the same reason. Handing back a location whose
+ * lock the caller then has to remember to take is how the lock came to be a path and nothing else.
  */
 export async function ensureEventWalDir(opts: {
   workspaceRoot: string;
   space: string;
   principal: string;
   threadId: string;
-}): Promise<EventWalLocation> {
+}): Promise<HeldEventWalLocation> {
   const loc = eventWalLocation(opts);
 
   // `ensureDirNoSymlink` refuses a symlinked component rather than following it — the WAL is written
@@ -182,5 +351,9 @@ export async function ensureEventWalDir(opts: {
     if (dir === opts.workspaceRoot || dirname(dir) === dir) break;
   }
 
-  return loc;
+  // AFTER the chain exists, because the lock is a file inside the principal directory, and BEFORE
+  // the caller can open a WAL under it, because a lock taken after the first transition is a lock
+  // that was not held when it mattered.
+  const lock = await acquirePrincipalLock(loc.lockPath);
+  return { ...loc, lock };
 }

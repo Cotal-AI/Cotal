@@ -15,11 +15,12 @@
  *
  * Run: npx tsx extensions/connector-core/smoke/agui-wal-path.smoke.ts
  */
-import { mkdtempSync, rmSync, statSync, symlinkSync, mkdirSync, existsSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, rmSync, statSync, symlinkSync, mkdirSync, existsSync, writeFileSync, readFileSync } from "node:fs";
+import { spawn } from "node:child_process";
+import { hostname, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
-import { eventWalLocation, ensureEventWalDir, resolveEventsStateRoot, EventsStateRootMissing } from "../src/agui-wal-path.js";
+import { eventWalLocation, ensureEventWalDir, resolveEventsStateRoot, EventsStateRootMissing, acquirePrincipalLock, PrincipalLockError } from "../src/agui-wal-path.js";
 import { EventWal } from "../src/event-wal.js";
 
 let pass = 0;
@@ -238,6 +239,129 @@ try {
   c("...and reopening it from that path recovers the frozen pending frame",
     reread.pending?.id === "00000000-0000-4000-8000-00000000abcd" && reread.pending?.state === "sent_unacked",
     reread.pending);
+
+  // ── [L] THE PRINCIPAL LOCK IS HELD, NOT COMPUTED ─────────────────────────────────────────────
+  //
+  // Every cell above this block asserts where the lock LIVES. That was the whole of this suite's
+  // coverage while `lockPath` was a string nobody ever opened, and a review demonstrated the cost:
+  // two logs on one file, the second one's stale handle rewriting the first one's folded frontier.
+  // A path is not a lock, and asserting a path's shape is not asserting exclusion.
+  //
+  // `refusesLock` asserts the NAMED invariant, never merely that something threw — the refusals here
+  // are one bad record away from each other, and "it threw" cannot tell them apart.
+  const refusesLock = async (what: string, invariant: string, fn: () => Promise<unknown>): Promise<void> => {
+    try {
+      await fn();
+      c(what, false, "did NOT throw");
+    } catch (e) {
+      if (!(e instanceof PrincipalLockError)) return c(what, false, `threw ${(e as Error).name}: ${(e as Error).message}`);
+      c(what, e.invariant === invariant, `invariant was "${e.invariant}", expected "${invariant}"`);
+    }
+  };
+
+  const L = { workspaceRoot: mkdtempSync(join(tmpdir(), "agui-lock-")), space: "main", principal: "owner.lockee", threadId: "sess-L" };
+  const lheld = await ensureEventWalDir(L);
+  c("[L] ensureEventWalDir returns a HELD lock and the file exists at the documented path",
+    lheld.lock.path === lheld.lockPath && existsSync(lheld.lockPath), lheld.lockPath);
+  c("[L] the lock file is 0600, like the WAL it guards",
+    (statSync(lheld.lockPath).mode & 0o777) === 0o600, (statSync(lheld.lockPath).mode & 0o777).toString(8));
+  c("[L] the record names THIS process and host, so another process can check its liveness",
+    (JSON.parse(readFileSync(lheld.lockPath, "utf8")) as { pid: number; host: string }).pid === process.pid &&
+      (JSON.parse(readFileSync(lheld.lockPath, "utf8")) as { host: string }).host === hostname(),
+    readFileSync(lheld.lockPath, "utf8"));
+
+  // Same principal, SECOND thread. Idempotent by decision, not by accident: the lock is per
+  // principal and the directory chain is per thread, so a session moving to its next thread calls
+  // this again, and the documented shape is one emitter per principal, one thread at a time.
+  const lheld2 = await ensureEventWalDir({ ...L, threadId: "sess-L2" });
+  c("[L] a second thread of the SAME principal in this process gets the same held lock",
+    lheld2.lock === lheld.lock, { a: lheld.lock.path, b: lheld2.lock.path });
+
+  // A LIVE foreign owner on this host. `process.ppid` is a process that certainly exists and
+  // certainly is not us, which is exactly the state an operator hits when two emitters are started.
+  const foreign = join(mkdtempSync(join(tmpdir(), "agui-lock-live-")), ".lock");
+  writeFileSync(foreign, JSON.stringify({ pid: process.ppid, host: hostname(), token: "t", acquiredAt: "now" }), { mode: 0o600 });
+  await refusesLock("[L] a lock held by a LIVE process on this host is refused, never reclaimed",
+    "the recorded owner is gone", () => acquirePrincipalLock(foreign));
+  c("[L] ...and the refusal left the other process's lock in place",
+    readFileSync(foreign, "utf8").includes(`"pid":${process.ppid}`), readFileSync(foreign, "utf8"));
+
+  // A DEAD owner. Reclaimable, because a crash that wedged the principal forever would be a worse
+  // failure than the one the lock prevents.
+  const deadPid = await new Promise<number>((res, rej) => {
+    const ch = spawn(process.execPath, ["-e", ""], { stdio: "ignore" });
+    ch.on("error", rej);
+    ch.on("exit", () => res(ch.pid as number));
+  });
+  const stale = join(mkdtempSync(join(tmpdir(), "agui-lock-dead-")), ".lock");
+  writeFileSync(stale, JSON.stringify({ pid: deadPid, host: hostname(), token: "t", acquiredAt: "then" }), { mode: 0o600 });
+  const reclaimed = await acquirePrincipalLock(stale);
+  c("[L] a lock whose recorded owner is GONE is reclaimed, so one crash does not wedge the principal",
+    (JSON.parse(readFileSync(stale, "utf8")) as { pid: number }).pid === process.pid, readFileSync(stale, "utf8"));
+
+  // ...and releasing it lets the next start take it. Asserted because a lock held for process life
+  // is only correct if the release path actually exists.
+  await reclaimed.release();
+  c("[L] release removes the file", !existsSync(stale));
+  const retaken = await acquirePrincipalLock(stale);
+  c("[L] ...and a fresh acquire takes it again", existsSync(stale) && retaken !== reclaimed);
+  await retaken.release();
+
+  // A DEAD pid recorded against ANOTHER HOST. This is the cell that separates "checked liveness"
+  // from "checked liveness where liveness is observable": on a shared filesystem the pid is a
+  // number about a machine this process cannot see, and reclaiming on it would be a guess.
+  const elsewhere = join(mkdtempSync(join(tmpdir(), "agui-lock-host-")), ".lock");
+  writeFileSync(elsewhere, JSON.stringify({ pid: deadPid, host: `${hostname()}-not-this-one`, token: "t", acquiredAt: "then" }), { mode: 0o600 });
+  await refusesLock("[L] a lock recorded on ANOTHER HOST is refused even when its pid is dead here",
+    "the recorded owner is on THIS host", () => acquirePrincipalLock(elsewhere));
+
+  // An unreadable record is refused rather than reclaimed. A file we cannot read is not evidence
+  // that nobody holds it, and reclaiming on it would make corruption the way past the lock.
+  const junk = join(mkdtempSync(join(tmpdir(), "agui-lock-junk-")), ".lock");
+  writeFileSync(junk, "not json at all", { mode: 0o600 });
+  await refusesLock("[L] an unreadable lock record is refused, never reclaimed",
+    "the lock names its owner", () => acquirePrincipalLock(junk));
+  const noOwner = join(mkdtempSync(join(tmpdir(), "agui-lock-noowner-")), ".lock");
+  writeFileSync(noOwner, JSON.stringify({ note: "readable JSON naming nobody" }), { mode: 0o600 });
+  await refusesLock("[L] ...and readable JSON that names nobody checkable is refused by the same invariant",
+    "the lock names its owner", () => acquirePrincipalLock(noOwner));
+
+  // THE CELL THAT MAKES "HELD FOR PROCESS LIFE" A MEASUREMENT. A real second process takes the lock
+  // through the shipped acquire and stays alive; this one must be refused while it lives, and must
+  // succeed once it is gone. Everything above this cell is single-process.
+  const crossDir = mkdtempSync(join(tmpdir(), "agui-lock-cross-"));
+  const crossLock = join(crossDir, ".lock");
+  const holder = spawn(process.execPath, [
+    "--import", "tsx",
+    // EXPLICIT rather than relying on Node's module-syntax detection: the child is a one-liner whose
+    // only job is to hold a lock, and a child that fails to start would make the refusal cell below
+    // pass for the wrong reason.
+    "--input-type=module",
+    "-e",
+    `import { acquirePrincipalLock } from ${JSON.stringify(resolve(import.meta.dirname, "../src/agui-wal-path.ts"))};` +
+      `await acquirePrincipalLock(${JSON.stringify(crossLock)});` +
+      `console.log("held");` +
+      `await new Promise((r) => setTimeout(r, 30000));`,
+  ], { stdio: ["ignore", "pipe", "pipe"] });
+  const holderReady = await new Promise<boolean>((res) => {
+    let out = "";
+    holder.stdout.on("data", (d: Buffer) => { out += d.toString(); if (out.includes("held")) res(true); });
+    holder.on("exit", () => res(false));
+    setTimeout(() => res(out.includes("held")), 15000).unref();
+  });
+  c("[L] a SECOND PROCESS acquired the lock through the shipped function", holderReady);
+  await refusesLock("[L] ...and this process is refused while that one is alive",
+    "the recorded owner is gone", () => acquirePrincipalLock(crossLock));
+  const holderGone = new Promise<void>((res) => holder.on("exit", () => res()));
+  holder.kill("SIGKILL");
+  await holderGone;
+  const afterDeath = await acquirePrincipalLock(crossLock);
+  c("[L] ...and the SAME lock is takeable once that process is gone",
+    (JSON.parse(readFileSync(crossLock, "utf8")) as { pid: number }).pid === process.pid, readFileSync(crossLock, "utf8"));
+  await afterDeath.release();
+
+  rmSync(L.workspaceRoot, { recursive: true, force: true });
+  rmSync(crossDir, { recursive: true, force: true });
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

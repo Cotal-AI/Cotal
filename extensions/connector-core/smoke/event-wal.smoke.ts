@@ -48,7 +48,7 @@ import { open } from "node:fs/promises";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { EventWal, WalCorruptError, EVENT_WAL_VERSION, openExclusiveNoFollow } from "../src/event-wal.js";
+import { EventWal, WalCorruptError, WalStaleWriterError, EVENT_WAL_VERSION, openExclusiveNoFollow } from "../src/event-wal.js";
 import type { Part } from "@cotal-ai/core";
 
 /** A neutral bracket snapshot for fixtures whose subject is NOT the bracket machine. Named so a
@@ -83,7 +83,7 @@ const BODY: Part[] = [{ kind: "text", text: "frame" }];
 let n = 0;
 const p = () => join(root, `w${++n}.json`);
 const doc = (over: Record<string, unknown> = {}) => JSON.stringify({
-  v: EVENT_WAL_VERSION, space: "sp1", epoch: "ep1", threadId: "th1", principal: "pr1",
+  v: EVENT_WAL_VERSION, gen: 1, space: "sp1", epoch: "ep1", threadId: "th1", principal: "pr1",
   frontier: { seq: 0, lastSubjectSeq: 0 }, pending: null, brackets: null, ...over,
 });
 
@@ -287,7 +287,7 @@ try {
       const virgin = await EventWal.open(p(), T);
       await virgin.advanceCursorOnly("cur-only");
       const back = await EventWal.open(virgin.path, EXISTS);
-      c("[F2] CONTROL: [P7] a cursor at a ZERO frontier LOADS — cursor-only advance is not corruption",
+      c("[F2] CONTROL: the cursor-only rule means a cursor at a ZERO frontier LOADS — cursor-only advance is not corruption",
         back.frontier.sourceCursor === "cur-only" && back.frontier.seq === 0 && back.frontier.lastSubjectSeq === 0);
     }
     await refuses("[F2] a MIXED frontier pair (seq 0, lastSubjectSeq 7) is impossible and refused",
@@ -493,12 +493,12 @@ try {
     }
   }
 
-  // ── one emit unit is ONE pending frame (`[P8]`) ──
+  // ── one emit unit is ONE pending frame ──
   const single = await EventWal.open(p(), T);
   await single.beginSend({ id: "a", E: 0, seq: 1, sourceCursor: "c1", body: BODY, brackets: BR });
   let refusedSecond = false;
   try { await single.beginSend({ id: "b", E: 0, seq: 2, sourceCursor: "c2", body: BODY, brackets: BR }); } catch { refusedSecond = true; }
-  c("[P8] a second pending frame is refused — one emit unit is one pending frame", refusedSecond);
+  c("a second pending frame is refused — one emit unit is one pending frame", refusedSecond);
 
   let refusedAdvance = false;
   try { await single.advanceCursorOnly("c5"); } catch { refusedAdvance = true; }
@@ -593,7 +593,7 @@ try {
   await migrated.fold();
   const onDisk = JSON.parse(readFileSync(atRest, "utf8")) as { v: number; brackets: unknown };
   c("v2:the-migration-reaches-DISK-on-the-next-durable-write",
-    onDisk.v === 2 && onDisk.brackets !== null && typeof onDisk.brackets === "object", onDisk.v);
+    onDisk.v === EVENT_WAL_VERSION && onDisk.brackets !== null && typeof onDisk.brackets === "object", onDisk.v);
   c("v2:fold-PROMOTES-the-frame's-frozen-bracket-state-to-the-document",
     JSON.stringify(onDisk.brackets) === JSON.stringify(BR), onDisk.brackets);
 
@@ -647,6 +647,109 @@ try {
     abWal.epoch !== oldEpoch && abWal.brackets?.run === undefined && abWal.brackets?.text.length === 0 &&
       abWal.frontier.seq === 0 && abWal.frontier.lastSubjectSeq === 0 && abWal.frontier.sourceCursor === undefined,
     { epochChanged: abWal.epoch !== oldEpoch, brackets: abWal.brackets, frontier: abWal.frontier });
+}
+
+// ── [G] TWO HANDLES, ONE FILE: THE GENERATION GUARD ──────────────────────────────────────────
+//
+// A review opened two `EventWal` objects on one file and drove the second one's stale handle
+// straight through `recordAck` and `fold`. Both succeeded, each replacing the whole document, and
+// the WAL came back up reporting a durable tip of 99 — a subject sequence the broker never
+// assigned. Nothing was corrupt on disk and nothing threw; the file simply belonged to the loser.
+//
+// These cells assert the DISK after the refusal, not just the refusal. A guard that throws after it
+// has already replaced the document is not a guard, and "it threw" cannot tell the two apart.
+{
+  const walPath = p();
+  const A = await EventWal.open(walPath, T);
+  await A.beginSend({ id: "id-A", E: 0, seq: 1, sourceCursor: "cur-A", body: BODY, brackets: BR });
+
+  // B opens HERE, exactly where the review opened it: after A's first transition, so B's in-memory
+  // document is a real state that A has already moved on from.
+  const B = await EventWal.open(walPath, EXISTS);
+
+  await A.recordAck(5);
+  await A.fold();
+  const afterA = JSON.parse(readFileSync(walPath, "utf8")) as { gen: number; frontier: { lastSubjectSeq: number } };
+  c("[G] every durable replace bumps the generation (virgin 0, T1/T2/T3 -> 3)",
+    afterA.gen === 3, afterA.gen);
+  c("[G] A's fold is on disk before B touches anything",
+    afterA.frontier.lastSubjectSeq === 5, afterA.frontier);
+
+  let bErr: Error | undefined;
+  try { await B.recordAck(99); } catch (e) { bErr = e as Error; }
+  c("[G] THE STALE HANDLE'S TRANSITION FAILS, and by name",
+    bErr instanceof WalStaleWriterError, bErr ? `${bErr.name}: ${bErr.message}` : "did NOT throw");
+  c("[G] ...and it names both generations, so an operator sees WHICH view is stale",
+    bErr instanceof WalStaleWriterError && bErr.expectedGen === 1 && bErr.foundGen === 3,
+    bErr instanceof WalStaleWriterError ? { expected: bErr.expectedGen, found: bErr.foundGen } : bErr?.message);
+
+  const afterB = JSON.parse(readFileSync(walPath, "utf8")) as { gen: number; frontier: { lastSubjectSeq: number } };
+  c("[G] THE DISK FRONTIER IS STILL A's 5, not the fabricated 99",
+    afterB.frontier.lastSubjectSeq === 5 && afterB.gen === 3, afterB);
+
+  // The harm is what a RESTART reads, so read it the way a restart does rather than trusting the
+  // bytes above to speak for themselves.
+  const restarted = await EventWal.open(walPath, EXISTS);
+  c("[G] ...and a fresh open recovers tip 5, so no publish freezes an expectation the broker never issued",
+    restarted.frontier.lastSubjectSeq === 5 && restarted.frontier.seq === 1 && restarted.pending === null,
+    restarted.frontier);
+
+  // CONTROL. Without it, every cell above is satisfied by a write path that refuses ALWAYS.
+  await A.beginSend({ id: "id-A2", E: 5, seq: 2, sourceCursor: "cur-A2", body: BODY, brackets: BR });
+  c("[G] CONTROL: the CURRENT handle keeps writing through the same guard",
+    A.pending?.id === "id-A2" &&
+      (JSON.parse(readFileSync(walPath, "utf8")) as { gen: number }).gen === 4,
+    A.pending);
+
+  // A stale handle stays stale. It does not resynchronise by being asked twice, and a second
+  // attempt must not be the one that lands.
+  let bErr2: Error | undefined;
+  try { await B.recordAck(99); } catch (e) { bErr2 = e as Error; }
+  c("[G] a second attempt from the same stale handle fails the same way",
+    bErr2 instanceof WalStaleWriterError &&
+      (JSON.parse(readFileSync(walPath, "utf8")) as { frontier: { lastSubjectSeq: number } }).frontier.lastSubjectSeq === 5,
+    bErr2?.message ?? "did NOT throw");
+}
+
+// ── [G] THE GENERATION IS REQUIRED FROM v3, AND A VANISHED FILE IS NOT A FRESH ONE ────────────
+{
+  // A document whose `gen` was stripped would silently disable the guard for every later write, so
+  // it is refused rather than read as zero. This is the same rule as the absent `pending` key: an
+  // absent field is not a value.
+  const stripped = p(); writeFileSync(stripped, doc({ gen: undefined }));
+  await refuses("[G] a v3 document with `gen` STRIPPED is refused, not read as generation 0",
+    "gen is a safe non-negative integer", () => EventWal.open(stripped, EXISTS));
+  const negative = p(); writeFileSync(negative, doc({ gen: -1 }));
+  await refuses("[G] ...and a negative generation is refused by the same invariant",
+    "gen is a safe non-negative integer", () => EventWal.open(negative, EXISTS));
+  // CONTROL: the same document with a legal generation loads, so the two refusals are not vacuous.
+  const legalGen = p(); writeFileSync(legalGen, doc({ gen: 4 }));
+  c("[G] CONTROL: the same document with a legal generation loads",
+    (await EventWal.open(legalGen, EXISTS)).frontier.seq === 0);
+
+  // A pre-v3 document has never been through a generation-aware write. It migrates at 0, and the
+  // first write from the migrated handle stamps 1 — which is what makes a second handle on the same
+  // migrated file lose rather than tie.
+  const old = p(); writeFileSync(old, JSON.stringify({
+    v: 2, space: "sp1", epoch: "ep1", threadId: "th1", principal: "pr1",
+    frontier: { seq: 1, lastSubjectSeq: 5, sourceCursor: "c1" }, pending: null, brackets: null,
+  }));
+  const migrated = await EventWal.open(old, EXISTS);
+  await migrated.advanceCursorOnly("c2");
+  c("[G] a v2 document migrates at generation 0 and its first write stamps 1",
+    (JSON.parse(readFileSync(old, "utf8")) as { gen: number; v: number }).gen === 1, readFileSync(old, "utf8"));
+
+  // The file this handle wrote has been taken away. Re-creating it would resume a thread from a
+  // state somebody deliberately removed, which is the missing-WAL guess by another route.
+  const vanish = p();
+  const v = await EventWal.open(vanish, T);
+  await v.beginSend({ id: "id-v", E: 0, seq: 1, sourceCursor: "cv", body: BODY, brackets: BR });
+  rmSync(vanish);
+  let goneErr: Error | undefined;
+  try { await v.recordAck(3); } catch (e) { goneErr = e as Error; }
+  c("[G] a handle whose file has VANISHED refuses to re-create it",
+    goneErr instanceof WalStaleWriterError && goneErr.foundGen === undefined,
+    goneErr ? `${goneErr.name}: ${goneErr.message}` : "did NOT throw");
 }
 
 } finally {

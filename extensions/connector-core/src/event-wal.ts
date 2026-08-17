@@ -33,6 +33,12 @@ import type { BracketState } from "./agui.js";
  * **v2 added `brackets`** — the AG-UI bracket machine's state, persisted so a mid-run restart can
  * continue instead of refusing the first event it re-reads.
  *
+ * **v3 added `gen`** — a counter this writer bumps on every durable replace, so a write can tell
+ * whether the document it is about to replace is the one it last read. See {@link EventWal.write}.
+ * A v2 document has never been written by a generation-aware writer, so it migrates forward at
+ * generation 0; from v3 on the field is REQUIRED, because "absent" and "zero" would otherwise be
+ * the same value and stripping the field would disable the guard silently.
+ *
  * **THE MIGRATION IS FORWARD-ONLY, AND THAT MAKES THE STATE OUTLIVE A CODE ROLLBACK.** Once a
  * process writes v2, reverting the code does NOT revert the state: the older build refuses the
  * document it now finds. That is the right trade — fail-loud beats silently reading a schema you do
@@ -41,7 +47,7 @@ import type { BracketState } from "./agui.js";
  * the refusal below distinguishes NEWER-than-this-code from unknown, and says which migration.
  * There is deliberately no downgrade path: a lossy downgrade is worse than a halt.
  */
-export const EVENT_WAL_VERSION = 2;
+export const EVENT_WAL_VERSION = 3;
 
 export interface WalFrontier {
   /** The `seq` of the last frame FOLDED into the frontier. 0 before the first frame lands. */
@@ -89,6 +95,14 @@ export interface WalPending {
 export interface WalDoc {
   v: number;
   /**
+   * How many durable replaces this document has been through (v3).
+   *
+   * It is a WITNESS, not a clock: its only job is to let a writer notice that the file it is about
+   * to replace is no longer the file it read. Nothing orders two documents by it and nothing derives
+   * a position from it.
+   */
+  gen: number;
+  /**
    * The space this WAL belongs to — stored because it is a PATH COMPONENT and a path component is
    * not a trusted input. `principal` and `threadId` were verified on
    * load and `space` was not, so a WAL copied or mis-resolved between two space directories under
@@ -122,7 +136,41 @@ export class WalCorruptError extends Error {
   }
 }
 
+/**
+ * Thrown when this handle's document is not the one on disk any more.
+ *
+ * A DISTINCT type from {@link WalCorruptError} because the file is not corrupt: it is FINE, and it
+ * belongs to somebody else's newer view. An operator reading "corrupt" would go looking for a bad
+ * disk; the actual situation is two writers, and only one of them is current.
+ */
+export class WalStaleWriterError extends Error {
+  constructor(readonly path: string, readonly expectedGen: number, readonly foundGen: number | undefined) {
+    super(
+      `event WAL at ${path} was written by another handle since this one read it (this handle expects ` +
+        `generation ${expectedGen}, the file is at ${foundGen === undefined ? "no file at all" : `generation ${foundGen}`}) — ` +
+        `refusing to overwrite it. A second emitter or a stale handle is writing this principal's log.`,
+    );
+    this.name = "WalStaleWriterError";
+  }
+}
+
 const isSafeNonNegInt = (n: unknown): n is number => Number.isSafeInteger(n) && (n as number) >= 0;
+
+/**
+ * The generation a raw document carries, stated in ONE place so the load path and the write path
+ * cannot drift apart about what a missing field means.
+ *
+ * Pre-v3 documents predate the field entirely, and 0 is that fact rather than a default: they have
+ * never been through a generation-aware write, so the first v3 write stamps 1 and every later
+ * comparison is exact. From v3 on the field is required — an absent one is refused, because a
+ * writer that treated it as 0 would silently accept a document with the guard stripped out.
+ */
+function docGeneration(path: string, doc: { v?: unknown; gen?: unknown }): number {
+  if (typeof doc.v === "number" && doc.v < 3) return 0;
+  if (!isSafeNonNegInt(doc.gen))
+    throw new WalCorruptError(path, "gen is a safe non-negative integer", `found gen=${String(doc.gen)} on a v${String(doc.v)} document`);
+  return doc.gen;
+}
 
 /**
  * Create a file EXCLUSIVELY and WITHOUT following a symlink, at mode 0600.
@@ -290,7 +338,8 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
       `v <= ${EVENT_WAL_VERSION}`,
       `this WAL is v${doc.v} and this build understands v${EVENT_WAL_VERSION} — THE STATE IS NEWER ` +
         `THAN THE CODE, which is what a code rollback across the v2 migration (persisted bracket ` +
-        `state) leaves behind. The migration is forward-only by design: there is no downgrade, ` +
+        `state) or the v3 one (the write generation) leaves behind. The migration is forward-only ` +
+        `by design: there is no downgrade, ` +
         `because a lossy one would silently discard state this file exists to preserve. Run the ` +
         `newer build, or move this WAL aside and accept that the thread restarts from a new epoch.`,
     );
@@ -410,6 +459,9 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
 
   return {
     v: EVENT_WAL_VERSION, // MIGRATED IN MEMORY; it reaches disk on the next durable write.
+    // The generation as the FILE states it, so the first write from this handle compares against
+    // what it actually read rather than against its own migrated shape.
+    gen: docGeneration(path, doc),
     space,
     epoch: doc.epoch,
     threadId,
@@ -431,9 +483,13 @@ export class EventWal {
    * would then resume the frame on disk while the live emitter retries the other, which breaks the
    * one thing this file exists to guarantee — that `id` and `E` are frozen and agreed.
    *
-   * A per-instance chain is sufficient and honest about its scope: it serializes THIS process's
-   * callers. Cross-process exclusion is a different problem, solved upstream by the principal-level
-   * lock, which allows one emitter per principal, not here.
+   * A per-instance chain is sufficient and honest about its scope, and the scope is narrower than it
+   * once claimed: it serializes THIS INSTANCE's callers. It does nothing about a SECOND `EventWal`
+   * on the same file, in this process or another — the chain is per object, so two objects are two
+   * chains and both of them "succeed". That gap was described here as "solved upstream by the
+   * principal-level lock" while no lock was ever acquired. Two things close it now, and neither is
+   * this chain: `acquirePrincipalLock` refuses a second emitter for the principal at start, and
+   * {@link EventWal.assertNotClobbering} refuses a stale handle's write even when it got past that.
    */
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -516,6 +572,10 @@ export class EventWal {
   private static virgin(space: string, threadId: string, principal: string): WalDoc {
     return {
       v: EVENT_WAL_VERSION,
+      // Nothing has been written yet, so the first durable replace stamps generation 1 and must find
+      // NO FILE. A file present at generation 0 means somebody else created it while this handle
+      // believed the thread was virgin, and that is refused rather than overwritten.
+      gen: 0,
       space,
       epoch: randomUUID(),
       threadId,
@@ -652,6 +712,11 @@ export class EventWal {
    * cheap enough that naming it as an accepted residual would be the worse trade.
    */
   private async write(next: WalDoc): Promise<void> {
+    // NOBODY ELSE HAS WRITTEN THIS FILE SINCE THIS HANDLE READ IT. Checked FIRST, because every
+    // line below replaces the document wholesale.
+    await this.assertNotClobbering();
+    const stamped: WalDoc = { ...next, gen: this.doc.gen + 1 };
+
     // The temp name is RANDOM per write, and the open is EXCLUSIVE and NON-FOLLOWING.
     //
     // The previous version derived the name from `path` + `pid` — predictable — and used
@@ -682,7 +747,7 @@ export class EventWal {
       dirname(this.path),
       `.${createHash("sha256").update(this.path).digest("hex").slice(0, 12)}.${process.pid}.${randomUUID().slice(0, 8)}.wal.tmp`,
     );
-    const body = JSON.stringify(next);
+    const body = JSON.stringify(stamped);
     const fh = await openExclusiveNoFollow(tmp);
     try {
       await fh.writeFile(body, "utf8");
@@ -696,6 +761,68 @@ export class EventWal {
       await unlink(tmp).catch(() => {});
       throw e;
     }
-    this.doc = next;
+    this.doc = stamped;
+  }
+
+  /**
+   * Refuse to replace a document this handle did not read.
+   *
+   * **THE FAILURE THIS EXISTS FOR WAS EXECUTED, NOT IMAGINED.** Two `EventWal` objects were opened
+   * on one file. A ran the full cycle and folded a frontier of `{seq:1, lastSubjectSeq:5}`. B, whose
+   * in-memory document was frozen back at the pending write, then called `recordAck(99)` and
+   * `fold()` — both SUCCEEDED, each replacing the whole file, and the WAL came back up claiming a
+   * durable tip of 99: a subject sequence the broker never assigned. The next publish freezes
+   * `E := 99` against a stream whose real tip is 5, so the emitter either CAS-halts forever or
+   * recovers a frontier that never existed. Nothing about that is loud; it reads as a healthy WAL.
+   *
+   * The per-instance `serialize` chain cannot see it (two instances, two chains) and neither can the
+   * principal lock (B's handle predates any lock B would take, and a lock is not held against a
+   * process's own second object). The guard has to be HERE, on the write, where the two views
+   * finally meet.
+   *
+   * **This is a check, not a transaction, and the difference is stated rather than glossed.** The
+   * read and the `rename` are separate syscalls, so a writer that lands in between is not caught by
+   * this; what is caught is every stale handle — the case that actually occurs, because a stale
+   * handle stays stale for as long as it exists rather than for a syscall's width. The lock is what
+   * keeps a second live writer from starting; this is what keeps one that already exists from
+   * winning.
+   */
+  private async assertNotClobbering(): Promise<void> {
+    let bytes: Buffer | undefined;
+    try {
+      bytes = await readFile(this.path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+    }
+
+    if (bytes === undefined) {
+      // Only a handle that has never written may create the file. A handle whose own document is on
+      // disk and now finds nothing has had it removed underneath it, and re-creating it would resume
+      // a thread from a state somebody deliberately took away.
+      if (this.doc.gen !== 0) throw new WalStaleWriterError(this.path, this.doc.gen, undefined);
+      return;
+    }
+
+    // Same fatal decode as `open`: a document that is not valid UTF-8 is not one this writer wrote,
+    // and the substituting decoder would turn it into one that merely looks like it.
+    let raw: string;
+    try {
+      raw = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+    } catch {
+      throw new WalCorruptError(this.path, "the file is valid UTF-8", "invalid UTF-8 bytes on the file about to be replaced; refusing rather than substituting U+FFFD");
+    }
+    let d: unknown;
+    try {
+      d = JSON.parse(raw);
+    } catch (e) {
+      throw new WalCorruptError(this.path, "parseable JSON", (e as Error).message);
+    }
+    if (typeof d !== "object" || d === null) throw new WalCorruptError(this.path, "document is an object", typeof d);
+
+    // ONLY the generation is read here. Re-running the load guards would refuse this write for
+    // properties of a document that is on its way out, and would answer a question this function is
+    // not asking.
+    const onDisk = docGeneration(this.path, d as { v?: unknown; gen?: unknown });
+    if (onDisk !== this.doc.gen) throw new WalStaleWriterError(this.path, this.doc.gen, onDisk);
   }
 }
