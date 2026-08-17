@@ -141,6 +141,10 @@ const sub = nc.subscribe(epServeFilter(SPACE, "one", EP), {
           code: "failed-precondition",
           message: `${EP}.${env.op.command} WAS NOT RUN - this is ${IID_REAL} epoch ${EPOCH} (SPEC 13.2)`,
           details: [{ kind: EP_BIND_REFUSED, endpoint: EP, command: env.op.command, boundTo, servedBy }],
+          // A FENCED responder refusing before dispatch MUST state this (SPEC 13.3), and since the
+          // caller now requires it before re-issuing, a fixture that omitted it was modelling a
+          // responder the spec forbids and would never be repaired.
+          outcome: "not-executed",
         },
       };
     }
