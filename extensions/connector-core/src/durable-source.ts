@@ -1,5 +1,5 @@
 /**
- * `[P6]` — the DURABLE SOURCE read.
+ * The DURABLE SOURCE read.
  *
  * **The in-process bus is a WAKE SIGNAL, never the data path.** Every harness Cotal connects to
  * already persists an ordered, timestamped record of what the agent did: Claude Code writes a
@@ -23,8 +23,8 @@ import { open, type FileHandle } from "node:fs/promises";
 /**
  * One record, WITH THE CURSOR THAT RESUMES AFTER IT — not just the value.
  *
- * **The per-record cursor is not a convenience; without it `[P8]` is unimplementable.** The emitter
- * may turn one read into several frames, and `[P8]` requires each frame to be its own durable
+ * **The per-record cursor is not a convenience; without it one-unit-one-frame is unimplementable.**
+ * The emitter may turn one read into several frames, and each frame must be its own durable
  * pending/publish/ack cycle *with its own `sourceCursor`*. A read that offers only a single
  * end-of-batch cursor gives a frame covering records 0..i exactly one legal cursor value to store:
  * the one that says every record in the batch was consumed. Fold that frame, crash, and the frontier
@@ -32,8 +32,8 @@ import { open, type FileHandle } from "node:fs/promises";
  * consumer to notice. That is the silent loss this whole plane exists to make impossible, reached
  * through the resume path rather than the publish one.
  *
- * The alternative — one read is indivisibly one frame — is worse: a restart's read returns
- * everything appended since the cursor, so `[P8]`'s "a single unit that cannot fit FAILS LOUD"
+ * The alternative, one read being indivisibly one frame, is worse: a restart's read returns
+ * everything appended since the cursor, so "a single unit that cannot fit FAILS LOUD"
  * would fire on ordinary catch-up traffic.
  */
 export interface SourceRecord<T> {
@@ -51,7 +51,7 @@ export interface SourceRead<T> {
    * Equal to the last record's cursor when the read is non-empty — an implementation MUST keep
    * those two agreeing, and {@link JsonlFileSource} asserts it rather than assuming it.
    * It is still carried separately because an EMPTY read has a cursor and no last record: a fresh
-   * adopt and a no-new-data poll both need one, and `[P7]`'s cursor-only advance is defined on it.
+   * adopt and a no-new-data poll both need one, and the cursor-only advance is defined on it.
    */
   cursor: string;
 }

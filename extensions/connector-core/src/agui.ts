@@ -6,7 +6,7 @@
  * text to a new channel and change nothing a consumer can do with it — the channel name was never
  * the complaint.
  *
- * **The vocabulary is adopted; the SDK is not** (plan §2). `@ag-ui/core` is a `devDependency`,
+ * **The vocabulary is adopted; the SDK is not.** `@ag-ui/core` is a `devDependency`,
  * pinned EXACT at `0.0.57`, and this file imports from it with `import type` ONLY. The reason is
  * measured rather than stylistic: `0.0.57` declares `dependencies: { zod: "^3.22.4" }` (verified
  * against the registry, not remembered), and `connector-core` is esbuild-bundled into every seeded
@@ -69,10 +69,10 @@ import { eventChannelForSession } from "./launch.js";
  * The AG-UI events this plane emits — the MAPPED SUBSET, not the whole protocol.
  *
  * Absent by decision, each recorded so its absence is not read as an oversight:
- * `*_CHUNK` (plan §3: all three sources are settled observations, so we emit the START/CONTENT/END
- * triple, which is the subset every consumer implements — raw CHUNK needs a client transformer);
+ * `*_CHUNK` (all three sources are settled observations, so we emit the START/CONTENT/END
+ * triple, which is the subset every consumer implements: raw CHUNK needs a client transformer);
  * `STATE_*` (reserved for a later lane, and ask state left this plane entirely);
- * `MESSAGES_SNAPSHOT` (§5.3 dropped it as a compaction anchor — a
+ * `MESSAGES_SNAPSHOT` (dropped as a compaction anchor, because a
  * windowed snapshot DELETES the prefix); `THINKING_*` (deprecated at 0.0.57 in favour of
  * `REASONING_*`, which is what we emit).
  */
@@ -141,8 +141,8 @@ export type WithCotal<E> = E & { cotal?: CotalMeta };
  * The `cotal.*` `CUSTOM` event table — the second and ONLY other vehicle for Cotal-specific data.
  *
  * **The v1 table is EMPTY, and that is the specification, not an unfinished state.** Earlier
- * revisions described a two-member table holding `cotal.ask.opened` / `cotal.ask.settled`; §4
- * removed both when ask state left this plane, on the operative ground that there is no consumer —
+ * revisions described a two-member table holding `cotal.ask.opened` / `cotal.ask.settled`. Both
+ * were removed when ask state left this plane, on the operative ground that there is no consumer:
  * the board answers what is owed, the plane carries what is happening. Leaving the count in the
  * prose invited re-adding them "because the table has two slots", so the table ships with no slots.
  *
@@ -156,10 +156,10 @@ export const AGUI_PROTOCOL = "ag-ui/0.0.57";
 
 
 /**
- * One Cotal message = one frame (plan §5.2).
+ * One Cotal message = one frame.
  *
- * `threadId` is the native harness session and `runId` is ONE native harness turn — §4 is explicit
- * that nothing else may claim these. `epoch` is the writer-identity fence recovered from the WAL
+ * `threadId` is the native harness session and `runId` is ONE native harness turn, and nothing
+ * else may claim either of them. `epoch` is the writer-identity fence recovered from the WAL
  * (never re-minted on restart), and `seq` is this writer's frame counter, which is what lets a
  * consumer detect a gap rather than merely fail to notice one.
  *
@@ -224,8 +224,8 @@ export interface BracketState {
  * Bracketing, checked INCREMENTALLY over the event sequence — deliberately not over one frame.
  *
  * **A frame is not guaranteed to be self-bracketed, and a validator demanding that it be would
- * forbid a split the plan mandates.** An oversized frame splits on event boundaries with each part
- * carrying its own `seq` (§5.2), so a run can legally open in one frame and close in the next. The
+ * forbid a split this design requires.** An oversized frame splits on event boundaries with each
+ * part carrying its own `seq`, so a run can legally open in one frame and close in the next. The
  * unit that must balance is the WRITER'S STREAM, not the message. Feeding this machine frame after
  * frame is therefore the only way to check the property that is actually claimed.
  *
@@ -818,7 +818,7 @@ export function reasoningMessageEnd(o: {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Sizing and splitting (plan §5.2).
+// Sizing and splitting.
 //
 // THIS DOES NOT MEASURE ANYTHING ITSELF, AND THAT IS THE WHOLE DESIGN. The bytes a frame puts on
 // the wire are decided by the surface that builds the envelope and sets the headers: the endpoint
@@ -837,11 +837,12 @@ export function reasoningMessageEnd(o: {
 // ---------------------------------------------------------------------------------------------
 
 /**
- * The fields a too-large event may be truncated on — NAMED, never inferred (plan §5.2).
+ * The fields a too-large event may be truncated on: NAMED, never inferred.
  *
  * Inferring "the biggest string on the object" would eventually truncate an id, a role or a tool
- * name, and produce a frame that fits and means something else. The plan names three, so three is
- * what this table holds; an event carrying none of them cannot be truncated and says so.
+ * name, and produce a frame that fits and means something else. Exactly three fields carry
+ * free-form content, so three is what this table holds; an event carrying none of them cannot be
+ * truncated and says so.
  */
 const TRUNCATABLE_FIELDS: ReadonlyArray<{ readonly type: string; readonly field: string }> = [
   { type: AGUI_EVENT_TYPE.TOOL_CALL_ARGS, field: "delta" },
@@ -860,12 +861,12 @@ const takeCodePoints = (s: string, codePoints: number): string =>
  * Split `events` into as many frames as the wire requires, truncating only what physically cannot
  * cross it, and LABELLING every truncation.
  *
- * **THIS IS THE PREVIEW PLANE'S SPLITTER (§5.8), AND IT HAS NO DURABLE-PLANE CALLER BY DESIGN.**
+ * **THIS IS THE PREVIEW PLANE'S SPLITTER, AND IT HAS NO DURABLE-PLANE CALLER BY DESIGN.**
  * Read that as a boundary, not as an oversight: the durable emitter packs with {@link packUnits} at
- * SOURCE-RECORD boundaries and refuses an oversized unit, because `[P8]` requires every frame to
- * carry a cursor that resumes after it and a frame ending mid-record has no cursor it can honestly
- * store. §5.2 specified this event-boundary split and its labelled truncation before the durable
- * plane had a cursor contract; where the two now disagree, `[P8]` governs the durable plane. The
+ * SOURCE-RECORD boundaries and refuses an oversized unit, because one durable emit unit must be one
+ * frame carrying a cursor that resumes after it, and a frame ending mid-record has no cursor it can
+ * honestly store. This event-boundary split and its labelled truncation were specified before the
+ * durable plane had a cursor contract; where the two disagree, the durable plane's rule wins. The
  * PREVIEW plane has no resume obligation at all, which is exactly where truncate-and-label is the
  * right answer and why this machinery is worth keeping.
  *
@@ -875,7 +876,7 @@ const takeCodePoints = (s: string, codePoints: number): string =>
  * with zero production callers looking exactly like live code, and unreachable code that looks live
  * is a hazard whichever direction the next reader resolves it in.
  *
- * **Say the uncomfortable thing** (plan §5.2): this is a content truncation, which is one of the
+ * **Say the uncomfortable thing:** this is a content truncation, which is one of the
  * sins `tr-` is being abolished for. The difference is not that we are gentler about it. `tr-` cut
  * *every* result at 700 characters, silently and unconditionally, as a design choice; this cuts only
  * what cannot physically be sent, three orders of magnitude higher, and records what it cut and how
@@ -955,7 +956,7 @@ export function splitFrames(opts: {
 /**
  * Shrink one event's single largest truncatable string until the frame carrying it alone fits.
  *
- * **Iterate to fit, never one pass** (plan §5.2). Shortening a string changes its JSON escaping and
+ * **Iterate to fit, never one pass.** Shortening a string changes its JSON escaping and
  * its UTF-8 length NONLINEARLY — one multi-byte character or one escaped quote is several bytes, so
  * "cut it to the overage" both overshoots and undershoots depending on content. This binary-searches
  * the code-point length and re-measures the WHOLE candidate each step, envelope and headers
@@ -1023,16 +1024,15 @@ function truncateToFit(
 
 
 // ---------------------------------------------------------------------------------------------
-// THE EMITTER (plan §5.4 for the state machine, §5.6 for this file, build-order step 2a for the
-// startup preflight).
+// THE EMITTER.
 //
 // Everything above this line is a pure function of its arguments. Everything below it is the one
 // thing that TALKS: it reads a durable source forward from the WAL's cursor, maps records to
 // events, packs them into frames that provably fit, and appends them to the principal's event
 // channel under an optimistic-concurrency expectation with a frozen dedup id.
 //
-// The emitter owns no policy about WHAT an event means — that is §3's per-connector mapping, and it
-// arrives here as an injected function. What it owns is the property none of the pieces can hold
+// The emitter owns no policy about WHAT an event means. That belongs to the per-connector mapping,
+// and it arrives here as an injected function. What it owns is the property none of the pieces hold
 // alone: that a frame is either on the wire and folded into the frontier, or not on the wire and
 // not folded, and that no third state is ever reported as success.
 
@@ -1050,7 +1050,7 @@ export interface EmitterEndpoint {
   readonly actorIsEphemeral: boolean;
   /** The broker's live `max_payload`. Throws when not connected — never guesses a default. */
   readonly maxPayload: number;
-  /** `[P5]`'s R1 preflight. The emitter calls this at startup, before anything can publish. */
+  /** The single-replica preflight. The emitter calls this at startup, before anything can publish. */
   assertExpectationSemantics(): Promise<void>;
   encodedSize(o: { channel: string; parts: Part[]; id: string; expectedLastSubjectSeq: number }): number;
   multicastExpecting(o: {
@@ -1064,12 +1064,13 @@ export interface EmitterEndpoint {
 /**
  * One source record's worth of events, with the cursor that resumes AFTER that record.
  *
- * `[P8]`: the emitter splits only at source-observation boundaries that are independently
- * reconstructable from the durable source. A frame therefore ends where a record ends, and carries
- * that record's cursor — so folding it means exactly "every record in this frame is consumed".
+ * One durable emit unit is one frame: the emitter splits only at source-observation boundaries that
+ * are independently reconstructable from the durable source. A frame therefore ends where a record
+ * ends, and carries that record's cursor, so folding it means exactly "every record here is
+ * consumed".
  */
 export interface EmitUnit {
-  /** The run these events belong to. A frame's envelope names ONE run (§4), so units are never
+  /** The run these events belong to. A frame's envelope names ONE run, so units are never
    *  mixed across runs in one frame. */
   runId: string;
   events: AguiEvent[];
@@ -1077,8 +1078,8 @@ export interface EmitUnit {
 }
 
 /** What the mapper returns for one source record: its run and its events, or `null` for a record
- *  this plane deliberately drops (§3 drops many). `null` is NOT an error — `[P7]` keeps the two
- *  apart, and conflating them turns a parser bug into silently skipped history. */
+ *  this plane deliberately drops, and it drops many. `null` is NOT an error: a deliberate drop and
+ *  a failed map are kept apart, because conflating them turns a parser bug into skipped history. */
 export type RecordMapper<T> = (record: T) => { runId: string; events: AguiEvent[] } | null;
 
 /**
@@ -1094,7 +1095,7 @@ export type RecordMapper<T> = (record: T) => { runId: string; events: AguiEvent[
  * was lost across a process restart.
  *
  * **This exists because two halts that both say "unbalanced" prove nothing about which produced
- * one.** The WAL persists `epoch`, `frontier` and the pending frame (§5.4) and NOT the set of open
+ * one.** The WAL persists `epoch`, `frontier` and the pending frame, and NOT the set of open
  * runs and messages, so a process that dies mid-run restarts with an empty {@link AguiBrackets},
  * resumes from `sourceCursor` at events whose `RUN_STARTED` was already published, and refuses the
  * first of them. Without this class the operator sees "nothing may be emitted outside an open run"
@@ -1145,16 +1146,16 @@ const SIZING_EXPECTATION = Number.MAX_SAFE_INTEGER;
 /**
  * Pack units into frames, splitting ONLY at unit boundaries and never inside one.
  *
- * Deliberately NOT {@link splitFrames}, and the difference is `[P8]`. `splitFrames` splits at EVENT
- * boundaries, which is what §5.2 specifies for a frame considered on its own — but a frame that
- * ends mid-record has no cursor it can honestly store: the only value available says the whole
- * record was consumed, and folding that after a crash skips the rest of the record's events with no
- * `seq` gap for a consumer to notice.
+ * Deliberately NOT {@link splitFrames}, and the difference is the durable plane's one-unit-one-frame
+ * rule. `splitFrames` splits at EVENT boundaries, which is the right answer for a frame considered
+ * on its own, but a frame that ends mid-record has no cursor it can honestly store: the only value
+ * available says the whole record was consumed, and folding that after a crash skips the rest of the
+ * record's events with no `seq` gap for a consumer to notice.
  *
- * **So §5.2's event-boundary split and `[P8]`'s unit rule are in tension, and this resolves it in
- * the direction `[P8]` states explicitly: a single unit that does not fit FAILS LOUD rather than
- * being truncated at a frame boundary.** That leaves `splitFrames`'s truncation path with no caller
- * on the durable plane, which is reported as a plan conflict rather than silently decided here.
+ * **So the event-boundary split and the one-unit-one-frame rule are in tension, and this resolves it
+ * in the direction the durable plane requires: a single unit that does not fit FAILS LOUD rather
+ * than being truncated at a frame boundary.** That leaves `splitFrames`'s truncation path with no
+ * caller on the durable plane, which is reported as a design conflict rather than decided here.
  *
  * @throws {AguiVocabularyError} when one unit cannot fit in a frame alone.
  */
@@ -1225,21 +1226,21 @@ export function packUnits(opts: {
 }
 
 /**
- * The event emitter: one per principal, one thread at a time (§5.5).
+ * The event emitter: one per principal, one thread at a time.
  *
  * **A KNOWN GAP, DECLARED RATHER THAN PAPERED OVER: bracket state does not survive a restart.**
  * It now DIAGNOSES ITSELF ({@link AguiBracketStateLost}) instead of surfacing as an anonymous
- * protocol violation, which is the interim ruled for this wave; PERSISTING the machine is a plan
- * amendment against §5.4 targeted at the wave that ships a connector, and it must not slip past it.
+ * protocol violation, which is the interim ruled for this wave; PERSISTING the machine is a design
+ * amendment targeted at the wave that ships a connector, and it must not slip past it.
  * Today this is unreachable in production because nothing emits; the moment a connector cuts over,
  * a mid-run crash is an ordinary Tuesday.
  * {@link AguiBrackets} checks a property of the WRITER'S STREAM across frames, and the WAL persists
  * `epoch`, `frontier` and the pending frame — not the open runs and messages. So a process that
  * crashes mid-run restarts with an empty bracket machine, resumes from `sourceCursor` at events
  * whose `RUN_STARTED` was already published, and the first of them is REFUSED. That is a halt, not
- * a loss, which is the safe direction — but it is a real production behaviour and not a hypothetical,
- * and §5.4 specifies recovery of the durable state without saying anything about this one. Reported
- * as a plan defect; not decided here.
+ * a loss, which is the safe direction, but it is a real production behaviour and not a hypothetical,
+ * and the recovery rules cover the durable state without saying anything about this one. Reported
+ * as a design defect; not decided here.
  */
 export class AguiEmitter<T> {
   /**
@@ -1273,9 +1274,10 @@ export class AguiEmitter<T> {
   }
 
   /**
-   * Start an emitter: resolve the channel, run the `[P5]` preflight, and settle any pending frame.
+   * Start an emitter: resolve the channel, run the single-replica preflight, and settle any pending
+   * frame.
    *
-   * **THIS IS BUILD-ORDER STEP 2a's PRODUCTION CALL SITE, AND UNTIL THIS FUNCTION EXISTED THERE WAS
+   * **THIS IS THAT PREFLIGHT'S PRODUCTION CALL SITE, AND UNTIL THIS FUNCTION EXISTED THERE WAS
    * NONE.** `CotalEndpoint.assertExpectationSemantics()` had zero production callers: it was a
    * check that shipped, was covered by its own suite, and never ran outside one. That is why it is
    * called HERE, before recovery and therefore before any publish — a serialized append on an
@@ -1304,7 +1306,7 @@ export class AguiEmitter<T> {
           `publish under one identity from another's write-ahead log`,
       );
 
-    // `[P5]` R1 PREFLIGHT — before recovery, before any publish.
+    // THE SINGLE-REPLICA PREFLIGHT: before recovery, before any publish.
     await endpoint.assertExpectationSemantics();
 
     const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId);
@@ -1318,7 +1320,7 @@ export class AguiEmitter<T> {
   }
 
   /**
-   * Boot recovery, branching on the WAL's tag (§5.4).
+   * Boot recovery, branching on the WAL's tag.
    *
    * `acked` NEVER republishes: the frame landed and we know it, so the only remaining work is to
    * fold. `sent_unacked` is the genuinely uncertain case and republishes with the SAME frozen `id`
@@ -1349,8 +1351,8 @@ export class AguiEmitter<T> {
     const read = await this.source.read(this.wal.frontier.sourceCursor);
 
     // Units the mapper dropped are not errors and not frames. Their cursor folds FORWARD into the
-    // preceding unit, so consuming that frame consumes them too and they are never re-read. `[P7]`
-    // keeps this apart from a mapper error, which reaches the caller with the cursor unmoved.
+    // preceding unit, so consuming that frame consumes them too and they are never re-read. A drop
+    // stays apart from a mapper error, which reaches the caller with the cursor unmoved.
     const units: EmitUnit[] = [];
     for (const rec of read.records) {
       const mapped = this.map(rec.value);
@@ -1362,12 +1364,12 @@ export class AguiEmitter<T> {
       units.push({ runId: mapped.runId, events: mapped.events, cursor: rec.cursor });
     }
 
-    // `[P7]` — a bounded range that mapped to nothing advances the cursor atomically and ALONE.
+    // A bounded range that mapped to nothing advances the cursor atomically and ALONE.
     //
     // THIS IS THE COMMON PATH, NOT AN EDGE CASE, and the number is here so nobody reads it as one.
     // Measured on a real Claude session of 5938 records: only 2694 (45%) carry a `message` at all —
     // the rest are attachments, queue operations, mode changes, prompt markers and system entries
-    // that §3 deliberately drops. So the MAJORITY of a real session maps to nothing. An emitter that
+    // the mapping deliberately drops. So the MAJORITY of a real session maps to nothing. An emitter
     // advanced the cursor only through an acked frame would re-read the same 55% forever, and no
     // fixture would ever show it, because a fixture author writes records that mean something.
     //
@@ -1415,7 +1417,7 @@ export class AguiEmitter<T> {
     }
 
     // Records the mapper dropped AFTER the last unit have no frame to ride on, so their cursor is
-    // advanced on its own — the same `[P7]` rule, applied to the tail of the batch.
+    // advanced on its own: the same cursor-only rule, applied to the tail of the batch.
     if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
 
     return { frames: frames.length, events };
@@ -1455,8 +1457,9 @@ export class AguiEmitter<T> {
    * - `!duplicate` → transition 2 then 3. Success becomes durable before the frontier moves.
    * - `duplicate` → HALT. On a first attempt it means a body WE DID NOT WRITE holds our id, and
    *   folding its `ackSeq` would advance the frontier and the source cursor past events that were
-   *   never published. On a retry it cannot happen under `[P5]` at all — an R1 stream evaluates the
-   *   expectation before the dedup cache — so observing it proves `[P5]` was violated. Both are
+   *   never published. On a retry it cannot happen on a single-replica stream at all, because such a
+   *   stream evaluates the expectation before the dedup cache, so observing it proves the stream is
+   *   not single-replica. Both are
    *   fail-loud, and neither is a case where guessing is better than stopping.
    * - CAS loss → HALT. Someone else moved the tip on a subject only this principal may write, or
    *   the subject was purged. Uncertainty plus a moved tip is exactly what must not be guessed at.

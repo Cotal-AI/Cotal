@@ -4,7 +4,7 @@
  * **This file exists so the cutover is a SWAP, not a swap plus a new lifecycle.** `TranscriptMirror`
  * presents a synchronous `adopt(path)` / `flush(path)` pair to the hook relay, because that is what
  * a hook can call: the relay must reply immediately and cannot await a publish. {@link AguiEmitter}
- * is the opposite shape — `start()` is async (it resolves the channel, runs `[P5]`'s R1 preflight,
+ * is the opposite shape: `start()` is async (it resolves the channel, runs the replica preflight,
  * and settles any frame the WAL left pending) and `pump()` is async. Something has to hold the
  * async thing behind the sync surface, and if that something is written in the same commit that
  * deletes the mirror, then the irreversible step also carries an untested lifecycle.
@@ -35,7 +35,7 @@ export class AguiEmitterHolder<T> {
    * Terminal. Once set, this holder never starts, pumps, or reports success again.
    *
    * It does not retry, and that is a decision rather than an omission. A retry on the next hook
-   * would re-run `[P5]`'s preflight and a WAL recovery against a stream this holder has already
+   * would re-run that preflight and a WAL recovery against a stream this holder has already
    * failed to establish itself on, on a timer set by how often the user happens to type. The
    * emitter's own answer to an uncertain publish is to halt rather than to limp, and a holder that
    * quietly reconnected underneath it would reintroduce, one layer up, exactly the silence the

@@ -118,7 +118,7 @@ try {
   c("a restart recovers the frontier intact",
     reopened.frontier.seq === 1 && reopened.frontier.lastSubjectSeq === 7 && reopened.frontier.sourceCursor === "c1");
 
-  // ── [P7] transition 4: cursor-only advance ──
+  // ── transition 4: cursor-only advance ──
   await reopened.advanceCursorOnly("c9");
   c("T4 advances the cursor ALONE — no seq consumed, no pending written",
     reopened.frontier.sourceCursor === "c9" && reopened.frontier.seq === 1 && reopened.pending === null);
@@ -251,7 +251,8 @@ try {
     };
 
     // [F1] the frozen body — a WAL that cannot re-publish the frame it froze is not a write-ahead
-    //      log. `[P2]` requires it; `WalPending` carried the id and the expectation and no payload.
+    //      log. The write-ahead rule requires it; `WalPending` carried the id and the expectation
+    //      and no payload.
     const withBody = await real("pending");
     const recovered = await EventWal.open(withBody, EXISTS);
     c("[F1] a restart RECOVERS the frozen body, so the same frame can be re-published",
@@ -279,8 +280,8 @@ try {
     c("[F2] CONTROL: the same document UNCHANGED still loads (the refusal is the deletion, not the file)",
       (await EventWal.open(folded, EXISTS)).frontier.sourceCursor === "cur-1");
     // [F2] CONTROL, and the inverse of the predicate: a cursor at a ZERO frontier is LEGAL. This is
-    //      [P7]'s cursor-only advance over a source range that mapped to no events, and a guard
-    //      written as "cursor iff nonzero" would refuse it — breaking a shipped transition to close
+    //      a cursor-only advance over a source range that mapped to no events, and a guard
+    //      written as "cursor iff nonzero" would refuse it, breaking a shipped transition to close
     //      a corruption hole. The asymmetry is the point, so it is asserted, not assumed.
     {
       const virgin = await EventWal.open(p(), T);

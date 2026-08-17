@@ -1,6 +1,6 @@
 /**
- * The event emitter — the `[P5]` preflight's production call site, the `[P8]` packing rule, and the
- * halts that are supposed to be halts.
+ * The event emitter: the replica preflight's production call site, the one-unit-one-frame packing
+ * rule, and the halts that are supposed to be halts.
  *
  * WHAT IS REAL HERE AND WHAT IS NOT, stated up front because it decides what these cells prove.
  * The `EventWal` is real and on a real filesystem. The `JsonlFileSource` is real and reads real
@@ -554,7 +554,7 @@ try {
     // consumed, which is the whole reason the cursor is per-record.
     c("pack:a-frame-carries-its-LAST-unit's-cursor", roomy[0]?.cursor === "c2", roomy[0]?.cursor);
 
-    // A run change flushes even with room to spare: a frame's envelope names ONE run (§4), so this
+    // A run change flushes even with room to spare: a frame's envelope names ONE run, so this
     // is not a size decision and a size-only packer would silently mislabel the second run's events.
     const tworuns = packUnits({
       threadId: THREAD,
@@ -588,8 +588,8 @@ try {
       tight.map((r) => ({ seq: r.frame.seq, cursor: r.cursor, n: r.frame.events.length })),
     );
 
-    // `[P8]`: a single unit that cannot fit ALONE fails loud. It is never truncated at a frame
-    // boundary — a frame ending mid-record has no cursor it can honestly store.
+    // A single unit that cannot fit ALONE fails loud. It is never truncated at a frame
+    // boundary, because a frame ending mid-record has no cursor it can honestly store.
     let oversized: Error | undefined;
     try {
       packUnits({ threadId: THREAD, epoch: "e", firstSeq: 1, units: [u("r1", 1, "c1")], measure: measureOf(ep), limit: alone - 1 });

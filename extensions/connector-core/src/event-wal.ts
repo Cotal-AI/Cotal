@@ -4,7 +4,7 @@
  * The emitter publishes to a per-principal, per-thread subject under an OPTIMISTIC-CONCURRENCY
  * expectation, so it must know the tip it expects (`E`) and the dedup id it froze — and it must
  * know them across a crash. That is all this file is: the durable half of the state machine in
- * §5.4 of the design, with the transitions kept honest by construction rather than by comment.
+ * of the design, with the transitions kept honest by construction rather than by comment.
  *
  * THE ORDERING RULE THE WHOLE DESIGN RESTS ON. Transition 1 records `sent_unacked` and only THEN
  * publishes; transition 2 records `acked` on a NON-duplicate ack, durably, BEFORE the frontier
@@ -66,7 +66,7 @@ export interface WalPending {
    * Without this the WAL froze what NAMES a frame and not the frame: a restart holding
    * `sent_unacked` recovered the id and the expectation and had nothing to re-publish, so
    * "retry the same frame after a crash" — the one thing this file exists to make possible —
-   * could not be performed from the document. `[P2]` requires it and it was absent.
+   * could not be performed from the document. The write-ahead rule requires it and it was absent.
    *
    * It is the parts and not a rendered message because `multicastExpecting` builds the envelope
    * (`ts`, `from`, `space`) at publish time; storing that too would freeze a second copy of fields
@@ -327,7 +327,7 @@ function parseDoc(path: string, raw: string, space: string, threadId: string, pr
   // vanish, transition 4 durably commits the new end, and nothing is left to notice it: no frame
   // published, and therefore no gap in the consumer's `seq` either.
   //
-  // A cursor at a ZERO frontier is legal and must stay so — `[P7]`'s cursor-only advance over a
+  // A cursor at a ZERO frontier is legal and must stay so: a cursor-only advance over a
   // source range that mapped to no events is exactly that state, and it is the ONLY asymmetry
   // here. `seq` and `lastSubjectSeq` move together in transition 3 and reset together in
   // abandonment, so a mixed pair is impossible by every shipped transition and refused for the
@@ -433,7 +433,7 @@ export class EventWal {
    *
    * A per-instance chain is sufficient and honest about its scope: it serializes THIS process's
    * callers. Cross-process exclusion is a different problem, solved upstream by the principal-level
-   * lock (§5.5's one-emitter-per-principal rule), not here.
+   * lock, which allows one emitter per principal, not here.
    */
   private chain: Promise<unknown> = Promise.resolve();
 
@@ -598,7 +598,7 @@ export class EventWal {
   /**
    * Transition 4 — a bounded source range that mapped to NOTHING.
    *
-   * `[P7]`: a mapper SUCCESS returning zero events advances the cursor atomically and alone — no
+   * A mapper SUCCESS returning zero events advances the cursor atomically and alone: no
    * `seq` consumed, no pending written, no publish. A mapper ERROR never advances it. Empty and
    * failed must not share a path: conflating them turns a parser bug into silently skipped history.
    */

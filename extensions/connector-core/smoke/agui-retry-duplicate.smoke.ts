@@ -1,5 +1,5 @@
 /**
- * `[P5]` THE RETRY-DUPLICATE PROBE — the msgID hard gate, and it closes here or not at all.
+ * THE RETRY-DUPLICATE PROBE: the msgID hard gate, and it closes here or not at all.
  *
  * THE THING BEING PROVED. The emitter freezes `{id, E}` at transition 1 and republishes them
  * unchanged after a crash. The design's whole safety argument for that is: on an R1 stream the
@@ -18,7 +18,7 @@
  * cache is STREAM-WIDE, not per-subject. So a message pre-seeded under our frozen `{msgID}` on a
  * DIFFERENT subject of the same stream leaves our subject's tip untouched — the frozen expectation
  * still holds, the expectation check therefore PASSES, and the dedup check is reached and fires.
- * That is exactly the `[P1]` "a foreign body holds our id" case, produced rather than simulated,
+ * That is exactly the "a foreign body holds our id" case, produced rather than simulated,
  * and it is the only way to observe a duplicate ack on an R1 stream.
  *
  * THE CONFIGURATION IS IN EVERY CELL NAME, because "it halted" is not a finding without it. The

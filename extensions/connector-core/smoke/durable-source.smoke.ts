@@ -1,5 +1,5 @@
 /**
- * `[P6]` durable-source read — the cursor must survive a crash and must never consume a
+ * The durable-source read: the cursor must survive a crash and must never consume a
  * half-written record.
  *
  * WHY THE PARTIAL-LINE CASE IS THE POINT. The writer is a separate process appending concurrently,
@@ -35,7 +35,7 @@
  *       ASCII cell in this file, which is the entire reason the fixture carries a multi-byte record:
  *       a suite written in English cannot see this defect at all.
  *   P2  give every record the END-OF-BATCH cursor
- *       KILLED on `per-record:cursor-resumes-EXACTLY-after-that-record` — the `[P8]` silent-loss
+ *       KILLED on `per-record:cursor-resumes-EXACTLY-after-that-record`, the silent-loss
  *       shape itself, and the one a reader would most plausibly write.
  *   P3  place a record's cursor BEFORE the newline that terminated it
  *       KILLED, and NOT by a content cell: the walk-consistency check in `read()` refuses the whole
@@ -312,7 +312,7 @@ try {
     }
   }
 
-  // ── PER-RECORD CURSORS — what `[P8]` needs and what the batch cursor cannot give it ────────────
+  // ── PER-RECORD CURSORS: what one-unit-one-frame needs, and what a batch cursor cannot give it ──
   //
   // The emitter may turn one read into several frames, and each frame is its own durable
   // pending/publish/ack cycle with its OWN `sourceCursor`. With only an end-of-batch cursor, a frame

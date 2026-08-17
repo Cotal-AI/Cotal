@@ -1,5 +1,5 @@
 /**
- * `agui-wal-path.ts` — the event WAL's location, its containment, and `[P10]`'s durable chain.
+ * `agui-wal-path.ts`: the event WAL's location, its containment, and its durable directory chain.
  *
  * **The property under test is CONTAINMENT, and it is tested by attacking it, not by reading the
  * layout back.** A cell that only checks `walPath` ends in `wal.json` passes against an

@@ -1,5 +1,5 @@
 /**
- * The oversized-frame split and its labelled truncation (plan §5.2).
+ * The oversized-frame split and its labelled truncation.
  *
  * WHY THIS IS A DATA-LOSS SUITE AND NOT A FORMATTING ONE. Everything this plane exists to fix comes
  * back if the split is wrong, and it comes back QUIETLY in every direction: a part sized against the

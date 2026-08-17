@@ -143,7 +143,7 @@ async function fsyncDir(dir: string): Promise<void> {
 }
 
 /**
- * Create the directory chain for a thread's WAL and make it durable — **`[P10]`, once, before the
+ * Create the directory chain for a thread's WAL and make it durable: **once, before the
  * first transition.**
  *
  * The WAL's own replace protocol fsyncs `wal.json` and the thread directory that holds it. That is
