@@ -60,7 +60,7 @@ const c = (name: string, cond: boolean, extra?: unknown) => {
 /** Declared, not implied: a live suite can end in ways that redden no line, and `fail === 0` reads
  *  as PASS in every one of them. Measured by this lane's own crash controls — a mid-run exit prints
  *  nothing at all, and an import-time throw does not even reach this handler. */
-const EXPECTED_CELLS = 33;
+const EXPECTED_CELLS = 34;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -325,6 +325,13 @@ try {
   c("...and still carries the bind-refused marker, so a caller keys on the same fact either way",
     replyRefusedBeforeEffect(goneThrew instanceof EpEnvelopeError ? goneThrew.toEpError() : undefined),
     goneThrew instanceof EpEnvelopeError ? goneThrew.details : goneThrew);
+  // §13.3: `WAS NOT RUN` in the message is prose; `outcome` is the field a caller keys on, and an
+  // omitted one MUST be read as `unknown`. Every cell above is satisfied by prose plus the marker,
+  // so a rethrow that dropped the outcome told a reader one thing and a machine the opposite, on
+  // the one path whose entire purpose is to be conclusive.
+  c("...and says so STRUCTURALLY, not only in prose (an omitted outcome reads as `unknown`)",
+    (goneThrew instanceof EpEnvelopeError ? goneThrew.outcome : undefined) === "not-executed",
+    { outcome: goneThrew instanceof EpEnvelopeError ? goneThrew.outcome ?? "(absent)" : "(not an EpEnvelopeError)" });
   c("...and nothing ran on the way to saying so", executions === exec4, { exec4, executions });
 
   // ---- 5. THE REFUSAL MUST BE DERIVABLE, NOT MERELY PRESENT ------------------------------------

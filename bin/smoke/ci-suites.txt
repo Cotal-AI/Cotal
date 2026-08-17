@@ -259,4 +259,11 @@ smoke:ci-suites
 smoke:membership-feed:auth
 smoke:describe-split-effect
 smoke:web-membership-refusal
+smoke:cas-publish
+smoke:cas-preflight-cluster
+smoke:frame-size
+smoke:valid-name
+smoke:actor-ephemeral
+smoke:principal-channel-witness
+smoke:part-renderer
 smoke:auth

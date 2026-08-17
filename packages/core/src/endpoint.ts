@@ -21,6 +21,7 @@ import { resolveService, invokeCommand, submitAndFollowGoal, type ResolvedServic
 import { EpEnvelopeError, respondedButUnbound, replyRefusedBeforeEffect } from "./endpoint-envelope.js";
 import { isRepeatSafeCommand } from "./endpoint-grants.js";
 import type { EpCaller } from "./endpoint-subjects.js";
+import { assertIdToken } from "./endpoint-subjects.js";
 import type { EpVerbTarget, EpAttributedReply } from "./endpoint-verbs.js";
 import { liveKvEntries } from "./kv-scan.js";
 import { ARTIFACT_PART_KIND, isArtifactPart } from "./artifact.js";
@@ -448,6 +449,12 @@ export class CotalEndpoint extends EventEmitter {
   private readonly owner: string;
   /** This endpoint's actor token (principal half 2) — the connection id in the dev default. */
   private readonly actor: string;
+  /** True when {@link actor} was SELF-MINTED at construction — a fresh random token, because the
+   *  card declared no actor and no id and no creds named one. Such a principal differs on every
+   *  restart, so nothing can be granted to it in advance and nothing durable may be keyed on it.
+   *  Exposed via {@link actorIsEphemeral} so a caller deriving a per-agent resource name can refuse
+   *  the mode instead of silently keying on a value that will not survive the process. */
+  readonly actorIsEphemeral: boolean;
   /** This incarnation's lifecycle UID (opts.lifecycleUid) — see {@link EndpointOptions.lifecycleUid}. */
   private readonly ownLifecycleUid?: string;
   /** Per-endpoint-name {@link resolveService} cache for {@link invokeService} — dropped on a
@@ -485,6 +492,9 @@ export class CotalEndpoint extends EventEmitter {
 
   constructor(opts: EndpointOptions) {
     super();
+    /** Did the dev/static branch fall through to a random connId? Set on every path that assigns
+     *  `connId` so the ephemeral verdict below can never read an unassigned value. */
+    let selfMintedConnId = false;
     this.space = opts.space;
     // A display name is the client-side handle a peer is addressed by; reject the reserved `/`
     // (the future owner/name separator) and surrounding whitespace at the one identity choke
@@ -524,6 +534,10 @@ export class CotalEndpoint extends EventEmitter {
       }
       this.connId = assertInboxConnId(`ibx${randomUUID().replace(/-/g, "")}`);
       this.sentinelCreds = opts.sentinelCreds;
+      // User mode's actor is SERVER-AUTHORED (bearer claims or a declared card checked against
+      // them), never self-minted — the ephemeral value here is the inbox nonce, which is the
+      // connection id and not the principal.
+      this.actorIsEphemeral = false;
     } else {
       // DEV / STATIC. Connection identity precedence: an explicit card.id, else the creds' identity, else
       // a random (dash-free, valid-actor-token) id. When both an id and creds are given they MUST name the
@@ -537,15 +551,21 @@ export class CotalEndpoint extends EventEmitter {
           throw new Error("a creds source requires an explicit card.id (no cred to derive the identity from at construction)");
         this.credsSource = opts.creds;
         this.connId = opts.card.id;
+        selfMintedConnId = false;
       } else {
         const credId = opts.creds ? idFromCreds(opts.creds) : undefined;
         if (opts.card.id && credId && opts.card.id !== credId)
           throw new Error(`card.id ${opts.card.id} != creds identity ${credId} - they must be the same nkey`);
         this.currentCreds = opts.creds;
+        selfMintedConnId = opts.card.id === undefined && credId === undefined;
         this.connId = opts.card.id ?? credId ?? randomUUID().replace(/-/g, "");
       }
       this.owner = opts.card.owner ?? DEV_OWNER;
       this.actor = opts.card.actor ?? this.connId;
+      // The actor is EPHEMERAL only when it inherited a self-minted connId — a declared `card.actor`
+      // is stable even on an otherwise identity-less connection. Recorded here, at the one site the
+      // fallback fires, so no caller has to re-derive the precedence rule from the outside.
+      this.actorIsEphemeral = opts.card.actor === undefined && selfMintedConnId;
     }
     // The incarnation's lifecycle UID (SPEC §13.1). AUTH mode (JWT creds/bearer) REQUIRES the
     // launcher to supply it — the dm/dlv/chathist durable names must match the exact names the
@@ -1196,6 +1216,203 @@ export class CotalEndpoint extends EventEmitter {
     return msg;
   }
 
+  /** The broker's live `max_payload` — the CEILING a frame is measured against, not a budget for a
+   *  caller's own payload.
+   *
+   *  Exposed because the connection is private and callers outside core (a connector assembling a
+   *  batched payload) otherwise have no way to learn the ceiling except by failing a publish.
+   *  Throws rather than guessing a default: a wrong ceiling is worse than none, because it splits
+   *  either too eagerly or too late and both look like working code.
+   *
+   *  THIS ALONE CANNOT SIZE A MESSAGE. The envelope this endpoint adds after the publish call, and
+   *  the client's own headers, are charged against the same ceiling and the caller never sees them.
+   *  Use {@link encodedSize}, which measures what will actually be sent. */
+  get maxPayload(): number {
+    const max = this.nc?.info?.max_payload;
+    if (typeof max !== "number" || !Number.isFinite(max) || max <= 0)
+      throw new Error(`${this.notLiveMsg()} - max_payload is only known while connected`);
+    return max;
+  }
+
+  /**
+   * Verify the PRECONDITION {@link multicastExpecting} depends on: that the chat stream evaluates
+   * the subject expectation BEFORE the `Nats-Msg-Id` dedup cache. **Throws if it cannot be
+   * guaranteed.** Call before the first serialized append on a given endpoint.
+   *
+   * **The ordering follows the stream's REPLICATION FACTOR, not the deployment.** A standalone R1
+   * stream and an R1 stream inside a real 3-node cluster both refuse a stale expectation with a CAS
+   * error; only an R3 stream evaluates dedup first and answers a retry with `duplicate: true`. A
+   * check written against cluster size would pass on exactly the deployment that breaks.
+   *
+   * Every stream Cotal creates is `num_replicas: 1`, from the same canonical config the restore path
+   * uses, so the property holds by construction today. This exists because "by construction" is an
+   * observation until something checks it: nothing in the wire contract reserves the replica factor.
+   * A caller appending under a stale assumption does not fail loudly; it accepts a retry as success
+   * and drops a message.
+   *
+   * Evidence is `smoke:cas-preflight-cluster`, which records the server version it measured against
+   * rather than naming one here — the suites resolve `nats-server` from `PATH`, so a hardcoded
+   * provenance ages into a claim about a machine that no longer exists.
+   *
+   * @throws if the stream is unreadable (no `STREAM.INFO` grant, or absent) or reports more than
+   *   one replica. Never degrades to a warning: the failure it prevents is silent.
+   */
+  async assertExpectationSemantics(): Promise<void> {
+    if (!this.jsm) throw new Error(this.notLiveMsg());
+    const stream = chatStream(this.space);
+    let replicas: number | undefined;
+    try {
+      replicas = (await this.jsm.streams.info(stream)).config.num_replicas;
+    } catch (e) {
+      throw new Error(
+        `cannot verify expectation semantics: stream "${stream}" info unavailable (${(e as Error).message}). ` +
+          `Serialized appends are refused rather than run on an unverified stream.`,
+      );
+    }
+    // `undefined` is NOT treated as 1. A server that does not report the field is a server whose
+    // ordering we have not established, which is the case this check exists for.
+    if (replicas !== 1)
+      throw new Error(
+        `stream "${stream}" reports num_replicas=${String(replicas)}; serialized appends on THIS ` +
+          `stream require 1 — a property of this one stream, not of the broker, so a clustered ` +
+          `deployment is fine so long as this stream is R1, which a cluster can host. ` +
+          `On a replicated stream the dedup cache is consulted before the subject expectation, so a ` +
+          `retry returns a duplicate ack instead of a conflict and a lost message reads as success.`,
+      );
+  }
+
+  /** The envelope {@link multicastExpecting} publishes, built in ONE place so that a frame and any
+   *  measurement of that frame cannot describe different messages. The fields this adds — `ts`,
+   *  `space`, `from`, `channel` and the normalized `mentions` — are exactly the ones a caller
+   *  holding only its parts cannot account for. */
+  private casEnvelope(opts: {
+    channel: string;
+    parts: Part[];
+    id: string;
+    mentions?: string[];
+    replyTo?: string;
+    contextId?: string;
+  }): CotalMessage {
+    return {
+      id: opts.id,
+      ts: Date.now(),
+      space: this.space,
+      from: this.ref(),
+      channel: opts.channel,
+      mentions: normalizeMentions(opts.mentions),
+      parts: opts.parts,
+      replyTo: opts.replyTo,
+      contextId: opts.contextId,
+    };
+  }
+
+  /**
+   * The bytes this frame will ACTUALLY put on the wire, to compare against {@link maxPayload}.
+   *
+   * Caller-side arithmetic is wrong in the dangerous direction: a split sized against the caller's
+   * own payload produces a frame the broker REJECTS, and a rejected truncation makes the loss silent
+   * again — the failure splitting exists to prevent.
+   *
+   * It lives on the surface that BUILDS the envelope so measurement and construction cannot drift
+   * apart unnoticed: it shares {@link casEnvelope} with the publish path, sets the same two headers,
+   * and lets the client's own encoder encode them rather than re-implementing the wire format.
+   * `frame-size.smoke.ts` binary-searches a real broker's ceiling and requires this number to land
+   * on it exactly.
+   *
+   * `expectedLastSubjectSeq` is a parameter because it is a header VALUE: sizing at 0 and publishing
+   * at 123456 differ by five bytes.
+   *
+   * Residual: `ts` is re-stamped at publish, so the two differ in value — not in length until
+   * epoch-millis needs a 14th digit.
+   */
+  encodedSize(opts: {
+    channel: string;
+    parts: Part[];
+    id: string;
+    expectedLastSubjectSeq: number;
+    mentions?: string[];
+    replyTo?: string;
+    contextId?: string;
+  }): number {
+    // The same argument validation the publish path applies, so a caller cannot size a frame that
+    // would have been refused before it ever reached the wire.
+    if (!isConcreteChannel(opts.channel))
+      throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    assertIdToken(opts.id, "publish id");
+    if (!Number.isSafeInteger(opts.expectedLastSubjectSeq) || opts.expectedLastSubjectSeq < 0)
+      throw new Error(
+        `expectedLastSubjectSeq must be a non-negative safe integer, got ${JSON.stringify(opts.expectedLastSubjectSeq)}`,
+      );
+    if (!Array.isArray(opts.parts) || opts.parts.length === 0)
+      throw new Error("encodedSize requires at least one part");
+
+    const mh = headers();
+    mh.set("Nats-Msg-Id", opts.id);
+    mh.set("Nats-Expected-Last-Subject-Sequence", `${opts.expectedLastSubjectSeq}`);
+    // `encode()` is on the client's header implementation but not on the published `MsgHdrs` type,
+    // so it is reached through a cast rather than copied. If a client version drops it, this throws
+    // immediately and loudly — the calibration cell would also fail — instead of returning a number
+    // that is quietly wrong near the ceiling.
+    const headerBytes = (mh as unknown as { encode(): Uint8Array }).encode().length;
+    return headerBytes + Buffer.byteLength(JSON.stringify(this.casEnvelope(opts)), "utf8");
+  }
+
+  /**
+   * Multicast with an OPTIMISTIC-CONCURRENCY expectation and a caller-chosen dedup id, returning
+   * the `PubAck` fields instead of discarding them. The serialized-append primitive: two writers
+   * racing one subject cannot interleave, because the loser's expectation no longer holds.
+   *
+   * **Why a separate method rather than options on {@link multicast}.** `multicast` mints a fresh
+   * `id` per call and drops the ack; both are right for ordinary chat and both are fatal to a
+   * caller that must retry an append idempotently. Keeping them apart means no existing caller
+   * changes behaviour, and the stricter validation below applies only where a caller opted in.
+   *
+   * - `id` becomes the JetStream `Nats-Msg-Id`, so the SAME id may be republished on retry and the
+   *   server dedups it within the stream's duplicate window. It is validated rather than trusted:
+   *   it lands in a wire header, and the dedup cache is **stream-wide**, so a caller-supplied id is
+   *   both an injection surface and a way to suppress another publisher's message.
+   * - `expectedLastSubjectSeq` is the sequence this publisher believes is the subject's tip; `0`
+   *   means "the subject must be empty". A mismatch throws, and the throw stays classifiable by the
+   *   already-public {@link isCasLoss} — the error is deliberately **not wrapped**, since wrapping
+   *   would hide the `err_code` that classification reads.
+   *
+   * @throws if the endpoint is not live, the channel is not concrete, `id` is malformed, `parts` is
+   *   empty, or `expectedLastSubjectSeq` is not a non-negative safe integer.
+   */
+  async multicastExpecting(opts: {
+    channel: string;
+    parts: Part[];
+    id: string;
+    expectedLastSubjectSeq: number;
+    mentions?: string[];
+    replyTo?: string;
+    contextId?: string;
+  }): Promise<{ message: CotalMessage; ack: { seq: number; duplicate: boolean } }> {
+    if (!this.js) throw new Error(this.notLiveMsg());
+    if (!isConcreteChannel(opts.channel))
+      throw new Error(`cannot publish to wildcard channel "${opts.channel}" - pick a concrete sub-channel`);
+    // Reuse the existing id grammar rather than mint a second one: [A-Za-z0-9_-]{1,64} admits a
+    // UUID and rejects every character that could break a wire header (CR, LF, space, colon).
+    assertIdToken(opts.id, "publish id");
+    const expected = opts.expectedLastSubjectSeq;
+    if (!Number.isSafeInteger(expected) || expected < 0)
+      throw new Error(
+        `expectedLastSubjectSeq must be a non-negative safe integer, got ${JSON.stringify(expected)}`,
+      );
+    if (!Array.isArray(opts.parts) || opts.parts.length === 0)
+      throw new Error("multicastExpecting requires at least one part");
+
+    const message = this.casEnvelope(opts);
+    // Publish DIRECTLY rather than through publishMsg: this path must set the expectation and read
+    // the ack, and publishMsg deliberately does neither.
+    const ack = await this.js.publish(
+      chatSubject(this.space, this.owner, this.actor, opts.channel),
+      JSON.stringify(message),
+      { msgID: opts.id, expect: { lastSubjectSequence: expected } },
+    );
+    return { message, ack: { seq: ack.seq, duplicate: ack.duplicate === true } };
+  }
+
   /** Unicast: direct message to one specific instance. */
   async unicast(
     instanceId: string,
@@ -1452,6 +1669,11 @@ export class CotalEndpoint extends EventEmitter {
               refusalCode,
               `${endpoint}.${command} WAS NOT RUN - the incarnation that received it refused it before any effect, and the re-issue could not be resolved: ${reissue instanceof Error ? reissue.message : String(reissue)}. Re-resolve and re-issue when the endpoint is reachable (SPEC 13.2)`,
               r.reply.error?.details,
+              // §13.3: the message asserts the command did not run, so the FIELD a caller keys on
+              // must assert it too. Omitted, it MUST be read as `unknown`, which is the opposite of
+              // what this path knows: the responder fenced the call before any effect and the
+              // re-issue never went out. Prose is for the reader; this is for the machine.
+              "not-executed",
             );
           }
           return await invokeCommand(nc, this.space, reissueTarget, command, args, invokeOpts);
