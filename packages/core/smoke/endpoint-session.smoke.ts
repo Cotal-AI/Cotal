@@ -28,7 +28,7 @@
  *      peer-close teardown (no remotely triggerable subscription/timer leak); the in-band
  *      close is advisory.
  *   D. NO STANDING EPS GRANT: the caller/serve grant builders emit no `eps.` row (§13.9
- *      :2068-2070 — both sides hold only redemption-minted per-session credentials).
+ *      SPEC §13.9 — both sides hold only redemption-minted per-session credentials).
  *
  * Run: pnpm smoke:ep-session   (needs nats-server on PATH; part of smoke:ci)
  */

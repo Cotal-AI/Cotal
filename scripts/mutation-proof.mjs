@@ -38,7 +38,7 @@
  * Every mutation must name the assertion it expects to redden (`expectRed`). "It went red" and "it
  * went red for my reason" are the same exit code until you say which.
  */
-import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync } from "node:fs";
+import { readFileSync, writeFileSync, copyFileSync, existsSync, rmSync, statSync, utimesSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { tmpdir } from "node:os";
@@ -180,6 +180,7 @@ function proveOne(m, opts) {
   const backup = join(tmpdir(), `mutation-proof-${createHash("sha1").update(path).digest("hex").slice(0, 12)}.bak`);
   copyFileSync(path, backup);
   const shaBefore = sha(path);
+  const { atime: atimeBefore, mtime: mtimeBefore } = statSync(path);
 
   // Restoring the FILE is not restoring the TREE when the command under test compiles it. The sha
   // check below proves the source is byte-identical again; it says nothing about a `dist/` the run
@@ -189,6 +190,16 @@ function proveOne(m, opts) {
   const restore = () => {
     copyFileSync(backup, path);
     const ok = sha(path) === shaBefore;
+    // Restore the TIMESTAMP as well as the bytes. `copyFileSync` is a write, so the file's mtime
+    // becomes now even though the line above proves the content is what it was. Anything that
+    // compares source mtimes against a build then reports a stale artefact for a file nobody
+    // edited: `smoke:dist-freshness` does exactly that, and after a graded run it named
+    // `packages/core` stale and refused the 261-suite chain at its first entry.
+    //
+    // Only when the content is verified identical. If `ok` is false the file is NOT what it was,
+    // and back-dating it would hide a failed restore from the tools that compare timestamps —
+    // the one case where a bumped mtime is telling the truth.
+    if (ok) utimesSync(path, atimeBefore, mtimeBefore);
     rmSync(backup, { force: true });
     if (ok && m.afterRestore) {
       const rr = run(m.afterRestore, cwd, opts.timeoutMs);

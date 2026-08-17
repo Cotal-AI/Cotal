@@ -256,6 +256,18 @@ smoke:ep-rail-failure
 smoke:bind-fence:live
 smoke:claude-launch-model
 smoke:ci-suites
+smoke:membership-feed:auth
+smoke:describe-split-effect
+smoke:web-membership-refusal
+smoke:cas-publish
+smoke:cas-preflight-cluster
+smoke:frame-size
+smoke:valid-name
+smoke:actor-ephemeral
+smoke:principal-channel-witness
+smoke:part-renderer
+smoke:auth
+smoke:mutation-fixtures
 
 # The cotal-lang runtime: the language package, the durable step journal and run driver, and the
 # mesh handler that binds the effect interface onto the real planes.

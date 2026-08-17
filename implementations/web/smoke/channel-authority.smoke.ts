@@ -390,12 +390,16 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
   const json = (u: string): unknown =>
     u.includes("/api/activity") ? entries : u.includes("/api/membership") ? { members: [] } : [];
   const ctx: Record<string, unknown> = {
-    fetch: async (u: string) => ({ json: async () => json(u) }),
+    // `ok: true` is part of the stub, not decoration: shipped code that checks the status before
+    // trusting the body reads `r.ok`, and a response object without it is a stub that reports every
+    // fetch as failed. That drives the refusal arm of a caller this suite is not testing.
+    fetch: async (u: string) => ({ ok: true, json: async () => json(u) }),
     // app.js
     refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {},
     roster: [], channels: null, dms: [], activity: [], agentSel: null, dmSel: null, selected: "*",
     // graph.js
     $: () => ({ textContent: "" }), ensureHub: () => ({}), updateRoster() {}, applyMembership() {},
+    membershipUnreadable() {},
     agents: new Map(), chatHit() {}, dmHit() {}, now: () => 0, recent: [] as unknown[],
     partsText: () => "", shortId: (x: unknown) => x, physics() {}, fitTarget: () => ({ x: 0, y: 0, scale: 1 }),
     cam: { x: 0, y: 0, scale: 1 }, alpha: 0,

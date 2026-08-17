@@ -83,7 +83,7 @@ function opActor(prefix: "epapl" | "eprec" | "epcan", opId: string): string {
  * post-frontier applier write would be an OBSERVABLE overwrite/DEL — unlike the reconciler/canceller
  * epw/epf appends, which land past the interval and are excluded by the interval reader.
  *
- * NAMED RESIDUAL (SPEC 13.9, cs-rev-sec-ruled ACCEPTED, seed-dominated): the fence is a POINT-IN-TIME
+ * NAMED RESIDUAL (SPEC 13.9, ruled ACCEPTED in security review, seed-dominated): the fence is a POINT-IN-TIME
  * scan, not a deny-new, so a holder of a still-unexpired repair JWT+seed could open a FRESH connection
  * AFTER the verify — the reconnect vector the `noReconnect` mint removes for the plane's OWN
  * connections, but not for an exfiltrated bearer. It is confined by the exact ONE-coordinate grant

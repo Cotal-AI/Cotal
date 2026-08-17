@@ -167,12 +167,12 @@ export interface EndpointStreamOptions {
 /**
  * The §13.12 RETENTION FLOOR on decision facts, enforced at the only site that exists.
  *
- * SPEC:3203-3205 requires EPF retention ≥ max(idempotency horizon, result retention, receipt retention), and §13.12 states it by OUTCOME: no
+ * SPEC §13.12 requires EPF retention ≥ max(idempotency horizon, result retention, receipt retention), and §13.12 states it by OUTCOME: no
  * removal cause may drop a protected fact early. The §13.4 idempotency horizon is realized BY that
  * retention and never by a clock — the create-only CAS returns the recorded decision for exactly as
  * long as the fact exists. So a fact age below the horizon does not shorten a guarantee, it deletes
  * the mechanism: once the decision fact is evicted, a redelivered submission finds no winner to
- * read and is accepted as NEW WORK, which is the failure SPEC:1718 names in as many words.
+ * read and is accepted as NEW WORK, which is the failure SPEC §13.8 names in as many words.
  *
  * WHY THIS IS A THROW AND NOT A CLAMP. The field's own contract was that horizons are "enforced by
  * policy above the broker, never by silently losing facts under a horizon" — and nothing was above
@@ -212,7 +212,7 @@ export function assertFactRetentionFloor(
       `factMaxAgeMs ${factMaxAgeMs} is below the declared ${binding} ${floor}: EPF facts would be evicted `
       + `while that promise still stands — a redelivered submission whose decision fact has gone is accepted `
       + `as NEW WORK rather than resolved to its recorded decision, and a receipt whose acceptance fact has `
-      + `gone can no longer be reconstructed (SPEC:3203-3205, §13.12 "Streams and retention")`,
+      + `gone can no longer be reconstructed (SPEC §13.12)`,
     );
 }
 

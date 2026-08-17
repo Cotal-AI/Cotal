@@ -1,0 +1,372 @@
+/**
+ * DESCRIBE/INVOKE SPLIT — NO DUPLICATE EFFECT ON THE CLASS QUEUE (live regression guard).
+ *
+ * A resolved handle binds the describe winner's instance; an unpinned invoke goes to the class
+ * queue, which picks its own. While the currency check ran only AFTER the reply landed, a
+ * non-matching responder had already executed the command when `failed-precondition` was raised,
+ * and `invokeService` re-invoked with the same args — for a write, a duplicate the caller could not
+ * see. This probe first reproduced that; the pre-effect fence closed it, and the probe now holds it
+ * closed. It grades either tip: on an unfenced one the duplicates return and it fails.
+ *
+ * What it asserts is the CALLER-VISIBLE contract, not the mechanism: one request causes at most one
+ * effect, and a request that caused none says so conclusively. A remedy that keeps that promise by
+ * other means passes, which is the point — it is a guard, not a mirror of the implementation.
+ *
+ * `define-persona`, never `spawn`: a duplicated `spawn` starts a second real agent process.
+ *
+ * Effects are counted at the RESPONDERS because the caller's view is what is under test — each
+ * manager writes personas into its own root, so one name in BOTH roots proves it ran twice. This
+ * undercounts (a retry landing on the same instance leaves one file), so every number is a floor.
+ *
+ * Run: pnpm smoke:describe-split-effect   (needs nats-server on PATH; boots its own broker)
+ */import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import {
+  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
+  mintLifecycleUid, DEV_OWNER, agentFilePath, CotalEndpoint, EpEnvelopeError,
+} from "@cotal-ai/core";
+import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
+import { Manager } from "../src/manager.js";
+import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+
+// A literal, not an import: the constant does not exist on tips predating the fence, and an import
+// would make this probe refuse to load on the very tip it is the baseline for.
+const EP_BIND_REFUSED = "ai.cotal.ep.bind-refused";
+
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
+  });
+const PORT = await freePort();
+const SERVERS = `nats://127.0.0.1:${PORT}`;
+
+// This probe performs WRITES; it must never be able to reach a real mesh.
+const LIVE_HOST = "broker.cotal.ai";
+for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete process.env[k];
+for (const [k, v] of Object.entries(process.env))
+  if (typeof v === "string" && v.includes(LIVE_HOST)) throw new Error(`refusing to run: ${k} points at the live broker (${v})`);
+if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(SERVERS)) throw new Error(`this probe only runs against an ephemeral loopback broker; got ${SERVERS}`);
+console.log(`broker-url guard: ${SERVERS} is ephemeral loopback; no env var references ${LIVE_HOST}\n`);
+
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+let pass = 0, fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ ${name}`); }
+  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : ""); }
+};
+
+const space = `epsplit-${randomUUID().slice(0, 8)}`;
+const auth = await createSpaceAuth(space);
+const dir = mkdtempSync(join(tmpdir(), "cotal-epsplit-"));
+const mkRoot = (tag: string): string => {
+  const r = join(dir, tag);
+  mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
+  saveSpaceAuth(authDir(r), auth);
+  return r;
+};
+writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+
+type MgrPriv = { managerInstanceId: string };
+let m1: InstanceType<typeof Manager> | undefined;
+let m2: InstanceType<typeof Manager> | undefined;
+let ep: CotalEndpoint | undefined;
+
+try {
+  let up = false;
+  for (let i = 0; i < 60; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
+  if (!up) throw new Error(`nats-server did not come up on ${PORT}`);
+  await setupSpaceStreams({ servers: SERVERS, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+
+  const root1 = mkRoot("ws1"), root2 = mkRoot("ws2");
+  for (const r of [root1, root2]) recordMesh({ space, server: SERVERS, root: r, mode: "auth", ts: new Date().toISOString() });
+  m1 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root1 });
+  m2 = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot: root2 });
+  await m1.start();
+  await m2.start();
+  const IID1 = (m1 as unknown as MgrPriv).managerInstanceId;
+  const IID2 = (m2 as unknown as MgrPriv).managerInstanceId;
+  check("two managers registered distinct instance ids (a real two-way race, not a single responder)",
+    IID1 !== IID2, { IID1, IID2 });
+
+  const id = newIdentity();
+  const uid = mintLifecycleUid();
+  const creds = await mintCreds(auth, id, "agent", { lifecycleUid: uid, capabilities: ["spawn"] });
+  ep = new CotalEndpoint({
+    space, servers: SERVERS, creds, lifecycleUid: uid,
+    channels: [], consume: false, registerPresence: false, watchPresence: false,
+    card: { name: "epsplit-caller", owner: DEV_OWNER, actor: id.id, kind: "endpoint" },
+  });
+  ep.on("error", () => {});
+  // Emitted by the fence's repair path; never fires on a pre-fence tip, so one instrument grades both.
+  let recoveriesThisTrial = 0, recoveriesTotal = 0;
+  // The FIRST refusal's bind, which the final error cannot supply: once the repair re-issues, the
+  // error the caller ends up holding names the SECOND refusal's bind. Only this event sees the one
+  // that was actually fenced, and the forced arm's positive control is that it names the uid the
+  // probe installed.
+  let firstBoundTo = "";
+  ep.on("split-recovered", (e: { boundTo?: { instanceId: string } }) => {
+    if (recoveriesThisTrial === 0) firstBoundTo = e.boundTo?.instanceId ?? "";
+    recoveriesThisTrial++; recoveriesTotal++;
+  });
+  await ep.start();
+
+  const N = 24;
+  type Trial = {
+    i: number; name: string;
+    inRoot1: boolean; inRoot2: boolean; both: boolean;
+    callerSaw: "ok" | "app-error" | "throw";
+    detail: string;
+    repairs: number;
+    /** The refusal said the command did not run — the marker AND `not-executed` together, because
+     *  the marker is this implementation's vocabulary and the outcome is the spec's, and only the
+     *  outcome licenses a caller to conclude that no effect exists. */
+    refusedBeforeEffect: boolean;
+    /** The failure said whether its effect landed, either way. §13.3 reads an ABSENT outcome as
+     *  `unknown`, so absence is the caller being left unable to tell — which is the condition this
+     *  whole class of defect consists of, duplicate or not. */
+    outcomeStated: boolean;
+  };
+  const trials: Trial[] = [];
+  let bindRefused = 0;
+
+  console.log(`\n1. ${N} describe+invoke trials of the write \`define-persona\`, two live managers`);
+  for (let i = 0; i < N; i++) {
+    const name = `epsplit-${i}`;
+    let callerSaw: Trial["callerSaw"] = "ok";
+    let detail = "";
+    let refusedBeforeEffect = false;
+    let outcomeStated = true;
+    recoveriesThisTrial = 0;
+    try {
+      const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
+        { name, persona: `probe persona ${i}` }, { deadlineMs: 15_000 });
+      if (r.reply.ok === true) { callerSaw = "ok"; detail = r.responder.instanceId === IID1 ? "A" : "B"; }
+      else {
+        callerSaw = "app-error";
+        const err = r.reply.error as { code?: string; outcome?: string; details?: Array<{ kind?: string }> } | undefined;
+        const marks = (err?.details ?? []).map((d) => d.kind).filter(Boolean);
+        if (marks.includes(EP_BIND_REFUSED)) bindRefused++;
+        refusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && err?.outcome === "not-executed";
+        outcomeStated = err?.outcome !== undefined;
+        detail = `${err?.code ?? "?"}|outcome=${err?.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`;
+      }
+    } catch (e) {
+      callerSaw = "throw";
+      // The marker arrives on THIS path too: a failed re-issue rethrows the ORIGINAL refusal, so
+      // reading marks only off `ok:false` replies undercounts the fence to zero on exactly the
+      // trials where it fired twice.
+      const marks = (e instanceof EpEnvelopeError ? e.details ?? [] : []).map((d) => d.kind).filter(Boolean);
+      if (marks.includes(EP_BIND_REFUSED)) bindRefused++;
+      refusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeError).outcome === "not-executed";
+      outcomeStated = e instanceof EpEnvelopeError && e.outcome !== undefined;
+      detail = e instanceof EpEnvelopeError
+        ? `${e.code}|outcome=${e.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`
+        : (e as Error).message.slice(0, 60);
+    }
+    const inRoot1 = existsSync(agentFilePath(root1, name));
+    const inRoot2 = existsSync(agentFilePath(root2, name));
+    trials.push({ i, name, inRoot1, inRoot2, both: inRoot1 && inRoot2, callerSaw, detail, repairs: recoveriesThisTrial, refusedBeforeEffect, outcomeStated });
+  }
+
+  // CONSERVATION, and it replaces "every trial produced an effect somewhere". That older invariant
+  // was true only while the split was unfenced: once a responder can refuse before running, a call
+  // that splits TWICE legitimately produces no effect at all and says so, and demanding an effect
+  // would fail the fixed tip for doing the right thing. What must hold on any correct tip is that
+  // no trial goes unaccounted: exactly one effect, or a refusal that states nothing ran.
+  const answered = trials.filter((t) => t.inRoot1 || t.inRoot2);
+  const accounted = trials.filter((t) => (t.inRoot1 || t.inRoot2) || t.refusedBeforeEffect);
+  check("CONSERVATION: every trial is accounted for — an effect, or a refusal stating it did not run",
+    accounted.length === N, { accounted: accounted.length, effects: answered.length, N });
+
+  // THE SPLIT, FORCED. Everything above waits for the class queue to hand the invoke to someone
+  // other than the describe winner, which is the run's luck and not this fixture's choice — so on
+  // its own this probe can decline to grade, and a suite that declines is not chain-safe.
+  //
+  // Here the bind is made to name an incarnation that CANNOT be serving: the handle's cached
+  // resolve is rewritten to a freshly minted lifecycle id belonging to no manager. Every responder
+  // is then the wrong one, so the pre-effect refusal is not raced for — it is guaranteed. This
+  // needs a valid lifecycle token, not a nonsense string: the responder parses `bind.instanceId`
+  // before comparing it, and a malformed one is refused as bad-request by a different path
+  // entirely, which would prove nothing about the fence.
+  const cache = (ep as unknown as { resolvedServices: Map<string, { responder: { instanceId: string; epoch: number } }> }).resolvedServices;
+  const bound = cache.get(MANAGER_ENDPOINT);
+  check("the caller holds a resolved handle to rewrite (the forced case can be set up at all)",
+    bound !== undefined, { cached: [...cache.keys()] });
+  let forcedRecoveries = 0, forcedEffects = 0, forcedOk = false;
+  // THE REPAIR IS NOT GUARANTEED TO LAND, BY DESIGN. Core repairs a bind refusal exactly once and
+  // lets a second refusal surface, while in a two-manager space roughly half of all class-queue
+  // calls split (both stated in `endpoint.ts`). The re-issue therefore goes back through the same
+  // queue and is split again about half the time. Asserting that the repair always lands is
+  // asserting a coin comes up heads.
+  let forcedRefusedBeforeEffect = false, forcedDetail = "", forcedUid = "", forcedBoundTo = "";
+  let forcedInstalled = false;
+  if (bound !== undefined) {
+    forcedUid = mintLifecycleUid();
+    bound.responder.instanceId = forcedUid;
+    // Read back through a FRESH cache lookup, not the local alias: this is what proves the probe
+    // mutated the entry the client will actually send from, rather than a copy handed out by
+    // `get`. If this is ever false the arm below is measuring an unforced call.
+    forcedInstalled = cache.get(MANAGER_ENDPOINT)?.responder.instanceId === forcedUid;
+    const forcedName = `epsplit-forced-${randomUUID().slice(0, 6)}`;
+    recoveriesThisTrial = 0;
+    firstBoundTo = "";
+    try {
+      const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
+        { name: forcedName, persona: "forced-split probe" }, { deadlineMs: 15_000 });
+      forcedOk = r.reply.ok === true;
+      if (!forcedOk) {
+        const err = r.reply.error as { code?: string; outcome?: string; details?: Array<{ kind?: string; boundTo?: { instanceId?: string } }> } | undefined;
+        const marks = (err?.details ?? []).map((d) => d.kind).filter(Boolean);
+        forcedRefusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && err?.outcome === "not-executed";
+        // WHICH bind the refusal names is what proves the re-issue actually went out: the first
+        // attempt is bound to the uid this probe forced in, so a second refusal still naming it
+        // would mean nothing was re-resolved and re-sent.
+        forcedBoundTo = (err?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED)?.boundTo?.instanceId ?? "";
+        forcedDetail = `${err?.code ?? "?"}|outcome=${err?.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`;
+      }
+    } catch (e) {
+      // RECORDED, NEVER DISCARDED. This arm previously wrote `catch { forcedOk = false; }`, which
+      // gave a timeout and a second fence refusal the same two numbers and no way to tell them
+      // apart — in a suite whose own subject is that a failure must state what it did. Diagnosing
+      // the flake it caused required adding this line first.
+      const thrown = (e instanceof EpEnvelopeError ? e.details ?? [] : []) as Array<{ kind?: string; boundTo?: { instanceId?: string } }>;
+      const marks = thrown.map((d) => d.kind).filter(Boolean);
+      forcedRefusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeError).outcome === "not-executed";
+      // Read here too, so this face is legible rather than blank. A resolve failure rethrows the
+      // ORIGINAL refusal, whose bind is the one forced in, so the guard below correctly rejects it:
+      // no re-issue went out. Left unassigned it stayed "", which is indistinguishable in the output
+      // from a detail that was absent, and telling those apart is this suite's whole subject.
+      forcedBoundTo = thrown.find((d) => d.kind === EP_BIND_REFUSED)?.boundTo?.instanceId ?? "";
+      forcedDetail = e instanceof EpEnvelopeError
+        ? `${e.code}|outcome=${e.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`
+        : `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`;
+    }
+    forcedRecoveries = recoveriesThisTrial;
+    forcedEffects = [root1, root2].filter((r) => existsSync(agentFilePath(r, forcedName))).length;
+  }
+  console.log(`\n1b. the split FORCED rather than awaited (bind names a non-serving incarnation)`);
+  console.log(`     pre-effect refusals repaired: ${forcedRecoveries}   effects: ${forcedEffects}   caller saw ok: ${forcedOk}`);
+  if (!forcedOk) console.log(`     the re-issue was refused too: ${forcedDetail}`);
+  if (!forcedOk) console.log(`     forced bind: ${forcedUid}   the refusal names: ${forcedBoundTo || "(none)"}`);
+  console.log(`     armed: installed=${forcedInstalled}  first refusal named: ${firstBoundTo || "(none)"}`);
+  // POSITIVE CONTROL ON THE ARMING, and it must come before any question about the outcome. This
+  // suite's space splits naturally about half the time, so a probe that failed to force anything
+  // still sees a refusal, a repair and a differing bind — every symptom of the case under test,
+  // produced by the ordinary race instead. Measured: with the forcing removed, the cells below
+  // passed on 4 of 6 runs. An absence of effects is only evidence if the arm could have produced
+  // one, and that is what this states: the bind went in, and the refusal that came back is the
+  // one it provoked.
+  check("THE FORCED SPLIT WAS ACTUALLY FORCED: the probe's bind was installed on the live handle, and the refusal that came back names THAT bind and not a natural one",
+    forcedInstalled && firstBoundTo === forcedUid, { forcedInstalled, forcedUid, firstBoundTo });
+  // A recovery is emitted ONLY on a reply the caller read as refused-before-effect, so counting one
+  // proves the responder produced the marked refusal — this is the fence, observed and not inferred.
+  check("FORCED SPLIT IS FENCED: the wrongly-bound call was refused before it ran, then repaired",
+    forcedRecoveries === 1, { forcedRecoveries });
+  // BOTH OUTCOMES ARE CORRECT, so both pass: the repair either landed (one effect, caller told ok)
+  // or was split again and refused (no effect, and the refusal states conclusively that nothing
+  // ran). Grading the first alone reddened this suite on runs where the property it exists to
+  // protect — at most one effect, and a conclusive answer when there was none — held completely.
+  // What must never happen is two effects, or none with nothing conclusive said about it.
+  const forcedLanded = forcedEffects === 1 && forcedOk;
+  // The refusal must name a DIFFERENT bind than the one forced in. Without this the arm would
+  // accept a client that counts the refusal, drops the handle and never re-issues at all: that
+  // also yields zero effects and a conclusive refusal, and would otherwise read as the good face.
+  const forcedRefusedAgain = forcedEffects === 0 && !forcedOk && forcedRefusedBeforeEffect
+    && forcedBoundTo !== "" && forcedBoundTo !== forcedUid;
+  check("FORCED SPLIT CAUSES AT MOST ONE EFFECT AND SAYS SO: the repair either landed exactly once, or was refused again and stated that nothing ran",
+    forcedLanded || forcedRefusedAgain, { forcedEffects, forcedOk, forcedRefusedBeforeEffect, forcedDetail, forcedUid, forcedBoundTo });
+
+  const dupes = trials.filter((t) => t.both);
+  const dupeSilent = dupes.filter((t) => t.callerSaw === "ok");
+
+  console.log(`\n2. effects counted at the RESPONDERS (persona files per manager root)`);
+  console.log(`     trials:                        ${N}`);
+  console.log(`     effect on A only:              ${trials.filter((t) => t.inRoot1 && !t.inRoot2).length}`);
+  console.log(`     effect on B only:              ${trials.filter((t) => t.inRoot2 && !t.inRoot1).length}`);
+  console.log(`     effect on BOTH (duplicate):    ${dupes.length}`);
+  console.log(`     ...of those, caller saw "ok":  ${dupeSilent.length}`);
+  console.log(`     caller outcomes: ok=${trials.filter((t) => t.callerSaw === "ok").length} ` +
+    `app-error=${trials.filter((t) => t.callerSaw === "app-error").length} ` +
+    `throw=${trials.filter((t) => t.callerSaw === "throw").length}`);
+  console.log(`     per-trial: ${trials.map((t) => (t.both ? "D" : t.inRoot1 ? "a" : t.inRoot2 ? "b" : "-")).join("")}`);
+  console.log(`                (D = duplicate across both instances, a/b = single effect, - = none)`);
+
+  console.log(`     refusals carrying ${EP_BIND_REFUSED}: ${bindRefused}`);
+  // WHICH refusal, not just how many: a count of zero cannot distinguish "the fence never fired"
+  // from "it fired in a shape this probe does not recognise", and those call for opposite work.
+  const byDetail = new Map<string, number>();
+  for (const t of trials) if (t.detail !== "A" && t.detail !== "B") byDetail.set(t.detail, (byDetail.get(t.detail) ?? 0) + 1);
+  for (const [d, n] of [...byDetail].sort((x, y) => y[1] - x[1])) console.log(`       ${n}x ${d}`);
+  const repaired = trials.filter((t) => t.repairs > 0);
+  const repairedOk = repaired.filter((t) => t.callerSaw === "ok");
+  console.log(`\n3. the repair path, measured on a LIVE contended queue (not a constructed re-seed)`);
+  console.log(`     trials where a re-issue was attempted:  ${repaired.length}`);
+  console.log(`     ...that HEALED into a success:          ${repairedOk.length}`);
+  console.log(`     ...that split AGAIN and surfaced:       ${repaired.length - repairedOk.length}`);
+  console.log(`     self-heal rate: ${repaired.length === 0 ? "n/a (no repair attempted)" : `${((repairedOk.length / repaired.length) * 100).toFixed(0)}%`}`);
+  console.log(`     total recoveries emitted: ${recoveriesTotal}`);
+
+  console.log(`\n=== FINDING ===`);
+  if (dupes.length > 0) {
+    console.log(`REGRESSED. ${dupes.length}/${N} trials executed the SAME write on BOTH instances,`);
+    console.log(`${dupeSilent.length} of them while telling the caller "ok". A responder is not refusing before`);
+    console.log(`the command runs. The count is a FLOOR: a retry landing back on the same instance`);
+    console.log(`executes twice and leaves one file, and is not counted here.`);
+  } else {
+    console.log(`HELD. No trial wrote to both roots in ${N} trials, and ${bindRefused} split(s) were refused`);
+    console.log(`before the command ran. The duplicate this probe was written to reproduce does not occur.`);
+  }
+
+  // A zero is only evidence if a split actually happened, and the signature differs by tip: on an
+  // unfenced tip a split shows as a duplicate or a throw; on a fenced one as a bind-refused refusal
+  // or a recovery that healed it invisibly. All zero means the queue never split and the natural
+  // sample grades nothing — which is not the same as the defect being absent.
+  //
+  // `recoveriesTotal` includes the FORCED case, which is the point: the forced split does not
+  // depend on the run's luck, so this suite can no longer reach the state where it declines to
+  // answer. The guard stays because it still distinguishes "the natural sample was thin" from
+  // "the fixture is broken" — if even the forced split leaves no trace, nothing here is graded.
+  const splitSeen = dupes.length + trials.filter((t) => t.callerSaw === "throw").length + bindRefused + recoveriesTotal;
+  if (splitSeen === 0) {
+    fail++;
+    console.log(`  \u2717 FAIL: GRADES NOTHING - no duplicate, no throw, no ${EP_BIND_REFUSED} refusal.`);
+    console.log(`     The class queue never split in these ${N} trials, so this run is evidence about`);
+    console.log(`     neither the defect nor any remedy. Re-run; do not read it as absence.`);
+  }
+  check("NO DUPLICATE EFFECT: no caller request executed the same write on both instances",
+    dupes.length === 0, { dupes: dupes.length, N });
+  check("NO SILENT DUPLICATE: no duplicated write was reported to the caller as success",
+    dupeSilent.length === 0, { dupeSilent: dupeSilent.length });
+  // The marker without the outcome is what makes two implementations disagree about whether the
+  // command ran, so a refusal carrying only one of the pair is a defect even with nothing
+  // duplicated. Vacuous when the queue never split — which the grades-nothing guard above forbids.
+  const markedButUnstated = trials.filter((t) => t.detail.includes(EP_BIND_REFUSED) && !t.refusedBeforeEffect);
+  check("REFUSALS ARE CONCLUSIVE: every fence refusal also states `not-executed`",
+    markedButUnstated.length === 0, markedButUnstated.map((t) => t.detail));
+
+  // THE ASSERTION THAT IS SENSITIVE TO THE FENCE ITSELF. Removing the pre-effect refusal does not
+  // bring the duplicate back on its own — the caller-side repair still collapses it — so the two
+  // checks above pass on a tip whose responder never fences. What returns is this: the split is
+  // reported AFTER the command ran, as `failed-precondition` with NO outcome, which §13.3 says a
+  // caller must read as `unknown`. The effect landed and the caller is told only that it failed.
+  // Measured: with the fence neutered, 15/24 failures arrive this way and zero duplicates do.
+  const inconclusive = trials.filter((t) => t.callerSaw !== "ok" && !t.outcomeStated);
+  check("NO INCONCLUSIVE FAILURE: every failed call states whether its effect landed",
+    inconclusive.length === 0, { inconclusive: inconclusive.length, sample: inconclusive[0]?.detail });
+
+  console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
+} finally {
+  await ep?.stop().catch(() => {});
+  await m1?.stop().catch(() => {});
+  await m2?.stop().catch(() => {});
+  srv.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
+}
+process.exit(fail === 0 ? 0 : 1);

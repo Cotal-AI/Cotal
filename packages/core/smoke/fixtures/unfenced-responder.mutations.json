@@ -11,8 +11,8 @@
     {
       "name": "PREDICTED KILLED (3 red) - a failed re-issue surfaces the resolve's own timeout again, discarding the refusal",
       "file": "packages/core/src/endpoint.ts",
-      "find": "          try {\n            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n          } catch (reissue) {",
-      "replace": "          if (false as boolean) {\n            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n          }\n          {\n            const reissue = await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n            return reissue as never;",
+      "find": "          } catch (reissue) {\n            throw new EpEnvelopeError(\n              refusalCode,",
+      "replace": "          } catch (reissue) {\n            if (reissue) throw reissue;\n            throw new EpEnvelopeError(\n              refusalCode,",
       "expectRed": "it still states the command was not run"
     },
     {

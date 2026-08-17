@@ -37,21 +37,50 @@ const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
  * against a written list rather than an archaeology exercise.
  *
  * ADDING A LINE HERE IS A DECISION, NOT A FIX. If a suite proves shipped behaviour, gate it.
+ *
+ * TWO KINDS OF EXCLUSION LIVE HERE AND THEY ARE NOT THE SAME KIND OF THING.
+ *
+ *   A STANDING DECISION - "no CI runner has this tooling", "this needs a real broker and an
+ *   install tree". Nothing is expected to change. The entry is permanent and correct.
+ *
+ *   DEBT WITH A FUSE - "this suite is red" or "this suite is flaky". Something IS wrong, someone
+ *   is expected to fix it, and the entry is supposed to disappear.
+ *
+ * Until now both were written the same way: a key and a sentence. So a red suite parked here was
+ * indistinguishable from one that legitimately does not belong in CI, and the list could not tell
+ * you how much debt it was carrying. That is how `smoke:auth` sat here for six weeks with its
+ * cause correctly diagnosed in its own reason string - the note was accurate, and nothing counted
+ * it or expected it to end.
+ *
+ * So the second kind carries a {@link BROKEN} prefix and is counted separately, the way UNTRIAGED
+ * already is. The count is not a failure and is not enforced: it is a number that is supposed to
+ * go down, printed where the person adding the next entry will see it.
  */
+
+/** Reason prefix for the debt-with-a-fuse class: the suite is red, flaky, or otherwise not
+ *  working, and the entry is expected to be removed once it is fixed. Distinct from a standing
+ *  decision, which needs no fuse and is written as a plain reason. */
+const BROKEN = "BROKEN:";
+
 const UNGATED: Record<string, string> = {
   // Need external tooling no CI runner has.
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
-  // Known-red or documented flakes, tracked separately; gating them would make the gate lie.
-  "smoke:auth": "pre-existing red on main (mgr-cred presence-KV CONSUMER.CREATE)",
-  "smoke:channels": "documented timing flake + fixed-port cleanup leak",
-  // EXPECTED RED BY DESIGN, and the one entry here that is a decision rather than debt. It
-  // reproduces an OPEN defect (renewManagedStaticCred reads the terminal latch at entry, then does
-  // four awaits before two writes that retirement cleanup has already deleted, leaving a valid
-  // credential and an `active` durable row for a retired lifecycle). Gating a known red is how a
-  // chain teaches its readers to skim reds, which is the most expensive habit a gate can pick up.
-  "smoke:renewal-terminal-race": "reproduction of an open defect; gate when the fix lands",
+  // Known-red or documented flakes: debt with a fuse, counted as such. Gating them would make the
+  // gate lie; leaving them unmarked made the list unable to say how much debt it held.
+  "smoke:channels": `${BROKEN} documented timing flake + fixed-port cleanup leak`,
+  // EXPECTED RED BY DESIGN. It reproduces an OPEN defect (renewManagedStaticCred reads the
+  // terminal latch at entry, then does four awaits before two writes that retirement cleanup has
+  // already deleted, leaving a valid credential and an `active` durable row for a retired
+  // lifecycle). Gating a known red is how a chain teaches its readers to skim reds, which is the
+  // most expensive habit a gate can pick up.
+  //
+  // Originally written up as "a decision rather than debt", and it is marked BROKEN anyway. The
+  // decision is about not gating it TODAY; the entry still ends when the product defect is fixed,
+  // and its own reason says so. That is a fuse, and a fuse nobody counts is how the entry above it
+  // lasted six weeks. Being red for a good reason is still being red.
+  "smoke:renewal-terminal-race": `${BROKEN} reproduction of an open defect; gate when the fix lands`,
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
   "smoke:user-auth-launch:live": "full live stack", "smoke:user-spawn:live": "full live stack",
@@ -76,7 +105,7 @@ const UNGATED: Record<string, string> = {
   "smoke:feedback": "UNTRIAGED", "smoke:install": "UNTRIAGED",
   "smoke:lifecycle-files": "UNTRIAGED", "smoke:manager-console": "UNTRIAGED", "smoke:manifest-launch": "UNTRIAGED",
   "smoke:members": "UNTRIAGED", "smoke:membership": "UNTRIAGED",
-  "smoke:membership-feed:auth": "UNTRIAGED", "smoke:plane3-activation:auth": "UNTRIAGED",
+  "smoke:plane3-activation:auth": "UNTRIAGED",
   "smoke:plane3-gate:auth": "UNTRIAGED", "smoke:presence-scrub": "UNTRIAGED",
   "smoke:self-serve-join-coverage:auth": "UNTRIAGED", "smoke:send": "UNTRIAGED",
   "smoke:start-model": "UNTRIAGED",
@@ -254,6 +283,16 @@ if (staleAllowlist.length) {
 
 const untriaged = ungated.filter((s) => UNGATED[s] === "UNTRIAGED");
 console.log(`\n  ${untriaged.length} of the ungated set are UNTRIAGED debt (not a failure; the number should go down).`);
+
+// The debt-with-a-fuse class, named so the list can say how much of itself is broken rather than
+// merely excluded. Reported, not enforced, for the same reason as UNTRIAGED: every entry here is
+// an exclusion someone already accepted, and failing the gate on it would block CI on debt that
+// was consciously taken. What was missing was never enforcement — it was the COUNT. `smoke:auth`
+// sat in this list for six weeks with its cause correctly written in its own reason string, and
+// nothing anywhere said "one suite here is broken and is supposed to stop being broken".
+const broken = ungated.filter((s) => (UNGATED[s] ?? "").startsWith(BROKEN)).sort();
+console.log(`  ${broken.length} are BROKEN — red or flaky, and expected to be fixed and removed, not kept:`);
+for (const s of broken) console.log(`      ${s} — ${(UNGATED[s] ?? "").slice(BROKEN.length).trim()}`);
 
 // Reported, not enforced: every entry here is already an accepted exclusion, so failing on them
 // would just block the gate on debt that was consciously taken. The number is the point.
