@@ -54,9 +54,9 @@ ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev
 
 | Path                                    | What it is                                                                                                                                                                                                                        |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core. |
+| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here. |
 | `extensions/*`                          | Pluggable adapters (connectors, runtimes). Peer-depend core; self-register on import.                                                                                                                                             |
-| `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon). Self-contained; never import each other.                                                                                                                          |
+| `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon, the cotal-lang runtime host). Self-contained; never import each other.                                                                                                                          |
 | `examples/*`                            | Use-cases / composition roots. Private, never published. Each self-documents in its README.                                                                                                                                       |
 | `bin/`                                  | The `cotal` binary (the published `cotal-ai` package): the composition root.                                                                                                                                                      |
 | `docs/`                                 | Protocol documentation (start at `docs/README.md`).                                                                                                                                                                               |
@@ -81,6 +81,13 @@ they self-register into. The wire standard — depends on nothing else in the re
 - `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator/workstation layer
 over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
 helpers, and the command-copy renderer. Depends on core; not part of the wire standard.
+- `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language — its grammar, the
+interpreter's sequential core and concurrency scopes, the step journal, the effect interface a
+host implements, and the simulator and dry run that exercise a program with no broker. Depends
+on nothing else in the repo; it knows about effects, not about NATS.
+- `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
+the mesh — the mesh handler binding the effect interface onto the real planes, the durable step
+journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.
 - `**@cotal-ai/connector-core**` (`extensions/connector-core`): the shared MCP-bridge runtime:
 the mesh agent, the `cotal_*` tool specs (incl. `cotal_spawn` / `cotal_persona` /
 `cotal_despawn`), and the hook relay. The adapters below are thin clients over it.
