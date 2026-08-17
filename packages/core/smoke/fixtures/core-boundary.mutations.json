@@ -31,7 +31,25 @@
     "and it declares a first-party dependency. What actually keeps the kit out is that it declares no",
     "dependencies at all. That makes zero-dependencies load-bearing, and a load-bearing property with",
     "no assertion under it is a property until the first person adds a convenient import. This",
-    "mutation adds one and watches the rail refuse it."
+    "mutation adds one and watches the rail refuse it.",
+    "",
+    "THE FOURTH ALSO NEEDS AN `afterRestore`, AND FINDING OUT WHY IS THE REASON IT IS WRITTEN DOWN.",
+    "It mutates a package.json inside a pnpm workspace, and pnpm syncs the lockfile when it runs a",
+    "script against a changed manifest. So the first run of this fixture killed all four mutations,",
+    "restored all four files, verified the restore, reported success — and left `pnpm-lock.yaml`",
+    "carrying `packages/smoke-kit: dependencies: yaml`. The tool restores what it mutated; it cannot",
+    "know what the RUN wrote. That is the same shape as a `dist/` compiled from a mutant after the",
+    "source is put back, and it is worse here: the lockfile is tracked, so the residue is one",
+    "`git commit -a` away from shipping a manifest nobody wrote.",
+    "",
+    "AND THE OBVIOUS REPAIR DOES NOT WORK, WHICH IS WHY THE RESTORE IS A `git checkout`. Regenerating",
+    "with `pnpm install --lockfile-only` reports `Already up to date` and leaves the entry in place,",
+    "with or without `--force`: pnpm syncs a lockfile ADDITIVELY here and will not prune an importer",
+    "entry the manifest no longer declares. Worse, `pnpm install --frozen-lockfile`, which is what CI",
+    "runs in seven places, ACCEPTS the residue and exits 0. So nothing downstream would have caught",
+    "it: not the regenerate, not the gate that exists to catch exactly this. git is the only thing",
+    "that restores it, which is also why this tool refuses to start on a dirty tree. Measured, all",
+    "three, rather than reasoned about."
   ],
   "mutations": [
     {
@@ -64,7 +82,8 @@
       "find": "  \"scripts\": {",
       "replace": "  \"dependencies\": {\n    \"yaml\": \"^2.9.0\"\n  },\n  \"scripts\": {",
       "expectRed": "✗ @cotal-ai/smoke-kit must declare no dependencies",
-      "cell": "✗ @cotal-ai/smoke-kit must declare no dependencies — it declares dependencies:"
+      "cell": "✗ @cotal-ai/smoke-kit must declare no dependencies — it declares dependencies:",
+      "afterRestore": "git checkout -- pnpm-lock.yaml"
     }
   ]
 }
