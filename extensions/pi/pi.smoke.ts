@@ -582,7 +582,8 @@ for (const assistant of [
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "   " }), /empty/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "-p run" }), /cannot start with/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize" }), /cannot start with/);
-    ok(!("prompt" in piConnector.buildLaunch({ space: "test", name: "pi" }).args), "no prompt, no positional argument");
+    const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model" }).args;
+    ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
     checks += 11;
   } finally {
     if (previousGroq === undefined) delete process.env.GROQ_API_KEY;

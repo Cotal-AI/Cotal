@@ -156,8 +156,8 @@ export interface Connector extends Extension {
    *  and still accepts any string the operator supplies. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
   /** The channel this connector publishes an agent's transcript mirror to (see
-   *  {@link LaunchOpts.transcript}). OPTIONAL — like {@link LaunchOpts.prompt}, only connectors that
-   *  actually mirror (Claude Code, OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
+   *  {@link LaunchOpts.transcript}). OPTIONAL — only connectors that actually mirror (Claude Code,
+   *  OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
    *  naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension, not
    *  core. The manager calls it to grant the agent publish rights on its transcript channel at provision
    *  time (auth-mode publish is default-deny), so the grant and what the connector publishes to come from
