@@ -49,6 +49,17 @@ const rows = [];
  * apart on purpose.
  */
 const probes = [];
+/**
+ * A config marked `"grades": "tool"` measures one of this repo's own instruments through its
+ * self-test, not a package's smoke suite. It is reported apart and never folded into the ratio
+ * above: a self-test's cells and a smoke suite's cells are not the same unit, and averaging them
+ * would move a coverage figure about shipped behaviour by changing a tool's test count.
+ *
+ * Such a config carries no `suite`, so it is exempt from the source-path check below for a reason
+ * rather than by omission: its command runs the mutated file directly with node, and there is no
+ * package name for a resolver to answer with `dist`.
+ */
+const tools = [];
 
 /**
  * Only the fields THIS script's report depends on are checked here. The set of keys the harness
@@ -82,14 +93,25 @@ const assertGradable = (configPath, suite, m) => {
 
 for (const path of configs) {
   const cfg = JSON.parse(readFileSync(path, "utf8"));
+  const gradesTool = cfg.grades === "tool";
+  if (!gradesTool && typeof cfg.suite !== "string") {
+    throw new Error(
+      `${path}: has no "suite", so this script cannot say which suite its cells belong to. `
+      + `Name the suite, or mark the config \`"grades": "tool"\` if it measures an instrument through `
+      + `its own self-test rather than a package's smoke suite.`,
+    );
+  }
+  // A tool config predicts a named red and has no cell to attribute it to, because there is no
+  // suite whose coverage it could be part of.
+  const required = gradesTool ? REQUIRED.filter((k) => k !== "cell") : REQUIRED;
   for (const m of cfg.mutations) {
-    for (const k of REQUIRED) {
+    for (const k of required) {
       if (typeof m[k] !== "string" || m[k] === "") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
     }
     for (const k of REQUIRED_MAY_BE_EMPTY) {
       if (typeof m[k] !== "string") throw new Error(`${path}: mutation "${m.name ?? "(unnamed)"}" is missing "${k}"`);
     }
-    assertGradable(path, cfg.suite, m);
+    if (!gradesTool) assertGradable(path, cfg.suite, m);
   }
   const out = execSync(cfg.command, { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] });
   // Two terminal shapes exist in this repo. "N passed, M failed" comes from a suite that records
@@ -102,6 +124,10 @@ for (const path of configs) {
   if (tallied && Number(tallied[2]) !== 0) throw new Error(`${path}: the suite is already red — coverage over a red suite means nothing`);
 
   const executed = Number((tallied ?? failFast)[1]);
+  if (gradesTool) {
+    tools.push([path, cfg.mutations.length, executed]);
+    continue;
+  }
   if (cfg.kind === "unasserted-probe") {
     probes.push([cfg.suite, cfg.mutations.length, executed]);
     continue;
@@ -138,4 +164,12 @@ if (probes.length) {
     console.log(`  ${suite}  ${n} probes against a suite of ${executed} cells`);
   }
   console.log("  Verdicts come from mutation-proof.mjs; a SURVIVED here is a finding, not a failure.");
+}
+if (tools.length) {
+  console.log("\nInstrument configs — this repo's own tools, graded through their self-tests.");
+  console.log("NOT added to the ratio above: a self-test's cells and a smoke suite's cells are different");
+  console.log("units, and averaging them would move a figure about shipped behaviour by a tool's test count.");
+  for (const [path, n, executed] of tools) {
+    console.log(`  ${path}  ${n} mutations against a self-test of ${executed} cells`);
+  }
 }

@@ -1,4 +1,5 @@
 {
+  "suite": "packages/lang/smoke/pins.smoke.ts",
   "guard": "a resume over a recorded journal must carry the run's pins (L5021)",
   "command": "pnpm smoke:lang-pins",
   "progressPattern": "  ok ",
@@ -9,7 +10,8 @@
       "file": "packages/lang/src/interpret.ts",
       "find": "  if (options.pins === undefined && options.journal !== undefined && options.journal.entries().length > 0) {",
       "replace": "  if (false) {",
-      "expectRed": "a resume over a recorded journal with no pins is REFUSED"
+      "expectRed": "a resume over a recorded journal with no pins is REFUSED",
+      "cell": "a resume over a recorded journal with no pins is REFUSED"
     },
     {
       "name": "the guard is widened to ANY journal, so a fresh run handed a store is refused too",
@@ -17,14 +19,16 @@
       "find": "options.journal !== undefined && options.journal.entries().length > 0) {",
       "replace": "options.journal !== undefined) {",
       "expectRed": "while a run handed an EMPTY journal is still a fresh run, not a refused resume",
-      "note": "The narrowness half. A guard that refuses every journal breaks the way a driver supplies storage to a FRESH run, and the refusal cell above cannot see that: it would still pass."
+      "note": "The narrowness half. A guard that refuses every journal breaks the way a driver supplies storage to a FRESH run, and the refusal cell above cannot see that: it would still pass.",
+      "cell": "while a run handed an EMPTY journal is still a fresh run, not a refused resume"
     },
     {
       "name": "the refusal fires but says nothing about what the pins decide",
       "file": "packages/lang/src/interpret.ts",
       "find": "The pins are what decide `\n        + `the run's logical epoch and its seed",
       "replace": "Refused.` + `",
-      "expectRed": "and the refusal says the pins are what decide the epoch and the seed"
+      "expectRed": "and the refusal says the pins are what decide the epoch and the seed",
+      "cell": "and the refusal says the pins are what decide the epoch and the seed"
     }
   ]
 }

@@ -1,7 +1,8 @@
 {
+  "grades": "tool",
   "guard": "the completion check runs ahead of EVERY verdict, not only ahead of the red one",
   "command": "node scripts/mutation-proof.selftest.mjs",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "completionMarker": "an absolute --config path is read where it is",
   "mutations": [
     {
@@ -36,7 +37,7 @@
     {
       "name": "the failure vocabulary is widened until it fires on a clean run",
       "file": "scripts/mutation-proof.mjs",
-      "find": "const FAILURE_EVIDENCE = \"(?:^|[\\\\s:])(?:\u2717|FAIL\\\\b|FAILED\\\\b|AssertionError)|\\\\b[1-9]\\\\d* failed\\\\b\";",
+      "find": "const FAILURE_EVIDENCE = \"(?:^|[\\\\s:])(?:✗|FAIL\\\\b|FAILED\\\\b|AssertionError)|\\\\b[1-9]\\\\d* failed\\\\b\";",
       "replace": "const FAILURE_EVIDENCE = \"failed\";",
       "expectRed": "...while a change nothing tests is still SURVIVED on that same suite",
       "note": "A pattern matching the word 'failed' anywhere fires on the summary line of a CLEAN run ('0 failed'), which turns every genuine survivor into a WRONG-RED. Narrowness is the whole design of this default."
