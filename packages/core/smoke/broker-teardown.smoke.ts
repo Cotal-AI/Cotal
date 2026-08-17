@@ -13,6 +13,7 @@
  * partial mitigation that reads as a solved problem is worse than a stated one.
  */
 import { spawnSync, spawn, type ChildProcess } from "node:child_process";
+import { killAndAwaitExit } from "@cotal-ai/smoke-kit";
 import { existsSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
@@ -187,6 +188,32 @@ try {
     check("wrapper killed: the broker is still torn down, by the exit handler", !alive(s.brokerPid), `pid ${s.brokerPid}`);
     check("wrapper killed: the fixture exited rather than being signalled", how.signal === null, JSON.stringify(how));
     reapOwn(s.brokerPid, s.storeDir);
+  }
+  // 7. `killAndAwaitExit` must not return until the child is ACTUALLY gone. This is the contract the
+  //    ENOTEMPTY failure in CI was missing: `bind-fence` sent SIGTERM and removed its tree on the
+  //    next line, and the recursive walk met a broker still flushing JetStream on its way out.
+  //
+  //    The assertion is deterministic even though the race it prevents is not. It does not try to
+  //    reproduce a timing window; it states the property that makes the window impossible — when this
+  //    resolves, the child reports a terminal status — so deleting the wait turns it red every time
+  //    rather than one run in ten.
+  //
+  //    The fixture ignores SIGTERM for 400ms before exiting, standing in for the graceful shutdown
+  //    that flushes state, so a helper that merely SENT the signal would return while it still runs.
+  {
+    const child = spawn(process.execPath, ["-e",
+      `process.on("SIGTERM", () => setTimeout(() => process.exit(0), 400)); setInterval(() => {}, 1000);`,
+    ], { stdio: "ignore" });
+    await wait(200); // let it install the handler, or SIGTERM lands on the default disposition
+    const t0 = Date.now();
+    await killAndAwaitExit(child, "SIGTERM");
+    const elapsed = Date.now() - t0;
+    check("killAndAwaitExit: the child reports a terminal status by the time it resolves",
+      child.exitCode !== null || child.signalCode !== null, { exitCode: child.exitCode, signalCode: child.signalCode });
+    check("killAndAwaitExit: it is really gone at the OS level, not just per the handle", !alive(child.pid!), `pid ${child.pid}`);
+    // Stated as a bound, not asserted as a deadline: it must have WAITED out the 400ms shutdown, which
+    // is what tells a reader this is a wait and not a sleep that happens to be long enough.
+    check("killAndAwaitExit: it waited for the shutdown rather than returning on the signal", elapsed >= 350, `${elapsed}ms`);
   }
 } finally {
   // Nothing to release: every cell reaps its own broker above, including the two that leak on purpose.

@@ -3,7 +3,7 @@ import { writeFileSync, mkdirSync, mkdtempSync, openSync, readFileSync, rmSync }
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { spawn } from "node:child_process";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 import {
   createSpaceAuth, serverConfig, mintCreds, newIdentity, isReachable,
@@ -146,12 +146,15 @@ await dlv.stop();
 await poster.stop();
 await sup.stop();
 await mgr.stop();
-child.kill("SIGTERM");
 // The store dir goes too. Its absence here is the whole reason this suite leaked: it passed, said
-// so, and left a directory behind on every green run. The pause is the same one `_boot-broker` uses:
-// removing the tree while the broker is still flushing JetStream state leaves files behind it
-// recreates, so the directory survives the removal that was supposed to take it.
-await sleep(200);
+// so, and left a directory behind on every green run.
+//
+// The 200ms pause that used to stand here was a GUESS at how long a graceful shutdown takes, and the
+// guess was too small: modelled on a fixture that flushes JetStream for 250ms after SIGTERM, removing
+// the tree after a fixed 200ms still walked into live writes. `bind-fence` proved the same window is
+// real in CI, dying on ENOTEMPTY with every cell already green. Waiting for the exit is not a longer
+// pause, it is the end of guessing.
+await killAndAwaitExit(child, "SIGTERM");
 rmSync(dir, { recursive: true, force: true });
 releaseBroker(); // last: ownership is held until this teardown has actually finished
 process.exit(0);

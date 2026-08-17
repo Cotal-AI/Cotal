@@ -37,6 +37,14 @@
       "replace": "  void entry;",
       "expectRed": "✗ FAIL: SIGTERM: the owned broker is gone",
       "cell": "✗ FAIL: SIGTERM: the owned broker is gone"
+    },
+    {
+      "name": "killAndAwaitExit sends the signal but does not wait, which is the shape that failed in CI",
+      "file": "packages/smoke-kit/src/broker-teardown.ts",
+      "find": "  if ((await Promise.race([exited.then(() => \"exited\" as const), after(timeoutMs)])) === \"timeout\") {",
+      "replace": "  if (false as boolean) {",
+      "expectRed": "✗ FAIL: killAndAwaitExit: the child reports a terminal status by the time it resolves",
+      "cell": "✗ FAIL: killAndAwaitExit: the child reports a terminal status by the time it resolves"
     }
   ]
 }
