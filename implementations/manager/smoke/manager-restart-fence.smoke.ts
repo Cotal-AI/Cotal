@@ -7,7 +7,7 @@
  * `…result.<execEpoch>`: the predecessor's terminal was expected to be INVISIBLE to the restarted
  * current-epoch reader, and the successor was expected to write a second terminal that callers
  * would see instead. That mechanism is gone: §13.2 reserved subjects reserves a flat `…result` leaf with no epoch
- * token), and it was not merely non-conformant — it was wrong. The window is "commit the terminal,
+ * token, and it was not merely non-conformant — it was wrong. The window is "commit the terminal,
  * then die before projecting it", in which the pre-restart fact is the LEGITIMATE outcome of work
  * that really happened, not a corpse's guess. Hiding it lost a real `succeeded` and let a successor
  * contradict it.

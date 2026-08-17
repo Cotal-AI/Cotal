@@ -149,20 +149,6 @@ function measure(value: unknown): { depth: number; items: number } {
   return { depth, items };
 }
 
-/** Decide ONE submission against the command's DECLARED `admissionCeiling`.
- *
- *  The ceiling is a parameter and never a constant, because two conforming implementations must
- *  not be able to decide the same bytes differently and durably. That is also why nothing here
- *  reads a clock: the outcome is a function of the bytes and the declaration alone, so a
- *  redelivery of the same submission reaches the same durable answer however long any worker
- *  took. A watchdog may re-deliver; it may never decide.
- *
- *  ORDER IS PART OF THE CONTRACT, and the reason is the fingerprint. The raw-byte ceiling is
- *  evaluated BEFORE parsing, because parsing is the work the ceiling exists to refuse. Everything
- *  that fails before a fingerprint exists quarantines, because there is no caller-addressed
- *  subject to write a decision to. Once a fingerprint EXISTS the caller is addressable, so a
- *  breach becomes a REJECTION — a durable, caller-visible answer rather than a message they never
- *  hear about. */
 /**
  * Duplicate object names in the RAW bytes, which no post-parse check can see.
  *
@@ -299,6 +285,20 @@ export function hasOutOfRangeNumber(
   return { outOfRange: false };
 }
 
+/** Decide ONE submission against the command's DECLARED `admissionCeiling`.
+ *
+ *  The ceiling is a parameter and never a constant, because two conforming implementations must
+ *  not be able to decide the same bytes differently and durably. That is also why nothing here
+ *  reads a clock: the outcome is a function of the bytes and the declaration alone, so a
+ *  redelivery of the same submission reaches the same durable answer however long any worker
+ *  took. A watchdog may re-deliver; it may never decide.
+ *
+ *  ORDER IS PART OF THE CONTRACT, and the reason is the fingerprint. The raw-byte ceiling is
+ *  evaluated BEFORE parsing, because parsing is the work the ceiling exists to refuse. Everything
+ *  that fails before a fingerprint exists quarantines, because there is no caller-addressed
+ *  subject to write a decision to. Once a fingerprint EXISTS the caller is addressable, so a
+ *  breach becomes a REJECTION — a durable, caller-visible answer rather than a message they never
+ *  hear about. */
 export function decideAdmission(
   rawBytes: Uint8Array,
   parsedBody: unknown,
