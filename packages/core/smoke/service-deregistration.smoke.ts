@@ -27,9 +27,11 @@
  * 4. IDEMPOTENCE. Deregistering twice is not an error, and neither is deregistering something that
  *    was never registered — both are `absent`, so a shutdown path racing an operator cannot fail.
  *
- * THE COUNT WAS PREDICTED AT 21 AND IS 19. Recorded rather than quietly re-cut: two of the
+ * THE COUNT WAS PREDICTED AT 21 AND IS 20. Recorded rather than quietly re-cut: two of the
  * predicted cells were the same assertions counted twice while sketching sections 4 and 5, not
  * cells that were dropped. Every claim written down before the first run is still asserted below.
+ * The twentieth was added afterwards, by the mutation pass: the status half of section 6 was being
+ * proved by a bare `await` that would have thrown mid-run rather than by a cell that names it.
  *
  * WHAT THE FIRST RUN FOUND, which is the reason to write the recovery cells before the code: the
  * spec key's create-only fence had an exact twin on the STATUS key. With only the spec side fixed,
@@ -54,7 +56,7 @@ import {
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
-const EXPECTED_CELLS = 19;
+const EXPECTED_CELLS = 20;
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -72,6 +74,10 @@ const ENDPOINT = "manager";
 const IID_LIVE = "a".repeat(26);
 const IID_DEAD = "b".repeat(26);
 const IID_NEVER = "c".repeat(26);
+// Section 5 gets its OWN id so that the only place the tombstone-recovery path is exercised is
+// section 6, where it is guarded. A section that reaches it incidentally turns a regression there
+// into a stack trace in the middle of the run, and a suite that dies cannot say which cell fell.
+const IID_PIN = "d".repeat(26);
 
 // The registration ceremony, exactly as `endpoint-serve.smoke.ts` builds it: a faithful in-memory
 // §13.1 barrier per (endpoint, instance), and an authority that admits this one core name.
@@ -176,11 +182,11 @@ try {
     torn.code === "failed-precondition" && /torn record state/.test(torn.message), torn);
 
   console.log("5. revision pinning - a delete removes the record that was READ, or nothing");
-  const pinned = await register(kv, IID_DEAD); // re-registers over its own tombstone (see section 6)
-  await converge(kv, IID_DEAD, pinned.registrationRevision);
-  const pinnedSpecKey = recordSpecKey(RECORD_KINDS.svc, [ENDPOINT, IID_DEAD]);
+  const pinned = await register(kv, IID_PIN);
+  await converge(kv, IID_PIN, pinned.registrationRevision);
+  const pinnedSpecKey = recordSpecKey(RECORD_KINDS.svc, [ENDPOINT, IID_PIN]);
   const staleRev = (await kv.get(pinnedSpecKey))!.revision;
-  await converge(kv, IID_DEAD, pinned.registrationRevision); // something wrote after the read
+  await converge(kv, IID_PIN, pinned.registrationRevision); // something wrote after the read
   const lost = await errOf(() => deleteRecordEntry(kv, pinnedSpecKey, staleRev - 1));
   c("a delete pinned to a revision the key has moved past is a loud CONFLICT", lost.code === "conflict", lost);
   c("the conflict says the record is not the one that was inspected, and to re-read",
@@ -190,18 +196,26 @@ try {
   console.log("6. re-registration over the tombstone: the recovery path, without which this is a cliff");
   // A create-only write fences against the key's whole history, so a manager that deregistered on a
   // clean stop could never register again. This is the cell that says it can.
-  const after = await deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: IID_DEAD });
+  // Both writes are asserted separately, because the spec key and the status key each fence against
+  // their own history and fixing one leaves the other cliff standing: a spec that cannot be
+  // rewritten means the manager never comes back at all, a status that cannot be means it comes
+  // back registered and never converges, which reads to every scatter as a live instance that
+  // answers nothing. Each is caught rather than awaited bare, so a regression names its own cell.
+  const after = await deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: IID_PIN });
   c("the instance is deregistered again (setting up the tombstone)", after.removed === true, after);
-  const epochBefore = gates.get(`${ENDPOINT}/${IID_DEAD}`)!.processEpoch;
-  const reborn = await register(kv, IID_DEAD);
+  const epochBefore = gates.get(`${ENDPOINT}/${IID_PIN}`)!.processEpoch;
+  let reborn: { registrationRevision: number } | undefined;
+  const rebirth = await errOf(async () => { reborn = await register(kv, IID_PIN); });
   c("THE RECOVERY: the same instance id registers again OVER the deletion marker",
-    reborn.registrationRevision > 0, reborn);
+    rebirth.message === "NO THROW" && (reborn?.registrationRevision ?? 0) > 0, rebirth);
   c("...and its epoch ADVANCED, so a predecessor that outlived its own deregistration is fenced",
-    gates.get(`${ENDPOINT}/${IID_DEAD}`)!.processEpoch === epochBefore + 1,
-    { epochBefore, now: gates.get(`${ENDPOINT}/${IID_DEAD}`)!.processEpoch });
-  await converge(kv, IID_DEAD, reborn.registrationRevision);
+    gates.get(`${ENDPOINT}/${IID_PIN}`)!.processEpoch === epochBefore + 1,
+    { epochBefore, now: gates.get(`${ENDPOINT}/${IID_PIN}`)!.processEpoch });
+  const reconverged = await errOf(() => converge(kv, IID_PIN, reborn?.registrationRevision ?? 0));
+  c("...and its STATUS converges again over the status tombstone, the other half of the same cliff",
+    reconverged.message === "NO THROW", reconverged);
   const frozen2 = new Set((await freezeExpectedSet(jsm, SPACE, ENDPOINT)).map((f) => f.instanceId));
-  c("...and it is a live class member again", frozen2.has(IID_DEAD), [...frozen2]);
+  c("...and it is a live class member again", frozen2.has(IID_PIN), [...frozen2]);
 
   console.log("7. the endpoint token is validated, not trusted");
   const bad = await errOf(() => deregisterServiceInstance(kv, { endpoint: ENDPOINT, instanceId: "not a valid token!" }));
