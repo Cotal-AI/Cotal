@@ -13,18 +13,26 @@
  * absence.
  *
  * KILL SET, predicted as NAMES before the run:
- *   K1  advance the source cursor to the read end instead of republishing it unchanged
+ *   K1  take the cursor from a fresh source read, the copy-paste from `pump`, instead of
+ *       republishing the frontier's own
  *       -> `close:the-source-cursor-is-REPUBLISHED-UNCHANGED`
  *   K2  mint a run id when none is open, instead of answering null
  *       -> `close:a-stream-at-a-stopping-point-answers-null-and-publishes-NOTHING`
- *   K3  publish without validating on the clone first
- *       -> `close:a-message-still-open-under-the-run-REFUSES-and-publishes-NOTHING`
- *   K4  let the holder start an emitter on the way out of a turn
- *       -> `holder:a-close-on-a-holder-that-never-adopted-starts-NOTHING`
+ *   K3  drop the pending guard -> `close:a-PENDING-frame-refuses-the-close`
+ *   K4  drop the halted guard -> `close:a-HALTED-emitter-refuses-to-close`
  *   K5  drop the `onRunClosed` report
  *       -> `holder:the-closed-run-is-reported-so-a-mapper-can-forget-it`
- *   K6  drop the halted guard
- *       -> `close:a-HALTED-emitter-refuses-to-close`
+ *
+ * WHAT CARRIES NO KILL, NAMED RATHER THAN COUNTED AS COVERAGE. Two properties here are held by
+ * something other than a line a mutation can break, and saying so is what keeps the five above
+ * meaning what they say:
+ *   - the clone validation before the publish. A closing unit is ONE event, and the real machine
+ *     refuses it before mutating anything, so removing the clone changes no observable outcome. It
+ *     is kept as symmetry with `pump`, where a multi-event batch makes it load-bearing, and it is
+ *     not claimed as a checked property here.
+ *   - `holder:a-close-on-a-holder-that-never-adopted-starts-NOTHING` is enforced by the SIGNATURE:
+ *     `closeRun` takes no path, so there is nothing to start an emitter from. The cell is a fence
+ *     against a future signature that takes one, not evidence about today's code.
  *
  * Run: pnpm smoke:agui-close-run
  */
@@ -182,6 +190,12 @@ try {
     const cursorBefore = afterPump.frontier.sourceCursor;
     const seqBefore = afterPump.frontier.seq;
 
+    // A RECORD LANDS BETWEEN THE FLUSH AND THE CLOSE, which is the real shape of a turn ending: the
+    // hook fires, the holder flushes, and the harness writes its last bytes a moment later. If the
+    // closing frame took its cursor from a fresh read instead of from the frontier, this record
+    // would be marked consumed without ever being mapped, and nothing downstream would show a gap.
+    append(src, { open: "run-late" });
+
     ep.answers = [{ seq: 12, duplicate: false }];
     const closed = await attempt(() => em.closeRun({ timestamp: 99 }));
 
@@ -224,16 +238,16 @@ try {
       { returned: again.value, err: again.err?.message, publishes: ep.publishes.length },
     );
 
-    // And a record that arrives AFTER the out-of-band close must not throw. The mapper here still
-    // believes nothing changed, so this is the raw hazard: it maps a fresh run and the stream takes
-    // it, because a closed run leaves the machine at a legal stopping point.
-    append(src, { open: "run-b" });
+    // The record that landed mid-close is STILL THERE to be mapped, and a record arriving after an
+    // out-of-band close must not throw: a closed run leaves the machine at a legal stopping point,
+    // so the next opening record is taken exactly as it would have been.
     ep.answers = [{ seq: 13, duplicate: false }];
     const late = await attempt(() => em.pump());
-    c("close:a-LATER-record-after-a-close-does-not-throw", late.err === undefined && late.value?.frames === 1, {
-      err: late.err?.message,
-      pumped: late.value,
-    });
+    c(
+      "close:the-record-that-landed-DURING-the-close-is-still-emitted",
+      late.err === undefined && late.value?.frames === 1 && late.value?.events === 4,
+      { err: late.err?.message, pumped: late.value },
+    );
   });
 
   // ── A CLOSE THAT WOULD BE A PROTOCOL VIOLATION IS REFUSED, NOT PUBLISHED ─────────────────────
@@ -294,10 +308,42 @@ try {
       stopped: em.stopped,
     });
     const publishesBefore = ep.publishes.length;
+    // Scripted DELIBERATELY: without an answer waiting, an emitter that ignored the halt would fail
+    // on the instrument rather than on the guard, and the cell would redden for the wrong reason.
+    ep.answers = [{ seq: 42, duplicate: false }];
     const closed = await attempt(() => em.closeRun({ timestamp: 99 }));
     c(
       "close:a-HALTED-emitter-refuses-to-close",
       closed.err instanceof AguiEmitterHalted && ep.publishes.length === publishesBefore,
+      { err: closed.err?.message, published: ep.publishes.length - publishesBefore },
+    );
+  });
+
+  // ── AN UNCERTAIN FRAME REFUSES THE CLOSE ─────────────────────────────────────────────────────
+  //
+  // A network error leaves `pending` as `sent_unacked`, which is the state that means WE DO NOT
+  // KNOW. Closing on top of it would publish a second frame claiming a `seq` the pending frame may
+  // already hold, and the recovery that exists to re-publish the frozen one would then be racing a
+  // frame nothing recorded.
+  await block("AN UNCERTAIN FRAME REFUSES THE CLOSE", async () => {
+    const { src, wal, source } = await fresh("pending");
+    const ep = new FakeEndpoint();
+    const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+    await em.pump(); // adopt
+    append(src, { open: "run-a" });
+    ep.answers = [new Error("connection reset")];
+    const pumped = await attempt(() => em.pump());
+    c(
+      "close:CONTROL-a-network-error-really-left-the-frame-PENDING",
+      pumped.err !== undefined && wal.pending?.state === "sent_unacked",
+      { err: pumped.err?.message, pending: wal.pending },
+    );
+    const publishesBefore = ep.publishes.length;
+    ep.answers = [{ seq: 61, duplicate: false }];
+    const closed = await attempt(() => em.closeRun({ timestamp: 99 }));
+    c(
+      "close:a-PENDING-frame-refuses-the-close",
+      closed.err !== undefined && /still pending/.test(closed.err.message) && ep.publishes.length === publishesBefore,
       { err: closed.err?.message, published: ep.publishes.length - publishesBefore },
     );
   });
