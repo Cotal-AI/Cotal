@@ -17,6 +17,13 @@
       "expectRed": "NO SELF-INFLICTED CAS CONFLICT"
     },
     {
+      "name": "PREDICTED KILLED (1 red) - B1: a re-read at the SAME revision refills the unconfirmed budget again, so the budget is measured from the last observation instead of the last TTL-refreshing write",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "          if (landed) this.leaseConfirmedAt = performance.now();\n",
+      "replace": "          this.leaseConfirmedAt = performance.now();\n",
+      "expectRed": "A RE-READ AT THE SAME REVISION MUST NOT BUY MORE TIME"
+    },
+    {
       "name": "PREDICTED KILLED (1 red) - D2a: the renew period goes back to TTL/2, so a single attempt fills the window again",
       "file": "packages/core/src/streams.ts",
       "find": "export const MANAGER_LEASE_RENEW_MS = MANAGER_LEASE_TTL_MS / 4;\n",

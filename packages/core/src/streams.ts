@@ -95,7 +95,17 @@ export const MANAGER_LEASE_TTL_MS = 10_000;
  *  at the JetStream default (5s, which is also TTL/2) puts exactly ONE attempt inside the window and
  *  lets that attempt's own deadline consume the entire remainder — so a single slow round trip is
  *  terminal, by construction, on a holder that is otherwise healthy. At TTL/4 with a deadline under
- *  the period, four attempts fit inside the window and no single one of them can spend it.
+ *  the period, no single attempt can spend the window and there is room to ask again.
+ *
+ *  HOW MUCH ROOM, EXACTLY, because "N attempts fit" is a claim about the composed path and not about
+ *  these two numbers. A renew that times out is followed by a re-read with a deadline of its own, and
+ *  the in-flight guard skips any tick that falls while the pair is running, so the unit to count is
+ *  the pair and not the tick. On the path this budget exists for — the renew gets no answer and the
+ *  re-read does — the pair costs about one deadline and three of them complete inside the TTL. Under a
+ *  TOTAL blackout, where both halves spend their deadline, the pair costs two and exactly ONE completes
+ *  inside the TTL while the next completes just after it. That second completion is the fail-close
+ *  decision, and arriving one attempt past the TTL is the intended behaviour rather than a shortfall:
+ *  the holder stops as soon as it can no longer prove anything, and not before.
  *
  *  They are CLIENT-SIDE PACING ONLY. Unlike the TTL, which is written into the bucket at `cotal up`
  *  and so has to be reconciled on an existing mesh (see {@link ttlBuckets}), changing these two
