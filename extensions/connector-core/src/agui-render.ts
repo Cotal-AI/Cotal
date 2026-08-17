@@ -63,6 +63,15 @@ const TOOL_PREFIX = "⚙ ";
 const RESULT_PREFIX = "  ↳ ";
 
 /**
+ * Every character markdown can read as BEGINNING a block, so {@link LINE_START_SAFE} never has to
+ * know which block: `#` heading, `>` quote, `|` table, `` ` `` and `~` fence, `=` and `-` setext
+ * underline, `-` `*` `+` bullet, `*` `_` `-` thematic break, a digit for an ordered list, `[` a link
+ * reference definition (which renders as NOTHING, so it deletes the line it is on), and a tab, which
+ * counts as up to four columns of indent and so opens code.
+ */
+const BLOCK_START_CHARS = new Set([..."#>|`~=_*+-[<0123456789", "\t"]);
+
+/**
  * A line this renderer is allowed to emit: one that cannot open a block construct.
  *
  * **Exported so the suite asserts the invariant against the SAME expression the renderer is
@@ -70,12 +79,29 @@ const RESULT_PREFIX = "  ↳ ";
  * lines and nothing more, deliberately not a claim about what any consumer does downstream, which
  * would be an assertion outside this module that no test here could hold up.
  *
- * The constructs are the block-level openers: ATX heading, bullet list, ordered list, blockquote,
- * table row, and the four-space indented code block, each of which is recognised with up to three
- * leading spaces, which is exactly why three is the ceiling above.
+ * **IT TESTS THE FIRST CHARACTER, NOT A LIST OF CONSTRUCTS, AND THAT IS THE WHOLE POINT.** The
+ * previous version enumerated the openers it knew (ATX heading, bullet, ordered list, blockquote,
+ * table row, indented code) and called them "the block-level openers". An enumeration of a syntax
+ * someone else defines is incomplete the moment it is written, and this one was: a bare `---`, `***`
+ * and a fence line all PASSED it while being a thematic break, a setext underline and a code fence.
+ * The suite stayed green because the PREFIXES stop the renderer from emitting such a line at all,
+ * which means the predicate was passing for a reason unrelated to what it claimed to check, and a
+ * weakened prefix would not have been caught by the thing whose job is to catch exactly that.
+ *
+ * So the rule is a property of one character: a line is safe when its first non-space character
+ * arrives within three columns and is not one markdown can read as beginning a block. That is
+ * stricter than the constructs strictly require (`1x` and `-x` open nothing and are refused anyway),
+ * and strictness is the correct direction here, because this constrains what THIS renderer emits and
+ * every line it emits carries a glyph prefix that is not punctuation at all.
  */
-export const LINE_START_SAFE = (line: string): boolean =>
-  !/^ {0,3}(?:#|[-*+>|]|\d+[.)])(?:\s|$)/.test(line) && !/^ {4}/.test(line);
+export const LINE_START_SAFE = (line: string): boolean => {
+  if (line === "") return true; // a blank line opens nothing and separates rather than nests
+  const indent = /^ */.exec(line)![0].length;
+  if (indent > 3) return false; // four columns is an indented code block
+  const first = line[indent];
+  if (first === undefined) return true; // spaces only, same as blank
+  return !BLOCK_START_CHARS.has(first);
+};
 
 /**
  * Fold a frame's events into display lines.

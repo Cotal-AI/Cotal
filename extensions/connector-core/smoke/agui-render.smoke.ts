@@ -154,7 +154,12 @@ c("an EMPTY run error message renders empty",
 // ── THE LINE-START INVARIANT, executed over hostile payload ───────────────────────────────────
 // Measured failure: a tool result whose second line began `- ` opened a markdown list that captured
 // the frame's own terminator into a list item the payload created. Payload restructured scaffolding.
-const hostilePayload = "line one\n- a list item\n# a heading\n    indented code\n> quote\n| table |\n1. ordered";
+// The second half of this payload is the set a REVIEWER found the first predicate accepted while
+// calling itself "the block-level openers": a fence, a thematic break, a setext underline, an HTML
+// block and a link reference definition, which renders as nothing at all and so deletes its line.
+const hostilePayload =
+  "line one\n- a list item\n# a heading\n    indented code\n> quote\n| table |\n1. ordered\n" +
+  "```\n~~~\n---\n***\n___\n===\n<!-- html -->\n<div>\n[ref]: http://example.invalid\n\ttab indented";
 const rendered = draw(
   ev("TOOL_CALL_RESULT", { content: hostilePayload }),
   ev("RUN_FINISHED", { runId: "r1" }),
@@ -164,6 +169,31 @@ c("no emitted line can open a markdown block, over a payload made of nothing but
   offenders.length === 0, offenders);
 c("CONTROL: the invariant's own predicate rejects a raw block opener (else the cell above is vacuous)",
   !LINE_START_SAFE("- a list item") && !LINE_START_SAFE("# h") && !LINE_START_SAFE("    code") && LINE_START_SAFE("» ok"));
+
+// THE REGRESSION THIS PREDICATE WAS WIDENED FOR. Each of these PASSED the enumerating version, so
+// this cell is the only thing standing between the predicate and the claim it makes about itself.
+// It is pinned construct by construct rather than as a count, so a future narrowing names its victim.
+const previouslyAccepted: Array<[string, string]> = [
+  ["fence, backtick", "```"],
+  ["fence, tilde", "~~~ts"],
+  ["thematic break, dashes", "---"],
+  ["thematic break, asterisks", "***"],
+  ["thematic break, underscores", "___"],
+  ["setext underline, equals", "==="],
+  ["HTML comment", "<!-- html -->"],
+  ["HTML block", "<div>"],
+  ["link reference definition (renders as NOTHING)", "[ref]: http://example.invalid"],
+  ["a tab, which is up to four columns of indent", "\ttab indented"],
+  ["a block opener behind three spaces (three is the ceiling, not an escape)", "   ```"],
+];
+const stillAccepted = previouslyAccepted.filter(([, line]) => LINE_START_SAFE(line));
+c("every construct the enumerating predicate wrongly called safe is now refused",
+  stillAccepted.length === 0, stillAccepted.map(([name]) => name));
+c("CONTROL: the widening did not just refuse everything, so the predicate still admits real lines",
+  ["» text", "(thinking) x", "⚙ tool()", "  · continued", "  ↳ result", "", "   ", "plain words", "(paren"]
+    .every((l) => LINE_START_SAFE(l)));
+c("and the stricter rule is stated honestly: a line that opens nothing is refused anyway when it starts with a block character",
+  !LINE_START_SAFE("1x") && !LINE_START_SAFE("-x"));
 c("every payload line is still present, prefixed rather than dropped",
   hostilePayload.split("\n").every((l) => rendered.includes(l)), rendered);
 

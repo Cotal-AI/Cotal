@@ -116,9 +116,14 @@ window.COTAL_PARTS = (() => {
     // non-core kind straight to the marker, which THREW AWAY content the old expression had been
     // showing: `{kind:"com.acme.snapshot", data:{x:1}}` rendered `{"x":1}` before and the marker
     // after. That is a regression wearing a fix's clothes — it removes information while claiming
-    // to add it, and it made this file's own "scope is nothing wider" claim false. Core is explicit
-    // that an unknown extension kind still falls back to its `data` and that this is deliberate
-    // (`packages/core/src/parts.ts:12-13`); that behaviour is preserved here.
+    // to add it, and it made this file's own "scope is nothing wider" claim false.
+    //
+    // THIS IS THE DELIBERATE DIFFERENCE FROM CORE ANNOUNCED AT THE TOP OF THIS FILE, NOT AGREEMENT
+    // WITH IT. Core's `partsToText` renders a data-bearing extension kind as the marker alone and
+    // keeps nothing (driven, not read: a part `{kind:"com.acme.snapshot", data:{x:1}}` through core
+    // returns only the unrenderable marker). The difference is justified by the SURFACE, not by
+    // core: this file replaces an expression that was already showing that JSON, and core's
+    // equivalent never did, so keeping it is a regression here and would be an addition there.
     //
     // So: name the kind AND keep the data. That is strictly more than either did alone — the old
     // expression showed the data but never said what it was, and the marker alone said what it was

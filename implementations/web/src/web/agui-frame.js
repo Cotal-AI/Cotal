@@ -63,8 +63,12 @@
   // common case, but pretty-printed args, a multi-paragraph message and an error body all are) and
   // emitting one as a single string puts its second and later lines at column 0 with nothing of the
   // renderer's in front of them.
+  // `body` is a string at every call site (a template literal, a `str() ?? fallback`, or an
+  // accumulator concat), so it is NOT coerced here. A `String(body)` would be the only difference
+  // between this fold and the node one, and a difference whose whole purpose is to absorb a case that
+  // cannot arrive is the kind that survives until the case does arrive and then diverges silently.
   function emit(lines, first, cont, body) {
-    const parts = String(body).split("\n");
+    const parts = body.split("\n");
     lines.push(first + parts[0]);
     for (let i = 1; i < parts.length; i += 1) lines.push(cont + parts[i]);
   }
@@ -109,7 +113,7 @@
         case "RUN_FINISHED": {
           // `outcome` is optional by the real schema. A turn that merely ended says nothing more,
           // and manufacturing "success" would assert something the source never said.
-          const outcome = e.outcome && str(e.outcome.type);
+          const outcome = str(e.outcome?.type);
           emit(lines, "◂ ", CONT, `run ${str(e.runId) ?? "?"} finished${outcome ? ` (${outcome})` : ""}`);
           break;
         }
