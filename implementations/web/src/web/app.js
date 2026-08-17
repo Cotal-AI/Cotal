@@ -774,7 +774,16 @@ async function select(key) {
     // already delivering into it.
     channelOrder = window.COTAL_EVENT_ORDER.create();
     renderCenter();
-    const msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();
+    // Same reason as the activity feed: a failed history read is an empty batch, not a reason to
+    // leave the boundary unpassed and the frames of this channel held out of the view that was
+    // opened to look at them.
+    let msgs;
+    try {
+      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();
+    } catch (err) {
+      msgs = [];
+      noteOrder([{ type: "backfill-failed", channel: key, reason: err && err.message ? err.message : String(err) }]);
+    }
     if (seq !== loadSeq) return;
     const settled = channelOrder.backfill(msgs);
     noteOrder(settled.notes);
@@ -844,7 +853,24 @@ async function refresh() {
     // filter, so for a frame there is nothing to come back and the old assignment was a silent
     // deletion of exactly the traffic this lane exists to make visible.
     const live = activity;
-    activity = await (await fetch("/api/activity?limit=200")).json();
+    // THE BOUNDARY MUST PASS EVEN WHEN THE FETCH DOES NOT, and this is not a soft failure mode
+    // invented here. `pending` is drained only by `backfill()`, so a rejected request means the
+    // machine never settles and every frame held during it stays invisible for the life of the page,
+    // with nothing on screen saying so. That is strictly worse than what this code replaced, where a
+    // failed fetch simply left the live arrivals in place.
+    //
+    // A failed history read IS an empty history batch: the machine already specifies that case, and
+    // specifies that the baseline then comes from the earliest BUFFERED frame. So the boundary is
+    // settled on empty rather than skipped, and the failure is SURFACED as a note instead of being
+    // swallowed. Reporting it is what keeps this from being a silent degrade.
+    let backfilled;
+    try {
+      backfilled = await (await fetch("/api/activity?limit=200")).json();
+    } catch (err) {
+      backfilled = [];
+      noteOrder([{ type: "backfill-failed", reason: err && err.message ? err.message : String(err) }]);
+    }
+    activity = backfilled;
     // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
     // requested, so the payload claim is overwritten at ingress rather than downstream.
     for (const e of activity) if (e?.msg) e.msg.channel = e.channel;

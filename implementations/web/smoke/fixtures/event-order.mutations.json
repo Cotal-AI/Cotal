@@ -56,6 +56,20 @@
       "find": "        if (p && typeof p === \"object\" && p.kind === KIND && isSeq(p.seq)) return p;",
       "replace": "        if (p && typeof p === \"object\" && p.kind === KIND) return p;",
       "expectRed": "10.1 a frame whose seq is a string passes through rather than being held"
+    },
+    {
+      "name": "O9 the activity backfill loses its failure arm, which restores the defect the buffering introduced: a rejected request never settles the machine, so every frame held during it stays invisible for the life of the page and nothing on screen says so",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    let backfilled;\n    try {\n      backfilled = await (await fetch(\"/api/activity?limit=200\")).json();\n    } catch (err) {\n      backfilled = [];\n      noteOrder([{ type: \"backfill-failed\", reason: err && err.message ? err.message : String(err) }]);\n    }\n    activity = backfilled;",
+      "replace": "    activity = await (await fetch(\"/api/activity?limit=200\")).json();",
+      "expectRed": "12.2 a frame held during a FAILED backfill still reaches the feed"
+    },
+    {
+      "name": "O10 the selected-channel history loses the same arm, so opening a channel whose history read fails holds that channel's frames out of the very view that was opened to look at them",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    let msgs;\n    try {\n      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();\n    } catch (err) {\n      msgs = [];\n      noteOrder([{ type: \"backfill-failed\", channel: key, reason: err && err.message ? err.message : String(err) }]);\n    }",
+      "replace": "    const msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();",
+      "expectRed": "12.9 a frame held during a FAILED channel history still reaches that channel's view"
     }
   ]
 }

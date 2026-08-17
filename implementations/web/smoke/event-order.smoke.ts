@@ -39,6 +39,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
+import ts from "typescript";
 import { PAGE } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -386,6 +387,94 @@ console.log("event-order smoke");
   ok("11.1 chat rows in the batch are preserved", settled.emit.filter((r) => API.frameOf(r) === undefined).length === 2);
   ok("11.2 and the frames still order among themselves", JSON.stringify(seqsOf(settled.emit).filter((s) => s !== "chat")) === JSON.stringify([100, 101]));
   ok("11.3 the batch's own order is not disturbed", API.frameOf(settled.emit[0]) === undefined);
+}
+
+// ── 12. THE BOUNDARY PASSES EVEN WHEN THE FETCH FAILS, driven through the SHIPPED functions ──────
+// Every cell above builds its own inputs, so none of them can see this: `pending` is drained only by
+// `backfill()`, so a rejected history request means the machine never settles and every frame held
+// during it is invisible for the life of the page. That was introduced by the buffering itself, since
+// the code this replaced simply left the live arrivals in place on a failed fetch. So this section
+// runs the REAL `refresh()` and `select()` out of `app.js`, with a fetch that rejects.
+{
+  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
+  const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select"]);
+  const fns: string[] = [];
+  sf.forEachChild((n) => {
+    if (ts.isFunctionDeclaration(n) && n.name && wanted.has(n.name.text)) fns.push(appSrc.slice(n.getStart(sf), n.end));
+  });
+  // Pinned first: a short extraction would make every cell below vacuous.
+  ok("12.1 all four shipped functions are extractable", fns.length === 4, fns.length);
+
+  type Ctx = Record<string, unknown> & {
+    activity: unknown[];
+    channelMsgs: unknown[];
+    orderNotes: { type: string }[];
+    feedOrder: Order;
+    channelOrder: Order;
+    __p?: Promise<void>;
+  };
+  /** A page-like context running the shipped functions, with `/api/activity` and the per-channel
+   *  history either answering or rejecting. */
+  const page = (mode: "reject" | "resolve"): Ctx => {
+    const ctx = {
+      console,
+      fetch: async (u: string) => {
+        const isBackfill = u.includes("/api/activity") || u.includes("/history");
+        if (isBackfill && mode === "reject") throw new Error("network down");
+        return { ok: true, json: async () => [] };
+      },
+      refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, renderChannels() {},
+      renderDMs() {}, renderRoster() {}, renderRail() {}, rosterRows: () => [],
+      roster: [], channels: new Map(), dms: [], activity: [] as unknown[], agentSel: null,
+      dmSel: null, selected: "*", unread: new Map(), channelMsgs: [] as unknown[],
+      orderNotes: [] as { type: string }[], isDemo: false, loadSeq: 0,
+      window: {} as Record<string, unknown>,
+      feedOrder: undefined as unknown, channelOrder: undefined as unknown,
+      __p: undefined as Promise<void> | undefined, __E: undefined as unknown,
+    };
+    const c = createContext(ctx);
+    runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
+    runInContext("feedOrder = window.COTAL_EVENT_ORDER.create(); channelOrder = window.COTAL_EVENT_ORDER.create();", c);
+    runInContext(fns.join("\n"), c, { filename: "app.js" });
+    (ctx as Record<string, unknown>).__ctx = c;
+    return ctx as unknown as Ctx;
+  };
+  const drive = async (ctx: Ctx, call: string, entry: unknown) => {
+    const c = (ctx as unknown as { __ctx: ReturnType<typeof createContext> }).__ctx;
+    (ctx as Record<string, unknown>).__E = entry;
+    runInContext(`__p = ${call};`, c);
+    runInContext("onMessage(__E);", c); // a frame arrives live while the request is in flight
+    await (ctx.__p as Promise<void>).catch(() => undefined);
+  };
+
+  // The all-activity feed, backfill REJECTING.
+  {
+    const ctx = page("reject");
+    await drive(ctx, "refresh()", frame(1));
+    ok("12.2 a frame held during a FAILED backfill still reaches the feed", ctx.activity.length === 1, ctx.activity.length);
+    ok("12.3 nothing is left held", ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
+    ok("12.4 the boundary passed", ctx.feedOrder.settled === true);
+    ok("12.5 and the failure is SURFACED rather than swallowed", ctx.orderNotes.some((n) => n.type === "backfill-failed"), ctx.orderNotes);
+    ok("12.6 the baseline came from the buffered frame", ctx.feedOrder.state(ctx.feedOrder.chainKeys[0])?.baseline === 1);
+  }
+  // CONTROL: the same harness with the fetch RESOLVING. Without this, 12.2 could be passing because
+  // the harness never held the frame in the first place.
+  {
+    const ctx = page("resolve");
+    await drive(ctx, "refresh()", frame(1));
+    ok("12.7 CONTROL: the same harness with a working fetch also delivers the frame", ctx.activity.length === 1, ctx.activity.length);
+    ok("12.8 CONTROL: and reports no failure note", !ctx.orderNotes.some((n) => n.type === "backfill-failed"));
+  }
+  // The selected-channel view, history REJECTING.
+  {
+    const ctx = page("reject");
+    ctx.selected = "events.local.alice";
+    await drive(ctx, 'select("events.local.alice")', frame(1));
+    ok("12.9 a frame held during a FAILED channel history still reaches that channel's view", ctx.channelMsgs.length === 1, ctx.channelMsgs.length);
+    ok("12.10 nothing is left held on that path either", ctx.channelOrder.pendingCount === 0);
+    ok("12.11 and it too surfaces the failure", ctx.orderNotes.some((n) => n.type === "backfill-failed"));
+  }
 }
 
 console.log(`event-order smoke: ${cells - failed} passed, ${failed} failed`);
