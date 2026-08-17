@@ -62,7 +62,10 @@
   const particles = [];
   const blooms = [];
   const recent = [];
-  const feed = { asOf: undefined, available: false }; // membership-feed freshness
+  // `available` is "there is a feed and it said something"; `unreadable` is "the last attempt to read
+  // it failed". They are independent, and `unreadable` is declared here rather than sprung into
+  // existence on first failure so the shape of the state is readable in one place.
+  const feed = { asOf: undefined, available: false, unreadable: false }; // membership-feed freshness
   const cam = { x: 0, y: 0, scale: 1, ready: false, user: false };
   const filter = { chat: true, unicast: true, anycast: true, window: 30, paused: false, hideOffline: true, hideEmpty: true };
   let W = 0, H = 0, DPR = 1, hover = null, sel = null, lastT = 0, alpha = 1;
@@ -339,13 +342,24 @@
   // default) collapses a HUB with no VISIBLE member under the current filters — it reads the cached `h.empty`
   // (kept current by recomputeHubEmpty). So when `hide offline` is ON this
   // means "no ONLINE member"; when it's OFF a channel that still shows offline members keeps its hub — the two
-  // toggles don't fight (review-critic R2). Gated on `feed.available`: without the authoritative feed there
-  // are no membership edges, so every hub would read empty — we can't tell a quiet channel from an unknown
-  // one, so we don't hide. Reading the cached flag keeps isHidden(hub) O(1), not an all-edges scan per call.
+  // toggles don't fight (review-critic R2). Gated on the feed being AUTHORITATIVE: without the
+  // authoritative feed there are no membership edges, so every hub would read empty — we can't tell a
+  // quiet channel from an unknown one, so we don't hide. Reading the cached flag keeps isHidden(hub)
+  // O(1), not an all-edges scan per call.
   // Hiding suppresses node/spoke rendering, hit-testing, camera framing, and physics participation; the node
   // stays in the model, so toggling reveals it instantly.
+  //
+  // `feedAuthoritative()` rather than `feed.available` alone. Those came apart the moment the feed
+  // could report that it could not be READ: the last snapshot is still the last thing we KNEW, but it
+  // is no longer what IS, and `hide empty` asserts a hub has no member NOW. That is the gate's own
+  // stated reason applied to the case where we hold stale edges rather than none — otherwise the pill
+  // says "unreadable" while the page keeps acting on the reading it just disowned.
+  //
+  // The snapshot itself is deliberately NOT discarded: `asOf` and the spokes remain the honest record
+  // of the last successful read, which is true and worth showing. What stops is treating it as current.
+  const feedAuthoritative = () => feed.available && !feed.unreadable;
   const isHidden = (n) => n.kind === "hub"
-    ? filter.hideEmpty && feed.available && n.empty
+    ? filter.hideEmpty && feedAuthoritative() && n.empty
     : filter.hideOffline && isOffline(n);
   // Per-CHANNEL visibility of a membership spoke: hidden when `hide offline` is on AND this edge is offline
   // for its channel (durable-only, or the agent is offline) — so "hide offline" holds per channel, not just

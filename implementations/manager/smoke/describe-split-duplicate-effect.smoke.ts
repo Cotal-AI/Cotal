@@ -106,7 +106,15 @@ try {
   ep.on("error", () => {});
   // Emitted by the fence's repair path; never fires on a pre-fence tip, so one instrument grades both.
   let recoveriesThisTrial = 0, recoveriesTotal = 0;
-  ep.on("split-recovered", () => { recoveriesThisTrial++; recoveriesTotal++; });
+  // The FIRST refusal's bind, which the final error cannot supply: once the repair re-issues, the
+  // error the caller ends up holding names the SECOND refusal's bind. Only this event sees the one
+  // that was actually fenced, and the forced arm's positive control is that it names the uid the
+  // probe installed.
+  let firstBoundTo = "";
+  ep.on("split-recovered", (e: { boundTo?: { instanceId: string } }) => {
+    if (recoveriesThisTrial === 0) firstBoundTo = e.boundTo?.instanceId ?? "";
+    recoveriesThisTrial++; recoveriesTotal++;
+  });
   await ep.start();
 
   const N = 24;
@@ -192,26 +200,88 @@ try {
   check("the caller holds a resolved handle to rewrite (the forced case can be set up at all)",
     bound !== undefined, { cached: [...cache.keys()] });
   let forcedRecoveries = 0, forcedEffects = 0, forcedOk = false;
+  // THE REPAIR IS NOT GUARANTEED TO LAND, BY DESIGN. Core repairs a bind refusal exactly once and
+  // lets a second refusal surface, while in a two-manager space roughly half of all class-queue
+  // calls split (both stated in `endpoint.ts`). The re-issue therefore goes back through the same
+  // queue and is split again about half the time. Asserting that the repair always lands is
+  // asserting a coin comes up heads.
+  let forcedRefusedBeforeEffect = false, forcedDetail = "", forcedUid = "", forcedBoundTo = "";
+  let forcedInstalled = false;
   if (bound !== undefined) {
-    bound.responder.instanceId = mintLifecycleUid();
+    forcedUid = mintLifecycleUid();
+    bound.responder.instanceId = forcedUid;
+    // Read back through a FRESH cache lookup, not the local alias: this is what proves the probe
+    // mutated the entry the client will actually send from, rather than a copy handed out by
+    // `get`. If this is ever false the arm below is measuring an unforced call.
+    forcedInstalled = cache.get(MANAGER_ENDPOINT)?.responder.instanceId === forcedUid;
     const forcedName = `epsplit-forced-${randomUUID().slice(0, 6)}`;
     recoveriesThisTrial = 0;
+    firstBoundTo = "";
     try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
         { name: forcedName, persona: "forced-split probe" }, { deadlineMs: 15_000 });
       forcedOk = r.reply.ok === true;
-    } catch { forcedOk = false; }
+      if (!forcedOk) {
+        const err = r.reply.error as { code?: string; outcome?: string; details?: Array<{ kind?: string; boundTo?: { instanceId?: string } }> } | undefined;
+        const marks = (err?.details ?? []).map((d) => d.kind).filter(Boolean);
+        forcedRefusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && err?.outcome === "not-executed";
+        // WHICH bind the refusal names is what proves the re-issue actually went out: the first
+        // attempt is bound to the uid this probe forced in, so a second refusal still naming it
+        // would mean nothing was re-resolved and re-sent.
+        forcedBoundTo = (err?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED)?.boundTo?.instanceId ?? "";
+        forcedDetail = `${err?.code ?? "?"}|outcome=${err?.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`;
+      }
+    } catch (e) {
+      // RECORDED, NEVER DISCARDED. This arm previously wrote `catch { forcedOk = false; }`, which
+      // gave a timeout and a second fence refusal the same two numbers and no way to tell them
+      // apart — in a suite whose own subject is that a failure must state what it did. Diagnosing
+      // the flake it caused required adding this line first.
+      const thrown = (e instanceof EpEnvelopeError ? e.details ?? [] : []) as Array<{ kind?: string; boundTo?: { instanceId?: string } }>;
+      const marks = thrown.map((d) => d.kind).filter(Boolean);
+      forcedRefusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeError).outcome === "not-executed";
+      // Read here too, so this face is legible rather than blank. A resolve failure rethrows the
+      // ORIGINAL refusal, whose bind is the one forced in, so the guard below correctly rejects it:
+      // no re-issue went out. Left unassigned it stayed "", which is indistinguishable in the output
+      // from a detail that was absent, and telling those apart is this suite's whole subject.
+      forcedBoundTo = thrown.find((d) => d.kind === EP_BIND_REFUSED)?.boundTo?.instanceId ?? "";
+      forcedDetail = e instanceof EpEnvelopeError
+        ? `${e.code}|outcome=${e.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`
+        : `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`;
+    }
     forcedRecoveries = recoveriesThisTrial;
     forcedEffects = [root1, root2].filter((r) => existsSync(agentFilePath(r, forcedName))).length;
   }
   console.log(`\n1b. the split FORCED rather than awaited (bind names a non-serving incarnation)`);
   console.log(`     pre-effect refusals repaired: ${forcedRecoveries}   effects: ${forcedEffects}   caller saw ok: ${forcedOk}`);
+  if (!forcedOk) console.log(`     the re-issue was refused too: ${forcedDetail}`);
+  if (!forcedOk) console.log(`     forced bind: ${forcedUid}   the refusal names: ${forcedBoundTo || "(none)"}`);
+  console.log(`     armed: installed=${forcedInstalled}  first refusal named: ${firstBoundTo || "(none)"}`);
+  // POSITIVE CONTROL ON THE ARMING, and it must come before any question about the outcome. This
+  // suite's space splits naturally about half the time, so a probe that failed to force anything
+  // still sees a refusal, a repair and a differing bind — every symptom of the case under test,
+  // produced by the ordinary race instead. Measured: with the forcing removed, the cells below
+  // passed on 4 of 6 runs. An absence of effects is only evidence if the arm could have produced
+  // one, and that is what this states: the bind went in, and the refusal that came back is the
+  // one it provoked.
+  check("THE FORCED SPLIT WAS ACTUALLY FORCED: the probe's bind was installed on the live handle, and the refusal that came back names THAT bind and not a natural one",
+    forcedInstalled && firstBoundTo === forcedUid, { forcedInstalled, forcedUid, firstBoundTo });
   // A recovery is emitted ONLY on a reply the caller read as refused-before-effect, so counting one
   // proves the responder produced the marked refusal — this is the fence, observed and not inferred.
   check("FORCED SPLIT IS FENCED: the wrongly-bound call was refused before it ran, then repaired",
     forcedRecoveries === 1, { forcedRecoveries });
-  check("FORCED SPLIT LEAVES ONE EFFECT: the repair re-issued once and the write landed exactly once",
-    forcedEffects === 1 && forcedOk, { forcedEffects, forcedOk });
+  // BOTH OUTCOMES ARE CORRECT, so both pass: the repair either landed (one effect, caller told ok)
+  // or was split again and refused (no effect, and the refusal states conclusively that nothing
+  // ran). Grading the first alone reddened this suite on runs where the property it exists to
+  // protect — at most one effect, and a conclusive answer when there was none — held completely.
+  // What must never happen is two effects, or none with nothing conclusive said about it.
+  const forcedLanded = forcedEffects === 1 && forcedOk;
+  // The refusal must name a DIFFERENT bind than the one forced in. Without this the arm would
+  // accept a client that counts the refusal, drops the handle and never re-issues at all: that
+  // also yields zero effects and a conclusive refusal, and would otherwise read as the good face.
+  const forcedRefusedAgain = forcedEffects === 0 && !forcedOk && forcedRefusedBeforeEffect
+    && forcedBoundTo !== "" && forcedBoundTo !== forcedUid;
+  check("FORCED SPLIT CAUSES AT MOST ONE EFFECT AND SAYS SO: the repair either landed exactly once, or was refused again and stated that nothing ran",
+    forcedLanded || forcedRefusedAgain, { forcedEffects, forcedOk, forcedRefusedBeforeEffect, forcedDetail, forcedUid, forcedBoundTo });
 
   const dupes = trials.filter((t) => t.both);
   const dupeSilent = dupes.filter((t) => t.callerSaw === "ok");
