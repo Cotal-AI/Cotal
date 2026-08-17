@@ -42,6 +42,7 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "./_broker-teardown.js";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict and never throws: one throwing cell would take every cell below it
@@ -151,8 +152,11 @@ function barrierFor(instanceId: string): EpIssuanceBarrier {
 }
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "bindfence-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+// The `finally` below is correct and stays. It just does not run when this process is killed, which
+// is when the broker outlives it, so ownership covers that path.
+const releaseBroker = teardownOnSignal(broker, sd);
 await new Promise((r) => setTimeout(r, 900));
 
 const nc = await connect({ servers: `nats://127.0.0.1:${PORT}` });
@@ -351,6 +355,10 @@ try {
   await nc.drain().catch(() => nc.close());
   broker.kill("SIGTERM");
   rmSync(sd, { recursive: true, force: true });
+  // LAST, deliberately. Releasing before the lines above would hand the broker back while cleanup
+  // could still throw, which is the exact case ownership exists to catch; held until here, an
+  // uncaught throw still exits with the broker owned.
+  releaseBroker();
 }
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);

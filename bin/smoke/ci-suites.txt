@@ -282,3 +282,4 @@ smoke:agui-retry-duplicate
 smoke:agui-holder
 smoke:opencode-boot-prompt
 smoke:import-remedy
+smoke:broker-teardown
