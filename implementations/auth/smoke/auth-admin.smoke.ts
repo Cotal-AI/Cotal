@@ -44,6 +44,7 @@ import { ensureRootCredential } from "../src/root-credential.js";
 import { openLifecycleRegistry, readLifecycleHeadForOperation } from "../src/lifecycle-registry.js";
 import type { EvictPrincipal } from "../src/credential-ledger.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = await pickFreePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
@@ -53,11 +54,12 @@ const check = (name: string, cond: boolean, extra?: unknown) => { if (cond) { pa
 
 const space = `aadm-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const tmp = mkdtempSync(join(tmpdir(), "cotal-aadm-"));
+const tmp = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const dir = join(tmp, "state");
 mkdirSync(dir, { recursive: true });
 writeFileSync(join(tmp, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(tmp, "js") }));
 const srv = spawn("nats-server", ["-c", join(tmp, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, tmp);
 const awaitExit = (proc: ReturnType<typeof spawn>, timeoutMs = 3000): Promise<void> =>
   new Promise((resolve) => {
     if (proc.exitCode !== null || proc.signalCode !== null) return resolve();
@@ -437,5 +439,6 @@ try {
   srv.kill("SIGTERM"); // exact PID — never pkill nats-server
   await awaitExit(srv);
   rmSync(tmp, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(process.exitCode ?? 0);
