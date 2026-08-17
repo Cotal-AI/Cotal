@@ -341,8 +341,13 @@ try {
   // (nats-server sets it whenever clustering is configured), so the oracle refuses reclaim there.
   // If nats-server ever stopped declaring it, this check — not production — is what breaks.
   {
-    const pA = 21000 + Math.floor(Math.random() * 20000);
-    const [pB, cA, cB] = [pA + 1, pA + 2, pA + 3];
+    // OS-assigned and distinct. The old draw (21000 + random 20000, four consecutive, unchecked)
+    // overlapped the Linux ephemeral range 32768-60999 on 41% of picks, so a transient outbound
+    // socket could hold a cluster port with no other suite involved; the ten-second wait then
+    // reported the broker ("cluster node A did not come up"), not the taken port.
+    const picked = new Set<number>();
+    while (picked.size < 4) picked.add(await pickFreePort());
+    const [pA, pB, cA, cB] = [...picked];
     const cdir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
     const conf = (name: string, port: number, cport: number, routes: string) => [
       `port: ${port}`, `server_name: ${name}`,
