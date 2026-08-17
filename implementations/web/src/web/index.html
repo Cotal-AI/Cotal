@@ -229,6 +229,14 @@
       .chip.danger { color: var(--red); }
       .chip.danger:hover { background: #2a1717; border-color: var(--red); }
 
+      /* Ordering notice: what the bootstrap found out about the event stream it merged. Shape and
+         text carry the meaning; `.fault` only adds emphasis, so colour is never the whole signal. */
+      .order-notice {
+        flex: none; padding: 8px 20px; font-size: 12px; color: var(--fg);
+        background: var(--tile); border-bottom: 1px solid var(--line);
+      }
+      .order-notice.fault { border-left: 3px solid var(--amber); }
+
       .feed { overflow-y: auto; min-height: 0; flex: 1; display: flex; flex-direction: column;
         gap: 2px; padding: 8px; }
       .sys { text-align: center; padding: 5px 12px; font-size: 11px; color: var(--faint); }
@@ -497,6 +505,7 @@
     <script src="/harness.js"></script>
     <script src="/parts.js"></script>
     <script src="/agui-frame.js"></script>
+    <script src="/event-order.js"></script>
     <script src="/md.js"></script>
     <script src="/app.js"></script>
   </body>

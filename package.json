@@ -195,6 +195,8 @@
     "smoke:agui-render-parity": "tsx bin/smoke/agui-render-parity.smoke.ts",
     "smoke:agui-frame-dispatch": "tsx implementations/web/smoke/agui-frame-dispatch.smoke.ts",
     "smoke:view-events-filter": "tsx implementations/cli/smoke/view-events-filter.smoke.ts",
+    "smoke:event-order": "tsx implementations/web/smoke/event-order.smoke.ts",
+    "smoke:web-events-filter": "tsx implementations/web/smoke/web-events-filter.smoke.ts",
     "smoke:event-channel": "tsx extensions/connector-core/smoke/event-channel.smoke.ts",
     "smoke:event-channel-resolve": "tsx extensions/connector-core/smoke/event-channel-resolve.smoke.ts",
     "smoke:agui-split": "tsx extensions/connector-core/smoke/agui-split.smoke.ts",
