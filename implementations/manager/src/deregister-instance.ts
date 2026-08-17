@@ -52,8 +52,9 @@ import type { NatsConnection } from "@nats-io/transport-node";
 export type InstanceDeregisterCondition =
   /** The instance ANSWERED a pinned describe: it is alive and this is never run against a live one. */
   | "instance-answered"
-  /** It did not answer, but the broker did NOT affirm its rail empty: something is subscribed there,
-   *  which is a hung or slow instance rather than a departed host. Nothing is removed. */
+  /** It did not answer, and the broker did NOT affirm its rail empty, which is what a held
+   *  subscription looks like: a hung or slow instance rather than a departed host, and the one
+   *  observation this command may not act on. Nothing is removed. */
   | "instance-not-affirmed-gone"
   /** The probe itself failed (refused, unreadable, or any non-silence error) — nothing established. */
   | "liveness-unestablishable"

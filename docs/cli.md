@@ -757,7 +757,7 @@ no connection and therefore no subscription, so a real corpse is still removed.
 | Refusal | What it means | What to do |
 |---|---|---|
 | `instance-answered` | The instance answered a pinned describe. It is alive | Nothing to repair. If it is wedged rather than gone, stop the process first; its own clean stop removes the record |
-| `instance-not-affirmed-gone` | It did not answer, but the broker did not report its rail empty. Something is subscribed there: slow or hung, not gone | Nothing was removed. Stop the process; its record goes on its own clean stop, or re-run this once it is down |
+| `instance-not-affirmed-gone` | It did not answer, and the broker did not report its rail empty, which is what a held subscription looks like: slow or hung, not affirmed gone | Nothing was removed. Stop the process; its record goes on its own clean stop, or re-run this once it is down |
 | `liveness-unestablishable` | The probe itself failed, so nothing was learned | Fix the probe's path (credential, broker) and re-run. A probe that could not run is never read as death |
 | `not-registered` | No registration at that coordinate | Check `--instance` and `--endpoint`. This takes the whole id, never a prefix |
 | `superseded` | The record moved between the read and the delete | Something is writing to it. Nothing was removed; re-observe before retrying |
