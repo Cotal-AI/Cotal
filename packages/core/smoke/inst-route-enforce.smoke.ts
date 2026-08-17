@@ -11,8 +11,8 @@
  * confound the pin with everything else that differs between them; comparing one profile against
  * itself isolates the thing C actually changed.
  *
- * THE SHAPE IS BORROWED AND SO IS THE CLASSIFIER, from a probe cs-lane-session executed and then
- * published a defect in. Both are load-bearing:
+ * THE SHAPE IS BORROWED AND SO IS THE CLASSIFIER, from an earlier probe that was run and had a
+ * defect published in it. Both are load-bearing:
  *
  *   - Take a REAL row out of `permissionsFor` for this principal, substitute only the trailing nonce
  *     wildcard, and publish it as the CONTROL. Then rewrite ONLY the route segment and publish that.
