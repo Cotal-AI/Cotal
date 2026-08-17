@@ -2385,7 +2385,7 @@ export class CotalEndpoint extends EventEmitter {
   }
 
   /** Idempotent-PER-LIFECYCLE create of a `dm_<o>-<a>-<uid>` durable with its ACTIVATION FRONTIER
-   *  (SPEC :467). Info-first: an existing durable (a manager-restart re-provision of the SAME uid, or
+   *  (SPEC §8). Info-first: an existing durable (a manager-restart re-provision of the SAME uid, or
    *  the same lifecycle's own restart) is kept as-is, preserving the ORIGINAL frontier — the
    *  activation moment never moves. A fresh lifecycle captures the DM stream's current `last_seq` and
    *  starts delivery at frontier+1, so a same-alias successor inherits none of the predecessor's
@@ -3982,7 +3982,7 @@ export class CotalEndpoint extends EventEmitter {
     if (!this.doRegister || !this.kv) return; // observers watch but never publish their own record
     const p: Presence = {
       card: this.card,
-      // SPEC §6/:315: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
+      // SPEC §6: presence carries the incarnation's lifecycle UID (MUST in auth mode from v0.4);
       // omitted only where the endpoint has none (a pure operator/daemon connection never registers).
       ...(this.ownLifecycleUid !== undefined ? { lifecycleUid: this.ownLifecycleUid } : {}),
       status: this.status,

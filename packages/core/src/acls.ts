@@ -138,13 +138,6 @@ async function enumerateLiveAclRows(
 }
 
 /**
- * Record (set) an owner's read ACL — a single ATOMIC CAS put of the full value, never
- * create-then-populate, so a present record is always complete and `[]` always means "no-read", never
- * "not yet written". Bumps `revision`. Retries a revision conflict by re-reading. Idempotent in
- * effect: writing the same `allowSubscribe` is harmless. Use `allowSubscribe: []` to revoke all reads
- * (the reader then DROPS the owner's entries) — distinct from {@link deleteAcl}, which removes the row.
- */
-/**
  * Raise the mint-time history ceiling (`issuedAllowSubscribe`) to match `allowSubscribe`.
  *
  * CALL PATH: only {@link provisionAgent} (and tests of that path). Ordinary registry writers use
@@ -182,6 +175,16 @@ export async function commitAcl(
   return writeAcl(kv, owner, lifecycleUid, allowSubscribe, { reissue: false });
 }
 
+/**
+ * Record (set) an owner's read ACL — a single ATOMIC CAS put of the full value, never
+ * create-then-populate, so a present record is always complete and `[]` always means "no-read", never
+ * "not yet written". Bumps `revision`. Retries a revision conflict by re-reading. Idempotent in
+ * effect: writing the same `allowSubscribe` is harmless. Use `allowSubscribe: []` to revoke all reads
+ * (the reader then DROPS the owner's entries) — distinct from {@link deleteAcl}, which removes the row.
+ *
+ * The shared write both {@link commitAcl} and {@link reissueAcl} delegate to; they differ only in
+ * whether the mint-time ceiling may rise, which is `opts.reissue`.
+ */
 async function writeAcl(
   kv: KV,
   owner: string,

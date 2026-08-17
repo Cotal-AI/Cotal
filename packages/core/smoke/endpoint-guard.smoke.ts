@@ -308,7 +308,7 @@ try {
       && heldSpec?.holder.id === guardResponder.id && heldSpec.holder.lifecycleUid === guardResponder.lifecycleUid);
 
     // HIGH 1 (distsys, fact-confirmed): a HOLD's VERIFIED obligations must SURVIVE the pause
-    // (SPEC :1628-1630 MUST-apply, :2311 reusable within the goal) - persisted on the hold's
+    // (SPEC §13.6: obligations are MUST-apply and reusable within the goal) - persisted on the hold's
     // immutable record at mint, returned identically from release and reconcile.
     const go = goalOf("g-gate-obl");
     await createGoal(ctx, go, gspec("sha256:go"));

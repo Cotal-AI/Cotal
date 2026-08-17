@@ -256,6 +256,7 @@ smoke:ep-rail-failure
 smoke:bind-fence:live
 smoke:claude-launch-model
 smoke:ci-suites
+smoke:membership-feed:auth
 smoke:cas-publish
 smoke:cas-preflight-cluster
 smoke:frame-size

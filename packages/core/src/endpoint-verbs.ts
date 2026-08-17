@@ -229,7 +229,7 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
   const parsed = parseEpSubject(subject);
   if (!parsed || parsed.plane !== "reply")
     throw new EpEnvelopeError("internal", `a message on the caller's reply rail does not parse as a reply subject: ${subject}`);
-  // §13.2 (:1173-1189): ACCEPTANCE binds the subject-borne attribution to the INVOKED identity.
+  // SPEC §13.2: ACCEPTANCE binds the subject-borne attribution to the INVOKED identity.
   // Reading the endpoint/instance/epoch off the subject is not the same as checking them against the
   // invocation: a truthfully-attributed reply from a DIFFERENT endpoint (or a stale/other instance)
   // is not the requested responder, and nonce possession is addressing, not authorization. A stale
