@@ -23,6 +23,7 @@ import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core"
 import type { CotalMessage, Delivery } from "@cotal-ai/core";
 import { transcriptChannel } from "@cotal-ai/connector-core";
 import { cotal } from "../src/plugin.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 async function freePort(): Promise<number> {
   const srv = createNetServer();
@@ -41,8 +42,9 @@ const NAME = "Otto";
 const CHAN = transcriptChannel(NAME); // "tr-otto" — the shared connector-core convention
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-octr-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const srv = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
@@ -173,5 +175,6 @@ try {
   oc.close();
   await sleep(150);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);
