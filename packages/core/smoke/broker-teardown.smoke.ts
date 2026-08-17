@@ -87,6 +87,14 @@ function reapOwn(brokerPid: number, storeDir: string): void {
 try {
   // 1. POSITIVE CONTROL. The identical fixture without ownership must leak on SIGTERM. This is the
   //    reproduction, run as a cell, and it is what makes cells 2-4 mean something.
+  //
+  //    IF THIS CELL JUST WENT RED ON YOU, READ THIS BEFORE TREATING IT AS A REGRESSION. It asserts
+  //    that the leak HAPPENS. It is not a leak detector and it does not guard anything; it keeps
+  //    passing whether or not the teardown works, which is exactly its job. So it goes red in one
+  //    interesting case: somebody fixed the leak AT ITS SOURCE, and an unowned broker no longer
+  //    outlives its signalled parent. If that is what you just did, this cell is correct to fail and
+  //    the right response is to delete it and the cells it was propping up, not to make it pass
+  //    again. Confirm it first: run the fixture in `unowned` mode by hand and watch the broker's pid.
   {
     const s = await start("unowned");
     process.kill(s.selfPid, "SIGTERM");
