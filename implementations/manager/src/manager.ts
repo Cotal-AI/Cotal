@@ -719,7 +719,7 @@ export class Manager {
    *  MONOTONIC (`performance.now`), not wall clock, because it is only ever read as an ELAPSED time.
    *  `Date.now` steps on an NTP correction or a suspend/resume, and a backward step would shorten the
    *  measured gap and let this instance serve past the TTL with no proof it still holds the key. The
-   *  initial value is `-Infinity` so "never confirmed" reads as an infinite gap and fails closed,
+   *  initial value is `-Infinity` so "never refreshed" reads as an infinite gap and fails closed,
    *  rather than as a small one at process start when a monotonic clock is still near zero. */
   private leaseConfirmedAt = Number.NEGATIVE_INFINITY;
   /** A renew is in flight. The tick must not start a second one: both would read the same cached
@@ -1571,9 +1571,11 @@ export class Manager {
    *  otherwise keep serving, adopting whatever revision the broker actually has.
    *
    *  WHEN NO ANSWER IS AVAILABLE AT ALL, the bound is time, not attempts: past one whole TTL with no
-   *  confirmation the key may have expired and been re-acquired, so this instance can no longer claim
-   *  to hold it and fails closed on that ground, said plainly. Inside the TTL the budget affords
-   *  several more attempts ({@link MANAGER_LEASE_RENEW_MS}), which is what makes waiting safe.
+   *  renew that LANDED, the key may have expired and been re-acquired, so this instance can no longer
+   *  claim to hold it and fails closed on that ground, said plainly. A re-read answering "still yours,
+   *  same revision" IS an answer and we keep serving on it, but it did not touch the key, so it buys
+   *  no time — reading a key is not refreshing it. Inside the TTL the budget affords another
+   *  renew-and-re-read pair ({@link MANAGER_LEASE_RENEW_MS}), which is what makes waiting safe.
    *
    *  FAILING CLOSED IS FOR THIS INSTANCE ONLY: stop serving + tear down OUR managed agents + exit, so a
    *  stalled instance can't keep double-processing under a key a same-id restart may re-acquire. Keyed
@@ -1617,10 +1619,10 @@ export class Manager {
         if (verdict.kind === "unknown") {
           const since = performance.now() - this.leaseConfirmedAt;
           if (since < MANAGER_LEASE_TTL_MS) {
-            console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) and could not re-read it either (${verdict.why}) - that proves nothing about the key, and it was confirmed ours ${Math.round(since)}ms ago, so this instance keeps serving and will retry`);
+            console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) and could not re-read it either (${verdict.why}) - that proves nothing about the key, and its lease was last refreshed ${Math.round(since)}ms ago, so this instance keeps serving and will retry`);
             return;
           }
-          return await this.failClosedOnLeaseLoss(`its lease key ${Number.isFinite(since) ? `has not been confirmed for ${Math.round(since)}ms, longer than the ${MANAGER_LEASE_TTL_MS}ms lease TTL` : "was never confirmed"}, so this instance can no longer prove it holds it (renew: ${why}; re-read: ${verdict.why})`);
+          return await this.failClosedOnLeaseLoss(`its lease key ${Number.isFinite(since) ? `has not been refreshed for ${Math.round(since)}ms, longer than the ${MANAGER_LEASE_TTL_MS}ms lease TTL` : "was never refreshed"}, so this instance can no longer prove it holds it (renew: ${why}; re-read: ${verdict.why})`);
         }
         return await this.failClosedOnLeaseLoss(verdict.kind === "gone"
           ? `its lease key is GONE from the bucket - expired or released (renew: ${why})`
