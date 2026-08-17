@@ -4509,7 +4509,7 @@ export class Manager {
     // itself (`iid`, written at accept), which is the honest coordinate: a same-instanceId restart
     // inherits its predecessor's orphans, and a goal accepted by a DIFFERENT (possibly still-live)
     // sibling is left for its owner. This replaces the goal spec's `executor` pin, which existed
-    // only to epoch-scope the terminal subject and is gone with it (SPEC:1394).
+    // only to epoch-scope the terminal subject and is gone with it (§13.2 reserved subjects).
     if (acceptedByIid !== this.managerInstanceId) {
       console.error(`goal reconcile ${ref.goalId}: accepted by instance "${acceptedByIid}", not this incarnation "${this.managerInstanceId}"; left for its owner (never a cross-instance settle)`);
       return;
@@ -4641,7 +4641,7 @@ export class Manager {
     // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): must-5 (a) reads THIS
     // incarnation's OWN gate epoch and REFUSES a superseded commit (the currency belt), and (b)
     // barrier-revoke evicts this connection on takeover. The terminal lands on the ONE subject
-    // SPEC:1394 reserves; first-terminal-fact-wins is global, so a committed outcome is visible
+    // SPEC:1433 (§13.2 reserved subjects) reserves; first-terminal-fact-wins is global, so a committed outcome is visible
     // to every reader in every incarnation. On success the reconcile-index entry is cleared.
     //
     // Named rather than inlined into the hooks below so the H1 post-accept fallback drives THIS
