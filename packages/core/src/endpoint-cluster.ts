@@ -81,8 +81,9 @@ export interface ClusterCommand {
    *  command marker and NOT a class — an action command's submissions are `journal`,
    *  but the marker is what makes `goalId` a MUST on the envelope. */
   action?: true;
-  /** Declared iff `action` — the ceiling is a MUST for every command that accepts journal-class
-   *  submissions, and the canonicalizer reads it from here, never from a constant. */
+  /** Declared iff the command is `journal`-class, which is what makes it accept submissions: the
+   *  marker is irrelevant here, and the canonicalizer reads the ceiling from this field, never
+   *  from a constant. */
   admissionCeiling?: EpAdmissionCeiling;
   /** The acceptance-relative readiness bound, iff the command declares bounded readiness (§13.6).
    *  Persisted into the acceptance because it is goal state, not the request's decision deadline. */
