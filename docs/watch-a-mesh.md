@@ -105,8 +105,10 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   **membership** (a spoke to every channel an agent subscribes to) and glows when a message flows.
   Membership is **broker-sourced and authoritative**, reconstructed by the delivery daemon from
   the broker's connection view unioned with the durable-members registry, so *silent* subscribers
-  show too. A header pill reports the feed as *live*, *stale*, or *traffic-only* (no daemon, e.g.
-  open mode; the graph then degrades to traffic-derived spokes). A **hide-offline** control
+  show too. A header pill reports the feed as *live*, *stale*, *traffic-only* (no daemon, e.g.
+  open mode; the graph then degrades to traffic-derived spokes), or *unreadable* — the last
+  meaning the read itself did not answer, which is a fact about the viewer rather than about the
+  mesh, and is kept distinct from *traffic-only* for exactly that reason. A **hide-offline** control
   collapses durable-but-away members. Broker-sourced membership needs the delivery daemon (auth
   mode) and is provisioned on a fresh `cotal up`.
 

@@ -258,3 +258,4 @@ smoke:claude-launch-model
 smoke:ci-suites
 smoke:membership-feed:auth
 smoke:describe-split-effect
+smoke:web-membership-refusal

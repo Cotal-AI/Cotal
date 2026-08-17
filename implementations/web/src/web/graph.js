@@ -262,8 +262,13 @@
   }
 
   // ── membership (authoritative spokes) ──
+  // The server said it could not read membership. Kept separate from `available` rather than folded
+  // into it: they are different facts and the pill has to say which one.
+  function membershipUnreadable() { feed.unreadable = true; setFeed(); }
+
   function applyMembership(snap) {
     if (!snap) return;
+    feed.unreadable = false; // a snapshot arrived, whatever it contains
     feed.asOf = snap.asOf;
     feed.available = snap.asOf !== undefined || (Array.isArray(snap.members) && snap.members.length > 0);
     setFeed();
@@ -528,7 +533,12 @@
     const el = $("feed"); if (!el) return;
     el.hidden = false;
     let cls, text;
-    if (!feed.available) { cls = "off"; text = "membership: traffic-only"; }
+    // UNREADABLE IS ITS OWN STATE, and it must be checked before `available`. "traffic-only" is a
+    // CLAIM ABOUT THE MESH — that no membership feed is being published — and it was being shown for
+    // a failed read, which is a claim about US. The operator's own viewer reported traffic-only
+    // against a mesh that had a feed, and nothing on the page could have revealed the difference.
+    if (feed.unreadable) { cls = "off"; text = "membership: unreadable"; }
+    else if (!feed.available) { cls = "off"; text = "membership: traffic-only"; }
     else { const age = feed.asOf ? now() - feed.asOf : Infinity; if (age < FEED_STALE_MS) { cls = ""; text = "membership: live"; } else { cls = "stale"; text = "membership: stale"; } }
     el.className = "pill" + (cls ? " " + cls : "");
     el.querySelector(".t").textContent = text;
@@ -663,13 +673,23 @@
   async function load() {
     const [meta, roster, chans, membership, activity, dmHist] = await Promise.all([
       fetch("/api/meta").then((r) => r.json()), fetch("/api/roster").then((r) => r.json()), fetch("/api/channels").then((r) => r.json()),
-      fetch("/api/membership").then((r) => r.json()).catch(() => ({ members: [] })),
+      // `.catch(() => ({members: []}))` here turned a failed fetch into an empty snapshot, which the
+      // pill then reported as "traffic-only" — the client half of the same defect the server had.
+      // A non-200 is not a snapshot either: `r.json()` on the refusal body would parse fine and
+      // arrive as data, so the status is checked before the body is trusted.
+      fetch("/api/membership")
+        .then((r) => (r.ok ? r.json() : { unreadable: true }))
+        .catch(() => ({ unreadable: true })),
       fetch("/api/activity?limit=400").then((r) => r.json()).catch(() => []), fetch("/api/dms?limit=400").then((r) => r.json()).catch(() => []),
     ]);
     $("space").textContent = "· " + meta.space;
     for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; }
     updateRoster(roster);
-    applyMembership(membership); // authoritative spokes BEFORE traffic seeding (no skeleton flicker)
+    // authoritative spokes BEFORE traffic seeding (no skeleton flicker) — unless the read refused,
+    // in which case there are no spokes to draw and the pill has to say so rather than imply a mesh
+    // with no feed.
+    if (membership && membership.unreadable) membershipUnreadable();
+    else applyMembership(membership);
     for (const e of activity) { const m = e.msg; if (m) m.channel = e.channel; const a = m?.from?.id && agents.get(m.from.id); if (e.mode === "chat" && m?.channel && a) chatHit(a, m.channel, m.ts || now()); }
     for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
     // Seed the `recent` buffer from the activity backfill so the channel detail's "recently active" tags +
@@ -684,7 +704,7 @@
     alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout
     const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.scale = f.scale;
   }
-  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => updateRoster(JSON.parse(e.data))); es.addEventListener("membership", (e) => applyMembership(JSON.parse(e.data))); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
+  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => updateRoster(JSON.parse(e.data))); es.addEventListener("membership", (e) => applyMembership(JSON.parse(e.data))); es.addEventListener("membership-read-failed", () => membershipUnreadable()); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
 
   resize();
   setInterval(setFeed, 5000); // age "live" → "stale" even without new events
