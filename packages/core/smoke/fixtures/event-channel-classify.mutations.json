@@ -1,0 +1,26 @@
+{
+  "command": "pnpm smoke:event-channel-classify",
+  "mutations": [
+    {
+      "name": "E1 the classifier goes back to a prefix test, so any string under the prefix is machine traffic again and a human channel is swept out of the chat pane",
+      "file": "packages/core/src/event-channel.ts",
+      "find": "  const principal = parsePrincipalKey(channel.slice(EVENT_CHANNEL_PREFIX.length));\n  if (principal === null) return null;\n  return eventChannel(principal) === channel ? principal : null;",
+      "replace": "  return { owner: \"x\", actor: \"y\" };",
+      "expectRed": "[retired limit] `events.NOT A VALID KEY` is NOT an event channel"
+    },
+    {
+      "name": "E2 the convention drifts by one character, which is the rename that ships green when a constant is only ever compared with itself",
+      "file": "packages/core/src/event-channel.ts",
+      "find": "export const EVENT_CHANNEL_PREFIX = \"events.\";",
+      "replace": "export const EVENT_CHANNEL_PREFIX = \"event.\";",
+      "expectRed": "the prefix is the literal `events.`"
+    },
+    {
+      "name": "E3 the constructor concatenates instead of validating, so a token carrying a dot is rewritten into a channel rather than refused, which is the fusion the principal re-key removed",
+      "file": "packages/core/src/event-channel.ts",
+      "find": "  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;",
+      "replace": "  return `${EVENT_CHANNEL_PREFIX}${principal.owner}.${principal.actor}`;",
+      "expectRed": "a dot in a token is refused, not rewritten"
+    }
+  ]
+}

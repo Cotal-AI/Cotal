@@ -1,0 +1,54 @@
+{
+  "command": "pnpm smoke:agui-render",
+  "mutations": [
+    {
+      "name": "R1 the renderer stops registering, so every surface goes back to the marker while the module still exports a perfectly good render function",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "registry.register(aguiFramePartRenderer);",
+      "replace": "",
+      "expectRed": "the renderer is registered under kind `part-renderer`"
+    },
+    {
+      "name": "R2 it registers under a lookalike name, which resolves for nobody and is invisible to any cell that compares the constant with itself",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "  name: AGUI_FRAME_KIND,",
+      "replace": "  name: \"agui.frame\",",
+      "expectRed": "the registered NAME is the wire kind, spelled out"
+    },
+    {
+      "name": "R3 the untrusted-element guard is dropped, so one null in the events array throws and the dispatcher collapses the whole frame to a single failure line",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "    const type = typeof e === \"object\" && e !== null ? str(e.type) : undefined;",
+      "replace": "    const type = str(e.type);",
+      "expectRed": "a null element among good events costs one line, not the frame"
+    },
+    {
+      "name": "R4 the empty-versus-absent distinction collapses on the tool result, which is the exact shape the browser copy diverged on",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "        emit(RESULT_PREFIX, CONT, str(e.content) ?? \"(no content)\");",
+      "replace": "        emit(RESULT_PREFIX, CONT, str(e.content) || \"(no content)\");",
+      "expectRed": "an EMPTY tool result renders empty, not `(no content)`"
+    },
+    {
+      "name": "R5 the tail flush for an unterminated text stream is dropped, so a truncated turn is indistinguishable from a silent one",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "  for (const id of [...text.keys()]) flush(text, id, TEXT_PREFIX, TEXT_PREFIX, \" …\");",
+      "replace": "",
+      "expectRed": "an unterminated text stream is flushed and marked truncated"
+    },
+    {
+      "name": "R6 an event type this build does not know is skipped instead of named, which is a hole in a transcript that still looks complete",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "        emit(\"• \", CONT, `unrecognised event ${JSON.stringify(type ?? null)}`);",
+      "replace": "        break;",
+      "expectRed": "an event type this build does not know is NAMED, not dropped"
+    },
+    {
+      "name": "R7 the line-start predicate accepts everything, which turns the invariant cell vacuous and is caught only by its own control",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "  !/^ {0,3}(?:#|[-*+>|]|\\d+[.)])(?:\\s|$)/.test(line) && !/^ {4}/.test(line);",
+      "replace": "  true;",
+      "expectRed": "predicate rejects a raw block opener"
+    }
+  ]
+}
