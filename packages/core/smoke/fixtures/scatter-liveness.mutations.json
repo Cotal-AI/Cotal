@@ -4,8 +4,8 @@
     {
       "name": "PREDICTED KILLED (>=1 red) - the settlement check runs only on a VERDICT, never on a REPLY, so the field shape (corpse affirmed first, live instance answering later) goes back to paying the whole deadline",
       "file": "packages/core/src/endpoint-verbs.ts",
-      "find": "        else if (settled()) finish(true);                 // the rest are affirmed gone: T is now\n",
-      "replace": "",
+      "find": "        else if (settled()) finish(true);",
+      "replace": "        else if (false) finish(true);",
       "expectRed": "and ended THERE, not at the 3000ms deadline"
     },
     {

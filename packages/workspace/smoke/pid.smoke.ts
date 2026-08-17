@@ -72,11 +72,20 @@ for (const other of ["vim SPEC.md", "node server.js", "/usr/bin/supervised-thing
 // SUBSTRING IS NOT ENOUGH, and this is the cell that says so: the token test is what keeps
 // `supervised-thing` above from reading as a manager, so a rewrite to `includes("supervise")`
 // resolves a stranger to ours and the attribution stops attributing.
-check("this very process is readable and is NOT a manager", (() => {
-  const r = readProcessCommand(process.pid);
-  return r.kind === "command" && !commandIsCotalSupervisor(r.command);
-})(), readProcessCommand(process.pid));
-check("a pid with no process behind it reads GONE, never as a command", readProcessCommand(deadPid).kind === "gone", { deadPid, got: readProcessCommand(deadPid) });
+// WHERE THERE IS AN ARGV SOURCE. win32 has none that this reads, so `readProcessCommand` answers
+// `unreadable` there and the caller may conclude nothing — which is not a gap to hide behind a skip
+// but a contract with its own cell below. Everything that needs a real command line is gated on it.
+const ARGV_READABLE = process.platform !== "win32";
+if (ARGV_READABLE)
+  check("this very process is readable and is NOT a manager", (() => {
+    const r = readProcessCommand(process.pid);
+    return r.kind === "command" && !commandIsCotalSupervisor(r.command);
+  })(), readProcessCommand(process.pid));
+else
+  check("on win32 a process's argv is UNREADABLE, and the reader says so rather than guessing",
+    readProcessCommand(process.pid).kind === "unreadable", readProcessCommand(process.pid));
+if (ARGV_READABLE)
+  check("a pid with no process behind it reads GONE, never as a command", readProcessCommand(deadPid).kind === "gone", { deadPid, got: readProcessCommand(deadPid) });
 
 // ── THE CALLERS, which are the actual change ──────────────────────────────────────────────────
 // Driven through a real pidfile in a real cotal root, not by calling the predicate by hand: the
@@ -115,8 +124,18 @@ try {
   // reports a healthy manager that does not exist. This runner IS such a stranger: alive, recorded,
   // and provably not a manager.
   writeFileSync(mgrPid, `${process.pid}\n`);
-  check("a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager", managerLiveness() === "foreign", process.pid);
-  check("and managerUp is FALSE for it, so a start path is not blocked forever by a stranger", managerUp() === false);
+  if (ARGV_READABLE) {
+    check("a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager", managerLiveness() === "foreign", process.pid);
+    check("and managerUp is FALSE for it, so a start path is not blocked forever by a stranger", managerUp() === false);
+  } else {
+    // ATTRIBUTION MAY ONLY DOWNGRADE ON PROOF, and on win32 there is none to be had. The stranger is
+    // therefore still trusted, which is exactly the pre-existing behaviour on every platform: this
+    // change makes the recycled-pid record detectable where an argv source exists and changes
+    // nothing where it does not. Asserted rather than skipped, so the blind spot is a stated fact.
+    check("on win32 a live stranger stays ALIVE, because nothing was established about it",
+      managerLiveness() === "alive", process.pid);
+    check("...and managerUp is TRUE for it, unchanged from before attribution existed", managerUp() === true);
+  }
   writeFileSync(mgrPid, `${supervisorPid}\n`);
 
   writeFileSync(mgrPid, `${deadPid}\n`);
