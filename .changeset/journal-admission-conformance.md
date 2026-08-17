@@ -19,7 +19,7 @@ never from the marker.
 
 `createEndpointStreams` now refuses a fact retention below the declared idempotency horizon. The
 horizon is realized by retention rather than by a clock, so a shorter age does not shorten a
-guarantee — it removes the mechanism, and a redelivered submission whose decision fact has been
+guarantee; it removes the mechanism, and a redelivered submission whose decision fact has been
 evicted is accepted as new work. The horizon is a declared option defaulting to the documented
 constant.
 

@@ -7,7 +7,7 @@ fix(web): tell the browser a membership read failed instead of serving it as emp
 
 The dashboard's `/api/membership` route answered a failed read with `{asOf: undefined, members: []}`
 and a 200. `JSON.stringify` drops a key whose value is `undefined`, so those bytes are
-`{"members":[]}` — byte-identical to a successful read of a space where nobody is subscribed. The
+`{"members":[]}`, byte-identical to a successful read of a space where nobody is subscribed. The
 graph then reported the feed as `membership: traffic-only`, which asserts that the mesh publishes no
 membership feed, when the truth was that the read did not answer.
 
