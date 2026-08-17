@@ -4,8 +4,13 @@
  *
  * SCOPE, measured rather than assumed. `finally` teardown is already correct on the normal path: ten
  * `bind-fence` runs on a long-lived box left zero `bindfence-*` brokers and zero store dirs behind.
- * The defect is exactly and only the signal path, because a signalled node process runs neither
- * `finally` nor an `exit` handler. So this adds a handler and changes nothing else.
+ * The defect is exactly and only the signal path, because a signalled suite never unwinds its
+ * `finally`. So this adds teardown that does not depend on unwinding, and changes nothing else.
+ *
+ * The two registrations below are INDEPENDENTLY SUFFICIENT under `tsx`, which is worth stating
+ * because it is not obvious and it was only established by trying to disable each one: removing
+ * either alone still tears the broker down, and only removing OWNERSHIP reinstates the leak. That is
+ * why the suite's mutation targets `owned.add` rather than a hook.
  *
  * PARENTAGE IS THE DISCRIMINATOR, NOT ARGV. The helper holds the child handle it spawned and never
  * has to recognize the process later. That matters because argv fails in BOTH directions on a real
