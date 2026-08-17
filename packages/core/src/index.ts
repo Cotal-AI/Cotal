@@ -62,6 +62,7 @@ export * from "./auth-provider.js";
 export * from "./canonical.js";
 export * from "./artifact.js";
 export * from "./parts.js";
+export * from "./agui-kind.js";
 export * from "./schema-profile.js";
 export * from "./broker-floor.js";
 export * from "./broker-tls.js";

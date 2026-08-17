@@ -268,3 +268,5 @@ smoke:principal-channel-witness
 smoke:part-renderer
 smoke:auth
 smoke:mutation-fixtures
+smoke:agui-conformance
+smoke:agui-kind

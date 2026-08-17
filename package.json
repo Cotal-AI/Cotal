@@ -186,6 +186,8 @@
     "smoke:actor-ephemeral": "tsx packages/core/smoke/actor-ephemeral.smoke.ts",
     "smoke:principal-channel-witness": "tsx packages/core/smoke/principal-channel-witness.smoke.ts",
     "smoke:part-renderer": "tsx packages/core/smoke/part-renderer.smoke.ts",
+    "smoke:agui-kind": "tsx packages/core/smoke/agui-kind.smoke.ts",
+    "smoke:agui-conformance": "tsx extensions/connector-core/smoke/agui-conformance.smoke.ts",
     "smoke:ep-work": "tsx packages/core/smoke/endpoint-work.smoke.ts",
     "smoke:ep-virtual": "tsx packages/core/smoke/endpoint-virtual.smoke.ts",
     "smoke:ep-action": "tsx packages/core/smoke/endpoint-action.smoke.ts",
