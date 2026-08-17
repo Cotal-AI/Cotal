@@ -29,6 +29,15 @@ relies on. A serving incarnation subscribes its instance rail for every command 
 endpoint must serve `describe`, so silence on that rail is evidence of absence rather than absence of
 evidence. The reply is never read, so an instance whose describe is broken still reads as present.
 
+**And a probe is never a reason to still be running.** Against a live instance the probe is never
+answered, because the request is a cast and a responder must not reply to one, so its deadline timer
+runs the full budget on every healthy instance every time. Wired into `cotal ps` that was measured at
+four extra seconds after the last row was printed, on a mesh with no dead registration in it at all:
+12.8s with the probe against 8.8s with it switched off, same tree and same mesh. The timer is now
+unref'd, so a probe still settles `unknown` at its budget for anyone waiting on it and no longer holds
+the event loop open for a caller whose gather has already finished. The same measurement after the fix
+is 8.6s to 9.4s.
+
 **The probe belongs to the caller, not to the scatter.** Asking about an instance is a publish on that
 instance's rail, and a credential holding no row for it is refused by the broker asynchronously while
 the publish returns normally, so a refused probe is silent and silence is what a live but slow instance
