@@ -1,0 +1,38 @@
+{
+  "suite": "packages/core/smoke/broker-teardown.smoke.ts",
+  "guard": "a smoke broker owned through the helper dies when its suite is SIGNALLED, not only when the suite returns",
+  "command": "pnpm smoke:broker-teardown",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/fixtures/broker-teardown.mutations.json",
+  "why": [
+    "ONE MUTATION, AND IT REINSTATES THE OBSERVED DEFECT. Narrowing the registered signals to SIGHUP",
+    "leaves the helper's structure, its exit handler, and its bookkeeping intact while removing the",
+    "only thing that fires when a seat is killed. That is precisely the state the tree was in when a",
+    "signalled bind-fence left broker pid 150309 alive, reparented to ppid 1, port still bound.",
+    "",
+    "THE SUITE'S OWN POSITIVE CONTROL IS WHY THE KILL MEANS SOMETHING. Cell 1 runs the identical",
+    "fixture WITHOUT ownership and asserts the broker SURVIVES. So the suite is known to be able to",
+    "observe a leak, and cells 2 and 3 are not passing because brokers happen to die on their own.",
+    "Under this mutation cell 1 stays green and cells 2 and 3 flip, which is the discrimination.",
+    "",
+    "IT MUST STILL TYPECHECK, because the suite's command builds nothing but tsx still type-strips and",
+    "`pnpm typecheck` covers this file. A const-asserted array with one member keeps every downstream",
+    "type intact, so the red that arrives is the assertion's own and not a compile error.",
+    "",
+    "WHAT THIS DOES NOT PROVE, and it is asserted in the suite rather than left out. SIGKILL is",
+    "uncatchable: the handler never runs, the child handle dies with the process, and the broker is",
+    "orphaned regardless. Cell 5 asserts that leak as a fact and checks the orphan carries the minted",
+    "store-dir token, because that token is the only evidence a later reaper can match. Parentage",
+    "covers the case this helper fixes; the token covers the case it cannot. Neither covers both, and",
+    "a reader who takes this for a solved problem has been misled."
+  ],
+  "mutations": [
+    {
+      "name": "the terminating signals are no longer handled, so a killed suite orphans its broker again",
+      "file": "packages/core/smoke/_broker-teardown.ts",
+      "find": "  for (const sig of [\"SIGINT\", \"SIGTERM\", \"SIGHUP\"] as const) {",
+      "replace": "  for (const sig of [\"SIGHUP\"] as const) {",
+      "expectRed": "✗ FAIL: SIGTERM: the owned broker is gone",
+      "cell": "✗ FAIL: SIGTERM: the owned broker is gone"
+    }
+  ]
+}
