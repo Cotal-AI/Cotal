@@ -9,11 +9,12 @@
       "expectRed": "...and it healed through the REFUSAL, not the allowlist: the recovery counter moved"
     },
     {
-      "name": "PREDICTED KILLED (>=4 red) - the client counts and drops but never re-issues, so a refusal is handed to the caller and no repair happens",
+      "name": "SURVIVED (measured, not predicted) - the client counts and drops but never re-issues, so a refusal is handed to the caller and no repair happens",
       "file": "packages/core/src/endpoint.ts",
-      "find": "            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n          } catch (reissue) {",
-      "replace": "            return r;\n          } catch (reissue) {",
-      "expectRed": "...and the re-issue DID go out \u2014 more than one publish, and every one of them safe"
+      "find": "          return await invokeCommand(nc, this.space, reissueTarget, command, args, invokeOpts);",
+      "replace": "          return r;",
+      "expectRed": "...and the re-issue DID go out \u2014 more than one publish, and every one of them safe",
+      "note": "Re-anchored 2026-08-17 after the old anchor went dead in the resolve/invoke split, and it does NOT kill. The cell named in expectRed reads the connection's raw outMsgs, and the delta across the purge window is 51 on a healthy run, so `> 1` is satisfied by the scenario's own traffic and cannot fail for the reason it states. Nothing else notices either: the recovery counter moves before the re-issue, the resolved-service cache was already dropped, and a returned refusal throws nothing. Real coverage gap in instrument-instance-pin, not a fixture defect - the dead anchor had been concealing it. Owner: the pin suite. Two sibling cells (the read window and the third window) read outMsgs the same way."
     },
     {
       "name": "PREDICTED KILLED (3 red) - the recovery is silent, so a handled split stops being a measurable one",

@@ -18,8 +18,8 @@
     {
       "name": "the fence drifts below args validation, so another check answers first",
       "file": "packages/core/src/endpoint-serve.ts",
-      "find": "      assertBoundIncarnation(env, identity);\n      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      // §13.2: the command admits only its REGISTERED target modes — before args validation,\n      // so an unadmitted mode learns nothing about the input contract.\n      assertModeAdmitted(parsed, def);\n      // §13.7: args validate against the input schema BEFORE any effect (bad-request).\n      assertArgsValid(def.validate.args, env.args);",
-      "replace": "      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      assertModeAdmitted(parsed, def);\n      assertArgsValid(def.validate.args, env.args);\n      assertBoundIncarnation(env, identity);",
+      "find": "      assertBoundIncarnation(env, identity);\n      assertClassMatches(env, def.class);\n      bindContract(env, def);",
+      "replace": "      assertClassMatches(env, def.class);\n      bindContract(env, def);\n      assertArgsValid(def.validate.args, env.args);\n      assertBoundIncarnation(env, identity);",
       "expectRed": "a bind mismatch with INVALID ARGS answers the bind refusal"
     },
     {
