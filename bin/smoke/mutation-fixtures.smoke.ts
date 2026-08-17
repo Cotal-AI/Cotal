@@ -44,21 +44,45 @@
  * a fixture. Globbing `*mutation*` would have been shorter and would miss the one fixture somebody
  * files somewhere unexpected, which is precisely the one nobody is validating.
  */
-import { readFileSync, readdirSync, statSync, existsSync } from "node:fs";
+import {
+  readFileSync, readdirSync, statSync, existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync,
+} from "node:fs";
+import { tmpdir } from "node:os";
 import { join, dirname, relative } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SKIP = new Set(["node_modules", "dist", ".git", ".changeset", "coverage", "build"]);
 
+/**
+ * The submodule paths, read from `.gitmodules` rather than named here.
+ *
+ * A SUBMODULE IS NOT THIS TREE, AND CI DOES NOT CHECK IT OUT. Walking one makes this gate read a
+ * different set of files on a developer box than on CI: the anchor count moves with whatever
+ * commit the submodule happens to sit at, and a fixture-shaped `.json` inside it gets graded by a
+ * gate that CI can never see. That asymmetry is the defect. A gate that is red locally and green
+ * on CI does not get fixed, it gets ignored, and an ignored gate is worse than no gate because it
+ * still reads as coverage.
+ *
+ * Parsed from `.gitmodules` instead of hardcoding a directory, so adding a second submodule does
+ * not quietly reintroduce this.
+ */
+function submodulePaths(gitmodules: string): Set<string> {
+  if (!existsSync(gitmodules)) return new Set();
+  const paths = [...readFileSync(gitmodules, "utf8").matchAll(/^\s*path\s*=\s*(.+)$/gm)];
+  return new Set(paths.map((m) => m[1].trim()).filter(Boolean));
+}
+const SUBMODULES = submodulePaths(join(ROOT, ".gitmodules"));
+
 /** Every `.json` in the tree, minus the directories that hold other people's. */
-function jsonFiles(dir: string, out: string[] = []): string[] {
+function jsonFiles(dir: string, out: string[] = [], root = ROOT, skip = SUBMODULES): string[] {
   for (const entry of readdirSync(dir)) {
     if (SKIP.has(entry)) continue;
     const path = join(dir, entry);
+    if (skip.has(relative(root, path))) continue;
     let st;
     try { st = statSync(path); } catch { continue; }
-    if (st.isDirectory()) jsonFiles(path, out);
+    if (st.isDirectory()) jsonFiles(path, out, root, skip);
     else if (entry.endsWith(".json")) out.push(path);
   }
   return out;
@@ -93,6 +117,67 @@ function commentLines(find: string): string[] {
     if (/^\*\s/.test(line) || line === "*") return true;      // docblock continuation
     return /(^|[^:])\/\/(?!\/)/.test(line) && !/\w+:\/\//.test(line);  // trailing `// note`
   });
+}
+
+/**
+ * SELF-CHECK: the walk must not enter a submodule.
+ *
+ * Three cells rather than one, because the obvious cell passes for the wrong reason exactly where
+ * it runs. CI does not check the submodule out, so "no fixtures found under it" is true on CI
+ * whether the skip works or not; asserting only that absence would be vacuous on the very machine
+ * the gate is meant to protect. So: prove the real `.gitmodules` yields a path to skip, then prove
+ * the skip on a tree built to contain a planted fixture, with a control proving the same tree
+ * WITHOUT the skip does find it.
+ */
+const selfChecks: string[] = [];
+function cell(name: string, ok: boolean): void {
+  console.log(`  ${ok ? "✓" : "✗"} ${name}`);
+  if (!ok) selfChecks.push(name);
+}
+
+cell("the real .gitmodules yields at least one submodule path to skip", SUBMODULES.size > 0);
+
+const probe = mkdtempSync(join(tmpdir(), "mutation-fixtures-probe-"));
+try {
+  mkdirSync(join(probe, "sub"), { recursive: true });
+  writeFileSync(
+    join(probe, "sub", "planted.mutations.json"),
+    JSON.stringify({ mutations: [{ name: "planted", file: "gone.ts", find: "// a prose anchor" }] }),
+  );
+  cell(
+    "a fixture-shaped file inside a submodule path is not walked",
+    jsonFiles(probe, [], probe, new Set(["sub"])).length === 0,
+  );
+  // The control. Without it the cell above proves nothing: a walk that found nothing because the
+  // tree was empty reads exactly like a walk that skipped, and only one of those is the guard.
+  cell(
+    "and the same tree WITHOUT the skip finds it, so the 0 above is a skip and not an empty tree",
+    jsonFiles(probe, [], probe, new Set()).length === 1,
+  );
+} finally {
+  rmSync(probe, { recursive: true, force: true });
+}
+
+// The real entry point, which the three cells above do not cover: they build their input by hand,
+// so they show the walker obeys a skip set, not that the production walk is given one. This cell
+// closes that -- and it is only observable when the submodule is actually checked out, so when it
+// is not, it says so instead of counting as a pass.
+const populated = [...SUBMODULES].filter((p) => {
+  const abs = join(ROOT, p);
+  try { return readdirSync(abs).length > 0; } catch { return false; }
+});
+if (populated.length) {
+  const leaked = jsonFiles(ROOT)
+    .map((p) => relative(ROOT, p))
+    .filter((r) => populated.some((s) => r === s || r.startsWith(`${s}/`)));
+  cell(
+    `the production walk returns nothing from inside ${populated.join(", ")}`,
+    leaked.length === 0,
+  );
+  if (leaked.length) console.log(`      leaked: ${leaked.slice(0, 3).join(", ")}`);
+} else {
+  console.log("  · submodule not checked out here, so the production-walk cell has nothing to");
+  console.log("    observe. It is UNOBSERVED, not passed, and on CI it is always this branch.");
 }
 
 const fixtures: { path: string; mutations: Mutation[] }[] = [];
@@ -194,12 +279,13 @@ for (const { path, mutations } of fixtures) {
   else console.log(`  ✓ ${rel} — ${here} anchor(s) present and unique`);
 }
 
-const failed = stale.length + ambiguous.length + missing.length + prose.length;
+const failed = stale.length + ambiguous.length + missing.length + prose.length + selfChecks.length;
 console.log(`\n${fixtures.length} fixture file(s), ${checked} anchor(s) checked at this commit`);
 console.log(`  dead anchors:        ${stale.length}`);
 console.log(`  ambiguous anchors:   ${ambiguous.length}`);
 console.log(`  anchors spanning prose: ${prose.length}`);
 console.log(`  missing file/key:    ${missing.length}`);
+console.log(`  walk self-checks failed: ${selfChecks.length}`);
 // The caveat belongs where the verdict is read, not only in the prologue: a ✓ reads as "the
 // fixtures are good" unless it says otherwise in the same breath.
 console.log(
