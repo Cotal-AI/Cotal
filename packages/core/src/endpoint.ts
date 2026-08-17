@@ -1224,16 +1224,9 @@ export class CotalEndpoint extends EventEmitter {
    *  Throws rather than guessing a default: a wrong ceiling is worse than none, because it splits
    *  either too eagerly or too late and both look like working code.
    *
-   *  THIS ALONE CANNOT SIZE A MESSAGE, and an earlier version of this comment said it could ("so a
-   *  caller can size a message BEFORE building it"). A caller holding only its own parts does not
-   *  know what will be sent: this endpoint adds `id`, `ts`, `space`, `from` and `channel` to the
-   *  envelope AFTER the publish call, and the JetStream client adds headers the broker charges
-   *  against this same ceiling. Measured against a 4096-byte broker, the largest frame that
-   *  published carried a 3993-byte JSON payload — 103 bytes went to what the caller never sees, and
-   *  a 3994-byte payload was REFUSED while naive arithmetic said it fit by a hundred bytes. Use
-   *  {@link encodedSize}, which measures what will actually be sent. A comment asserting something
-   *  outside its own function is a test nobody wrote, and this one was asserting the opposite of
-   *  what the wire does. */
+   *  THIS ALONE CANNOT SIZE A MESSAGE. The envelope this endpoint adds after the publish call, and
+   *  the client's own headers, are charged against the same ceiling and the caller never sees them.
+   *  Use {@link encodedSize}, which measures what will actually be sent. */
   get maxPayload(): number {
     const max = this.nc?.info?.max_payload;
     if (typeof max !== "number" || !Number.isFinite(max) || max <= 0)
@@ -1316,33 +1309,21 @@ export class CotalEndpoint extends EventEmitter {
   /**
    * The bytes this frame will ACTUALLY put on the wire, to compare against {@link maxPayload}.
    *
-   * WHY THIS EXISTS RATHER THAN THE CALLER DOING ARITHMETIC. The purpose of splitting an oversized
-   * frame is a LABELLED truncation, so that loss is visible. A split sized against the caller's own
-   * payload is not conservative — it is wrong in the dangerous direction: the frame it produces is
-   * REJECTED, and a rejected truncation makes the loss silent again, which is the failure the split
-   * exists to prevent. Measured against a 4096-byte broker, a 3994-byte JSON payload was refused
-   * while naive arithmetic said it fit by a hundred bytes.
+   * Caller-side arithmetic is wrong in the dangerous direction: a split sized against the caller's
+   * own payload produces a frame the broker REJECTS, and a rejected truncation makes the loss silent
+   * again — the failure splitting exists to prevent.
    *
-   * IT LIVES ON THE SURFACE THAT BUILDS THE ENVELOPE, deliberately. Measurement and construction in
-   * two places drift, and the drift is invisible: nothing fails until a frame near the ceiling meets
-   * a broker, which is exactly the case no unit test builds. So this shares {@link casEnvelope} with
-   * the publish path and sets the same two headers the JetStream client sets for a `msgID` +
-   * `expect.lastSubjectSequence` publish.
+   * It lives on the surface that BUILDS the envelope so measurement and construction cannot drift
+   * apart unnoticed: it shares {@link casEnvelope} with the publish path, sets the same two headers,
+   * and lets the client's own encoder encode them rather than re-implementing the wire format.
+   * `frame-size.smoke.ts` binary-searches a real broker's ceiling and requires this number to land
+   * on it exactly.
    *
-   * THE HEADER BLOCK IS ENCODED BY THE CLIENT'S OWN ENCODER, never re-implemented here — a private
-   * hand-rolled copy of the wire format is a second source of truth that a client upgrade silently
-   * invalidates. What this file DOES decide is WHICH headers get set, and that choice is calibrated
-   * against a real broker in `frame-size.smoke.ts`: the suite binary-searches the true ceiling and
-   * requires this number to land on it exactly, so a client that changes its encoding, or a publish
-   * path that starts setting a third header, fails there rather than in a customer's split.
+   * `expectedLastSubjectSeq` is a parameter because it is a header VALUE: sizing at 0 and publishing
+   * at 123456 differ by five bytes.
    *
-   * `expectedLastSubjectSeq` is a parameter because it is a HEADER VALUE: sizing at 0 and publishing
-   * at 123456 differ by five bytes, and a frame sized one digit short of the ceiling is the frame
-   * that gets refused.
-   *
-   * The residual, stated rather than hidden: `ts` is stamped at measurement and re-stamped at
-   * publish, so the two differ in value. They cannot differ in LENGTH until epoch-millis needs a
-   * 14th digit, in the year 2286.
+   * Residual: `ts` is re-stamped at publish, so the two differ in value — not in length until
+   * epoch-millis needs a 14th digit.
    */
   encodedSize(opts: {
     channel: string;
