@@ -2,10 +2,23 @@
  * Shared smoke helper: own a spawned `nats-server` so it dies when this process is SIGNALLED, not
  * only when the suite returns and its `finally` runs.
  *
- * SCOPE, measured rather than assumed. `finally` teardown is already correct on the normal path: ten
- * `bind-fence` runs on a long-lived box left zero `bindfence-*` brokers and zero store dirs behind.
- * The defect is exactly and only the signal path, because a signalled suite never unwinds its
- * `finally`. So this adds teardown that does not depend on unwinding, and changes nothing else.
+ * SCOPE, AND A CORRECTION TO THE FIRST VERSION OF IT. This helper covers ONE of two defects, and an
+ * earlier draft of this paragraph claimed it covered the only one. It said `finally` teardown is
+ * already correct on the normal path, which was measured — ten `bind-fence` runs on a long-lived box
+ * left zero brokers and zero store dirs — but measured on ONE suite and then stated about all of
+ * them. It does not hold generally. `channels-auth.smoke.ts` has no teardown at all: it passes,
+ * reports `AUTH GRANT CHECKS PASSED`, and leaks its store dir on every green run. Sixty-two of them
+ * had accumulated over four days when that was finally counted.
+ *
+ * So there are two defects, and this helper is only the answer to the second:
+ *
+ *   1. NO NORMAL-PATH TEARDOWN. Nothing to unwind, so the suite leaks whether or not it is killed.
+ *      Six suites are in this state. Ownership does NOT fix them, and worse, it makes them read as
+ *      handled while they keep manufacturing directories on every pass.
+ *   2. TEARDOWN THAT NEVER UNWINDS. The `finally` is correct and the process is SIGNALLED, so it
+ *      never runs. That is what this file exists for, and it changes nothing else.
+ *
+ * Adopting this helper in a suite with defect 1 is a rename, not a fix. Check the normal path first.
  *
  * The two registrations below are INDEPENDENTLY SUFFICIENT under `tsx`, which is worth stating
  * because it is not obvious and it was only established by trying to disable each one: removing

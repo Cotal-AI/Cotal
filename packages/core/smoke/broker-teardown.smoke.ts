@@ -139,10 +139,19 @@ try {
     reapOwn(s.brokerPid, s.storeDir);
   }
 
-  // 4. The normal path must be UNCHANGED. It was already correct (measured: ten bind-fence runs left
-  //    zero brokers and zero store dirs), so this cell guards against the helper breaking it. The
-  //    fixture models a real suite here: it kills the broker itself and releases ownership, because a
-  //    live spawned child holds the event loop open and a suite that skipped that would never exit.
+  // 4. The normal path must be UNCHANGED where a suite HAS one, which is the claim this cell makes
+  //    and the only one it can make. The fixture tears its own broker down, so what is guarded here
+  //    is that the helper does not break a teardown that already works: measured on bind-fence, ten
+  //    runs, zero brokers and zero store dirs left.
+  //
+  //    It says nothing about a suite with NO normal-path teardown, and an earlier version of this
+  //    comment implied otherwise by calling the normal path "already correct" without a subject. Six
+  //    suites have none; `channels-auth` passes and leaks a store dir every run. For those, adopting
+  //    the helper is a rename rather than a fix, and this cell would stay green throughout.
+  //
+  //    The fixture models a real suite here: it kills the broker itself and releases ownership,
+  //    because a live spawned child holds the event loop open and a suite that skipped that would
+  //    never exit.
   {
     const s = await start("clean");
     const how = await ended(s.proc);
