@@ -711,8 +711,14 @@ export class Manager {
   private leaseTimer?: ReturnType<typeof setInterval>;
   /** When the broker last CONFIRMED this instance holds its lease key — a successful acquire, renew,
    *  or re-read. Not "when we last tried": the gap since a confirmation is the only thing that bounds
-   *  how long we may keep serving without proof. */
-  private leaseConfirmedAt = 0;
+   *  how long we may keep serving without proof.
+   *
+   *  MONOTONIC (`performance.now`), not wall clock, because it is only ever read as an ELAPSED time.
+   *  `Date.now` steps on an NTP correction or a suspend/resume, and a backward step would shorten the
+   *  measured gap and let this instance serve past the TTL with no proof it still holds the key. The
+   *  initial value is `-Infinity` so "never confirmed" reads as an infinite gap and fails closed,
+   *  rather than as a small one at process start when a monotonic clock is still near zero. */
+  private leaseConfirmedAt = Number.NEGATIVE_INFINITY;
   /** A renew is in flight. The tick must not start a second one: both would read the same cached
    *  revision, so whichever lands second CASes against a sequence the first already moved. */
   private leaseRenewInFlight = false;
@@ -885,7 +891,7 @@ export class Manager {
     this.leaseInfo = { holder: this.ep.ref().id, instanceId: this.managerInstanceId, runtime: this.runtime.kind, root: resolve(this.workspaceRoot), pid: process.pid };
     try {
       this.leaseRevision = await this.ep.acquireManagerLease(this.leaseInfo);
-      this.leaseConfirmedAt = Date.now();
+      this.leaseConfirmedAt = performance.now();
     } catch (e) {
       // Our OWN instance id already holds a live key ⇒ refuse. Anything else (e.g. a KV/JS error) is a
       // real failure to surface, not a silent "held" — keep the cause so it isn't misread as a conflict.
@@ -1581,24 +1587,24 @@ export class Manager {
       if (!this.leaseInfo || this.leaseRevision === undefined) return;
       try {
         this.leaseRevision = await this.ep.renewManagerLease(this.leaseInfo, this.leaseRevision);
-        this.leaseConfirmedAt = Date.now();
+        this.leaseConfirmedAt = performance.now();
         return;
       } catch (renewError) {
         const why = (renewError as Error).message;
         const verdict = await this.reconcileLease();
         if (verdict.kind === "held") {
           this.leaseRevision = verdict.revision;
-          this.leaseConfirmedAt = Date.now();
+          this.leaseConfirmedAt = performance.now();
           console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) - the key is still ours at revision ${verdict.revision}, so this instance keeps serving`);
           return;
         }
         if (verdict.kind === "unknown") {
-          const since = Date.now() - this.leaseConfirmedAt;
+          const since = performance.now() - this.leaseConfirmedAt;
           if (since < MANAGER_LEASE_TTL_MS) {
-            console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) and could not re-read it either (${verdict.why}) - that proves nothing about the key, and it was confirmed ours ${since}ms ago, so this instance keeps serving and will retry`);
+            console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) and could not re-read it either (${verdict.why}) - that proves nothing about the key, and it was confirmed ours ${Math.round(since)}ms ago, so this instance keeps serving and will retry`);
             return;
           }
-          return await this.failClosedOnLeaseLoss(`its lease key has not been confirmed for ${since}ms, longer than the ${MANAGER_LEASE_TTL_MS}ms lease TTL, so this instance can no longer prove it holds it (renew: ${why}; re-read: ${verdict.why})`);
+          return await this.failClosedOnLeaseLoss(`its lease key ${Number.isFinite(since) ? `has not been confirmed for ${Math.round(since)}ms, longer than the ${MANAGER_LEASE_TTL_MS}ms lease TTL` : "was never confirmed"}, so this instance can no longer prove it holds it (renew: ${why}; re-read: ${verdict.why})`);
         }
         return await this.failClosedOnLeaseLoss(verdict.kind === "gone"
           ? `its lease key is GONE from the bucket - expired or released (renew: ${why})`

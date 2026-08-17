@@ -208,7 +208,7 @@ try {
   // The budget as a budget, graded on the numbers rather than on behaviour — and deliberately so.
   // Reverting either number leaves the reconcile in place, so the cells above still pass while the
   // slack that makes waiting safe is gone; arithmetic is the only thing that catches that.
-  check("THE RENEW BUDGET HAS SLACK: at least three attempts fit inside the lease TTL, and no attempt can outlive its own period",
+  check("THE RENEW BUDGET HAS SLACK: at least three renew periods fit inside the lease TTL, and no attempt can outlive its own period",
     MANAGER_LEASE_RENEW_MS * 3 <= MANAGER_LEASE_TTL_MS && MANAGER_LEASE_ATTEMPT_MS < MANAGER_LEASE_RENEW_MS,
     { ttlMs: MANAGER_LEASE_TTL_MS, renewEveryMs: MANAGER_LEASE_RENEW_MS, attemptDeadlineMs: MANAGER_LEASE_ATTEMPT_MS });
 
