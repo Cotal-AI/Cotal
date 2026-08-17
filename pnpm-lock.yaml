@@ -223,6 +223,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
 
   extensions/connector-hermes:
     devDependencies:
@@ -456,6 +459,9 @@ importers:
       '@cotal-ai/connector-core':
         specifier: workspace:*
         version: link:../../extensions/connector-core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@nats-io/jetstream':
         specifier: ^3.4.0
         version: 3.4.0
@@ -519,6 +525,10 @@ importers:
       yaml:
         specifier: ^2.9.0
         version: 2.9.0
+    devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../smoke-kit
 
   packages/lang:
     dependencies:
@@ -528,6 +538,8 @@ importers:
       json-canonicalize:
         specifier: 2.0.0
         version: 2.0.0
+
+  packages/smoke-kit: {}
 
   packages/workspace:
     dependencies:

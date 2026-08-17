@@ -30,7 +30,7 @@ import {
   type EpCaller, type WorkItemRef, type WorkWorker, type WorkPoolContext,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "./_broker-teardown.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };

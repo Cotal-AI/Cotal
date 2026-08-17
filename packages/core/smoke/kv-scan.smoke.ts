@@ -27,7 +27,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { IncompleteKvScan, isReachable, liveKvEntries } from "../src/index.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "./_broker-teardown.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const PORT = 14771;
 const SERVER = `nats://127.0.0.1:${PORT}`;

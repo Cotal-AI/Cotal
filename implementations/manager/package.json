@@ -38,6 +38,7 @@
     "zod": "^4.4.3"
   },
   "devDependencies": {
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/kv": "^3.4.0",

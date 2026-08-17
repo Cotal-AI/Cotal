@@ -42,7 +42,7 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "./_broker-teardown.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict and never throws: one throwing cell would take every cell below it
