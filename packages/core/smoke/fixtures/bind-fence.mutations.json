@@ -28,6 +28,13 @@
       "find": "      if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)",
       "replace": "      if (false as boolean)",
       "expectRed": "a bind refusal from the very incarnation the caller bound is internal"
+    },
+    {
+      "name": "the coherence checks go back to being gated on the outcome, so omitting it skips them",
+      "file": "packages/core/src/endpoint-verbs.ts",
+      "find": "    if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error)) {",
+      "replace": "    if (attributed.reply.ok === false && bindRefusalMarked(attributed.reply.error) && attributed.reply.error?.outcome === \"not-executed\") {",
+      "expectRed": "a bind refusal that OMITS the outcome is still checked against its attribution"
     }
   ]
 }
