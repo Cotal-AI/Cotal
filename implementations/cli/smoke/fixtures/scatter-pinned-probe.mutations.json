@@ -34,7 +34,7 @@
       "file": "implementations/cli/src/lib/control.ts",
       "find": "      verdicts.get(instanceId) ?? (opts.pinned.has(instanceId) ? \"unknown\" : \"not-probed\"),",
       "replace": "      verdicts.get(instanceId) ?? \"unknown\",",
-      "expectRed": "and its row says NOT-PROBED, which is a fact about this command, not about the instance"
+      "expectRed": "and one outside the set reads NOT-PROBED without the hook ever running"
     }
   ],
   "_note": "The suite imports `../src/lib/control.js` RELATIVELY, so it loads the CLI SOURCE and no build step belongs here. The mutated file does import `@cotal-ai/core` from dist, but no mutation here touches core. Mutation 1 deletes the gate rather than inverting it so that the pinned path is untouched: the point is what leaves the connection for an UNPINNED id, and section 3's counter cell stays green to show the instrument still works."
