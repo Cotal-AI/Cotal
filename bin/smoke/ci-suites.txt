@@ -270,3 +270,12 @@ smoke:auth
 smoke:mutation-fixtures
 smoke:agui-conformance
 smoke:agui-kind
+smoke:event-channel
+smoke:event-channel-resolve
+smoke:agui-split
+smoke:durable-source
+smoke:event-wal
+smoke:agui-wal-path
+smoke:agui-emitter
+smoke:agui-retry-duplicate
+smoke:agui-holder
