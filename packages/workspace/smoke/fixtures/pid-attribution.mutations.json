@@ -27,7 +27,7 @@
       "file": "packages/workspace/src/pid.ts",
       "find": "  if (r.status === 0 && out !== \"\") return { kind: \"command\", command: out };",
       "replace": "  if (r.status === 0 && out !== \"\") return { kind: \"unreadable\", why: \"mutant\" };",
-      "expectRed": "a live pid that is NOT a manager reads as FOREIGN, not as a healthy manager"
+      "expectRed": "this very process is readable and is NOT a manager"
     }
   ],
   "_note": "The suite imports `../src/pid.js` and `../../../implementations/cli/src/lib/manager-proc.js` RELATIVELY, so both mutated files are the modules under test and no build step belongs here. Mutation 4 targets the POSIX `ps` branch, which is the one this machine executes; the linux `/proc` branch and the win32 branch are not covered by these four and neither is claimed to be."
