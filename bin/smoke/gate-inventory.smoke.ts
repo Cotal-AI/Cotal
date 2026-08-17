@@ -21,6 +21,8 @@
 import { readFileSync, readdirSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
+// @ts-expect-error - plain .mjs helper, shared with bin/smoke/shard.mjs so the chain has one parser.
+import { readCiSuites, ciChainBody } from "./ci-suites.mjs";
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT_RE = /(smoke:[A-Za-z0-9:_-]+)/g;
@@ -118,6 +120,14 @@ function suitesIn(body: string): string[] {
   return [...body.matchAll(/\bpnpm\s+(?:run\s+)?(smoke(?::[A-Za-z0-9:_-]+)?)(?![A-Za-z0-9:_/.-])/g)].map((m) => m[1]);
 }
 
+/** The body to GRADE for a script. `smoke:ci` runs a list file rather than naming its suites inline
+ *  (`node bin/smoke/shard.mjs 0 1`), so its literal body names nothing and both directions below
+ *  would go quiet on 228 suites at once — the reachability walk would call every one of them
+ *  ungated, and the resolver would stop checking that any of them exists. Grading the synthesized
+ *  chain keeps both directions pointed at the same suites they were pointed at when the chain was a
+ *  string; the file is the source, this is the projection of it that the existing checks can read. */
+const bodyOf = (name: string): string => (name === "smoke:ci" ? ciChainBody() : pkg.scripts[name] ?? "");
+
 // REACHED MEANS REACHABLE FROM A ROOT THAT ACTUALLY RUNS, transitively — not "mentioned somewhere".
 // The two relations agree on today's graph, which is why the weaker one survived: an allowlisted
 // UNREACHABLE parent naming a child marks the child reached under "mentioned by", though nothing
@@ -134,7 +144,7 @@ while (frontier.length) {
   const cur = frontier.pop() as string;
   if (reached.has(cur)) continue;
   reached.add(cur);
-  for (const s of suitesIn(pkg.scripts[cur] ?? "")) if (s !== cur && s in pkg.scripts) frontier.push(s);
+  for (const s of suitesIn(bodyOf(cur))) if (s !== cur && s in pkg.scripts) frontier.push(s);
 }
 
 const ungated = [...all].filter((s) => !reached.has(s)).sort();
@@ -190,8 +200,8 @@ const workspaceManifest = (pkgName: string): Record<string, string> | null => {
   return null;
 };
 const dangling: Array<[string, string]> = [];
-for (const [name, body] of Object.entries(pkg.scripts))
-  for (const segment of body.split("&&")) {
+for (const name of Object.keys(pkg.scripts))
+  for (const segment of bodyOf(name).split("&&")) {
     const filtered = /(?:^|\s)(?:-F|--filter)\s+(\S+)/.exec(segment);
     if (filtered) {
       // `pnpm -F <pkg>... build` selects a dependency closure; only a smoke target needs resolving.
@@ -212,6 +222,24 @@ if (dangling.length) {
   for (const [host, missing] of dangling) console.log(`      ${host} -> ${missing}`);
 } else {
   console.log(`  ✓ every composite entry resolves to a defined script`);
+}
+
+// THE CHAIN FILE'S OWN TWO PROPERTIES, neither of which the checks above can see. Resolution is
+// covered — `bodyOf` feeds the chain into both directions — but those checks are satisfied by a
+// chain of one entry and by a chain that names the same suite twice, and both of those are the
+// gate quietly running less than it says. An empty chain is the sharp one: `smoke:ci` would exit 0
+// in seconds and every branch would read green.
+const chain = readCiSuites() as string[];
+const dupes = [...new Set(chain.filter((s, i) => chain.indexOf(s) !== i))].sort();
+if (chain.length < 2) {
+  fail++;
+  console.log(`  ✗ FAIL: bin/smoke/ci-suites.txt holds ${chain.length} suite(s) — a chain that runs nothing exits 0`);
+} else if (dupes.length) {
+  fail++;
+  console.log(`  ✗ FAIL: bin/smoke/ci-suites.txt names ${dupes.length} suite(s) twice: ${dupes.join(", ")}`);
+  console.log(`    A duplicate costs a full run of that suite and hides which copy a merge added.`);
+} else {
+  console.log(`  ✓ the smoke:ci chain file holds ${chain.length} suites, no duplicates`);
 }
 
 // An allowlist that outlives its entries rots into a place where gating a suite goes unnoticed.
