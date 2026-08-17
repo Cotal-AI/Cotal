@@ -40,6 +40,7 @@ import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
 import { openLifecycleRegistry, activateLifecycle } from "../src/lifecycle-registry.js";
 import { runExactPoolCleaner } from "../src/retirement-barrier.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -75,7 +76,7 @@ const fp = (tag: string): string => contractDigest({ fp: tag });
 const enc = new TextEncoder();
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-confine-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 // The connection-scoped inbox nonces (SPEC 13.9: never the account-wide `_INBOX.>` default). The
 // mediator holds NO records-stream consumer grant (site 3): its drain enumerates through the sealed
 // records scanner, so there is no per-mediator enumeration consumer name to bind.
@@ -98,6 +99,7 @@ writeFileSync(join(sd, "server.conf"), [
   "}",
 ].join("\n"));
 const broker = spawn("nats-server", ["-c", join(sd, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 let nc: NatsConnection | undefined, medNc: NatsConnection | undefined, clnNc: NatsConnection | undefined;
 try {
@@ -375,6 +377,7 @@ try {
   broker.kill("SIGKILL"); // exact PID — never pkill nats-server
   await new Promise((r) => broker.once("exit", r));
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(fail === 0 ? `\nMEDIATOR/CLEANER CONFINEMENT SMOKE OK ✅  (${ok} passed, ${fail} failed)` : `\nMEDIATOR/CLEANER CONFINEMENT SMOKE FAILED ❌  (${ok} passed, ${fail} failed)`);
