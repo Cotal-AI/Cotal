@@ -157,7 +157,10 @@ version, no seeded marker) is left untouched on upgrade; a deliberately-removed 
 of removed-vs-never-seeded and is unioned with its backup on read, so a truncated authority never
 resurrects a removal. Every (re)install is verified before the generation stamp is written — recorded in
 the manifest, present on disk with its entry file resolvable, and at the generation version — so a
-version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current.
+version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
+**older** than the store's stamped generation refuses before writing anything, rather than stamping the
+store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
+to rebuild the store for the version you are running.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the
