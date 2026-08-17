@@ -278,7 +278,10 @@ console.log("\nsend refusal:");
 const noDefault = await refusal(async () => quietAgent.multicast("who is listening"));
 check("multicast with no channel and no subscription REFUSES", /no default channel/.test(noDefault), noDefault);
 check("and the refusal says what to do about it", /name a channel explicitly, or join one first/.test(noDefault), noDefault);
-check("it does not fall back to general", !/general/.test(noDefault), noDefault);
+// `refusal` answers "" when the call did NOT reject, and "" trivially satisfies "does not mention
+// general" — so the non-empty half is the cell, not decoration. Without it this passes loudest in
+// exactly the state it exists to catch: the fallback restored, nothing thrown, no message at all.
+check("it does not fall back to general", noDefault !== "" && !/general/.test(noDefault), noDefault);
 
 // ---- 5. leaving your last channel ---------------------------------------------------------------
 console.log("\nleave your last channel:");
@@ -295,8 +298,11 @@ solo.on("error", (e: Error) => console.log("solo err:", e.message));
 await solo.start();
 await wait(400);
 
-const beforeLeave = await refusal(async () => solo.multicast("still here"));
-check("on its only channel, a no-channel send resolves to that channel", beforeLeave === "", beforeLeave);
+// Not merely "it did not throw": the resolved destination is read off the returned message, so the
+// cell says WHICH channel a no-argument send picked. "No exception" would also be true of a send
+// that quietly resolved somewhere else.
+const beforeLeave = await solo.multicast("still here");
+check("on its only channel, a no-channel send resolves to THAT channel", beforeLeave.channel === "ops", beforeLeave.channel);
 
 const left = await solo.leaveChannel("ops");
 check("leaving your ONLY channel is allowed", left.left === true, left);
@@ -307,8 +313,8 @@ check("after leaving your last channel, a no-channel send refuses", /no default 
 
 const rejoined = await solo.joinChannel("ops");
 check("re-joining restores the default send channel", rejoined.joined === true, rejoined);
-const afterRejoin = await refusal(async () => solo.multicast("back"));
-check("and the send works again", afterRejoin === "", afterRejoin);
+const afterRejoin = await solo.multicast("back");
+check("and the send resolves to the re-joined channel again", afterRejoin.channel === "ops", afterRejoin.channel);
 
 // ---- teardown ------------------------------------------------------------------------------------
 console.log(`\nno-implicit-general: ${pass} passed, ${fail} failed`);
