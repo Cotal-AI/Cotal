@@ -122,7 +122,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
       src: 'const a = await spawn("p", { name: "a" });\nawait wait(replied(a), { name: "w", timeout: "1h" });\n',
       method: "wait",
     },
-    // `conclave` is a scope, so its request is built on the scope path rather than in `callEffect`.
+    // `conclave` is a scope, so its request is built on the scope path rather than in `callPrimitive`.
     // That is a second place an option can be dropped, and until this case existed nothing walked it.
     conclave: {
       src: 'const a = await spawn("p", { name: "a" });\nawait conclave([a], (ch) => turn(a, { name: "go" }), { name: "t", channel: "war-room" });\n',

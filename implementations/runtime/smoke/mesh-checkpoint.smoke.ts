@@ -187,7 +187,7 @@ const tokenOf = async (runId: string): Promise<string | undefined> => {
   const entry = out.status === "completed"
     ? out.result.journal.entries().find((e) => e.kind === "checkpoint")
     : undefined;
-  // The journal holds the RAW outcome, not the program's `CheckpointResult`: whether an expiry
+  // The journal holds the RAW outcome, not the program's `CheckpointResultValue`: whether an expiry
   // throws or returns is `onExpiry`, recomputed from today's source on every replay, and recording
   // the policy's answer would bake one reading of it into the record.
   const rec = entry?.result as { outcome?: string; value?: unknown; by?: string; answerId?: string } | undefined;
