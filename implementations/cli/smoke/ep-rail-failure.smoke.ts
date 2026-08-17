@@ -23,6 +23,7 @@ import {
 } from "@cotal-ai/core";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { askManager, epRailFailure } from "../src/lib/control.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const c = (name: string, cond: boolean, extra?: unknown) => {
@@ -104,8 +105,9 @@ console.log("epRailFailure polarity (hand-built errors, one per producer shape):
 // ── Part 2: the public askManager path against a real broker (open mesh) ──
 console.log("askManager against a real broker:");
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-eprail-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "eprail";
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -159,6 +161,7 @@ try {
 } finally {
   broker.kill("SIGTERM");
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\n${fail === 0 ? "EP-RAIL-FAILURE POLARITY SMOKE OK ✅" : "EP-RAIL-FAILURE POLARITY SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

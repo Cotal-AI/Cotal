@@ -31,6 +31,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the
@@ -61,7 +62,7 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
   console.log(`  ✓ ${name}`);
 };
 
-const dir = mkdtempSync(join(tmpdir(), "cotal-codexhost-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const FAKE = fileURLToPath(new URL("./fake-codex.mjs", import.meta.url));
 const BIN = join(dir, "fake-codex");
 writeFileSync(BIN, `#!/bin/sh\nexec "${process.execPath}" "${FAKE}" "$@"\n`);
@@ -101,6 +102,7 @@ async function waitFor<T>(name: string, get: () => T | undefined, timeoutMs = 20
 }
 
 const nats = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(nats, dir);
 
 const operator = new CotalEndpoint({
   space,
@@ -1206,5 +1208,6 @@ try {
   nats.kill("SIGKILL");
   await sleep(200);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);

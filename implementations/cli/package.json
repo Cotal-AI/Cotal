@@ -46,6 +46,7 @@
     "@eplightning/nats-server-win32-x64": "^2.14.0"
   },
   "devDependencies": {
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@types/react": "^19.0.0",
     "@types/ws": "^8.18.1"
   },

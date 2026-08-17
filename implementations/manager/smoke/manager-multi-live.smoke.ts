@@ -16,7 +16,8 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve, dirname } from "node:path";
@@ -62,7 +63,7 @@ const PORT = await freePort();
 const SERVERS = `nats://127.0.0.1:${PORT}`;
 const SPACE = `mgrmulti-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(SPACE);
-const dir = mkdtempSync(join(tmpdir(), "cotal-mgrmulti-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string, agentName: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -74,12 +75,14 @@ writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: 
 
 type MgrPriv = { managerInstanceId: string };
 const kids: ReturnType<typeof spawn>[] = [];
+let releaseBroker: (() => void) | undefined;
 let m1: InstanceType<typeof Manager> | undefined;
 let m2: InstanceType<typeof Manager> | undefined;
 let nc: NatsConnection | undefined;
 try {
   const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
   kids.push(srv);
+  releaseBroker = teardownOnSignal(srv, dir);
   let up = false;
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVERS)) { up = true; break; } await wait(200); }
   if (!up) throw new Error(`auth nats-server did not come up on ${PORT}`);
@@ -133,6 +136,13 @@ try {
   await m2?.stop().catch(() => {});
   await m1?.stop().catch(() => {});
   for (const k of kids) { try { k.kill("SIGKILL"); } catch { /* best effort */ } }
+  // The scratch tree goes too. Its absence here is the defect: this suite passed, said so, and
+  // left one directory behind on every green run — reproduced by count, not inferred. The pause
+  // is the one `_boot-broker` uses: removing the tree while the broker is still flushing
+  // JetStream state leaves files behind it recreates, so the directory survives its own removal.
+  await wait(200);
+  rmSync(dir, { recursive: true, force: true });
+  releaseBroker?.(); // last: ownership is held until this teardown has actually finished
 }
 
 function names2(scatter: Awaited<ReturnType<typeof scatterCommand>>, iid: string): string[] {
