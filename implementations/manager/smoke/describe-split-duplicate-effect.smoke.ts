@@ -191,7 +191,7 @@ try {
   const bound = cache.get(MANAGER_ENDPOINT);
   check("the caller holds a resolved handle to rewrite (the forced case can be set up at all)",
     bound !== undefined, { cached: [...cache.keys()] });
-  let forcedRecoveries = 0, forcedEffects = 0, forcedOk = false;
+  let forcedRecoveries = 0, forcedEffects = 0, forcedOk = false, forcedConclusive = false;
   if (bound !== undefined) {
     bound.responder.instanceId = mintLifecycleUid();
     const forcedName = `epsplit-forced-${randomUUID().slice(0, 6)}`;
@@ -200,6 +200,11 @@ try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
         { name: forcedName, persona: "forced-split probe" }, { deadlineMs: 15_000 });
       forcedOk = r.reply.ok === true;
+      // Read exactly as the trial loop reads it (the marker is this implementation's vocabulary,
+      // the outcome is the spec's, and only the outcome licenses "no effect exists").
+      const err = r.reply.error as { outcome?: string; details?: Array<{ kind?: string }> } | undefined;
+      forcedConclusive = (err?.details ?? []).map((d) => d?.kind).includes(EP_BIND_REFUSED)
+        && err?.outcome === "not-executed";
     } catch { forcedOk = false; }
     forcedRecoveries = recoveriesThisTrial;
     forcedEffects = [root1, root2].filter((r) => existsSync(agentFilePath(r, forcedName))).length;
@@ -210,8 +215,18 @@ try {
   // proves the responder produced the marked refusal — this is the fence, observed and not inferred.
   check("FORCED SPLIT IS FENCED: the wrongly-bound call was refused before it ran, then repaired",
     forcedRecoveries === 1, { forcedRecoveries });
-  check("FORCED SPLIT LEAVES ONE EFFECT: the repair re-issued once and the write landed exactly once",
-    forcedEffects === 1 && forcedOk, { forcedEffects, forcedOk });
+  // THE REPAIR IS ONE ATTEMPT, NOT A GUARANTEE, so this cell accepts BOTH of its correct endings.
+  // Core repairs a bind refusal exactly once and surfaces a second one; the re-issue therefore
+  // meets the same live queue and splits again at roughly the rate section 3 measures below. An
+  // earlier revision of this cell demanded `forcedEffects === 1 && forcedOk` — it accepted only the
+  // healed ending, so it graded the documented re-split as a failure and reddened unrelated PRs at
+  // about that rate. What the fence actually promises is that the caller is never lied to: the
+  // write landed EXACTLY once and was reported so, or it landed NOWHERE and the caller was told
+  // conclusively. Both endings are checked here; a duplicate, or a silent failure, is neither.
+  const forcedHealed = forcedEffects === 1 && forcedOk;
+  const forcedSurfaced = forcedEffects === 0 && !forcedOk && forcedConclusive;
+  check("FORCED SPLIT IS CONCLUSIVE: the write landed exactly once, or nowhere and the caller was told",
+    forcedHealed !== forcedSurfaced, { forcedEffects, forcedOk, forcedConclusive });
 
   const dupes = trials.filter((t) => t.both);
   const dupeSilent = dupes.filter((t) => t.callerSaw === "ok");
