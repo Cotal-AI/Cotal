@@ -348,9 +348,9 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
     results[1]!.status === "rejected" ? String((results[1] as PromiseRejectedResult).reason).slice(0, 60) : "ok");
   const back = await replayRunJournal(js, jsm, SPACE, "r-5c", tid());
   const steps = back.records.filter((r) => r.record.kind === "step");
-  // The property the earlier rule was protecting, and the one that actually matters: the ORDINAL
-  // chain is unbroken. The entry that could not be written is simply not there — which is what an
-  // unwritten entry is — and its successor did not land over its gap.
+  // The property that matters: the ORDINAL chain is unbroken. The entry that could not be written
+  // is simply not there, which is what an unwritten entry is, and its successor did not land over
+  // its gap.
   c("and the journal has no hole: the ordinals are contiguous across the failure",
     steps.every((r, i) => r.record.n === i + 1), steps.map((r) => r.record.n));
   c("with the unserializable entry absent rather than half-written",
@@ -479,9 +479,8 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 // ── 5h) the lease token ORDERS takeovers; the barrier alone does not ─────────────────────────
 //
 // The barrier fences knowledge of the head, and knowledge is free: anyone who replays has it. So a
-// driver whose lease expired long ago could activate over the current holder just by reading first
-// — measured, before this check, as activations [2, 1] on one run with the token-1 driver's append
-// landing afterwards. The replayed prefix is the answer, and it is current as of the CAS.
+// driver whose lease expired long ago can activate over the current holder just by reading first,
+// and then append behind it. The lease token is what orders the two.
 {
   const cur = await activateRun(js, jsm, startRun("r-5h", "d2", 2));
   await cur.append({ n: 0 }, 0);
@@ -605,11 +604,11 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
   c("so nothing the intruder wanted is in the journal: still one activation",
     (await replayRunJournal(js, jsm, SPACE, "r-5l", tid())).records.filter((r) => r.record.kind === "activation").length === 1);
 
-  // Direction two: the same holder at a DIFFERENT epoch, both ways. This used to allow the newer
-  // one through, on the reasoning that a restart should reclaim its own run. The pool disagrees, and
-  // it is the authority: within one attempt the lease comes back verbatim, a redelivery advances the
-  // token, and the commit gate binds the epoch EXACTLY — so (equal token, newer epoch) is a tuple no
-  // lease issues, and a driver holding it could drive a run it could never settle.
+  // Direction two: the same holder at a DIFFERENT epoch, both ways. Letting the newer one through
+  // reads as a restart reclaiming its own run, and the pool disagrees: within one attempt the lease
+  // comes back verbatim, a redelivery advances the token, and the commit gate binds the epoch
+  // EXACTLY. So (equal token, newer epoch) is a tuple no lease issues, and a driver holding it
+  // could drive a run it could never settle.
   let newEpoch: unknown;
   try { await activateRun(js, jsm, tok("r-5l", "A", 2, "existing")); } catch (e) { newEpoch = e; }
   c("a NEWER process of the same holder cannot activate on the epoch the lease did not bind",
@@ -631,12 +630,10 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 
 // ── 5m) two takeovers replaying at the same instant ──────────────────────────────────────────
 //
-// The replay consumer used to be named after the RUN, so contenders shared it: `add` returned the
-// other's half-read consumer, and each one's delete tore down the other's live fetch. Measured on
-// the shared form, two concurrent takeovers on a six-record run left one holding 1 record and then a
-// terminal incomplete-replay error — never reaching the retry path that was supposed to cover it —
-// and eight produced raw `consumer deleted` and `ConsumerNotFoundError` from the API. A consumer
-// nobody else names has none of that to race with.
+// A replay consumer named after the RUN is shared by contenders: `add` hands back the other's
+// half-read consumer, and each one's delete tears down the other's live fetch, so a replay comes
+// back short and the retry path never sees a recoverable error. A consumer nobody else names has
+// none of that to race with.
 {
   const a = await activateRun(js, jsm, startRun("r-5m", "d1", 1));
   for (let n = 0; n < 4; n += 1) await a.append({ n }, n);
@@ -711,7 +708,7 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 // different one is written. The subject was captured before the await, which makes the runId case
 // worse rather than better: a mutated runId would label a foreign run on THIS run's subject, which
 // is a record the barrier itself would then believe. The repo's WorkLease seams snapshot caller
-// input before awaiting for exactly this reason (`endpoint-work.ts:98-118`); this one now does too.
+// input before awaiting for exactly this reason (`snapshotRef`); this one does too.
 {
   const d1 = await activateRun(js, jsm, startRun("r-5p", "d1", 1));
   await d1.append({ marker: "as-recorded" }, 1);
@@ -811,10 +808,10 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 
 // ── 5r) a local failure is not the stream saying no ──────────────────────────────────────────
 //
-// `isCasLoss` reads a `code` off whatever was thrown. Serialization used to happen INSIDE that
-// catch, so an entry whose `toJSON` threw an object carrying `code: 10071` was classified as a
-// refused append — and a refused append is the one answer a driver acts on by standing down, for
-// good. A bug in this process would have retired the run.
+// `isCasLoss` reads a `code` off whatever was thrown, so serialization must not happen inside that
+// catch: an entry whose `toJSON` throws an object carrying `code: 10071` would be classified as a
+// refused append, and a refused append is the one answer a driver acts on by standing down for
+// good. A bug in this process would retire the run.
 {
   const a = await activateRun(js, jsm, startRun("r-5r", "d1", 1));
   const poison = { get entry() { throw Object.assign(new Error("toJSON blew up"), { code: 10071 }); } };
@@ -831,11 +828,11 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
 
 // ── 5s) the replay consumer cleans up, and says so when it cannot ────────────────────────────
 //
-// The delete used to swallow every error, resting on the stream's limits to reap what was left.
-// They do not: WFJ sets neither `max_consumers` nor `consumer_limits`, which normalize to unlimited
-// and to an inactive threshold of zero, and a durable at zero is given no delete timer. One failed
-// delete per takeover would have been permanent. Two halves: the consumer carries its own reaper,
-// and a delete that fails for a reason we did not name is raised rather than hidden.
+// A delete that swallows every error rests on the stream's limits to reap what is left, and they
+// do not: WFJ sets neither `max_consumers` nor `consumer_limits`, which normalize to unlimited and
+// to an inactive threshold of zero, and a durable at zero is given no delete timer. One failed
+// delete per takeover would be permanent. Two halves: the consumer carries its own reaper, and a
+// delete that fails for a reason we did not name is raised rather than hidden.
 {
   const cfg = runJournalConsumerConfig(SPACE, "r-5s", "tk1");
   c("the replay consumer carries an inactivity threshold, so the server reaps it even if we cannot",

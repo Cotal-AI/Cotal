@@ -167,12 +167,10 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   await waitPast(NOW + 4_000);
   c("the broker published its own fire on the token's subject", await brokerFired(TOKEN));
 
-  // THE CELL THIS SUITE WAS MISSING, and the one that used to pass by doing the handler's work for
-  // it. Every green timeout cell here called `handleCheckpointFire` by hand, so what was graded was
-  // that the checkpoint plane expires a pause when somebody delivers its fire — which was true, and
-  // was never the question. Nothing in the tree delivered one. Measured on a live broker: a two
-  // second sleep, one schedule armed, the fire published, and four seconds later the status still
-  // `waiting`, no settle fact, the effect still pending. A pause that is durable and permanent.
+  // NOBODY HANDS THE FIRE OVER. A cell that calls `handleCheckpointFire` by hand grades that the
+  // checkpoint plane expires a pause when somebody delivers its fire, which was never the question:
+  // the question is whether the run's own watcher takes one. Without that, a sleep whose fire has
+  // been published sits `waiting` with no settle fact and the effect pending, durably and forever.
   await withDeadline(sleeping, 20_000, "the sleep effect");
   c("and the effect returns on its own: taking the fire is the handler's job, not a caller's", true);
   const settle = await readCheckpointSettle(jsm, SPACE, { endpoint: EP, token: TOKEN });
@@ -186,13 +184,11 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
 // If this minted a second checkpoint, a run that crashed while asleep would come back holding two
 // timers and would be settled by whichever fired first — under a deadline nobody chose.
 //
-// ON ITS OWN CLOCK, AND THAT IS THE WHOLE CELL. This block used to run on the suite's held clock,
-// so both attempts computed the same `now() + duration` and the mint agreed by arithmetic rather
-// than by attaching. On the clock a real host has, the second attempt is a second or an hour later
-// and its recomputed deadline is a DIFFERENT spec, which the plane refuses. Reproduced before the
-// repair: an eight second sleep, the step performed again 1.2 seconds later under its recorded id,
-// `already exists with a DIFFERENT spec`, and a pause left waiting with nobody attached to it. A
-// crash is a gap in time by definition, so the cell that grades a resume has to let time pass.
+// ON ITS OWN CLOCK, AND THAT IS THE WHOLE CELL. A crash is a gap in time by definition, so a cell
+// that grades a resume has to let real time pass or it is grading the arithmetic: on a held clock
+// both attempts compute the same `now() + duration` and the mint agrees without anything having
+// attached. On the clock a real host has, the second attempt's recomputed deadline is a DIFFERENT
+// spec, and a mint is idempotent only for an identical one.
 {
   console.log("• 2 — the same step after a crash");
   const TOKEN2 = "cnRlc3RfYXR0YWNoX3Rva2VuXzAwMDI";
@@ -255,10 +251,8 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   first.catch(() => { /* the abandoned attempt */ });
   await wait(300);
   // THE REQUEST IS TAKEN AND THROWN AWAY, which is the window this block is about: a writer read it
-  // and died before it armed anything. Leaving it on the stream instead was the first version and
-  // it graded nothing — the resume's own `armPending` armed the ORIGINAL request, the timer fired,
-  // the pause ended, and removing the reconciler entirely changed no cell. The request has to be
-  // gone for the re-emission to be the only thing that can still arm this pause.
+  // and died before it armed anything. It has to be GONE, or the resume's own `armPending` arms the
+  // original request, the pause ends on that timer, and the cell passes with no reconciler at all.
   const dropped = await dropPending(4);
   c("the one schedule request was consumed by a writer that armed nothing: the crash-before-arm window",
     dropped === 1, dropped);

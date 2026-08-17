@@ -162,10 +162,8 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 // ---- 3) every declared primitive is actually implemented ----------------------------------------
 
 {
-  // This section used to assert the opposite: `conclave` was declared, validated, and threw L1000,
-  // and the cell certified that the skeleton was at least LOUD about it. It is implemented now, so
-  // the claim worth holding is the one the catalog makes — a primitive that parses runs — and the
-  // check that catches a regression is that no primitive reaches the interpreter's L1000 default.
+  // The claim worth holding is the one the catalog makes: a primitive that parses runs. The check
+  // that catches a regression is that no primitive reaches the interpreter's L1000 default.
   const { handler, seen } = capturing(new SimHandler({ turns: { h: { status: "done", at: 0 } } }));
   const r = await run(
     'const a = await spawn("a", { name: "a" });\nawait conclave([a], (ch) => turn(a, { name: "h" }), { name: "t", channel: "war-room" });\n',

@@ -875,13 +875,11 @@ export function runJournalConsumerConfig(
   space: string,
   runId: string,
   /**
-   * A token unique to ONE takeover attempt. Contenders used to share a per-run durable, and sharing
-   * it is what made replay a race with itself: `add` on an existing durable returns it, so one
-   * driver could inherit another's half-read consumer, and each contender's delete tore down the
-   * other's live fetch — measured, two concurrent takeovers on a six-record run left one with 1 of 6
-   * and a terminal incomplete-replay error, and eight produced raw `consumer deleted` and
-   * `ConsumerNotFoundError` from the API. A consumer nobody else names cannot be inherited, nor
-   * deleted out from under its owner. The grant pins this token EXACTLY — a consumer name is one
+   * A token unique to ONE takeover attempt. A per-run durable is shared by contenders, and sharing
+   * it makes replay a race with itself: `add` on an existing durable returns it, so one driver
+   * inherits another's half-read consumer, and each contender's delete tears down the other's live
+   * fetch. A consumer nobody else names cannot be inherited, nor deleted out from under its owner.
+   * The grant pins this token EXACTLY — a consumer name is one
    * subject token and no pattern covers part of one — so it is chosen when the rows are minted, with
    * the lease, and not afterwards by the driver.
    */

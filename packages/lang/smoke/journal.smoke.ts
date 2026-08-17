@@ -288,11 +288,10 @@ const H = (v: unknown) => digest(v);
 // ---- 10) a REFUSED append is a durability failure, not an effect failure -----------------------
 
 /**
- * The store saying no and the world saying no are different facts, and the journal used to record
- * them as the same one. A handler that completed plus an append the store rejected produced the
- * durable sequence `[pending, settled:failed]` — a permanent record that work which really happened
- * had failed — because one `try` covered both the dispatch and the settling append, and the map was
- * mutated before the append was awaited.
+ * The store saying no and the world saying no are different facts and must not be recorded as the
+ * same one. Under a single `try` covering both the dispatch and the settling append, a handler that
+ * completed plus an append the store rejected produces the durable sequence
+ * `[pending, settled:failed]`: a permanent record that work which really happened had failed.
  *
  * So: nothing recorded, nothing moved in memory, and the error travels as itself.
  */
@@ -471,13 +470,13 @@ const counting = (sim: SimHandler, calls: string[]): EffectHandler => ({
 
 // ── a program cannot CATCH the loss of its own journal ────────────────────────────────────────
 //
-// Reproduced before this was fixed: a store that refused ONE append (the settle of the first
-// effect) and then worked again. The program's own `try/catch` swallowed the refusal, went on to
-// perform two more effects against the world, and the run returned normally — with nothing recorded
-// from the refusal onward, so a resume would perform all three again. A cancellation was already
-// uncatchable for exactly this reason: neither is a program error, and neither is the program's to
-// handle. The transient store is what makes the difference visible; a permanently dead one masks it,
-// because the next append fails too and the run stops for the wrong reason.
+// A store that refuses ONE append (the settle of the first effect) and then works again. If the
+// program's own `try/catch` can swallow that refusal, the run performs two more effects against the
+// world and returns normally with nothing recorded from the refusal onward, so a resume performs
+// all three again. A cancellation is uncatchable for exactly this reason: neither is a program
+// error, and neither is the program's to handle. The store has to be TRANSIENT to see it; a
+// permanently dead one masks it, because the next append fails too and the run stops for the wrong
+// reason.
 {
   let appends = 0;
   const flaky = {
@@ -548,10 +547,10 @@ await sleep("3h", { name: "after-the-catch" });
 //
 // The stream is append-only and says so in its own suite: `journal-store.smoke` asserts that
 // "settling appends a second record rather than editing the first", so ONE step is TWO records on
-// the broker. `RunJournalAppender.steps()` hands back every step record in order
-// (`packages/core/src/run-journal.ts:579-581`), and the driver seeds a journal straight from it
-// (`implementations/runtime/src/run-driver.ts:250-258`). So a resumed run's journal is seeded with
-// two rows per completed step, in production, today — this is not a hypothetical caller.
+// the broker. `RunJournalAppender.steps()` hands back every step record in order, and
+// `run-driver.ts`'s `drive` seeds a journal straight from `appender.steps()`. So a resumed run's
+// journal is seeded with two rows per completed step, in production, today: not a hypothetical
+// caller.
 //
 // The journal folds that log HALFWAY: `byKey` keeps the last write, `order` keeps both keys. Its
 // two views then disagree with each other, which is what makes this a bug rather than a contract
@@ -577,22 +576,21 @@ await sleep("3h", { name: "after-the-catch" });
   ok("the KEYED view folds correctly: the ceiling counts the step once, not twice",
     seeded.dispatchedEffects() === 1, seeded.dispatchedEffects());
 
-  // REPAIRED. `entries()` is documented as the prompt context for repair, and it used to report
-  // history this run does not have: two rows where one step happened.
+  // REPAIRED. `entries()` is documented as the prompt context for repair, so two rows where one
+  // step happened is history this run does not have.
   ok("REPAIRED: the ORDERED view folds too — one step is one entry",
     seeded.entries().length === 1, seeded.entries().map((e) => `${journalEntryKeyString(e)}:${e.state}`));
 
-  // WHICH row survives is its own claim, and the opposite of the one the bug had. The duplicate
-  // used to make the PENDING row come back as a second copy of the settled one; the fold keeps the
-  // last write, so the step reads as what it ended up being rather than as what it started as.
+  // WHICH row survives is its own claim: an unfolded duplicate brings the PENDING row back as a
+  // second copy of the settled one. The fold keeps the last write, so the step reads as what it
+  // ended up being rather than as what it started as.
   ok("and it is the LAST write, so a step that settled reads settled",
     seeded.entries()[0]?.state === "settled" && seeded.entries()[0]?.status === "ok",
     seeded.entries()[0]);
 
-  // The live consumer. `migrate` builds its orphan table from `orphans()`
-  // (`implementations/runtime/src/migrate.ts:205`) and computes `consumedThrough` from its length,
-  // so a doubled orphan was a doubled row in the operator's table and arithmetic over a doubled
-  // input — one decision presented as two, about a step that happened once.
+  // The live consumer. `migrateRun` builds its orphan table from `journal.orphans()` and computes
+  // `consumedThrough` from its length, so a doubled orphan is a doubled row in the operator's table
+  // and arithmetic over a doubled input: one decision presented as two, about one step.
   ok("and an unconsumed step is an orphan ONCE, so the migrate table counts one decision",
     seeded.orphans().length === 1, seeded.orphans().map((e) => journalEntryKeyString(e)));
 

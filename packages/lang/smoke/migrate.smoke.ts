@@ -179,8 +179,8 @@ await sleep("1s", { name: "after-race" });
     !raceOrphans.some((k) => losers.some((b) => k.includes(`/b:${b}/`))), JSON.stringify({ losers, raceOrphans }));
   ok("nothing at all is orphaned when the source did not change", raceOrphans.length === 0, raceOrphans);
 
-  // An edit INSIDE the loser used to be invisible, which was the contract until the entry's
-  // `branchDigest` landed — read the note below before treating this pair as the proof of either.
+  // An edit INSIDE the loser is caught by the entry's `branchDigest` and by nothing else. Read the
+  // note below before treating this pair as the proof of either half.
   const DURATION: Record<string, string> = { x: "1s", y: "2s" };
   const loser = losers[0] as string;
   const EDITED_LOSER = RACE.replace(
@@ -258,11 +258,11 @@ await sleep("1s", { name: "after-race" });
   // WHY THAT PAIR WAS NOT THE PROOF, AND WHAT IS. Kept, because the mutation it defends against is
   // still live: the digest closed the EDIT case, and this note is about the WALK case.
   //
-  // Both cells above used to pass against a build that walks the losers too, and the mutation that
-  // removes the branch filter SURVIVED them. Not because the divergence did not happen — the loser
+  // Both cells above also pass against a build that walks the losers too, so the mutation that
+  // removes the branch filter survives them. Not because the divergence does not happen — the loser
   // really does raise `RunDivergence` — but because the race's winner tie-break DISCARDS it: on a
   // full replay every branch clock reads the same instant, so declaration order picks the winner
-  // and a losing arm's rejection is dropped on the floor. An edit inside a loser was therefore
+  // and a losing arm's rejection is dropped on the floor. An edit inside a loser is therefore
   // invisible for TWO independent reasons, and a cell that cannot tell them apart is asserting the
   // one it did not mean. The digest fires at the scope's own lookup, upstream of both.
   //
@@ -474,7 +474,7 @@ await parallel({
 
   // NARROWNESS, and it is the half that keeps migrations possible. A guard that refused any edited
   // race would satisfy every cell above and make an edited arm un-migratable and un-forkable. Each
-  // neighbouring shape already had an answer BEFORE this guard, and each must still get that one:
+  // neighbouring shape has an answer that does not come from this guard, and must keep it:
   //   - a renamed or deleted LOSER diverges through the branch digest (L5001, section 2);
   //   - an ADDED arm is not an edit to anything recorded, so the walk completes.
   const renamedLoser = await walk(RACE5.split(`  ${lost}:`).join(`  ${lost}${lost}:`));
@@ -556,9 +556,8 @@ await race({
   ok("so the arm names are recorded as a FACT on the entry instead",
     JSON.stringify(raceScope?.branches) === JSON.stringify(["x", "y"]), raceScope?.branches);
 
-  // THE HANG, on source nobody edited. This is the cell that was failing before the fix, and it is
-  // deliberately over UNEDITED source: a migration that cannot walk what it recorded is broken
-  // before any edit is involved.
+  // THE HANG, deliberately over UNEDITED source: a migration that cannot walk what it recorded is
+  // broken before any edit is involved.
   const sameRace = await walk6("r6-race", RACE6, raceEntries);
   ok("a migration over an UNEDITED failed race returns rather than hanging",
     !(sameRace as Error)?.message?.startsWith("HUNG"), `${(sameRace as Error)?.name}: ${(sameRace as Error)?.message?.slice(0, 80)}`);

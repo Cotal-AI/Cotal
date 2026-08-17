@@ -92,10 +92,9 @@ r = runTool([
   "--find", "this string is not in the file",
   "--replace", "x",
 ]);
-// This cell went red silently when the preflight landed and nothing told me, because nothing runs
-// this file: it moved the refusal from a per-mutation ERROR line to an upfront refusal, which is
-// the better behaviour and a different surface. So the cell now asserts the INTENT — an absent
-// target never grades anything — rather than the word the old surface happened to print.
+// The cell asserts the INTENT — an absent target never grades anything — rather than the exact
+// word one surface prints, because the refusal is free to move between a per-mutation ERROR line
+// and an upfront refusal without the property changing.
 check("an absent target is refused, not graded", r.status !== 0 && r.stdout.includes("not found"), r.stdout.slice(-300));
 check("...and nothing is graded under it", !r.stdout.includes("mutation(s) did not produce"), r.stdout.slice(-300));
 
@@ -207,8 +206,8 @@ r = runTool(["--config", "mut.json"]);
 check("`label` names the mutation the way `name` does", r.status === 0 && r.stdout.includes("the oversize guard is disabled"), r.stdout.slice(-300));
 
 // 7e. An ABSOLUTE config path is used as given, not joined to the repo root. A config that grades
-// this tool cannot live in the tree — committing it dirties the tree the tool then refuses — so
-// before this, the only way to run one was the tool's own `--allow-dirty` escape hatch.
+// this tool cannot live in the tree, since committing it dirties the tree the tool then refuses, so
+// without this the only way to run one is the tool's own `--allow-dirty` escape hatch.
 const outside = join(mkdtempSync(join(tmpdir(), "mutation-selftest-cfg-")), "outside.json");
 writeFileSync(outside, JSON.stringify({
   command: `${process.execPath} suite.mjs`,
@@ -232,8 +231,7 @@ check("a run that never reaches the suite's end is INCONCLUSIVE, not KILLED",
 // 7g. THE MIRROR OF 7f, AND THE ONE THE ORDERING DECIDES. 7f only needs the completion check to sit
 // above KILLED. This needs it above SURVIVED as well: the mutant ends the run with exit 0 before the
 // region is ever entered, so the suite "passes" — and SURVIVED is an ACCUSATION that the suite has a
-// hole, made about code that never executed. Measured before the fix: "the suite PASSED with the
-// implementation broken", about a guard two lines below the exit.
+// hole, made about code that never executed.
 writeFileSync(outside, JSON.stringify({
   command: `${process.execPath} suite.mjs`,
   completionMarker: "  ✓ done",

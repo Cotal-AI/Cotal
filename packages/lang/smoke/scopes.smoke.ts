@@ -409,12 +409,12 @@ await conclave([a], async (ch) => { await turn(a, { name: "t" }); return 1; }, {
    * A BODY MAY THROW A PRIMITIVE, and the disposition must survive it.
    *
    * `throw` is part of the language and `null` is a value, so a body can fail with something that
-   * is not an object. The facts used to be written ONTO the thrown value with `Object.assign`,
-   * which is a TypeError on `null`: the close had already been acknowledged, and the caller then
-   * received a manufactured type error instead of the body's own failure while the entry recorded
-   * `closed: undefined` for a room that was genuinely closed — an orphan walk would reject a
-   * correctly closed conclave. The facts are the interpreter's, so they travel in the
-   * interpreter's own envelope and the program's value rides untouched.
+   * is not an object. Writing the facts ONTO the thrown value with `Object.assign` is a TypeError
+   * on `null`, thrown after the close has been acknowledged: the caller gets a manufactured type
+   * error instead of the body's own failure, and the entry records `closed: undefined` for a room
+   * that was genuinely closed, so an orphan walk rejects a correctly closed conclave. The facts are
+   * the interpreter's, so they travel in the interpreter's own envelope and the program's value
+   * rides untouched.
    */
   const { handler, calls } = watching(new SimHandler({}));
   const j = new Journal({ run: "c-3p" });
@@ -541,11 +541,11 @@ await race({
 
 {
   /**
-   * The signal a `race` waits on used to be `p.then(() => undefined)`, which propagates a rejection.
-   * So the first arm to FAIL threw straight out of the await — past the cancellation of its
+   * The signal a `race` waits on must not propagate a rejection. A `p.then(() => undefined)` does,
+   * so the first arm to FAIL throws straight out of the await: past the cancellation of its
    * siblings, past `allSettled`, and into a scope entry recorded as failed with no losers on it.
-   * The run terminated while a sibling was still performing effects: the run says it is over, an
-   * agent keeps working, and nothing durable says the two disagree.
+   * The run then terminates while a sibling is still performing effects, and nothing durable says
+   * the two disagree.
    *
    * `bad` fails in microtasks while `slow` is parked in the watched handler's macrotask sleep, so
    * which arm settles first is decided here rather than by the event loop. `slow` then has a SECOND

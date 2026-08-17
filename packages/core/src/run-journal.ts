@@ -393,26 +393,22 @@ export async function replayRunJournal(
 ): Promise<RunJournalReplay> {
   const stream = wfjStreamName(space);
   const subject = wfjSubject(space, runId);
-  // A consumer nobody else names. Replay used to share one durable per run, which made every
-  // takeover a race with every other: `add` returns an existing durable rather than refusing, so a
-  // contender could inherit a half-read consumer, and each contender's delete tore down the other's
-  // live fetch. Measured, two concurrent takeovers on a six-record run left one of them holding 1
-  // record and then a terminal incomplete-replay error, and eight produced raw `consumer deleted`
-  // and `ConsumerNotFoundError` straight from the API. This one is created, read and removed by a
-  // single replay, so none of that has anyone to happen with.
+  // A consumer nobody else names, created, read and removed by a single replay. One durable per RUN
+  // would make every takeover a race with every other: `add` returns an existing durable rather than
+  // refusing, so a contender inherits a half-read consumer, and each contender's delete tears down
+  // the other's live fetch.
   const cfg = runJournalConsumerConfig(space, runId, takeoverId);
   const durable = cfg.durable_name as string;
   const created = await jsm.consumers.add(stream, cfg);
   try {
     return await readReplay(js, stream, durable, created, subject, runId);
   } finally {
-    // ONLY "already gone" is swallowed. The earlier catch-all rested on the stream's limits reaping
+    // ONLY "already gone" is swallowed. A catch-all here would rest on the stream's limits reaping
     // the leftovers, and they do not: WFJ sets neither `max_consumers` nor `consumer_limits`, which
     // the server normalizes to unlimited with an inactive threshold of zero, and a durable at zero
-    // gets no delete timer at all. So every delete that failed for any other reason left a consumer
-    // behind for good — one per takeover, forever. The consumer now carries its own threshold (see
-    // `runJournalConsumerConfig`) so the server reaps it regardless, and a delete that fails for a
-    // reason we did not name is raised rather than hidden.
+    // gets no delete timer at all, so a failed delete leaves a consumer behind for good, one per
+    // takeover. The consumer carries its own threshold (see `runJournalConsumerConfig`) so the
+    // server reaps it regardless, and a delete that fails for a reason we did not name is raised.
     try {
       await jsm.consumers.delete(stream, durable);
     } catch (e) {
@@ -456,8 +452,8 @@ async function readReplay(
   // it promised is the whole run. The CHAIN is the integrity check — every record carries its
   // ordinal, so `records[i].n === i` fails on a short front (a purge that retired the run, a
   // consumer that ate the head) AND on a record removed from the middle, which nothing else here can
-  // see. Measured before it existed: one interior delete left a replay of [1,2,4] that passed the
-  // count and the front anchor both, and the run would have re-performed the effect it lost.
+  // see: a replay of [1,2,4] passes the count and the front anchor both, and the run re-performs
+  // the effect it lost.
   for (let i = 0; i < records.length; i += 1) {
     if (records[i]!.record.n !== i) {
       throw new RunJournalPrefixTruncated(runId, records[i]!.seq, i, records[i]!.record.n);
@@ -478,7 +474,7 @@ async function readReplay(
  *
  * Serialization is the caller's own failure and must not be inside the window where an outcome is
  * classified. `isCasLoss` reads a `code` off whatever was thrown, so an entry whose `toJSON` threw
- * an object carrying `code: 10071` used to read as "the stream refused this append" — a local bug
+ * an object carrying `code: 10071` would read as "the stream refused this append": a local bug
  * reported as a supersession, which is the one answer a driver acts on by standing down for good.
  * And an appender that treats "no PubAck" as terminal would retire a run over it, when in truth
  * nothing was sent, nothing landed, and nothing moved.
@@ -710,9 +706,9 @@ export interface ActivateOptions {
  *
  * A newer epoch on an equal token is refused too, and that is not extra strictness but agreement
  * with the authority that issues the token. A lease is bound to one worker at assignment: within an
- * attempt the pool returns the SAME lease verbatim, a redelivery advances the token
- * (`endpoint-work.ts:440-444`), and the commit gate matches the bound epoch EXACTLY —
- * `current !== bound.epoch` settles nothing (`endpoint-work.ts:655-656`). So (equal token, newer
+ * attempt the pool returns the SAME lease verbatim (`first-wins: the still-current attempt's lease,
+ * verbatim`), a redelivery advances the token, and the commit gate matches the bound epoch EXACTLY:
+ * `current !== bound.epoch` settles nothing. So (equal token, newer
  * epoch) is a tuple no lease can produce, and a driver presenting it would be driving a run it can
  * never settle. A restarted process re-leases and gets its attempt's lease back with the epoch it
  * was bound at, which is the exact tuple above.
@@ -757,9 +753,7 @@ export async function activateRun(
   // tuple is checked and a different one lands: check holder A at token 7, publish holder B at
   // token 7, or token 1. The runId case is the worst of them, because `subject` is fixed here: a
   // mutated runId would label a FOREIGN run on this run's subject, and the barrier would then
-  // believe that record. Measured before this snapshot existed: an activation carrying
-  // `run: "r-other"` landed on r-5p's subject at ordinal 2. The pool's seams detach caller input for
-  // the same reason (`endpoint-work.ts:98-118`).
+  // believe that record. The pool's seams detach caller input for the same reason (`snapshotRef`).
   const t: RunTakeover = {
     space: takeover.space,
     runId: takeover.runId,
@@ -789,10 +783,9 @@ export async function activateRun(
     lastExpected = lastSeq;
     // The barrier by itself fences KNOWLEDGE OF THE HEAD, not authority: anyone who replays learns
     // the head, so a driver whose lease expired long ago can activate over the current holder just
-    // by reading. Measured before this check: activations [2, 1] on one run, the token-1 driver's
-    // append landing at seq 4. The replayed prefix is where the answer already is — it contains
-    // every activation, and it is current as of the CAS that follows — so a takeover under a token
-    // older than the last one recorded is refused here rather than after the damage.
+    // by reading, and then append behind it. The replayed prefix is where the answer already is: it
+    // contains every activation and is current as of the CAS that follows, so a takeover under a
+    // token older than the last one recorded is refused here rather than after the damage.
     // Typed is not checked: a value that is neither would fall through BOTH guards and reactivate a
     // purged run as if it were new, which is the thing the field exists to make impossible.
     if (t.expect !== "new" && t.expect !== "existing") {

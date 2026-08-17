@@ -101,8 +101,8 @@ const armPending = async (expect: number): Promise<number> => {
 };
 
 /** Whether the broker has published its own `.fire` for a token — an OBSERVATION of the timer
- *  plane, never a delivery. This suite used to hand the fire to `handleCheckpointFire` itself, and
- *  that is what kept the expiry cell green while nothing in the tree took a fire. */
+ *  plane, never a delivery. A suite that hands the fire to `handleCheckpointFire` itself grades
+ *  the plane's expiry and not whether anything in the tree takes a fire. */
 const brokerFired = async (token: string, epoch = EPOCH): Promise<boolean> => {
   const subject = eptSubject(SPACE, EP, IID, epoch, token, "fire");
   const fired = await jsm.streams.getMessage(eptStreamName(SPACE), { last_by_subj: subject }).catch(() => null);

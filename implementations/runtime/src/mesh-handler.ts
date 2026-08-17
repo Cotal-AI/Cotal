@@ -146,14 +146,12 @@ export class MeshHandler {
   /**
    * WHAT to repair when this process takes a run over. The driver decides WHEN and calls this.
    *
-   * The seam existed as an optional `onActivated` callback and NOTHING in the tree passed one — not
-   * the production path, not the driver's own suite — so every adopted run's timers stayed armed at
-   * the predecessor's coordinates, firing where nobody listens. An optional hook that must be wired
-   * correctly by every future host is a defect waiting on its first host; the handler that knows how
-   * to re-arm is the thing that should say so, and it is already the object the driver holds.
+   * It is a method rather than an optional hook the host wires: an adopted run whose timers stay
+   * armed at the predecessor's coordinates fires where nobody listens, and the object that knows how
+   * to re-arm is the one the driver already holds.
    *
-   * Not swallowed here: a driver that resumed a program whose pauses it could not re-arm would look
-   * like it was holding a run it cannot advance, which is the failure this exists to prevent.
+   * Failures are raised, not swallowed: a driver holding a run whose pauses it could not re-arm
+   * cannot advance it.
    */
   async adopted(entries: readonly JournalEntry[]): Promise<string[]> {
     return await rearmOutstandingPauses(
@@ -231,21 +229,17 @@ export class MeshHandler {
   /**
    * `wait` — an event await that survives the process waiting for it.
    *
-   * The mechanism is a DURABLE JetStream consumer named from `ctx.requestId`, created before the
-   * wait begins. That is the whole durability argument: the consumer holds the run's position on
-   * the channel, so an event published while the run's host was down is still there when the run
-   * comes back and re-attaches under the same derived name. An ephemeral consumer, or one created
-   * on resume, would silently start from "now" and the event would simply never have happened.
+   * A DURABLE consumer named from `ctx.requestId` holds the run's position on the channel, so an
+   * event published while the host was down is still there when the run re-attaches under the same
+   * derived name. An ephemeral consumer, or one created on resume, starts from "now" and the event
+   * never happened.
    *
-   * The TIMEOUT rides the checkpoint plane, which makes it durable too: it is minted once with an
-   * absolute deadline, so a wait that spans a crash resumes against the ORIGINAL deadline rather
-   * than restarting the clock — a resumed 20-minute wait that had 30 seconds left has 30 seconds
-   * left. A timeout resolves `null` and never throws: `??` is `otherwise`.
+   * The TIMEOUT rides the checkpoint plane and is minted once with an absolute deadline, so a
+   * resumed 20-minute wait with 30 seconds left has 30 seconds left. A timeout resolves `null` and
+   * never throws: `??` is `otherwise`.
    *
-   * Two of the four event kinds are NOT here. `replied(agent)` and `down(agent)` are addressed to an
-   * agent HANDLE, which comes from `spawn` — and `down` additionally needs `monitor` to have
-   * registered interest. They are gated by their input rather than by their mechanism, and they
-   * refuse through the same named seam as the durable actions themselves.
+   * `replied(agent)` and `down(agent)` are not here. They address an agent handle, which only
+   * `spawn` produces, so they refuse through the same named seam as the durable actions.
    */
   async wait(req: WaitRequest, ctx: EffectContext): Promise<unknown | null> {
     const ev = req.event;
@@ -320,26 +314,13 @@ export class MeshHandler {
         }
       }
     } finally {
-      // A THROW IS NOT AN ENDING, and that is what this used to miss by cleaning up unconditionally.
-      //
-      // The three returns above are the wait being OVER — it matched, its deadline passed, or its
-      // idle window closed — and then its position is worthless. A throw is the opposite: the step
-      // is still pending, someone will retry it, and the consumer's position is the only record of
-      // where this run had reached on the channel. `ctx.bind` is a JOURNAL APPEND and a journal can
-      // refuse one (L5010, RunSuperseded), so this is reached in ordinary operation, not only by a
-      // bug — and the source comment above it, which promises a crash between bind and ack is
-      // recoverable, was true only of a crash that never runs this block at all.
-      //
-      // Measured before the repair: the wait matched at `chatSeq` 2, the bind was refused, the
-      // consumer was deleted on the way out, and the retry — which carries no recorded sequence,
-      // because recording it is exactly what failed — created a fresh consumer at
-      // `deliver_policy: "new"` and found NOTHING. The message sat on the stream, permanently
-      // invisible to that run, with nothing anywhere red.
-      //
-      // Keeping it costs one consumer on a run that is abandoned rather than retried. That is the
-      // same cost a host crash already pays, and it is the cost this comment's original argument
-      // deliberately chose: an inactivity threshold that could reap a LIVE wait's consumer while its
-      // host was down would lose exactly the events the durable exists to hold.
+      // A THROW IS NOT AN ENDING. The three returns above are the wait being over and its position
+      // worthless; a throw leaves the step pending, and the consumer's position is the only record
+      // of where this run reached on the channel. `ctx.bind` is a journal append and a journal can
+      // refuse one (L5010, RunSuperseded), so a throw here is ordinary operation and not only a bug.
+      // Keeping the consumer costs one durable on an abandoned run, which is what a host crash
+      // already costs; reaping on inactivity instead could delete a live wait's position while its
+      // host was down.
       if (over) {
         try {
           await this.jsm.consumers.delete(stream, durable);
@@ -441,27 +422,15 @@ export class MeshHandler {
   /**
    * Arm this pause, or ATTACH to the one already recorded under the same token.
    *
-   * The deadline a resume must use is the RECORDED one, and it cannot be recomputed. `deadline` is
-   * derived from the clock at the moment the step runs, and a mint is idempotent only if the whole
-   * spec is identical, so a resumed step that recomputes `now() + duration` presents a deadline a
-   * second or an hour later than the one on record and the plane refuses it as a different intent.
-   * Reproduced live before this existed, on the clock a real host has: an eight second `sleep`
-   * armed, the step performed again 1.2 seconds later under its recorded id, and the mint threw
-   * `already exists with a DIFFERENT spec`. The pause stayed `waiting` with nobody attached to it,
-   * which is the same permanent-and-correct pause the fire had before anything took it. The suites
-   * did not catch it because they held the clock still between the two attempts, so the arithmetic
-   * agreed by accident. An adopting neighbour at the next epoch walks into the identical door.
+   * A mint is idempotent only if the whole spec is identical, so the recorded deadline is the
+   * authority and a resume may not recompute one: `now() + duration` is a different deadline a
+   * second later, and the plane reads a different deadline as a different intent. The pause holds
+   * it; a second copy anywhere else is a second thing to disagree.
    *
-   * So the spec on record is the authority, and this reads it before it computes anything. Nothing
-   * is remembered anywhere else: the pause itself is where the deadline lives, and a second copy in
-   * the journal would be a second thing to disagree.
-   *
-   * A pause whose recorded deadline has ALREADY PASSED cannot be re-minted at all, because a mint
-   * requires a future deadline, and that is right: it is not being armed, it is overdue. What it
-   * needs is the schedule re-emitted at the status's current generation, which is the reconciler's
-   * job and takes no deadline from here. A spec with no status is the crash window between the two
-   * halves of a mint, and once the deadline has passed nothing can repair it from here, so it is
-   * named and raised rather than waited on forever.
+   * An already-passed deadline cannot be minted at all, correctly, because a due pause is not being
+   * armed. It needs its schedule re-emitted at the status's current generation, which is the
+   * reconciler's job. A spec with no status and an elapsed deadline is unrepairable from here, so it
+   * is raised rather than waited on.
    */
   private async arm(ref: CheckpointRef, deadline: number): Promise<void> {
     // Over already: an expiry or an answer landed while this host was away. Nothing to arm, and the
@@ -512,26 +481,16 @@ export class MeshHandler {
    * Take the broker's `.fire` for this deadline, if it has published one, and let the checkpoint
    * plane judge it. Answers whether the fire SETTLED the pause.
    *
-   * **This is the step the whole timer plane was missing a caller for.** The broker arms a real
-   * schedule and publishes a real fire, and the fire is the only thing that can expire a pause
-   * nobody answers - but a fire is a MESSAGE, not a settlement, and `handleCheckpointFire` is what
-   * turns one into the other. Nothing outside the suites was calling it. Measured on a live broker
-   * before this existed: a two-second `sleep`, the timer writer arming one schedule, the fire
-   * published on the token's own subject, and four seconds later the status still `waiting`, no
-   * settle fact, and the effect still pending. The pause was durable, correct, and permanent.
+   * A fire is a MESSAGE and a settlement is a FACT; `handleCheckpointFire` is what turns one into
+   * the other, and a pause nobody answers ends no other way.
    *
-   * READ BY SUBJECT, not by a subscription, because the fire is a RECORD of a deadline passing and
-   * this is asked repeatedly by callers that are already polling. `last_by_subj` gives the current
-   * one whether it arrived a moment ago or while this host was down, which is the case a resume
-   * lands in - a subscription that only saw new messages would miss the fire that is the reason the
-   * run has something to resume.
+   * READ BY SUBJECT rather than by a subscription, because the fire is a record of a deadline
+   * passing and callers here are already polling: `last_by_subj` gives the current one whether it
+   * arrived a moment ago or while this host was down, and a resume lands in the second case.
    *
-   * IDEMPOTENT BY THE PLANE, not by bookkeeping here: a fire handed over twice finds the pause
-   * already settled and declines. The one repeated verdict with a side effect is `re-armed`, which
-   * re-emits the current generation's schedule under owner-behind clock skew; over-emission is
-   * idempotent at the timer writer and the skew window is seconds, so it costs a re-emit per poll
-   * for as long as this host's clock is behind the broker's, and remembering which fire had already
-   * been judged would be this file keeping state the plane already holds.
+   * IDEMPOTENT BY THE PLANE rather than by bookkeeping here: a fire handed over twice finds the
+   * pause settled and declines. The one repeated verdict with a side effect is `re-armed` under
+   * owner-behind clock skew, and over-emission is idempotent at the timer writer.
    */
   private async takeFire(ref: CheckpointRef): Promise<boolean> {
     const subject = eptSubject(
@@ -614,9 +573,8 @@ export class MeshHandler {
     try {
       return await Promise.race([
         this.watcher.awaitSettle(ref),
-        // A pump that ENDED is not an answer - only a pump that FAILED is. A failure here means
-        // this process cannot expire the pause, which is the state that used to be indistinguishable
-        // from waiting, so it is raised rather than absorbed: the step stays pending and is retried.
+        // A pump that ENDED is not an answer, only one that FAILED is: a failure means this process
+        // cannot expire the pause, so it is raised rather than absorbed and the step stays pending.
         pump.then<CheckpointSettleFact>(() => new Promise<never>(() => {})),
       ]);
     } finally {
@@ -786,11 +744,10 @@ export async function rearmOutstandingPauses(
  * later record wins — a step that settled has a settled entry after its pending one, and reading
  * only the first would re-arm timers for pauses that are already over.
  *
- * THE KINDS ARE THE THREE THAT ARM A TIMER, and `wait` was missing from that list. It does not mint
- * a pause of its own, so it does not look like one, but `wait()` arms mediated deadlines exactly as
- * `sleep` does — its idle window or its timeout — and a `wait` adopted at a new epoch was therefore
- * left waiting on a deadline no live epoch would ever fire. Found by review, reproduced on a pending
- * `wait` entry that yielded no tokens at all.
+ * THE KINDS ARE THE THREE THAT ARM A TIMER, and `wait` is one of them. It mints no pause of its own
+ * so it does not look like one, but its idle window and its timeout are mediated deadlines exactly
+ * as `sleep`'s is, and a `wait` adopted at a new epoch would otherwise wait on a deadline no live
+ * epoch fires.
  *
  * An idle wait with a timeout arms TWO, and the second is DERIVED rather than recorded, so it is
  * re-derived here for the same reason the live path derives it: a resume that had to remember it

@@ -799,12 +799,12 @@ function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
     }
   }
 
-  // Step names: REQUIRED-ness and VALIDITY are separate questions and used to share one gate.
+  // Step names: REQUIRED-ness and VALIDITY are separate questions and must not share one gate.
   //
   // Required-ness is a statement about the caller's obligation; validity is a statement about the
-  // sink. `nameRequired` is false for 7 of the 13 primitives, and a name supplied on one of those
-  // reached `stepKeyString` completely unchecked — so the optional path, which is the one nobody
-  // writes tests for, fed the same durable journal key as the required one. A name containing the
+  // sink. `nameRequired` is false for 7 of the 13 primitives, so behind one gate a name supplied on
+  // any of those reaches `stepKeyString` unchecked: the optional path, which is the one nobody
+  // writes tests for, feeds the same durable journal key as the required one. A name containing the
   // characters the key grammar reserves forges structure: two different programs then print one
   // identical key, and with matching inputs the collision is entirely silent.
   if (name !== "checkpoint") {
@@ -982,7 +982,7 @@ function resolveFunction(node: AnyNode, v: Validator, scope: Scope): AnyNode | u
   if (node.type !== "Identifier") return undefined;
   const name = node.name as string;
   // Bound here: the binding answers, whatever it is bound to. Unbound: walk 2 has already raised
-  // L2001 for it, and the index is what the earlier fold used, so it stays the fallback.
+  // L2001 for it, so the module index is the fallback.
   if (scope.lookup(name) !== undefined) return scope.lookupFn(name);
   return v.functions.get(name) ?? undefined;
 }

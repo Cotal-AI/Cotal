@@ -167,12 +167,10 @@ const plan = async (
     p.admissible === true, p.refusals);
   c("its cut is NOT the resume walk's answer", p.cut.length !== wrongCut.length,
     { plan: keys(p.cut), resume: wrongCut });
-  // THIS CELL USED TO BLESS THE DEFECT. It asserted the enclosing `/parallel:pair#0` entry belonged
-  // in the cut, which is what made claim 1 false: the child replays in RESUME mode, where a settled
-  // scope is taken wholesale, so it never re-entered and its first live step landed after the whole
-  // combinator — never re-running the step it was forked for, and inheriting a recorded result that
-  // already answered the branch the caller wanted re-decided. A cell can be green, specific, and
-  // wrong, and this one was all three for as long as it existed.
+  // The enclosing `/parallel:pair#0` entry must stay OUT of the cut. A child replays in RESUME mode,
+  // where a settled scope is taken wholesale, so a child that inherits it never re-enters the scope:
+  // it skips the step it was forked for and adopts a recorded answer to the branch the caller wanted
+  // re-decided.
   c("it holds the sibling branch that ran before the cut, and NOT the scope enclosing it",
     keys(p.cut).join() === "/parallel:pair#0/b:a/sleep:a#0", keys(p.cut));
   c("the enclosing scope is projected out, so the child re-enters instead of short-circuiting past it",
@@ -660,9 +658,9 @@ const plan = async (
     winnerEdit.admissible === false && winnerEdit.refusals.some((r) => r.code === "L5018"),
     winnerEdit.refusals);
 
-  // REPAIRED by the entry's `branchDigest`. The same edit on the other arm used to produce a plan
-  // byte-for-byte identical to the plan for source that was never edited at all; the losers' bodies
-  // are now bound into the scope entry, so it diverges at the scope rather than passing through it.
+  // The losers' bodies are bound into the scope entry by its `branchDigest`, so an edit to an arm
+  // the walk never enters still diverges at the scope. Without that binding an edited loser and an
+  // unedited source produce the same plan.
   c("REPAIRED: editing the LOSING arm diverges, at the scope that bound it",
     loserEdit.admissible === false && loserEdit.refusals.some((r) => r.code === "L5001"),
     loserEdit.refusals);
@@ -713,10 +711,8 @@ const plan = async (
   c("and the refusal set is exactly the one true code, so it reads as one repair",
     atLoser.refusals.length === 1, atLoser.refusals);
 
-  // REPAIRED, and it was the cheapest of the four. A refused plan used to hand back a
-  // plausible-looking cut, so a caller reading `cut` without reading `admissible` got something
-  // usable-shaped out of a fork that will not happen. The unreached path already returned nothing;
-  // the refused-but-reached path now does too.
+  // An inadmissible plan carries no cut on either path. A caller that reads `cut` without reading
+  // `admissible` must get nothing usable-shaped out of a fork that will not happen.
   const atWinner = await atKey(RACED, WINNER);
   c("REPAIRED: an INADMISSIBLE plan carries no cut",
     atWinner.admissible === false && atWinner.cut.length === 0, { cut: keys(atWinner.cut) });
@@ -732,11 +728,11 @@ const plan = async (
 // Every other block in this file hands `planFork` a KEYED view, because `record()` builds one from
 // `Journal.entries()`. No driver has one. The stream is append-only — `journal-store.smoke` proves
 // one step is two records — `RunJournalAppender.steps()` replays every step record in order, and
-// `run-driver.ts:250-258` seeds a journal straight from it. **A suite that only ever passes the
-// tidy shape cannot see what the real caller's shape does**, which is why this block exists.
+// `run-driver.ts`'s `drive` seeds a journal straight from `appender.steps()`. **A suite that only
+// passes the tidy shape cannot see what the real caller's shape does**, which is why this exists.
 //
-// The language now folds that log when it SEEDS a journal. `planFork` filters `req.entries`
-// directly, so it does not.
+// The language folds that log when it SEEDS a journal. `planFork` filters `req.entries` directly,
+// so it does not.
 {
   const log: JournalEntry[] = [];
   const j = new Journal({
@@ -752,9 +748,9 @@ const plan = async (
   c("a fork over the log is admissible, exactly as it is over the keyed view",
     p.admissible === true && p.refusals.length === 0, p.refusals);
 
-  // REPAIRED. The prefix used to carry the pending row AND the settled row of every copied step, so
-  // the child inherited a history twice the size of the one its parent performed — silently, with
-  // every key correct and simply two of each. The plan now addresses the journal's keyed view.
+  // The plan addresses the journal's KEYED view, so one step is one row in the cut. A plan over the
+  // raw log would copy the pending row and the settled row of every step, handing the child a
+  // history twice the size of the one its parent performed, with every key correct and two of each.
   c("REPAIRED: the cut carries one row per step, folded by the journal rather than by a second rule",
     keys(p.cut).length === 2 && new Set(keys(p.cut)).size === 2, keys(p.cut));
   c("and it is the SETTLED row that survives, not the pending one the log opened with",

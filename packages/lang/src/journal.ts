@@ -171,10 +171,11 @@ export interface JournalInit {
  * A durable append the store REFUSED.
  *
  * This is not an effect failure, and conflating the two is not cosmetic. A handler that completed
- * plus a log that would not accept the completion used to produce an entry saying the work FAILED,
- * so a later replay reported failure for work the world had actually done — the journal lying about
- * the one thing it exists to remember. The domains are separate: "the world said no" is the run's
- * result, "the log said no" is the run losing its ability to have one. A driver reads the second as
+ * plus a log that would not accept the completion, recorded as one fact, is an entry saying the
+ * work FAILED: a later replay then reports failure for work the world actually did, which is the
+ * journal lying about the one thing it exists to remember. The domains are separate: "the world
+ * said no" is the run's result, "the log said no" is the run losing its ability to have one. A
+ * driver reads the second as
  * "stop, and do not record anything else", never as an outcome.
  *
  * Nothing was written and nothing in memory moved, so a caller holding this error knows exactly as
@@ -307,15 +308,14 @@ export class Journal {
   /**
    * Durably record one entry, BEFORE the in-memory map is allowed to hold it.
    *
-   * The order is the whole point and it was the other way round once. Mutating first leaves a
-   * volatile transition behind when the store refuses: a `begin` whose append was rejected still
-   * read as `pending`, and a `settle` whose append was rejected still read as settled, so the
-   * in-memory journal claimed a durability the store had explicitly declined to provide. Persisting
-   * first means a rejected append changes nothing at all, which is the only state a caller can
-   * reason about.
+   * The order is the whole point. Mutating first leaves a volatile transition behind when the store
+   * refuses: a `begin` whose append was rejected still reads as `pending`, and a `settle` whose
+   * append was rejected still reads as settled, so the in-memory journal claims a durability the
+   * store explicitly declined to provide. Persisting first means a rejected append changes nothing
+   * at all, which is the only state a caller can reason about.
    *
-   * A journal with no store keeps the old behaviour exactly: `persist` returns, the map is updated,
-   * and nothing is awaited that could fail.
+   * With no store there is nothing to refuse: `persist` returns, the map is updated, and nothing is
+   * awaited that could fail.
    */
   private async persist(k: string, entry: JournalEntry): Promise<void> {
     if (this.store === undefined) return;

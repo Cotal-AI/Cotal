@@ -199,13 +199,13 @@ log(votes.a.status);
 
 // ---- 4) the effect ceiling is a RUN bound, and survives a crash ------------------------------
 //
-// The counter lives on the interpreter, so every activation used to start at zero: a run pinned to
-// four effects performed six across two activations and never faulted. Two individually correct
-// decisions composed into it — instance fields at zero, and replayed effects deliberately not
-// counted, which is right because a replay performs nothing. What was missing is that the journal
-// records every dispatch, so the count IS recoverable, and L4009 is a RUN ceiling.
+// The counter lives on the interpreter, so a fresh activation starts at zero and a run pinned to
+// four effects can perform six across two activations without faulting. Two individually correct
+// decisions compose into that: instance fields at zero, and replayed effects deliberately not
+// counted, which is right because a replay performs nothing. The journal records every dispatch,
+// so the count is recoverable, and L4009 is a RUN ceiling.
 //
-// This is the exact reproduction that found it: pin four, release after three, resume.
+// The shape here: pin four, release after three, resume.
 {
   const NOW = 1_770_000_000_000;
   const pins = resolvePins({ runId: "r-ceil", effectCeiling: 4 }, NOW);
@@ -239,8 +239,8 @@ log(votes.a.status);
     journal: new Journal({ run: "r-ceil", entries, store }),
   }).then(() => null, (e: unknown) => e as Error);
 
-  // Before the fix this returned normally, having performed six effects under a ceiling of four,
-  // and nothing anywhere said so. The ceiling is what the run is pinned to, not what one walk is.
+  // The ceiling is what the RUN is pinned to, not what one walk is. Counted per activation, this
+  // returns normally having performed six effects under a ceiling of four, and says nothing.
   ok("the resumed run reaches the ceiling the RUN was pinned to, not a fresh one",
     second instanceof RuntimeFault && second.code === "L4009", { name: second?.name, code: (second as RuntimeFault)?.code });
   ok("and it stops at the pinned number rather than after it",

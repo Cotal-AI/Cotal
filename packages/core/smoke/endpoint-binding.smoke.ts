@@ -280,12 +280,11 @@ c("the run-driver journal grants are the run's own subject and ONE takeover's re
     "$JS.API.CONSUMER.DELETE.WFJ_epbind.wfj_r-1_tk1",
   ]), runDriverJournalGrants(SPACE, "r-1", "tk1"));
 // The durable is per-TAKEOVER, and the takeover id is therefore part of the CREDENTIAL rather than
-// something the driver picks afterwards. The earlier shape here granted `wfj_r-1_*` and read as a
-// family of names; it is not one. NATS expands `*` as a WHOLE dot-delimited token only, so that row
-// was a literal string matching no consumer any driver would ever create — measured, not reasoned:
-// a subscription to `api.WFJ.wfj_r-1_*` received `api.WFJ.wfj_r-1_*` and never `…wfj_r-1_ab12cd34`.
-// The rows below are literals on purpose; `run-journal-auth.smoke.ts` proves they work on a broker
-// that actually enforces them, which is the only place that difference is visible.
+// something the driver picks afterwards. A row like `wfj_r-1_*` reads as a family of names and is
+// not one: NATS expands `*` as a WHOLE dot-delimited token, so it is a literal string matching no
+// consumer any driver would create. The rows below are literals on purpose;
+// `run-journal-auth.smoke.ts` proves they work on a broker that actually enforces them, which is
+// the only place that difference is visible.
 c("no row carries a star inside a name token, which reads like a pattern and is a literal",
   runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !/[A-Za-z0-9_-]\*/.test(r)),
   runDriverJournalGrants(SPACE, "r-1", "tk1"));

@@ -318,10 +318,9 @@ rejects(
   "L2032",
   'let winner = "none";\nawait parallel({ a: async () => { if (true) { winner = "a"; } } }, { name: "p" });',
 );
-// A BRANCH IS A BRANCH HOWEVER IT IS SPELLED. This is the same program with the arrows
-// replaced by named declarations, and the first version of the rule accepted it: `branchThunks`
-// looked only at function nodes written at the call site, so `parallel({ a, b })` had no branches
-// to check at all. Found by review, not by the suite, which is why both spellings are here now.
+// A BRANCH IS A BRANCH HOWEVER IT IS SPELLED. This is the same program with the arrows replaced by
+// named declarations. A `branchThunks` that looks only at function nodes written at the call site
+// finds no branches at all in `parallel({ a, b })`, so both spellings are pinned here.
 rejects(
   "a NAMED branch is checked, not skipped because it was declared elsewhere",
   "L2032",

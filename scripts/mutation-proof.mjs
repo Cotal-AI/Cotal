@@ -159,14 +159,12 @@ function proveOne(m, opts) {
     if (r.timedOut) return { label, verdict: "INCONCLUSIVE", why: `run timed out; a hang is not a red`, ticks };
 
     // THE COMPLETION CHECK COMES FIRST, FOR EVERY VERDICT — NOT ONLY FOR THE RED ONE.
-    // It used to sit one branch above KILLED, which passes the two obvious controls (a crash with
-    // no output, a crash mid-cell) and fails the two that matter. A mutant that exits 0 before ever
-    // reaching the region graded SURVIVED — and a survivor is an ACCUSATION that the suite has a
-    // hole, made about code the run never entered. Measured: a mutation replacing a function body
-    // with `process.exit(0)` reported "the suite PASSED with the implementation broken" about a
-    // guard two lines further down that was never executed. The red side is the same asymmetry
-    // mirrored: a genuine early cell failure whose text happens to contain the named string, plus a
-    // stop before the region, is a plausible-looking kill with a real cell name attached.
+    // One branch above KILLED passes the two obvious controls (a crash with no output, a crash
+    // mid-cell) and fails the two that matter. A mutant that exits 0 before ever reaching the region
+    // grades SURVIVED, and a survivor is an ACCUSATION that the suite has a hole, made about code
+    // the run never entered. The red side is the same asymmetry mirrored: a genuine early cell
+    // failure whose text happens to contain the named string, plus a stop before the region, is a
+    // plausible-looking kill with a real cell name attached.
     //
     // An incomplete run is not a kill and it is not a survival. It is an absence of evidence, and
     // the only verdict that says so is INCONCLUSIVE.
@@ -263,8 +261,8 @@ let opts = {
  * "Red alone is not proof" was reachable by one typo in a file nobody re-reads after it goes green.
  *
  * `label` is accepted as an alias for `name` rather than rejected: it is what most configs in
- * flight already use, and until now they printed the fallback label instead of the intent their
- * author wrote. The rest are annotations tools other than this one read; they are listed so that
+ * flight use, and rejecting it would print the fallback label instead of the intent their author
+ * wrote. The rest are annotations tools other than this one read; they are listed so that
  * carrying one is a decision rather than a typo that happens to survive.
  */
 const MUTATION_KEYS = [
@@ -273,11 +271,11 @@ const MUTATION_KEYS = [
 ];
 
 if (a.config) {
-  // An ABSOLUTE config path is used as given. It used to be joined to the repo root, which turned
-  // `/tmp/x.json` into `<repo>/tmp/x.json` and died on ENOENT — so the only ways to run a config
-  // were to put it in the tree (dirtying the tree this tool then refuses) or to reach it with
-  // `../../../`. A harness whose own escape hatch is the only way to grade it is a harness whose
-  // guard is untested by construction. Relative paths still resolve against `cwd`, unchanged.
+  // An ABSOLUTE config path is used as given. Joining it to the repo root turns `/tmp/x.json` into
+  // `<repo>/tmp/x.json` and dies on ENOENT, leaving two ways to run a config: put it in the tree
+  // (dirtying the tree this tool then refuses) or reach it with `../../../`. A harness whose own
+  // escape hatch is the only way to grade it is untested by construction. Relative paths resolve
+  // against `cwd`.
   const cfgPath = isAbsolute(a.config) ? a.config : join(cwd, a.config);
   const cfg = JSON.parse(readFileSync(cfgPath, "utf8"));
   mutations = cfg.mutations ?? usage("config has no `mutations` array");

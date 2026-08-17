@@ -162,10 +162,10 @@ interface ScopeFacts {
 /**
  * A scope's failure, carrying the interpreter's OWN facts about it.
  *
- * These facts used to be attached to the thrown value with `Object.assign`, which works exactly as
- * long as every program throws an object. `throw null` is valid, and `Object.assign(null, …)`
- * is a TypeError — so a conclave whose body threw a primitive lost its closure fact AND handed the
- * caller a manufactured type error in place of the body's failure, while the entry recorded
+ * Attaching them to the thrown value with `Object.assign` works exactly as long as every program
+ * throws an object. `throw null` is valid, and `Object.assign(null, …)` is a TypeError, so a
+ * conclave whose body throws a primitive loses its closure fact AND hands the caller a manufactured
+ * type error in place of the body's failure, while the entry records
  * `closed: undefined` for a room the handler had in fact closed. The facts belong to the
  * interpreter, so they travel in the interpreter's own envelope and the program's value rides
  * untouched inside it. Nothing outside `performScope` ever sees this class: it unwraps before it
@@ -644,13 +644,12 @@ class Interpreter {
 
     // TWO FAILURE DOMAINS, AND THE TERMINAL APPEND IS NOT IN THE HANDLER'S.
     //
-    // This was one `try` around both the dispatch and the settle, and the bug it produced is the
-    // worst kind a journal can have: the handler completed, the store refused the settling append,
-    // the catch below recorded that refusal as a handler fault, and the durable sequence became
-    // `[pending, settled:failed]` for work the world had actually done. Every later replay then
-    // reported failure for a real success. So the handler's outcome is decided first, alone, and
-    // the append that records it happens outside — where a rejection is a durability failure that
-    // travels as itself and settles nothing.
+    // One `try` around both the dispatch and the settle produces the worst bug a journal can have:
+    // the handler completes, the store refuses the settling append, the catch below records that
+    // refusal as a handler fault, and the durable sequence becomes `[pending, settled:failed]` for
+    // work the world actually did, so every later replay reports failure for a real success. The
+    // handler's outcome is decided first, alone, and the append that records it happens outside,
+    // where a rejection is a durability failure that travels as itself and settles nothing.
     let result: unknown;
     try {
       result = await perform(ctx, inputHash);
@@ -1798,12 +1797,11 @@ class Interpreter {
           // A cancellation is the scope being unwound, and swallowing it would keep a branch
           // working after it lost a race.
           //
-          // A durability failure is the JOURNAL refusing to record — the run losing its ability to
-          // have a result at all. Measured before this line existed: a program whose store refused
-          // an append caught the failure, performed two more effects against the world, and
-          // returned normally. Nothing about that run was recorded from the refusal onward, so the
-          // effects it went on to perform exist only in the world, and a resume would perform them
-          // again. An unrecordable run must stop, and no `catch` may decide otherwise.
+          // A durability failure is the JOURNAL refusing to record: the run losing its ability to
+          // have a result at all. A program that catches one goes on performing effects against the
+          // world with nothing recorded from the refusal onward, so those effects exist only in the
+          // world and a resume performs them again. An unrecordable run must stop, and no `catch`
+          // may decide otherwise.
           if (e instanceof Cancelled || e instanceof JournalAppendRejected || e instanceof RunReleased) throw e;
           const handlerNode = node.handler as AnyNode | null;
           if (handlerNode === null || handlerNode === undefined) throw e;
@@ -1904,16 +1902,12 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
   // A resume is handed the pins the run STARTED under and binds to them; a fresh run resolves them
   // once, here, and hands them back for the run record.
   //
-  // AND A RESUME MAY NOT DECLINE TO SAY WHICH RUN IT IS RESUMING. Handed history but no pins, this
-  // used to re-resolve them and carry on, which is not a smaller version of the right behaviour —
-  // it is a different run wearing the same journal. Measured on a journal recorded at epoch
-  // 1000000000000 and resumed a day later without pins: `now()` before the first effect returned
-  // the RESUMING host's clock (1000086400000), the run clock stayed on that host's time even AFTER
-  // a replayed `sleep` whose recorded `endedAt` was 1000000001000, and a pinned seed was replaced
-  // by the runId default so `random()` moved from 0.6367686 to 0.5057680. Nothing refused, because
-  // nothing could: pure draws are not journalled and the epoch is not a recorded fact, so there is
-  // no divergence for the replay to catch. Every production caller already passes pins; this makes
-  // the contract the code's rather than the caller's memory.
+  // AND A RESUME MAY NOT DECLINE TO SAY WHICH RUN IT IS RESUMING. Re-resolving the pins for a run
+  // handed history but none is not a smaller version of the right behaviour: it is a different run
+  // wearing the same journal. The clock moves to the RESUMING host and the seed falls back to the
+  // runId default, so both the logical epoch and every pure draw change, and nothing refuses,
+  // because nothing can. Pure draws are not journalled and the epoch is not a recorded fact, so
+  // there is no divergence for the replay to catch.
   //
   // A journal with NO entries is a different thing and stays allowed: that is a FRESH run being
   // handed a journal for its store, not a resume.

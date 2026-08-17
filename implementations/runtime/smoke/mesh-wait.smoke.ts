@@ -112,10 +112,9 @@ const armPending = async (expect = 8): Promise<number> => {
   return armed;
 };
 /** Whether the broker has published its own `.fire` for this token — an OBSERVATION of the timer
- *  plane, never a delivery. This suite used to call `handleCheckpointFire` here on the handler's
- *  behalf, and that is what made every timeout cell green while nothing in the tree took a fire:
- *  what was graded was that the checkpoint plane expires a pause when somebody delivers its fire,
- *  which was true and was never the question. */
+ *  plane, never a delivery. Calling `handleCheckpointFire` here on the handler's behalf would grade
+ *  that the checkpoint plane expires a pause when somebody delivers its fire, which was never the
+ *  question: the question is whether anything in the tree takes one. */
 const brokerFired = async (token: string): Promise<boolean> => {
   const subject = eptSubject(SPACE, EP, IID, EPOCH, token, "fire");
   const fired = await jsm.streams.getMessage(eptStreamName(SPACE), { last_by_subj: subject }).catch(() => null);
@@ -201,8 +200,8 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
 {
   const id = tok("durable");
   // The consumer is created from the CONTRACT written out here, not from the function under test.
-  // Building the fixture with `waitConsumerConfig` was the first version and it graded nothing: a
-  // mutation to the derivation moved the fixture with it, and the cell passed with the link broken.
+  // A fixture built with `waitConsumerConfig` moves with any mutation to the derivation, so the
+  // cell would pass with the link broken.
   c("the wait durable's name is `wfw_<requestId>` — a derivation something else can reproduce",
     waitConsumerName(id) === `wfw_${id}`, waitConsumerName(id));
   c("and its filter is the channel, from any principal", 
