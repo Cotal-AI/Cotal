@@ -301,8 +301,13 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
   epmig: {
     // The endpoint's cutover manifest (§ S5): an atomic unsplit key, ONE per endpoint — never one
     // per caller and never one per run. It is the inventory a migration is performed against and
-    // the durable source of the name generation, which is what stops a generation being reused by
-    // a later run.
+    // the durable record of the cutover runs performed against it, which is what stops a RUN
+    // generation being reused by a later run. That run generation is scoped to cutover and is key
+    // material nowhere else: the `<gen>` token on `goaleff` is the accepted submission's EPJ
+    // `sourceSeq` and only that, and `goal`/`goalidx`/`goal….result` carry no generation at all.
+    // Calling this "the durable source of the name generation" is what gave two different counters
+    // one name, and two implementations reading it that way key the same election differently and
+    // never meet inside it.
     kind: "epmig",
     qualifiers: [qEndpoint],
     split: false,

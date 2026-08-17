@@ -2278,9 +2278,17 @@ session.
 **Effect.** A command declaration carries `effect`, one of `read` or `write`.
 
 **Reachability.** `effect` is reachable only under `protocol.v: 2` (*Version*, below). A responder
-whose descriptor is pinned to `v: 1` cannot emit the field, and a caller resolving such a
-descriptor cannot read one, so in a `v: 1` deployment nothing turns on the declaration and the
-`v: 1` rule below is the whole of what governs. A reference implementation that has not moved to
+whose descriptor is pinned to `v: 1` cannot declare the field on the command surface a caller
+resolves against, and nothing in such a deployment consumes it, so the `v: 1` rule below is the
+whole of what governs.
+
+Note what the pin does NOT do. A descriptor MAY inline the registered cluster artifact verbatim
+(*Descriptor and describe*, §13.7), and an artifact is not filtered against the parsed command
+surface, so a key named `effect` inside one can appear on the wire under a `v: 1` descriptor. Its
+presence there is not a declaration and MUST NOT be read as one. Repeat-safety information exists
+only at `protocol.v: 2`, and a caller that recovers it from raw artifact bytes under a `v: 1`
+descriptor has reinstated exactly the retry this section exists to stop, while believing it read a
+declaration. A reference implementation that has not moved to
 `2` therefore carries its repeat-safety knowledge somewhere off the wire, as a static allowlist of
 the commands it knows to be safe to repeat. Such an allowlist stands in for this field for exactly
 as long as no `v: 2` descriptor can exist, and it is superseded by the declaration the moment one
@@ -2448,7 +2456,7 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `obl
 | `handle` | `handle.<issuerKeyId>.<id>` |
 | `contracts` | `contracts.<endpoint>` |
 | `goal` | `goal.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` |
-| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by the provisioner sweep so a superseded executor's orphaned goals settle; never caller-addressed). Writer: the **goal-writer** principal (§13.9), which is the commit principal plus the goal `.bind` leaf plus this index subtree, and NOT the bare commit principal, whose enumeration does not reach this kind. The two are separated because the index is created BEFORE the bind, so the principal that writes it is the one that also binds; a deployment that grants the index on the bare commit row has widened every commit principal to reach a key only the goal writer needs |
+| `goalidx` | `goalidx.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>` (atomic; an in-flight action's reconcile index, written create-only before the goal binds and deleted at its terminal, enumerated by the provisioner sweep so a superseded executor's orphaned goals settle; never caller-addressed). Writer: the **goal-writer** principal (§13.9), which composes the commit principal with three additions, this index subtree among them, and NOT the bare commit principal, whose enumeration does not reach this kind. The two are separated because the index is created BEFORE the bind, so the principal that writes it is the one that also binds; a deployment that grants the index on the bare commit row has widened every commit principal to reach a key only the goal writer needs |
 | `goaleff` | `goaleff.<endpoint>.<cOwner>.<cActor>.<cUid>.<goalId>.<gen>` (atomic; the at-most-one-launch election for one accepted action, written create-only by the effects executor that wins it and advanced by revision-CAS through its phases). `<gen>` is the accepted submission's **EPJ `sourceSeq`**, the sequence it was delivered at, carried verbatim into the acceptance fact; the only discriminator that exists at the EARLIEST coordinate, since `goalidx` is created before the bind and therefore before any decision fact exists, so a decision sequence cannot key it. The generation token is what keeps this kind out of the one-use-forever trap: a lawful later acceptance under the same `goalId` gets a different `<gen>` and a fresh key, never a permanent tombstone. Writer: the owning endpoint's **commit path** ONLY (§13.9), inherited by the goal-writer principal that composes it; the generic per-kind spec/status writer row does not reach it, because this kind is unsplit and has no `.spec`/`.status` to write. The value machine, including which actor may settle a row, is *The two coordination machines* below |
 | `epname` | `epname.<endpoint>.<nameToken>` (atomic; the durable claim on one name, keyed by the NAME rather than by a caller triple, because the thing being made exclusive is the name and two callers must contend on one key). Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, so create-only for the claim and revision-CAS for every state change. The state machine, its actor roles, and the claimant union are *The two coordination machines* below |
 | `epmig` | `epmig.<endpoint>` (atomic; the endpoint's cutover manifest: the inventory a migration is performed against, and the durable record of the cutover runs performed against it, so a run generation is never reused by a later run). That run generation is **scoped to cutover and is key material nowhere else**: the `<gen>` token in the `goaleff` grammar is the accepted submission's EPJ `sourceSeq` and only that, the `goal`, `goalidx`, and `goal….result` grammars carry no generation token at all, and an implementation that keys any of them from this manifest has built an election two conforming peers can never meet inside. Writer: the owning endpoint's **commit path** ONLY (§13.9); unsplit, and its qualifier profile is `[qEndpoint]` alone, one manifest per endpoint, never one per caller or per run |
@@ -2510,8 +2518,12 @@ cutover backfill. A launch in flight (`launching`, `relaunching`) additionally c
 `runtimeOwner`, and `enteredAt`; `claimed` and `released` carry the base fields alone.
 
 `runtimeOwner` is the incarnation that owns the handle table for the name, and it is **moved, never
-derived**. It is written at `launching → live` from the executor that made the launch call,
-recorded at the moment it becomes true, and every later edge carries it forward. It is not
+derived**. It MOVES on the four launch-resolving edges, `launching → live`, `relaunching → live`,
+`launching → draining`, and `relaunching → draining`: the row's full `executor` incarnation becomes
+its `runtimeOwner` and `launchAttemptId` is cleared, recorded at the moment it becomes true. Both
+fields of the incarnation move together, because an `instanceId` without its `processEpoch` names a
+process rather than the run of it that holds the handle table. On every other edge into `live`,
+`preserved`, or `draining` it is CARRIED unchanged. It is never
 reconstructed from any other row, because a supported deployment mode has no such row to read and a
 predicate that cannot be evaluated on a supported path either refuses forever or falls back to
 absence. An `instanceId` alone will not stand in: an identity is not an incarnation, and a
