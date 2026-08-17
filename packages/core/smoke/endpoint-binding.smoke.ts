@@ -44,6 +44,7 @@ import {
   assertFactRetentionFloor, IDEMPOTENCY_HORIZON_MS_DEFAULT, RECEIPT_RETENTION_MS_DEFAULT,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 // A PASSING CELL PRINTS: `mutation-proof` counts `✓` marks to tell "the mutation applied and no
@@ -521,8 +522,9 @@ throws("a fractional fact age is refused (a wire duration is a safe integer)",
 
 // ── the resources + live behaviors (real broker) ──
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epbind-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -728,7 +730,7 @@ try {
   // the body-selected EPW read.
   {
     const SPORT = await pickFreePort();
-    const sd2 = mkdtempSync(join(tmpdir(), "cotal-epbind-auth-"));
+    const sd2 = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
     const canonRows = canonicalizerWorkGrants(SPACE, "manager");
     writeFileSync(join(sd2, "server.conf"), [
       `port: ${SPORT}`,
@@ -743,6 +745,9 @@ try {
       "}",
     ].join("\n"));
     const broker2 = spawn("nats-server", ["-c", join(sd2, "server.conf")], { stdio: "ignore" });
+    // The nested broker is owned separately, with its OWN store dir. A signalled run that reaped
+    // the outer one and left this one would read as cleaned up while a second broker held a port.
+    const releaseBroker2 = teardownOnSignal(broker2, sd2);
     try {
       let up2 = false;
       for (let i = 0; i < 50 && !up2; i++) { up2 = await isReachable(`nats://127.0.0.1:${SPORT}`); if (!up2) await wait(100); }
@@ -824,6 +829,7 @@ try {
       if (broker2.pid) { try { process.kill(broker2.pid, "SIGKILL"); } catch { /* gone */ } }
       await wait(200);
       rmSync(sd2, { recursive: true, force: true });
+      releaseBroker2(); // last for the nested broker
     }
   }
 
@@ -837,5 +843,6 @@ try {
   if (broker.pid) { try { process.kill(broker.pid, "SIGKILL"); } catch { /* gone */ } }
   await wait(200);
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
   process.exit(process.exitCode ?? 0);
 }
