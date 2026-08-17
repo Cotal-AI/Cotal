@@ -136,6 +136,22 @@ export interface EpBindRefusedDetail extends EpErrorDetail {
   servedBy: { instanceId: string; epoch: number };
 }
 
+/** True iff an `EpError` CARRIES the {@link EP_BIND_REFUSED} marker, saying nothing about whether
+ *  the marker is believable. It is the claim's presence, not its acceptance.
+ *
+ *  The two questions come apart, and conflating them is what this pair exists to prevent. Whether a
+ *  caller may ACT on a bind refusal — re-issue a command it would otherwise never repeat — needs
+ *  the marker AND an explicit `not-executed`, which is {@link replyRefusedBeforeEffect}. Whether a
+ *  reply is CHECKED for self-consistency needs only the claim, because the contradiction being
+ *  checked is between the reply's BODY and the subject the broker pinned, and that is a
+ *  contradiction whatever the outcome field says — or does not say.
+ *
+ *  Gating the checks on the stronger predicate meant a reply could skip them by OMITTING a field,
+ *  so the least credible shape drew the least scrutiny. */
+export function bindRefusalMarked(e: EpError | undefined): boolean {
+  return (e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED);
+}
+
 /** True iff an `EpError` carries the {@link EP_BIND_REFUSED} marker: a responder refused BEFORE
  *  executing, because it is not the incarnation the caller bound — the command did not run.
  *
@@ -167,7 +183,7 @@ export interface EpBindRefusedDetail extends EpErrorDetail {
  *  before dispatch to carry `not-executed`, so what it loses is a repair it was never owed. This
  *  endpoint's own responder sets the field, so conforming deployments are unaffected. */
 export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
-  if (!(e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED)) return false;
+  if (!bindRefusalMarked(e)) return false;
   return e?.outcome === "not-executed";
 }
 
