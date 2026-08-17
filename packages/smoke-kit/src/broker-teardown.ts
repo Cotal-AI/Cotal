@@ -29,10 +29,15 @@
  * has to recognize the process later. That matters because argv fails in BOTH directions on a real
  * box: it under-matches (of 151 `spawn("nats-server"` sites, 38 pass a store dir and no config at
  * all, and one passes a prebuilt args variable), and it over-matches (a `server-open.conf` rule
- * protects 7 processes of which only 3 are the real mesh). Worse, an argv marker can outlive the file
- * it names: every one of the 4 observed orphans names a config path that no longer exists, deleted by
- * the very cleanup that failed to kill the process. Anything that validates a candidate by stat-ing
- * its config would refuse to reap all four.
+ * covers 8 processes, only some of which are ever a real mesh). Worse, an argv marker can outlive the
+ * file it names: across a fuller census of 15 live orphans, 4 named a config path that no longer
+ * exists, deleted by the very cleanup that failed to kill the process. Anything that validates a
+ * candidate by stat-ing its config would refuse to reap exactly those four.
+ *
+ * Two numbers above were revised once the census went from 4 orphans to 15: the `server-open.conf`
+ * count was 7, and "every one of the 4 observed orphans" was true of the 4 then visible but is 4 of
+ * 15 now. The conclusion is unchanged and so is the reason for it; only the ratio was overstated,
+ * and an overstated ratio in a paragraph arguing against a matching strategy is worth correcting.
  *
  * WHAT THIS CANNOT DO, and it must be read as a limit rather than a solved problem: SIGKILL is
  * uncatchable. `kill -9` on a suite kills the handle along with the process, and the broker is
@@ -43,9 +48,26 @@
 import type { ChildProcess } from "node:child_process";
 import { rmSync } from "node:fs";
 
-/** The one minted token. A broker started through this helper is recognizable after its owner is
- *  SIGKILLed; a broker started around it is not, so a reaper is only ever as complete as migration. */
-export const SMOKE_BROKER_TOKEN = "cotal-smoke-broker-";
+/** The stable half of the token: what marks a store dir as a smoke broker's at all. */
+export const SMOKE_BROKER_PREFIX = "cotal-smoke-broker-";
+
+/**
+ * The minted token: the prefix plus THIS PROCESS'S PID, so the dir records not just "a smoke broker"
+ * but "whose". A broker started through this helper is recognizable after its owner is SIGKILLed; a
+ * broker started around it is not, so a reaper is only ever as complete as migration.
+ *
+ * THE PID IS HERE BECAUSE MARKING THE BROKER WAS NOT ENOUGH, and the gap was live rather than
+ * theoretical. A reaper matching the prefix alone claims every migrated suite's broker, not every
+ * LEAKED one, and two suites run concurrently on a shared box constantly. Reproduced: a second lane
+ * minting through this token and holding its broker with the owner still alive was listed for the
+ * kill by a prefix-only reaper. It would have SIGKILLed a live broker mid-run and reddened that lane
+ * with a diagnosis pointing at its own code, which is the "worse than no reaper" case exactly.
+ *
+ * Every call site keeps working unchanged, because this is still just a `mkdtemp` prefix. Sites that
+ * append their own tag after it still match, since the owner is parsed from the pid segment rather
+ * than from the whole name.
+ */
+export const SMOKE_BROKER_TOKEN = `${SMOKE_BROKER_PREFIX}${process.pid}-`;
 
 /**
  * Kill a broker and DO NOT RETURN until it is actually gone, so the caller's `rmSync` cannot race a

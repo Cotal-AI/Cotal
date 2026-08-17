@@ -290,3 +290,4 @@ smoke:agui-frame-dispatch
 smoke:view-events-filter
 smoke:event-order
 smoke:web-events-filter
+smoke:reaper
