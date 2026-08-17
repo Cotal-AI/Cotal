@@ -316,8 +316,8 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): Ep
   return caps;
 }
 
-/** The SAME tier set, pinned to ONE instance — the issuance `--on <instanceId>` was always meant to
- *  get. These instruments are ONE-SHOT, minted per control call, and the resolve that chose the
+/** The SAME tier set, pinned to NAMED instances — the issuance `--on <instanceId>` was always meant
+ *  to get. These instruments are ONE-SHOT, minted per control call, and the resolve that chose the
  *  instance runs BEFORE the mint, so the exact id can be handed down and the emitter's
  *  `if (cap.instanceId)` branch produces exactly `ep.inst.<endpoint>.<iid>.<command>` for THIS
  *  invocation and nothing else. No wildcard instance is minted anywhere, which is what keeps the
@@ -325,17 +325,32 @@ export function operatorInstrumentCapabilities(tier: "privileged" | "admin"): Ep
  *  instruments that already hold it, and a plain, spawn-capable, or observer credential still gets
  *  no instance route at all.
  *
+ *  SEVERAL ids are accepted, and that does NOT relax the rule above. `cotal ps` scatters, so it has
+ *  no single instance to pin — but it FREEZES the class first, and a frozen set is a list of exact
+ *  ids known before the mint, which is the same precondition `--on` satisfies with one. Each id
+ *  still emits its own concrete rows; the count changes, the shape does not. The alternative
+ *  considered and rejected was a wildcard instance row for the tier, which is a widening three
+ *  review seats already refused and which `inst-route-grant` asserts against by shape.
+ *
  *  `describe` is included EXPLICITLY. The baseline describe row is class-rail only
  *  ({@link epDescribeAllGrantRow}), so without this the pinned RESOLVE that must precede a pinned
  *  invoke is refused at the broker — and refused invisibly, because the client renders that refusal
  *  as a describe timeout. Here it is a concrete endpoint+instance capability, not the normative
- *  wildcard form, so the exact-arity discipline of the caller grammar is preserved. */
-export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin", instanceId: string): EpCapability[] {
-  assertLifecycleToken(instanceId, "instanceId"); // fail loud at mint on a malformed id, never widen a subject
-  return [
-    { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe", instanceId },
-    ...operatorInstrumentCapabilities(tier).map((cap) => ({ ...cap, instanceId })),
-  ];
+ *  wildcard form, so the exact-arity discipline of the caller grammar is preserved. It is also what
+ *  the §13.5 scatter's liveness probe publishes, so a frozen instance the broker has to be asked
+ *  about is reachable at all. */
+export function instancePinnedInstrumentCapabilities(tier: "privileged" | "admin", instanceId: string | string[]): EpCapability[] {
+  const ids = Array.isArray(instanceId) ? instanceId : [instanceId];
+  if (ids.length === 0)
+    throw new Error("instancePinnedInstrumentCapabilities needs at least one instanceId; an empty pin would mint the tier's class rows under a name that promises a pin");
+  const tierCaps = operatorInstrumentCapabilities(tier);
+  return ids.flatMap((id) => {
+    assertLifecycleToken(id, "instanceId"); // fail loud at mint on a malformed id, never widen a subject
+    return [
+      { endpoint: BASELINE_LIFECYCLE_ENDPOINT, command: "describe", instanceId: id },
+      ...tierCaps.map((cap) => ({ ...cap, instanceId: id })),
+    ];
+  });
 }
 
 /** All BASELINE caller rows (Appendix B): the wildcard describe form + the baseline capability

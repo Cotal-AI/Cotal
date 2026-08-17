@@ -143,7 +143,7 @@ A project's state lives in `.cotal/` at the mesh root (found by walking up from 
 | `manifests/<hash>.json` | Manifest-deploy ledger (records of `up -f` / `spawn -f` runs) |
 | `config.json` | Space-local connector config (the override layer above) |
 | `nats.pid` · `nats.log` | Background nats-server pid + log |
-| `manager.pid` · `manager.log` | Manager (supervisor) pid + log; `manager.delivery-aware` marks a delivery-aware build |
+| `manager.pid` · `manager.log` | Manager (supervisor) pid + log; `manager.delivery-aware` marks a delivery-aware build. The manager writes the pid itself, whatever started it, and removes it on a clean stop only while it still names that process. A reader treats the record as a running manager only if the pid is alive **and** the process is a supervisor: a recycled pid belonging to something else is reported as a stale record, never signalled |
 | `delivery.pid` · `delivery.log` · `delivery.creds` | Delivery daemon pid, log, and scoped cred (auth mode) |
 | `web.pid` · `web.log` | Web dashboard pid + log |
 | `membership.json` · `membership-*.creds` | Membership feed state + its scoped creds |

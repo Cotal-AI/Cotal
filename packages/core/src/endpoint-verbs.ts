@@ -151,6 +151,79 @@ function isNoRespondersMsg(msg: Msg): boolean {
   return h != null && (h.code === 503 || h.status === "503");
 }
 
+/** What a liveness probe can establish about ONE frozen instance (§13.5). Only `gone` is an
+ *  AFFIRMATIVE fact — the broker itself reporting that the instance holds no subscription on its
+ *  own rail. `live` and `unknown` are handled identically by the gather: they license nothing and
+ *  the full deadline stands. There is deliberately NO verdict for "its presence entry expired":
+ *  a lapsed heartbeat is absence of evidence, and reading absence of evidence as death is how a
+ *  slow correct answer becomes a fast wrong one. */
+export type EpInstanceLiveness = "gone" | "live" | "unknown";
+
+/**
+ * Ask the BROKER whether one instance still holds a subscription on its own `inst` rail (§13.2).
+ *
+ * A serving incarnation subscribes `ep.inst.<endpoint>.<instanceId>.<command>.>` for every command
+ * it serves, so a request published there with a reply-to only the broker can reach either draws
+ * the broker's no-responders 503 — an affirmative statement that this instance holds no
+ * subscription — or draws nothing at all.
+ *
+ * NOTHING IS `unknown`, NEVER DEATH. A denied publish, a slow broker, a responder that receives the
+ * request and declines to answer, and a perfectly healthy instance are indistinguishable from here,
+ * and every one of them must keep the caller waiting. The failure direction is the whole safety
+ * argument: because only a 503 says anything, a short probe budget can never turn a live instance
+ * into a fast `missing` — it can only fail to speed up a dead one.
+ *
+ * It rides `describe` because §13.7 makes every endpoint serve it and it carries no effect, and it
+ * rides as a CAST: the verdict comes from the transport, not from an answer, so nothing is read and
+ * an instance whose describe is broken still reads as present.
+ */
+export async function epProbeInstanceInterest(
+  nc: NatsConnection,
+  space: string,
+  endpoint: string,
+  instanceId: string,
+  caller: EpCaller,
+  opts: { deadlineMs: number },
+): Promise<EpInstanceLiveness> {
+  const deadlineMs = assertDeadline(opts.deadlineMs);
+  const iId = assertLifecycleToken(instanceId, "instanceId");
+  const n = nonce();
+  const subject = epRequestSubject(space, { route: { mode: "inst", instanceId: iId }, endpoint, command: "describe", caller, nonce: n });
+  const env = {
+    v: 1, id: nonce(), op: { endpoint, command: "describe" }, class: "ephemeral",
+    replyExpected: false, from: { id: `${caller.owner}.${caller.actor}`, name: caller.actor },
+  };
+  // The SAME reserved sentinel `epCall` uses, for the same reason: no responder holds a publish
+  // grant for the `_nr._nr._nr` reply subject (§13.9), so a 503 arriving there is the broker's own
+  // control frame and cannot be forged by a recipient that knows the nonce.
+  const noRespReplyTo = `${spacePrefix(space)}.ep.reply._nr._nr._nr.${callerTokens(caller).join(".")}.${n}`;
+  let sub: Subscription | undefined;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await new Promise<EpInstanceLiveness>((resolve) => {
+      timer = setTimeout(() => resolve("unknown"), deadlineMs);
+      // A PROBE MUST NEVER BE THE REASON A PROCESS IS STILL RUNNING. Against a LIVE instance no
+      // answer ever comes back — the request is a cast and §13.5 forbids the responder replying to
+      // one — so this timer runs its full budget on every healthy instance, every time. Wired into
+      // `cotal ps` that was measured at 4.0 extra seconds AFTER the last row was printed (12.8s
+      // with the probe against 8.8s without it, on a healthy two-manager mesh): the gather had long
+      // since finished, and the only verdict that changes anything is `gone`, which a caller who
+      // has already gathered can no longer use. Unref makes the timer stop holding the loop open
+      // WITHOUT changing the probe: it still settles `unknown` at the budget for anyone still
+      // waiting on it, because the connection this needs is itself an open handle, and a caller
+      // still using that connection is therefore still running.
+      timer.unref?.();
+      sub = nc.subscribe(noRespReplyTo, {
+        callback: (err, msg) => { resolve(err === null && isNoRespondersMsg(msg) ? "gone" : "unknown"); },
+      });
+      nc.publish(subject, new TextEncoder().encode(JSON.stringify(env)), { reply: noRespReplyTo });
+    });
+  } finally {
+    sub?.unsubscribe();
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 /** Race a caller-supplied read against a bounded budget so a never-settling hook cannot exceed the
  *  operation deadline (SPEC 13.5: deadline mandatory). Clears its timer on either outcome. */
 async function raceBounded<T>(read: () => Promise<T> | T, ms: number, what: string, details?: EpErrorDetail[]): Promise<T> {
@@ -590,6 +663,16 @@ export type EpRegistrationState =
  *  - `reconcileDeadlineMs` (optional, default `deadlineMs`): the explicit bound on that post-T read,
  *    named so the single `deadlineMs` is not silently spent twice.
  *  - `lateDrainMs` (optional): the absolute post-T horizon for `late` classification. Omitted → none.
+ *  - `probeLiveness` (optional): affirmative per-instance liveness, run concurrently with the gather.
+ *    The gather's only exits are "every frozen slot answered" and the deadline, so a slot that CANNOT
+ *    answer makes the first unreachable and the deadline is paid in full — every scatter in the space,
+ *    forever, because the registry has no expiry and a crashed instance never deregisters. This hook
+ *    supplies the missing fact. It moves the classification point T EARLIER and moves NOTHING else:
+ *    a slot the broker affirms is gone is still `missing`, still surfaced, still not `complete`.
+ *    ONLY the verdict `gone` licenses anything; `live`, `unknown`, a throwing hook, and any value
+ *    outside the closed set all license nothing and leave the full deadline standing. That asymmetry
+ *    is deliberate and is the safety argument: a broken or lying-quiet probe degrades to exactly
+ *    today's behavior, never to a fast wrong answer.
  */
 export async function epScatter(
   nc: NatsConnection,
@@ -601,6 +684,7 @@ export async function epScatter(
     reconcileRegistration: () => Promise<Map<string, EpRegistrationState>>;
     reconcileDeadlineMs?: number;
     lateDrainMs?: number;
+    probeLiveness?: (instanceId: string) => Promise<EpInstanceLiveness>;
   },
 ): Promise<EpScatterResult> {
   const deadlineMs = assertDeadline(opts.deadlineMs);
@@ -629,6 +713,7 @@ export async function epScatter(
   const terminal = new Set<string>();  // frozen slots with a VALID frozen-epoch reply (drives early completion)
   const seen = new Set<string>();      // "(instanceId,epoch)" pairs already classified non-invalid (drives §13.5 duplicate)
   const responded = new Set<string>(); // frozen slots that produced ANY reply (live)
+  const gone = new Set<string>();      // frozen slots the BROKER affirmed hold no subscription
   const regChurned = new Set<string>();
   const failMsg = (e: unknown) => (e instanceof Error ? e.message : String(e));
   let respondedAtDeadline: Set<string> | undefined; // `responded` snapshotted at the classification point
@@ -668,19 +753,55 @@ export async function epScatter(
     return terminal.size === frozen.size;
   };
 
+  // NOTHING outstanding can still answer: every frozen slot has either produced a valid reply or been
+  // affirmed gone by the broker. Checked on BOTH events that can make it true — a verdict landing and
+  // a reply landing — because the last thing to settle is as often the live peer's slow answer as it
+  // is the corpse's verdict, and a check that ran only on verdicts would leave the common case (one
+  // corpse affirmed immediately, one live instance answering a second later) paying the full deadline.
+  const settled = (): boolean => {
+    for (const id of frozen.keys()) if (!terminal.has(id) && !gone.has(id)) return false;
+    return true;
+  };
+
   let sub: Subscription | undefined;
-  // Phase 1 — gather to the classification point T = min(all-valid, deadline). NO drain here; the drain
-  // is a later observational phase so it can never move the classification.
+  // Phase 1 — gather to the classification point T = min(all-valid, all-accounted-for, deadline). NO
+  // drain here; the drain is a later observational phase so it can never move the classification.
   await new Promise<void>((resolve) => {
+    let ended = false;
     const finishAtT = () => { if (respondedAtDeadline === undefined) respondedAtDeadline = new Set(responded); };
-    const timer = setTimeout(() => { deadlinePassed = true; finishAtT(); resolve(); }, deadlineMs);
+    // `incomplete` marks the two exits at which some frozen slot did NOT answer, so the post-T rail
+    // stays open for a straggler and classifies it `late` rather than dropping it. Early completion
+    // (every slot answered) is not one of them: there is nothing left to be late.
+    const finish = (incomplete: boolean) => {
+      if (ended) return;
+      ended = true;
+      if (incomplete) deadlinePassed = true;
+      finishAtT(); clearTimeout(timer); resolve();
+    };
+    const timer = setTimeout(() => finish(true), deadlineMs);
     sub = nc.subscribe(replySubjectFor(space, op.caller, req.n), {
       callback: (err, msg) => {
-        if (err) { subError ??= err; finishAtT(); clearTimeout(timer); resolve(); return; } // fail loud, never fake `missing`
-        if (handle(msg.subject, msg.data)) { finishAtT(); clearTimeout(timer); resolve(); }
+        if (err) { subError ??= err; finish(false); return; } // fail loud, never fake `missing`
+        if (handle(msg.subject, msg.data)) finish(false); // every slot answered: complete, nothing can be late
+        else if (settled()) finish(true);                 // the rest are affirmed gone: T is now
       },
     });
     nc.publish(req.subject, req.body);
+    // AFFIRMATIVE liveness, concurrent with the gather and never gating it. A verdict can only end
+    // the gather EARLY; it can never extend it, and a probe still in flight at the deadline is
+    // simply irrelevant by then.
+    if (opts.probeLiveness !== undefined)
+      for (const instanceId of frozen.keys())
+        void (async () => {
+          let verdict: EpInstanceLiveness;
+          // A probe that FAILED established nothing. Same rule as the verdicts below and for the
+          // same reason: only `gone` is evidence, everything else leaves the deadline standing.
+          try { verdict = await opts.probeLiveness!(instanceId); } catch { return; }
+          if (verdict !== "gone" || ended) return;
+          gone.add(instanceId);
+          if (settled()) finish(true); // one corpse among live peers still waits for them
+
+        })();
   });
 
   let drainTimer: ReturnType<typeof setTimeout> | undefined;
@@ -780,7 +901,23 @@ export async function epScatterService(
   jsm: JetStreamManager,
   space: string,
   op: EpVerbOp,
-  opts: { deadlineMs: number; reconcileDeadlineMs?: number; lateDrainMs?: number },
+  opts: {
+    deadlineMs: number; reconcileDeadlineMs?: number; lateDrainMs?: number;
+    /** The §13.5 liveness hook, FORWARDED from the caller and never invented here.
+     *
+     *  This function knows the frozen set only AFTER the freeze, so an auto-probe built in here
+     *  would publish on instance rails the caller may hold no grant for, and a refused publish is
+     *  invisible to it: the broker's violation lands on the CONNECTION, the probe just times out,
+     *  and the operation reports `unknown` — the exact "slow" reading of a permission bug this
+     *  whole change exists to stop. The caller is the only layer that knows which rails its
+     *  credential carries, so the caller supplies the closure (and, with it, its own budget and its
+     *  own violation reporting). Omitted ⇒ no probe, and the gather is bit-for-bit the pre-#468
+     *  deadline behaviour.
+     *
+     *  {@link epProbeInstanceInterest} is the ready-made implementation; a caller pins it to its
+     *  own grant set. */
+    probeLiveness?: (instanceId: string) => Promise<EpInstanceLiveness>;
+  },
 ): Promise<EpScatterResult> {
   // ONE ABSOLUTE deadline covers the whole op (distsys BLOCKING 2): the freeze (STREAM.INFO
   // enumeration + per-slot leader reads) is charged against `deadlineMs`, not run unbounded before
@@ -792,7 +929,10 @@ export async function epScatterService(
   const remaining = deadlineMs - (Date.now() - started);
   if (remaining <= 0)
     throw new EpEnvelopeError("deadline-exceeded", `the scatter freeze for ${op.endpoint} consumed the whole ${deadlineMs}ms budget; no time left to gather (SPEC 13.5)`, [registryReadDetail(op)]);
-  return epScatter(nc, space, op, { ...opts, deadlineMs: remaining, expected, reconcileRegistration: registrationReconciler(jsm, space, op.endpoint, expected) });
+  return epScatter(nc, space, op, {
+    ...opts, deadlineMs: remaining, expected,
+    reconcileRegistration: registrationReconciler(jsm, space, op.endpoint, expected),
+  });
 }
 
 /**

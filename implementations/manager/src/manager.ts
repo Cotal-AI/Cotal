@@ -95,6 +95,8 @@ import {
   epcredRowKey,
   epgateKey,
   registerServiceInstance,
+  deregisterServiceInstance,
+  type ServiceDeregistration,
   authorizeServeGrant,
   writeServiceStatus,
   SERVICE_READY,
@@ -1539,11 +1541,58 @@ export class Manager {
       await this.stopRetainedAgentsOnExit();
     }
     await this.ep.releaseManagerLease(this.managerInstanceId, this.leaseRevision);
+    // Capture BEFORE the serve loop is torn down: `stopServiceServe` clears the state, and what is
+    // being asked here is "did this process register a service instance", which only the state
+    // before teardown can answer. Deregistration runs AFTER the serve loop has drained, so no
+    // in-flight command can write a status back onto the record it just removed.
+    const registered = this.serviceServe !== undefined;
     await this.stopServiceServe();
+    if (registered) await this.deregisterServiceOnStop();
     await this.stopGoalWriter();
     await this.stopSessionPlane();
     await this.ep.stop();
     await this.attach.stop();
+  }
+
+  /**
+   * REMOVE THIS INSTANCE'S SERVICE REGISTRATION on a clean stop (§13.5 deregistration).
+   *
+   * The registry records registration, not liveness, and nothing expires a row. Without this, every
+   * manager that has ever run in a space leaves a record claiming a live instance forever: each one
+   * is frozen into every later class scatter, none of them answers, and each costs the full gather
+   * deadline — on every `cotal ps`, `stop` and `attach` in that space, for good. A manager that is
+   * shutting down is the one participant that KNOWS it is going away, so it says so.
+   *
+   * ONLY THE GRACEFUL PATH. `failClosedOnLeaseLoss` deliberately does not come here: a lost lease
+   * means this instance may already have been superseded, and the successor persists the SAME
+   * instanceId, so deregistering there could delete a live successor's registration. The delete is
+   * additionally revision-pinned inside {@link deregisterServiceInstance}, so even that race removes
+   * nothing — this is the second fence, not the only one.
+   *
+   * Best-effort and LOUD, matching every other teardown step: a broker that is already gone must not
+   * turn a stop into a failure, but a registration that survives a stop is the exact defect this
+   * exists to prevent, so a failure to remove it is printed with the operator's own repair verb
+   * rather than swallowed. It is not fatal because a crash leaves the same state and the operator
+   * verb handles both.
+   */
+  private async deregisterServiceOnStop(): Promise<void> {
+    const iid = this.managerInstanceId;
+    const dereg = ({ recordsKv }: { recordsKv: KV }): Promise<ServiceDeregistration> =>
+      deregisterServiceInstance(recordsKv, { endpoint: MANAGER_ENDPOINT, instanceId: iid });
+    try {
+      const outcome = await (this.auth ? this.withEndpointServeExecutor(dereg) : this.withOpenServeConnection(dereg));
+      if (outcome.removed)
+        console.error(`✓ deregistered manager instance ${iid} from the ${MANAGER_ENDPOINT} service registry (spec revision ${outcome.specRevision})`);
+      else if (outcome.reason === "superseded")
+        console.error(`! manager instance ${iid} was not deregistered: its registration moved while this stop ran, so another incarnation owns it now - leaving it alone`);
+      // `absent` is silent: there was nothing registered to remove, which is not news at shutdown.
+    } catch (e) {
+      console.error(
+        `! could not deregister manager instance ${iid}: ${(e as Error).message}\n` +
+          `  Its registration now outlives this process and will be frozen into every class scatter in space "${this.space}", each paying the full deadline.\n` +
+          `  NEXT: remove it with \`cotal deregister-instance --instance ${iid}\` once this process is gone.`,
+      );
+    }
   }
 
   /** Stop the v0.4 service-endpoint serve loop (drain subscriptions, await in-flight handlers)
