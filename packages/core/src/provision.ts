@@ -650,7 +650,7 @@ export interface ProvisionOpts extends MintOpts {
 export interface DurableProvisioner {
   /** Pre-create the lifecycle's bind-only DM durable (`dm_<owner>-<actor>-<uid>`). The implementation
    *  captures the DM stream's ACTIVATION FRONTIER (its `last_seq` at first creation) and starts
-   *  delivery at frontier+1 (SPEC :467) — a same-alias successor inherits no predecessor DMs.
+   *  delivery at frontier+1 (SPEC §8) — a same-alias successor inherits no predecessor DMs.
    *  Idempotent PER LIFECYCLE: a re-provision of the same uid keeps the existing durable (and so the
    *  ORIGINAL frontier — the activation moment does not move on manager restart). */
   provisionDmInbox(owner: string, actor: string, lifecycleUid: string): Promise<void>;

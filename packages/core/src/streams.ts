@@ -229,7 +229,7 @@ export function dmDurableConfig(
   // lifecycle scoping lives in the consumer: the NAME carries the uid (exact-name deprovision) and
   // delivery starts at the ACTIVATION FRONTIER — the DM stream sequence captured when this lifecycle
   // was provisioned — so a same-alias successor inherits none of the predecessor's pending DMs
-  // (SPEC :467). `activationFrontier` = that captured `last_seq`; delivery begins at frontier+1.
+  // (SPEC §8). `activationFrontier` = that captured `last_seq`; delivery begins at frontier+1.
   // Callers that provision a genuinely fresh lifecycle pass the sequence they captured; 0 = from the
   // stream start (an explicit choice, e.g. a stream created after the lifecycle in tests).
   const frontier = opts.activationFrontier ?? 0;

@@ -336,6 +336,7 @@
     "smoke:gate-reconcile-cli:auth": "tsx implementations/manager/smoke/gate-reconcile-cli-e2e.smoke.ts",
     "smoke:resolve-rtt": "tsx implementations/manager/smoke/resolve-rtt-probe.smoke.ts",
     "smoke:queue-win": "tsx implementations/manager/smoke/queue-win-distribution.smoke.ts",
+    "smoke:describe-split-effect": "tsx implementations/manager/smoke/describe-split-duplicate-effect.smoke.ts",
     "smoke:instrument-instance-pin": "tsx implementations/manager/smoke/instrument-instance-pin.smoke.ts",
     "smoke:cli-seat-locality": "tsx implementations/manager/smoke/cli-seat-locality.smoke.ts",
     "smoke:tool-input-closed": "tsx extensions/connector-core/smoke/tool-input-closed.smoke.ts",

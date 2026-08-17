@@ -28,7 +28,11 @@ on:
     branches:
       - main
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# Same rule as ci.yml, and for the same reason: a superseded PR run holds the group and starves
+# the run that replaced it, while a merge to main must keep its own verdict. See the note there.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   # REQUIRED lane — Windows-specific + broker-free, so a red is a real Windows regression.

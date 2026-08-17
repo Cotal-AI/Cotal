@@ -166,7 +166,7 @@ export function goalRefOf(request: ParsedEpRequest, goalId: string): GoalRef {
   return { endpoint: request.endpoint, caller: { owner: c.owner, actor: c.actor, uid: c.uid }, goalId: assertIdToken(goalId, "goalId") };
 }
 
-/** The goal's terminal-result fact subject — the ONE subject SPEC:1433 reserves (§13.2 reserved subjects, `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`),
+/** The goal's terminal-result fact subject — the ONE subject SPEC §13.2 reserves (reserved subjects, `goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`),
  *  `epf.<e>.goal.<cOwner>.<cActor>.<cUid>.<goalId>.result`, with NO epoch token.
  *
  *  An earlier revision epoch-scoped this (`…result.<execEpoch>`) to fence a live-superseded

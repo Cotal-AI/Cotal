@@ -6,7 +6,19 @@ on:
     branches:
       - main
 
-concurrency: ${{ github.workflow }}-${{ github.ref }}
+# A new push to a PR supersedes the run already going; a merge to main does not.
+#
+# The group expression is unchanged — only what happens to the run holding it. Without
+# `cancel-in-progress` the superseded run keeps the group and its replacement is created with
+# ZERO JOBS and sits pending, which reads as "queued and about to start" rather than "starved".
+#
+# Deliberately not unconditional: a main commit's CI result is the record for that commit, not a
+# preview of the next, and a cancelled run leaves a merge ungradable — neither red nor green.
+# Superseding is only right where the earlier answer has stopped being interesting, which is true
+# of a PR revision and false of a merge.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Same coverage as before, fanned across parallel jobs so wall-clock is the slowest job, not the sum:
 #   • unit  — typecheck + build + unit tests + the broker-free view/pack checks (fast).
