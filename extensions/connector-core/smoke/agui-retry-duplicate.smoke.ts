@@ -218,7 +218,7 @@ const arm = async (opts: { config: string; url: string; seed: boolean }) => {
   const ep = new CotalEndpoint({
     space,
     servers: dial(opts.url),
-    card: { name: "fm-agui-probe", kind: "agent", owner: OWNER, actor: ACTOR, id: ACTOR },
+    card: { name: "probe-agent", kind: "agent", owner: OWNER, actor: ACTOR, id: ACTOR },
     lifecycleUid: mintLifecycleUid(),
   });
   ep.on("error", () => {});

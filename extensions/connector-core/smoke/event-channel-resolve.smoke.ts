@@ -119,20 +119,20 @@ const BOB: Peer = { name: "bob", id: "local.bbb", owner: "local", actor: "bbb" }
 // ── AMBIGUITY IS REFUSED — the cell this function exists for ───────────────────────────────────────
 {
   const twins: Peer[] = [
-    { name: "fm-agui", id: "local.first", owner: "local", actor: "first" },
-    { name: "fm-agui", id: "local.second", owner: "local", actor: "second" },
+    { name: "twin-agent", id: "local.first", owner: "local", actor: "first" },
+    { name: "twin-agent", id: "local.second", owner: "local", actor: "second" },
   ];
   c(
     "ambiguous:two-principals",
-    refusalNaming(() => eventChannelForName("fm-agui", twins), "is ambiguous") === "OK",
-    refusalNaming(() => eventChannelForName("fm-agui", twins), "is ambiguous"),
+    refusalNaming(() => eventChannelForName("twin-agent", twins), "is ambiguous") === "OK",
+    refusalNaming(() => eventChannelForName("twin-agent", twins), "is ambiguous"),
   );
   // It must name BOTH, or an operator cannot act on the refusal — the witness, not just the verdict.
   c(
     "ambiguous:names-both-principals",
     (() => {
       try {
-        eventChannelForName("fm-agui", twins);
+        eventChannelForName("twin-agent", twins);
         return false;
       } catch (e) {
         const m = (e as Error).message;
@@ -147,9 +147,9 @@ const BOB: Peer = { name: "bob", id: "local.bbb", owner: "local", actor: "bbb" }
 //    against every real roster, and a suite that only tested the ambiguity arm would not notice.
 {
   const ghosted: Peer[] = [
-    { name: "fm-agui", id: "local.same", owner: "local", actor: "same" },
-    { name: "fm-agui", id: "local.same", owner: "local", actor: "same" },
-    { name: "fm-agui", id: "local.same" },
+    { name: "twin-agent", id: "local.same", owner: "local", actor: "same" },
+    { name: "twin-agent", id: "local.same", owner: "local", actor: "same" },
+    { name: "twin-agent", id: "local.same" },
   ];
   // COMPUTED ONCE, INSIDE A GUARD, AND THIS IS NOT A STYLE CHOICE. The first version called the
   // resolver unguarded in the assertion expression. When a mutation made this input throw, the
@@ -159,7 +159,7 @@ const BOB: Peer = { name: "bob", id: "local.bbb", owner: "local", actor: "bbb" }
   // stop reporting, and a cell which stops reporting is indistinguishable from one that never ran.
   const got = (() => {
     try {
-      return eventChannelForName("fm-agui", ghosted);
+      return eventChannelForName("twin-agent", ghosted);
     } catch (e) {
       return `REFUSED: ${(e as Error).message}`;
     }
