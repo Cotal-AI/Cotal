@@ -335,6 +335,22 @@ export function assertClassMatches(env: EndpointRequest, declaredClass: EpClass)
     fail("class-mismatch", `class "${env.class}" does not equal the command's contract class "${declaredClass}"`);
 }
 
+/** The ACTION-COMPOSITE agreement check: `goalId` is a MUST for a command whose registered
+ *  declaration carries the action marker and MUST be absent otherwise. Split out for
+ *  the same reason as the class check — it needs the contract in hand.
+ *
+ *  Both directions are refusals, and neither is a default. A missing `goalId` on an action command
+ *  cannot be minted here: the goal id is CLIENT-generated, so a server-side substitute would invent
+ *  the very identity the caller uses to correlate its own work. A `goalId` on a non-action command
+ *  cannot be dropped: it names a goal the command has no machinery to bind, and accepting it
+ *  silently would let a caller believe work is tracked that nothing tracks. */
+export function assertActionGoalId(env: EndpointRequest, declaresAction: boolean): void {
+  if (declaresAction && env.goalId === undefined)
+    fail("bad-request", `command declares the action composite: goalId is REQUIRED (SPEC 13.7) and is client-generated, never minted by the servicer`);
+  if (!declaresAction && env.goalId !== undefined)
+    fail("bad-request", `goalId ${JSON.stringify(env.goalId)} on a command that does not declare the action composite: there is no goal to bind it to`);
+}
+
 function pickError(v: unknown): EpError {
   const e = asRecord(v, "error");
   const code = asString(e.code, "error.code");

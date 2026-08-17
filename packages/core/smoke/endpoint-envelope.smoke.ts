@@ -22,6 +22,14 @@ const rejects = (n: string, code: string, fn: () => unknown) => {
   try { fn(); c(n, false, "no throw"); }
   catch (e) { c(n, e instanceof EpEnvelopeError && e.code === code, e instanceof EpEnvelopeError ? e.code : (e as Error).message); }
 };
+/** A BARE CALL IS NOT A CELL. The admitted directions here were written `fn(); c(label, true)`, so a
+ *  mutant that makes `fn()` throw ends the process before the cell is reached: the suite dies with a
+ *  stack trace and no assertion name on it, and the count it prints is whatever it got to. A named
+ *  failure is the only thing a grader can hold the implementation to. */
+const admits = (n: string, fn: () => unknown) => {
+  try { fn(); c(n, true); }
+  catch (e) { c(n, false, (e as Error).message); }
+};
 
 const UID = "u".repeat(26);
 const caller = { owner: "u_abc", actor: "worker", uid: UID };
@@ -109,10 +117,9 @@ const selfSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoin
 const handleSub = parse(epRequestSubject("demo", { route: { mode: "one" }, endpoint: "manager", command: "attach", target: { mode: "handle", tOwner: "u_t", tActor: "svc", tUid: "h".repeat(26) }, caller, nonce: NONCE }));
 const bodyTarget = { owner: "u_abc", actor: "runner", lifecycleUid: "t".repeat(26) };
 
-checkRequestSubjectAgreement(req, untargeted);
-c("untargeted request agrees with its subject", true);
-checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, target: bodyTarget }), ownerSub);
-c("owner-mode request with a matching body target agrees", true);
+admits("untargeted request agrees with its subject", () => checkRequestSubjectAgreement(req, untargeted));
+admits("owner-mode request with a matching body target agrees",
+  () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, target: bodyTarget }), ownerSub));
 rejects("op.command disagreement is op-mismatch", "op-mismatch",
   () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, op: { ...goodReq.op, command: "stop" } }), untargeted));
 rejects("a body target on an untargeted subject is target-mismatch, never ignored", "target-mismatch",
@@ -134,8 +141,8 @@ rejects("the declared class must equal the contract class", "class-mismatch",
 const scatterSub = parse(epRequestSubject("demo", { route: { mode: "all" }, endpoint: "manager", command: "spawn", caller, nonce: NONCE }));
 rejects("a deadline-less cast on the scatter rail is bad-request (deadlineMs is a MUST for scatter)", "bad-request",
   () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false, deadlineMs: undefined }), scatterSub));
-checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false }), scatterSub);
-c("a scatter cast WITH a deadline agrees", true);
+admits("a scatter cast WITH a deadline agrees",
+  () => checkRequestSubjectAgreement(parseEndpointRequest({ ...goodReq, replyExpected: false }), scatterSub));
 
 // ── reply / event shapes ──
 const okReply = parseEndpointReply({ v: 1, id: "req-1", ok: true, data: { pid: 1 }, junk: 1 });
