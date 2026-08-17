@@ -373,4 +373,53 @@ check("graph.js registers a listener for the refusal event", Boolean(listened), 
 check("the listener's event name IS the server's exported constant (a restated literal can drift)",
   listened === MEMBERSHIP_READ_FAILED, { listened, exported: MEMBERSHIP_READ_FAILED });
 
+// ── The page stops ACTING on a reading it has just disowned ─────────────────────────────────────
+// The pill telling the truth was only half of it. `hide empty` collapses a hub with no visible
+// member, and it was gated on `feed.available`, which an unreadable feed leaves TRUE — so the pill
+// read "unreadable" while the layout went on asserting a hub is empty NOW, from a snapshot the page
+// had just said it could no longer read. Internally inconsistent with one honest half is a strict
+// improvement on consistently false, and a bad place to stop.
+const feedAuth = liftStmt(graphJs, "const feedAuthoritative", ";");
+const isHiddenSrc = liftStmt(graphJs, "const isHidden", ";");
+check("the feed-authority predicate was lifted out of graph.js", feedAuth !== null);
+check("the isHidden expression was lifted out of graph.js", isHiddenSrc !== null);
+
+/** Drive the SHIPPED `isHidden` over a hub that is empty, under a given feed state. */
+const hubHidden = (f: Record<string, unknown>): boolean => {
+  const ctx: Record<string, unknown> = {
+    feed: { asOf: undefined, available: false, unreadable: false, ...f },
+    filter: { hideEmpty: true, hideOffline: false },
+    isOffline: () => false,
+    out: undefined,
+  };
+  runInContext(`${feedAuth}\n${isHiddenSrc}\nout = isHidden({ kind: "hub", empty: true });`,
+    createContext(ctx), { filename: "graph.js (isHidden)" });
+  return ctx.out as boolean;
+};
+
+check("CONTROL: an authoritative feed still hides an empty hub (the toggle is not collateral damage)",
+  hubHidden({ available: true, asOf: 1700000000000 }) === true);
+check("CONTROL: with no feed at all an empty hub is still not hidden (traffic-only is unchanged)",
+  hubHidden({ available: false }) === false);
+// THE DEFECT, STATED DIRECTLY. A stale snapshot is what we last KNEW, never what IS, and `hide empty`
+// is a claim about now. This is the cell a revert reddens.
+check("AN UNREADABLE FEED IS NOT AUTHORITATIVE: an empty hub is not hidden while the feed cannot be read",
+  hubHidden({ available: true, asOf: 1700000000000, unreadable: true }) === false);
+
+// The over-correction this could invite is discarding the snapshot, which would throw away a true
+// fact: `asOf` means "when we last read successfully", and that is exactly what it should keep
+// meaning. The same trap the read path already passes, one layer up.
+const unreadableFn = lift(graphJs, "function membershipUnreadable()");
+check("the unreadable transition was lifted out of graph.js", unreadableFn !== null);
+const afterUnreadable = (): Record<string, unknown> => {
+  const feed: Record<string, unknown> = { asOf: 1700000000000, available: true, unreadable: false };
+  runInContext(`${unreadableFn}\nmembershipUnreadable();`,
+    createContext({ feed, setFeed: () => undefined }), { filename: "graph.js (unreadable)" });
+  return feed;
+};
+check("an unreadable feed still records WHEN it was last read successfully (asOf is not discarded)",
+  afterUnreadable().asOf === 1700000000000, afterUnreadable());
+check("...and it does say it is unreadable, so the state is marked rather than erased",
+  afterUnreadable().unreadable === true);
+
 console.log(`\nMEMBERSHIP REFUSAL SMOKE OK ✅  (${pass} passed, 0 failed)`);
