@@ -22,7 +22,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import {
-  isReachable, EpEnvelopeError,
+  isReachable, EpEnvelopeError, registryReadFailed, unansweredRequest,
   openRecordsBucket,
   parseServiceSpec, parseServiceStatus, assertServiceNameAuthority,
   registerServiceInstance, writeServiceStatus, freezeExpectedSet,
@@ -130,10 +130,14 @@ const DOC_REL = {
     cmd("audit", { targeted: true, modes: ["ledger"] }),
   ],
 };
-const DOC_JOURNAL = { urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: [cmd("submitjob", { class: "journal" })] };
+// A JOURNAL-class command declares its admission ceiling whether or not it carries the action
+// marker — the marker sits on top of the class, and it is the CLASS that makes a command receive
+// submissions. This fixture predates that rule and went red when it landed, which is the rule
+// working: `submitjob` is a real journal-class non-action command, and it had no ceiling.
+const DOC_JOURNAL = { urn: "ai.cotal.jobs", revision: 1, attributes: [], events: [], commands: [cmd("submitjob", { class: "journal", admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } })] };
 // A MIXED endpoint: one ephemeral (rail-served) command + one journal command. Both belong to
 // the credential/descriptor surface; only "run" gets a rail def (SPEC 13.4/13.7).
-const DOC_MIXED = { urn: "ai.cotal.mixed", revision: 1, attributes: [], events: [], commands: [cmd("run"), cmd("submitjob", { class: "journal" })] };
+const DOC_MIXED = { urn: "ai.cotal.mixed", revision: 1, attributes: [], events: [], commands: [cmd("run"), cmd("submitjob", { class: "journal", admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } })] };
 // §13.7 two-digest content addressing: the registered CLOSURE digest names a MANIFEST
 // `{v:1, root:<artifactDigest>, members:[]}`; the manifest's root names the cluster DOCUMENT.
 // The store (D8 provides the production epc reader) holds BOTH artifacts, each at its own digest.
@@ -509,7 +513,7 @@ try {
     // cluster and journal in another is ephemeral for the check, so a later journal
     // redeclaration cannot mask the earlier ephemeral one and sneak a virtual registration in.
     const DOC_EPH_RUN = { urn: "ai.cotal.ephrun", revision: 1, attributes: [], events: [], commands: [cmd("run")] };
-    const DOC_JRN_RUN = { urn: "ai.cotal.jrnrun", revision: 1, attributes: [], events: [], commands: [cmd("run", { class: "journal" })] };
+    const DOC_JRN_RUN = { urn: "ai.cotal.jrnrun", revision: 1, attributes: [], events: [], commands: [cmd("run", { class: "journal", admissionCeiling: { maxBytes: 65536, maxDepth: 16, maxItems: 256 } })] };
     const DC_EPH_RUN = register(DOC_EPH_RUN);
     const DC_JRN_RUN = register(DOC_JRN_RUN);
     // A command name declared in TWO clusters is an ambiguous surface: registration refuses the
@@ -963,6 +967,14 @@ try {
     });
     await rejects("epScatterService charges the freeze against the deadline (a stalled enumeration is deadline-exceeded)",
       () => epScatterService(nc, stalledJsm, SPACE, opC("status"), { deadlineMs: 200 }), "deadline-exceeded");
+    {
+      // The stalled freeze is the CALLER's registry read failing before any request goes out: it
+      // carries EP_REGISTRY_READ_FAILED and never EP_UNANSWERED, so a consumer does not print a
+      // reachability verdict for a read that asked nobody.
+      let e: unknown;
+      try { await epScatterService(nc, stalledJsm, SPACE, opC("status"), { deadlineMs: 200 }); } catch (err) { e = err; }
+      c("a stalled freeze is marked EP_REGISTRY_READ_FAILED (the caller's own registry read), not EP_UNANSWERED", registryReadFailed(e) && !unansweredRequest(e), e);
+    }
 
     // a REAL mid-scatter re-registration: the production reconciler observes the revision
     // advance the reply rail cannot see and classifies `registration` churn (§13.5)

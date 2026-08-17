@@ -1,0 +1,27 @@
+{
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:instrument-instance-pin",
+  "mutations": [
+    {
+      "name": "PREDICTED KILLED (>=8 red) - the fence removed, so every split is caught after the responder handled it and the re-cut cells revert to the old disposition",
+      "file": "packages/core/src/endpoint-serve.ts",
+      "find": "      assertBoundIncarnation(env, identity);\n",
+      "replace": "",
+      "expectRed": "...and it healed through the REFUSAL, not the allowlist: the recovery counter moved"
+    },
+    {
+      "name": "PREDICTED KILLED (>=4 red) - the client counts and drops but never re-issues, so a refusal is handed to the caller and no repair happens",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "            return await invokeCommand(nc, this.space, await resolve(), command, args, invokeOpts);\n          } catch (reissue) {",
+      "replace": "            return r;\n          } catch (reissue) {",
+      "expectRed": "...and the re-issue DID go out \u2014 more than one publish, and every one of them safe"
+    },
+    {
+      "name": "PREDICTED KILLED (3 red) - the recovery is silent, so a handled split stops being a measurable one",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "          this.splitsRecovered++;\n",
+      "replace": "",
+      "expectRed": "...and the recovery was counted, so a handled split is still a measurable one"
+    }
+  ],
+  "_note": "THE SUITE LOADS dist, NOT src. `instrument-instance-pin` imports `@cotal-ai/core`, whose exports point at ./dist/index.js, so mutating packages/core/src leaves the module the suite actually runs untouched. MEASURED: all three of these mutations first reported SURVIVED at 55/55 marks, the full baseline, for that reason alone -- not because the suite fails to discriminate. The command therefore rebuilds core from the mutated source before running. Restoring src is not enough afterwards: dist is left carrying the last mutant, so core must be rebuilt from the restored source before any other suite is believed."
+}

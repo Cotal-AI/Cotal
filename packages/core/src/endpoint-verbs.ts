@@ -20,8 +20,9 @@ import {
   type EpCaller, type EpRoute, type EpTarget,
 } from "./endpoint-subjects.js";
 import {
-  EpEnvelopeError, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
-  type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock,
+  EpEnvelopeError, EP_UNBOUND_RESPONDER, EP_UNANSWERED, EP_REGISTRY_READ_FAILED, EP_BIND_REFUSED, registryReadFailed, replyRefusedBeforeEffect, parseEndpointReply, parseEndpointEvent, assertArgsValid, assertOutputValid,
+  type EndpointRequest, type EndpointReply, type EndpointEvent, type EpCorrelation, type EpTargetBlock, type EpUnboundResponderDetail, type EpBindRefusedDetail,
+  type EpUnansweredDetail, type EpRegistryReadFailedDetail, type EpErrorDetail, type EpBindBlock,
 } from "./endpoint-envelope.js";
 import type { JetStreamManager } from "@nats-io/jetstream";
 import type { CompiledContract } from "./schema-profile.js";
@@ -46,6 +47,10 @@ export interface EpVerbOp {
   caller: EpCaller;
   args?: Record<string, unknown>;
   target?: EpVerbTarget;
+  /** The incarnation this caller resolved against (§13.3). Carrying it makes a responder that is
+   *  not that incarnation refuse BEFORE running the command, which is the only place the refusal
+   *  can be a guard rather than a report. Omitted ⇒ any member of the class may serve the call. */
+  bind?: EpBindBlock;
   correlation?: EpCorrelation;
   /** Opaque signed authorization-context slot (§13.3); carried as-is. */
   auth?: string;
@@ -84,6 +89,17 @@ function buildRequest(
   // same budget the responder runs, so a request this boundary admits pins digests the
   // responder can honor or reject, never digests detached from the payload.
   assertArgsValid(op.contract.input.validate, op.args);
+  // The responder refuses these too (§13.3), but a caller that would emit an unservable request
+  // should not have to learn it from a round trip: `describe` is what produces a bind, and a
+  // scatter addresses every incarnation, so neither can carry one.
+  if (op.bind !== undefined) {
+    if (op.command === "describe")
+      throw new EpEnvelopeError("bad-request", "describe carries no bind: it is the bootstrap that produces one (SPEC 13.3)");
+    if (route.mode === "all")
+      throw new EpEnvelopeError("bad-request", "a scatter addresses every incarnation; a bind would make every member but one refuse (SPEC 13.5)");
+    if (route.mode === "inst" && op.bind.instanceId !== route.instanceId)
+      throw new EpEnvelopeError("bad-request", `bind.instanceId "${op.bind.instanceId}" contradicts the inst-rail route's instance "${route.instanceId}" (SPEC 13.2)`);
+  }
   const n = nonce();
   const subject = epRequestSubject(space, {
     route, endpoint: op.endpoint, command: op.command,
@@ -104,6 +120,7 @@ function buildRequest(
     replyExpected: verb.replyExpected,
     ...(op.goalId !== undefined ? { goalId: op.goalId } : {}),
     ...(op.target && op.target.mode !== "self" ? { target: bodyTarget(op.target) } : {}),
+    ...(op.bind !== undefined ? { bind: { instanceId: assertLifecycleToken(op.bind.instanceId, "bind instanceId"), epoch: op.bind.epoch } } : {}),
     ...(op.args !== undefined ? { args: op.args } : {}),
     from: { id: `${op.caller.owner}.${op.caller.actor}`, name: op.name ?? op.caller.actor },
     ...(verb.deadlineMs !== undefined ? { deadlineMs: verb.deadlineMs } : {}),
@@ -136,15 +153,22 @@ function isNoRespondersMsg(msg: Msg): boolean {
 
 /** Race a caller-supplied read against a bounded budget so a never-settling hook cannot exceed the
  *  operation deadline (SPEC 13.5: deadline mandatory). Clears its timer on either outcome. */
-async function raceBounded<T>(read: () => Promise<T> | T, ms: number, what: string): Promise<T> {
+async function raceBounded<T>(read: () => Promise<T> | T, ms: number, what: string, details?: EpErrorDetail[]): Promise<T> {
   let t: ReturnType<typeof setTimeout> | undefined;
   try {
     return await Promise.race([
       (async () => read())(),
-      new Promise<never>((_, reject) => { t = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `${what} did not settle within the ${ms}ms budget (SPEC 13.5)`)), ms); }),
+      new Promise<never>((_, reject) => { t = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `${what} did not settle within the ${ms}ms budget (SPEC 13.5)`, details)), ms); }),
     ]);
   } finally { if (t !== undefined) clearTimeout(t); }
 }
+
+/** The {@link EP_UNANSWERED} detail for `op`: set ONLY where this module observed that nothing
+ *  answered (the broker's no-responders control frame, or the reply deadline elapsing). */
+const unansweredDetail = (op: EpVerbOp): EpUnansweredDetail => ({ kind: EP_UNANSWERED, endpoint: op.endpoint, command: op.command });
+/** The {@link EP_REGISTRY_READ_FAILED} detail for `op`: set where the scatter's OWN registry read
+ *  (freeze or reconcile) failed, so the failure is never read as the responders' silence. */
+const registryReadDetail = (op: EpVerbOp): EpRegistryReadFailedDetail => ({ kind: EP_REGISTRY_READ_FAILED, endpoint: op.endpoint, command: op.command });
 
 /** The caller's per-request reply subscription: its own rail narrowed to exactly this request's
  *  nonce (contained in the §13.9 reply-read grant), so concurrent calls never see each other. */
@@ -157,6 +181,48 @@ function replySubjectFor(space: string, caller: EpCaller, n: string): string {
 export interface EpAttributedReply {
   reply: EndpointReply;
   responder: { endpoint: string; instanceId: string; epoch: number };
+}
+
+/** The stale-epoch refusal, worded by DIRECTION and by what the caller's reference epoch IS, and
+ *  carrying the {@link EP_UNBOUND_RESPONDER} marker. Both rails reach it after an ATTRIBUTED reply:
+ *  the responder received the request and answered it, at an epoch other than the caller's reference.
+ *  The reference has two meanings, and the message must not lend one caller's meaning to the other:
+ *  - `bind`: the epoch this caller's own resolve bound (the `inst` rail's pinned epoch, or the
+ *    describe-bound default on `one`). `answered > held` means a SUCCESSOR of the bound incarnation
+ *    answered (a same-root restart, or a supersession): the caller's handle is the stale side, and
+ *    re-resolving adopts the successor. `answered < held` means a superseded incarnation still
+ *    connected answered, and its reply is what is rejected.
+ *  - `registry`: a currency read of the responder's CURRENT registered epoch (epCall's documented
+ *    `currentEpoch` contract, {@link serviceEpochReader}). Nothing of the caller's is stale here:
+ *    `answered > current` means the read lags a restart, `answered < current` a superseded
+ *    incarnation still answering.
+ *  Either way the marker says what the code alone cannot: a retry is a second attempt. The kind is
+ *  explicit rather than inferred because a single wording names the wrong stale side on one of the
+ *  two paths, whichever meaning it picks. */
+function staleEpochRefusal(
+  op: EpVerbOp,
+  responder: { instanceId: string; epoch: number },
+  held: number,
+  reference: "bind" | "registry",
+  rail: "one" | "inst",
+): EpEnvelopeError {
+  const who = `the ${op.endpoint} instance ${responder.instanceId}`;
+  const ahead = responder.epoch > held;
+  const situation = reference === "bind"
+    ? (ahead
+      ? `${who} answered at epoch ${responder.epoch}, but this handle resolved against it at epoch ${held}: a SUCCESSOR of the bound incarnation answered (a restart or supersession), so the handle is the stale side; re-resolve to adopt it`
+      : `${who} answered at epoch ${responder.epoch}, but this handle resolved against it at epoch ${held}: a SUPERSEDED incarnation still connected answered, and its reply is rejected`)
+    : (ahead
+      ? `${who} answered at epoch ${responder.epoch}, but a currency read of its registered epoch returned ${held}: the responder is ahead of the registry read (the read lags a restart), so its reply is rejected until the read catches up; nothing of this caller's is stale`
+      : `${who} answered at epoch ${responder.epoch}, but a currency read of its registered epoch returned ${held}: a SUPERSEDED incarnation still connected answered, and its reply is rejected`);
+  const detail: EpUnboundResponderDetail = {
+    kind: EP_UNBOUND_RESPONDER, endpoint: op.endpoint, command: op.command, answeredBy: responder.instanceId,
+    ...(reference === "bind" ? { boundTo: responder.instanceId } : {}),
+    answeredEpoch: responder.epoch, heldEpoch: held, reference, pinned: rail === "inst",
+  };
+  return new EpEnvelopeError("expired",
+    `${situation}. THIS SAYS NOTHING ABOUT WHETHER THE COMMAND RAN: ${responder.instanceId} received the request and answered it, so if "${op.command}" mutates, that effect may already have landed; verify the outcome ('ps'/'inspect'/roster) before re-issuing (SPEC 13.2, the stale-reply rejection rule)`,
+    [detail]);
 }
 
 function parseAttributedReply(space: string, subject: string, data: Uint8Array, requestId: string, op: EpVerbOp, expect?: { instanceId?: string; epoch?: number }): EpAttributedReply {
@@ -173,7 +239,7 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
   if (expect?.instanceId !== undefined && parsed.instanceId !== expect.instanceId)
     throw new EpEnvelopeError("internal", `reply instance "${parsed.instanceId}" is not the addressed instance "${expect.instanceId}" (SPEC 13.2)`);
   if (expect?.epoch !== undefined && parsed.epoch !== expect.epoch)
-    throw new EpEnvelopeError("expired", `reply epoch ${parsed.epoch} is not the addressed epoch ${expect.epoch}; a superseded incarnation's reply is rejected (SPEC 13.2:1187-1189)`);
+    throw staleEpochRefusal(op, { instanceId: parsed.instanceId, epoch: parsed.epoch }, expect.epoch, "bind", "inst");
   // §13.3: an unparseable body is THIS boundary's own structured refusal — the documented catalog
   // (`internal`) holds; a raw SyntaxError must never escape the verb (the watch path already wraps
   // its decode the same way).
@@ -195,20 +261,24 @@ function parseAttributedReply(space: string, subject: string, data: Uint8Array, 
  * Call one command and await its reply within `deadlineMs`: on the `one` (queue-group anycast) or
  * `inst` (stable incarnation) rail with `replyExpected: true`, subscribe the caller's own
  * nonce-scoped reply subject BEFORE publishing, and resolve the first attributed reply — BOUND to
- * the invoked identity (§13.2:1187-1189: "callers reject" stale-process replies), on BOTH rails:
+ * the invoked identity (§13.2, the stale-reply rejection rule: "callers reject" stale-process replies), on BOTH rails:
  *  - `inst` pins the addressed `(instanceId, epoch)` incarnation up front; a stale-epoch reply is
  *    `expired` and a wrong-instance reply `internal`.
  *  - `one` cannot pin an instance up front (the queue picks the responder), so the caller MUST supply
  *    `currentEpoch(instanceId)`: after the reply lands, the answering incarnation's epoch is checked
  *    against its current registry epoch, and a superseded-but-still-connected queue member's reply is
  *    `expired`. The queue winner is NOT implicitly current — that is a check, not an assumption.
+ *    `currencyReference` says what that hook returns, for the refusal's wording and marker: the
+ *    documented `registry` read (default), or `bind` when a caller supplies its own resolve's epoch
+ *    instead (the describe-bound default in {@link invokeCommand}), where a responder ahead of it is
+ *    a successor and the caller's handle is the stale side.
  *
  * Application-level failure is NOT a throw: the resolved `reply` carries `ok: false` with the
  * responder's structured error (§13.3). This boundary throws only for its own refusals: invalid args
  * `bad-request`; an unparseable/mis-echoed/mis-attributed reply `internal` (a raw decode error never
  * escapes); a throwing `currentEpoch` hook `internal` and a garbled (non-integer/negative) currency
  * value `failed-precondition` (the read's own failure, never mislabeled staleness); a stale reply `expired`;
- * NO responder `unavailable` (SPEC 13.5:1484 — the broker's no-responders 503 lands on a reply-to that
+ * NO responder `unavailable` (SPEC 13.5, the broker no-responders answer — the broker's no-responders 503 lands on a reply-to that
  * sits on THIS caller's own rail, so a manual, fully-disposed probe distinguishes it from a slow
  * responder without leaving a lingering request); a failed reply subscription `unavailable`; the
  * elapsed budget `deadline-exceeded`. Every subscription and timer is released in the `finally`.
@@ -218,11 +288,11 @@ export async function epCall(
   space: string,
   route: { mode: "one" } | { mode: "inst"; instanceId: string; epoch: number },
   op: EpVerbOp,
-  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number },
+  opts: { deadlineMs: number; currentEpoch?: (instanceId: string) => Promise<number> | number; currencyReference?: "bind" | "registry" },
 ): Promise<EpAttributedReply> {
   const deadlineMs = assertDeadline(opts.deadlineMs);
   if (route.mode === "one" && opts.currentEpoch === undefined)
-    throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2:1187-1189)");
+    throw new EpEnvelopeError("bad-request", "epCall on the `one` rail requires opts.currentEpoch: the queue winner is not implicitly current, and a superseded-but-connected member's reply must be rejected (SPEC 13.2, the stale-reply rejection rule)");
   const req = buildRequest(space, route, op, { replyExpected: true, deadlineMs });
   const expect = route.mode === "inst" ? { instanceId: route.instanceId, epoch: route.epoch } : undefined;
   // A no-responders reply-to that lands on THIS caller's OWN rail (within its §13.9 read grant, no
@@ -245,7 +315,7 @@ export async function epCall(
           // impersonate transport absence — so it takes the ordinary attributed-reply path below, never
           // the broker-control path.
           if (msg.subject === noRespReplyTo) {
-            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`)); return; }
+            if (isNoRespondersMsg(msg)) { reject(new EpEnvelopeError("unavailable", `no responder for ${op.endpoint}.${op.command} (SPEC 13.5)`, [unansweredDetail(op)])); return; }
             reject(new EpEnvelopeError("internal", `a non-503 message reached the reserved no-responders sentinel for ${op.endpoint}.${op.command}; nothing but the broker control frame is addressable there`)); return;
           }
           resolve({ subject: msg.subject, data: msg.data });
@@ -253,11 +323,41 @@ export async function epCall(
       });
     });
     nc.publish(req.subject, req.body, { reply: noRespReplyTo });
-    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`)), deadlineMs); });
+    const timeout = new Promise<never>((_, reject) => { timer = setTimeout(() => reject(new EpEnvelopeError("deadline-exceeded", `no reply to ${op.endpoint}.${op.command} within the ${deadlineMs}ms budget (SPEC 13.5)`, [unansweredDetail(op)])), deadlineMs); });
     const msg = await Promise.race([outcome, timeout]);
     const attributed = parseAttributedReply(space, msg.subject, msg.data, req.requestId, op, expect);
+    // Taken BEFORE the currency check below, because a responder that fenced on the bind settled
+    // the same question better: it knows it did not run the command, where the check can only
+    // observe that the answer came from elsewhere. Returning the refusal keeps it an ordinary
+    // application-level failure (§13.5) that tells the caller a retry is safe, instead of a throw
+    // that says nothing about whether the command ran. Cross-checked against the SUBJECT first: a
+    // reply attributed to the very incarnation the caller bound cannot coherently claim it is not
+    // that incarnation (§13.3).
+    if (attributed.reply.ok === false && replyRefusedBeforeEffect(attributed.reply.error)) {
+      if (op.bind === undefined)
+        throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} replied with a bind refusal to a request that carried no bind`);
+      const r = attributed.responder;
+      if (r.instanceId === op.bind.instanceId && r.epoch === op.bind.epoch)
+        throw new EpEnvelopeError("internal", `${op.endpoint} instance ${r.instanceId} refused ${op.command} as the wrong incarnation, but the reply subject attributes it to exactly the bound one (${op.bind.instanceId} epoch ${op.bind.epoch}); the body does not get to contradict its own attribution (SPEC 13.3)`);
+      // AND THE REFUSAL MUST BE AN ANSWER TO *THIS* REQUEST, FROM *THIS* RESPONDER. THREE CHECKS ARE
+      // JOINTLY REQUIRED here — the subject check above, plus `boundTo` and `servedBy` below — and
+      // removing any one of them accepts a "did not run" the caller cannot derive. A caller acts on
+      // this marker by re-issuing a command it would otherwise never repeat, so it is checked rather
+      // than believed: a fence computes it from the request's own bind against its own identity, so
+      // both halves are DERIVABLE. A `boundTo` that is not the block this request carried was not
+      // computed from this request; a `servedBy` disagreeing with the reply subject is a body
+      // contradicting its own attribution. Both are `internal`, not a retry.
+      const refusal = (attributed.reply.error?.details ?? []).find((d) => d.kind === EP_BIND_REFUSED) as EpBindRefusedDetail | undefined;
+      if (refusal === undefined)
+        throw new EpEnvelopeError("internal", `${op.endpoint}.${op.command} came back marked ${EP_BIND_REFUSED} with no such detail to derive it from (SPEC 13.3)`);
+      if (refusal.boundTo.instanceId !== op.bind.instanceId || refusal.boundTo.epoch !== op.bind.epoch)
+        throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} against bind ${refusal.boundTo.instanceId} epoch ${refusal.boundTo.epoch}, but this request carried ${op.bind.instanceId} epoch ${op.bind.epoch}; a refusal computed from another request proves nothing about this one (SPEC 13.3)`);
+      if (refusal.servedBy.instanceId !== r.instanceId || refusal.servedBy.epoch !== r.epoch)
+        throw new EpEnvelopeError("internal", `${op.endpoint} refused ${op.command} claiming to be served by ${refusal.servedBy.instanceId} epoch ${refusal.servedBy.epoch}, but the reply subject attributes it to ${r.instanceId} epoch ${r.epoch}; the body does not get to contradict its own attribution (SPEC 13.3)`);
+      return attributed;
+    }
     if (route.mode === "one") {
-      // §13.2:1187-1189 currency for the queue winner, bounded by the REMAINING budget so the whole
+      // §13.2, the stale-reply rejection rule currency for the queue winner, bounded by the REMAINING budget so the whole
       // call stays within ONE `deadlineMs` (deliberately NOT a second dedicated budget like scatter's
       // `reconcileDeadlineMs`: a call's reply usually arrives well before T, leaving room to verify,
       // whereas scatter's gather deterministically eats its whole deadline). The consequence is a
@@ -280,7 +380,7 @@ export async function epCall(
       if (!Number.isSafeInteger(cur) || cur < 0)
         throw new EpEnvelopeError("failed-precondition", `the \`one\` currency read returned a non-integer/negative epoch ${String(cur)}; a garbled currency read is refused as the read's own failure, never reported as responder staleness (SPEC 13.2)`);
       if (attributed.responder.epoch !== cur)
-        throw new EpEnvelopeError("expired", `the \`one\` responder ${attributed.responder.instanceId} answered at epoch ${attributed.responder.epoch}, not its current ${cur}; a superseded incarnation's reply is rejected (SPEC 13.2:1187-1189)`);
+        throw staleEpochRefusal(op, attributed.responder, cur, opts.currencyReference ?? "registry", "one");
     }
     return attributed;
   } finally {
@@ -594,17 +694,21 @@ export async function epScatter(
     });
 
     // Reconcile shortly after T, bounded by its OWN explicit budget (not a second full `deadlineMs`):
-    // a never-settling read is `unavailable`, an unreadable registry `failed-precondition`.
+    // a never-settling read is `unavailable`, an unreadable registry `failed-precondition`. Only the
+    // bound's own MARKED refusal passes through as is: the hook is untrusted caller-supplied code,
+    // so whatever it throws is the read failing and is normalized and marked here. Keying the
+    // pass-through on the code instead would let a hook's bare `unavailable` escape unmarked, and an
+    // unmarked refusal is what a consumer cannot classify.
     let current: Map<string, EpRegistrationState>;
     let reconcileTimer: ReturnType<typeof setTimeout> | undefined;
     try {
       current = await Promise.race([
         opts.reconcileRegistration(),
-        new Promise<never>((_, reject) => { reconcileTimer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the scatter registration reconcile did not settle within its ${reconcileDeadlineMs}ms bound (SPEC 13.5: deadline mandatory, never a hung scatter)`)), reconcileDeadlineMs); }),
+        new Promise<never>((_, reject) => { reconcileTimer = setTimeout(() => reject(new EpEnvelopeError("unavailable", `the scatter registration reconcile did not settle within its ${reconcileDeadlineMs}ms bound (SPEC 13.5: deadline mandatory, never a hung scatter)`, [registryReadDetail(op)])), reconcileDeadlineMs); }),
       ]);
     } catch (e) {
-      if (e instanceof EpEnvelopeError && e.code === "unavailable") throw e; // the reconcile bound
-      throw new EpEnvelopeError("failed-precondition", `the scatter registration reconcile is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${failMsg(e)}`);
+      if (registryReadFailed(e)) throw e; // the reconcile bound above
+      throw new EpEnvelopeError("failed-precondition", `the scatter registration reconcile is unreadable; an unreadable registry is failed-precondition, never an empty success (SPEC 13.5): ${failMsg(e)}`, [registryReadDetail(op)]);
     } finally {
       if (reconcileTimer !== undefined) clearTimeout(reconcileTimer);
     }
@@ -679,10 +783,10 @@ export async function epScatterService(
   // its budget, and the gather runs on the REMAINING budget.
   const deadlineMs = assertDeadline(opts.deadlineMs);
   const started = Date.now();
-  const expected = await raceBounded(() => freezeExpectedSet(jsm, space, op.endpoint), deadlineMs, `the scatter freeze for ${op.endpoint}`);
+  const expected = await raceBounded(() => freezeExpectedSet(jsm, space, op.endpoint), deadlineMs, `the scatter freeze for ${op.endpoint}`, [registryReadDetail(op)]);
   const remaining = deadlineMs - (Date.now() - started);
   if (remaining <= 0)
-    throw new EpEnvelopeError("deadline-exceeded", `the scatter freeze for ${op.endpoint} consumed the whole ${deadlineMs}ms budget; no time left to gather (SPEC 13.5)`);
+    throw new EpEnvelopeError("deadline-exceeded", `the scatter freeze for ${op.endpoint} consumed the whole ${deadlineMs}ms budget; no time left to gather (SPEC 13.5)`, [registryReadDetail(op)]);
   return epScatter(nc, space, op, { ...opts, deadlineMs: remaining, expected, reconcileRegistration: registrationReconciler(jsm, space, op.endpoint, expected) });
 }
 
