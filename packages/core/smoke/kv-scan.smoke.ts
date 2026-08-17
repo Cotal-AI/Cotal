@@ -27,10 +27,11 @@ import { connect } from "@nats-io/transport-node";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { IncompleteKvScan, isReachable, liveKvEntries } from "../src/index.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "./_broker-teardown.js";
 
 const PORT = 14771;
 const SERVER = `nats://127.0.0.1:${PORT}`;
-const store = mkdtempSync(join(tmpdir(), "cotal-kvscan-"));
+const store = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -40,6 +41,9 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const srv = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store], { stdio: "ignore" });
+// The `finally` below stays and still does the work on every normal exit; ownership only covers the
+// path where this process is killed and the `finally` never unwinds.
+const releaseBroker = teardownOnSignal(srv, store);
 try {
   let up = false;
   for (let i = 0; i < 60; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -211,5 +215,6 @@ try {
 } finally {
   srv.kill("SIGKILL");
   rmSync(store, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until cleanup has actually finished
 }
 process.exit(0);
