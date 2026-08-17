@@ -361,6 +361,7 @@
     "smoke:herdr:probe": "tsx extensions/herdr/probe.smoke.ts",
     "smoke:herdr-e2e:live": "tsx bin/smoke/herdr-e2e-live.smoke.ts",
     "smoke:probe-teardown": "tsx packages/core/smoke/probe-teardown.smoke.ts",
+    "smoke:reaper": "tsx bin/smoke/reaper.smoke.ts",
     "smoke:persona-announce": "pnpm --filter cotal-ai... build && tsx bin/smoke/persona-announce.smoke.ts",
     "smoke:presence-ttl-migration:auth": "tsx packages/core/smoke/presence-ttl-migration-auth.smoke.ts",
     "smoke:presence-ttl-refresh-cli": "tsx packages/core/smoke/presence-ttl-refresh-cli.smoke.ts",
