@@ -30,6 +30,7 @@ import {
   type EpCaller, type WorkItemRef, type WorkWorker, type WorkPoolContext,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "./_broker-teardown.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
@@ -50,8 +51,11 @@ const epWorker = (epoch: number): WorkWorker => ({ kind: "endpoint", owner: "u_w
 const enc = (s: string) => new TextEncoder().encode(s);
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cotal-epwork-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+// The `finally` below stays and still does the work on every normal exit; ownership only covers
+// the path where this process is killed and the `finally` never unwinds.
+const releaseBroker = teardownOnSignal(broker, sd);
 
 try {
   let up = false;
@@ -502,6 +506,7 @@ try {
   broker.kill("SIGKILL");
   await new Promise<void>((resolve) => { broker.once("exit", () => resolve()); broker.once("error", () => resolve()); });
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until cleanup has actually finished
 }
 
 console.log(`\nENDPOINT WORK SMOKE ${fail === 0 ? "OK ✅ " : "FAILED ❌ "} (${ok} passed, ${fail} failed)`);
