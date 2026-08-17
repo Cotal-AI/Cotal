@@ -29,10 +29,15 @@
  * has to recognize the process later. That matters because argv fails in BOTH directions on a real
  * box: it under-matches (of 151 `spawn("nats-server"` sites, 38 pass a store dir and no config at
  * all, and one passes a prebuilt args variable), and it over-matches (a `server-open.conf` rule
- * protects 7 processes of which only 3 are the real mesh). Worse, an argv marker can outlive the file
- * it names: every one of the 4 observed orphans names a config path that no longer exists, deleted by
- * the very cleanup that failed to kill the process. Anything that validates a candidate by stat-ing
- * its config would refuse to reap all four.
+ * covers 8 processes, only some of which are ever a real mesh). Worse, an argv marker can outlive the
+ * file it names: across a fuller census of 15 live orphans, 4 named a config path that no longer
+ * exists, deleted by the very cleanup that failed to kill the process. Anything that validates a
+ * candidate by stat-ing its config would refuse to reap exactly those four.
+ *
+ * Two numbers above were revised once the census went from 4 orphans to 15: the `server-open.conf`
+ * count was 7, and "every one of the 4 observed orphans" was true of the 4 then visible but is 4 of
+ * 15 now. The conclusion is unchanged and so is the reason for it; only the ratio was overstated,
+ * and an overstated ratio in a paragraph arguing against a matching strategy is worth correcting.
  *
  * WHAT THIS CANNOT DO, and it must be read as a limit rather than a solved problem: SIGKILL is
  * uncatchable. `kill -9` on a suite kills the handle along with the process, and the broker is
