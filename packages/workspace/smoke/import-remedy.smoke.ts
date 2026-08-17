@@ -16,6 +16,8 @@ import { join } from "node:path";
 import { readFileSync } from "node:fs";
 import type { ExtensionRef } from "@cotal-ai/core";
 import { extensionsDir, hostPackageDir, importInstalledExtension, type InstalledExtension } from "@cotal-ai/workspace";
+// Not on the package's public surface: the same module instance the entry point above loads.
+import { upgradeRemedy } from "../dist/import-diagnosis.js";
 
 const tmp = mkdtempSync(join(import.meta.dirname, ".import-remedy-"));
 process.env.XDG_CONFIG_HOME = tmp;
@@ -72,7 +74,11 @@ try {
     check("lockstep, extension newer: names the missing symbol", m.includes("`notAnExportOfCore`"), m);
     check("lockstep, extension newer: names the core's version and path", m.includes(CORE_VERSION) && m.includes(CORE_DIR), m);
     check("lockstep, extension newer: does NOT prescribe reinstalling the extension", !m.includes("cotal ext add"), m);
-    check("lockstep, extension newer: points at the install that owns that core", m.includes(`upgrade the cotal that owns ${CORE_DIR}`), m);
+    // The repo's core is a source checkout, not an installed copy, so the remedy must be a rebuild:
+    // `npm i -g` would be the wrong instruction for this path. The installed-copy wording is proven
+    // below, since no fixture here can make hostPackageDir resolve into a node_modules tree.
+    check("lockstep, extension newer: prescribes a rebuild for a source checkout", m.includes("source checkout") && m.includes("rebuild it at 99.0.0 or newer"), m);
+    check("lockstep, extension newer: names no npm command for a source checkout", !m.includes("npm i -g"), m);
   }
 
   // 2. A declared floor above the linked core is the extension's OWN statement that it needs a newer
@@ -81,6 +87,7 @@ try {
     const m = await failureFor({ scope: "@third", version: "1.0.0", peerRange: ">=99.0.0" });
     check("declared floor above the linked core: names the CORE as behind", m.includes("The installed @cotal-ai/core is BEHIND"), m);
     check("declared floor above the linked core: quotes the declared range", m.includes(">=99.0.0"), m);
+    check("declared floor above the linked core: targets the floor, not the extension's version", m.includes("99.0.0 or newer") && !m.includes("1.0.0 or newer"), m);
   }
 
   // 3. Equal versions cannot be a version skew, so the remaining explanation is a stale BUILD — and
@@ -115,6 +122,18 @@ try {
     const m = await failureFor({ scope: "@cotal-ai", version: "99.0.0", peerRange: ">=0.1.0", body: `import "./does-not-exist.mjs";\n` });
     check("control, non-export failure: claims no side", !/is BEHIND|older side|Same version|Neither side/.test(m), m);
     check("control, non-export failure: keeps the plain reinstall remedy", m.includes("cotal ext add @cotal-ai/remedy-"), m);
+  }
+  // 7. The remedy's SHAPE, proven on hand-built paths because nothing in this repo can make the peer
+  //    resolve into an installed tree — hostPackageDir always finds the source checkout above. Cells
+  //    1-6 prove the real entry point reaches this function; these two prove the branch it takes for
+  //    the path shape a customer's machine actually has, which is the one the operator must be given
+  //    an exact command for.
+  {
+    const installed = upgradeRemedy("/home/someone/.local/share/cotal/node_modules/@cotal-ai/core", "0.18.0");
+    check("installed copy: the remedy is the exact upgrade command, pinned to the version it must reach", installed.includes("`npm i -g cotal-ai@0.18.0`"), installed);
+    check("installed copy: does not call an installed copy a source checkout", !installed.includes("source checkout"), installed);
+    const checkout = upgradeRemedy("/home/someone/Cotal/packages/core", "0.18.0");
+    check("source checkout: prescribes a rebuild, never `npm i -g`", checkout.includes("rebuild") && !checkout.includes("npm i -g"), checkout);
   }
 } finally {
   rmSync(tmp, { recursive: true, force: true });

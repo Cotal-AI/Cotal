@@ -11,7 +11,7 @@ import {
   type InstalledExtension,
 } from "./extensions.js";
 import { claimExtensionMutationLock } from "./extension-mutation.js";
-import { diagnosePeerSkew } from "./import-diagnosis.js";
+import { diagnosePeerSkew, upgradeRemedy } from "./import-diagnosis.js";
 
 /**
  * The generic manifest-materialize primitive: verify an installed package's version pin, resolve
@@ -62,9 +62,9 @@ function importFailure(pkg: string, ext: InstalledExtension, e: unknown): Error 
   switch (skew.side) {
     case "peer-behind":
       return new Error(
-        `${head}, and ${at}. The installed ${peer} is BEHIND: ${skew.because} - upgrade the cotal that owns ` +
-          `${skew.peerPath} (for a global install, \`npm i -g cotal-ai@latest\`). Reinstalling the extension cannot ` +
-          `add an export to an older ${peer}.`,
+        `${head}, and ${at}. The installed ${peer} is BEHIND: ${skew.because} - ` +
+          `${upgradeRemedy(skew.peerPath, skew.needsAtLeast)}. Reinstalling the extension cannot add an export to an ` +
+          `older ${peer}.`,
       );
     case "same-version":
       return new Error(

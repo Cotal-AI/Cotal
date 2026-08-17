@@ -53,14 +53,34 @@ export function declaredFloor(range: string): string | undefined {
   return m ? m[1] : undefined;
 }
 
-export interface PeerSkew {
+interface PeerSkewBase {
   /** The peer package the extension resolved against. */
   readonly peer: string;
   readonly peerVersion: string;
   readonly peerPath: string;
-  readonly side: "peer-behind" | "same-version" | "extension-behind" | "unrankable";
   /** Why the ranking came out this way, in the operator's terms. */
   readonly because: string;
+}
+
+export type PeerSkew =
+  | (PeerSkewBase & {
+      readonly side: "peer-behind";
+      /** The version the peer must reach for this pair to match — so the remedy can be an exact
+       *  command instead of an instruction to go find one. */
+      readonly needsAtLeast: string;
+    })
+  | (PeerSkewBase & { readonly side: "same-version" | "extension-behind" | "unrankable" });
+
+/**
+ * The command that fixes a behind peer, chosen by what the resolved path actually IS. An installed
+ * copy lives under `node_modules` and is upgraded; a path outside one is a source checkout, where
+ * `npm i -g` would be the wrong instruction entirely and a rebuild is the real remedy.
+ */
+export function upgradeRemedy(peerPath: string, needsAtLeast: string): string {
+  const installed = /(^|[/\\])node_modules[/\\]/.test(peerPath);
+  return installed
+    ? `upgrade the cotal that owns it: \`npm i -g cotal-ai@${needsAtLeast}\``
+    : `that path is a source checkout rather than an installed copy, so rebuild it at ${needsAtLeast} or newer`;
 }
 
 /** Locate the peer this process would have linked, and rank it against the extension. */
@@ -81,7 +101,12 @@ export function diagnosePeerSkew(pkg: string, extVersion: string, peer: string, 
   // itself says it needs a newer peer than the one that got linked.
   const floor = declared === undefined ? undefined : declaredFloor(declared);
   if (floor !== undefined && (comparePeerVersions(peerVersion, floor) ?? 0) < 0) {
-    return { ...base, side: "peer-behind", because: `it declares ${peer} ${declared}, and the linked ${peer} is older than that` };
+    return {
+      ...base,
+      side: "peer-behind",
+      needsAtLeast: floor,
+      because: `it declares ${peer} ${declared}, and the linked ${peer} is older than that`,
+    };
   }
 
   // Otherwise only first-party packages can be ranked against each other: `@cotal-ai/*` versions move
@@ -92,7 +117,14 @@ export function diagnosePeerSkew(pkg: string, extVersion: string, peer: string, 
   }
   const order = comparePeerVersions(extVersion, peerVersion);
   if (order === undefined) return { ...base, side: "unrankable", because: `${extVersion} and ${peerVersion} do not both parse as semver` };
-  if (order > 0) return { ...base, side: "peer-behind", because: `@cotal-ai/* versions move in lockstep, and ${extVersion} is newer than the linked ${peer} ${peerVersion}` };
+  if (order > 0) {
+    return {
+      ...base,
+      side: "peer-behind",
+      needsAtLeast: extVersion,
+      because: `@cotal-ai/* versions move in lockstep, and ${extVersion} is newer than the linked ${peer} ${peerVersion}`,
+    };
+  }
   if (order === 0) return { ...base, side: "same-version", because: `both are ${peerVersion}` };
   return { ...base, side: "extension-behind", because: `@cotal-ai/* versions move in lockstep, and ${extVersion} is older than the linked ${peer} ${peerVersion}` };
 }
