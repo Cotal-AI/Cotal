@@ -21,6 +21,20 @@
       "find": "  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;",
       "replace": "  return `${EVENT_CHANNEL_PREFIX}${principal.owner}.${principal.actor}`;",
       "expectRed": "a dot in a token is refused, not rewritten"
+    },
+    {
+      "name": "E4 the channel is keyed on the display name again, the fusing defect the principal key exists to remove (relocated from the connector-core fixture with the code it grades)",
+      "file": "packages/core/src/event-channel.ts",
+      "find": "  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;",
+      "replace": "  return `${EVENT_CHANNEL_PREFIX}${String((principal as unknown as { name?: string }).name ?? principal.actor).toLowerCase().replace(/[^a-z0-9_-]+/g, \"-\")}`;",
+      "expectRed": "eight distinct principals give eight distinct channels"
+    },
+    {
+      "name": "E5 the owner half is dropped, so every owner has one channel per actor name and two owners with a same-named actor collapse onto it (relocated with the code it grades)",
+      "file": "packages/core/src/event-channel.ts",
+      "find": "export function eventChannel(principal: { owner: string; actor: string }): string {\n  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key}`;",
+      "replace": "export function eventChannel(principal: { owner: string; actor: string }): string {\n  return `${EVENT_CHANNEL_PREFIX}${principalKey(principal.owner, principal.actor).key.split(\".\").slice(1).join(\".\")}`;",
+      "expectRed": "every constructed channel derives back to the principal that built it"
     }
   ]
 }
