@@ -1,10 +1,16 @@
 /**
- * DESCRIBE/INVOKE SPLIT — DUPLICATE EFFECT ON THE CLASS QUEUE (live repro).
+ * DESCRIBE/INVOKE SPLIT — NO DUPLICATE EFFECT ON THE CLASS QUEUE (live regression guard).
  *
  * A resolved handle binds the describe winner's instance; an unpinned invoke goes to the class
- * queue, which picks its own. The currency check runs AFTER the reply lands, so a non-matching
- * responder has already executed the command when `failed-precondition` is raised, and
- * `invokeService` re-invokes with the same args — for a write, a duplicate the caller cannot see.
+ * queue, which picks its own. While the currency check ran only AFTER the reply landed, a
+ * non-matching responder had already executed the command when `failed-precondition` was raised,
+ * and `invokeService` re-invoked with the same args — for a write, a duplicate the caller could not
+ * see. This probe first reproduced that; the pre-effect fence closed it, and the probe now holds it
+ * closed. It grades either tip: on an unfenced one the duplicates return and it fails.
+ *
+ * What it asserts is the CALLER-VISIBLE contract, not the mechanism: one request causes at most one
+ * effect, and a request that caused none says so conclusively. A remedy that keeps that promise by
+ * other means passes, which is the point — it is a guard, not a mirror of the implementation.
  *
  * `define-persona`, never `spawn`: a duplicated `spawn` starts a second real agent process.
  *
@@ -110,6 +116,14 @@ try {
     callerSaw: "ok" | "app-error" | "throw";
     detail: string;
     repairs: number;
+    /** The refusal said the command did not run — the marker AND `not-executed` together, because
+     *  the marker is this implementation's vocabulary and the outcome is the spec's, and only the
+     *  outcome licenses a caller to conclude that no effect exists. */
+    refusedBeforeEffect: boolean;
+    /** The failure said whether its effect landed, either way. §13.3 reads an ABSENT outcome as
+     *  `unknown`, so absence is the caller being left unable to tell — which is the condition this
+     *  whole class of defect consists of, duplicate or not. */
+    outcomeStated: boolean;
   };
   const trials: Trial[] = [];
   let bindRefused = 0;
@@ -119,6 +133,8 @@ try {
     const name = `epsplit-${i}`;
     let callerSaw: Trial["callerSaw"] = "ok";
     let detail = "";
+    let refusedBeforeEffect = false;
+    let outcomeStated = true;
     recoveriesThisTrial = 0;
     try {
       const r = await ep.invokeService(MANAGER_ENDPOINT, "define-persona",
@@ -129,20 +145,37 @@ try {
         const err = r.reply.error as { code?: string; outcome?: string; details?: Array<{ kind?: string }> } | undefined;
         const marks = (err?.details ?? []).map((d) => d.kind).filter(Boolean);
         if (marks.includes(EP_BIND_REFUSED)) bindRefused++;
+        refusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && err?.outcome === "not-executed";
+        outcomeStated = err?.outcome !== undefined;
         detail = `${err?.code ?? "?"}|outcome=${err?.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`;
       }
     } catch (e) {
       callerSaw = "throw";
-      detail = e instanceof EpEnvelopeError ? e.code : (e as Error).message.slice(0, 40);
+      // The marker arrives on THIS path too: a failed re-issue rethrows the ORIGINAL refusal, so
+      // reading marks only off `ok:false` replies undercounts the fence to zero on exactly the
+      // trials where it fired twice.
+      const marks = (e instanceof EpEnvelopeError ? e.details ?? [] : []).map((d) => d.kind).filter(Boolean);
+      if (marks.includes(EP_BIND_REFUSED)) bindRefused++;
+      refusedBeforeEffect = marks.includes(EP_BIND_REFUSED) && (e as EpEnvelopeError).outcome === "not-executed";
+      outcomeStated = e instanceof EpEnvelopeError && e.outcome !== undefined;
+      detail = e instanceof EpEnvelopeError
+        ? `${e.code}|outcome=${e.outcome ?? "(absent)"}|${marks.join(",") || "(no details)"}`
+        : (e as Error).message.slice(0, 60);
     }
     const inRoot1 = existsSync(agentFilePath(root1, name));
     const inRoot2 = existsSync(agentFilePath(root2, name));
-    trials.push({ i, name, inRoot1, inRoot2, both: inRoot1 && inRoot2, callerSaw, detail, repairs: recoveriesThisTrial });
+    trials.push({ i, name, inRoot1, inRoot2, both: inRoot1 && inRoot2, callerSaw, detail, repairs: recoveriesThisTrial, refusedBeforeEffect, outcomeStated });
   }
 
+  // CONSERVATION, and it replaces "every trial produced an effect somewhere". That older invariant
+  // was true only while the split was unfenced: once a responder can refuse before running, a call
+  // that splits TWICE legitimately produces no effect at all and says so, and demanding an effect
+  // would fail the fixed tip for doing the right thing. What must hold on any correct tip is that
+  // no trial goes unaccounted: exactly one effect, or a refusal that states nothing ran.
   const answered = trials.filter((t) => t.inRoot1 || t.inRoot2);
-  check("every trial produced an effect somewhere (the sample is valid; no silently lost trials)",
-    answered.length === N, { answered: answered.length, N });
+  const accounted = trials.filter((t) => (t.inRoot1 || t.inRoot2) || t.refusedBeforeEffect);
+  check("CONSERVATION: every trial is accounted for — an effect, or a refusal stating it did not run",
+    accounted.length === N, { accounted: accounted.length, effects: answered.length, N });
 
   const dupes = trials.filter((t) => t.both);
   const dupeSilent = dupes.filter((t) => t.callerSaw === "ok");
@@ -160,6 +193,11 @@ try {
   console.log(`                (D = duplicate across both instances, a/b = single effect, - = none)`);
 
   console.log(`     refusals carrying ${EP_BIND_REFUSED}: ${bindRefused}`);
+  // WHICH refusal, not just how many: a count of zero cannot distinguish "the fence never fired"
+  // from "it fired in a shape this probe does not recognise", and those call for opposite work.
+  const byDetail = new Map<string, number>();
+  for (const t of trials) if (t.detail !== "A" && t.detail !== "B") byDetail.set(t.detail, (byDetail.get(t.detail) ?? 0) + 1);
+  for (const [d, n] of [...byDetail].sort((x, y) => y[1] - x[1])) console.log(`       ${n}x ${d}`);
   const repaired = trials.filter((t) => t.repairs > 0);
   const repairedOk = repaired.filter((t) => t.callerSaw === "ok");
   console.log(`\n3. the repair path, measured on a LIVE contended queue (not a constructed re-seed)`);
@@ -171,32 +209,46 @@ try {
 
   console.log(`\n=== FINDING ===`);
   if (dupes.length > 0) {
-    console.log(`REPRODUCED. ${dupes.length}/${N} trials executed the SAME write on BOTH instances.`);
-    console.log(`${dupeSilent.length} of those returned success to the caller, which therefore has no`);
-    console.log(`way to know the write ran twice. The effect count is a FLOOR: a retry landing on the`);
-    console.log(`same instance executes twice and leaves one file, and is not counted here.`);
+    console.log(`REGRESSED. ${dupes.length}/${N} trials executed the SAME write on BOTH instances,`);
+    console.log(`${dupeSilent.length} of them while telling the caller "ok". A responder is not refusing before`);
+    console.log(`the command runs. The count is a FLOOR: a retry landing back on the same instance`);
+    console.log(`executes twice and leaves one file, and is not counted here.`);
   } else {
-    console.log(`NOT REPRODUCED in ${N} trials — no trial wrote to both roots.`);
-    console.log(`This does NOT establish that the mechanism cannot fire. Distinguish the two cases`);
-    console.log(`from the per-trial line above: a healthy mix of a/b means the queue really did split`);
-    console.log(`and the retry still never crossed instances; an all-a or all-b line means this run`);
-    console.log(`never produced a split at all, and the harness did not reach the condition.`);
+    console.log(`HELD. No trial wrote to both roots in ${N} trials, and ${bindRefused} split(s) were refused`);
+    console.log(`before the command ran. The duplicate this probe was written to reproduce does not occur.`);
   }
 
-  // A zero is only evidence if a split actually happened, and the signatures differ by tip:
-  // duplicate, throw, or bind-refused. All three zero means the queue never split and this run
+  // A zero is only evidence if a split actually happened, and the signature differs by tip: on an
+  // unfenced tip a split shows as a duplicate or a throw; on a fenced one as a bind-refused refusal
+  // or a recovery that healed it invisibly. All four zero means the queue never split and this run
   // grades nothing — which is not the same as the defect being absent.
-  const splitSeen = dupes.length + trials.filter((t) => t.callerSaw === "throw").length + bindRefused;
+  const splitSeen = dupes.length + trials.filter((t) => t.callerSaw === "throw").length + bindRefused + recoveriesTotal;
   if (splitSeen === 0) {
     fail++;
     console.log(`  \u2717 FAIL: GRADES NOTHING - no duplicate, no throw, no ${EP_BIND_REFUSED} refusal.`);
     console.log(`     The class queue never split in these ${N} trials, so this run is evidence about`);
     console.log(`     neither the defect nor any remedy. Re-run; do not read it as absence.`);
   }
-  check("DEFECT PRESENT: at least one write executed on both instances for one caller request",
-    dupes.length > 0, { dupes: dupes.length, N });
-  check("DEFECT IS SILENT: at least one duplicated write returned success to the caller",
-    dupeSilent.length > 0, { dupeSilent: dupeSilent.length });
+  check("NO DUPLICATE EFFECT: no caller request executed the same write on both instances",
+    dupes.length === 0, { dupes: dupes.length, N });
+  check("NO SILENT DUPLICATE: no duplicated write was reported to the caller as success",
+    dupeSilent.length === 0, { dupeSilent: dupeSilent.length });
+  // The marker without the outcome is what makes two implementations disagree about whether the
+  // command ran, so a refusal carrying only one of the pair is a defect even with nothing
+  // duplicated. Vacuous when the queue never split — which the grades-nothing guard above forbids.
+  const markedButUnstated = trials.filter((t) => t.detail.includes(EP_BIND_REFUSED) && !t.refusedBeforeEffect);
+  check("REFUSALS ARE CONCLUSIVE: every fence refusal also states `not-executed`",
+    markedButUnstated.length === 0, markedButUnstated.map((t) => t.detail));
+
+  // THE ASSERTION THAT IS SENSITIVE TO THE FENCE ITSELF. Removing the pre-effect refusal does not
+  // bring the duplicate back on its own — the caller-side repair still collapses it — so the two
+  // checks above pass on a tip whose responder never fences. What returns is this: the split is
+  // reported AFTER the command ran, as `failed-precondition` with NO outcome, which §13.3 says a
+  // caller must read as `unknown`. The effect landed and the caller is told only that it failed.
+  // Measured: with the fence neutered, 15/24 failures arrive this way and zero duplicates do.
+  const inconclusive = trials.filter((t) => t.callerSaw !== "ok" && !t.outcomeStated);
+  check("NO INCONCLUSIVE FAILURE: every failed call states whether its effect landed",
+    inconclusive.length === 0, { inconclusive: inconclusive.length, sample: inconclusive[0]?.detail });
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
 } finally {
