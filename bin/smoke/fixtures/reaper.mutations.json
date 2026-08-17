@@ -24,6 +24,14 @@
     "test worth running, and that constraint shaped which mutations exist here rather than being an",
     "excuse for having fewer.",
     "",
+    "BOTH ANCHORS ARE CODE ONLY, AND THE FIRST ONE HAD TO BE REPAIRED TO BECOME SO. As first written",
+    "it ran to the end of the line and swallowed the trailing `// someone is still using it`, which",
+    "the fixture gate caught. That is not a formatting nit: the guard this fixture protects is the",
+    "load-bearing one, and an anchor that includes prose can be disarmed by someone tidying a comment,",
+    "in a commit whose diff announces nothing. The mutation would then silently stop being applied and",
+    "the cell below would go green for no reason at all. The anchor stops at the closing brace, so the",
+    "comment is free to change and the guard stays armed.",
+    "",
     "THE SECOND MUTATION SEPARATES REPORTING FROM ACTING. The reaper both kills a process and returns a",
     "list naming it, and a single green cell could conflate those. Removing the kill while leaving the",
     "bookkeeping intact reddens the positive control alone and leaves 'the killed broker is named in",
@@ -34,7 +42,7 @@
     {
       "name": "the owner-liveness check is disabled, so a tokened broker is claimed while its owner is still running",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": "    if (alive(Number(owner[1]))) { ownedLive++; continue; } // someone is still using it",
+      "find": "    if (alive(Number(owner[1]))) { ownedLive++; continue; }",
       "replace": "    if (false) { ownedLive++; continue; }",
       "expectRed": "✗ FAIL: NEGATIVE CONTROL: a tokened broker whose owner is ALIVE is untouched",
       "cell": "✗ FAIL: NEGATIVE CONTROL: a tokened broker whose owner is ALIVE is untouched"
