@@ -1,0 +1,68 @@
+{
+  "command": "pnpm smoke:agui-conformance",
+  "mutations": [
+    {
+      "name": "M10 the reasoning constructor drops the required role literal, the defect the first draft actually shipped",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    role: \"reasoning\",\n",
+      "replace": "",
+      "expectRed": "reasoningMessageStart parses under its real schema"
+    },
+    {
+      "name": "M11 aguiFrame accepts an empty events array, so a writer can consume a seq and carry nothing",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  if (!Array.isArray(opts.events) || opts.events.length === 0)\n    throw new AguiVocabularyError(\"a frame must carry at least one event\");",
+      "replace": "  if (false as boolean)\n    throw new AguiVocabularyError(\"a frame must carry at least one event\");",
+      "expectRed": "a frame with no events is refused rather than published as a gap-free no-op"
+    },
+    {
+      "name": "M12 closing a run stops refusing ids it left dangling",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      const dangling = [...this.text, ...this.reasoning, ...this.tools];\n      if (dangling.length > 0)\n        throw new AguiVocabularyError(\n          `${t} while still open: ${dangling.join(\", \")}`,\n        );\n",
+      "replace": "",
+      "expectRed": "closing a run with a tool call still open is refused"
+    },
+    {
+      "name": "M13 openId stops checking that the id is not already open",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (set.has(id)) throw new AguiVocabularyError(`${t} re-opened \"${id}\" while already open`);",
+      "replace": "",
+      "expectRed": "re-opening a messageId that is already open is refused"
+    },
+    {
+      "name": "M14 the CUSTOM gate accepts any name instead of only the declared table",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "        if (!COTAL_CUSTOM_EVENTS.includes(String(e.name)))",
+      "replace": "        if (false as boolean)",
+      "expectRed": "an undeclared CUSTOM name is refused rather than emitted"
+    },
+    {
+      "name": "M15 the three REASONING cases are deleted, so they fall through to the unmapped default",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      case AGUI_EVENT_TYPE.REASONING_MESSAGE_START:\n        return this.openId(this.reasoning, String(e.messageId), t);\n      case AGUI_EVENT_TYPE.REASONING_MESSAGE_CONTENT:\n        return this.requireOpen(this.reasoning, String(e.messageId), t);\n      case AGUI_EVENT_TYPE.REASONING_MESSAGE_END:\n        return this.closeId(this.reasoning, String(e.messageId), t);\n",
+      "replace": "",
+      "expectRed": "a synthesized 3-turn sequence brackets cleanly"
+    },
+    {
+      "name": "M16 the three REASONING cases are present but misrouted into the text id set, which no multi-turn sequence can see",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      case AGUI_EVENT_TYPE.REASONING_MESSAGE_START:\n        return this.openId(this.reasoning, String(e.messageId), t);\n      case AGUI_EVENT_TYPE.REASONING_MESSAGE_CONTENT:\n        return this.requireOpen(this.reasoning, String(e.messageId), t);\n      case AGUI_EVENT_TYPE.REASONING_MESSAGE_END:\n        return this.closeId(this.reasoning, String(e.messageId), t);\n",
+      "replace": "      case AGUI_EVENT_TYPE.REASONING_MESSAGE_START:\n        return this.openId(this.text, String(e.messageId), t);\n      case AGUI_EVENT_TYPE.REASONING_MESSAGE_CONTENT:\n        return this.requireOpen(this.text, String(e.messageId), t);\n      case AGUI_EVENT_TYPE.REASONING_MESSAGE_END:\n        return this.closeId(this.text, String(e.messageId), t);\n",
+      "expectRed": "the three id sets do not collide"
+    },
+    {
+      "name": "M17 the TOOL_CALL_RESULT guard is deleted, and every happy path sends the result after the call closed so nothing else looks",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "        if (this.tools.has(String(e.toolCallId)))\n          throw new AguiVocabularyError(\n            `TOOL_CALL_RESULT for \"${String(e.toolCallId)}\" while its call is still open`,\n          );\n",
+      "replace": "",
+      "expectRed": "a TOOL_CALL_RESULT arriving while its call is still open is refused"
+    },
+    {
+      "name": "M18 toolCallEnd ALONE stops carrying the cotal key, which a one-schema passthrough sample cannot see",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    type: AGUI_EVENT_TYPE.TOOL_CALL_END,\n    toolCallId: o.toolCallId,\n    timestamp: o.timestamp,\n    ...(o.cotal ? { cotal: o.cotal } : {}),",
+      "replace": "    type: AGUI_EVENT_TYPE.TOOL_CALL_END,\n    toolCallId: o.toolCallId,\n    timestamp: o.timestamp,",
+      "expectRed": "the `cotal` key SURVIVES the parse rather than being stripped"
+    }
+  ]
+}
