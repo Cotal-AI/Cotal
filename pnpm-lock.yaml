@@ -338,6 +338,9 @@ importers:
         specifier: ^6.2.3
         version: 6.2.3
     devDependencies:
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       better-auth:
         specifier: ^1.6.23
         version: 1.6.23(@opentelemetry/api@1.9.0)(react@19.2.7)
