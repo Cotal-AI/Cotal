@@ -1,0 +1,40 @@
+{
+  "suite": "extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
+  "guard": "a seat spawned with an initial prompt submits it as its first turn, exactly once",
+  "command": "pnpm smoke:opencode-boot-prompt",
+  "completionMarker": "OPENCODE BOOT-PROMPT TEST PASSED",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/fixtures/boot-prompt.mutations.json",
+  "why": [
+    "The shipped defect had a shape that reads as working code: the launch spec was built, the seat",
+    "joined the roster, the persona loaded, and the only thing missing was the turn nobody was",
+    "watching for. So the mutation is the same shape rather than a broken build. It carries the",
+    "prompt over the env exactly as the fix does and then declines to submit it, which is what the",
+    "connector did for its whole life before this change.",
+    "",
+    "IT TARGETS THE PLUGIN, NOT THE LAUNCH SPEC, because the launch-spec half is the half that could",
+    "already be proved by reading. A spec cell reddens on a one-line revert and nobody would doubt",
+    "it. The half worth grading is the one that needs a session, a mesh join, and a turn boundary to",
+    "observe at all, and it is the half where a passing suite could plausibly be measuring the",
+    "connector's env write rather than an actual turn.",
+    "",
+    "THE ARM-B CONTROL IS WHY THE KILL MEANS WHAT IT SAYS. Arm A alone would also be satisfied by a",
+    "plugin that prompts at boot unconditionally, and such a plugin would waste a turn on every seat",
+    "that never asked for one. Arm B boots the same plugin with the carrier absent and requires",
+    "silence, so the two arms together pin the turn to the prompt rather than to the boot.",
+    "",
+    "SPECIFIER BOUNDARY: the suite imports `../src/plugin.js` and `../src/extension.js` and runs",
+    "under tsx, so the bytes mutated are the bytes executed. No dist is built by the command, and no",
+    "`afterRestore` is needed to undo one."
+  ],
+  "mutations": [
+    {
+      "name": "the boot drive is dropped, so the prompt is carried over the env and then never submitted",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    await drive(text);",
+      "replace": "    void text;",
+      "expectRed": "a boot prompt drives a turn without any peer traffic",
+      "cell": "a boot prompt drives a turn without any peer traffic",
+      "note": "The defect as it shipped, minus the parts that were never the problem. Everything around it survives: the connector still writes the carrier, the plugin still reads and clears it, the session is still created, the mesh is still joined, and the seat still answers a directed message seconds later. Only the first turn is missing, which is exactly how the drop escaped notice for as long as it did."
+    }
+  ]
+}
