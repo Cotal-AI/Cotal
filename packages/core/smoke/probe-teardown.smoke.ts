@@ -28,7 +28,7 @@ import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isReachable, probeConnect } from "../src/endpoint.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REFUSING = "nats://127.0.0.1:1"; // closed loopback port: answers RST
@@ -200,7 +200,10 @@ try {
     child.signal === null && child.status === 0, { status: child.status, signal: child.signal, stderr: child.stderr?.slice(0, 400) });
 } finally {
   const comm = spawnSync("ps", ["-p", String(BROKER_PID), "-o", "comm="], { encoding: "utf8" }).stdout.trim();
-  if (comm === "nats-server") process.kill(BROKER_PID, "SIGTERM");
+  // Same wide window as bind-fence: SIGTERM asks for a graceful shutdown, which flushes JetStream
+  // into the very tree the next line walks. The pid check stays — it is what proves the process
+  // under this pid is still the broker — and the handle is what we wait on.
+  if (comm === "nats-server") await killAndAwaitExit(broker, "SIGTERM");
   rmSync(scratch, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

@@ -42,7 +42,7 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
-import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict and never throws: one throwing cell would take every cell below it
@@ -353,7 +353,10 @@ try {
   await Promise.all(served.map((s) => s.stop()));
 } finally {
   await nc.drain().catch(() => nc.close());
-  broker.kill("SIGTERM");
+  // WAIT for it, do not just ask. SIGTERM makes nats-server flush JetStream on its way out, and
+  // removing the tree on the next line walked into what it was still writing: this suite went red
+  // in CI on ENOTEMPTY over .../KV_cotal_records_bindfence/msgs with every cell already passed.
+  await killAndAwaitExit(broker, "SIGTERM");
   rmSync(sd, { recursive: true, force: true });
   // LAST, deliberately. Releasing before the lines above would hand the broker back while cleanup
   // could still throw, which is the exact case ownership exists to catch; held until here, an

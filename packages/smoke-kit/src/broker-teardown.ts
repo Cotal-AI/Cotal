@@ -47,6 +47,52 @@ import { rmSync } from "node:fs";
  *  SIGKILLed; a broker started around it is not, so a reaper is only ever as complete as migration. */
 export const SMOKE_BROKER_TOKEN = "cotal-smoke-broker-";
 
+/**
+ * Kill a broker and DO NOT RETURN until it is actually gone, so the caller's `rmSync` cannot race a
+ * process still writing into the tree it is walking.
+ *
+ * This exists because that race is not theoretical. `bind-fence` sent SIGTERM and removed its tree on
+ * the next line; in CI the recursive walk hit a directory nats-server had just written back into and
+ * the suite died on `ENOTEMPTY: directory not empty, rmdir
+ * '/tmp/cotal-smoke-broker-LilWsp/jetstream/$G/streams/KV_cotal_records_bindfence/msgs'` after every
+ * one of its cells had passed.
+ *
+ * SIGTERM is the reason the window is wide: it asks nats-server to shut down GRACEFULLY, and a
+ * graceful shutdown FLUSHES JetStream state to disk. So the signal that is polite to the broker is
+ * precisely the one that keeps it writing while the removal walks. Modelled on a fixture that flushes
+ * for 250ms after SIGTERM, removing straight away failed 4 times out of 4; waiting for the exit first
+ * succeeded 4 out of 4.
+ *
+ * A NOTE ON WHAT DOES NOT WORK, so nobody re-derives it from the docs. Node's own retry options on
+ * `rmSync` (`maxRetries`/`retryDelay`) name ENOTEMPTY explicitly and look like the native answer. They
+ * are not: measured on the same fixture they failed 4 out of 4 while burning 5.7 seconds, because the
+ * retry re-attempts the failed `rmdir` and never re-walks the directory, so files created during the
+ * first walk are never removed and the `rmdir` can never succeed. Waiting is the fix; retrying is not.
+ *
+ * Never throws — it runs on the teardown path, where a throw would replace the real cause of death.
+ * If the broker ignores the first signal it is escalated to SIGKILL rather than waited on forever.
+ */
+export async function killAndAwaitExit(child: ChildProcess, signal: NodeJS.Signals = "SIGTERM", timeoutMs = 10_000): Promise<void> {
+  const dead = (): boolean => child.exitCode !== null || child.signalCode !== null;
+  if (dead()) return;
+  const exited = new Promise<void>((resolve) => child.once("exit", () => resolve()));
+  const after = (ms: number): Promise<"timeout"> => new Promise((r) => setTimeout(() => r("timeout"), ms).unref());
+  try {
+    child.kill(signal);
+  } catch {
+    return; // already gone; `exit` may never fire, and there is nothing left to wait for
+  }
+  if ((await Promise.race([exited.then(() => "exited" as const), after(timeoutMs)])) === "timeout") {
+    // It ignored the polite signal. Escalate rather than hang the suite's teardown forever.
+    try {
+      child.kill("SIGKILL");
+    } catch {
+      return;
+    }
+    await Promise.race([exited, after(2_000)]);
+  }
+}
+
 interface Owned {
   readonly child: ChildProcess;
   readonly storeDir?: string;
