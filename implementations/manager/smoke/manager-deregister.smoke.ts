@@ -22,7 +22,7 @@
  * shipping a manager that can be stopped once and never started again — the first draft did exactly
  * that on the status key, and section 2 is what caught it.
  *
- * THE COUNT WAS PREDICTED AT 16 AND IS 28. Recorded rather than re-cut backwards. Five of the first
+ * THE COUNT WAS PREDICTED AT 16 AND IS 30. Recorded rather than re-cut backwards. Five of the first
  * seven came from the fixture refusing to build without them: the open-mesh restart pair (an
  * auth-mesh restart needs the delivery daemon as its eviction oracle, which is not what this suite
  * is about), the credential-boundary pair (the scatter's own credential turned out to be unable to
@@ -38,7 +38,10 @@
  * manager that was up, and the verb deleted a LIVE registration. The guard now removes a record
  * only on the broker affirming nothing is subscribed on that instance's rail, section 12 is the
  * hung shape built for real, and its last cell is the positive control that the corpse this whole
- * change exists for still deletes. Every claim in the original 16 is still asserted.
+ * change exists for still deletes. Section 13 came from the same review round: the guard names its
+ * three refusals so an operator knows which check stopped them, and a chain of named denials passes
+ * whatever it does not recognise, so the fence is now `gone` itself and that is tested with a state
+ * from outside the closed set. Every claim in the original 16 is still asserted.
  *
  * Run: pnpm smoke:manager-deregister   (needs nats-server + node on PATH; boots its own JWT broker)
  */
@@ -64,7 +67,7 @@ import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
 import { InstanceDeregisterRefused, deregisterEndpointInstance, makeInstanceProbe, type InstanceProbe } from "../src/deregister-instance.js";
 
-const EXPECTED_CELLS = 28;
+const EXPECTED_CELLS = 30;
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -379,6 +382,21 @@ try {
   await hung.stop().catch(() => {});
   hung = undefined;
   await hungNc.drain().catch(() => hungNc.close());
+
+  console.log("13. a verdict from outside the closed set is not a verdict");
+  // The guard names three refusals so an operator knows WHICH check stopped them, and a chain of
+  // named denials passes anything it does not recognise. This is that fence tested rather than
+  // assumed: a state from outside `InstanceProbe` reaches the guard - the shape a fourth probe
+  // state, or a caller wiring its own probe, would produce - and the delete must not be reachable.
+  // It is asked about the LIVE manager, so a fall-through is a live registration removed.
+  const foreign = await withExecutor(IID_LIVE, (kv) => deregisterEndpointInstance({
+    kv, endpoint: MANAGER_ENDPOINT, instanceId: IID_LIVE,
+    probeInstance: async () => ({ state: "silent", detail: "a verdict this command does not know" }) as unknown as InstanceProbe,
+    log: () => {},
+  })).then(() => undefined).catch((e: unknown) => e as InstanceDeregisterRefused);
+  check("an unrecognised probe verdict REFUSES: only a broker-affirmed gone is acted on",
+    foreign?.condition === "liveness-unestablishable" && /not a verdict this command acts on/.test(foreign?.message ?? ""), foreign?.message?.slice(0, 160));
+  check("...and the live manager it was asked about is still registered", (await frozenIds()).includes(IID_LIVE), IID_LIVE);
 } finally {
   try { await nc?.drain(); } catch { /* ignore */ }
   await live?.stop().catch(() => {});

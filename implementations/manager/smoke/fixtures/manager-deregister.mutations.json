@@ -30,10 +30,10 @@
       "expectRed": "a probe whose publishes the broker REFUSES is unestablishable, never silence"
     },
     {
-      "name": "PREDICTED KILLED (1 red) - the guard runs AFTER the delete instead of before it, so the record is already gone by the time a live instance is found to be alive",
+      "name": "PREDICTED KILLED (1 red) - the guard never ASKS: the probe is not run and its verdict is assumed, so a live manager's registration is deleted on no evidence at all",
       "file": "implementations/manager/src/deregister-instance.ts",
       "find": "  const probe = await opts.probeInstance();",
-      "replace": "  const probe: InstanceProbe = { state: \"silent\", detail: \"guard skipped\" };",
+      "replace": "  const probe: InstanceProbe = { state: \"gone\", detail: \"guard skipped\" };",
       "expectRed": "and the live manager's registration is untouched by the refusal"
     },
     {
@@ -49,6 +49,13 @@
       "find": "    if (registered) await this.deregisterServiceOnStop();",
       "replace": "",
       "expectRed": "after a clean stop its registration is GONE, so no later scatter can freeze it in"
+    },
+    {
+      "name": "PREDICTED KILLED (1 red) - the guard becomes a chain of denials with no fence at its end, so any verdict it does not recognise - a fourth probe state, or one a caller wires itself - falls through to the delete",
+      "file": "implementations/manager/src/deregister-instance.ts",
+      "find": "  if (state !== \"gone\")",
+      "replace": "  if (false)",
+      "expectRed": "an unrecognised probe verdict REFUSES: only a broker-affirmed gone is acted on"
     }
   ],
   "_note": "This suite imports the manager from `../src/*.js` RELATIVELY, so the mutated files ARE the modules under test and no build step belongs in the command. `@cotal-ai/core` still resolves to dist here, which is why no mutation in this fixture touches core: the core-side deletes are proved by packages/core/smoke/fixtures/service-deregistration.mutations.json, whose suite loads core from source."

@@ -163,8 +163,15 @@ export async function deregisterEndpointInstance(opts: {
   const { kv, endpoint, instanceId, log } = opts;
 
   // ---- 1. THE GUARD. Read-only, and nothing is mutated until it passes.
+  //
+  // IT IS AN ALLOW-LIST, and the last check below is what makes that structural. The three refusals
+  // that follow exist to name the CONDITION an operator hit, not to be the fence: a chain of
+  // denials passes anything it does not recognise, so a probe that grew a fourth state, or a caller
+  // that hands this a state from outside the closed set, would fall through to the delete. `gone`
+  // is the only verdict this command may act on, so `gone` is what it tests for.
   const probe = await opts.probeInstance();
-  log(`instance ${endpoint}/${instanceId}: ${probe.state} - ${probe.detail}`);
+  const state: string = probe.state;
+  log(`instance ${endpoint}/${instanceId}: ${state} - ${probe.detail}`);
   if (probe.state === "answered")
     throw new InstanceDeregisterRefused(
       "instance-answered",
@@ -179,6 +186,11 @@ export async function deregisterEndpointInstance(opts: {
     throw new InstanceDeregisterRefused(
       "liveness-unestablishable",
       `the liveness of ${endpoint}/${instanceId} could not be established (${probe.detail}) - the probe failed rather than went unanswered, so nothing was learned about the instance. Refusing: this removes a record only on the broker affirming its rail empty.`,
+    );
+  if (state !== "gone")
+    throw new InstanceDeregisterRefused(
+      "liveness-unestablishable",
+      `the probe for ${endpoint}/${instanceId} returned "${state}", which is not a verdict this command acts on (${probe.detail}). Only a broker-affirmed \`gone\` removes a registration, so nothing was removed.`,
     );
 
   // ---- 2. The §13.5 delete, revision-pinned inside (status first, then spec).
