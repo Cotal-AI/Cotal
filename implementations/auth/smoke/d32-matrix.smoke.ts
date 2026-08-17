@@ -20,10 +20,10 @@
  * overlap the commit principal's five fact families; per-kind record writers stay disjoint).
  *
  * KNOWN RECORDED GAPS (not failures): the CANONICALIZER principal holds neither of the two
- * authorities SPEC gives it — the `epf.<e>.dec.>`/`.quar.>` fact publish (SPEC:1658-1663: the
+ * authorities SPEC gives it — the `epf.<e>.dec.>`/`.quar.>` fact publish (SPEC §13.4: the
  * canonicalizer publishes the decision or quarantine fact and terminally acks only after it
  * durably exists) nor the leader-served `STREAM.MSG.GET.EPF_<space>` of the row titled
- * "Canonicalizer CAS-winner + terminal read" (SPEC:2907, which it needs to read the winning fact
+ * "Canonicalizer CAS-winner + terminal read" (SPEC §13.9, which it needs to read the winning fact
  * on redelivery). Its builders emit its EPJ consumer rows plus the EPW work publish, and the
  * holder-set fixture below asserts that absence POSITIVELY by listing `canonicalizer:EPW_<space>`
  * and no `canonicalizer:EPF_<space>`. That is correct today — no production path mints a
@@ -376,7 +376,7 @@ const FIXTURE: Record<string, { publish: string[]; subscribe: string[] }> = {
   // P2 item 6: the manager's per-session SERVING credential — the EXACT mirror of `session-caller`
   // with the rail directions swapped, for ONE session. It replaces a STANDING writer that held
   // `eps.manager.*.<epoch>.{in,out}` and so reached every live session's bytes at its epoch, against
-  // SPEC:2753 ("no standing EPS grant exists on either side", §13.6 session credentials). No KV and no JS-API at all: the
+  // SPEC §13.9 ("no standing EPS grant exists on either side", §13.6 session credentials). No KV and no JS-API at all: the
   // serving side drives bytes, and the ledger belongs to the standing credential below.
   "session-serving": { publish: [
     `cotal.d32m.eps.manager.${SC_SID}.3.out`,
@@ -566,7 +566,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
     holders.size === expected.size && [...holders].every((h) => expected.has(h)), [...holders].sort());
 }
 
-// (2b') EXACTLY ONE principal may hold BOTH sides of the goal fact chain. SPEC:2906 splits the
+// (2b') EXACTLY ONE principal may hold BOTH sides of the goal fact chain. SPEC §13.9 splits the
 // `.bind` leaf from the commit principal's `.result` and says so in the row itself ("no writer
 // overlap"); the self-mediated goal-writer (P2 item 2) unions them ON PURPOSE, because a Model-B
 // endpoint accepts and commits on one connection. That union is safe only while it is UNIQUE and
@@ -609,7 +609,7 @@ for (const [principal, v] of Object.entries(gen)) for (const row of [...v.publis
   // WHAT THIS COMPARES TODAY, said exactly, because the label used to name three families the set
   // does not contain. `canonSubjects` resolves to ONE row — `cotal.<space>.epw.<e>.>` — since the
   // canonicalizer's builders emit its EPJ consumer rows plus the EPW work publish and nothing else.
-  // The dec/quar/bind publish SPEC:1658-1663 gives the canonicalizer is not in any builder yet (see
+  // The dec/quar/bind publish SPEC §13.4 gives the canonicalizer is not in any builder yet (see
   // the recorded gap in this file's header), so it cannot be on either side of this intersection.
   // The cell still earns its place — a builder broadened to an ancestor that SUBSUMES a foreign
   // family fails here, which is its stated purpose — but it is a subsumption guard over the rows

@@ -571,7 +571,7 @@ try {
     epj.duplicate_window === nanos(EPJ_DUPLICATE_WINDOW_MS));
   const epf = await cfg(epfStreamName(SPACE));
   c("EPF serves Direct Get (the last-by-subject fact reads)", epf.allow_direct === true);
-  // THE RETENTION FLOOR IS THE AGE TERM ONLY, AND THE RULE IS WIDER THAN THE AGE TERM. SPEC:3189-3195
+  // THE RETENTION FLOOR IS THE AGE TERM ONLY, AND THE RULE IS WIDER THAN THE AGE TERM. SPEC §13.12
   // forbids "not only age eviction below the horizon but every conforming alternative that erases it
   // while `MaxAge` still passes": a finite MaxMsgs/MaxBytes/MaxMsgsPerSubject with DiscardOld, a
   // per-message TTL, rollup/compaction, or a retention-policy change. The floor validator checks the

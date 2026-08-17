@@ -4641,7 +4641,7 @@ export class Manager {
     // caller cannot publish it). TWO COMPOSED FENCES (defense in depth): must-5 (a) reads THIS
     // incarnation's OWN gate epoch and REFUSES a superseded commit (the currency belt), and (b)
     // barrier-revoke evicts this connection on takeover. The terminal lands on the ONE subject
-    // SPEC:1433 (§13.2 reserved subjects) reserves; first-terminal-fact-wins is global, so a committed outcome is visible
+    // SPEC §13.2 (reserved subjects) reserves; first-terminal-fact-wins is global, so a committed outcome is visible
     // to every reader in every incarnation. On success the reconcile-index entry is cleared.
     //
     // Named rather than inlined into the hooks below so the H1 post-accept fallback drives THIS
