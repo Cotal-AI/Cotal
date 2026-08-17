@@ -11,7 +11,7 @@ message or take the surface down.
 
 `principalChannelWitness` / `assertPrincipalChannelGrants` catch a grant that matches no
 principal-keyed channel. Keying a channel on a principal costs one token more than the flat form it
-replaces, so an operator holding an old single-token wildcard gets a grant matching nothing — which
+replaces, so an operator holding an old single-token wildcard gets a grant matching nothing, which
 at the broker is indistinguishable from a channel with no traffic. The launch reports success and
 the stream is silently mute. The mismatch is now named at grant time, and a witness subject is
 returned rather than a boolean so a refusal can show the operator a subject their grant would have
@@ -25,4 +25,4 @@ distinct names would otherwise collapse into one identity.
 
 `assertExpectationSemantics` now states its scope correctly. The `num_replicas: 1` requirement is a
 property of the one chat stream it reads, not of the broker, and the old message read as a global
-rule — a clustered deployment runs fine so long as that stream is R1, which a cluster can host.
+rule. A clustered deployment runs fine so long as that stream is R1, which a cluster can host.
