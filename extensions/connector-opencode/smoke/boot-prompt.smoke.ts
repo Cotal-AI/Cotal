@@ -28,6 +28,7 @@ import { join } from "node:path";
 import { seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
 import { cotal } from "../src/plugin.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
@@ -89,8 +90,9 @@ async function freePort(): Promise<number> {
 const PORT = await freePort();
 const servers = `nats://127.0.0.1:${PORT}`;
 const space = "ocboot";
-const dir = mkdtempSync(join(tmpdir(), "cotal-ocboot-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const nats = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(nats, dir);
 const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 
 // A fake OpenCode HTTP server: hand the plugin a session id and record every turn it drives.
@@ -195,5 +197,6 @@ try {
   oc.close();
   await sleep(150);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);
