@@ -21,7 +21,7 @@
  * Run: pnpm smoke:agui-render
  */
 import { AGUI_FRAME_KIND, partsToText, registry, type Part } from "@cotal-ai/core";
-import { LINE_START_SAFE, aguiFramePartRenderer } from "../src/agui-render.js";
+import { LINE_START_SAFE, aguiFramePartRenderer, registerAguiFramePartRenderer } from "../src/agui-render.js";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -47,6 +47,27 @@ c("the registered NAME is the wire kind, spelled out",
   aguiFramePartRenderer.name === "ag-ui.frame", aguiFramePartRenderer.name);
 c("registering under the wire kind is what the dispatcher resolves on",
   registry.has("part-renderer", "ag-ui.frame"));
+
+// ── LOADING THIS MODULE TWICE MUST NOT BE FATAL, and that is not hypothetical ──────────────────
+// `cotal ext add <connector>` failed with `extension already registered: part-renderer:ag-ui.frame`
+// before the registration was made idempotent. The CLI loads this module from its own copy of the
+// package; materializing an installed connector loads it again from the extension prefix's
+// `node_modules`, a different physical file and so a second top-level evaluation, while
+// `@cotal-ai/core` is linked to ONE copy and therefore one registry. Calling the exported
+// registration a second time is the same event those two module instances produce.
+let secondCallThrew: string | undefined;
+try { registerAguiFramePartRenderer(); } catch (e) { secondCallThrew = (e as Error).message; }
+c("a second registration does not throw (the ext-add crash, executed)", secondCallThrew === undefined, secondCallThrew);
+c("and it did not displace the first: exactly one provider is resolvable",
+  registry.resolve("part-renderer", AGUI_FRAME_KIND) === aguiFramePartRenderer);
+c("a frame still draws after the second registration", draw(ev("RUN_STARTED", { runId: "r1" })) === "▸ run r1 started");
+// The control: an unguarded duplicate really is fatal, so the guard is load-bearing rather than
+// decorative. Asserted on a DIFFERENT name so it cannot disturb the registration under test.
+let bareDupThrew = false;
+const probe = Object.freeze({ kind: "part-renderer" as const, name: "com.example.probe", render: () => "x" });
+registry.register(probe);
+try { registry.register(probe); } catch { bareDupThrew = true; }
+c("CONTROL: an unguarded duplicate registration IS fatal (so the guard above is doing work)", bareDupThrew);
 
 // ── A FRAME NO LONGER RENDERS AS THE MARKER. The whole point of the change ────────────────────
 const started = draw(ev("RUN_STARTED", { runId: "r1" }));

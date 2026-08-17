@@ -49,6 +49,13 @@
       "find": "  !/^ {0,3}(?:#|[-*+>|]|\\d+[.)])(?:\\s|$)/.test(line) && !/^ {4}/.test(line);",
       "replace": "  true;",
       "expectRed": "predicate rejects a raw block opener"
+    },
+    {
+      "name": "R8 the idempotence guard is dropped, so loading this package from a second physical copy throws and takes down `cotal ext add` for every connector, which is the crash this guard was written from",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "  if (registry.has(\"part-renderer\", AGUI_FRAME_KIND)) return;\n  registry.register(aguiFramePartRenderer);",
+      "replace": "  registry.register(aguiFramePartRenderer);",
+      "expectRed": "a second registration does not throw (the ext-add crash, executed)"
     }
   ]
 }

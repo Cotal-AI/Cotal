@@ -234,4 +234,33 @@ export const aguiFramePartRenderer: PartRenderer = Object.freeze({
   },
 });
 
-registry.register(aguiFramePartRenderer);
+/**
+ * Register the provider, once, however many copies of this module get loaded.
+ *
+ * **THIS PACKAGE LEGITIMATELY EXISTS TWICE IN ONE PROCESS, AND A BARE `register` CRASHES THERE.**
+ * Measured, not anticipated: `cotal ext add <connector>` failed with
+ * `extension already registered: part-renderer:ag-ui.frame`, and the mechanism is the extension
+ * prefix's layout. The CLI imports this module from its OWN copy of `connector-core`. Materializing
+ * an installed connector imports `connector-core` again, from the extension prefix's `node_modules`,
+ * which is a different physical file and therefore a second module instance with its own top-level
+ * evaluation. `@cotal-ai/core` is LINKED to the CLI's single copy (`ext add` writes that link on
+ * purpose), so both instances see ONE registry, and `registry.register` throws on the duplicate
+ * `kind:name`. That throw took down `ext add` for every connector.
+ *
+ * **WHY THIS IS NOT THE SILENT DEGRADE THE PROJECT REFUSES.** `register`'s refusal exists to catch
+ * TWO EXTENSIONS CLAIMING ONE NAME, which is a genuine conflict nobody can adjudicate. This is one
+ * extension arriving twice, which is not a conflict: `ag-ui.frame` is defined by this package, no
+ * other package may claim it, and every copy of this file registers a provider that draws it the
+ * same way. First one wins, deterministically, and the second is a no-op rather than a fatal error
+ * on a path a customer runs. Skipping a duplicate self-registration is a different act from
+ * swallowing a failure.
+ *
+ * It is a named function rather than a bare guard so the property is executable: a cell calls it
+ * twice and asserts the second call neither throws nor displaces the first.
+ */
+export function registerAguiFramePartRenderer(): void {
+  if (registry.has("part-renderer", AGUI_FRAME_KIND)) return;
+  registry.register(aguiFramePartRenderer);
+}
+
+registerAguiFramePartRenderer();
