@@ -26,6 +26,7 @@ const EXPECTED_KEYS = [
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
   "NOUS_API_KEY",
+  "NEBIUS_API_KEY",
   // hermes-registry dedicated keys
   "OPENCODE_GO_API_KEY",
   "OPENCODE_ZEN_API_KEY",
