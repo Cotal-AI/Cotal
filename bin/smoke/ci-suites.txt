@@ -187,7 +187,6 @@ smoke:cross-path-dedup
 smoke:backup-cli
 smoke:registry-staging
 smoke:materialize-concurrency
-smoke:import-remedy
 smoke:seed
 smoke:setup-failloud
 smoke:agent-skills
@@ -272,3 +271,4 @@ smoke:mutation-fixtures
 smoke:agui-conformance
 smoke:agui-kind
 smoke:lease-renew
+smoke:import-remedy
