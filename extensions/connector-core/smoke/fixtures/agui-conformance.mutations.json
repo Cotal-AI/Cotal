@@ -84,6 +84,20 @@
       "find": "  return {\n    kind: AGUI_FRAME_KIND,\n    protocol: AGUI_PROTOCOL,",
       "replace": "  return {\n    kind: \"ag-ui.frame.v2\" as typeof AGUI_FRAME_KIND,\n    protocol: AGUI_PROTOCOL,",
       "expectRed": "and a built frame carries that literal, not merely the constant"
+    },
+    {
+      "name": "M22 the interrupt outcome goes back to being passed straight through, the defect two review lenses filed",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  if (o.outcome?.type === \"interrupt\") assertInterrupts(o.outcome.interrupts);\n",
+      "replace": "",
+      "expectRed": "the constructor either refuses an interrupt outcome or builds one the real schema accepts"
+    },
+    {
+      "name": "M23 the guard is half deleted: the list must still be non-empty, but an entry's reason stops being checked",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (typeof e.reason !== \"string\")\n      throw new AguiVocabularyError(`outcome.interrupts[${i}].reason must be a string`);\n",
+      "replace": "",
+      "expectRed": "runFinished refuses an interrupt entry missing its reason"
     }
   ]
 }

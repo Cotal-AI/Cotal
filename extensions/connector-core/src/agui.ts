@@ -66,8 +66,8 @@ import { AGUI_FRAME_KIND, AGUI_EVENT_TYPE, isAguiFramePart } from "@cotal-ai/cor
  * Absent by decision, each recorded so its absence is not read as an oversight:
  * `*_CHUNK` (plan §3: all three sources are settled observations, so we emit the START/CONTENT/END
  * triple, which is the subset every consumer implements — raw CHUNK needs a client transformer);
- * `STATE_*` and the interrupt outcome (§4 reserved them for cotal-lang `checkpoint`, and ask state
- * left this plane entirely); `MESSAGES_SNAPSHOT` (§5.3 dropped it as a compaction anchor — a
+ * `STATE_*` (reserved for a later lane, and ask state left this plane entirely);
+ * `MESSAGES_SNAPSHOT` (§5.3 dropped it as a compaction anchor — a
  * windowed snapshot DELETES the prefix); `THINKING_*` (deprecated at 0.0.57 in favour of
  * `REASONING_*`, which is what we emit).
  */
@@ -538,6 +538,47 @@ export function runStarted(o: {
 }
 
 /**
+ * One entry of the `interrupt` outcome.
+ *
+ * Both fields are REQUIRED strings, measured against the real schema rather than read off its
+ * types: an entry missing either is refused naming `outcome.interrupts.<i>.<field>`. Extra keys on
+ * an entry are STRIPPED rather than refused, which is why nothing here polices them.
+ */
+export interface AguiInterrupt {
+  id: string;
+  reason: string;
+}
+
+/**
+ * The `interrupt` outcome's list, checked against exactly what the real schema requires.
+ *
+ * Measured: the list must be present and NON-EMPTY (`too_small` on `outcome.interrupts`), and every
+ * entry must be an object carrying `id` and `reason` as strings (`invalid_type` on
+ * `outcome.interrupts.<i>.<field>`). The check is exactly the schema's rule and no stricter: an
+ * empty `id` is legal upstream, so refusing it here would be this file inventing a protocol.
+ *
+ * It lives at the CONSTRUCTOR because the constructor is the only writer, and because a typed
+ * parameter proves nothing about the callers that actually reach it: a hook payload crosses into
+ * this file as `unknown`, and a replayed record crosses through a cast. The type is the reader's
+ * documentation, this is the enforcement.
+ */
+function assertInterrupts(list: readonly AguiInterrupt[]): void {
+  if (!Array.isArray(list) || list.length === 0)
+    throw new AguiVocabularyError(
+      "outcome.interrupts must be a non-empty array when the outcome is an interrupt",
+    );
+  for (const [i, entry] of list.entries()) {
+    const e = entry as { id?: unknown; reason?: unknown } | null;
+    if (typeof e !== "object" || e === null)
+      throw new AguiVocabularyError(`outcome.interrupts[${i}] is not an object`);
+    if (typeof e.id !== "string")
+      throw new AguiVocabularyError(`outcome.interrupts[${i}].id must be a string`);
+    if (typeof e.reason !== "string")
+      throw new AguiVocabularyError(`outcome.interrupts[${i}].reason must be a string`);
+  }
+}
+
+/**
  * `RUN_FINISHED`.
  *
  * `outcome` is OPTIONAL — measured against the real schema, which accepts a `RUN_FINISHED` carrying
@@ -545,14 +586,21 @@ export function runStarted(o: {
  * manufacturing a `success` outcome would be asserting something the source never said. When an
  * outcome IS supplied its discriminator key is `type`, not `status` (measured: the schema refuses
  * `{status:"success"}` naming `outcome.type`), and the object is STRICT.
+ *
+ * The `interrupt` outcome is REPRESENTABLE and VALIDATED here, and UNSPENT: no source on this plane
+ * constructs one, because a harness-native park is what would justify it and none of the three
+ * sources reports one. It is checked anyway because the arm exists, and an arm that builds an event
+ * the schema refuses is worse than an arm that does not exist. Its first draft took `unknown[]` and
+ * passed it through, so `[]` and `[{}]` both produced a refused event with nothing looking.
  */
 export function runFinished(o: {
   threadId: string;
   runId: string;
   timestamp: number;
-  outcome?: { type: "success" } | { type: "interrupt"; interrupts: unknown[] };
+  outcome?: { type: "success" } | { type: "interrupt"; interrupts: AguiInterrupt[] };
   cotal?: CotalMeta;
 }): WithCotal<RunFinishedEvent> {
+  if (o.outcome?.type === "interrupt") assertInterrupts(o.outcome.interrupts);
   return {
     type: AGUI_EVENT_TYPE.RUN_FINISHED,
     threadId: o.threadId,

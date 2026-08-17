@@ -46,11 +46,16 @@
  * | M16 | route all three `REASONING_*` cases to `this.text` | `the three id sets do not collide` AND `mid-split, the reasoning id opened in the FIRST frame is still outstanding` |
  * | M17 | delete the `TOOL_CALL_RESULT` while-still-open guard | `a TOOL_CALL_RESULT arriving while its call is still open is refused` |
  * | M18 | drop the `cotal` spread from `toolCallEnd` ALONE | `and on EVERY one the `cotal` key SURVIVES the parse rather than being stripped` |
+ * | M19 | drop the `RUN_ERROR` arm of the close branch | `a run that ends in RUN_ERROR closes cleanly, and the machine reports itself closed` |
+ * | M20 | `restore` drops the reasoning id set | `a machine RESTORED from a snapshot carries the outstanding reasoning id across the restart` |
+ * | M21 | build the frame with a kind that is not the wire literal | `and a built frame carries that literal, not merely the constant` |
+ * | M22 | delete the whole `assertInterrupts` call, restoring the pass-through | `the constructor either refuses an interrupt outcome or builds one the real schema accepts` AND the two named refusal cells AND the sweep's CONTROL |
+ * | M23 | keep the emptiness check, delete only the `reason` type check | `runFinished refuses an interrupt entry missing its reason` AND the sweep AND its CONTROL, and NOT the empty-list cell |
  *
- * All nine landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the
- * code that runs), and all nine were KILLED on the named cell above, each predicted before its run.
+ * Every one landed in SOURCE (this suite imports `../src/agui.js`, so a mutation cannot miss the
+ * code that runs), and every one was KILLED on the named cell above, each predicted before its run.
  *
- * **The ledger is executable, not a story about a run somebody once did.** The nine live in
+ * **The ledger is executable, not a story about a run somebody once did.** They live in
  * `smoke/fixtures/agui-conformance.mutations.json`, so `pnpm mutation-proof --config` re-runs them
  * and `smoke:mutation-fixtures` fails the moment an anchor stops matching its source exactly once.
  * A prose ledger goes stale silently; a fixture announces it. Every anchor is a code-only window
@@ -83,6 +88,12 @@
  * **M10 is the one worth keeping.** It is not a hypothetical: the constructor really did omit
  * `role`, and this suite caught it on its first execution. The mutation re-introduces a defect that
  * actually shipped in the first draft, which is the strongest form this proof takes.
+ *
+ * **M22 and M23 are a pair, and M22 alone would be the weaker proof.** M22 restores the exact defect
+ * two review lenses filed: the pass-through. M23 is the discriminating one, leaving the emptiness
+ * check intact and removing only the per-entry type check, because a guard can be half present and
+ * a cell set that only ever feeds it `[]` cannot tell the difference. Their predicted kill sets
+ * differ by the empty-list cell, and that difference is the measurement.
  *
  * **What these mutations do NOT prove.** Every cell here builds its own input by hand, so a killed
  * mutation shows the cells DEPEND on this code; it does not show a real entry point REACHES it.
@@ -141,6 +152,7 @@ import {
   toolCallResult,
   toolCallStart,
   type AguiEvent,
+  type AguiInterrupt,
 } from "../src/agui.js";
 
 let ok = 0, fail = 0;
@@ -236,6 +248,79 @@ c("MEASURED: REASONING_MESSAGE_START requires role:\"reasoning\", unlike TEXT_ME
 c("MEASURED: the outcome discriminator key is `type`, and `status` is refused",
   RunFinishedEventSchema.safeParse({ type: "RUN_FINISHED", threadId: "t", runId: "r", outcome: { type: "success" } }).success === true &&
   RunFinishedEventSchema.safeParse({ type: "RUN_FINISHED", threadId: "t", runId: "r", outcome: { status: "success" } }).success === false);
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// 2a. THE `interrupt` OUTCOME
+//
+//    Both review lenses filed the same finding independently: `runFinished` took
+//    `interrupts: unknown[]` and passed it straight through, so `[]` and `[{}]` each produced a
+//    RUN_FINISHED the real schema refuses, and not one cell here looked at it. The section above
+//    is why it survived: every `parses` cell feeds the constructor a WELL-FORMED argument, so a
+//    constructor that validates nothing and one that validates everything are indistinguishable
+//    from inside it. What the schema requires is measured first, then the constructor is held to it.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+const withOutcome = (interrupts: unknown) =>
+  RunFinishedEventSchema.safeParse({
+    type: "RUN_FINISHED", threadId: "t", runId: "r", outcome: { type: "interrupt", interrupts },
+  }).success;
+c("MEASURED: an interrupt outcome requires a NON-EMPTY interrupts list",
+  withOutcome([]) === false && withOutcome(undefined) === false &&
+  withOutcome([{ id: "i1", reason: "why" }]) === true);
+c("MEASURED: every interrupt entry requires both `id` and `reason`, as strings",
+  withOutcome([{}]) === false && withOutcome([{ id: "i1" }]) === false &&
+  withOutcome([{ reason: "why" }]) === false && withOutcome([{ id: 1, reason: "why" }]) === false);
+
+parses("runFinished (outcome interrupt)", RunFinishedEventSchema, runFinished({
+  threadId: "sess-1", runId: "turn-1", timestamp: TS,
+  outcome: { type: "interrupt", interrupts: [{ id: "i1", reason: "awaiting input" }] },
+}));
+refuses("runFinished refuses an interrupt outcome carrying an empty interrupts list",
+  () => runFinished({ threadId: "sess-1", runId: "turn-1", timestamp: TS,
+    outcome: { type: "interrupt", interrupts: [] } }),
+  /outcome\.interrupts must be a non-empty array/);
+refuses("runFinished refuses an interrupt entry missing its reason",
+  () => runFinished({ threadId: "sess-1", runId: "turn-1", timestamp: TS,
+    outcome: { type: "interrupt", interrupts: [{ id: "i1" } as AguiInterrupt] } }),
+  /outcome\.interrupts\[0\]\.reason/);
+
+// The INVARIANT the three cells above are examples of, swept over every shape a caller can reach
+// this constructor with. For each one the constructor must either REFUSE by name, or build an event
+// the real schema ACCEPTS. The third outcome, building an event the schema refuses, is the defect,
+// and it is the one an example-shaped cell keeps missing because nobody writes the bad example.
+const interruptShapes: Array<[string, unknown]> = [
+  ["empty list", []],
+  ["absent list", undefined],
+  ["not an array", { id: "i1", reason: "why" }],
+  ["entry is a string", ["i1"]],
+  ["entry is null", [null]],
+  ["entry missing reason", [{ id: "i1" }]],
+  ["entry missing id", [{ reason: "why" }]],
+  ["entry id is a number", [{ id: 1, reason: "why" }]],
+  ["one well-formed entry", [{ id: "i1", reason: "awaiting input" }]],
+  ["two well-formed entries", [{ id: "i1", reason: "a" }, { id: "i2", reason: "b" }]],
+];
+let leaked = "", accepted = 0, refused = 0;
+for (const [label, interrupts] of interruptShapes) {
+  let built: unknown;
+  try {
+    built = runFinished({ threadId: "sess-1", runId: "turn-1", timestamp: TS,
+      outcome: { type: "interrupt", interrupts: interrupts as AguiInterrupt[] } });
+  } catch (e) {
+    if (e instanceof AguiVocabularyError) refused++;
+    else leaked += `${label}: threw ${String(e)} rather than refusing by name; `;
+    continue;
+  }
+  accepted++;
+  if (!RunFinishedEventSchema.safeParse(built).success)
+    leaked += `${label}: BUILT an event the real schema refuses; `;
+}
+c("the constructor either refuses an interrupt outcome or builds one the real schema accepts",
+  leaked === "", leaked);
+// THE CONTROL, and without it the sweep is worthless: a constructor that threw on EVERY input would
+// leave the cell above green, having proved only that nothing got out. The split is pinned exactly,
+// so a guard that grows too strict fails here rather than passing as extra safety.
+c("CONTROL: the sweep accepted exactly the 2 well-formed shapes and refused the other 8",
+  accepted === 2 && refused === 8, `accepted=${accepted} refused=${refused}`);
 
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 3. `.passthrough()` — THE `cotal` METADATA VEHICLE
