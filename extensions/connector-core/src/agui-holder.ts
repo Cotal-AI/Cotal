@@ -1,0 +1,165 @@
+/**
+ * The lifecycle seam between a connector's hooks and the AG-UI emitter.
+ *
+ * **This file exists so the cutover is a SWAP, not a swap plus a new lifecycle.** `TranscriptMirror`
+ * presents a synchronous `adopt(path)` / `flush(path)` pair to the hook relay, because that is what
+ * a hook can call: the relay must reply immediately and cannot await a publish. {@link AguiEmitter}
+ * is the opposite shape: `start()` is async (it resolves the channel, runs the replica preflight,
+ * and settles any frame the WAL left pending) and `pump()` is async. Something has to hold the
+ * async thing behind the sync surface, and if that something is written in the same commit that
+ * deletes the mirror, then the irreversible step also carries an untested lifecycle.
+ *
+ * So it lands first, against the shape the mirror already proved, and the cutover becomes a
+ * substitution of one object for another behind an unchanged call pattern.
+ *
+ * **WHY LAZY.** The emitter cannot be built at construction time. Its {@link DurableSource} is the
+ * session's transcript, whose path the connector does not know until a hook hands it over, and
+ * `start()` reaches the broker — work that must not run for a session that never emits. First
+ * `adopt` is the earliest moment the emitter is both constructible and needed.
+ */
+import type { AguiEmitter } from "./agui.js";
+
+/**
+ * Holds at most one {@link AguiEmitter}, started on first adopt.
+ *
+ * `T` is the connector's source record type; the holder never inspects one. It owns exactly three
+ * things — WHEN the emitter starts, that it starts AT MOST ONCE, and that everything touching it is
+ * serialized — and deliberately owns no policy about what an event means or how a frame is built.
+ */
+export class AguiEmitterHolder<T> {
+  private emitter?: AguiEmitter<T>;
+  /** The path this holder is BOUND to. Set before `starting`, so a second path is refused even
+   *  while the first start is still in flight. */
+  private boundPath?: string;
+  /**
+   * Terminal. Once set, this holder never starts, pumps, or reports success again.
+   *
+   * It does not retry, and that is a decision rather than an omission. A retry on the next hook
+   * would re-run that preflight and a WAL recovery against a stream this holder has already
+   * failed to establish itself on, on a timer set by how often the user happens to type. The
+   * emitter's own answer to an uncertain publish is to halt rather than to limp, and a holder that
+   * quietly reconnected underneath it would reintroduce, one layer up, exactly the silence the
+   * emitter refuses.
+   */
+  private dead?: Error;
+  /** ALL mutation runs on this chain. Hook events arrive concurrently on the control socket, so
+   *  without it two flushes could read the source at the same cursor. */
+  private chain: Promise<void> = Promise.resolve();
+
+  /**
+   * @param startEmitter Builds and starts the emitter for an adopted path. Injected rather than
+   *   assembled here: the WAL location, the source, and the record mapper are all connector
+   *   decisions, and a holder that made them would be a second place they are decided.
+   * @param onError Where a failure goes. Required, and not defaulted to a swallow: this class runs
+   *   behind a hook that must not throw, so the only way a failure reaches a human is if the caller
+   *   is made to say where it goes.
+   */
+  constructor(
+    private readonly startEmitter: (path: string) => Promise<AguiEmitter<T>>,
+    private readonly onError: (e: Error) => void,
+  ) {}
+
+  /** True once an emitter is running here. False while a start is still in flight — it reports what
+   *  IS, never what is about to be. */
+  get running(): boolean {
+    return this.emitter !== undefined && !this.emitter.stopped;
+  }
+
+  /** The failure that killed this holder, if one did. */
+  get failure(): Error | undefined {
+    return this.dead;
+  }
+
+  /** The path this holder bound to on first adopt, if it has adopted. */
+  get path(): string | undefined {
+    return this.boundPath;
+  }
+
+  /**
+   * Adopt a transcript path, starting the emitter if this is the first one.
+   *
+   * Synchronous and non-throwing by contract, because a hook calls it. The work lands on the chain.
+   */
+  adopt(path: unknown): void {
+    this.enqueue(() => this.ensureStarted(path).then(() => undefined));
+  }
+
+  /**
+   * Adopt if necessary, then drain the source into frames.
+   *
+   * Same contract as {@link adopt}: synchronous, non-throwing, work on the chain.
+   */
+  flush(path: unknown): void {
+    this.enqueue(async () => {
+      const emitter = await this.ensureStarted(path);
+      if (!emitter || emitter.stopped) return;
+      await emitter.pump();
+    });
+  }
+
+  /**
+   * Start at most once, bind the path once.
+   *
+   * Returns `undefined` when there is nothing to run against — a dead holder or a path this holder
+   * cannot take — rather than throwing, so a caller cannot mistake "no emitter" for "pumped".
+   */
+  private async ensureStarted(path: unknown): Promise<AguiEmitter<T> | undefined> {
+    if (this.dead) return undefined;
+    if (typeof path !== "string" || path.length === 0) return undefined;
+
+    // The binding is checked BEFORE the started-emitter shortcut, and the order is load-bearing:
+    // with the shortcut first, a started holder returns its emitter for ANY path and the refusal
+    // below becomes unreachable code that still reads like a guard.
+    if (this.boundPath !== undefined && this.boundPath !== path) {
+      // REFUSED, not re-adopted. `threadId` is the native session and the WAL is keyed to it, so
+      // rebinding to a second transcript would continue one session's `epoch`, `seq` and
+      // `sourceCursor` against another session's bytes — a fabricated frontier, and the same class
+      // of harm `EventWal` refuses when a stored principal disagrees with the live one.
+      this.die(
+        new Error(
+          `AG-UI emitter is bound to transcript ${this.boundPath}; refusing to re-adopt ${path} — a ` +
+            `second session needs its own emitter and its own write-ahead log`,
+        ),
+      );
+      return undefined;
+    }
+
+    if (this.emitter) return this.emitter;
+
+    if (this.boundPath === undefined) {
+      this.boundPath = path;
+      try {
+        // Started INSIDE the chain, which is the only thing keeping this to one emitter. There is
+        // deliberately no second guard: two emitters on one principal's channel would each hold
+        // their own bracket machine and their own view of the frontier — the writer-cardinality
+        // failure the design names as a stated limit — but a belt-and-braces memo here would mean a
+        // cell asserting "started once" passed whether or not either mechanism worked. One
+        // mechanism, one cell that can actually fail.
+        this.emitter = await this.startEmitter(path);
+        return this.emitter;
+      } catch (e) {
+        this.die(e as Error);
+        return undefined;
+      }
+    }
+
+    return this.emitter;
+  }
+
+  private die(e: Error): void {
+    // FIRST failure wins. A later one is a consequence of this one, and overwriting would replace
+    // the cause with a symptom.
+    if (this.dead) return;
+    this.dead = e;
+    this.onError(e);
+  }
+
+  private enqueue(step: () => Promise<void>): void {
+    this.chain = this.chain.then(step).catch((e) => this.die(e as Error));
+  }
+
+  /** Await the queued work. For callers that need a settled point — a shutdown, or a cell. */
+  async settled(): Promise<void> {
+    await this.chain;
+  }
+}

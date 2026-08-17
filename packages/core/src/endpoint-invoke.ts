@@ -30,7 +30,7 @@ import { epCall, epScatterService } from "./endpoint-verbs.js";
 import { epGoalProgressGrantRow } from "./endpoint-grants.js";
 import { epRequestSubject, epCallerReplyFilter, parseEpSubject, type EpCaller, type EpRoute } from "./endpoint-subjects.js";
 import { parseEndpointReply } from "./endpoint-envelope.js";
-import type { EpVerbTarget, EpAttributedReply, EpScatterResult } from "./endpoint-verbs.js";
+import type { EpVerbTarget, EpAttributedReply, EpScatterResult, EpInstanceLiveness } from "./endpoint-verbs.js";
 
 const dec = new TextDecoder(), enc = new TextEncoder();
 const nonce = (): string => randomBytes(24).toString("base64url");
@@ -496,7 +496,13 @@ export async function scatterCommand(
   service: ResolvedService,
   command: string,
   args: Record<string, unknown> | undefined,
-  opts: { deadlineMs: number; reconcileDeadlineMs?: number; lateDrainMs?: number },
+  opts: {
+    deadlineMs: number; reconcileDeadlineMs?: number; lateDrainMs?: number;
+    /** Forwarded verbatim to {@link epScatterService} (§13.5 liveness). The caller owns it because
+     *  the caller owns the grant: a probe publishes on an instance rail, and only the credential's
+     *  minter knows which instance rails it carries. */
+    probeLiveness?: (instanceId: string) => Promise<EpInstanceLiveness>;
+  },
 ): Promise<EpScatterResult> {
   const resolved = service.commands.get(command);
   if (resolved === undefined)

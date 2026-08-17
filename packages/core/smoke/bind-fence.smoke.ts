@@ -42,6 +42,7 @@ import {
 } from "../src/index.js";
 import type { KV } from "@nats-io/kv";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 /** A cell RECORDS its verdict and never throws: one throwing cell would take every cell below it
@@ -64,7 +65,7 @@ const throws = (name: string, fn: () => unknown, code?: string) => {
 /** Declared, not implied: a live suite can end early in ways that redden no cell — a broker that
  *  never came up, a hang the runner kills, a top-level rejection — and `fail === 0` reads as PASS
  *  in every one of them, with the exit code to match. */
-const EXPECTED_CELLS = 25;
+const EXPECTED_CELLS = 28;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -86,10 +87,16 @@ const withOutcome = (outcome?: string) => ({ code: "failed-precondition", messag
 
 c("a refusal stating `not-executed` is a refusal (the conforming case, unchanged)",
   replyRefusedBeforeEffect(withOutcome("not-executed")) === true);
-// §13.3 permits omitting the field, and a responder too old to know it emits exactly this. Refusing
-// it here would stop core repairing splits for a third party that is otherwise behaving.
-c("a refusal omitting the outcome is STILL a refusal (absence is permitted, so it stays accepted)",
-  replyRefusedBeforeEffect(withOutcome(undefined)) === true);
+// SPEC 1510: an error reply that omits `outcome` MUST be read as `unknown`. SPEC 2271: a client
+// MUST NOT automatically re-issue a `write` after any outcome that does not prove non-execution.
+// This predicate licenses a re-issue that skips the repeat-safe gate, so accepting absence made
+// core do exactly what 2271 forbids. Absence and explicit `unknown` are one value and get one
+// answer; the responder that omits the field is already non-conforming, since a refusal raised
+// before dispatch MUST carry `not-executed`.
+c("a refusal omitting the outcome is NOT a refusal (absence reads as `unknown`, SPEC 1510)",
+  replyRefusedBeforeEffect(withOutcome(undefined)) === false);
+c("...and it gets the SAME answer as explicit `unknown`, because SPEC 1510 makes them one value",
+  replyRefusedBeforeEffect(withOutcome(undefined)) === replyRefusedBeforeEffect(withOutcome("unknown")));
 c("SELF-CONTRADICTORY: the marker paired with `executed` is NOT a refusal, so it cannot ungate a re-issue",
   replyRefusedBeforeEffect(withOutcome("executed")) === false);
 c("the marker paired with `unknown` is NOT a refusal either (a responder that cannot tell has not said no)",
@@ -104,6 +111,7 @@ const EP = "manager";
 const IID_A = "a".repeat(26);
 const IID_B = "b".repeat(26);
 const IID_LIAR = "c".repeat(26);
+const IID_LIAR2 = "d".repeat(26); // the same forgery, with the outcome field left off
 const GHOST = "g".repeat(26); // a well-formed instance id that serves nothing
 const EPOCH = 1;
 const caller: EpCaller = { owner: "u_op", actor: "cli", uid: "u".repeat(26) };
@@ -144,8 +152,11 @@ function barrierFor(instanceId: string): EpIssuanceBarrier {
 }
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "bindfence-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+// The `finally` below is correct and stays. It just does not run when this process is killed, which
+// is when the broker outlives it, so ownership covers that path.
+const releaseBroker = teardownOnSignal(broker, sd);
 await new Promise((r) => setTimeout(r, 900));
 
 const nc = await connect({ servers: `nats://127.0.0.1:${PORT}` });
@@ -156,7 +167,7 @@ try {
   /** Bring one instance up: register, publish READY, authorize the serve artifact, serve `poke`
    *  with a handler that COUNTS its entries. The count is the whole instrument — it is what turns
    *  "a refusal came back" into "and the command did not run". */
-  const runs: Record<string, number> = { [IID_A]: 0, [IID_B]: 0, [IID_LIAR]: 0 };
+  const runs: Record<string, number> = { [IID_A]: 0, [IID_B]: 0, [IID_LIAR]: 0, [IID_LIAR2]: 0 };
   const bring = async (instanceId: string, handler?: EpCommandDef["handler"]) => {
     const reg = await registerServiceInstance(kv as KV, { spec, instanceId, registrant: asOp, authority, space: SPACE, barrier: barrierFor(instanceId), readClusterArtifact });
     await writeServiceStatus(kv as KV, { endpoint: EP, instanceId, epoch: EPOCH, readProcessEpoch: () => EPOCH, status: { epoch: EPOCH, state: SERVICE_READY, observedSpecRevision: reg.registrationRevision } });
@@ -201,6 +212,15 @@ try {
   // preserved it rather than rebuilding the error without it.
   c("...and `outcome: not-executed`, the field a peer that does not know the marker reads",
     refused.reply.error?.outcome === "not-executed", refused.reply.error);
+  // THE CONFORMING PATH STILL HEALS, asserted on a LIVE refusal rather than a hand-built one,
+  // because tightening the predicate to require `not-executed` is only safe if a real responder
+  // actually emits it. This is the pair the tightening depends on: the same reply carries the
+  // marker AND the field, so it still licenses the re-issue that skips the repeat-safe gate.
+  // It proves the LICENCE, not the repair; the end-to-end repair is graded in the manager's
+  // split suite, which drives a real re-issue against two live incarnations.
+  c("A CONFORMING REFUSAL STILL LICENSES THE REPAIR: marker and `not-executed` on one live reply",
+    replyRefusedBeforeEffect(refused.reply.error) === true && refused.reply.error?.outcome === "not-executed",
+    refused.reply.error);
 
   console.log("\n2. the same instance at another epoch is a different incarnation");
   const stale = await call({ instanceId: IID_A, epoch: EPOCH + 7 });
@@ -275,11 +295,14 @@ try {
   // The marker is a body field, so a responder could always emit one after doing the work; what
   // stops that from becoming a free "nothing ran" is the caller cross-checking it against the
   // reply SUBJECT, which the broker pins.
+  // The liar states `not-executed` as well as the marker, which makes it the maximally credible
+  // forgery: it is the shape that would license a re-issue if the caller believed it. The cell
+  // below it grades the opposite end, a refusal with the outcome left off, and both are checked.
   const liar = await bring(IID_LIAR, () => {
     runs[IID_LIAR]++;
     throw new EpEnvelopeError("failed-precondition", "I did not run this (I did)", [
       { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR, epoch: EPOCH }, servedBy: { instanceId: GHOST, epoch: EPOCH } },
-    ]);
+    ], "not-executed");
   });
   // Address the liar directly so the class queue cannot hand this to A.
   await rejects("a bind refusal from the very incarnation the caller bound is internal, never honored",
@@ -287,6 +310,25 @@ try {
       { endpoint: EP, command: "poke", contract, caller, args: { n: 1 }, bind: { instanceId: IID_LIAR, epoch: EPOCH } },
       { deadlineMs: 8000, currentEpoch: registryEpoch }), "internal");
   c("...and the liar did run, which is the point: the marker alone is not proof", runs[IID_LIAR] === 1, runs[IID_LIAR]);
+
+  // THE SAME FORGERY WITH THE OUTCOME LEFT OFF. Requiring `not-executed` is what stops a caller
+  // ACTING on this reply, and that half is settled. It must not also decide whether the reply is
+  // CHECKED: the contradiction here is between the body and the reply subject the broker pins, and
+  // it is just as flatly a contradiction whether or not an outcome field is present. Gating the
+  // checks on the outcome let a forger skip them by omitting a field, so the least credible reply
+  // got the least scrutiny.
+  const liar2 = await bring(IID_LIAR2, () => {
+    runs[IID_LIAR2]++;
+    throw new EpEnvelopeError("failed-precondition", "I did not run this (I did), and I will not say so", [
+      { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR2, epoch: EPOCH }, servedBy: { instanceId: GHOST, epoch: EPOCH } },
+    ]);
+  });
+  await rejects("a bind refusal that OMITS the outcome is still checked against its attribution, not waved through",
+    () => epCall(nc, SPACE, { mode: "inst", instanceId: IID_LIAR2, epoch: EPOCH },
+      { endpoint: EP, command: "poke", contract, caller, args: { n: 1 }, bind: { instanceId: IID_LIAR2, epoch: EPOCH } },
+      { deadlineMs: 8000, currentEpoch: registryEpoch }), "internal");
+  await liar2.stop();
+
   // Off the class queue before section 6, or it wins some of those calls and answers them with
   // its fake refusal — which would be counted as neither served-by-A nor refused-by-B.
   await liar.stop();
@@ -311,8 +353,15 @@ try {
   await Promise.all(served.map((s) => s.stop()));
 } finally {
   await nc.drain().catch(() => nc.close());
-  broker.kill("SIGTERM");
+  // WAIT for it, do not just ask. SIGTERM makes nats-server flush JetStream on its way out, and
+  // removing the tree on the next line walked into what it was still writing: this suite went red
+  // in CI on ENOTEMPTY over .../KV_cotal_records_bindfence/msgs with every cell already passed.
+  await killAndAwaitExit(broker, "SIGTERM");
   rmSync(sd, { recursive: true, force: true });
+  // LAST, deliberately. Releasing before the lines above would hand the broker back while cleanup
+  // could still throw, which is the exact case ownership exists to catch; held until here, an
+  // uncaught throw still exits with the broker owned.
+  releaseBroker();
 }
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);

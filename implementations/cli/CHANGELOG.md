@@ -1,5 +1,292 @@
 # @cotal-ai/cli
 
+## 0.20.0
+
+### Patch Changes
+
+- 4743594: `cotal ps` prints what the manager reports instead of folding it into one false word.
+
+  Every row carried two facts, the process (`running` or `exited`, with its age) and the mesh presence, and the CLI printed only the second. A seat whose process has been up for two days but whose mesh session dropped rendered as `offline`, and a seat with no roster entry rendered as `starting...` regardless of age. Both are false statements about a live process. Rows now print both facts, `running 2d 10h  mesh offline`, so the reader can tell a fresh start from a seat that never joined, and a live process from a dead one.
+
+  A registered manager instance that gives no answer within the deadline is no longer labelled `unreachable`, which is a network verdict the client does not hold; it prints `registered, no answer within the deadline` and says that a dead host never deregisters itself. `attach` and `stop` say the same instead of telling the operator to retry against an instance that may never answer.
+
+  - @cotal-ai/core@0.20.0
+  - @cotal-ai/workspace@0.20.0
+
+## 0.19.0
+
+### Minor Changes
+
+- a1bc784: Display an agent event frame, and separate event channels from chat.
+
+  An `ag-ui.frame` part carries no text part by design, so every surface that renders a message as
+  flat text drew one as `[unrenderable part kind "ag-ui.frame"]`. A renderer now folds a frame's
+  events into readable lines: streamed text and reasoning deltas accumulate into one line rather than
+  one line each, a tool call reports its name, its arguments and its result, and a stream that ended
+  without its terminator is flushed and marked truncated instead of being dropped. An event type this
+  build does not know is named rather than skipped, because a skipped event is a hole in a transcript
+  that still looks complete. It registers through the part-renderer seam, so the standard resolves it
+  by the part's own kind and never learns what the vocabulary means.
+
+  The renderer is loaded by the composition root rather than by a connector. Connectors are removable
+  extensions materialized on demand, and no surface that renders imports one, so a provider that
+  registered only inside a connector would be absent from every process that draws.
+
+  The event channel's name and its classifier move into the standard, beside the frame's identity.
+  Both are things a reader needs in order to recognise an agent's stream without knowing which adapter
+  produced it, and the two surfaces that most need to classify cannot reach an extension package at
+  all. The constructor is re-exported from its former home, so no caller changes.
+
+  The classifier is now a derivation rather than a prefix test, and the two disagree on names a real
+  mesh produces. Nothing reserves the `events.` prefix, so a channel a human created and talks on
+  answered yes to "does this start with `events.`" and was swept out of the chat pane it was sent to.
+  A name that does not resolve to a principal is no longer treated as machine traffic, which returns
+  those channels to the view, and leaves a malformed publisher visible rather than hidden. The
+  collision is narrowed rather than closed: a chat channel whose remainder is itself principal shaped
+  is still indistinguishable from an agent's stream, and closing that means reserving the prefix on
+  the wire.
+
+  The console keeps event channels out of the channel strip and out of the history prefill. The order
+  matters more than the result: the channel list carries one entry per retained subject, so filtering
+  after the fetch would read history for every event channel and discard it, which is unbounded work
+  to display nothing. Live rows are marked rather than dropped, because hiding them would delete the
+  only traffic this change taught the console to draw.
+
+  The dashboard gains the same rendering through a per-kind lookup, so its dispatcher stays ignorant
+  of every kind anyone teaches it. A renderer that throws, returns a non-string, or shares a name with
+  an inherited object method is reported by name instead of blanking the body. The browser cannot
+  import the shared renderer, so the two implementations are held together by an executable
+  equivalence check rather than by intent.
+
+  The example harness records a message through the shared renderer instead of keeping only its text
+  parts, so a message whose content is not text is no longer written to the transcript as an empty
+  string and scored as an agent that said nothing.
+
+  No connector emits a frame yet, and no transcript mirror is removed. Display lands first on purpose:
+  a cutover shipped before a renderer would replace a readable mirror with a part every surface shows
+  as a marker.
+
+- a7267b3: Refuse a class-queue split before the command runs, instead of reporting it afterwards.
+
+  An endpoint call resolves one incarnation and then invokes through a queue that may pick another.
+  Until now the caller was the only party that noticed: the mismatch was detected on the reply, by
+  which time the responder had already handled the request. That is why the error had to say it
+  proved nothing about whether the command ran: a check that runs after the effect is a report, not
+  a guard. In a multi-manager space it is how one spawn becomes several: the effect lands on A, the
+  caller bound to B is told the call failed, and the retry duplicates it.
+
+  A request now carries the incarnation the caller resolved against (`bind`, a new optional
+  `EndpointRequest` field), and a responder that is not that incarnation refuses at the pre-effect
+  seam, before args validation, before target resolution, and before the governed gate that can
+  consume a one-use payment proof. The refusal carries `ai.cotal.ep.bind-refused` and states that
+  the command did not run, so re-resolving and re-issuing is safe. `failed-precondition` when a
+  different instance received it, `expired` when the same instance is at another epoch: the epoch is
+  carried even on the instance rail, where the subject grammar has no token for it and a successor
+  incarnation would otherwise serve its predecessor's caller.
+
+  The block confers nothing. It can only make a responder the subject already reached refuse, so it
+  narrows and never widens, and attribution still comes from the reply subject: a refusal
+  attributed to the very incarnation the caller bound is incoherent and is rejected rather than
+  honored, so the marker cannot be used to claim an effect away. It is refused rather than ignored
+  where it has no reading: on `describe`, which is what produces a bind, and on the scatter rail,
+  which addresses every incarnation by construction.
+
+  A long-lived client recovers from the refusal instead of stranding on it. `invokeService` caches
+  its resolve, and its existing split recovery keyed on a thrown marker, which a refusal, being an
+  ordinary reply, never raises. It now keys on the reply too, drops the stale bind, and re-issues
+  the call **once for any command**, not only for one on the repeat-safe allowlist. That allowlist
+  exists because a split used to be detected after the responder had handled the request, so core
+  could not tell a duplicate-able effect from a repaired one and had to fail closed; a bind refusal
+  removes the uncertainty rather than working around it, so the re-issue is a first attempt.
+
+  The allowlist still governs everything else, and that is the half that keeps this safe. A
+  responder that predates the fence ignores the field and executes, so its reply proves nothing
+  about whether the command ran, and re-issuing on it would duplicate the effect. The re-issue is
+  therefore withheld from every reply that does not carry the refusal, and the refusal is checked
+  rather than believed: the bind it was computed against must be the one this request carried, and
+  the incarnation it claims to be must be the one the reply subject attributes it to. Both halves
+  are derivable by the caller, and neither is something an unfenced responder can produce by
+  accident. A refusal that fails either is `internal`, not a licence to try again.
+
+  A re-issue that cannot be resolved surfaces the refusal, not the resolve. Re-resolving goes back
+  to the registry, and an endpoint that has since retired answers nothing, so a stale handle used
+  to be met with a describe deadline ten seconds later, with the one fact that said the command had
+  not run discarded on the way. The refusal now surfaces, carrying its marker, with the resolve
+  failure named as the reason the repair could not be attempted.
+
+  That recovery is counted, and the counter is the point. Handling a split makes it invisible, and
+  the routing event is the only evidence the split exists at all; silence it and the split rate
+  becomes unmeasurable exactly as it becomes survivable. `CotalEndpoint.splitRecoveryCount` is
+  always on and never behind a flag, and a `split-recovered` event carries the same fact for anyone
+  listening; the event can be missed, the count cannot. On a live two-manager mesh, 5 of 6 unpinned
+  class-anycast reads split, so this is not a rare-event counter.
+
+  The caller-side check remains, and remains necessary: a responder that predates the fence ignores
+  the field and executes, which leaves the older after-the-fact report, and the allowlist, as the
+  only protection in a skewed pair. That pair is now driven directly rather than argued about, by a
+  hand-rolled responder that answers the class rail without a fence; `serveEndpoint` cannot produce
+  the case, because its fence refuses a mismatched bind before the handler, so a request it executes
+  is one whose bind matched. `--on` still addresses a specific manager, but it is no longer what
+  stands between a split and a duplicated effect.
+
+  The suites count executions at the responder rather than publishes at the caller, and the change
+  was forced. "One publish" meant "one execution" only while a split was caught after the responder
+  had handled the request; under the fence the second publish carries the first execution, so the
+  old instrument reports a correctly repaired call and a duplicated one identically. Where a claim
+  narrowed, the cell says which condition moved it rather than being replaced.
+
+  SPEC §13.2 and §13.3 carry the normative rules; `docs/control-surface.md` is updated.
+
+- 7f83b8c: `cotal mint --provision` (agent profile) pre-creates the identity's bind-only DM/deliver durables and its role's task queue on the live mesh, so a credential minted out of band can consume rather than only publish; `--role <role>` names the anycast queue, and `--space`/`--server` pick the mesh. The command now prints the identity's principal and lifecycle uid, the two facts a consuming client needs beyond the file.
+
+### Patch Changes
+
+- 87c4130: Say what a refused publish, a goal deadline, and a class-queue split actually proved.
+
+  A refused publish now reports itself. `nc.publish` is fire-and-forget: a caller whose credential
+  does not authorize the subject gets an asynchronous answer on the _connection_, so the publish
+  returns normally and the only observable is that no reply arrives. That is indistinguishable from
+  an absent responder, though the two need opposite responses: mint the grant, or go find the
+  responder. An instance-addressed describe made with a class-rail credential is exactly that case,
+  and it read as an unresponsive manager: measured live, `ps --on <instance>` returned `no describe
+reply from manager within 10000ms` against a 115ms RTT while an untargeted describe answered from
+  either instance in well under a second. The describe now watches its connection for a permission
+  violation on its own subject and raises `permission-denied` naming that subject, the instance rail,
+  and the fact that the responder may be perfectly healthy. The watch closes its status iterator on
+  every exit, so it does not leave a listener parked on the connection per resolve.
+
+  A goal that produced no terminal in time no longer implies the goal failed. It was accepted; only
+  its terminal did not arrive within the wait. Observed live: seats that reported this had already
+  come up and were messaging peers, and retrying submitted a second goal that duplicated the effect.
+  The message now says the deadline is on the wait rather than the work, and says not to retry on it
+  alone.
+
+  An unpinned class-queue split no longer implies the effect did not land. Describe and invoke are
+  separate trips through the same anycast queue, so in a multi-instance space the instance that won
+  the queue received the request and may have executed it, possibly after the error was raised. The
+  core message now says so and points at `ps`/`inspect`/roster before any retry; it stops at "a call
+  that addresses one instance does not split". The CLI adds `--on <instance>` as the remedy, and only
+  on the commands that have the flag (`ps`, `stop`, `attach`, `spawn --detach`), which declare it to
+  the shared renderer; `models`, `up` and `down` ride the same rails and split the same way, and are
+  no longer told to type a flag they do not have. Absence of a pin is not evidence of the flag.
+
+  And a split is no longer silently retried into a duplicate effect. The client recovered from
+  `failed-precondition` by dropping its cached resolve and invoking again, which is a repair when the
+  bound incarnation is gone but a second attempt when the error came from a different live instance
+  answering the class queue: request received and answered (executed or refused; the reply does not
+  say which), error raised afterwards. Re-invoking there re-issued the command automatically, while
+  the error text told the operator not to retry; it is the mechanism behind one spawn producing
+  several seats. The retry now happens only for commands
+  whose second execution is observably indistinguishable from one: the reads and `describe`. Every
+  other command surfaces the split to its caller, carrying a marker that says a responder did answer
+  the request, so the caller can check before deciding. Surfacing also drops the stale bind: the
+  cached resolve named an incarnation a different live instance has just answered for, and keeping it
+  would send every later deliberate call on that endpoint into the same refusal, so the caller could
+  verify and still never reach the live instance. Dropping it re-issues nothing; the next call is the
+  caller's own.
+
+  The same rule now covers the adjacent case, a manager restarted in the same workspace root. That
+  restart keeps the logical instance id and advances its epoch, so a client that resolved before it
+  gets its next answer from the same id at a later epoch: `expired`, raised after the attributed reply
+  just like the split. It used to be rethrown untouched with the bind kept, so a long-lived client
+  (a connector's mesh agent, the console) reached the successor on every later call, may have applied
+  the effect each time, and never recovered. The stale-epoch refusal now carries the same
+  responder-answered marker, the guard keys on the marker rather than the error code, and its message
+  says which side is stale: a responder ahead of what the caller holds is a successor (re-resolve to
+  adopt it), one behind is a superseded incarnation still answering. The old text called the caller's
+  own bound epoch the responder's "current" epoch, which named the wrong side.
+
+  That classification is an allowlist and fails closed at both levels. It is keyed by endpoint, not by
+  bare command name, because the client is endpoint-agnostic and a flat list would lend the manager's
+  judgement to any endpoint that happened to reuse a name; an endpoint nobody has classified has no
+  repeat-safe commands, and an unlisted command is surfaced rather than repeated. `describe` is the one
+  exception, and structurally so: it is served by the machinery on every endpoint and can never be
+  redefined into something that mutates.
+
+  `models` is deliberately not on that list even though it is a read command. With `{refresh: true}` it
+  reaches the connector's model listing and, for OpenCode, re-fetches provider catalogs and rewrites a
+  cache: the same name, in the same grant class, answering differently because of an argument the
+  classification cannot see. A long-lived client invoking `models` through `invokeService` therefore
+  surfaces a split rather than absorbing it in a multi-instance space; encoding per-command argument
+  rules here would reintroduce exactly the fail-open shape this replaced.
+
+  Where this table bites, precisely: it is read only by `CotalEndpoint.invokeService`, the long-lived
+  client path. Its shipped callers are the connector's `cotal_*` manager tools (spawn, inspect, stop,
+  despawn, purge, define-persona), `cotal spawn -f` (launch) and `cotal down -f` (despawn), whose
+  splits now surface instead of being re-issued, plus the repeat-safe `ps` reads of `spawn -f`,
+  `down -f` and the console, which keep absorbing them. The one-shot CLI commands (`cotal ps`,
+  `cotal models`, `stop`, `attach`, `spawn --detach`) resolve fresh and invoke once on a short-lived
+  connection; they had no cached bind and no retry, and are unchanged. That is the clearest statement of what the list is: a client-side
+  stand-in for `effect` (SPEC 13.7), which the wire now carries and this change does not yet consult.
+  The spec grew both halves after this work began: `effect` declares whether repeating a command is
+  safe, and rides `protocol.v: 2`, while this tree still registers and resolves at `v: 1`, under which
+  every command reads as a write. Reconciling the two is a separate change and is named here rather
+  than described as absent from the wire.
+
+  The CLI no longer prefixes every failed manager call with "no manager reachable on the ep rails".
+  That verdict is stated only where the call went unanswered, as core marks it: no responder, or the
+  reply deadline elapsed with nothing attributed to the request. The catalog code alone was not
+  evidence of that. A manager that answers its describe with `ok:false` has the refusal rethrown under
+  its own code, `unavailable` included, and a store read after an answered describe raises the same
+  code; both printed as an unreachable manager while a manager was answering (reproduced live during
+  review). Core now sets a detail kind on the producers that observed silence and the CLI keys on it,
+  never on the code. A registry read on the caller's own side (the scatter's freeze or its reconcile)
+  is a third outcome with its own line, since the managers were not the failure and may all be up. A
+  refusal that states its own cause (a describe refused by the broker, a split, a stale epoch) is
+  printed as it is, because the prefix contradicted it, and an unanswered `--on <instance>` names the
+  instance that did not answer instead of pronouncing on the mesh (measured: three managers answering,
+  one typo in `--on`, "no manager reachable"). `up`'s resume readiness poll keys on that same
+  unanswered fact rather than on the message prefix.
+
+  `ps` prints the full instance id in its multi-manager view. That view appears only where the split
+  makes `--on <instance>` the one way to address a manager, and `--on` accepts nothing but the whole
+  26-32 character lifecycle token, so an abbreviated header named the remedy and withheld the value
+  it needed, and `--on <prefix>` was refused as a malformed token. The `stop`/`attach` seat-lookup
+  miss, which lists the instances that did not answer for the same purpose, prints them whole too and
+  says the id must be passed as printed. `spawn` refuses `--on` outside a detached imperative spawn: a
+  foreground spawn has no manager to pin and a manifest deploy launches through the manager class
+  queue, so the flag was accepted there and silently ignored. An empty `--on` (`--on ""`, an unset
+  shell variable) is refused at the flag on all four commands: `ps` and the detached `spawn` carried it
+  to the mint, which refused it as an invalid token, while `stop` and `attach` read it as absent and
+  fell through to the seat lookup, so one input had two answers and one of them was a dropped pin.
+
+  The peer-side manager tools stop reading silence off the catalog code too. `MeshAgent`'s manager
+  invoke reported "no responder answered - a manager may be down, or this credential holds no <cmd>
+  capability and the broker denied the request" for every `deadline-exceeded`, and the bare code for
+  everything else. That was wrong in both directions. The broker's no-responders 503 arrives as
+  `unavailable` carrying the unanswered marker, so the one case where the capability explanation is
+  certain was the one case that did not get it: an agent denied a capability was told only
+  "unavailable". And an answered `ok:false` describe is also `unavailable`, deliberately unmarked
+  because a manager did answer -- and this surface is read by agents, where a claim of silence invites
+  the retry that duplicates a spawn. Same code, opposite conditions, separated only by the marker,
+  which is now what the verdict keys on.
+
+- 007a17b: `cotal up` now provisions the data-account half of the membership bundle on every run, not only when a space is first created, so a space provisioned before broker-sourced membership gains the graph feed without regenerating its auth. The delivery daemon's incomplete-bundle message now names the repair that matches the missing piece instead of always pointing at a system-account rotation.
+- eae512e: `cotal mint --profile agent` now mints the lifecycle uid the agent profile requires, instead of failing on every invocation. The agent arm of `permissionsFor` builds lifecycle-keyed dm/dlv/chathist grants and threw without one, so the default profile could never be used and the only reachable profiles were observer and admin, neither of which can publish to a channel.
+- 12f2df8: Refuse to stamp the connector seed store down to an older generation. A cotal older than the store's
+  stamped generation used to miss the fast path, refresh nothing, and then write its own version over
+  the stamp, leaving the store claiming a generation whose payloads were not the ones installed and
+  making the next newer command reinstall every connector. It now fails loud before writing anything,
+  naming both generations and pointing at `cotal ext seed --reset`.
+- Updated dependencies [48c6631]
+- Updated dependencies [10d9cd6]
+- Updated dependencies [a1bc784]
+- Updated dependencies [a7267b3]
+- Updated dependencies [ce1c248]
+- Updated dependencies [5e95736]
+- Updated dependencies [19931dd]
+- Updated dependencies [6074c26]
+- Updated dependencies [24687a3]
+- Updated dependencies [17f14be]
+- Updated dependencies [87c4130]
+- Updated dependencies [cb9e1ad]
+- Updated dependencies [c038730]
+- Updated dependencies [758e1e3]
+- Updated dependencies [be624af]
+- Updated dependencies [8572a5d]
+  - @cotal-ai/core@0.19.0
+  - @cotal-ai/workspace@0.19.0
+
 ## 0.18.0
 
 ### Minor Changes

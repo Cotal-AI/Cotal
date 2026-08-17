@@ -1,5 +1,36 @@
 # @cotal-ai/delivery
 
+## 0.20.0
+
+### Patch Changes
+
+- @cotal-ai/core@0.20.0
+- @cotal-ai/workspace@0.20.0
+
+## 0.19.0
+
+### Patch Changes
+
+- 007a17b: `cotal up` now provisions the data-account half of the membership bundle on every run, not only when a space is first created, so a space provisioned before broker-sourced membership gains the graph feed without regenerating its auth. The delivery daemon's incomplete-bundle message now names the repair that matches the missing piece instead of always pointing at a system-account rotation.
+- Updated dependencies [48c6631]
+- Updated dependencies [10d9cd6]
+- Updated dependencies [a1bc784]
+- Updated dependencies [a7267b3]
+- Updated dependencies [ce1c248]
+- Updated dependencies [5e95736]
+- Updated dependencies [19931dd]
+- Updated dependencies [6074c26]
+- Updated dependencies [24687a3]
+- Updated dependencies [17f14be]
+- Updated dependencies [87c4130]
+- Updated dependencies [cb9e1ad]
+- Updated dependencies [c038730]
+- Updated dependencies [758e1e3]
+- Updated dependencies [be624af]
+- Updated dependencies [8572a5d]
+  - @cotal-ai/core@0.19.0
+  - @cotal-ai/workspace@0.19.0
+
 ## 0.18.0
 
 ### Minor Changes

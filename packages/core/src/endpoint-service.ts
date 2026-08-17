@@ -20,7 +20,7 @@ import {
 import { EpEnvelopeError, type EpClass } from "./endpoint-envelope.js";
 import {
   RECORD_KINDS, GOVERN_HEAD, recordSpecKey, recordStatusKey, recordAtomicKey, readRecord, recordsBucket,
-  createRecordEntry, updateRecordEntry, assertStatusValue,
+  createRecordEntry, updateRecordEntry, deleteRecordEntry, assertStatusValue,
 } from "./endpoint-records.js";
 import { verifyClusterManifest, verifyClusterRoot, deriveDescriptor, GOVERNED_TRAIT_URNS, type ClusterDocument, type DescribeDescriptor } from "./endpoint-cluster.js";
 import { isSupervisorWrite, type SupervisorWriteGrant } from "./endpoint-supervisor.js";
@@ -537,7 +537,21 @@ export async function registerServiceInstance(
   // genuinely infra/ambiguous — never a concurrent-CAS loss we could treat as a definite no-write.
   let newRev: number;
   try {
-    newRev = current && current.operation === "PUT"
+    // A DEREGISTRATION TOMBSTONE IS RE-REGISTRABLE, and it is the only record kind here that is.
+    // `createRecordEntry` fences against the key's entire history, so a create over a DEL marker is
+    // a loud conflict — correct for the never-deleted lifecycle families, and fatal here: §13.5
+    // makes a deleted spec an EXPLICIT deregistration ({@link deregisterServiceInstance}), so a
+    // manager that deregisters on a clean stop could never start again. The tombstone is therefore
+    // written OVER, revision-pinned to the marker's own revision, which is still a CAS and still
+    // refuses a blind write.
+    //
+    // Reusing the id is safe because the records key was never what bound it: §13.1 binds the
+    // lifecycle to the ISSUANCE GATE, which this registration has already observed (a `retired`
+    // gate refuses above, and the gate's principal binding is unchanged by a records delete), and
+    // the (name, owner) pair is authorized fresh under the frozen gate. What a tombstone loses is
+    // the stored-owner comparison two branches up — it has no value to compare — and that check is
+    // a defence-in-depth read of the same fact the name authority decides.
+    newRev = current
       ? await updateRecordEntry(kv, key, spec, current.revision)
       : await createRecordEntry(kv, key, spec);
   } catch (err) {
@@ -568,7 +582,13 @@ export async function registerServiceInstance(
   // bites on a real restart). A FIRST registration keeps the provisioned epoch (0), so a single
   // never-restarted instance stays at epoch 0. The advance rides THIS completing reopen only; the
   // old family was already revoked + verify-evicted in PHASE 2, so no old-epoch authority survives.
-  const isReRegistration = current !== undefined && current !== null && current.operation === "PUT";
+  // A DEREGISTRATION TOMBSTONE COUNTS AS A PRIOR INCARNATION. The question this predicate asks is
+  // "did an incarnation of this instanceId exist before me", and a DEL marker answers yes exactly as
+  // a live spec does — the deregistration is what removed it. Reading only `PUT` here would let a
+  // stop-then-start pair re-register at the PREDECESSOR's epoch, so a predecessor process that
+  // outlived its own deregistration would still hold a current-epoch authority. TRUE ABSENCE (never
+  // registered) is the only case that keeps the provisioned epoch.
+  const isReRegistration = current !== undefined && current !== null;
   try {
     if (!(await args.barrier.reopen(token, successorAt(newRev, isReRegistration ? obs.processEpoch + 1 : obs.processEpoch))))
       throw new Error("the reopen CAS lost its freeze token (a reconciler or newer barrier superseded this one)");
@@ -696,7 +716,90 @@ export async function writeServiceStatus(
     }
     return updateRecordEntry(kv, key, status, stored.revision);
   }
-  return createRecordEntry(kv, key, status);
+  // A DEREGISTRATION TOMBSTONE on the STATUS key is written over too, and for the same reason the
+  // spec key's is (see {@link registerServiceInstance}): §13.5 deletes BOTH keys, so a create-only
+  // write here would let the spec come back on a restart while the status never could — the
+  // instance would register and then be unable to converge, which reads to every scatter as
+  // "registered but never live" and to the operator as a manager that starts and does nothing.
+  // Still a CAS, pinned to the marker's own revision; only TRUE ABSENCE creates.
+  return stored ? updateRecordEntry(kv, key, status, stored.revision) : createRecordEntry(kv, key, status);
+}
+
+// ---- deregistration (§13.5) --------------------------------------------------------------------
+
+/** What a deregistration found and did. `removed: false` is a NORMAL outcome, not a failure: an
+ *  already-absent record and a record that moved under the read are both things a caller has to be
+ *  able to tell apart from a completed removal, and neither is worth a throw at this layer — the
+ *  operator verb refuses loudly on them, a manager's own clean-stop logs and carries on. */
+export type ServiceDeregistration =
+  | { removed: true; specRevision: number; statusRevision?: number }
+  /** No live spec key at the coordinate: never registered, or already deregistered. */
+  | { removed: false; reason: "absent" }
+  /** A key moved between the read and its revision-pinned delete: something is WRITING to this
+   *  registration, so it is not the dead record that was inspected. Nothing was removed — the
+   *  status delete is attempted first precisely so this outcome leaves the record whole. */
+  | { removed: false; reason: "superseded" };
+
+/**
+ * DEREGISTER one service instance: the §13.5 explicit deregistration, which is the DELETE of its
+ * `svc` spec key (and its status key with it).
+ *
+ * WHY THIS EXISTS AT ALL. The registry records REGISTRATION, not liveness, and nothing in the model
+ * expires a row. An instance whose host dies leaves a record that claims a live state forever, and
+ * every class scatter in the space then freezes that slot in and waits out the full deadline for an
+ * answer that can never come. Registration therefore needs a way OUT that does not depend on the
+ * dead instance's cooperation, and this is it. There is deliberately no automatic sweep behind it:
+ * the two callers are an instance removing its OWN row on a clean stop, and an operator naming a
+ * hard-dead instance explicitly.
+ *
+ * ORDER IS PART OF THE CONTRACT: status first, then spec. A reader that catches the pair mid-delete
+ * sees "spec without status", which §13.4 already defines (an instance registered but not converged;
+ * {@link freezeExpectedSet} skips it) and which {@link readRecord} reads cleanly. The other order
+ * produces "status without spec", which is the TORN state readers refuse — a deregistration would
+ * hand every concurrent reader a `failed-precondition` for the width of one round trip.
+ *
+ * BOTH DELETES ARE REVISION-PINNED to what this function just read. A blind delete of a registration
+ * is a delete of whatever is there NOW, and what is there now may be a successor that re-registered
+ * microseconds ago under the same instanceId — exactly the case a restart produces. A moved key
+ * aborts with `superseded` and removes nothing.
+ *
+ * THE RECOVERY PATH, because a deregistration must never be a one-way door: the record is removed,
+ * the §13.1 issuance gate is NOT. The same instance can register again and does so on its next
+ * start — {@link registerServiceInstance} writes over the tombstone under a revision-pinned CAS and
+ * advances the epoch as it does for any other restart.
+ */
+export async function deregisterServiceInstance(
+  kv: KV,
+  args: { endpoint: string; instanceId: string },
+): Promise<ServiceDeregistration> {
+  const iId = assertLifecycleToken(args.instanceId, "instanceId");
+  const specKey = recordSpecKey(RECORD_KINDS.svc, [args.endpoint, iId]);
+  const statusKey = recordStatusKey(RECORD_KINDS.svc, [args.endpoint, iId]);
+  const specEntry = await kv.get(specKey);
+  if (!specEntry || specEntry.operation !== "PUT") return { removed: false, reason: "absent" };
+  const statusEntry = await kv.get(statusKey);
+  const casLoss = (e: unknown): boolean => e instanceof EpEnvelopeError && e.code === "conflict";
+  let statusRevision: number | undefined;
+  if (statusEntry && statusEntry.operation === "PUT") {
+    try {
+      await deleteRecordEntry(kv, statusKey, statusEntry.revision);
+      statusRevision = statusEntry.revision;
+    } catch (e) {
+      if (casLoss(e)) return { removed: false, reason: "superseded" }; // it wrote a status: it is alive
+      throw e;
+    }
+  }
+  try {
+    await deleteRecordEntry(kv, specKey, specEntry.revision);
+  } catch (e) {
+    // The status is already gone. That is the deliberate direction of this partial state: the
+    // instance is absent from every scatter freeze (a spec with no status is not a live member) and
+    // its own next registration rewrites both keys. Reported as `superseded` so the caller says so
+    // rather than claiming a removal it did not complete.
+    if (casLoss(e)) return { removed: false, reason: "superseded" };
+    throw e;
+  }
+  return { removed: true, specRevision: specEntry.revision, ...(statusRevision !== undefined ? { statusRevision } : {}) };
 }
 
 // ---- the scatter freeze (§13.5) ---------------------------------------------------------------

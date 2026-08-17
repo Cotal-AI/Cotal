@@ -1,0 +1,26 @@
+{
+  "command": "pnpm smoke:agui-render-parity",
+  "mutations": [
+    {
+      "name": "P1 the browser copy goes back to falsiness on the tool result, which is the divergence this pair actually shipped with: an empty result printed (no content) in the dashboard and nothing in the console, for the same frame",
+      "file": "implementations/web/src/web/agui-frame.js",
+      "find": "          emit(lines, RESULT_PREFIX, CONT, str(e.content) ?? \"(no content)\");",
+      "replace": "          emit(lines, RESULT_PREFIX, CONT, str(e.content) || \"(no content)\");",
+      "expectRed": "parity: empty strings where the default is non-empty"
+    },
+    {
+      "name": "P2 the browser copy stops flushing an unterminated tool call, so a turn that was cut off mid-call is indistinguishable from one that never made it, on one surface only",
+      "file": "implementations/web/src/web/agui-frame.js",
+      "find": "    for (const id of [...toolName.keys()]) {\n      emit(lines, TOOL_PREFIX, CONT, `${toolName.get(id) ?? \"?\"}(${toolArgs.get(id) ?? \"\"}) …`);\n    }",
+      "replace": "",
+      "expectRed": "parity: an unterminated tool call (tail flush, the third path)"
+    },
+    {
+      "name": "P3 the node renderer alone changes its continuation prefix, so the two surfaces indent multi-line payload differently: a one-character edit on one side that no cell in either package can see",
+      "file": "extensions/connector-core/src/agui-render.ts",
+      "find": "const CONT = \"  · \";",
+      "replace": "const CONT = \"  > \";",
+      "expectRed": "parity: reasoning, which uses a different continuation prefix from text"
+    }
+  ]
+}

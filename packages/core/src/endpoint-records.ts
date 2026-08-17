@@ -592,6 +592,25 @@ export async function updateRecordEntry(kv: KV, key: string, value: unknown, exp
   }
 }
 
+/** Revision-pinned CAS DELETE of one record key — the write behind an explicit deregistration
+ *  (§13.5: a deleted `svc` spec IS the deregistration). Pinned, never blind: between the read that
+ *  decided to remove a record and this delete, the very instance being removed may have written
+ *  again, and a blind delete would erase a live registration. A moved revision is a loud `conflict`
+ *  with the same re-read-and-re-decide remedy every other CAS here carries; any other broker
+ *  failure propagates untranslated.
+ *
+ *  Applicable ONLY to the record kinds §13.5 says may be deleted. The lifecycle families are never
+ *  deleted, and {@link createRecordEntry} deliberately refuses to write over a tombstone so a
+ *  one-use identity can never be re-opened by whoever can delete a key. */
+export async function deleteRecordEntry(kv: KV, key: string, expectedRevision: number): Promise<void> {
+  try {
+    await kv.delete(key, { previousSeq: expectedRevision });
+  } catch (e) {
+    if (isCasLoss(e)) conflict(`delete of ${key} at revision ${expectedRevision} lost its CAS: the record moved after it was read, so it is NOT the record that was inspected (re-read and re-decide, SPEC 13.8)`, e);
+    throw e;
+  }
+}
+
 /** Status values MUST carry `observedSpecRevision` (§13.4) — the merged-read staleness rules
  *  key on it. Enforced at the write seam so a status without it can never exist. */
 export function assertStatusValue<T extends Record<string, unknown>>(value: T): T & { observedSpecRevision: number } {

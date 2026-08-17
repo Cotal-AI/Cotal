@@ -92,8 +92,11 @@ fail-loud on collision.
 - **Manager:** `startManagerDetached` / `ensureManager`
   ([`lib/manager-proc.ts`](../implementations/cli/src/lib/manager-proc.ts)) re-execs `cotal
   supervise` detached (pty runtime); it answers the control plane
-  (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.pid` and
-  `.cotal/manager.log`; `managerUp()` checks pid liveness for setup's status card.
+  (`cotal_spawn` / `cotal_despawn` / `cotal_persona`). Writes `.cotal/manager.log`;
+  `managerUp()` checks the pid record for setup's status card. The **manager itself** writes
+  `.cotal/manager.pid`, so a supervisor started by a container entrypoint, by cron, or by hand is
+  recorded the same way a detached `cotal up` is. Readers verify the recorded pid is alive and is a
+  supervisor before trusting it ([Config](config.md#project-cotal)).
 
 The **web dashboard** is *not* part of `cotal up`. It ships inside `cotal-ai` as the `@cotal-ai/web`
 extension and is seeded automatically by the boot reconcile — the same durable, version-locked path as
@@ -157,7 +160,10 @@ version, no seeded marker) is left untouched on upgrade; a deliberately-removed 
 of removed-vs-never-seeded and is unioned with its backup on read, so a truncated authority never
 resurrects a removal. Every (re)install is verified before the generation stamp is written — recorded in
 the manifest, present on disk with its entry file resolvable, and at the generation version — so a
-version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current.
+version-skewed payload fails loud (`ext seed --repair`) rather than being stamped as current. A cotal
+**older** than the store's stamped generation refuses before writing anything, rather than stamping the
+store back down to its own version while refreshing nothing: run the newer cotal, or `ext seed --reset`
+to rebuild the store for the version you are running.
 
 **Crash safety.** One shared advisory lock ([`packages/workspace/src/advisory-lock.ts`](../packages/workspace/src/advisory-lock.ts):
 atomic hard-link publish, PID + process-start liveness, bounded wait, dead-owner reclaim) guards the

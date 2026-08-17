@@ -13,6 +13,7 @@ import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams } from "@cotal-ai/core";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { pickFreePort } from "./_free-port.js";
 
 const PORT = await pickFreePort();
@@ -24,9 +25,15 @@ const check = (name: string, cond: boolean) => { if (cond) { pass++; console.log
 
 const space = `delivery-couple-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-couple-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 let srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+// Owned, so a SIGNALLED run takes the broker and its store dir with it. The `finally` below is the
+// only teardown this suite has and no signal handler is registered, so before this line a SIGINT
+// left both behind. Killing the broker mid-test is this suite's SUBJECT, not its teardown: it proves
+// the daemon exits on its own once the broker is gone, and the ~10s wait for that is also why the
+// removal at the end of the `finally` is nowhere near the exit it follows.
+const releaseBroker = teardownOnSignal(srv, dir);
 const credsPath = join(dir, "delivery.creds");
 
 let daemon: ReturnType<typeof spawn> | undefined;
@@ -71,4 +78,5 @@ try {
   try { if (daemon && !daemonExited) daemon.kill("SIGKILL"); } catch { /* gone */ }
   try { srv.kill("SIGKILL"); } catch { /* gone */ }
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }

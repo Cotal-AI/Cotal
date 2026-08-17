@@ -44,6 +44,7 @@ import {
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_STATUS_CONTRACT, type ManagerStatus } from "../src/manager-service-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -63,12 +64,13 @@ const enc = new TextEncoder(), dec = new TextDecoder();
 
 const space = `mgrsvc-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-mgrsvc-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const workspaceRoot = join(dir, "ws");
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth); // the manager's start() reloads auth from disk
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 // The smoke reaches private state ONLY to observe/force fence states the wire cannot cheaply
@@ -265,6 +267,7 @@ try {
 } finally {
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\n${fail === 0 ? "MANAGER SERVICE SMOKE OK ✅" : "MANAGER SERVICE SMOKE FAILED"}  (${pass} passed, ${fail} failed)`);

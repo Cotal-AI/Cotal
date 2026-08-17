@@ -38,6 +38,7 @@ import { join } from "node:path";
 import { randomUUID } from "node:crypto";
 import { CotalEndpoint, isCasLoss, isReachable, mintLifecycleUid, type CotalMessage, type Delivery } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -46,8 +47,9 @@ const c = (n: string, v: boolean, extra?: unknown) => {
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "cas-publish-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 const SPACE = "caspub";
 const CH = "events.probe.s1";
 
@@ -225,6 +227,7 @@ try {
 } finally {
   broker.kill("SIGKILL");
   rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 function throwsSync(what: string, fn: () => unknown) {

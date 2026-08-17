@@ -98,11 +98,59 @@ a mutation: the older behaviour detected the mismatch on the reply, after the ma
 already acted, and could only tell you to go and check. `--on` still matters for reaching a
 specific manager (`ps`, `stop`, `attach`, `spawn --detach`), but it is no longer what stands
 between a split and a duplicated spawn. Against a manager older than this fence the refusal is
-still after the fact, and its message says so. `ps` and
+still after the fact, and its message says so. The re-issue is automatic only when the refusal
+states `not-executed` in its `outcome` field; a refusal that omits the field, or states
+`unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
+not run. `ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
-results with per-instance attribution. A non-answering instance is labelled unreachable,
-never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs) (scatter) and [cli.md](cli.md).
+results with per-instance attribution. A non-answering instance is labelled as registered
+with no answer within the deadline, never silently omitted. See [SPEC §13.5](../SPEC.md#135-verbs) (scatter) and [cli.md](cli.md).
+
+The expected set comes from the **registry**, which records registration rather than liveness.
+An instance that crashes never deregisters, so it stays in the set and the gather has nothing
+left to wait for but an answer that cannot come. It pays the whole deadline, on every scatter,
+indefinitely. A scatter can therefore be given a per-instance liveness probe: when the broker
+itself reports that an instance holds no subscription on its own instance rail, the gather stops
+waiting for it. Only that affirmative report counts. A lapsed presence entry, a probe that timed
+out, and a probe that failed are all *absence of evidence*, and treating any of them as death
+would turn a slow correct answer into a fast wrong one, so they leave the full deadline standing.
+Nothing about the outcome changes either way: an instance that did not answer is still
+unreachable, still surfaced, and the scatter is still not complete.
+
+The probe is supplied by the **caller**, not invented by the scatter. Asking about an instance is
+a publish on that instance's rail, and a credential that holds no row for it is refused by the
+broker asynchronously, while the publish itself returns normally. A refused probe is therefore
+silent, and silence is exactly what a live but slow instance looks like. Only the layer that
+minted the credential knows which ids it may ask about, so that layer asks about those and no
+others, and prints any refusal the broker raises anyway rather than letting it expire into a
+timeout. `cotal ps` freezes the class on its first connection, re-mints an instrument pinned to
+exactly the frozen ids, and scatters on a second.
+
+This does not help against an instance that is **connected but not answering**. A hung manager
+holds its subscriptions, so it is indistinguishable from a slow one, and it still costs the full
+deadline. That is the correct result, not a gap in the probe.
+
+### Deregistration
+
+A probe makes a dead registration cheap to skip; it does not remove it. Removal is the
+registration's own exit, and there are exactly two routes to it, both explicit
+([SPEC §13.5](../SPEC.md#135-verbs): a deleted `svc` spec *is* the deregistration).
+
+A manager that stops cleanly deletes its own two records keys as part of stopping, so an instance
+that was shut down leaves no row behind. This is a **graceful stop** only. A manager that loses
+its lease tears down fail-closed and deliberately does not deregister: it is not the authority on
+its own record at that point, and the incarnation that took the lease from it is.
+
+For the instance that cannot cooperate, an operator names it:
+`cotal deregister-instance --instance <id>` ([cli.md](cli.md#deregister-instance)). It removes the
+record only on the same evidence `cotal ps` acts on: the broker reporting nothing subscribed on
+that instance's own rail. It refuses if the instance answers a describe, refuses if the probe could
+not run at all, and refuses if the instance is merely quiet, because a hung process still holds its
+subscriptions and is therefore not affirmed gone. Nothing sweeps the registry on an age threshold
+or on silence.
+An instance that is deregistered while it is merely wedged re-registers over the tombstone on its
+next start, which is what makes the operator's decision a recoverable one.
 
 ## Attach sessions
 

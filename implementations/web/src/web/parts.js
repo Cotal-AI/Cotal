@@ -37,18 +37,24 @@
 // page script, and `web.ts` serves it from the PAGE allow-list — a file missing from that map is a
 // 404 no matter what the HTML says.
 //
-// DELIBERATELY AHEAD OF CORE, AND THAT IS NOT AN OVERSIGHT. This mirrors the contract of core's
-// `partsToText`, but core's copy on this branch still has the vanishing `JSON.stringify(p.data)`
-// fallback and prints no marker; the marker-bearing version lives on an unmerged branch. So this is
-// NOT "adopting the shared renderer" — adopting it as it stands here would have changed nothing
-// for the case this file exists to fix. The browser runs ahead on purpose, and converges to core's
-// wording when that lands. The strings below are the contract under test.
+// IT WAS AHEAD OF CORE, AND CORE HAS SINCE CAUGHT UP. This mirrors the contract of core's
+// `partsToText`. When this file was written, core's copy still had the vanishing
+// `JSON.stringify(p.data)` fallback and printed no marker, so the browser ran ahead on purpose;
+// core now carries the marker and a per-kind renderer seam of its own. The two remain SEPARATE
+// implementations because this surface cannot import core at all, and they are held together by
+// `bin/smoke/agui-render-parity.smoke.ts` rather than by anyone's intention. One difference is
+// deliberate and survives: an extension kind carrying `data` renders its JSON here (see below) and
+// goes straight to the marker in core.
 //
-// SCOPE: this makes an undrawable part SAY SO, and preserves everything that was already visible.
-// It does not teach either page to RENDER an AG-UI frame and it adds no `events.*` filter; both are
-// separate, unowned work. An earlier version of this line read "and nothing wider", which was FALSE
-// while the extension branch discarded data — the scope sentence was wider than the code in one
-// direction and narrower in the other.
+// SCOPE: this makes an undrawable part SAY SO, preserves everything that was already visible, and
+// CONSULTS a per-kind renderer registry so a surface can be taught to draw a kind without this file
+// learning what the kind is. It does not itself know how to render an AG-UI frame; `agui-frame.js`
+// does, and it registers. An earlier version of this line read "and nothing wider", which was FALSE
+// while the extension branch discarded data: the scope sentence was wider than the code in one
+// direction and narrower in the other. It then read "does not teach either page to RENDER an AG-UI
+// frame", which went false in the other direction the moment the lookup landed, because the page
+// can now draw one via a file this one has never heard of. A scope sentence is only worth having if
+// it is re-read every time the code under it moves.
 //
 // Neither page republishes this text — `graph.js` only issues GETs and `app.js`'s single POST is
 // `/api/channel/delete`, which carries a channel name — so the marker is safe to place in the body
@@ -68,15 +74,56 @@ window.COTAL_PARTS = (() => {
       // sees one must not conclude the other.
       return encoded === undefined ? "[empty data part]" : encoded;
     }
-    // An extension kind. Not drawable here and not silently droppable either.
+    // An extension kind. A surface may have been TAUGHT to draw one, by registering a function
+    // under its kind in `window.COTAL_PART_RENDERERS` (see `agui-frame.js`). Consulted here, first,
+    // because a renderer that exists is strictly more specific than either fallback below.
+    //
+    // READ AT CALL TIME, not when this closure was built, so registration may happen in any script
+    // order. That is the whole reason this is a lookup and not an import: this file stays ignorant
+    // of every kind anyone teaches it, which is what keeps the dispatcher a dispatcher.
+    //
+    // A THROWING RENDERER MUST NOT TAKE THE PAGE DOWN, and must not silently become a blank body
+    // either, which is precisely the failure this file exists to remove; re-introducing it through
+    // the extension seam would be the same bug with a new door. It degrades to a NAMED marker
+    // carrying the error, and the data fallback below is not reached: a renderer that registered
+    // and then failed is a different fact from no renderer at all, and a reader who saw raw JSON
+    // would conclude the second.
+    // OWN PROPERTIES ONLY. `p.kind` comes off the wire, and a plain object inherits `toString`,
+    // `valueOf` and `constructor` from `Object.prototype` — every one of them a function. A bare
+    // `renderers[p.kind]` therefore RESOLVES for a part whose kind is `"toString"`, passes the
+    // `typeof === "function"` test, and gets called unbound: the body renders `[object Window]`,
+    // which names no kind and reports no failure. Core's dispatcher is keyed by a `Map` and never
+    // had this door; a plain object on `window` does, so it is closed explicitly here.
+    const renderers = window.COTAL_PART_RENDERERS;
+    const render =
+      renderers && Object.prototype.hasOwnProperty.call(renderers, p.kind) ? renderers[p.kind] : undefined;
+    if (typeof render === "function") {
+      let out;
+      try {
+        out = render(p);
+      } catch (err) {
+        return `[renderer for part kind ${JSON.stringify(p.kind)} failed: ${err && err.message ? err.message : String(err)}]`;
+      }
+      // A renderer returning a non-string would put `undefined` or `[object Object]` into the body
+      // through the same coercion described at the top of this file. Its contract is a string.
+      if (typeof out === "string") return out;
+      return `[renderer for part kind ${JSON.stringify(p.kind)} returned ${typeof out}, expected a string]`;
+    }
+
+    // No renderer for this kind. Not drawable here, and not silently droppable either.
     //
     // BUT DATA-BEARING EXTENSIONS MUST KEEP THEIR DATA. The first version of this file sent every
     // non-core kind straight to the marker, which THREW AWAY content the old expression had been
     // showing: `{kind:"com.acme.snapshot", data:{x:1}}` rendered `{"x":1}` before and the marker
     // after. That is a regression wearing a fix's clothes — it removes information while claiming
-    // to add it, and it made this file's own "scope is nothing wider" claim false. Core is explicit
-    // that an unknown extension kind still falls back to its `data` and that this is deliberate
-    // (`packages/core/src/parts.ts:12-13`); that behaviour is preserved here.
+    // to add it, and it made this file's own "scope is nothing wider" claim false.
+    //
+    // THIS IS THE DELIBERATE DIFFERENCE FROM CORE ANNOUNCED AT THE TOP OF THIS FILE, NOT AGREEMENT
+    // WITH IT. Core's `partsToText` renders a data-bearing extension kind as the marker alone and
+    // keeps nothing (driven, not read: a part `{kind:"com.acme.snapshot", data:{x:1}}` through core
+    // returns only the unrenderable marker). The difference is justified by the SURFACE, not by
+    // core: this file replaces an expression that was already showing that JSON, and core's
+    // equivalent never did, so keeping it is a regression here and would be an addition there.
     //
     // So: name the kind AND keep the data. That is strictly more than either did alone — the old
     // expression showed the data but never said what it was, and the marker alone said what it was

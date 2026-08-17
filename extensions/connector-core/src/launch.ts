@@ -14,7 +14,7 @@
  * secret access — HOME / XDG / platform config dirs are forwarded, so a child can still read
  * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
  */
-import type { McpServerSpec } from "@cotal-ai/core";
+import { eventChannel, parsePrincipalKey, principalKey, type McpServerSpec } from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -201,6 +201,133 @@ export function userAuthEnv(opts: {
  *  (illegal runs collapse to a single `-`) — changing it would rename every live transcript channel. */
 export function transcriptChannel(name: string): string {
   return `tr-${name.toLowerCase().replace(/[^a-z0-9_-]+/g, "-")}`;
+}
+
+/** The per-agent EVENT channel and its classifier, RE-EXPORTED FROM CORE.
+ *
+ *  They were defined here, and they moved. The convention is one every connector publishes to and
+ *  every reader has to recognise, so it is a protocol shape rather than an adapter's choice, and it
+ *  now lives beside the frame's identity in `packages/core/src/event-channel.ts`. The comment that
+ *  used to sit here argued the opposite in those words: that an agent event stream is a connector
+ *  feature and a classifier for the convention belongs beside its constructor. The second half was
+ *  right and is why they moved TOGETHER; the first half was wrong, and the evidence is that the two
+ *  surfaces which most need to classify, the console's mesh view and the dashboard, cannot reach
+ *  this package at all.
+ *
+ *  `isEventChannel` is no longer a prefix test. It derives the principal and refuses a name that
+ *  does not resolve to one, which is what retires the known limit this file used to document. The
+ *  reasoning for that direction is on the core function.
+ *
+ *  Re-exported rather than relocated silently, so every existing importer of `../src/launch.js`
+ *  keeps working and the move is not a breaking change to this package's surface. */
+export {
+  EVENT_CHANNEL_PREFIX,
+  eventChannel,
+  eventChannelPrincipal,
+  isEventChannel,
+} from "@cotal-ai/core";
+
+/** The event channel for a LIVE session, derived from the endpoint's own principal — what the
+ *  broker will actually enforce against, never `config.name` and never the launch env.
+ *
+ *  REFUSES AN EPHEMERAL ACTOR LOUDLY, and that refusal is the whole point. An endpoint with neither
+ *  a declared `card.id` nor creds SELF-MINTS a random actor per process ({@link CotalEndpoint} dev
+ *  branch), so its channel would differ on every restart and could never match a grant minted in
+ *  advance. The tempting repair — fall back to the display name for that one mode — would reinstate
+ *  the fused-channel defect on the single path that has no credential to grade it against, which is
+ *  where it would live forever. So the mode fails closed: events are unavailable without a stable
+ *  identity, and the operator is told which.
+ *
+ *  Structurally typed rather than importing `CotalEndpoint`, so the three connectors' publish paths
+ *  and a test can drive the SAME refusal. */
+export function eventChannelForSession(
+  ep: { principal: { owner: string; actor: string }; actorIsEphemeral: boolean },
+): string {
+  if (ep.actorIsEphemeral)
+    throw new Error(
+      "events are not available for a session with a self-minted identity: this endpoint has no " +
+        "declared id and no credentials, so its actor is a fresh random token per process and its " +
+        "event channel could never match a grant. Launch it with an identity (an authed mesh, or " +
+        "an explicit id) to publish events.",
+    );
+  return eventChannel(ep.principal);
+}
+
+/**
+ * Resolve a DISPLAY NAME to its event channel, against the presence records a reader already holds.
+ *
+ * **THIS EXISTS BECAUSE THE RE-KEY MADE THE CHANNEL UNGUESSABLE, AND THAT COST IS REAL.** While the
+ * channel was `events.<sanitised name>`, a viewer holding a roster row could construct it by string
+ * arithmetic. It now carries the principal — in the dev default that is `events.local.<56-char
+ * nkey>` — which nothing about a display name predicts. The isolation defect the re-key fixed was
+ * worth that; leaving every reader to invent its own lookup would not be, because each one would
+ * invent a different answer to the ambiguity below and most would invent the wrong one.
+ *
+ * **AMBIGUITY IS REFUSED, NOT RESOLVED, AND IT IS THE WHOLE POINT OF THE FUNCTION.** Display names
+ * are not unique and never were: `assertValidName` permits two agents to carry the same one, and
+ * this mesh runs duplicate lane names routinely. A resolver that returned the FIRST match would
+ * reinstate the exact defect the re-key removed — two distinct principals fused onto one answer —
+ * except now at the READ end, where it is worse: a viewer would silently display one agent's stream
+ * under another agent's name, and nothing on the wire would look wrong. So a name matching two
+ * DIFFERENT principals throws and names both.
+ *
+ * **Rows that agree on the principal are ONE agent, not an ambiguity.** A roster carries stale
+ * presence within its TTL, so the same agent legitimately appears more than once; refusing that
+ * would make the function useless exactly when a reader most needs it. The test is on the resolved
+ * principal, never on the row count.
+ *
+ * **It resolves from `owner`/`actor` when present and falls back to parsing `id`** — both are the
+ * same principal by construction (`card.id` is `principalKey(owner, actor).key`), and `id` is the
+ * field every peer is guaranteed to carry. It does NOT guess: a row whose principal cannot be
+ * determined from either is reported as such rather than skipped, because silently skipping the one
+ * row that mattered turns a wrong answer into a confident wrong answer.
+ *
+ * @throws naming the failure, never returning a sentinel — a reader that got `undefined` would show
+ *   an empty pane, and an empty pane is indistinguishable from a correctly-empty one.
+ */
+export function eventChannelForName(
+  name: string,
+  peers: readonly { name: string; id?: string; owner?: string; actor?: string }[],
+): string {
+  const matches = peers.filter((p) => p.name === name);
+  if (matches.length === 0)
+    throw new Error(
+      `no peer named "${name}" in the ${peers.length} presence record(s) given, so its event ` +
+        `channel cannot be resolved. Event channels are keyed on the agent's PRINCIPAL ` +
+        `(events.<owner>.<actor>) and cannot be derived from a display name alone — the name has to ` +
+        `be matched against presence first.`,
+    );
+
+  const seen = new Map<string, { owner: string; actor: string }>();
+  const unresolvable: string[] = [];
+  for (const p of matches) {
+    const principal =
+      p.owner && p.actor ? { owner: p.owner, actor: p.actor } : parsePrincipalKey(p.id ?? "");
+    if (!principal) {
+      unresolvable.push(p.id ?? "<no id>");
+      continue;
+    }
+    seen.set(principalKey(principal.owner, principal.actor).key, principal);
+  }
+
+  if (seen.size > 1)
+    throw new Error(
+      `"${name}" is ambiguous: it matches ${seen.size} distinct principals (${[...seen.keys()]
+        .map((k) => `"${k}"`)
+        .join(", ")}), and they are different agents with different event channels. Display names ` +
+        `are not identities and are not unique, so resolving this to any one of them would show one ` +
+        `agent's stream under another's name. Address the principal you mean.`,
+    );
+
+  const only = [...seen.values()][0];
+  if (!only)
+    throw new Error(
+      `"${name}" matched ${matches.length} presence record(s) but none carries a resolvable ` +
+        `principal (saw ${unresolvable.map((u) => `"${u}"`).join(", ")}). An event channel is keyed ` +
+        `on <owner>.<actor>, so a record with neither an owner/actor pair nor a principal-shaped id ` +
+        `names no channel.`,
+    );
+  return eventChannel(only);
 }
 
 /** The environment-variable NAMES a set of shared MCP server specs reference via `${VAR}` /

@@ -54,7 +54,7 @@ ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev
 
 | Path                                    | What it is                                                                                                                                                                                                                        |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here. |
+| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
 | `extensions/*`                          | Pluggable adapters (connectors, runtimes). Peer-depend core; self-register on import.                                                                                                                                             |
 | `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon, the cotal-lang runtime host). Self-contained; never import each other.                                                                                                                          |
 | `examples/*`                            | Use-cases / composition roots. Private, never published. Each self-documents in its README.                                                                                                                                       |
@@ -70,7 +70,9 @@ ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev
 ### The packages (one-way dependency tiers)
 
 Dependencies flow one way: `examples → implementations → workspace → core ← (peer) extensions`
-(`packages/*` is core + workspace; extensions peer-depend core only).
+(`packages/*` is core + workspace; extensions peer-depend core only). `@cotal-ai/smoke-kit` sits
+outside that flow entirely: it is a test-only devDependency of the packages whose smokes use it, and
+no shipped file may import it.
 Extensions, connectors, runtimes, and commands **self-register into the core `Registry` on
 import**; a composition root just imports the surfaces it wants. An unknown agent type throws,
 with no silent fallback.
@@ -81,6 +83,11 @@ they self-register into. The wire standard — depends on nothing else in the re
 - `**@cotal-ai/workspace**` (`packages/workspace`): the machine-local operator/workstation layer
 over `~/.cotal` — the mesh registry, target resolution, preflight, the `.cotal/` auth-path
 helpers, and the command-copy renderer. Depends on core; not part of the wire standard.
+- `**@cotal-ai/smoke-kit**` (`packages/smoke-kit`): private test-only helpers shared by the smoke
+suites — currently the broker ownership that kills a spawned `nats-server` when a suite is
+*signalled* rather than only when it returns. Never published and never imported by shipped code
+(enforced by `pnpm smoke:core-boundary`); it has no `dist`, so there is no build step and no
+compiled second copy that can disagree with the source.
 - `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language — its grammar, the
 interpreter's sequential core and concurrency scopes, the step journal, the effect interface a
 host implements, and the simulator and dry run that exercise a program with no broker. Depends

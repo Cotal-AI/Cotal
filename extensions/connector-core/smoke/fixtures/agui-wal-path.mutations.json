@@ -1,0 +1,19 @@
+{
+  "command": "pnpm smoke:agui-wal-path",
+  "mutations": [
+    {
+      "name": "L1 the principal lock goes back to being a computed path with nothing acquired, which is the exact state a review drove two logs onto one file from",
+      "file": "extensions/connector-core/src/agui-wal-path.ts",
+      "find": "  const lock = await acquirePrincipalLock(loc.lockPath);",
+      "replace": "  const lock = { path: loc.lockPath, release: async () => {} };",
+      "expectRed": "[L] ensureEventWalDir returns a HELD lock and the file exists at the documented path"
+    },
+    {
+      "name": "L2 the live-owner refusal is dropped, so a lock held by a running emitter is reclaimed out from under it and two emitters run on one principal",
+      "file": "extensions/connector-core/src/agui-wal-path.ts",
+      "find": "  if (ownerIsAlive(r.pid as number))\n    throw new PrincipalLockError(path, \"the recorded owner is gone\", `pid ${r.pid} on ${here} is still running and holds this principal's emitter`);",
+      "replace": "",
+      "expectRed": "[L] a lock held by a LIVE process on this host is refused, never reclaimed"
+    }
+  ]
+}

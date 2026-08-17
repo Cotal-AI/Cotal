@@ -28,6 +28,7 @@ import { Kvm } from "@nats-io/kv";
 import { jetstreamManager } from "@nats-io/jetstream";
 import { isReachable, createSpaceAuth, mintCreds, serverConfig, newIdentity, setupSpaceStreams, reconcileBucketTtl, standaloneConnectOpts, presenceBucket, deliveryBucket, managerBucket } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { assertEphemeralBroker } from "./_ephemeral-only.js";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -41,9 +42,10 @@ const space = `ttlmig-${randomUUID().slice(0, 8)}`;
 const PRESENCE_MS = 6_000, DELIVERY_MS = 30_000, MANAGER_MS = 10_000;
 
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-ttlmig-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
@@ -176,5 +178,6 @@ try {
   srv.kill("SIGKILL");
   await sleep(200);
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(0);

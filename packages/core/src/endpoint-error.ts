@@ -136,6 +136,22 @@ export interface EpBindRefusedDetail extends EpErrorDetail {
   servedBy: { instanceId: string; epoch: number };
 }
 
+/** True iff an `EpError` CARRIES the {@link EP_BIND_REFUSED} marker, saying nothing about whether
+ *  the marker is believable. It is the claim's presence, not its acceptance.
+ *
+ *  The two questions come apart, and conflating them is what this pair exists to prevent. Whether a
+ *  caller may ACT on a bind refusal — re-issue a command it would otherwise never repeat — needs
+ *  the marker AND an explicit `not-executed`, which is {@link replyRefusedBeforeEffect}. Whether a
+ *  reply is CHECKED for self-consistency needs only the claim, because the contradiction being
+ *  checked is between the reply's BODY and the subject the broker pinned, and that is a
+ *  contradiction whatever the outcome field says — or does not say.
+ *
+ *  Gating the checks on the stronger predicate meant a reply could skip them by OMITTING a field,
+ *  so the least credible shape drew the least scrutiny. */
+export function bindRefusalMarked(e: EpError | undefined): boolean {
+  return (e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED);
+}
+
 /** True iff an `EpError` carries the {@link EP_BIND_REFUSED} marker: a responder refused BEFORE
  *  executing, because it is not the incarnation the caller bound — the command did not run.
  *
@@ -152,14 +168,23 @@ export interface EpBindRefusedDetail extends EpErrorDetail {
  *  command the reply just said had ALREADY RUN. A present outcome that disagrees therefore wins, and
  *  the reply is not read as a refusal.
  *
- *  AN ABSENT OUTCOME IS STILL ACCEPTED, and that is deliberate rather than an oversight. §13.3
- *  permits omitting it, and a responder too old to know the field emits exactly that; refusing those
- *  would stop core repairing splits for a third-party responder that is behaving, turning a healed
- *  split into a surfaced failure. Requiring presence is a protocol tightening with a real victim
- *  class, and it is a SPEC question rather than one settled by editing this predicate. */
+ *  AN ABSENT OUTCOME IS NOT A REFUSAL EITHER, and it is the same answer as `unknown` because the
+ *  spec says they are the same value: SPEC 1510, "an error reply that omits `outcome` MUST be read
+ *  as `unknown`". An earlier revision accepted absence, on the argument that a responder too old to
+ *  know the field emits exactly that and refusing it would stop core repairing splits for a third
+ *  party that is otherwise behaving. That argument does not survive SPEC 2271: a client MUST NOT
+ *  automatically re-issue a command declared `write` after any outcome that does not prove
+ *  non-execution, whatever `id` the re-issue carries, and `unknown` proves nothing. Since this
+ *  predicate is what licenses a re-issue that SKIPS {@link isRepeatSafeCommand}, accepting absence
+ *  made core re-issue writes on an outcome the spec says is `unknown`.
+ *
+ *  The cost is real and it is bounded: a responder that omits the field no longer has its splits
+ *  repaired. That responder is already non-conforming, because §13.3 requires a refusal raised
+ *  before dispatch to carry `not-executed`, so what it loses is a repair it was never owed. This
+ *  endpoint's own responder sets the field, so conforming deployments are unaffected. */
 export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
-  if (!(e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED)) return false;
-  return e?.outcome === undefined || e.outcome === "not-executed";
+  if (!bindRefusalMarked(e)) return false;
+  return e?.outcome === "not-executed";
 }
 
 /** §13.3 **Effect outcome**: whether the command's effect occurred. Emitted by the RESPONDER,

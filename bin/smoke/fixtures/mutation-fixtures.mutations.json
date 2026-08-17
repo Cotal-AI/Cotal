@@ -15,7 +15,18 @@
     "so a mutation that reddens for an unrelated reason cannot be mistaken for a kill.",
     "",
     "The subject is this repo's own restore-mtime fixture rather than another lane's, so a graded",
-    "run cannot leave someone else's file mid-edit if the tool dies between mutation and restore."
+    "run cannot leave someone else's file mid-edit if the tool dies between mutation and restore.",
+    "",
+    "THE LAST TWO MUTATIONS BREAK CODE, NOT DATA, AND THE DIRECTION STILL WORKS. The walk's",
+    "submodule skip is the one guard here whose removal REDDENS rather than greens: the suite",
+    "self-checks that it skips submodules, so disabling the skip fails a cell instead of quietly",
+    "widening the walk. That is why these two can be proved at all while the four above had to",
+    "target fixture data.",
+    "",
+    "Neither of them depends on the submodule being checked out. That matters: CI never checks it",
+    "out, and a fixture provable only on a developer box would be exactly the local/CI asymmetry",
+    "this change exists to remove. Mutation A kills on the parse of `.gitmodules`, which is tracked",
+    "and always present; mutation B kills on a tree the cell builds itself."
   ],
   "mutations": [
     {
@@ -49,6 +60,22 @@
       "replace": "      \"file\": \"scripts/mutation-proof-that-was-renamed.mjs\",\n      \"find\": \"    if (ok) utimesSync(path, atimeBefore, mtimeBefore);\",",
       "expectRed": "TARGET FILE MISSING",
       "cell": "TARGET FILE MISSING"
+    },
+    {
+      "name": "the submodule set comes back empty, so the walk has nothing to skip",
+      "file": "bin/smoke/mutation-fixtures.smoke.ts",
+      "find": "  if (!existsSync(gitmodules)) return new Set();\n  const paths = [...readFileSync(gitmodules, \"utf8\").matchAll(/^\\s*path\\s*=\\s*(.+)$/gm)];",
+      "replace": "  return new Set();\n  const paths = [...readFileSync(gitmodules, \"utf8\").matchAll(/^\\s*path\\s*=\\s*(.+)$/gm)];",
+      "expectRed": "✗ the real .gitmodules yields at least one submodule path to skip",
+      "cell": "✗ the real .gitmodules yields at least one submodule path to skip"
+    },
+    {
+      "name": "the walk stops honouring the skip set and descends into a submodule",
+      "file": "bin/smoke/mutation-fixtures.smoke.ts",
+      "find": "    if (skip.has(relative(root, path))) continue;\n    let st;",
+      "replace": "    let st;",
+      "expectRed": "✗ a fixture-shaped file inside a submodule path is not walked",
+      "cell": "✗ a fixture-shaped file inside a submodule path is not walked"
     }
   ]
 }

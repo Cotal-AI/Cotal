@@ -47,13 +47,14 @@ import {
   mintLifecycleUid, standaloneConnectOpts, DEV_OWNER, EpEnvelopeError,
   resolveService, invokeCommand, permissionsFor,
   instancePinnedInstrumentCapabilities, respondedButUnbound, replyRefusedBeforeEffect, EP_UNBOUND_RESPONDER, CotalEndpoint,
-  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS,
+  isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, parseEpSubject,
   type EpCaller,
   type ResolvedService,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { MANAGER_ENDPOINT } from "../src/manager-service-contract.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const freePort = (): Promise<number> =>
   new Promise((res, rej) => {
@@ -96,6 +97,37 @@ const check = (name: string, cond: boolean, extra?: unknown) => {
 const pubs = (ep: CotalEndpoint): number =>
   (ep as unknown as { nc: { stats(): { outMsgs: number } } }).nc.stats().outMsgs;
 
+/** REQUESTS this endpoint published on one command's request rail, counted by decoding each
+ *  published subject with the SHIPPED parser rather than a hand-rolled match.
+ *
+ *  {@link pubs} counts every message the connection sends, which is why it could not witness a
+ *  re-issue: across these windows a healthy run publishes ~51 messages of describes,
+ *  contract-store reads and KV traffic, so `> 1` was satisfied by the scenario's own noise and
+ *  could not fail for the reason it stated. Measured: gutting the re-issue leaves 51 either way.
+ *
+ *  Counting per (endpoint, command) removes exactly that: a describe is a different command and a
+ *  contract read is not a request at all, so the only thing that can move this counter for `ps` is
+ *  a `ps` request leaving the caller. The re-issue is the second one.
+ *
+ *  This does NOT replace the handler-entry counter and is not its job. That one counts entries
+ *  BEHIND the fence, so it says the command EXECUTED; a re-issue whose first attempt was refused
+ *  ahead of the handler is invisible to it by construction. The suite owned a counter for effects
+ *  and none for attempts; this is the second one. */
+const requestsSent = (ep: CotalEndpoint): ((endpoint: string, command: string) => number) => {
+  const sent = new Map<string, number>();
+  const nc = (ep as unknown as { nc: { publish: (s: string, ...rest: unknown[]) => unknown } }).nc;
+  const orig = nc.publish.bind(nc);
+  nc.publish = (subject: string, ...rest: unknown[]): unknown => {
+    const p = parseEpSubject(subject);
+    if (p && p.plane === "request") {
+      const k = `${p.endpoint} ${p.command}`;
+      sent.set(k, (sent.get(k) ?? 0) + 1);
+    }
+    return orig(subject, ...rest);
+  };
+  return (endpoint: string, command: string) => sent.get(`${endpoint} ${command}`) ?? 0;
+};
+
 /**
  * THE DISPOSITION AND THE EFFECT MUST AGREE — the deterministic form of "exactly once", and the
  * reason "exactly once" could not be asserted literally.
@@ -132,7 +164,7 @@ const readTolerant = async (
 
 const space = `pin-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
-const dir = mkdtempSync(join(tmpdir(), "cotal-pin-"));
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const mkRoot = (tag: string): string => {
   const r = join(dir, tag);
   mkdirSync(join(r, ".cotal", "agents"), { recursive: true });
@@ -141,6 +173,7 @@ const mkRoot = (tag: string): string => {
 };
 writeFileSync(join(dir, "server.conf"), serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: PORT, storeDir: join(dir, "js") }));
 const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
 
 type MgrPriv = { managerInstanceId: string };
 let m1: InstanceType<typeof Manager> | undefined;
@@ -346,6 +379,7 @@ try {
     });
     ep.on("error", () => {});
     await ep.start();
+    const reqs = requestsSent(ep);
     try {
       const warm = await readTolerant(ep, "warm-up");
       check("the probe can invoke ps before the split is forced", warm.ok, warm.last);
@@ -431,7 +465,7 @@ try {
       // mechanisms are separated here: this arm asserts the REFUSAL path (the recovery counter
       // moves), and the allowlist path is asserted where it is still reachable — against a
       // responder without a fence, in `smoke:unfenced-responder`.
-      const readPubs = pubs(ep);
+      const readReqs = reqs(MANAGER_ENDPOINT, "ps");
       const readSplitsBefore = ep.splitRecoveryCount;
       const psBefore = totalRuns("ps");
       let readThrew: unknown;
@@ -454,8 +488,8 @@ try {
         { ran: totalRuns("ps") - psBefore, reply: readReply });
       // A re-resolve is a describe plus the contract-store reads behind it, so the heal is many
       // publishes; the point is that it is MORE than the single publish a held guard leaves.
-      check("...and that heal re-issued (more than the one publish a held guard leaves)",
-        pubs(ep) - readPubs > 1, { publishes: pubs(ep) - readPubs });
+      check("...and that heal re-issued (more than one `ps` REQUEST left the caller, not merely more traffic)",
+        reqs(MANAGER_ENDPOINT, "ps") - readReqs > 1, { psRequests: reqs(MANAGER_ENDPOINT, "ps") - readReqs });
     } finally { await ep.stop().catch(() => {}); }
   }
 
@@ -518,6 +552,7 @@ try {
     });
     ep.on("error", () => {});
     await ep.start();
+    const reqs = requestsSent(ep);
     try {
       // Resolve for real, then doctor the cached responder id (identical to cell 6, because the
       // point is that the COMMAND changed the outcome, nothing else).
@@ -531,7 +566,7 @@ try {
 
       let threw: unknown;
       let returned: unknown;
-      const purgePubs = pubs(ep);
+      const purgeReqs = reqs(MANAGER_ENDPOINT, "purge");
       const purgedBefore = totalRuns("purge");
       const purgeSplitsBefore = ep.splitRecoveryCount;
       try {
@@ -567,8 +602,8 @@ try {
       // "exactly one publish" would today be the signature of a client that had STRANDED on its
       // stale bind. What must still hold is that the extra publishes carry no extra effect, which
       // the execution count above states directly.
-      check("...and the re-issue DID go out — more than one publish, and every one of them safe",
-        pubs(ep) - purgePubs > 1, { publishes: pubs(ep) - purgePubs });
+      check("...and the re-issue DID go out — more than one `purge` REQUEST, and every one of them safe",
+        reqs(MANAGER_ENDPOINT, "purge") - purgeReqs > 1, { purgeRequests: reqs(MANAGER_ENDPOINT, "purge") - purgeReqs });
       // GROUP B, NARROWED TO WHAT IT ACTUALLY MEASURES. The claim was: the bind naming a gone
       // incarnation must not survive the call, or every later deliberate call on this long-lived
       // handle reuses it and meets the same refusal forever — permanent, on an endpoint with no
@@ -625,7 +660,7 @@ try {
       if (mgrRecord) cache.set(third, { ...mgrRecord, responder: { ...mgrRecord.responder, instanceId: ghost } });
       let thirdThrew: unknown;
       let thirdReturned: unknown;
-      const thirdPubs = pubs(ep);
+      const thirdDescribes = reqs(third, "describe");
       const thirdPsBefore = totalRuns("ps");
       try {
         thirdReturned = await ep.invokeService(third, "ps");
@@ -649,9 +684,16 @@ try {
       // A re-issue is now the correct response to a refusal that proves nothing ran, so one publish
       // would today be the signature of a client stranded on its stale bind. What must still hold is
       // that no effect went with the extra publish — the manager's `ps` handler was never entered.
-      check("...and the re-issue WAS attempted (more than one publish) while nothing ran for it",
-        pubs(ep) - thirdPubs > 1 && totalRuns("ps") === thirdPsBefore,
-        { publishes: pubs(ep) - thirdPubs });
+      // THE REPAIR IS WITNESSED AT THE RESOLVE, NOT AT A RE-ISSUE, and that is the honest reading of
+      // this arm rather than a weaker one. The recovery drops the stale bind and re-resolves; for an
+      // endpoint nothing serves, that resolve finds no responder and the ORIGINAL refusal rethrows,
+      // so no second `ps` request is ever published (measured: zero). What the cell exists to state
+      // is WHICH endpoint the repair went looking for -- "the endpoint the account NAMES" -- and the
+      // describe carries exactly that. A recovery that resolved "manager" instead would have moved
+      // the manager's counter and left this one at zero.
+      check("...and the repair re-resolved against the endpoint the account NAMES, while nothing ran for it",
+        reqs(third, "describe") - thirdDescribes > 0 && totalRuns("ps") === thirdPsBefore,
+        { thirdDescribes: reqs(third, "describe") - thirdDescribes, psRuns: totalRuns("ps") - thirdPsBefore });
       check("...and the unknown endpoint's stale bind was dropped",
         cache.get(third) === undefined, { got: cache.get(third)?.responder.instanceId });
       cache.delete(third);
@@ -779,5 +821,6 @@ console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} faile
   await m2?.stop().catch(() => {});
   srv.kill("SIGKILL");
   rmSync(dir, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 process.exit(fail === 0 ? 0 : 1);

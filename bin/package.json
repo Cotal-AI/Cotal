@@ -1,6 +1,6 @@
 {
   "name": "cotal-ai",
-  "version": "0.18.0",
+  "version": "0.20.0",
   "description": "Cotal — lateral agent coordination over NATS. Run `npx cotal-ai` for the CLI.",
   "license": "Apache-2.0",
   "keywords": [
@@ -54,6 +54,7 @@
     "@cotal-ai/connector-hermes": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/pi": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/web": "workspace:*",
     "@nats-io/jetstream": "^3.4.0",
     "@nats-io/transport-node": "^3.4.0"

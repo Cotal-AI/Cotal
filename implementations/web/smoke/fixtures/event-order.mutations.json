@@ -1,0 +1,145 @@
+{
+  "command": "pnpm smoke:event-order",
+  "mutations": [
+    {
+      "name": "O1 the baseline is taken from the batch's first row instead of its minimum, so a history batch sorted by timestamp rather than by seq baselines on whichever frame the producer stamped earliest and manufactures a gap beneath it",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "          if (c.baseline === undefined || f.seq < c.baseline) c.baseline = f.seq;",
+      "replace": "          if (c.baseline === undefined) c.baseline = f.seq;",
+      "expectRed": "4.12 the baseline is the batch MINIMUM, not its first row"
+    },
+    {
+      "name": "O2 the buffered frames are released in arrival order instead of seq order, so a frame that arrived early is drawn before the frames it comes after and the reader sees the stream run backwards",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        heldFrames.sort((a, b) => (a.frame.seq - b.frame.seq) || (a.i - b.i));\n",
+      "replace": "",
+      "expectRed": "5.2 released in seq order, not arrival order"
+    },
+    {
+      "name": "O3 live frames are no longer held before the boundary, which is the first-arrival baseline this design exists to refuse: the first frame observed becomes the baseline and the retained range that follows reads as arriving beneath it",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        if (!settled) {\n          pending.push(entry);\n          return { emit: [], held: true, notes: [] };\n        }\n",
+      "replace": "",
+      "expectRed": "3.1 a live frame before the boundary is held"
+    },
+    {
+      "name": "O4 prefix-incomplete is reported at the first sequence too, so every chain that is complete from origin is marked as having lost its prefix and the marker stops meaning anything",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "          c.prefixIncomplete = c.baseline > FIRST_SEQ;",
+      "replace": "          c.prefixIncomplete = c.baseline >= FIRST_SEQ;",
+      "expectRed": "6.1 baseline 1 is NOT prefix-incomplete"
+    },
+    {
+      "name": "O5 the gap note and the fault flag are dropped, so a missing frame is applied forward silently: the consumer's sequence shows no hole and the wire shows nothing wrong",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "          notes.push({ type: \"gap\", ...hole });\n          c.faulted = true;\n",
+      "replace": "",
+      "expectRed": "7.3 a post-baseline discontinuity IS reported"
+    },
+    {
+      "name": "O6 epoch leaves the chain key, so two writers whose runId and seq collide by construction are folded into one chain and each one's frames read as gaps in the other's",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "      typeof frame.epoch === \"string\" ? frame.epoch : null,\n",
+      "replace": "",
+      "expectRed": "9.1 two epochs are two chains"
+    },
+    {
+      "name": "O7 the frontier only advances on an exact match, so one lost frame re-reports on every frame that follows it and the single event that mattered is buried under repetitions of itself",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "      if (seq >= c.next) c.next = seq + 1;",
+      "replace": "      if (seq === c.next) c.next = seq + 1;",
+      "expectRed": "7.7 the frame after a gap does not re-report it"
+    },
+    {
+      "name": "O8 the seq check leaves the frame test, so a part whose seq is a string or absent is treated as orderable: it is held at a boundary it can never satisfy and compared with arithmetic that yields nothing",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        if (p && typeof p === \"object\" && p.kind === KIND && isSeq(p.seq)) return p;",
+      "replace": "        if (p && typeof p === \"object\" && p.kind === KIND) return p;",
+      "expectRed": "10.1 a frame whose seq is a string passes through rather than being held"
+    },
+    {
+      "name": "O9 the activity backfill loses its failure arm, so a rejected request degrades the ordering with nothing on screen saying so: the settle still happens, and the reader is told the frames are complete when the half that would have proved it was never read",
+      "file": "implementations/web/src/web/app.js",
+      "find": "      try {\n        batch = await (await fetch(\"/api/activity?limit=200\")).json();\n      } catch (err) {\n        batch = [];\n        noteOrder([{ type: \"backfill-failed\", reason: err && err.message ? err.message : String(err) }]);\n      }",
+      "replace": "      batch = await (await fetch(\"/api/activity?limit=200\")).json();",
+      "expectRed": "12.5 and the failure is SURFACED rather than swallowed"
+    },
+    {
+      "name": "O10 the selected-channel history loses the same arm, so a channel whose history read failed is presented as a channel whose history was empty",
+      "file": "implementations/web/src/web/app.js",
+      "find": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();\n    } catch (err) {\n      msgs = [];\n      noteOrder([{ type: \"backfill-failed\", channel: key, reason: err && err.message ? err.message : String(err) }]);\n    } finally {",
+      "replace": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();\n    } finally {",
+      "expectRed": "12.11 and it too surfaces the failure"
+    },
+    {
+      "name": "O11 the feed bootstrap loses its single flight, so the stock startup's second call re-arms the machine while the first is still fetching and the frames the first one is holding become unreachable",
+      "file": "implementations/web/src/web/app.js",
+      "find": "  if (refreshing) return refreshing;\n",
+      "replace": "",
+      "expectRed": "13.4 so the frame held by the first one still reaches the feed"
+    },
+    {
+      "name": "O12 the channel bootstrap loses its single flight, so the poll's own repeated select for the SAME open channel supersedes the load in flight and the frames it held are dropped instead of drawn",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    if (selecting && selecting.key === key) return selecting.promise;\n",
+      "replace": "",
+      "expectRed": "13.7 so its held frame reaches the channel view"
+    },
+    {
+      "name": "O13 the settle goes back inside the all-activity branch while the arm stays unconditional, so a reader sitting on a channel, a DM or an agent holds every live frame in a machine that never settles",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    const settled = feedOrder.backfill(activity);",
+      "replace": "    const settled = selected === \"*\" ? feedOrder.backfill(activity) : { emit: [], notes: [] };",
+      "expectRed": "14.1 the boundary passes with a channel open"
+    },
+    {
+      "name": "O14 the settle moves off the failure path and back into the normal tail, so a throw from any request before the backfill leaves the boundary unpassed: the roster read was one of those, and no failure arm around the backfill covers it",
+      "file": "implementations/web/src/web/app.js",
+      "find": "\n  } finally {\n",
+      "replace": "\n  } catch (__e) {\n    throw __e;\n  }\n  {\n",
+      "expectRed": "14.7 a throw from the FIRST request still settles the boundary"
+    },
+    {
+      "name": "O15 the retained range is no longer audited, only its ends, so a batch whose middle is missing reads healthy forever: the baseline is right, the frontier is right, every later frame follows contiguously, and nothing on the live path can ever reveal it",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "          let run = 0;\n          for (let s = c.baseline + 1; s <= highest; s++) {\n            if (!c.seen.has(s)) {\n              run++;\n              continue;\n            }\n            if (run > 0) {\n              notes.push({ type: \"gap\", key, expected: s - run, got: s, missing: run });\n              c.faulted = true;\n              run = 0;\n            }\n          }\n",
+      "replace": "",
+      "expectRed": "16.1 a hole inside the batch IS reported"
+    },
+    {
+      "name": "O16 the hole that straddles the bootstrap seam is reported as a hard fault again, which fires on a healthy continuously publishing stream and latches: the frame that fills it a moment later clears nothing",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "        if (straddle) {",
+      "replace": "        if (false) {",
+      "expectRed": "17.1 the straddling hole is NOT a gap"
+    },
+    {
+      "name": "O17 every released frame is treated as straddling the seam, not just the first of its chain, so a frame missing BETWEEN two buffered arrivals of the same tap is downgraded to unconfirmed when it is a real loss",
+      "file": "implementations/web/src/web/event-order.js",
+      "find": "          const straddle = !c.released;",
+      "replace": "          const straddle = true;",
+      "expectRed": "17.9 a hole between two BUFFERED frames is a gap"
+    },
+    {
+      "name": "O18 the all-activity view stops drawing the notice, so the machine detects a missing frame and the surface the reader is actually looking at says nothing",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    ${orderNoticeHtml()}\n    <div class=\"feed\">",
+      "replace": "    <div class=\"feed\">",
+      "expectRed": "15.8 the all-activity view draws it"
+    },
+    {
+      "name": "O19 the channel view stops drawing it, so a reader who opened one channel to look at its frames is the one reader who cannot be told a frame is missing from it",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    ${orderNoticeHtml()}\n    <div class=\"clist\">",
+      "replace": "    <div class=\"clist\">",
+      "expectRed": "15.9 the channel view draws it"
+    },
+    {
+      "name": "O20 the unattributable start-up hole stops being drawn, so the page reports the one thing it could not find out as though it had found nothing wrong",
+      "file": "implementations/web/src/web/app.js",
+      "find": "  if (races.length) parts.push(`${races.length} possible ordering race${races.length === 1 ? \"\" : \"s\"} at start-up, unconfirmed`);\n",
+      "replace": "",
+      "expectRed": "15.5 an unattributable start-up hole is drawn as unconfirmed, not as loss"
+    }
+  ]
+}

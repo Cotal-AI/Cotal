@@ -268,6 +268,33 @@ smoke:principal-channel-witness
 smoke:part-renderer
 smoke:auth
 smoke:mutation-fixtures
+smoke:agui-conformance
+smoke:agui-kind
+smoke:lease-renew
+smoke:event-channel
+smoke:event-channel-resolve
+smoke:agui-split
+smoke:durable-source
+smoke:event-wal
+smoke:agui-wal-path
+smoke:agui-emitter
+smoke:agui-retry-duplicate
+smoke:agui-holder
+smoke:opencode-boot-prompt
+smoke:import-remedy
+smoke:broker-teardown
+smoke:event-channel-classify
+smoke:agui-render
+smoke:agui-render-parity
+smoke:agui-frame-dispatch
+smoke:view-events-filter
+smoke:event-order
+smoke:web-events-filter
+smoke:reaper
+smoke:scatter-liveness
+smoke:service-dereg
+smoke:manager-deregister
+smoke:scatter-pinned-probe
 
 # The cotal-lang runtime: the language package, the durable step journal and run driver, and the
 # mesh handler that binds the effect interface onto the real planes.

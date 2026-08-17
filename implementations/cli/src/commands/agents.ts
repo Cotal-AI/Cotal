@@ -2,7 +2,7 @@ import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, t
 import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
 import { connect } from "@nats-io/transport-node";
 import { c } from "../ui.js";
-import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit } from "../lib/control.js";
+import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness } from "../lib/control.js";
 import { attachClient, detachKey, meshSessionTransport } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
@@ -66,10 +66,24 @@ type AgentRow = {
   role?: string;
   agent: string;
   mode: string;
+  status: string;
+  uptimeMs: number;
   mesh: string;
   authHealth?: string;
   authReason?: string;
 };
+
+/** Compact process age for a row: `12s`, `47m`, `3.5h`, `2d 7h`. */
+function fmtUptime(ms: number): string {
+  const s = Math.max(0, Math.floor(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  const h = s / 3600;
+  if (h < 24) return `${h.toFixed(1)}h`;
+  const d = Math.floor(h / 24);
+  return `${d}d ${Math.floor(h - d * 24)}h`;
+}
 
 /**
  * WHERE does the named seat live? A `stop` or `attach` can only be served by the manager actually
@@ -100,7 +114,7 @@ async function locateSeat(v: FlagValues<typeof stopFlags>, name: string): Promis
   // manual escape hatch there, and docs/cli.md says so rather than this failing mysteriously.
   const probe = await resolveControlTarget(v, "control-caller-privileged");
   if (probe.auth.bearer) return { kind: "unpinned" };
-  const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth);
+  const scatter = await scatterManager(probe.space, probe.server, "ps", probe.auth, probe.spaceAuth);
   if (!scatter.ok) return { kind: "unpinned" }; // cannot locate ⇒ behave exactly as before, never worse
   const reachable = scatter.instances.filter((i) => i.reachable);
   const unreachable = scatter.instances.filter((i) => !i.reachable).map((i) => i.instanceId);
@@ -118,22 +132,73 @@ async function pinForTarget(v: FlagValues<typeof stopFlags>, verb: string): Prom
   const loc = await locateSeat(v, String(v.name));
   if (loc.kind === "pin") return loc.instanceId;
   if (loc.kind === "unpinned") return undefined;
-  // The honest error #383 asked for: name the search, not just the absence.
+  // The honest error #383 asked for: name the search, not just the absence. A registration that
+  // gave no answer within the deadline is NOT told to "retry": a manager whose host died never
+  // deregisters, so its row stays in the registry indefinitely and answers nothing, and a retry
+  // against it loops forever. Say what is known (registered, silent), what it may mean (a live
+  // slow host OR a dead registration), and the two real actions.
   const missed = loc.unreachable.length
-    ? ` ${loc.unreachable.length} manager instance(s) did not answer (${loc.unreachable.join(", ")}), so it may be hosted by one of those: retry, or \`${verb} --on <instance>\` (the whole id, as printed) if you know where it is.`
+    ? ` ${loc.unreachable.length} registered manager instance(s) gave no answer within the deadline (${loc.unreachable.join(", ")}). Either that host is alive but slow, or it died and its registration was never removed; if it is dead, deregister it. To address it directly: \`${verb} --on <instance>\` (the whole id, as printed).`
     : "";
   console.error(c.red(`✗ no managed agent "${v.name}" on any of the ${loc.checked} reachable manager instance(s) in this space.${missed}`));
   process.exit(1);
 }
 
-/** Render one managed-agent row (status + optional auth-health line), indented for the per-manager
- *  grouping a class scatter prints. */
+/**
+ * What one SILENT manager instance's row says. The wording lives here, in the CLI, and not in the
+ * scatter that produced the fact: core reports a frozen slot that did not answer, and turning that
+ * into a sentence for an operator is a rendering decision.
+ *
+ * "unreachable" was the old word for all four of these, and it was a network verdict this client
+ * never held. What it actually knows is narrower and more useful — whether it ASKED the broker
+ * about the instance, and what the broker said:
+ *
+ *  - `gone`: the broker itself reports nothing subscribed on that instance's rail. The registration
+ *    outlived its host, which never happens on its own and never heals on its own, so the row names
+ *    the verb that removes it.
+ *  - `unknown`: asked, nothing came back. "Alive but slow" and "wedged" are the same observation,
+ *    and neither is death — so this row still says only what happened.
+ *  - `not-probed` / `probe-refused`: this command could not ask. That is a fact about the command,
+ *    not the instance, and saying so is what keeps a local gap from reading as a remote fault.
+ */
+function silentManagerRow(liveness: ScatterInstanceLiveness | undefined, instanceId: string): string {
+  if (liveness === "gone")
+    return (
+      c.red("registration is stale") +
+      c.dim(` (the broker reports nothing subscribed on its rail; its host is gone and never deregistered)`) +
+      c.dim(`\n  ↳ remove the record: cotal deregister-instance --instance ${instanceId}`)
+    );
+  const why =
+    liveness === "probe-refused"
+      ? " (its liveness could not be probed: the broker refused this command's probe, named above)"
+      : liveness === "not-probed"
+        ? " (its liveness was not probed: this command holds no probe grant for it)"
+        : " (either the host is alive and slow, or it died and its registration was never removed)";
+  return c.red("registered, no answer within the deadline") + c.dim(why);
+}
+
+/** Render one managed-agent row (process fact, mesh fact, optional auth-health line), indented for
+ *  the per-manager grouping a class scatter prints.
+ *
+ *  Two facts, printed as two facts. The manager reports the PROCESS (`status` from the runtime
+ *  handle, `uptimeMs` from its start) and the MESH presence separately, and they disagree in the
+ *  common failure: a seat that is `running` for two days but `offline` on the mesh. Folding them
+ *  into one word rendered ten live processes as "offline" and a 57h-old process with no roster
+ *  entry as "starting…", both false. `mesh: absent` means exactly "not in the presence roster",
+ *  so it prints as that; the process age next to it tells the reader whether it is a fresh start
+ *  or a seat that never joined. */
 function printAgentRow(r: AgentRow, indent = ""): void {
-  const status =
+  const proc =
+    r.status === "running"
+      ? c.green("running") + c.dim(" " + fmtUptime(r.uptimeMs))
+      : r.status === "exited"
+        ? c.red("exited") + c.dim(" after " + fmtUptime(r.uptimeMs))
+        : c.yellow(r.status) + c.dim(" " + fmtUptime(r.uptimeMs));
+  const mesh =
     r.mesh === "absent"
-      ? c.yellow("starting…")
+      ? c.yellow("not in roster")
       : r.mesh === "offline"
-        ? c.dim("offline")
+        ? c.dim("mesh offline")
         : r.mesh === "working"
           ? c.green("working")
           : r.mesh === "waiting"
@@ -145,7 +210,7 @@ function printAgentRow(r: AgentRow, indent = ""): void {
   console.log(
     `${indent}${c.bold(r.name)}${r.role ? c.dim("/" + r.role) : ""}  ${c.dim(
       r.agent + " · " + r.mode,
-    )}  ${status}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
+    )}  ${proc}  ${mesh}${r.authHealth ? "  " + authColor(r.authHealth) : ""}`,
   );
   // The detached agent's ONLY operator window into a failing bearer refresh: the provider command's
   // operator-exact sentence, verbatim (it already names the repair).
@@ -199,7 +264,7 @@ export async function ps(args: ParsedArgs): Promise<void> {
     return;
   }
 
-  const scatter = await scatterManager(t.space, t.server, "ps", t.auth);
+  const scatter = await scatterManager(t.space, t.server, "ps", t.auth, t.spaceAuth);
   if (!scatter.ok) {
     console.error(c.red(`✗ ${scatter.error}`));
     process.exit(1);
@@ -229,7 +294,10 @@ export async function ps(args: ParsedArgs): Promise<void> {
   for (const inst of instances) {
     const label = `manager ${inst.instanceId}`;
     if (!inst.reachable) {
-      console.log(`${c.bold(label)}  ${c.red("unreachable")}`);
+      // Not "unreachable": the client holds no network verdict. What it knows is which question it
+      // asked about this instance and what came back, which is narrower and more useful. The four
+      // cases and their wording are `silentManagerRow`.
+      console.log(`${c.bold(label)}  ${silentManagerRow(inst.liveness, inst.instanceId)}`);
       continue;
     }
     if (inst.error) {

@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-codex",
   "description": "Cotal connector for OpenAI Codex: a host-mode peer driving codex app-server, with Codex's own TUI attached and the cotal_* tools served over a loopback MCP endpoint.",
-  "version": "0.18.0",
+  "version": "0.20.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -29,6 +29,7 @@
   "devDependencies": {
     "@cotal-ai/connector-core": "workspace:*",
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@modelcontextprotocol/sdk": "^1.29.0",
     "@types/ws": "^8.18.1",
     "esbuild": "^0.28.0",

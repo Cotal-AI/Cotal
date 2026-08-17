@@ -38,7 +38,7 @@
  * Run: pnpm smoke:unfenced-responder
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -50,6 +50,7 @@ import {
   type EndpointReply, type EpCaller, type ResolvedService,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 let pass = 0, fail = 0;
 const c = (name: string, cond: boolean, extra?: unknown) => {
@@ -80,8 +81,9 @@ const argsContract = compileContract({ root: { type: "object", properties: { n: 
 const outContract = compileContract({ root: { type: "object", properties: { ran: { type: "boolean" } }, required: ["ran"], additionalProperties: false } });
 
 const PORT = await pickFreePort();
-const sd = mkdtempSync(join(tmpdir(), "unfenced-"));
+const sd = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a", "127.0.0.1"], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(broker, sd);
 await new Promise((r) => setTimeout(r, 900));
 
 const enc = new TextEncoder(), dec = new TextDecoder();
@@ -141,6 +143,10 @@ const sub = nc.subscribe(epServeFilter(SPACE, "one", EP), {
           code: "failed-precondition",
           message: `${EP}.${env.op.command} WAS NOT RUN - this is ${IID_REAL} epoch ${EPOCH} (SPEC 13.2)`,
           details: [{ kind: EP_BIND_REFUSED, endpoint: EP, command: env.op.command, boundTo, servedBy }],
+          // A FENCED responder refusing before dispatch MUST state this (SPEC 13.3), and since the
+          // caller now requires it before re-issuing, a fixture that omitted it was modelling a
+          // responder the spec forbids and would never be repaired.
+          outcome: "not-executed",
         },
       };
     }
@@ -397,6 +403,10 @@ try {
   await ep.stop().catch(() => {});
   await nc.drain().catch(() => nc.close());
   broker.kill("SIGKILL");
+  // The store dir goes with it. Reaping the broker and leaving its tree is what made this
+  // suite leak a directory on every green run.
+  rmSync(sd, { recursive: true, force: true });
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 
 console.log(`\n${fail === 0 ? "PASS" : "FAIL"} — ${pass} passed, ${fail} failed`);
