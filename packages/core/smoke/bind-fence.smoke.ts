@@ -64,7 +64,7 @@ const throws = (name: string, fn: () => unknown, code?: string) => {
 /** Declared, not implied: a live suite can end early in ways that redden no cell — a broker that
  *  never came up, a hang the runner kills, a top-level rejection — and `fail === 0` reads as PASS
  *  in every one of them, with the exit code to match. */
-const EXPECTED_CELLS = 25;
+const EXPECTED_CELLS = 27;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -86,10 +86,16 @@ const withOutcome = (outcome?: string) => ({ code: "failed-precondition", messag
 
 c("a refusal stating `not-executed` is a refusal (the conforming case, unchanged)",
   replyRefusedBeforeEffect(withOutcome("not-executed")) === true);
-// §13.3 permits omitting the field, and a responder too old to know it emits exactly this. Refusing
-// it here would stop core repairing splits for a third party that is otherwise behaving.
-c("a refusal omitting the outcome is STILL a refusal (absence is permitted, so it stays accepted)",
-  replyRefusedBeforeEffect(withOutcome(undefined)) === true);
+// SPEC 1510: an error reply that omits `outcome` MUST be read as `unknown`. SPEC 2271: a client
+// MUST NOT automatically re-issue a `write` after any outcome that does not prove non-execution.
+// This predicate licenses a re-issue that skips the repeat-safe gate, so accepting absence made
+// core do exactly what 2271 forbids. Absence and explicit `unknown` are one value and get one
+// answer; the responder that omits the field is already non-conforming, since a refusal raised
+// before dispatch MUST carry `not-executed`.
+c("a refusal omitting the outcome is NOT a refusal (absence reads as `unknown`, SPEC 1510)",
+  replyRefusedBeforeEffect(withOutcome(undefined)) === false);
+c("...and it gets the SAME answer as explicit `unknown`, because SPEC 1510 makes them one value",
+  replyRefusedBeforeEffect(withOutcome(undefined)) === replyRefusedBeforeEffect(withOutcome("unknown")));
 c("SELF-CONTRADICTORY: the marker paired with `executed` is NOT a refusal, so it cannot ungate a re-issue",
   replyRefusedBeforeEffect(withOutcome("executed")) === false);
 c("the marker paired with `unknown` is NOT a refusal either (a responder that cannot tell has not said no)",
@@ -201,6 +207,15 @@ try {
   // preserved it rather than rebuilding the error without it.
   c("...and `outcome: not-executed`, the field a peer that does not know the marker reads",
     refused.reply.error?.outcome === "not-executed", refused.reply.error);
+  // THE CONFORMING PATH STILL HEALS, asserted on a LIVE refusal rather than a hand-built one,
+  // because tightening the predicate to require `not-executed` is only safe if a real responder
+  // actually emits it. This is the pair the tightening depends on: the same reply carries the
+  // marker AND the field, so it still licenses the re-issue that skips the repeat-safe gate.
+  // It proves the LICENCE, not the repair; the end-to-end repair is graded in the manager's
+  // split suite, which drives a real re-issue against two live incarnations.
+  c("A CONFORMING REFUSAL STILL LICENSES THE REPAIR: marker and `not-executed` on one live reply",
+    replyRefusedBeforeEffect(refused.reply.error) === true && refused.reply.error?.outcome === "not-executed",
+    refused.reply.error);
 
   console.log("\n2. the same instance at another epoch is a different incarnation");
   const stale = await call({ instanceId: IID_A, epoch: EPOCH + 7 });
@@ -275,11 +290,16 @@ try {
   // The marker is a body field, so a responder could always emit one after doing the work; what
   // stops that from becoming a free "nothing ran" is the caller cross-checking it against the
   // reply SUBJECT, which the broker pins.
+  // The liar states `not-executed` as well as the marker, which is now the ONLY shape that reaches
+  // the coherence checks at all: they are gated on `replyRefusedBeforeEffect`, and a refusal that
+  // omits the outcome no longer satisfies it. That makes this the maximally credible forgery rather
+  // than a weaker one, so the cell tests a stronger case than before. A forger has no reason to omit
+  // a field that costs nothing to set, and one that does omit it is now inert instead of honored.
   const liar = await bring(IID_LIAR, () => {
     runs[IID_LIAR]++;
     throw new EpEnvelopeError("failed-precondition", "I did not run this (I did)", [
       { kind: EP_BIND_REFUSED, endpoint: EP, command: "poke", boundTo: { instanceId: IID_LIAR, epoch: EPOCH }, servedBy: { instanceId: GHOST, epoch: EPOCH } },
-    ]);
+    ], "not-executed");
   });
   // Address the liar directly so the class queue cannot hand this to A.
   await rejects("a bind refusal from the very incarnation the caller bound is internal, never honored",

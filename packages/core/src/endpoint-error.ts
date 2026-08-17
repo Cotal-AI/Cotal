@@ -152,14 +152,23 @@ export interface EpBindRefusedDetail extends EpErrorDetail {
  *  command the reply just said had ALREADY RUN. A present outcome that disagrees therefore wins, and
  *  the reply is not read as a refusal.
  *
- *  AN ABSENT OUTCOME IS STILL ACCEPTED, and that is deliberate rather than an oversight. §13.3
- *  permits omitting it, and a responder too old to know the field emits exactly that; refusing those
- *  would stop core repairing splits for a third-party responder that is behaving, turning a healed
- *  split into a surfaced failure. Requiring presence is a protocol tightening with a real victim
- *  class, and it is a SPEC question rather than one settled by editing this predicate. */
+ *  AN ABSENT OUTCOME IS NOT A REFUSAL EITHER, and it is the same answer as `unknown` because the
+ *  spec says they are the same value: SPEC 1510, "an error reply that omits `outcome` MUST be read
+ *  as `unknown`". An earlier revision accepted absence, on the argument that a responder too old to
+ *  know the field emits exactly that and refusing it would stop core repairing splits for a third
+ *  party that is otherwise behaving. That argument does not survive SPEC 2271: a client MUST NOT
+ *  automatically re-issue a command declared `write` after any outcome that does not prove
+ *  non-execution, whatever `id` the re-issue carries, and `unknown` proves nothing. Since this
+ *  predicate is what licenses a re-issue that SKIPS {@link isRepeatSafeCommand}, accepting absence
+ *  made core re-issue writes on an outcome the spec says is `unknown`.
+ *
+ *  The cost is real and it is bounded: a responder that omits the field no longer has its splits
+ *  repaired. That responder is already non-conforming, because §13.3 requires a refusal raised
+ *  before dispatch to carry `not-executed`, so what it loses is a repair it was never owed. This
+ *  endpoint's own responder sets the field, so conforming deployments are unaffected. */
 export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
   if (!(e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED)) return false;
-  return e?.outcome === undefined || e.outcome === "not-executed";
+  return e?.outcome === "not-executed";
 }
 
 /** §13.3 **Effect outcome**: whether the command's effect occurred. Emitted by the RESPONDER,

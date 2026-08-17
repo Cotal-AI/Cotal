@@ -98,7 +98,10 @@ a mutation: the older behaviour detected the mismatch on the reply, after the ma
 already acted, and could only tell you to go and check. `--on` still matters for reaching a
 specific manager (`ps`, `stop`, `attach`, `spawn --detach`), but it is no longer what stands
 between a split and a duplicated spawn. Against a manager older than this fence the refusal is
-still after the fact, and its message says so. `ps` and
+still after the fact, and its message says so. The re-issue is automatic only when the refusal
+states `not-executed` in its `outcome` field; a refusal that omits the field, or states
+`unknown`, is surfaced to the caller instead of repaired, because neither proves the command did
+not run. `ps` and
 `status` become a **scatter** across every registered instance: the caller freezes the
 expected set from the service registry, invokes each under a shared deadline, and merges the
 results with per-instance attribution. A non-answering instance is labelled unreachable,
