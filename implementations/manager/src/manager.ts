@@ -709,9 +709,12 @@ export class Manager {
   private leaseInfo?: Omit<ManagerLeaseInfo, "since">;
   private leaseRevision?: number;
   private leaseTimer?: ReturnType<typeof setInterval>;
-  /** When the broker last CONFIRMED this instance holds its lease key — a successful acquire, renew,
-   *  or re-read. Not "when we last tried": the gap since a confirmation is the only thing that bounds
-   *  how long we may keep serving without proof.
+  /** When this instance last knew the key's TTL had been REFRESHED: a successful acquire or renew, or
+   *  a re-read showing the revision moved past the one we held (our write landed, only its ack was
+   *  lost). The gap since then is the only thing bounding how long we may keep serving with no answer
+   *  at all, so it must track the last TTL-refreshing WRITE and not the last successful observation.
+   *  A re-read at the same revision is deliberately NOT a refresh: it proves the key exists at that
+   *  instant, while the key still expires when the last landed write said it would.
    *
    *  MONOTONIC (`performance.now`), not wall clock, because it is only ever read as an ELAPSED time.
    *  `Date.now` steps on an NTP correction or a suspend/resume, and a backward step would shorten the
@@ -1593,9 +1596,22 @@ export class Manager {
         const why = (renewError as Error).message;
         const verdict = await this.reconcileLease();
         if (verdict.kind === "held") {
+          // WHETHER THIS REFILLS THE BUDGET TURNS ON ONE THING: did our write land? It did, with only
+          // its acknowledgement lost, exactly when the stored revision has moved past the one we hold.
+          // That write is what restarted the key's TTL, so only it may reset the clock below.
+          //
+          // A re-read at the SAME revision proves the key exists AT THAT INSTANT and nothing more. Our
+          // write did not land, the TTL was not restarted, and the key still expires when the last
+          // landed write said it would. Resetting the clock here would measure the budget from the last
+          // OBSERVATION rather than from the last TTL-refreshing write, and the budget would then
+          // outlive the key: a streak of same-revision re-reads keeps refilling it, and if reads then
+          // stop answering too, this instance goes on serving for a further whole TTL after the key has
+          // actually expired and a same-id restart has taken it. Serving on a key we can still SEE is
+          // right; buying more time to serve on a key we cannot see is not.
+          const landed = verdict.revision > this.leaseRevision;
           this.leaseRevision = verdict.revision;
-          this.leaseConfirmedAt = performance.now();
-          console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) - the key is still ours at revision ${verdict.revision}, so this instance keeps serving`);
+          if (landed) this.leaseConfirmedAt = performance.now();
+          console.error(`! manager instance ${this.managerInstanceId} could not renew its liveness lease for space "${this.space}" (${why}) - the key is still ours at revision ${verdict.revision}${landed ? ", and that renew had in fact landed" : ", though this renew did not land, so the key's TTL was not restarted"}, so this instance keeps serving`);
           return;
         }
         if (verdict.kind === "unknown") {
