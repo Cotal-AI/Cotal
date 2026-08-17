@@ -77,6 +77,27 @@ export function resolvePeer(
 }
 
 /**
+ * Is every UTF-16 surrogate in `s` properly paired?
+ *
+ * `String.prototype.isWellFormed()` does exactly this, but it is ES2024 and this package targets an
+ * earlier lib; raising the target repo-wide to gain one predicate would be a build-config change
+ * reaching every package, for a check that is eight lines here. A high surrogate must be followed by
+ * a low one, and a low surrogate must not appear on its own.
+ */
+function isWellFormedUtf16(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    const c = s.charCodeAt(i);
+    if (c >= 0xdc00 && c <= 0xdfff) return false; // a low surrogate reached without its high
+    if (c >= 0xd800 && c <= 0xdbff) {
+      const next = s.charCodeAt(i + 1);
+      if (!(next >= 0xdc00 && next <= 0xdfff)) return false; // high surrogate unpaired (or at end: NaN)
+      i++; // consume the pair
+    }
+  }
+  return true;
+}
+
+/**
  * Validate a display name. A name must be non-empty, single-line, and free of surrounding
  * whitespace; `/` is reserved as the future `owner/name` separator (and already means "a path"
  * to the agent-file loader). Throws — no silent rewrite (per AGENTS.md, no fallbacks). Internal
@@ -91,4 +112,22 @@ export function assertValidName(name: string): void {
     throw new Error(`invalid name ${JSON.stringify(name)}: "/" is reserved (the owner/name separator)`);
   if (name.includes("\\"))
     throw new Error(`invalid name ${JSON.stringify(name)}: "\\" is reserved (a Windows path separator)`);
+  // A name must be well-formed UTF-16 — no unpaired surrogate. This is an IDENTITY rule, not a
+  // tidiness one, and it is here at the shared choke point rather than at one consumer.
+  //
+  // An unpaired surrogate cannot be encoded as UTF-8: every encoder replaces it with U+FFFD. So the
+  // moment a name crosses any UTF-8 boundary, DISTINCT names become the SAME bytes. Two consequences
+  // were measured on this repo, and both are silent:
+  //   - `createHash().update(name)` hashes the replaced bytes, so "\uD800", "\uD801" and "\uFFFD"
+  //     produce one digest — and any identifier derived from that digest merges the three principals.
+  //   - the launch environment normalizes the name on the way to a child process, so the child's
+  //     idea of its own name can differ from the parent's while both believe they agree.
+  // Refusing here is the only fix that covers both; a consumer that hashes injectively still cannot
+  // stop the name itself from changing shape as it crosses a process boundary.
+  if (!isWellFormedUtf16(name))
+    throw new Error(
+      `invalid name ${JSON.stringify(name)}: contains an unpaired UTF-16 surrogate. Such a name ` +
+        `cannot survive UTF-8 encoding — it is replaced with U+FFFD — so distinct names would ` +
+        `silently become one identity.`,
+    );
 }
