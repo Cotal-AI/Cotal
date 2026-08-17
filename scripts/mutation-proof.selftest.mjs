@@ -12,7 +12,7 @@
  *
  * Run: node scripts/mutation-proof.selftest.mjs
  */
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync, statSync } from "node:fs";
 import { execSync, spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join, dirname } from "node:path";
@@ -537,6 +537,37 @@ check("an anchored progress pattern counts per LINE, not once per transcript",
 const after = execSync("git status --porcelain", { cwd: root, encoding: "utf8" }).trim();
 check("every run restored the tree", after === "", { after });
 check("...and the guard is byte-intact", readFileSync(join(root, "src/impl.js"), "utf8").includes("if (n > 10)"));
+
+// 9. Restoring the BYTES is not restoring the FILE. `copyFileSync` is a write, so a restored file
+// carries a fresh mtime while its content is provably unchanged — and every tool that compares a
+// source against a build reads exactly that. After a real graded run, `smoke:dist-freshness` named
+// `packages/core` stale and refused the 261-suite chain at its first entry, for a file nobody had
+// edited. The sha checks above stay green through all of it, which is why this asserts the TIME.
+//
+// Back-date first: without it a fast restore lands in the same millisecond as the original and the
+// check passes whether or not the timestamp was preserved.
+const timed = join(root, "src/impl.js");
+const OLD_MS = Date.now() - 3600_000;
+execSync(`touch -d ${JSON.stringify(new Date(OLD_MS).toISOString())} ${JSON.stringify(timed)}`);
+const mtimeBefore = statSync(timed).mtimeMs;
+const startedMs = Date.now();
+r = runTool([
+  "--command", `${process.execPath} suite.mjs`,
+  "--file", "src/impl.js",
+  "--find", "if (n > 10)\n    return false;",
+  "--replace", "if (false)\n    return false;",
+  "--expect-red", "oversized values are refused",
+]);
+const mtimeAfter = statSync(timed).mtimeMs;
+// Not an equality test. `statSync` surfaces a nanosecond timestamp as a millisecond Date and
+// `utimesSync` can only write that precision back, so a faithful restore still lands up to 1ms
+// off. The defect is not imprecision, it is the mtime becoming NOW — so the discriminating
+// question is whether the restored time predates the run that touched it.
+check("a restored file keeps its original mtime, not the time of the restore",
+  verdictIs(r.stdout, "KILLED") && mtimeAfter < startedMs && Math.abs(mtimeAfter - mtimeBefore) <= 1,
+  { mtimeBefore, mtimeAfter, startedMs, movedMs: mtimeAfter - mtimeBefore });
+check("...and the content is unchanged too, so the time was not preserved by skipping the restore",
+  readFileSync(timed, "utf8").includes("if (n > 10)"));
 
 rmSync(root, { recursive: true, force: true });
 console.log(`\nMUTATION-PROOF SELF-TEST PASSED ✅  (${pass} checks)`);
