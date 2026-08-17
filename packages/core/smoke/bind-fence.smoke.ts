@@ -64,7 +64,7 @@ const throws = (name: string, fn: () => unknown, code?: string) => {
 /** Declared, not implied: a live suite can end early in ways that redden no cell — a broker that
  *  never came up, a hang the runner kills, a top-level rejection — and `fail === 0` reads as PASS
  *  in every one of them, with the exit code to match. */
-const EXPECTED_CELLS = 20;
+const EXPECTED_CELLS = 25;
 process.on("exit", () => {
   const ran = pass + fail;
   if (ran !== EXPECTED_CELLS) {
@@ -72,6 +72,32 @@ process.on("exit", () => {
     process.exitCode = 1;
   }
 });
+
+// ── A REPLY THAT CONTRADICTS ITSELF IS NOT A REFUSAL (no broker needed; the predicate is pure) ───
+// `replyRefusedBeforeEffect` is what licenses core to re-issue a command WITHOUT the repeat-safe
+// gate. It read the marker alone, and `EpBindRefusedDetail` carries no outcome, so a reply asserting
+// BOTH "refused before any effect" and `outcome: "executed"` was resolved toward re-issuing — sending
+// again a command the same reply said had already run. These cells run before the broker so they
+// still grade if it never comes up.
+const refusalDetail = { kind: EP_BIND_REFUSED, endpoint: "manager", command: "define-persona",
+  boundTo: { instanceId: "a".repeat(26), epoch: 1 }, servedBy: { instanceId: "b".repeat(26), epoch: 1 } };
+const withOutcome = (outcome?: string) => ({ code: "failed-precondition", message: "refused",
+  details: [refusalDetail], ...(outcome ? { outcome } : {}) }) as unknown as Parameters<typeof replyRefusedBeforeEffect>[0];
+
+c("a refusal stating `not-executed` is a refusal (the conforming case, unchanged)",
+  replyRefusedBeforeEffect(withOutcome("not-executed")) === true);
+// §13.3 permits omitting the field, and a responder too old to know it emits exactly this. Refusing
+// it here would stop core repairing splits for a third party that is otherwise behaving.
+c("a refusal omitting the outcome is STILL a refusal (absence is permitted, so it stays accepted)",
+  replyRefusedBeforeEffect(withOutcome(undefined)) === true);
+c("SELF-CONTRADICTORY: the marker paired with `executed` is NOT a refusal, so it cannot ungate a re-issue",
+  replyRefusedBeforeEffect(withOutcome("executed")) === false);
+c("the marker paired with `unknown` is NOT a refusal either (a responder that cannot tell has not said no)",
+  replyRefusedBeforeEffect(withOutcome("unknown")) === false);
+// CONTROL: the outcome alone must not manufacture a refusal out of a reply that carries no marker,
+// or the predicate would have stopped testing the thing it is named for.
+c("CONTROL: `not-executed` WITHOUT the marker is not a refusal (the marker is still required)",
+  replyRefusedBeforeEffect({ code: "failed-precondition", message: "x", outcome: "not-executed" }) === false);
 
 const SPACE = "bindfence";
 const EP = "manager";

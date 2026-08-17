@@ -141,9 +141,25 @@ export interface EpBindRefusedDetail extends EpErrorDetail {
  *
  *  It takes an `EpError` and not a thrown value, unlike its sibling predicates, because this
  *  refusal never arrives as a throw: it is the responder's own application-level failure and
- *  those ride the reply (§13.5). A consumer reads it off `reply.error`. */
+ *  those ride the reply (§13.5). A consumer reads it off `reply.error`.
+ *
+ *  A REPLY THAT CONTRADICTS ITSELF IS NOT A REFUSAL. The marker IS the assertion that the command
+ *  did not run, and {@link EpError.outcome} says a responder refusing before dispatch MUST carry
+ *  `not-executed` — but {@link EpBindRefusedDetail} carries no outcome of its own, so nothing in the
+ *  type stops a reply pairing the marker with `executed`. That combination is not merely odd: the
+ *  only consumer of this predicate re-issues a command **without** the {@link isRepeatSafeCommand}
+ *  gate, on the strength of the marker, so resolving the contradiction toward "refused" re-sends a
+ *  command the reply just said had ALREADY RUN. A present outcome that disagrees therefore wins, and
+ *  the reply is not read as a refusal.
+ *
+ *  AN ABSENT OUTCOME IS STILL ACCEPTED, and that is deliberate rather than an oversight. §13.3
+ *  permits omitting it, and a responder too old to know the field emits exactly that; refusing those
+ *  would stop core repairing splits for a third-party responder that is behaving, turning a healed
+ *  split into a surfaced failure. Requiring presence is a protocol tightening with a real victim
+ *  class, and it is a SPEC question rather than one settled by editing this predicate. */
 export function replyRefusedBeforeEffect(e: EpError | undefined): boolean {
-  return (e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED);
+  if (!(e?.details ?? []).some((d) => d.kind === EP_BIND_REFUSED)) return false;
+  return e?.outcome === undefined || e.outcome === "not-executed";
 }
 
 /** §13.3 **Effect outcome**: whether the command's effect occurred. Emitted by the RESPONDER,
