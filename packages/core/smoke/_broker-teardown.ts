@@ -66,17 +66,16 @@ function reap(): void {
 function arm(): void {
   if (armed) return;
   armed = true;
-  // WHICH OF THESE TWO ACTUALLY FIRES DEPENDS ON THE RUNNER, and it is not the one you would guess.
-  // Every suite here runs under `tsx`, which converts a terminating signal into an ordinary exit
-  // (measured: a fixture with NO signal listener, sent SIGTERM directly, still ran its `exit` handler
-  // and reported code 143). So on the runner these suites actually use, the `exit` registration below
-  // is the load-bearing one and the signal handlers are redundant.
+  // THESE TWO ARE INDEPENDENTLY SUFFICIENT UNDER `tsx`, established by disabling each in turn and
+  // watching the suite stay green both times. With a signal listener registered, tsx delivers the
+  // signal and the handler reaps. With none, tsx converts the signal into an ordinary exit and the
+  // `exit` handler reaps: measured directly, a fixture registering only `process.on("exit")`, sent
+  // SIGTERM at its own pid, printed `EXIT HANDLER RAN code=143`.
   //
-  // They are kept because the redundancy is one-directional: run the same file under plain `node`
-  // (a compiled suite, or a future runner that does not intercept), and a default-disposition SIGTERM
-  // terminates without ever running an `exit` handler, at which point the signal handlers are the
-  // only thing left. The suite says so in its own output rather than implying both are proven: the
-  // signal handlers are UNOBSERVED under `tsx`, not verified by it.
+  // Both are kept because the sufficiency is runner-specific, not universal: under plain `node` a
+  // default-disposition SIGTERM terminates without running an `exit` handler at all, and there the
+  // signal handlers are the only thing left. The suite prints that they are UNOBSERVED here rather
+  // than letting a green run imply this runner proved them.
   process.on("exit", reap);
   for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"] as const) {
     // A NAMED handler removed with `process.off`, never `removeAllListeners`: this helper is meant to
