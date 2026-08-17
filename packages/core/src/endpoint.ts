@@ -1452,6 +1452,11 @@ export class CotalEndpoint extends EventEmitter {
               refusalCode,
               `${endpoint}.${command} WAS NOT RUN - the incarnation that received it refused it before any effect, and the re-issue could not be resolved: ${reissue instanceof Error ? reissue.message : String(reissue)}. Re-resolve and re-issue when the endpoint is reachable (SPEC 13.2)`,
               r.reply.error?.details,
+              // §13.3: the message asserts the command did not run, so the FIELD a caller keys on
+              // must assert it too. Omitted, it MUST be read as `unknown`, which is the opposite of
+              // what this path knows: the responder fenced the call before any effect and the
+              // re-issue never went out. Prose is for the reader; this is for the machine.
+              "not-executed",
             );
           }
           return await invokeCommand(nc, this.space, reissueTarget, command, args, invokeOpts);
