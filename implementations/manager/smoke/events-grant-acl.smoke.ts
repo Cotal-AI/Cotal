@@ -411,6 +411,60 @@ try {
     );
   }
 
+  // 8 - THE ACTOR HALF IS THE PRINCIPAL, and a resume document supplies `name` and
+  // `identity.actor` independently. In user mode the row this document re-arms is keyed by
+  // `identity.actor`: it is what the provider adopts below, what the incarnation bind reads, and
+  // what the minted credential carries. Judging the channel against `name` would judge it against
+  // the half that does not own the plane, so a record whose NAME is the victim and whose PRINCIPAL
+  // is somebody else would arm the victim's plane for that somebody else.
+  //
+  // A user-mode entry reaches this rule on a static manager because the rule runs BEFORE the mode
+  // check that refuses it. That is exactly why the discriminator here is the refusal TEXT: both
+  // arms are refused, and only one of them is refused by this rule.
+  {
+    const owner = "resumeowner";
+    const victimName = "victimseat";
+    const build = (withForeign: boolean): ManagerResumeInventory => {
+      const inv = JSON.parse(JSON.stringify({ ...preserved, agents: [preserved!.agents[0]] })) as ManagerResumeInventory;
+      const e = inv.agents[0]! as unknown as { name: string; identity: unknown; launch: { allowSubscribe?: string[]; allowPublish?: string[] } };
+      e.name = victimName;
+      // The record was written for a STATIC agent that was armed with its own plane, and rewriting
+      // its identity would make that plane foreign too. Strip every event channel first so the one
+      // this cell adds is the only difference between the two arms.
+      const noEvents = (list?: string[]): string[] | undefined => list?.filter((ch) => !ch.startsWith("events."));
+      e.launch.allowSubscribe = noEvents(e.launch.allowSubscribe);
+      e.launch.allowPublish = noEvents(e.launch.allowPublish);
+      // Its identity files are the REAL retained credential of the static agent this record was
+      // copied from: pointing them at invented paths only proves that the reference check runs
+      // first, which is not what this cell is about.
+      const cred = (preserved!.agents[0]!.identity as unknown as { credential: { path: string; sha256: string } }).credential;
+      e.identity = {
+        mode: "user",
+        owner,
+        actor: "attackerseat",
+        lifecycleUid: "aaaaaaaa",
+        actorToken: { kind: "file", path: cred.path, sha256: cred.sha256 },
+        sentinelCredential: { kind: "file", path: cred.path, sha256: cred.sha256 },
+        health: { kind: "file", path: cred.path },
+      };
+      if (withForeign)
+        e.launch.allowSubscribe = [...(e.launch.allowSubscribe ?? []), eventChannel({ owner, actor: victimName })];
+      return inv;
+    };
+    const rf = JSON.stringify(await newManager().resumePreserved(build(true)));
+    check(
+      "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
+      /another agent's event channel/.test(rf),
+      rf.slice(0, 400),
+    );
+    const rc2 = JSON.stringify(await newManager().resumePreserved(build(false)));
+    check(
+      "the SAME record without that channel is refused for its own reason, not by this rule",
+      !/another agent's event channel/.test(rc2),
+      rc2.slice(0, 400),
+    );
+  }
+
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
@@ -418,7 +472,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 31;
+const EXPECTED = 33;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

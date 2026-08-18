@@ -40,7 +40,6 @@ import {
   epCallerReplyFilter,
   parseEpSubject,
   controlServiceSubject,
-  isEventChannel,
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
@@ -3231,7 +3230,7 @@ export class Manager {
       // because it has just allocated the principal.
       //
       // STATED LIMIT, because a fence whose gap is discovered later is worse than one whose gap is
-      // written down. `isEventChannel` derives a principal and refuses anything that is not exactly
+      // written down. `eventChannelPrincipal` decodes a principal and refuses anything that is not exactly
       // two principal tokens, so a WILDCARD is not an event channel to it: `events.<owner>.>` and
       // `events.>` pass this rule untouched and are governed by ordinary ACL authority, which on a
       // user mesh is the envelope and on a static mesh is the spawn credential itself. So this
@@ -3564,9 +3563,7 @@ export class Manager {
     }
   }
 
-  /**
-
-/** Re-read every retained identity input and its current authority without provisioning. This runs
+  /** Re-read every retained identity input and its current authority without provisioning. This runs
    * during whole-inventory preflight, immediately before each individual spawn, and at commit. */
   private async validateRetainedAuthority(
     entry: ManagerResumeAgent,
@@ -3591,7 +3588,12 @@ export class Manager {
     // is reachable is that nobody reads the record.
     {
       const owner = entry.identity.mode === "user" ? entry.identity.owner : DEV_OWNER;
-      const actor = entry.identity.mode === "user" ? entry.name : entry.identity.id;
+      // The ACTOR HALF IS THE PRINCIPAL, never the display name. In user mode the row this
+      // document re-arms is keyed by `identity.actor` (it is what the provider adopts below and
+      // what every liveness check reads), and an inventory supplies `name` and `identity.actor`
+      // independently, so judging the channel against `name` would judge it against the half that
+      // does not own the plane.
+      const actor = entry.identity.mode === "user" ? entry.identity.actor : entry.identity.id;
       const foreign = foreignEventChannels(
         [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],
         owner,

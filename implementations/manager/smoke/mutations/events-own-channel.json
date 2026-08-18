@@ -14,6 +14,9 @@
     "fields, which is the shape a refactor produces and which E1 cannot distinguish. E3 goes the other",
     "way and makes the rule catch MORE than it claims to, which is the only way to show the",
     "stated-limit cell is an assertion rather than a sentence. E4 removes the rule from the RESUME door",
+    "E5 swaps the resume door's actor half from the principal to the display name. A resume document",
+    "supplies both independently, so that mutant re-arms the victim's plane for a different principal while",
+    "E4's cell and every spawn cell stay green.",
     "while leaving it on the spawn door, which is the state this PR was in when a security review found",
     "it: every spawn cell stayed green and a foreign concrete channel was mintable through an inventory.",
     "",
@@ -58,6 +61,15 @@
       "expectRed": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
       "cell": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
       "note": "Not an invented mutant: this is exactly the state the change was in when a security review reproduced a foreign concrete event channel being minted through an admin inventory plus one credential renewal. Every spawn cell stays green under it, which is why it needed its own cell rather than trust in the existing ones."
+    },
+    {
+      "name": "E5 the resume door judges the channel against the display name, not the principal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const actor = entry.identity.mode === \"user\" ? entry.identity.actor : entry.identity.id;",
+      "replace": "      const actor = entry.identity.mode === \"user\" ? entry.name : entry.identity.id;",
+      "expectRed": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
+      "cell": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
+      "note": "The two halves agree in every honest inventory, which is why this survives E4 and every spawn cell. They are supplied independently by admin JSON, and the row the document re-arms is keyed by the principal, so the name is the half that does not own the plane."
     }
   ]
 }
