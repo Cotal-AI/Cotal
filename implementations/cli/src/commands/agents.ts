@@ -343,20 +343,28 @@ const LINK_DEADLINE_MS = 5_000;
 
 /** A deadline that never holds the process open by itself: the loser of a race must not add five
  *  seconds to an exit. */
-const after = (ms: number): Promise<void> =>
-  new Promise((r) => { const t = setTimeout(r, ms); t.unref?.(); });
+/** Race a link round trip against a deadline, and answer `no` if the deadline wins. The timer is
+ *  deliberately NOT unref'd: it is the only thing keeping the process alive while we wait on a
+ *  socket that will never answer, and an unref'd one lets node empty its loop and abort the whole
+ *  command on a pending await instead of finishing the wait and printing why. It is cleared as soon
+ *  as either side settles, so a healthy link is never held open for the remainder of the deadline. */
+const withDeadline = async (work: Promise<boolean>, ms: number): Promise<boolean> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const deadline = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });
+  try { return await Promise.race([work, deadline]); } finally { clearTimeout(timer); }
+};
 
 /** Did a flush RETURN inside the deadline? That, and not the publish, is what says a frame left:
  *  publishing is a local buffer write. A rejection and a timeout are the same answer here, `no`. */
 const flushed = (nc: NatsConnection): Promise<boolean> =>
-  Promise.race([nc.flush().then(() => true, () => false), after(LINK_DEADLINE_MS).then(() => false)]);
+  withDeadline(nc.flush().then(() => true, () => false), LINK_DEADLINE_MS);
 
 /** Give a connection back, bounded. Draining is another flush, so a link that has already missed
  *  its deadline is closed outright instead of being asked to drain through the same dead socket.
  *  A drain that REJECTS has closed nothing either: it gives up inside that same flush, before the
  *  close it would have done, so a rejection means close it here or leak the socket. */
 const closeLink = async (nc: NatsConnection): Promise<void> => {
-  const drained = await Promise.race([nc.drain().then(() => true, () => false), after(LINK_DEADLINE_MS).then(() => false)]);
+  const drained = await withDeadline(nc.drain().then(() => true, () => false), LINK_DEADLINE_MS);
   if (!drained) await nc.close().catch(() => { /* already gone */ });
 };
 

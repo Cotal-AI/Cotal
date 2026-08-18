@@ -132,20 +132,32 @@ const releaseBroker = teardownOnSignal(srv, dir);
 // --- the faultable link -------------------------------------------------------------------------
 const liveSockets = new Set<Socket>();
 let proxy: Server | undefined;
+// The link has THREE states, not two. Severed is a socket that is gone, which the client's NATS
+// layer notices at once. HELD is a socket that is still up and carries nothing, which is what a
+// sleeping laptop or a black-holing middlebox actually looks like from the client: the connection
+// is not closed, so anything that asks "is this link alive?" says yes, and only a round trip that
+// fails to come back tells the truth. Data handlers behind a flag, because `pipe` cannot be paused
+// without also pausing the socket the flag is meant to keep looking healthy.
+let holding = false;
+const hold = (): void => { holding = true; };
+const unhold = (): void => { holding = false; };
 const heal = (): Promise<void> =>
   new Promise((res, rej) => {
+    holding = false;
     const s = createServer((client) => {
       const up = netConnect(BROKER_PORT, "127.0.0.1");
       liveSockets.add(client); liveSockets.add(up);
       const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
       for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
-      client.pipe(up); up.pipe(client);
+      client.on("data", (b) => { if (!holding) up.write(b); });
+      up.on("data", (b) => { if (!holding) client.write(b); });
     });
     s.on("error", rej);
     s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
   });
 const sever = (): Promise<void> =>
   new Promise((res) => {
+    holding = false;
     const s = proxy; proxy = undefined;
     for (const sock of liveSockets) sock.destroy();
     liveSockets.clear();
@@ -311,9 +323,9 @@ try {
     check("the detach key ends the attach mid-reconnect", await a.waitExit(20_000), a.seen().slice(-300));
     check("...exiting clean", a.exit()?.code === 0, a.exit());
     // Detaching while the link is still down leaves a session this client could not hand back, and
-    // the exit is the only place an operator can learn that. It is also the end-to-end proof that
-    // the hand-back RECORDS what it could not deliver: this line was absent when the code treated a
-    // local publish as delivery, because the flush that failed was swallowed and nothing was kept.
+    // the exit is the only place an operator can learn that. This is the CLOSED-link half of that
+    // rule: the connection is gone, so no frame is even attempted. Cell I below is the other half,
+    // where the socket is still up and only the flush tells the truth.
     check("...saying the manager is still holding the session it could not hand back",
       /the manager still holds a session/.test(a.seen()), a.seen().slice(-600));
     await heal();
@@ -360,6 +372,33 @@ try {
       await a.waitFor(new RegExp(`ECHO\\[${nonce}\\]`), 30_000), a.seen().slice(-400));
     a.write(DETACH_BYTE);
     check("...and it detaches clean", (await a.waitExit(30_000)) && a.exit()?.code === 0, a.exit());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  console.log("\nI. a link that is UP but carries nothing: only the flush knows the close never left");
+  {
+    // The rule this cell exists for is that publishing is a local buffer write and the flush is the
+    // round trip. Severing cannot test it: a destroyed socket closes the connection, so the client
+    // never even attempts the frame. Holding the link keeps `isClosed()` false, so the frame IS
+    // published, the flush is the only thing that can fail, and a client that mistook the publish
+    // for delivery would drop the session silently and say nothing on the way out.
+    const a = attachUnderPty(root); started.push(a);
+    check("the attach comes up", await a.waitFor(/attached to rcseat/, 90_000), a.seen().slice(-400));
+    const before = a.seen().length;
+    check("seat output is flowing before the link goes half-open",
+      await a.waitFor(/TICK-\d+/, 20_000), a.seen().slice(before).slice(-200));
+
+    hold();
+    a.write(DETACH_BYTE);
+    // The detach itself is local, so it lands at once; the exit then waits out the flush deadline
+    // and the drain deadline against a socket that will never answer, which is what bounds it.
+    check("the detach key ends the attach while the link is up but carries nothing", await a.waitExit(40_000), a.seen().slice(-300));
+    check("...exiting clean", a.exit()?.code === 0, a.exit());
+    check("...saying the manager is still holding the session, because the close frame's flush never returned",
+      /the manager still holds a session/.test(a.seen()), a.seen().slice(-600));
+    // The proxy was never severed here, so it is still listening: releasing the hold is the whole
+    // repair, and calling heal() would try to bind a port it already owns.
+    unhold();
   }
 
   // ---------------------------------------------------------------------------------------------
