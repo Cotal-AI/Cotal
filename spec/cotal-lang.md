@@ -50,7 +50,7 @@ or `[` that continues the statement above it.
 ### 2.2 The syntax table
 
 The language is a subset of JavaScript defined by a table of AST node types, and every admitted
-construct means what ECMAScript says it means, with the exceptions §4 and §5 name explicitly. An
+construct means what ECMAScript says it means, with the exceptions §3 to §5 name explicitly. An
 implementation MUST accept exactly the admitted set and MUST refuse everything else with the code
 the table gives, or with L1029 for syntax the table does not name.
 
@@ -58,7 +58,8 @@ the table gives, or with L1029 for syntax the table does not name.
 declaration, block, `if`, `while`, `for`, `for...of`, `return`, `break`, `continue`, `throw`,
 `try`/`catch`/`finally`, `switch`, empty statement.
 
-**Admitted expressions:** literal (string, number, boolean, `null`; not regex), identifier,
+**Admitted expressions:** literal (string, number, boolean, `null`; not regex, not bigint),
+identifier,
 template literal, array literal, object literal (with spread), member access (`.name`, `[expr]`),
 optional chain (`?.`), unary (`!`, `-`, `+`, `~`, `typeof`), update (`++`, `--`), binary (`===`,
 `!==`, `<`, `<=`, `>`, `>=`, `+`, `-`, `*`, `/`, `%`, `**`, `&`, `|`, `^`, `<<`, `>>`, `>>>`),
@@ -96,6 +97,7 @@ default value, object and array patterns, template element, switch case, catch c
 | comma operator | L1026 | one statement per expression |
 | `void` | L1027 | `undefined`, or drop the expression |
 | the property name `__proto__` | L1028 | another name |
+| bigint literal (`10n`) | L1030 | a number, or a string |
 | `debugger`, and any other syntax | L1029 | none |
 
 `eval`, `Function` and `Symbol` are host globals and are refused by name (L2012, §3); no module
@@ -119,6 +121,10 @@ The validator MUST also refuse, before a program runs:
   global by name (L2012, with the language's replacement in the fix, §3); the name `Promise` (L2011).
 - A declaration, parameter or function name that shadows a reserved name (L2002); an assignment
   to a `const` binding (L2003).
+- **A reference to a `let`/`const` binding above its declaration (L2004, the dead zone; §3)**, where
+  straight-line code makes it visible. A reference from inside a nested function is not refused —
+  the function may run after the declaration — and the same refusal moves to run time when the call
+  comes first.
 - **A call that starts an effect and is not awaited (L2013).** A call to an effect primitive, or to
   a user function declared `async` (or bound by `const` to an async function expression), MUST be
   the operand of `await`, the operand of `return`, or the concise body of an arrow function passed
@@ -146,9 +152,13 @@ and a `fanOut` over a literal list whose items carry no `id` and no `key` (L3021
 A program may reference, and MUST NOT redeclare, the **reserved names**: the primitives (§6),
 the event constructors (`replied`, `message`, `idle`, `down`), the pure primitives (`channel`,
 `run`), the builtins (§5.1), and the value `undefined`. Every other name
-a program uses it declares. Name resolution is lexical and static: `let`/`const` are block-scoped,
-`function` declarations are hoisted within their block, `for (let ...)` binds per iteration, and a
-`catch` parameter is `const`.
+a program uses it declares. Name resolution is lexical and static: `let`/`const` are block-scoped
+and bind their whole block — a reference above the declaration is the dead zone, refused when the
+program is read where straight-line code makes it visible and at run time otherwise (L2004, §2.3);
+`function` declarations are hoisted within their block and bind immutably (assignment is L2003); a
+named function expression binds its own name inside its own body, and nowhere else; parameters bind
+left to right, so a default value reaches only the parameters before it (L2004 past that);
+`for (let ...)` binds per iteration; and a `catch` parameter is `const`.
 
 The following host globals are refused by name (L2012), each with the replacement this language
 offers: `Math`, `JSON`, `Object`, `Array`, `Number`, `String`, `Boolean`, `parseInt`,
@@ -189,7 +199,11 @@ answers an index, `length`, and the array method table (§5.2). A **string** ans
 member of an array, string or number is a refusal naming the table (L4014). Reading a member of
 `null` or `undefined` is L4010; a function or a boolean has no members (L4014). Iteration
 (`for...of`, spread) accepts an array or a string and nothing else (L4015). Calling a value that is
-not a function is L4011.
+not a function is L4011. A method is not a value: reading a method name off an array, string or
+number without calling it is refused (L4020) — write `(x) => xs.includes(x)`, not `xs.includes`.
+Destructuring follows member access: `const { a } = v` reads `a` as a member of `v`, so
+destructuring `null` or `undefined` is L4010 and a primitive answers from its method table (L4014
+for a name that is not there), never by ECMAScript's object coercion.
 
 ### 4.3 Mutation and freezing
 
@@ -199,11 +213,15 @@ A record or array the program builds is **writable by the frame that built it**:
 in JavaScript, and only truncates: `n` MUST be an integer between 0 and the current length, because a
 longer length would create holes, a value class this language does not have (its methods do not skip
 holes, so a program with holes would read differently here and on a real engine); anything else is
-L4017. Two writes are refused:
+L4017. An index write is contiguous for the same reason: `xs[i] = v` takes an index up to and
+including `xs.length` — writing at `length` appends — and a write past the end is refused (L4019).
+Two writes are refused:
 
 - **L2031, a frozen value.** Every value that crosses an effect boundary in either direction is
   deep-frozen: an effect's arguments, its result, and the result of a concurrency scope. What
-  crossed is what the journal recorded, so it cannot change afterwards. Build a new value instead
+  crossed is what the journal recorded, so it cannot change afterwards — through a store too: a
+  journal seeded from serialized entries freezes each recorded value on the way in, so a result
+  replayed on resume is as frozen as it was live. Build a new value instead
   (`{ ...record, field: value }`, `[...list, item]`).
 - **L2032, a value born outside a concurrent branch and written inside it** (§7.7), whether it is
   reached through its binding or through an alias.
@@ -218,20 +236,26 @@ boundary only if it has one: `null`, a boolean, a **finite** number, a string, a
 records of these. `undefined`, `NaN`, `Infinity`, functions, and objects that are not plain records
 have no canonical form. An implementation MUST refuse such a value in any argument of an effect
 primitive **before any journal entry is written**, naming the argument and the path inside it:
-L3041 for `undefined`, a non-finite number or an opaque object, L3042 for a function. An effect
+L3041 for `undefined`, a non-finite number or an opaque object, L3042 for a function. A sparse
+array (a hole), a cyclic value, and a record carrying an own `__proto__` field are refused the same
+way: a hole would canonicalize into a `null` the program never wrote, and a cycle does not
+serialize. A shared subtree without a cycle (a diamond) crosses. An effect
 **result** that has no canonical form is a failed step: the entry settles `failed` with error
 `{ code: "L4000", kind: "handler-fault" }` and the failure is thrown to the program.
 
 `json.stringify(value)` is the canonical form (§5.1), so a program that serializes a value writes
-exactly what the journal would.
+exactly what the journal would — and is refused (L4016) exactly where the boundary would refuse.
 
 ### 4.5 Operators and equality
 
-Only strict equality exists (`===`, `!==`; §2.2 refuses `==`). Every arithmetic, bitwise,
-comparison and logical operator has its ECMAScript meaning, including coercion (`"a" + 1` is
-`"a1"`, `+"3"` is `3`); a program that wants a number from text uses `parseNumber`. `??` is the
-recovery operator: `wait` resolves `null` on timeout (§6.5), so `await wait(...) ?? fallback` reads
-as Orc's `otherwise`.
+Only strict equality exists (`===`, `!==`; §2.2 refuses `==`). On **primitives** every arithmetic,
+bitwise, comparison and logical operator has its ECMAScript meaning, including coercion (`"a" + 1`
+is `"a1"`, `+"3"` is `3`); a program that wants a number from text uses `parseNumber`. An array, a
+record or a function never coerces: the arithmetic, bitwise and ordering operators, unary `-`, `+`
+and `~`, and template interpolation refuse such an operand (L4018), because ECMAScript's answer
+would pass through a `toString` this language does not give its values. `===`/`!==` (identity),
+`!`, `typeof` and the logical operators take every value. `??` is the recovery operator: `wait`
+resolves `null` on timeout (§6.5), so `await wait(...) ?? fallback` reads as Orc's `otherwise`.
 
 ### 4.6 Durations
 
@@ -258,7 +282,7 @@ that wants concurrency says so with `parallel` or `fanOut` (§7).
 | arrays | `len(xs)`, `map(xs, f)`, `filter(xs, f)`, `find(xs, f)` (→ `null` when absent), `some(xs, f)`, `every(xs, f)`, `sort(xs, keyFn?)`, `slice(xs, start, end?)`, `concat(xs, ys)`, `join(xs, sep)`, `reverse(xs)`, `unique(xs)`, `range(n)`, `sum(xs)` |
 | strings | `split(s, sep)`, `trim(s)`, `lower(s)`, `upper(s)`, `startsWith(s, p)`, `endsWith(s, p)`, `contains(s, p)`, `replace(s, from, to)` (**every** occurrence) |
 | numbers | `min(...xs)`, `max(...xs)`, `abs(n)`, `floor(n)`, `ceil(n)`, `round(n)`, `parseNumber(text)` (`Number(text)`) |
-| data and control | `json.parse(text)`, `json.stringify(value)` (the RFC 8785 canonical form), `assert(cond, message?)` (L4012 when false), `log(...values)` |
+| data and control | `json.parse(text)` (refuses a `"__proto__"` key, L4016), `json.stringify(value)` (the RFC 8785 canonical form; a value that cannot cross an effect boundary cannot stringify, L4016), `assert(cond, message?)` (L4012 when false), `log(...values)` |
 | tamed nondeterminism | `random()`, `randomInt(n)`, `pick(xs)` (§8.2), `now()` (§8.1), `duration(text)` (§4.6) |
 
 `f` in `map`, `filter`, `find`, `some`, `every` receives `(item, index)`. `sort` returns a new
@@ -279,12 +303,18 @@ Every pattern argument (`split`, `replace`, `startsWith`, ...) is a string; ther
 expressions. Note the two places the free builtin and the method deliberately differ: `find(xs,
 f)` yields `null` where `xs.find(f)` yields `undefined`, and `replace(s, a, b)` replaces every
 occurrence where `s.replace(a, b)` replaces the first, in each case exactly as JavaScript spells the
-method.
+method. The string `replace` and `replaceAll` methods honour JavaScript's replacement patterns
+(`$$`, `$&`, `` $` ``, `$'`): the replacement is a string with ECMAScript's substitution, not a
+template. Callback methods read the array's length once, before the first call, as JavaScript's do,
+so a callback that pushes does not extend its own iteration. And a method is looked up at the call,
+never read as a value (L4020, §4.2).
 
 ### 5.3 The total order
 
-`sort` never answers "equal" for two distinct values: numbers compare by value, strings by code
-unit, anything else by canonical form, and a tie on the key falls to the canonical form of the
+`sort` never answers "equal" for two distinct values, and answers consistently in both directions.
+Values order by kind — `undefined`, then `null`, `false`, `true`, numbers, strings, arrays,
+records — and within a kind numbers compare by value with `NaN` after every number, strings by code
+unit, and arrays and records by canonical form. A tie on the key falls to the canonical form of the
 elements themselves and then to their original position. What is left equal is identical, so the
 result of `sort` is a function of its input alone.
 
@@ -474,7 +504,10 @@ Live, no scheduler and no host tuning value chooses the winner. When an arm sett
 short in pure work only if it **can no longer win**: its clock is later than *t*, or equal and it is
 declared later. A sibling that could still win runs its pure tail to a settle; a sibling that
 reaches a new effect is cut there, having proven it would end after *t*. A later settle with an
-earlier clock re-decides the cut for the rest. The scope entry records the winner, the losers
+earlier clock re-decides the cut for the rest. So does a landing: an effect a cancelled arm already
+had in flight advances that arm's clock when it lands, and a landing that pushes the arm past the
+frontier cuts its pure tail at the next yield — one that leaves it earlier lets it run on, still
+able to win. The scope entry records the winner, the losers
 (`cancel.losers`), and, when the branches are written as an object literal, a **branch digest** over
 the losers' bodies (§10.6), so an edit inside an arm the walk never enters still diverges.
 
@@ -509,7 +542,11 @@ recovery path of every other branch-local resource.
 
 Cancellation is by semantics, never by an API the program calls, and it has one law on the program
 side: **a cancelled branch performs no new effect** (the effect boundary raises the cancellation
-instead of dispatching, and a pending entry it held settles `cancelled`). Work already in flight is
+instead of dispatching, and a pending entry it held settles `cancelled`). The boundary holds across
+its own gap: a cancellation raised while the pending entry was being written is seen again after
+the write, so the effect is still not dispatched and the entry settles `cancelled` — the signal
+reaches a branch asynchronously, but from the moment it is raised no new effect starts. Work
+already in flight is
 the handler's: an agent reply already in progress completes and is ignored. A `catch` never sees a
 cancellation (§9.2). A `race` may additionally cut a loser's pure work at a yield point once it can
 no longer win (§7.3); a pure loop in an arm that could still win ends on the step budget (L4013).
@@ -545,7 +582,9 @@ Sequentially that is the previous effect's end; a branch inherits its parent's c
 joining branches takes the maximum; a branch never sees a sibling's completion it did not await.
 The clock starts at the run's **logical epoch**, `startedAt`, and is deterministic under replay,
 which is what makes "time advances only at effect boundaries" a property of the design rather than
-a convention.
+a convention. A concurrency scope's own entry stamps its `endedAt` with the joined branch clock —
+that same maximum, a cancelled arm's landings included — not the host clock at settle, so `now()`
+after a scope answers the same value live and on resume (§10.1).
 
 ### 8.2 Randomness
 
@@ -594,6 +633,8 @@ as itself. A failure the runtime raised arrives as a **frozen record**: an effec
 `{ code, kind, message, detail? }` (the recorded `EntryError`, §10.1) and an interpreter fault as
 `{ code, kind: "runtime", message }`. A program cannot construct an `Error`, so anything that is
 one came from the runtime or the host and is delivered as `{ code: "L4000", kind: "host", message }`.
+`finally` carries ECMAScript's completion semantics: a `return`, `break`, `continue` or `throw`
+that completes the finalizer replaces whatever the `try` or `catch` was completing with.
 
 ```js
 const builder = await spawn("builder")
@@ -615,7 +656,10 @@ the program's to handle: a **cancellation** (§7.6); a **journal append the stor
 the run has lost its ability to have a result, and effects performed past it would exist only in the
 world); a **host release** (L5012: the driver stopped, the program did not); a **divergence**
 (L5001, §11.1: the journal is saying this program is not the one that wrote it); and a **migration
-walk's refusal to enter a scope** (L5022, or an unwalkable `conclave`).
+walk's refusal to enter a scope** (L5022, or an unwalkable `conclave`). These unwind past `finally`
+too: a finalizer neither runs on the way out nor replaces the fault, because none of the five
+leaves the program a next step to take — a cancelled branch performs no new work, and a run that
+has diverged, lost its journal or been released cannot be allowed one more effect on the way down.
 
 ### 9.3 Error rendering
 
@@ -651,7 +695,8 @@ The journal is an append-only log of entries. An entry is JSON:
   branchDigest?,       // a race: the digest over the losers' bodies (§10.6)
   branches?,           // a scope that failed: its branch keys
   closed?,             // a conclave: whether membership was released
-  startedAt, endedAt?  // host clock at begin and settle
+  startedAt, endedAt?  // host clock at begin and settle; a scope entry's endedAt is the
+                       //   joined branch clock at settle (§8.1)
 }
 ```
 
@@ -826,9 +871,11 @@ time, L5xxx durability, L6xxx simulation.
 | L1027 | Forbidden syntax: `void` |
 | L1028 | Forbidden property name |
 | L1029 | Syntax outside the language |
+| L1030 | Forbidden literal: bigint |
 | L2001 | Unknown identifier |
 | L2002 | Shadows a builtin or a primitive |
 | L2003 | Assignment to a `const` binding |
+| L2004 | Use before declaration |
 | L2011 | The Promise API is not available |
 | L2012 | Host global is not available |
 | L2013 | An async call is not awaited |
@@ -864,6 +911,9 @@ time, L5xxx durability, L6xxx simulation.
 | L4015 | Not iterable |
 | L4016 | Builtin failed |
 | L4017 | Invalid array length |
+| L4018 | No implicit conversion |
+| L4019 | Array write past the end |
+| L4020 | A method is not a value |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -904,3 +954,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | --- | --- |
 | 2026-08-18 | First normative reference, language version `1`, alongside SPEC.md v0.5 §14. |
 | 2026-08-18 | Review folds, same revision: the PRNG separator is U+0000 (§8.2, the earlier text said a space and was wrong; the code never changed); `any`/`all` are no longer reserved (§3); `xs.length = n` truncates only, L4017 (§4.3); the L2013 rule states where the validator can see (§2.3); `fanOut` fails like `parallel` (§7.4); L5022 is a walk refusal, not a resume stop (§11.1); no lineage on a fork's child (§11.3); `schema` is opaque and concurrent turns on one handle are the handler's (§6.5); the checkpoint entry's `attempts` chain (§6.5). |
+| 2026-08-18 | Language-lane folds, same revision: operators coerce primitives only, an array, record or function operand is refused (L4018, §4.5); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
