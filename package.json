@@ -120,6 +120,7 @@
     "probe:attach-reconnect": "tsx implementations/manager/smoke/_probe-attach-reconnect.ts",
     "probe:session-leak": "tsx implementations/manager/smoke/_probe-session-leak.ts",
     "probe:cellj-timing": "tsx implementations/manager/smoke/_probe-cellj-timing.ts",
+    "probe:stdin-window": "tsx implementations/manager/smoke/_probe-stdin-window.ts",
     "smoke:manager-console": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/console-assets.smoke.ts",
     "smoke:windows": "tsx implementations/manager/smoke/windows-launch.smoke.ts",
     "smoke:secret-fs": "tsx packages/core/smoke/secret-fs.smoke.ts",
