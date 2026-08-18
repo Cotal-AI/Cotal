@@ -574,6 +574,60 @@ try {
       repeated.length === 0, { repeated, calls });
   }
 
+  // ── 21) TOTAL PROGRESS, on the input where every cursor shape so far has failed ───────────────
+  //
+  // Two recall items sharing a millisecond that CANNOT fit one window between them, with ordinary
+  // messages behind them. This is the input that discriminates the three cursors tried here:
+  //
+  //   naive (advance to the last delivered timestamp)  -> the held twin is stranded for good
+  //   below-tie (stop just under the first held item)  -> the delivered twin, and everything after
+  //                                                       it, is re-served on every call, forever
+  //   pair watermark over an unbroken prefix           -> both twins delivered, nothing re-served
+  //
+  // The invariant it asserts is the one the escapes kept breaking: EVERY fresh item is eventually
+  // delivered, and nothing is delivered twice. Measured on the second shape before this repair: the
+  // held twin arrived on zero of six calls while its twin and all the later mail arrived on all six.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const items = [
+      // Same millisecond, and 30,000 characters each: either fits alone, neither fits beside the other.
+      { id: "G-1", ts: 9_000, text: `${"g".repeat(30_000)} GIANT_1` },
+      { id: "G-2", ts: 9_000, text: `${"g".repeat(30_000)} GIANT_2` },
+      ...Array.from({ length: 6 }, (_, n) => ({ id: `S-${n}`, ts: 9_001 + n, text: `${"s".repeat(500)} SMALL_${n}` })),
+    ].map((i) => ({
+      ...i,
+      fromId: "peer",
+      fromName: "Peer",
+      kind: "channel" as const,
+      channel: "general",
+      mentionsMe: false,
+      historical: false,
+    }));
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items,
+      droppedChannels: [],
+    });
+
+    const labels = ["GIANT_1", "GIANT_2", ...Array.from({ length: 6 }, (_, n) => `SMALL_${n}`)];
+    const times = new Map<string, number>();
+    let calls = 0;
+    while (calls < 12 && [...labels].some((l) => !times.has(l))) {
+      const text = textOf(await inboxSpec().run(agent, cfg, {}));
+      assert.ok(text.length <= INBOX_WINDOW_CHARS, `E13 call ${calls} returned ${text.length} chars`);
+      for (const l of labels) {
+        const hits = (text.match(new RegExp(` ${l}(?![0-9])`, "g")) ?? []).length;
+        if (hits) times.set(l, (times.get(l) ?? 0) + hits);
+      }
+      calls++;
+    }
+    check("a same-millisecond pair too large to share one window still reaches the caller, both halves",
+      labels.every((l) => times.has(l)), { missing: labels.filter((l) => !times.has(l)), calls });
+    check("...and nothing behind the hole was re-served to get there",
+      [...times.values()].every((n) => n === 1), { counts: Object.fromEntries(times), calls });
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {

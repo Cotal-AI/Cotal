@@ -156,6 +156,8 @@ export interface InboxResponse {
   shown: InboxItem[];
   /** Everything it does not carry. */
   held: InboxItem[];
+  /** Ids no response could ever carry, whatever the window held at the time. */
+  stuck: ReadonlySet<string>;
 }
 
 /**
@@ -185,6 +187,14 @@ export function renderInbox(opts: {
   /** A rider the response must carry, such as the focus branch's recall warning. */
   warning?: string;
   budget?: number;
+  /**
+   * Ids of a lane that must be delivered IN ORDER, with no gaps: focus recall, which a caller walks
+   * with a single mark rather than an acknowledgement per item. Stepping over one of these to fit a
+   * later one would either strand it, if the mark then passes it, or re-serve everything after it,
+   * if the mark stops short. The buffered lane has no such constraint, because each of its items is
+   * acked by id.
+   */
+  strictIds?: ReadonlySet<string>;
 }): InboxResponse {
   const budget = opts.budget ?? INBOX_WINDOW_CHARS;
   const peek = opts.peek ?? false;
@@ -212,11 +222,20 @@ export function renderInbox(opts: {
   // message too large for any response must not block the mail behind it. Then assemble for real
   // and give back trailing items until the finished string fits, which is the part no future writer
   // to the response body can slip past.
+  const strictIds = opts.strictIds ?? new Set<string>();
   const shown: InboxItem[] = [];
   let used = 0;
+  let strictGap = false; // the in-order lane stops at its first gap; the free lane steps over its own
   for (const i of ordered) {
+    const strict = strictIds.has(i.id);
+    if (strict && strictGap) continue;
     const cost = itemCost(i);
-    if (used + cost > budget) continue;
+    if (used + cost > budget) {
+      // A message nothing could ever carry is not a gap: it will never become deliverable, so the
+      // walk steps over it and the note says so. Anything else IS a gap, and the ordered lane waits.
+      if (strict && !stuck.has(i.id)) strictGap = true;
+      continue;
+    }
     shown.push(i);
     used += cost;
   }
@@ -231,7 +250,7 @@ export function renderInbox(opts: {
     held = heldOf();
     text = assemble(shown, held);
   }
-  return { text, shown, held };
+  return { text, shown, held, stuck };
 }
 
 /** What one rendered item costs a response: its own text plus the newline that joins it. */
@@ -514,10 +533,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           .sort((a, b) => (a.ts !== b.ts ? a.ts - b.ts : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
         const warning = droppedNote(recall.droppedChannels);
         const bufferedIds = new Set(buffered.map((i) => i.id));
-        const { text, shown: all } = renderInbox({
+        const { text, shown: all, stuck } = renderInbox({
           items: [...buffered, ...fresh],
           peek,
           warning,
+          strictIds: new Set(fresh.map((i) => i.id)),
           head: (s) =>
             scope
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
@@ -533,15 +553,20 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // would mark it handled, so a later live copy of that channel message would be dropped.
         if (!peek) {
           agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
-          // THE CURSOR ADVANCES PAST WHAT THIS REPLY DELIVERED, and past nothing else. Two recall
-          // items can share a millisecond, so the mark is a (timestamp, id) pair: a timestamp alone
-          // either filters the twin out for good, if it moves past both, or re-serves the one already
-          // delivered, if it stops below them. The pair leaves the held twin strictly ahead of the
-          // mark and the delivered one strictly behind it, so the next call resumes with neither a
-          // gap nor a repeat.
-          const shownRecall = all.filter((i) => !bufferedIds.has(i.id));
-          const last = shownRecall[shownRecall.length - 1];
-          if (last) agent.noteRecalled({ ts: last.ts, id: last.id });
+          // THE MARK MOVES OVER AN UNBROKEN PREFIX, and stops at the first thing this reply did not
+          // carry. Two recall items can share a millisecond, so the mark is a (timestamp, id) pair:
+          // a timestamp alone either strands the twin, if it moves past both, or re-serves the one
+          // already delivered, if it stops below them. And it is the PREFIX that decides, not the
+          // last item shown, because a pair too large to share one window leaves a hole: advancing
+          // past a hole strands what is in it, which is total progress lost on an input that a
+          // replay burst produces routinely.
+          const shownIds = new Set(all.map((i) => i.id));
+          let mark: { ts: number; id: string } | undefined;
+          for (const i of fresh) {
+            if (!shownIds.has(i.id) && !stuck.has(i.id)) break;
+            mark = { ts: i.ts, id: i.id };
+          }
+          if (mark) agent.noteRecalled(mark);
         }
         return ok(text);
       },

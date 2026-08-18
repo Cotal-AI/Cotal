@@ -11,6 +11,13 @@
     "note, K12 gives stuck mail the waiting mail's promise, K14 unbounds the recall warning, K15 gives a",
     "peeking caller a promise peek cannot keep, and K16 re-serves recall from the same frontier forever.",
     "",
+    "K17 through K20 are the recall walk, which this change created and therefore owns. A lane walked",
+    "by a single mark can fail in four ways and each has a mutation: comparing times alone strands a",
+    "tie, a mark that forgets its id repeats one, stepping over a gap re-serves everything behind it,",
+    "and a mark that follows the last item shown strands whatever the gap held. The invariant they",
+    "guard together is total progress: every fresh item eventually delivered, and nothing delivered",
+    "twice, on inputs including a same-millisecond pair too large to share one window.",
+    "",
     "K1, K8, K9 and K10 are the class guard and its edges. Three escapes were found here in sequence,",
     "each the same defect one level further out: an oversized item shown alone, then the head and note",
     "riding outside the budget, then the focus warning appended after the window was filled. Every one",
@@ -182,6 +189,24 @@
       "cell": "...and the twin already delivered is not re-served to pay for it",
       "expectRed": "...and the twin already delivered is not re-served to pay for it",
       "note": "The other direction of the same tie: a mark that forgets which item it stopped at leaves the delivered twin ahead of it, so the next call serves it again. Starvation and repetition are the two ways a tie can be got wrong, and the cell asserts against both."
+    },
+    {
+      "name": "K19 the ordered lane steps over its own gap to fit later items",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (strict && strictGap) continue;",
+      "replace": "    if (false && strict && strictGap) continue;",
+      "cell": "...and nothing behind the hole was re-served to get there",
+      "expectRed": "...and nothing behind the hole was re-served to get there",
+      "note": "Stepping over a gap looks like better packing: the window is fuller and nothing is lost yet. But a lane walked by one mark cannot record a hole, so everything delivered past it is served again on the next call, forever. The free lane may step over its own gaps because each of its items is acked by id."
+    },
+    {
+      "name": "K20 the mark follows the last item shown instead of the unbroken prefix",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "            if (!shownIds.has(i.id) && !stuck.has(i.id)) break;",
+      "replace": "            if (!shownIds.has(i.id) && !stuck.has(i.id)) continue;",
+      "cell": "a same-millisecond pair too large to share one window still reaches the caller, both halves",
+      "expectRed": "a same-millisecond pair too large to share one window still reaches the caller, both halves",
+      "note": "The other half of the same trap: a mark that follows the last item shown walks past a hole, and what was in the hole is stranded for good while the reply keeps promising a next batch. Two same-millisecond messages too large to share one window are all it takes, which a replay burst produces routinely."
     }
   ]
 }
