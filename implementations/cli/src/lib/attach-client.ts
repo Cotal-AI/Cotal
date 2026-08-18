@@ -144,6 +144,16 @@ export function holdTerminal(): TerminalHold {
   };
 }
 
+/** Register the stdout EPIPE/EIO no-op ONCE for the process. Idempotent by construction: a
+ *  reconnecting attach calls {@link attachClient} once per attempt and each call would otherwise
+ *  add another listener that nothing ever removes. */
+let stdoutErrorSwallowed = false;
+function swallowStdoutPipeErrors(): void {
+  if (stdoutErrorSwallowed) return;
+  stdoutErrorSwallowed = true;
+  process.stdout.on("error", () => {});
+}
+
 /**
  * Why a session ended, as {@link attachClient} resolves it. The reason is the peer's distinct `end`
  * reason, the transport's own (`detached`, `peer-closed`, `connection-closed`), or the broken
@@ -205,9 +215,11 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
 
     // A broken local pipe (terminal closed / SIGHUP) makes stdout writes async-error on a later
     // tick; with no listener that EPIPE/EIO becomes an uncaughtException — crashing on the per-frame
-    // PTY write or the on-detach restore write. Register a no-op listener once here (not in cleanup,
-    // so it outlives the async error tick) to turn it into a handled no-op.
-    process.stdout.on("error", () => {});
+    // PTY write or the on-detach restore write. It must outlive the async error tick, so it is NOT
+    // removed in cleanup — which is exactly why it is registered once per PROCESS rather than once
+    // per attempt: a reconnect loop calls this function again on every re-establishment, and one
+    // listener per attempt walks into MaxListenersExceededWarning during a long outage.
+    swallowStdoutPipeErrors();
 
     // Wheel-scroll state (see MOUSE_ON above): whether the child is in the alternate screen (on the
     // hold, since it outlives one session) and a buffer for an SGR mouse report split across stdin
@@ -315,7 +327,8 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
       cleanup();
       // The reason is DATA, not an exception: a reconnecting caller reads it to decide whether the
       // link broke or the session finished. A transport with nothing to say about a faulted end
-      // reports `error`, which is never in the transport-class set, so it ends the attach loudly.
+      // reports `error`, which is never in the transport-class set; the loop exits non-zero on it
+      // rather than calling it a detach, so an unnamed fault is still loud.
       resolve({ reason: reason ?? (err ? "error" : "detached"), ...(err ? { error: err } : {}) });
     });
   });

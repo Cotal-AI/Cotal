@@ -369,21 +369,28 @@ export function attachRefusal(code: string | undefined): AttachRefusal {
 async function establishAttachSession(
   v: FlagValues<typeof attachFlags>,
   on: string | undefined,
-  reconnecting: boolean,
+  reconnect: boolean,
+  first: boolean,
 ): Promise<Established> {
   // A reconnect must never cross a path that can END THE PROCESS. The mesh resolve and its
   // preflight are written to do exactly that ("no mesh running at X - run `cotal up`"), which is
   // the right answer for a person who just typed a command and the wrong one for a link that is
-  // coming back. So a re-establishment asks for the THROWING form and treats the refusal as the
-  // transient it is; the first attach keeps the exiting form, and with it today's wording and exit
-  // code for an operator who typed the command against a mesh that is not there.
+  // coming back. So a RE-ESTABLISHMENT asks for the throwing form and treats the refusal as the
+  // transient it is.
+  //
+  // Keyed off `first`, NOT off the reconnect flag, and the difference is user-visible. A refusal
+  // that escapes as an exception is rendered by the dispatcher's generic handler, which prints
+  // `✗ ${message}` over a sentence that already opens with `✗` and drops the refusal's hint line.
+  // The reconnect flag is on by DEFAULT, so keying on it sent the very first attach down that path
+  // and turned today's "no mesh running at X - run `cotal up`" into a double mark with no remedy.
+  // The first attempt is not a re-establishment and has nothing to survive for.
   //
   // `pinForTarget` is deliberately not crossed here: seat locality is resolved ONCE, before the
   // loop, and the pin is carried in. It is the other step on this path that exits.
   // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
   // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
   // passes with "spawn", cross-owner needs ledger "admin").
-  const t = await resolveControlTarget(v, "control-caller-admin", on, reconnecting ? { onRefusal: "throw" } : {});
+  const t = await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code), message: reply.error ?? "error" };
@@ -415,13 +422,13 @@ async function establishAttachSession(
     servers: t.server,
     ...standaloneConnectOpts({ creds, tls: false }),
     inboxPrefix: `_INBOX_${id.id}`,
-    maxReconnectAttempts: reconnecting ? 0 : -1,
+    maxReconnectAttempts: reconnect ? 0 : -1,
     // Detection latency is part of the defect, not a detail of it. A laptop waking from sleep does
     // not always get a socket error: the connection can sit half-open, and on the stock two-minute
     // ping with two misses the client would not learn its link was dead for about four minutes,
     // with the terminal frozen the whole time. Ten seconds puts that in tens of seconds. Only on
     // the reconnecting path, so `--no-reconnect` keeps today's timing along with today's exit.
-    ...(reconnecting ? { pingInterval: 10_000 } : {}),
+    ...(reconnect ? { pingInterval: 10_000 } : {}),
   });
   return { ok: true, nc, grant };
 }
@@ -467,7 +474,7 @@ async function runAttachLoop(
     }
     let est: Established;
     try {
-      est = await establishAttachSession(vv, pin, reconnect);
+      est = await establishAttachSession(vv, pin, reconnect, first);
     } catch (e) {
       // The FIRST attempt throws exactly as it always has — the CLI's top-level handler renders
       // it. Only a reconnect turns a thrown establishment into another attempt.
@@ -498,7 +505,14 @@ async function runAttachLoop(
       if (outcome.error) throw outcome.error;
       return { kind: "ended" };
     }
-    if (!isTransportEnd(outcome.reason)) return { kind: "ended" };
+    if (!isTransportEnd(outcome.reason)) {
+      // A faulted end this classification does not recognise is NOT a detach. Printing
+      // `detached from` over it would be the silent swallow this whole change exists to remove,
+      // so it exits non-zero carrying the fault. Every `fireEnd` site passes a reason today, so
+      // this is a guard against a future one that forgets, not a live path.
+      if (outcome.error) return { kind: "failed", message: outcome.error.message };
+      return { kind: "ended" };
+    }
     console.error(c.dim("[cotal: connection lost, reconnecting]"));
   }
 }

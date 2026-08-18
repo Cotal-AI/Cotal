@@ -358,6 +358,32 @@ try {
   }
 
   // ---------------------------------------------------------------------------------------------
+  console.log("\nG. a FIRST attach against a mesh that is not there refuses the way it always did");
+  {
+    // The reconnect flag is on by default, so the loop's "survive a refusal" path is armed from the
+    // very first attempt. It must not be TAKEN on that attempt. A refusal that escapes as an
+    // exception is rendered by the dispatcher's generic handler, which prefixes `✗` onto a sentence
+    // that already opens with one and drops the refusal's hint, so keying the throwing form off the
+    // flag instead of off `first` silently degraded the oldest error message this command has.
+    //
+    // `--on` is the path that reaches it: with an instance pinned, `pinForTarget` returns before
+    // `locateSeat`, so this is the first thing that touches the broker. Without `--on` the refusal
+    // comes from `locateSeat` and never gets near the loop.
+    const { loadManagerInstanceIdentity } = await import("@cotal-ai/workspace");
+    const instance = loadManagerInstanceIdentity(root, space)?.instanceId;
+    check("the manager's instance id is available to pin", typeof instance === "string" && instance.length > 0, instance);
+    await sever();
+    const r = await cotal(["attach", "--name", SEAT, "--on", String(instance), "--space", space, "--server", PROXY], root, 60_000);
+    await heal();
+    check("it exits non-zero", r.status !== 0, { status: r.status, out: r.out.slice(-400) });
+    check("...saying the mesh is not there, in the CLI's own words", /no mesh running at/.test(r.out), r.out.slice(-400));
+    check("...with ONE failure mark, not the doubled one a rethrown refusal renders",
+      !/✗\s*✗/.test(r.out), r.out.slice(-400));
+    check("...and it never announced a reconnect it was not going to make",
+      !/\[cotal: connection lost, reconnecting\]/.test(r.out), r.out.slice(-400));
+  }
+
+  // ---------------------------------------------------------------------------------------------
   console.log("\nF. the two classifications the loop turns on");
   check("transport-class: the rail's own fault vocabulary reconnects",
     ["gap", "stall", "subscription", "peer-closed", "connection-closed", "publish", "flood", "credit-overrun", "garbled-frame", "handler", "seq-exhausted", "closed"]
