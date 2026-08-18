@@ -402,7 +402,11 @@ try {
   {
     const bearerClaims = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { sub: string; act: { actor: string; lifecycleUid: string } };
     const epCaller = { owner: bearerClaims.sub, actor: bearerClaims.act.actor, uid: bearerClaims.act.lifecycleUid };
-    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds }), maxReconnectAttempts: 0 });
+    // `tls: false` is REQUIRED, not decorative: this file is outside every tsconfig, so the guard
+    // in `standaloneConnectOpts` is the only thing that reaches it, and it throws rather than
+    // defaulting. SERVER is a plaintext local broker, the same value its two sibling auth smokes
+    // pass. Without it this line threw and took every cell below it with it.
+    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
     try {
       const svc = await resolveService(epNc, SPACE, "manager", epCaller, { deadlineMs: 10_000 });
       check("user bearer resolves the manager generically (describe + store fetch + digest-verified recompile, all over the bearer)",
@@ -585,7 +589,7 @@ try {
   // a spawn-only cross-owner op is broker-DENIED at publish while an admin operator's is admitted
   // and the manager's fresh ledger read governs.
   type EpReply = { ok: boolean; data?: unknown; error?: string };
-  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop", name: string): Promise<EpReply> => {
+  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop" | "input", name: string): Promise<EpReply> => {
     let info;
     try { info = await ep.invokeService("manager", "inspect", { name }); }
     catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
@@ -594,9 +598,12 @@ try {
     const dot = rowInfo.id.indexOf(".");
     const [tOwner, tActor] = dot > 0 ? [rowInfo.id.slice(0, dot), rowInfo.id.slice(dot + 1)] : [ep.principal.owner, rowInfo.id];
     const mode = tOwner !== ep.principal.owner ? "any" : "owner";
-    const command = op === "stop" ? "despawn" : "attach";
+    const command = op === "stop" ? "despawn" : op;
+    // `input` is the one op here that carries a body. Everything else about the call is identical,
+    // which is the point: the same resolve, the same derived mode, the same rails.
+    const body = op === "input" ? { text: "/compact", enter: false } : undefined;
     try {
-      const r = await ep.invokeService("manager", command, undefined, { target: { mode, owner: tOwner, actor: tActor, lifecycleUid: rowInfo.lifecycleUid } });
+      const r = await ep.invokeService("manager", command, body, { target: { mode, owner: tOwner, actor: tActor, lifecycleUid: rowInfo.lifecycleUid } });
       return r.reply.ok === true ? { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
@@ -615,6 +622,16 @@ try {
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
   check("delta is gone from the manager after the sibling stop", !manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  // THE SIBLING-WRITE VECTOR, executed on a real user mesh rather than argued from the mint table.
+  // The two cells above are the reason it exists: on a user mesh the own-domain arm admits any seat
+  // under the caller's owner, so `opsmate` attaches and stops an agent it never spawned. That is the
+  // policy working as designed, because both are denial. Seat INPUT is not denial, it is control of
+  // whatever the peer is running, so it must NOT ride the same spawn scope. It does not: a spawn
+  // bearer is minted no `input` row in either mode, so the publish is broker-denied before the
+  // manager sees it. `alpha` rather than `delta` because the sibling stop above took delta.
+  const sibInput = await epTargeted(opsmate, "input", "alpha");
+  check("owner-domain: the SAME sibling actor that could attach and stop is REFUSED seat input (no row in either mode)", sibInput.ok === false, sibInput);
+  check("alpha survived the refused sibling input", manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
   // A CROSS-OWNER caller with only spawn scope: the ep any-mode row it would need is broker-DENIED
   // at publish (a spawn bearer holds owner-mode rows only), so the op fails before the manager.
   const OWNER_B = "u_" + "b".repeat(26);
@@ -629,6 +646,13 @@ try {
   const auditor = await ctlCaller("auditor", OWNER_B, ["spawn", "admin"]);
   const adminAttach = await epTargeted(auditor, "attach", "alpha");
   check("cross-owner attach with ledger admin passes (any-mode admin rows + fresh ledger read)", adminAttach.ok === true, adminAttach);
+  // And the same ledger row reaches seat input, which is the whole point of putting `input` on the
+  // operator instrument instead of on `spawn`: the authority that already crosses owners carries it,
+  // and nothing weaker does. This is also the live proof that the any-mode `input` row the admin
+  // mint emits is REACHABLE, not merely present in a decoded JWT.
+  const adminInput = await epTargeted(auditor, "input", "alpha");
+  check("cross-owner seat input with ledger admin passes, and reports the bytes it wrote",
+    adminInput.ok === true && (adminInput.data as { bytes?: number })?.bytes === 8, adminInput);
   // Narrow the auditor back to [spawn] (upsert) — its NEXT exchange mints owner-mode-only rows, so a
   // cross-owner op loses the any-mode reach (the callout re-reads the ledger per exchange).
   await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
