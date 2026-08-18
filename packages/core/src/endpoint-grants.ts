@@ -152,10 +152,23 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const)
  *  of `despawn` (distsys) — one owner-mode terminal command keeps the vocabulary single. Self-`stop`
  *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt.
  *  `input` (type into the seat) joins the owner-mode set for the same reason `attach` is in it:
- *  it acts on an EXISTING agent. It is NOT a widening of what this capability can do, and the
- *  reason is mechanical, not a judgement: a holder of owner-mode `attach` already opens a session
- *  whose `write` feeds that agent's terminal, so the keystroke authority is one this set has
- *  always granted. `input` only removes the session from the path. */
+ *  it acts on an EXISTING agent.
+ *
+ *  IT IS A NEW ABILITY FOR THIS CAPABILITY, and saying otherwise was measured wrong. The tempting
+ *  claim is that owner-mode `attach` already reaches the same pty through `AttachSession.write`,
+ *  so nothing is added. It does not: `attach` returns a §13.6 grant, and REDEEMING one needs a
+ *  `session-caller` credential whose `eps.<endpoint>.<sessionId>.<epoch>.in` publish row this
+ *  profile does not carry and cannot mint, because minting reads the space signing seed. Executed:
+ *  a spawn-capability agent credential's minted JWT carries the owner-mode `attach` REQUEST row and
+ *  zero `eps.` rows. So the holder can ask for a grant it can never use, and `input` is the first
+ *  route by which it can put bytes in a child's terminal.
+ *
+ *  It belongs here anyway, on the true argument rather than that one. The reach is the same
+ *  own-child / own-owner policy `despawn` rides ({@link authorizeNamedControl}), so the new power
+ *  is over agents the caller itself created; and it is strictly weaker than what this capability
+ *  already carries, because `spawn` is host-launch authority (launch options are a raw passthrough
+ *  onto the manager host) plus `despawn`. A caller that already chooses a child's command line and
+ *  can kill it gains no reach by typing into it. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
 export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach", "input"] as const);
 /** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
