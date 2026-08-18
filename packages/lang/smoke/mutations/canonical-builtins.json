@@ -1,0 +1,48 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "json.stringify refuses what has no canonical form, json.parse refuses a __proto__ key, and sort's order is total. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/canonical-builtins.json",
+  "mutations": [
+    {
+      "name": "json.stringify silently canonicalizes again",
+      "file": "packages/lang/src/library.ts",
+      "find": "    stringify: fn(\"json.stringify\", (_f, a) => {\n      try {\n        assertCrossable(a[0], \"json.stringify: the value\");\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n      return canonicalize(a[0]);\n    }),",
+      "replace": "    stringify: fn(\"json.stringify\", (_f, a) => canonicalize(a[0])),",
+      "expectRed": "`json.stringify` refuses a value with no canonical form (L4016), naming the path",
+      "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
+      "cell": "`json.stringify` refuses a value with no canonical form (L4016), naming the path",
+      "note": "The unchecked call drops undefined members and turns NaN into null — the measured pre-fix information loss."
+    },
+    {
+      "name": "json.parse mints an own __proto__ field again",
+      "file": "packages/lang/src/library.ts",
+      "find": "          if (!Array.isArray(v) && Object.prototype.hasOwnProperty.call(v, \"__proto__\")) {",
+      "replace": "          if (false) {",
+      "expectRed": "`json.parse` refuses a \"__proto__\" key (L4016), exactly as the literal refuses it",
+      "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
+      "cell": "`json.parse` refuses a \"__proto__\" key (L4016), exactly as the literal refuses it",
+      "note": "With the check gone the parse is a bypass around L1028 and L4014, the measured pre-fix hole."
+    },
+    {
+      "name": "NaN compares equal to every number again, the shipped defect",
+      "file": "packages/lang/src/library.ts",
+      "find": "    if (Number.isNaN(a)) return Number.isNaN(b) ? 0 : 1;\n    if (Number.isNaN(b)) return -1;\n    return a < b ? -1 : a > b ? 1 : 0;",
+      "replace": "    return a < b ? -1 : a > b ? 1 : 0;",
+      "expectRed": "`sort` is total: NaN after every number, undefined below null, both directions agreeing",
+      "completionMarker": "ok `sort` orders numbers by value and strings by code unit",
+      "cell": "`sort` is total: NaN after every number, undefined below null, both directions agreeing",
+      "note": "Without the NaN arm the comparator answers 0 against every number, and `sort([1, NaN, 0])` returns an unsorted list."
+    },
+    {
+      "name": "kinds no longer rank, so undefined and null shuffle by arrival order",
+      "file": "packages/lang/src/library.ts",
+      "find": "  const ra = rankOf(a);\n  const rb = rankOf(b);\n  if (ra !== rb) return ra < rb ? -1 : 1;",
+      "replace": "  const ra = rankOf(a);\n  const rb = rankOf(b);",
+      "expectRed": "`sort` is total: NaN after every number, undefined below null, both directions agreeing",
+      "completionMarker": "ok `sort` orders numbers by value and strings by code unit",
+      "cell": "`sort` is total: NaN after every number, undefined below null, both directions agreeing",
+      "note": "Without the rank comparison, undefined falls through to a canonical form that is not a string and compares equal to everything — the measured arrival-order behavior. (The unused rank locals are accepted by tsx; the suite reddens on the cell, not on a compile error.)"
+    }
+  ]
+}

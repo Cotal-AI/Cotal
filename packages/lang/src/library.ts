@@ -26,7 +26,7 @@ import { RuntimeFault } from "./errors.js";
 import { parseDuration } from "./duration.js";
 import type { ScopeFrame } from "./keys.js";
 import { scopePathString } from "./keys.js";
-import { Prng, born, deepFreeze } from "./values.js";
+import { NotCrossable, Prng, assertCrossable, born, deepFreeze } from "./values.js";
 
 /** What the library needs of the interpreter's frame. `Frame` in interpret.ts satisfies it. */
 export interface LibFrame {
@@ -78,16 +78,51 @@ const asCallable = (v: unknown, where: string): Callable => {
 // ---- the total order `sort` uses ----------------------------------------------------------------
 
 /**
- * A comparison that never answers "equal" for two distinct values (design §3.4.3): numbers by value,
- * strings by code unit, anything else by canonical form, and a tie on the key by the canonical form
- * of the elements themselves. What is left equal is identical, and a stable sort keeps its order.
+ * A TOTAL order over the language's values (design §3.4.3): kinds rank first (undefined, null,
+ * false, true, numbers, strings, arrays, records, everything else), numbers by value with NaN
+ * after every number, strings by code unit, containers by canonical form. The shipped comparator
+ * was not total (measured): NaN answered "equal" to every number because both `<` and `>` are
+ * false, so `sort([1, NaN, 0])` returned an unsorted list, and `undefined` — whose canonical form
+ * is not a string — compared "equal" to everything too, so `[undefined, null]` kept whatever order
+ * it arrived in. What is left equal here is identical (or canonically indistinguishable), and a
+ * stable sort keeps its order.
  */
+function rankOf(v: unknown): number {
+  if (v === undefined) return 0;
+  if (v === null) return 1;
+  if (typeof v === "boolean") return v ? 3 : 2;
+  if (typeof v === "number") return 4;
+  if (typeof v === "string") return 5;
+  if (Array.isArray(v)) return 6;
+  if (typeof v === "object") return 7;
+  return 8;
+}
+
 function compareTotal(a: unknown, b: unknown): number {
-  if (typeof a === "number" && typeof b === "number") return a < b ? -1 : a > b ? 1 : 0;
+  const ra = rankOf(a);
+  const rb = rankOf(b);
+  if (ra !== rb) return ra < rb ? -1 : 1;
+  if (typeof a === "number" && typeof b === "number") {
+    if (Number.isNaN(a)) return Number.isNaN(b) ? 0 : 1;
+    if (Number.isNaN(b)) return -1;
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
   if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
-  const ca = canonicalize(a);
-  const cb = canonicalize(b);
+  if (ra < 4) return 0; // same rank among undefined/null/false/true means identical
+  const ca = safeCanonical(a);
+  const cb = safeCanonical(b);
   return ca < cb ? -1 : ca > cb ? 1 : 0;
+}
+
+/** The canonical form where one exists; a stable, deterministic stand-in where it does not. */
+function safeCanonical(v: unknown): string {
+  try {
+    const c = canonicalize(v) as unknown;
+    if (typeof c === "string") return c;
+  } catch {
+    // fall through
+  }
+  return `\uFFFF${String(v)}`;
 }
 
 // ---- methods ---------------------------------------------------------------------------------------
@@ -102,26 +137,33 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
   const write = (xs: unknown[], frame: LibFrame): void => ctx.assertWritable(xs, frame);
   const table: Record<string, (frame: LibFrame, xs: unknown[], args: unknown[]) => unknown> = {
     // pure, callback-taking (each callback awaited in order)
+    // Every callback-taking method captures the length BEFORE the first call, as JavaScript
+    // captures it: an element the callback appends is not visited (measured before the fix: a
+    // `push` inside `map` grew the walk and the result).
     map: async (frame, xs, a) => {
       const f = asCallable(a[0], "map");
       const out: unknown[] = [];
-      for (let i = 0; i < xs.length; i += 1) out.push(await f(frame, [xs[i], i, xs]));
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) out.push(await f(frame, [xs[i], i, xs]));
       return born(out, frame.depth);
     },
     filter: async (frame, xs, a) => {
       const f = asCallable(a[0], "filter");
       const out: unknown[] = [];
-      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) out.push(xs[i]);
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) out.push(xs[i]);
       return born(out, frame.depth);
     },
     find: async (frame, xs, a) => {
       const f = asCallable(a[0], "find");
-      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
       return undefined;
     },
     findIndex: async (frame, xs, a) => {
       const f = asCallable(a[0], "findIndex");
-      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) return i;
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) return i;
       return -1;
     },
     findLast: async (frame, xs, a) => {
@@ -136,17 +178,20 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
     },
     some: async (frame, xs, a) => {
       const f = asCallable(a[0], "some");
-      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) return true;
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) if (await f(frame, [xs[i], i, xs])) return true;
       return false;
     },
     every: async (frame, xs, a) => {
       const f = asCallable(a[0], "every");
-      for (let i = 0; i < xs.length; i += 1) if (!(await f(frame, [xs[i], i, xs]))) return false;
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) if (!(await f(frame, [xs[i], i, xs]))) return false;
       return true;
     },
     forEach: async (frame, xs, a) => {
       const f = asCallable(a[0], "forEach");
-      for (let i = 0; i < xs.length; i += 1) await f(frame, [xs[i], i, xs]);
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) await f(frame, [xs[i], i, xs]);
       return undefined;
     },
     reduce: async (frame, xs, a) => {
@@ -159,13 +204,15 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
         acc = xs[0];
         i = 1;
       }
-      for (; i < xs.length; i += 1) acc = await f(frame, [acc, xs[i], i, xs]);
+      const len = xs.length;
+      for (; i < len; i += 1) acc = await f(frame, [acc, xs[i], i, xs]);
       return acc;
     },
     flatMap: async (frame, xs, a) => {
       const f = asCallable(a[0], "flatMap");
       const out: unknown[] = [];
-      for (let i = 0; i < xs.length; i += 1) {
+      const len = xs.length;
+      for (let i = 0; i < len; i += 1) {
         const r = await f(frame, [xs[i], i, xs]);
         if (Array.isArray(r)) out.push(...r);
         else out.push(r);
@@ -230,8 +277,11 @@ export function stringMethods(): Readonly<Record<string, Method>> {
     slice: (_f, s, a) => s.slice(a[0] as number | undefined, a[1] as number | undefined),
     substring: (_f, s, a) => s.substring(a[0] as number, a[1] as number | undefined),
     split: (frame, s, a) => born(a.length === 0 ? [s] : s.split(str("split", a[0]), a[1] as number | undefined), frame.depth),
-    replace: (_f, s, a) => s.replace(str("replace", a[0]), () => String(a[1])),
-    replaceAll: (_f, s, a) => s.replaceAll(str("replaceAll", a[0]), () => String(a[1])),
+    // The replacement string means what JavaScript says it means, `$$`/`$&`/`$\``/`$'` included
+    // (measured before the fix: the function form made every `$` literal, a meaning JavaScript
+    // gives neither method).
+    replace: (_f, s, a) => s.replace(str("replace", a[0]), String(a[1])),
+    replaceAll: (_f, s, a) => s.replaceAll(str("replaceAll", a[0]), String(a[1])),
     repeat: (_f, s, a) => s.repeat(a[0] as number),
     padStart: (_f, s, a) => s.padStart(a[0] as number, a[1] as string | undefined),
     padEnd: (_f, s, a) => s.padEnd(a[0] as number, a[1] as string | undefined),
@@ -271,9 +321,18 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
 
   const json = deepFreeze({
     parse: fn("json.parse", (frame, a) => {
-      // Every container the text describes is born here, in this frame.
+      // Every container the text describes is born here, in this frame — and checked: JSON can
+      // spell an OWN field named `__proto__`, which the literal refuses statically (L1028) and
+      // the member write refuses dynamically (L4014), so a parse that minted one was a bypass
+      // around both (measured before the check).
       const stamp = (v: unknown): unknown => {
         if (v !== null && typeof v === "object") {
+          if (!Array.isArray(v) && Object.prototype.hasOwnProperty.call(v, "__proto__")) {
+            throw new RuntimeFault(
+              "L4016",
+              'json.parse: the text carries a "__proto__" key, which names an object\'s prototype and cannot be a field here, exactly as it cannot in a literal',
+            );
+          }
           for (const inner of Object.values(v as Record<string, unknown>)) stamp(inner);
           born(v, frame.depth);
         }
@@ -282,8 +341,18 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       return stamp(JSON.parse(a[0] as string));
     }),
     // Canonical form (RFC 8785): the same text the journal hashes, so a program that stringifies a
-    // value writes what the run record would.
-    stringify: fn("json.stringify", (_f, a) => canonicalize(a[0])),
+    // value writes what the run record would — and REFUSES what the journal would refuse. The
+    // unchecked call silently dropped undefined members, turned undefined elements and NaN into
+    // null (measured), which is information loss wearing the canonical name.
+    stringify: fn("json.stringify", (_f, a) => {
+      try {
+        assertCrossable(a[0], "json.stringify: the value");
+      } catch (e) {
+        if (e instanceof NotCrossable) throw new RuntimeFault("L4016", e.message);
+        throw e;
+      }
+      return canonicalize(a[0]);
+    }),
   });
 
   return [

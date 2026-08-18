@@ -318,6 +318,21 @@ await bothThrow("repeat with a negative count throws", `log("a".repeat(-1));`);
 await bothThrow("reduce of an empty array with no seed throws", `log([].reduce((a, b) => a + b));`);
 await bothThrow("json.parse of malformed text throws", `log(json.parse("{"));`);
 
+// ---- 5b) the method table under mutation, and replacement strings ------------------------------
+
+await same("a callback that appends does not grow the walk: the length is captured first", `
+const xs = [1, 2];
+const ys = xs.map((x, i) => { if (i === 0) { xs.push(3); } return x * 10; });
+const seen = [];
+xs.forEach((x, i) => { if (i === 0) { xs.push(9); } seen.push(i); });
+log(xs, ys, seen);
+`);
+
+await same("replacement strings mean what JavaScript says: $-patterns, first vs all", `
+log("aba".replace("a", "$&x"), "aba".replaceAll("a", "$&x"));
+log("aba".replace("a", "X"), "price: 5".replace("5", "$$9"), "abc".replace("b", "[$\`|$']"));
+`);
+
 // ---- 6b) selection and completion: `switch` order and `finally` overrides ----------------------
 
 await same("`default` written above a matching case does not shadow it", `

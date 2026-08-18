@@ -289,6 +289,25 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
   ok("`sort` with a key breaks ties by the canonical form of the elements, whatever their input order", JSON.stringify(await logsOf('log(sort([{ n: 1, k: "b" }, { n: 1, k: "a" }], (x) => x.n), sort([{ n: 1, k: "a" }, { n: 1, k: "b" }], (x) => x.n));')) === JSON.stringify([[[{ n: 1, k: "a" }, { n: 1, k: "b" }], [{ n: 1, k: "a" }, { n: 1, k: "b" }]]]));
   ok("`sort` returns a new array and leaves its input alone", JSON.stringify(await logsOf("const xs = [2, 1]; const ys = sort(xs); log(xs, ys);")) === JSON.stringify([[[2, 1], [1, 2]]]));
   ok("`json.stringify` is the canonical form (sorted keys, no spaces)", (await logsOf('log(json.stringify({ b: 1, a: [2, { d: 3, c: 4 }] }));'))[0] === '{"a":[2,{"c":4,"d":3}],"b":1}');
+  // And it REFUSES what has no canonical form, instead of silently dropping or nulling it
+  // (measured before the rule: `{ a: undefined }` lost its key, `[undefined]` and NaN became
+  // null — information loss wearing the canonical name).
+  ok("`json.stringify` refuses a value with no canonical form (L4016), naming the path",
+    await logsOf("log(json.stringify({ b: 1, a: undefined }));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes(".a"))
+      && await logsOf("log(json.stringify([undefined, 1]));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && await logsOf("log(json.stringify(0 / 0));").then(() => false, (e: Error) => e.message.startsWith("L4016")));
+  // JSON can spell an OWN field named __proto__, which the literal (L1028) and the member write
+  // (L4014) both refuse — a parse that minted one was a bypass around both (measured).
+  ok("`json.parse` refuses a \"__proto__\" key (L4016), exactly as the literal refuses it",
+    await logsOf(`log(json.parse('{"__proto__":{"polluted":true}}'));`).then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("__proto__"))
+      && await logsOf(`log(json.parse('{"nested":{"__proto__":1}}'));`).then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && JSON.stringify(await logsOf(`log(keys(json.parse('{"constructor":1}')));`)) === '[["constructor"]]');
+  // The order is TOTAL: NaN sorts after every number, undefined and null rank below everything,
+  // and both directions of the same input agree (measured before the rule: NaN compared "equal"
+  // to every number and `[undefined, null]` kept its arrival order).
+  ok("`sort` is total: NaN after every number, undefined below null, both directions agreeing",
+    JSON.stringify(await logsOf("log(sort([1, 0 / 0, 0]), sort([0 / 0, 0, 1]));")) === '[[[0,1,null],[0,1,null]]]'
+      && JSON.stringify(await logsOf("log(sort([null, undefined])[0] === undefined, sort([undefined, null])[0] === undefined, sort([\"b\", 2, null, true])[0] === null);")) === '[[true,true,true]]');
   ok("a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
     (await logsOf("const o = { a: 1 }; o.b = 2; const xs = [1]; xs.push(2); xs[2] = 6; xs[0] = 0; log(o, xs.length);"))[0]?.toString() === "[object Object],3"
       && await logsOf('const b = await spawn("b"); b.x = 1;').then(() => false, (e: Error) => e.message.startsWith("L2031")));
