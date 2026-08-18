@@ -332,7 +332,6 @@ export async function ps(args: ParsedArgs): Promise<void> {
  *  the terminal they walked away from being gone when they come back. */
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** How long any single wait on a LINK may take before the loop stops waiting on it. Neither
  *  `flush()` nor `drain()` carries a deadline of its own, and `connect`'s `timeout` covers only the
@@ -610,10 +609,19 @@ async function runAttachLoop(
   for (;;) {
     if (!first) {
       // Back off BEFORE the attempt, and stay interruptible: the detach key must work while we
-      // wait, not only while a session is up.
-      const wait = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
+      // wait, not only while a session is up. The timer is CLEARED rather than left to the race,
+      // because losing a `Promise.race` does not stop a `setTimeout`: the detach is honoured at
+      // once, the terminal comes back and `detached from` prints, and then node holds the process
+      // open until the abandoned timer fires. On the 30s rung that is half a minute of a shell that
+      // has already said it detached and will not give the prompt back. Measured before this line
+      // existed: press to first output 0.1s, press to EXIT 27.0s with the next attempt 26.9s away,
+      // and 8.3s with it 8.1s away, tracking the rung rather than the work.
+      const ms = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
       const watch = watchDetachKey(key.byte);
-      const detached = await Promise.race([sleep(wait).then(() => false), watch.pressed.then(() => true)]);
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const waited = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });
+      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);
+      clearTimeout(timer);
       watch.stop();
       if (detached) return await done({ kind: "ended" });
       attempt++;
