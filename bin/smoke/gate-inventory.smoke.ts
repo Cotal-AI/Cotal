@@ -67,6 +67,12 @@ const UNGATED: Record<string, string> = {
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
+  // A STANDING DECISION, and the reason is the suite's own founding argument rather than
+  // convenience: it maps a REAL Claude session JSONL, and a real session cannot be committed
+  // (it carries the operator's local context) so no CI runner has an input for it. Its
+  // security half, "no peer-authored body reaches the event channel", is a hostile fixture that
+  // needs no session and IS gated, as `smoke:agui-authorship`.
+  "smoke:agui-map": "maps a real, uncommittable Claude session JSONL (COTAL_AGUI_SESSION)",
   // Known-red or documented flakes: debt with a fuse, counted as such. Gating them would make the
   // gate lie; leaving them unmarked made the list unable to say how much debt it held.
   "smoke:channels": `${BROKEN} documented timing flake + fixed-port cleanup leak`,

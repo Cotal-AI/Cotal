@@ -172,7 +172,7 @@ export interface DriverOpts {
  *  - `"turnCompleted"` ({turnId, status, owned})       — a turn reached a terminal status.
  *    `owned` is false for a turn the attached TUI started: this host may observe it, but only
  *    a turn it started itself may finalize its own delivery accounting.
- *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/transcript/presence)
+ *  - `"itemStarted"` / `"itemCompleted"` (item, turnId) — thread items (feed/presence)
  *  - `"waiting"` (detail)                              — an approval was requested (auto-answered)
  *  - `"closed"` (code)                                 — the child exited
  */
