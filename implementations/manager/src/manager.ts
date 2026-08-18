@@ -2602,10 +2602,21 @@ export class Manager {
   private async driveRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
     if (!this.auth) return; // guaranteed by requestRetirement; re-checked for the type narrowing below
     const held = this.retiring.get(a.name);
-    const me = parsePrincipalKey(this.ep.ref().id);
     const target = parsePrincipalKey(a.id);
-    if (!me || !target) {
-      if (held) held.lastError = "the manager or target principal could not be derived; the retirement was not requested";
+    if (!target) {
+      if (held) held.lastError = "the target principal could not be derived; the retirement was not requested";
+      return;
+    }
+    // The SERVE identity, not the endpoint identity, is who this request speaks as (#549). The field
+    // is declared `!:`, which asserts to the type system what the ordering happens to provide, so it
+    // is read here as what it actually is. On today's ordering this guard cannot fire: `start()`
+    // assigns the identity before it connects anything, and a retirement needs an agent that only a
+    // started manager can hold. It is kept as a fail-closed assertion rather than a live face,
+    // because the alternative is carrying `undefined` into the caller triple and surfacing the
+    // result as "the rail could not be reached", which would name the wrong cause.
+    const serveIdentity = this.managerServeIdentity as Identity | undefined;
+    if (!serveIdentity?.id) {
+      if (held) held.lastError = `the retirement was NOT requested: this manager has no serve identity yet, so it cannot speak as the registered serving instance. The despawn stopped "${a.name}" and the name stays held. NEXT: let the manager finish registering, then re-attempt the same-name spawn to re-drive the teardown.`;
       return;
     }
     const uncertain = (why: string) =>
@@ -2614,7 +2625,22 @@ export class Manager {
       // The caller triple and the TARGET are both grant-pinned now (#350): the `handle` target
       // rides the subject, so this ephemeral credential can ask to retire exactly this
       // incarnation and nothing else.
-      const caller = { owner: me.owner, actor: me.actor, uid: this.managerLifecycleUid };
+      //
+      // THE TRIPLE IS THE SERVE PRINCIPAL, and it has to be (#549). The auth rail authorizes this
+      // request by comparing the caller's `<owner>.<actor>` against the serve issuance gate's bound
+      // principal, and that gate is opened with `principalKey(DEV_OWNER, serveIdentity.id)` (see the
+      // registration block). Deriving the caller from `ep.ref().id` instead put the manager's
+      // ENDPOINT identity nkey on the wire, which is a different, equally real identity of the same
+      // manager, so the comparison was unsatisfiable and EVERY user-mesh retirement was refused as a
+      // full no-op. Measured before the fix: 8 refusals in one suite run across 5 agents, with the
+      // epoch and the instance id both matching and only the principal disagreeing.
+      //
+      // Both halves come from the gate's own sources rather than from `ep.ref()`: `DEV_OWNER` is
+      // hard-coded at the gate site, so taking the owner from `ep.ref().id` would re-open the same
+      // mismatch in the owner half the moment a manager ran under a user-shaped identity. This is
+      // also the more honest attribution: the authority being exercised is "I am the registered
+      // serving instance", which is exactly what the gate records.
+      const caller = { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
       const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
         retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
       });
