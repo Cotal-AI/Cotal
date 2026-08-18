@@ -314,13 +314,13 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
     })());
 }
 
-// ---- 6) the language reference parses ------------------------------------------------------------------
+// ---- 6) the language reference and the guide parse ------------------------------------------------------
 
-{
-  const reference = `${here}/../../../spec/cotal-lang.md`;
+for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
+  const path = `${here}/../../../${rel}`;
   let text: string | null = null;
   try {
-    text = readFileSync(reference, "utf8");
+    text = readFileSync(path, "utf8");
   } catch {
     text = null;
   }
@@ -337,9 +337,9 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
         bad.push(`block ${i + 1}: ${codes.join(",")}`);
       }
     }
-    ok(`every js block in spec/cotal-lang.md validates as written (${blocks.length} blocks)`, bad.length === 0, bad);
+    ok(`every js block in ${rel} validates as written (${blocks.length} blocks)`, bad.length === 0, bad);
   } else {
-    console.log("  (spec/cotal-lang.md not present; reference cells skipped)");
+    console.log(`  (${rel} not present; its cells skipped)`);
   }
 }
 
