@@ -735,6 +735,15 @@ async function runAttachLoop(
       // The session is over: take the stream back before the hand-back's own round trip, so the
       // period with no owner is the width of this statement rather than the width of a flush on a
       // dying link. `done` releases it again on whichever exit follows.
+      //
+      // MEASURED, and this line is NOT graded by the suite: deleting it leaves every cell green.
+      // The backoff wait installs the same reader a moment later, so what this buys is only the
+      // window between a session ending and that wait starting. In every fault the smoke can
+      // produce, the connection is already closed when the session ends, so the flush above is
+      // skipped and that window is a few statements wide. The case it is here for is a session
+      // that ends transport-class while the SOCKET lives, a rail stall being the one that happens:
+      // there the flush runs to its 5s deadline, and without this the keyboard has no owner for
+      // all of it.
       if (reconnect) ownStdin();
     }
     // The backoff resets on a session that WORKED, not on one that merely opened. `carried` is not
