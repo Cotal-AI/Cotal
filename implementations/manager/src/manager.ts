@@ -2022,6 +2022,15 @@ export class Manager {
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
       }),
+      // C3 `input`: the SAME authorization as `attach`, deliberately written out rather than
+      // factored with it - the two share a policy, not a body, and a shared wrapper would be a
+      // place for one of them to quietly acquire a condition the other does not have.
+      input: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        return this.inputAuthorized(a, args(ctx));
+      }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
       purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
@@ -5285,6 +5294,45 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
+   *  had. The single call an external UI needs to deliver a harness command (`/compact`, `/clear`,
+   *  `/model`) without holding a terminal open on the caller's side.
+   *
+   *  Why the runtime HANDLE and not an attach session: a session is a stream (backlog, subscriber
+   *  set, a lifetime the session plane accounts for and caps). Opening and discarding one per
+   *  keystroke line would burn a session slot for a write, and would put a capacity refusal in the
+   *  path of an operation that has no capacity cost. {@link AgentHandle.write} is the one-shot
+   *  sibling of `interrupt()`, which already writes into the same pty.
+   *
+   *  Three refusals, each for a different reason and each with its own code, so a caller can tell
+   *  "never going to work" from "not right now":
+   *   - the name was refilled while authorization awaited: act on the incarnation the caller was
+   *     authorized for or on nothing at all (the same guard {@link attachAuthorized} carries, for
+   *     the same reason: a name is a reusable slot and `authorizeNamed` can await a ledger read);
+   *   - the agent is not running: there is no terminal to type into;
+   *   - the runtime cannot write (tmux/cmux/orca/herdr attach to an externally-owned process, so
+   *     they own no input stream for it): `unimplemented`, named by runtime kind. NOT a fallback
+   *     to an attach session and NOT a silent success - a dropped keystroke would leave the caller
+   *     believing a command was delivered that never was.
+   *
+   *  `enter` defaults to true: a harness command typed but not submitted has not been delivered.
+   *  Nothing is echoed back; the caller reads the resulting turns from the event plane. */
+  private inputAuthorized(a: ManagedAgent, args: Record<string, unknown>): { name: string; bytes: number } {
+    if (this.agents.get(a.name) !== a)
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`);
+    if (a.handle.status() !== "running")
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to type into`);
+    const write = a.handle.write?.bind(a.handle);
+    if (!write)
+      throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`);
+    // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
+    // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
+    // and an explicit `true` must behave identically, and only `false` may suppress the return.
+    const data = `${String(args.text)}${args.enter !== false ? "\r" : ""}`;
+    write(data);
+    return { name: a.name, bytes: Buffer.byteLength(data, "utf8") };
   }
 
   /** The post-authorization attach effect (P2 item 6): mint the holder-bound §13.6 offer, redeem it
