@@ -560,13 +560,14 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // last item shown, because a pair too large to share one window leaves a hole: advancing
           // past a hole strands what is in it, which is total progress lost on an input that a
           // replay burst produces routinely.
-          const shownIds = new Set(all.map((i) => i.id));
-          let mark: { ts: number; id: string } | undefined;
-          for (const i of fresh) {
-            if (!shownIds.has(i.id) && !stuck.has(i.id)) break;
-            mark = { ts: i.ts, id: i.id };
-          }
-          if (mark) agent.noteRecalled(mark);
+          // The recall lane is filled in order and stops at its first gap, so what this reply carried
+          // of it IS an unbroken prefix: the last recall item shown is the end of that prefix, and
+          // the mark is exactly it. A walk over the prefix would compute the same value, which is why
+          // the mutation for it survived and the code went rather than the test being weakened.
+          const shownRecall = all.filter((i) => !bufferedIds.has(i.id));
+          const last = shownRecall[shownRecall.length - 1];
+          if (last) agent.noteRecalled({ ts: last.ts, id: last.id });
+          void stuck;
         }
         return ok(text);
       },

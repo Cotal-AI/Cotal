@@ -34,7 +34,12 @@
     "measurement of any one host's cap: no mutation can show it is the RIGHT number, only that a bound",
     "is enforced and that what falls outside it is kept. An earlier mutation that subtracted the recall",
     "warning from the budget a second time SURVIVED and the code it targeted was deleted rather than",
-    "kept: with the reply assembled and measured, no input could tell the two versions apart."
+    "kept: with the reply assembled and measured, no input could tell the two versions apart.",
+    "",
+    "A SECOND SURVIVOR, resolved the same way as the first. A mutation on a walk that recomputed the",
+    "mark over the delivered prefix SURVIVED: the ordered lane already stops at its first gap, so the",
+    "last recall item shown IS the end of the prefix and no input could tell the two versions apart.",
+    "The walk was deleted rather than the test weakened, and the mark is the last item shown."
   ],
   "mutations": [
     {
@@ -103,11 +108,11 @@
     {
       "name": "K8 one message too large for any response blocks the queue behind it",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (used + cost > budget) continue;",
-      "replace": "    if (used + cost > budget) break;",
+      "find": "    if (used + cost > budget) {",
+      "replace": "    if (used + cost > budget && !strict) {",
       "cell": "ordinary mail is delivered past an item that can never fit",
       "expectRed": "ordinary mail is delivered past an item that can never fit",
-      "note": "The fill stops at the first item too large instead of stepping over it, so one message nobody can deliver blocks every message behind it. That is the wedge the show-alone escape was invented to avoid, arriving through the other door."
+      "note": "The fill stops at the first item too large instead of stepping over it, so one message nobody can deliver blocks every message behind it. That is the wedge the show-alone escape was invented to avoid, arriving through the other door. Expressed here as the ordered lane's rule leaking onto the free lane, which is the plausible way it would be written."
     },
     {
       "name": "K9 nothing is ever classified as too large to deliver",
@@ -198,15 +203,6 @@
       "cell": "...and nothing behind the hole was re-served to get there",
       "expectRed": "...and nothing behind the hole was re-served to get there",
       "note": "Stepping over a gap looks like better packing: the window is fuller and nothing is lost yet. But a lane walked by one mark cannot record a hole, so everything delivered past it is served again on the next call, forever. The free lane may step over its own gaps because each of its items is acked by id."
-    },
-    {
-      "name": "K20 the mark follows the last item shown instead of the unbroken prefix",
-      "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "            if (!shownIds.has(i.id) && !stuck.has(i.id)) break;",
-      "replace": "            if (!shownIds.has(i.id) && !stuck.has(i.id)) continue;",
-      "cell": "a same-millisecond pair too large to share one window still reaches the caller, both halves",
-      "expectRed": "a same-millisecond pair too large to share one window still reaches the caller, both halves",
-      "note": "The other half of the same trap: a mark that follows the last item shown walks past a hole, and what was in the hole is stranded for good while the reply keeps promising a next batch. Two same-millisecond messages too large to share one window are all it takes, which a replay burst produces routinely."
     }
   ]
 }
