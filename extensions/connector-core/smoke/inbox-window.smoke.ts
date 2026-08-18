@@ -686,23 +686,48 @@ try {
     // Every failure inside this loop reports under the cell's own name, so a mutation killed here is
     // killed on a named assertion rather than on an anonymous throw from inside a fixture.
     const UNIVERSE = "every scenario in the cursor's input universe makes total progress with no duplicates";
-    const SIZES = { small: 500, half: 23_000, giant: 60_000 } as const;
+    // `brim` is the band the eighth defect lived in: large enough that a note beside it does not fit,
+    // small enough that it rides a response on its own. Two sweeps rather than one product, because
+    // adding a fourth size to the four-item shapes multiplies the run for coverage the shorter shapes
+    // already give: four items over three sizes, and three items over four including the band.
+    const SIZES = { small: 500, half: 23_000, brim: 47_800, giant: 60_000 } as const;
     type Size = keyof typeof SIZES;
+    const sweeps: { len: number; kinds: Size[] }[] = [
+      { len: 4, kinds: ["small", "half", "giant"] },
+      { len: 3, kinds: ["small", "half", "brim", "giant"] },
+    ];
     const shapes: Size[][] = [];
-    const kinds: Size[] = ["small", "half", "giant"];
-    for (const a of kinds) for (const b of kinds) for (const c of kinds) for (const d of kinds) shapes.push([a, b, c, d]);
+    for (const sweep of sweeps) {
+      const build = (prefix: Size[]): void => {
+        if (prefix.length === sweep.len) {
+          shapes.push(prefix);
+          return;
+        }
+        for (const k of sweep.kinds) build([...prefix, k]);
+      };
+      build([]);
+    }
 
+    // THE UNIVERSE GREW WITH THE WALK. Defects seven and eight each added state the first version of
+    // this cell could not reach: an item stamped ahead of the local clock, which is walked by id in
+    // its own lane rather than by the mark, and a held-note that gives up its names, then its counts,
+    // then itself when a message needs the room. Both were found by seats on instances, which is the
+    // failure this cell exists to stop repeating, so both dimensions are enumerated here rather than
+    // left to the next reviewer. Sizes alone force the note to tier; `ahead` crosses the two lanes.
     let scenarios = 0;
     let deliveries = 0;
     for (const shape of shapes) {
       for (const tied of [false, true]) {
+        for (const ahead of [false, true]) {
         const agent = new MeshAgent(cfg);
         agent.on("error", () => {});
         Object.defineProperty(agent, "attention", { get: () => "focus" });
         const items = shape.map((size, n) => ({
           id: `E-${n}`,
-          // Tied mode puts every pair in one millisecond, which is what a replay burst does.
-          ts: 20_000 + (tied ? Math.floor(n / 2) : n),
+          // Tied mode puts every pair in one millisecond, which is what a replay burst does. Ahead
+          // mode stamps the odd items in the far future, the way a peer with a wrong or chosen clock
+          // does, so every shape is walked with both lanes carrying part of it.
+          ts: ahead && n % 2 === 1 ? Date.now() + 9_000_000 + n : 20_000 + (tied ? Math.floor(n / 2) : n),
           fromId: "peer",
           fromName: "Peer",
           kind: "channel" as const,
@@ -716,15 +741,35 @@ try {
           droppedChannels: [],
         });
 
+        // THE CHANNEL KEEPS TALKING. A walk that has handed over a future-stamped item is only
+        // provably still walking if ordinary traffic ARRIVES after it: with a fixed set, a mark
+        // parked in the future has nothing left to strand. These two land after the first call.
+        const late: Size[] = ["small", "small"];
         const seen = new Map<string, number>();
         let calls = 0;
         let progressed = true;
-        while (calls < 10 && progressed) {
+        // The late pair lands after call one, so a scenario whose first call delivers nothing (four
+        // giants) must still take a second call rather than reporting a stall before they arrive.
+        while (calls < 12 && (progressed || calls < 2)) {
           const before = new Map(seen);
           const text = textOf(await inboxSpec().run(agent, cfg, {}));
+          if (calls === 0)
+            items.push(
+              ...late.map((size, n) => ({
+                id: `L-${n}`,
+                ts: 20_500 + n,
+                fromId: "peer",
+                fromName: "Peer",
+                kind: "channel" as const,
+                channel: "general",
+                mentionsMe: false,
+                historical: false,
+                text: `${"l".repeat(SIZES[size])} MARK_${shape.length + n}`,
+              })),
+            );
           assert.ok(
             text.length <= INBOX_WINDOW_CHARS,
-            `${UNIVERSE} :: [${shape.join(",")}${tied ? ",tied" : ""}] call ${calls} returned ${text.length} chars`,
+            `${UNIVERSE} :: [${shape.join(",")}${tied ? ",tied" : ""}${ahead ? ",ahead" : ""}] call ${calls} returned ${text.length} chars`,
           );
           for (let n = 0; n < items.length; n++) {
             const hits = (text.match(new RegExp(` MARK_${n}(?![0-9])`, "g")) ?? []).length;
@@ -734,20 +779,22 @@ try {
           progressed = seen.size > before.size;
         }
 
-        const label = `[${shape.join(",")}${tied ? ",tied" : ""}]`;
-        for (let n = 0; n < items.length; n++) {
-          const deliverable = shape[n] !== "giant"; // a giant cannot ride any response of its own
+        const label = `[${shape.join(",")}${tied ? ",tied" : ""}${ahead ? ",ahead" : ""}]`;
+        const all: Size[] = [...shape, ...late];
+        for (let n = 0; n < all.length; n++) {
+          const deliverable = all[n] !== "giant"; // a giant cannot ride any response of its own
           const count = seen.get(`MARK_${n}`) ?? 0;
           assert.ok(
             deliverable ? count === 1 : count === 0,
-            `${UNIVERSE} :: ${label} MARK_${n} (${shape[n]}) was delivered ${count} times after ${calls} calls`,
+            `${UNIVERSE} :: ${label} MARK_${n} (${all[n]}) was delivered ${count} times after ${calls} calls`,
           );
           deliveries += count;
         }
         scenarios++;
+        }
       }
     }
-    check(UNIVERSE, scenarios === shapes.length * 2, { scenarios, deliveries });
+    check(UNIVERSE, scenarios === shapes.length * 4, { scenarios, shapes: shapes.length, deliveries });
   }
 
   // ── 23) A SENDER'S CLOCK CANNOT PARK THIS SESSION'S RECALL IN THE FUTURE ─────────────────────
