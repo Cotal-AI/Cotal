@@ -3532,9 +3532,9 @@ this revision does not fix.
 ### 14.5 Answers, notices, migrations
 
 Three record kinds carry the payloads a run's effects file (§13.7 for the grammar and the
-sentences that defend each shape). Their derived id tokens all take one form: **base64url of the
-SHA-256 over the strict RFC 8785 canonical JSON of the named object, truncated to 43 characters**,
-which is an id token by construction. The reference implementation's canonicalizer is the one
+sentences that defend each shape). Their derived id tokens all take one form: **the unpadded
+base64url of the SHA-256 over the strict RFC 8785 canonical JSON of the named object, 43
+characters**, which is an id token by construction. The reference implementation's canonicalizer is the one
 §13.7's `*Digest` fields use.
 
 - **`answer`**, `answer.<endpoint>.<token>.<answerId>`, atomic, create-only: `{ v: 1, token,
