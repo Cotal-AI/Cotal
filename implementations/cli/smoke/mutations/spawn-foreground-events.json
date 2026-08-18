@@ -1,0 +1,46 @@
+{
+  "suite": "implementations/cli/smoke/spawn-foreground-events.smoke.ts",
+  "guard": "the foreground spawn hands an armed session the same launch the manager does, and refuses a connector that publishes no event plane",
+  "command": "pnpm smoke:spawn-foreground-events",
+  "completionMarker": "SUITE COMPLETE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/mutations/spawn-foreground-events.json",
+  "why": [
+    "Both mutations below restore the exact state this suite was written against, so the suite's",
+    "value is not a matter of opinion: it either reddens on the shipped bug or it does not.",
+    "",
+    "The bug was invisible to every suite that existed. The connector's own suite injects a workspace",
+    "root in each accepted case, which proves the connector's contract in ISOLATION and can say",
+    "nothing about whether a caller honours it, and the manager's grant suite drives the manager. A",
+    "contract asserted only against itself is how a caller goes missing, which is why this assertion",
+    "sits on the caller's side of the boundary and drives real argv through the binary's own dispatch.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the CLI by relative source path (../src/index.js,",
+    "../src/command.js), so the bytes mutated are the bytes graded: no dist in the path and no build",
+    "in the command. It imports @cotal-ai/core and @cotal-ai/workspace by package name for the",
+    "registry and the mesh record, and no mutation below touches either.",
+    "",
+    "NOT PROVED HERE, named rather than implied. The mesh is OPEN, so neither authenticated branch",
+    "runs and the event grant landing in allowPublish is not exercised on this path. That property is",
+    "proved for the manager by smoke:events-grant and is not proved for the CLI by anything."
+  ],
+  "mutations": [
+    {
+      "name": "F1 the foreground launch drops the workspace root again, which is the shipped bug",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "      workspaceRoot: target.root,",
+      "replace": "",
+      "expectRed": "an armed foreground launch carries the mesh's own root for the write-ahead log",
+      "cell": "an armed foreground launch carries the mesh's own root for the write-ahead log",
+      "note": "Not a contrived mutation: it is the code as it shipped, where cotal spawn --events failed at launch construction for every armed session while --detach worked."
+    },
+    {
+      "name": "F2 the foreground stops refusing a connector that publishes no event plane",
+      "file": "implementations/cli/src/commands/spawn.ts",
+      "find": "  if (events && !connector.eventChannel) {",
+      "replace": "  if (false) {",
+      "expectRed": "--events on a connector that publishes no event plane REFUSES, by name",
+      "cell": "--events on a connector that publishes no event plane REFUSES, by name",
+      "note": "The other half of the shipped state: the flag was accepted and silently did nothing, which is the failure mode the manager's refusal exists to prevent."
+    }
+  ]
+}

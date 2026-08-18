@@ -36,6 +36,8 @@ export const launchFlags = [
   { name: "resume", type: "string", value: "<id>", description: "fork an existing session id into the mesh (claude only; detached: pair with --cwd)" },
   { name: "transcript", type: "boolean", description: "mirror the session transcript to tr-<name>" },
   { name: "no-transcript", type: "boolean", description: "explicit default: no transcript mirror" },
+  { name: "events", type: "boolean", description: "publish the session's AG-UI event plane to its own event channel" },
+  { name: "no-events", type: "boolean", description: "explicit default: no event plane" },
   { name: "share-tools", type: "string", value: "<sel>", description: "share named operator MCP servers with the agent" },
   { name: "subscribe", type: "string", value: "<a,b>", description: "channel read set override" },
   { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override" },

@@ -125,6 +125,7 @@ const SPAWN_INPUT_SCHEMA = {
     launchOptions: { type: "object" },
     resume: { type: "string" },
     transcript: { type: "boolean" },
+    events: { type: "boolean" },
     cwd: { type: "string" },
     prompt: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
