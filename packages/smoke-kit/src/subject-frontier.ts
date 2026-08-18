@@ -7,34 +7,34 @@
  * constructor in the shipped module would be exactly the omission route that requirement exists to
  * close, reachable by anyone who found it. A suite double belongs on the suite side of the boundary.
  *
- * It mirrors the durable implementation's contract EXACTLY, including `seedFromThread`: a double
- * that silently lacked it would make every case with a pre-seeded write-ahead log publish against a
- * tip of zero, and the cells would go red for a reason that has nothing to do with what they test.
+ * **IT MIRRORS THE DURABLE IMPLEMENTATION'S REFUSALS, NOT ONLY ITS HAPPY PATH.** A double that
+ * accepts what the real one rejects turns every call site into a place the real refusal is never
+ * exercised: it makes the suites agree with the double instead of with what ships. So a value that
+ * is not a safe non-negative integer is refused here for the same reason it is refused there, and a
+ * reviewer's probe that `advance(NaN)` and `advance(1.5)` were accepted here is why this says so.
  */
 export interface MemorySubjectFrontier {
   readonly tip: number;
   advance(seq: number): Promise<void>;
   reset(): Promise<void>;
-  seedFromThread(seq: number): Promise<void>;
 }
 
 /** A fresh, virgin in-memory frontier. One per case, unless the case is about continuity. */
 export function memorySubjectFrontier(initial = 0): MemorySubjectFrontier {
+  const safe = (n: unknown): n is number => typeof n === "number" && Number.isSafeInteger(n) && n >= 0;
+  if (!safe(initial)) throw new Error(`memory subject frontier: initial tip must be a safe non-negative integer, got ${String(initial)}`);
   let tip = initial;
   return {
     get tip() {
       return tip;
     },
     async advance(seq: number) {
+      if (!safe(seq)) throw new Error(`memory subject frontier: seq must be a safe non-negative integer, got ${String(seq)}`);
       if (seq <= tip) throw new Error(`memory subject frontier: seq=${seq} does not advance the tip ${tip}`);
       tip = seq;
     },
     async reset() {
       tip = 0;
-    },
-    async seedFromThread(seq: number) {
-      if (tip !== 0) throw new Error(`memory subject frontier: refusing to seed a record that already holds tip ${tip}`);
-      if (seq > 0) tip = seq;
     },
   };
 }

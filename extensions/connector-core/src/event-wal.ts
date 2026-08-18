@@ -619,8 +619,16 @@ export class EventWal {
   /**
    * The sequence a publish must expect, which is the SUBJECT's tip and not this thread's.
    *
-   * Unbound it falls back to this document's own last ack, which is what a WAL driven directly by a
-   * suite means and what every caller meant before the shared record existed.
+   * Unbound it returns this document's own last ack, which is what a WAL driven directly by a suite
+   * means and what every caller meant before the shared record existed.
+   *
+   * **THAT UNBOUND VALUE IS THE DEFECT'S OWN SHAPE, SO WHERE IT CANNOT BE REACHED IS PART OF THE
+   * CONTRACT AND IS WRITTEN DOWN RATHER THAN ASSUMED.** Nothing that publishes reaches it:
+   * {@link AguiEmitter.start} is the only shipped path from a WAL to a publish, it requires a
+   * frontier at runtime as well as in the type, and it binds before the emitter exists. So an
+   * unbound WAL is one nobody is publishing from. A future caller that drives a WAL to a publish
+   * without going through the emitter would reintroduce this defect silently, and the requirement
+   * on `start` is the guard for that, not a comment here.
    */
   get expectedTip(): number {
     return this.subject ? this.subject.tip : this.doc.frontier.lastSubjectSeq;

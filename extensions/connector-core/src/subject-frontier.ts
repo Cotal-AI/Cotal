@@ -268,22 +268,12 @@ export class FileSubjectFrontier implements SubjectFrontier {
     return best;
   }
 
-  /**
-   * Seed a virgin record from a thread that already published before this record existed.
-   *
-   * **THIS IS THE UPGRADE PATH AND IT IS NOT OPTIONAL.** An installation running the release before
-   * this file existed has thread logs holding a real `lastSubjectSeq` and no principal record at
-   * all. Opening one virgin would publish an expectation of 0 against a subject that thread already
-   * filled, which is the very defect this fixes, reintroduced at the upgrade boundary. Seeding is
-   * therefore allowed exactly once, only while the record is virgin, and only from a value a thread
-   * log actually holds.
-   */
-  async seedFromThread(seq: number): Promise<void> {
-    if (this.doc.tip !== 0) throw new Error(`subject frontier ${this.path}: refusing to seed a record that already holds tip ${this.doc.tip}`);
-    if (!isSafeNonNegInt(seq)) throw new Error(`subject frontier ${this.path}: seed must be a safe non-negative integer, got ${String(seq)}`);
-    if (seq === 0) return; // nothing to carry forward
-    await this.write({ ...this.doc, tip: seq });
-  }
+  // `seedFromThread` used to live here, and it is GONE rather than kept for a caller that might
+  // want it. Recovery moved into `open`, which is the only place that can see every sibling log,
+  // and what was left behind was a public method that writes a tip into a record whose only
+  // precondition is that the record reads 0. A record reading 0 is exactly what abandonment writes
+  // after a channel purge, so the leftover was a supported route back into the state this file
+  // exists to prevent, with no shipped caller to justify it.
 
   async reset(): Promise<void> {
     await this.write({ ...this.doc, tip: 0 });

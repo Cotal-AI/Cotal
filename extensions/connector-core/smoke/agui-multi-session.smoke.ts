@@ -26,7 +26,7 @@
  *          `session-3:...and-a-THIRD-one-does-too`, and NOT the control, which is the point.
  *   S2  `recordAck` does not advance the shared record
  *       -> the same two, one publish later.
- *   S3  drop `seedFromThread` at bind
+ *   S3  an absent record is taken as virgin without scanning the sibling logs
  *       -> `upgrade:a-log-from-before-the-shared-record-carries-its-tip-across` ONLY.
  *   S4  `abandon` leaves the shared record standing
  *       -> `abandon:resets-the-shared-record-with-the-log` and its durability cell.
@@ -217,9 +217,12 @@ try {
     // Requiring the following word is better and still a prefix test, which a reviewer caught: a
     // path ending `...principal wholeheartedly` satisfies it too. So the cell EXTRACTS the path the
     // message names and compares it whole. A prefix test cannot decide where a path ends.
-    // `whole\b`, because `whole` alone is satisfied by a path ending `... wholeheartedly`, which
-    // is the SAME prefix mistake in its third costume. A boundary is what pins the word.
-    const located = /removing (\S+) whole\b/.exec(s4.err ?? "")?.[1];
+    // Two things this pattern has to survive, both found by lenses rather than by me. `whole` alone
+    // is satisfied by a path ending `... wholeheartedly` or `... wholesale`, so the pattern pins the
+    // whole clause that follows rather than one word of it. And `\S+` drops any real workspace path
+    // containing a space, which would red this cell on a perfectly correct message; `.+?` with a
+    // pinned suffix takes the path as it is.
+    const located = /removing (.+?) whole, and removing less/.exec(s4.err ?? "")?.[1];
     c("control:the-halt-LOCATES-the-state-to-remove", located === PRINCIPAL_DIR, { located, dir: PRINCIPAL_DIR, err: s4.err });
   }
 
