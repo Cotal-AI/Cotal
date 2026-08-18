@@ -438,7 +438,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
                 ? `Nothing could be delivered in this response.${heldNote(held)}`
                 : scope
                   ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                  : "Inbox empty — no new messages.",
+                  : "Inbox empty, no new messages.",
             );
           const head = scope
             ? `${shown.length} pull-only message${shown.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
@@ -463,7 +463,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
               ? `Nothing could be delivered in this response.${heldNote(held)}`
               : scope
                 ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                : "Inbox empty — no new messages, and no channel chatter since you entered focus.",
+                : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
           );
         const parts: string[] = [];
         if (all.length) {
