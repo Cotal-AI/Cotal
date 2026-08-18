@@ -690,22 +690,28 @@ try {
       await a.waitFor(new RegExp(`attached to ${SEAT}`), 120_000), a.seen().slice(-300));
     await wait(1_000);
     const mark = sink().length;
-    // The seat echoes what it is typed, so a burst of lines is a burst of data frames. Drop them,
-    // then stop: the first frame delivered after the window is ahead of what the rail expects.
+    // The seat echoes what it is typed, so a burst of lines is a burst of data frames. Every stage
+    // below is synchronised on what the system does rather than on a sleep: drop until frames have
+    // actually gone missing, then keep the seat producing until the rail notices the hole. A fixed
+    // window would be a guess about how fast a loaded box echoes.
     const flushLeft = new Promise<void>((r) => { sawClientPing = () => r(); });
     dropping = true;
-    for (let i = 0; i < 6; i++) { a.write(`k${i}\r`); await wait(120); }
-    await wait(500);
+    for (let i = 0; i < 12 && droppedFrames < 3; i++) { a.write(`k${i}\r`); await wait(150); }
+    check("the link loses frames without losing the connection", droppedFrames >= 3, { droppedFrames });
     dropping = false;
-    for (let i = 0; i < 4; i++) { a.write(`m${i}\r`); await wait(150); }
-    // The client's flush is a PING and the proxy sees it leave: that is the hand-back starting, on
-    // a connection the fault did not close. Waiting for it is waiting for the window itself.
-    check("the faulted session is handed back over a link that is still up",
-      await Promise.race([flushLeft.then(() => true), wait(25_000).then(() => false)]), { droppedFrames });
+    // The fault fires on the first frame DELIVERED after the hole, and the client's flush is a PING
+    // the proxy watches leave: that is the hand-back starting, on a connection the fault did not
+    // close. Waiting for it is waiting for the window itself.
+    let opened = false;
+    for (let i = 0; i < 25 && !opened; i++) {
+      a.write(`m${i}\r`);
+      opened = await Promise.race([flushLeft.then(() => true), wait(400).then(() => false)]);
+    }
+    check("the faulted session is handed back over a link that is still up", opened, { droppedFrames });
     const seenAtPress = a.seen();
     const tPress = Date.now();
     a.write(DETACH);
-    await wait(8); // two keystrokes, 8ms apart: separate reads for a reader that is reading
+    await wait(60); // two keystrokes far enough apart to be separate reads for a reader that reads
     a.write("z");
     // The premise, checked and not assumed: the press has to land INSIDE the hand-back, before the
     // loop announces the loss. After the announcement it is the backoff wait's reader that has the
