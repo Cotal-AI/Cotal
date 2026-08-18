@@ -108,6 +108,19 @@ const realMs = Date.now() - realStart;
     .map((e) => `${e.scope}/${e.kind}${e.name === "" ? "" : `:${e.name}`}#${e.occurrence}`);
   const planKeys = report.effects.map((e) => e.step);
 
+  // Both comparisons below are identities, and an identity holds at zero: `0 === 0` is true, and so
+  // is `"[]" === "[]"`. A run that journalled nothing would pass the two cells this file calls the
+  // ones that matter, and the drift they exist to catch is exactly the drift they would miss in the
+  // case where it is total. `report.agents` and `report.checkpoints` are pinned above but they are
+  // built from the recorder's own arrays, not from the journal, so they floor nothing here. Pin the
+  // corpus itself: six effects, and all four kinds the program uses.
+  const realKinds = new Set(real.journal.entries().map((e) => e.kind));
+  ok(
+    "the real run journalled the program's six effects, across all four of its kinds",
+    realKeys.length === 6 && realKinds.size === 4,
+    { keys: realKeys, kinds: [...realKinds] },
+  );
+
   ok("the plan has an entry for every effect the real run performed", planKeys.length === realKeys.length, {
     plan: planKeys.length,
     real: realKeys.length,
@@ -152,6 +165,9 @@ const realMs = Date.now() - realStart;
   const rec = new RecordingHandler(inner);
   ok("the recorder delegates the clock rather than owning one", rec.now() === inner.now());
   const r = await run(PROGRAM, { runId: "dry-run", handler: rec });
+  // Another identity, floored transitively: section 4 pins `realKeys` at six and then equates it to
+  // `planKeys`, so `report.effects` is non-empty by the time this line runs, or the suite is already
+  // red. If section 4's floor is ever removed, this cell goes unfloored with it.
   ok("a run through the recorder behaves identically", r.journal.entries().length === report.effects.length, {
     through: r.journal.entries().length,
     plan: report.effects.length,
