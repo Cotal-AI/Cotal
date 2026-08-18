@@ -173,9 +173,17 @@ function fireHookViaRealRelay(
   opts: { starveStdout?: boolean; breakStdout?: boolean } = {},
 ): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve) => {
+    // Ambient COTAL_ vars are stripped before this suite sets its own. Whatever runs this suite may
+    // itself be a managed agent session, and inheriting ITS identity here would give the relay a
+    // second answer to "which control endpoint": a launch-material pointer from the outer session
+    // alongside the token this suite is testing with. The config layer refuses that pair rather than
+    // picking one, and the relay fails open on a refusal, so the failure mode would be a hook that
+    // silently does nothing while every assertion here still reads as a relay bug.
+    const clean = { ...process.env };
+    for (const key of Object.keys(clean)) if (key.startsWith("COTAL_")) delete clean[key];
     const child = spawn(process.execPath, [tsxCli, hookEntry], {
       env: {
-        ...process.env,
+        ...clean,
         COTAL_NAME: "Otto", // hasIdentity() gate — the relay no-ops for an unmanaged session
         COTAL_CONTROL_SOCKET: socketPath,
         COTAL_CONTROL_TOKEN: TOKEN,

@@ -106,6 +106,13 @@ const DIRECT_MATERIAL_VARS = [
   "COTAL_ACTOR",
   "COTAL_SENTINEL_CREDS",
   "COTAL_BEARER_CMD",
+  // The control token belongs here for a reason that is not symmetry. Once a launcher-spawned seat
+  // carries a material pointer in its environment, anything that INHERITS that environment and then
+  // sets COTAL_CONTROL_TOKEN by hand has two answers for one question, and controlFromEnv would
+  // silently prefer the inherited one - handing a process the OUTER seat's control endpoint while
+  // its own explicit token sat unused. That is not hypothetical: it is what a test harness spreading
+  // `...process.env` does, and this whole change exists because that spread used to be invisible.
+  "COTAL_CONTROL_TOKEN",
 ] as const;
 
 /** Resolve the launch-material file, if this launch uses one. Refuses the two-carrier case: a
