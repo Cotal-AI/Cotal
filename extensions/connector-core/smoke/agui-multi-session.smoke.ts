@@ -1,5 +1,5 @@
 /**
- * MANY SESSIONS, ONE PRINCIPAL, ONE SUBJECT — the case that was broken in a released version.
+ * MANY SESSIONS, ONE PRINCIPAL, ONE SUBJECT: the case that was broken in a released version.
  *
  * **THE DEFECT THIS FILE EXISTS FOR.** The write-ahead log is keyed per thread and the subject is
  * keyed per principal, so an agent's SECOND session opened `virgin`, published an expectation of 0
@@ -35,6 +35,14 @@
  *          `smoke:subject-frontier`. Named here because it is the same rule seen from the log side.
  *   S6  drop the runtime requirement and keep only the type
  *       -> `guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME`.
+ *   S8  the halt claims the per-principal lock PREVENTS a concurrent emitter
+ *       -> `control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this`.
+ *          The lock is real, but its file is per WORKSPACE ROOT on one HOST, so it cannot prevent
+ *          the case this halt fires on. A guard named without its boundary sends an operator
+ *          hunting a writer that the guard supposedly made impossible.
+ *   S9  the halt points at the thread's own wal path instead of the principal directory
+ *       -> `control:the-halt-LOCATES-the-state-to-remove`. `abandon()` has no shipped caller, so
+ *          the directory IS the remedy and half of it is a mixed state the next start refuses.
  *
  * Run: pnpm smoke:agui-multi-session   (needs nats-server on PATH; starts its own broker)
  */
@@ -181,6 +189,17 @@ try {
     c("control:a-FOREIGN-writer-on-our-subject-still-HALTS", s4.err !== undefined && /subject tip is no longer/.test(s4.err ?? ""), s4);
     c("control:the-halt-names-a-CONCURRENT-emitter-under-this-principal", /CONCURRENT emitter/.test(s4.err ?? ""), s4.err);
     c("control:the-halt-also-names-a-DISAGREEING-record-which-is-the-new-cause", /frontier record that disagrees/.test(s4.err ?? ""), s4.err);
+
+    // The message may not assert a guard that does not hold. A per-principal lock DOES exist
+    // (`acquirePrincipalLock`, taken by `ensureEventWalDir` on the shipped connector path), so
+    // naming it is honest; claiming it PREVENTS this is not, because its file lives under one
+    // workspace root on one host. Two roots, two hosts, or a reclaim onto a reused pid walk past
+    // it, and those are the situations an operator reading this halt is actually in.
+    c("control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this", /lock refuses only/.test(s4.err ?? "") && /workspace root/.test(s4.err ?? "") && !/lock is meant to prevent/.test(s4.err ?? ""), s4.err);
+
+    // A named remedy has to exist where it is named. Nothing in shipped code calls `abandon()`, so
+    // the halt cannot send an operator looking for a command; it has to hand them the directory.
+    c("control:the-halt-LOCATES-the-state-to-remove", (s4.err ?? "").includes(PRINCIPAL_DIR), { err: s4.err, dir: PRINCIPAL_DIR });
   }
 
   // ------------------------------------------------------------------ the upgrade path

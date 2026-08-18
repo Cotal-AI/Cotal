@@ -65,6 +65,7 @@ import { isCasLoss, principalKey, type Part } from "@cotal-ai/core";
 import type { DurableSource } from "./durable-source.js";
 import type { SubjectFrontier } from "./subject-frontier.js";
 import type { EventWal } from "./event-wal.js";
+import { dirname } from "node:path";
 import { eventChannelForSession } from "./launch.js";
 
 /**
@@ -1600,13 +1601,16 @@ export class AguiEmitter<T> {
           "cas-loss",
           `event emitter for ${this.channel}: the subject tip is no longer ${o.E} (${(e as Error).message}). ` +
             `The broker ACL confines this subject to one principal, so the tip moved for one of: a ` +
-            `CONCURRENT emitter under this same principal (two sessions publishing at once, which the ` +
-            `per-principal lock is meant to prevent); a subject frontier record that disagrees with the ` +
-            `stream, which is what an interrupted upgrade or a restored backup leaves behind; a ` +
-            `RESTORED stream; or a FILTERED PURGE, which returns the tip to 0 for every thread on the ` +
-            `channel. None of these is resolvable by re-reading the tip, which agent credentials cannot ` +
-            `read in any case. Clearing it is an explicit abandonment, which resets epoch, seq, E and ` +
-            `cursor together, and resets the shared subject record with them.`,
+            `CONCURRENT emitter under this same principal, which the per-principal lock refuses only ` +
+            `within one workspace root on one host, so two roots, two hosts, or a lock reclaimed onto ` +
+            `a reused pid all get past it; a subject frontier record that disagrees with the stream, ` +
+            `which is what an interrupted upgrade or a restored backup leaves behind; a RESTORED ` +
+            `stream; or a FILTERED PURGE, which returns the tip to 0 for every thread on the channel. ` +
+            `None of these is resolvable by re-reading the tip, which agent credentials cannot read in ` +
+            `any case. Clearing it is an explicit abandonment of epoch, seq, E, cursor and the shared ` +
+            `subject record together; no command performs it, so by hand it means removing ` +
+            `${dirname(dirname(this.wal.path))} whole, and removing less than that leaves a mixed ` +
+            `state the next start refuses.`,
         );
       throw e;
     }

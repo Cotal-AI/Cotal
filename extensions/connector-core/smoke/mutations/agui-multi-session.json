@@ -23,7 +23,12 @@
     "NOT PROVED HERE, named rather than implied. The record's own refusals (a decrease, a foreign",
     "principal, a zero-byte file, an unreadable sibling log) are graded by smoke:subject-frontier and",
     "its own config, not by this suite. And S5, recovering a tip into a record that READS zero rather",
-    "than only into an absent one, is proved there because that is where the distinction has a cell."
+    "than only into an absent one, is proved there because that is where the distinction has a cell.",
+    "",
+    "THE MESSAGE IS BEHAVIOUR, NOT DECORATION, so S8 and S9 grade it. A halt that names a guard",
+    "without its boundary, or a remedy with no command behind it, costs an operator the hour the",
+    "message was written to save. Neither find string anchors on a comment: both are shipped text an",
+    "assertion reads."
   ],
   "mutations": [
     {
@@ -70,6 +75,24 @@
       "expectRed": "guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME",
       "cell": "guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME",
       "note": "Smoke files in this repository are not typechecked, so the type alone is not a guard for the callers that matter most: the ones a compiler never sees."
+    },
+    {
+      "name": "S8 the halt claims the per-principal lock PREVENTS a concurrent emitter, instead of stating its limit",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "            `CONCURRENT emitter under this same principal, which the per-principal lock refuses only ` +\n            `within one workspace root on one host, so two roots, two hosts, or a lock reclaimed onto ` +\n            `a reused pid all get past it; a subject frontier record that disagrees with the stream, ` +\n",
+      "replace": "            `CONCURRENT emitter under this same principal (two sessions publishing at once, which the ` +\n            `per-principal lock is meant to prevent); a subject frontier record that disagrees with the stream, ` +\n",
+      "expectRed": "control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
+      "cell": "control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
+      "note": "The lock is real and taken on the shipped path (acquirePrincipalLock, via ensureEventWalDir at connector-claude-code/src/mcp.ts), so naming it is honest. Its file is per workspace root on one host, so it cannot prevent the case this halt fires on, and a guard named without its boundary sends an operator hunting a writer the guard supposedly made impossible."
+    },
+    {
+      "name": "S9 the halt points at this session's own log instead of the principal directory",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "            `${dirname(dirname(this.wal.path))} whole, and removing less than that leaves a mixed ` +\n",
+      "replace": "            `${this.wal.path} whole, and removing less than that leaves a mixed ` +\n",
+      "expectRed": "control:the-halt-LOCATES-the-state-to-remove",
+      "cell": "control:the-halt-LOCATES-the-state-to-remove",
+      "note": "abandon() has no shipped caller anywhere in the tree, so the directory is the whole remedy. One dirname short names one session's log, and removing that alone leaves the shared record and the other sessions standing, which is the mixed state the next start refuses."
     }
   ]
 }
