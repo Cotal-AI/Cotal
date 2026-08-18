@@ -1,0 +1,463 @@
+/**
+ * Who owns stdin while `cotal attach` has no session, and what reaches the AGENT when nobody does.
+ * Run: pnpm smoke:attach-stdin   (needs nats-server + node on PATH; boots its own broker). (#585)
+ *
+ * THE DEFECT, as measured before the fix existed. `watchDetachKey` was installed for the duration
+ * of a backoff WAIT and stopped, with `stdin.pause()`, before each attempt; `attachClient` installs
+ * its own reader in `onReady`, after the session is open, and resumes stdin there. Between those
+ * two points nothing was reading and the stream buffered, so that `stdin.resume()` flushed whatever
+ * had been typed at a frozen terminal straight into the seat's pty. Graded at the seat rather than
+ * on screen: typed during a wait, dropped; during a FAILED attempt, dropped; during an attempt that
+ * SUCCEEDED, DELIVERED, and a 0x03 there arrived as a real SIGINT at the agent, which recorded the
+ * signal and exited. The detach key struck in that same window was not a detach either: it was
+ * flushed into the session that had just opened and forwarded to the agent as data.
+ *
+ * WHERE THE CELLS GRADE, and why there. Every replay cell asks the SEAT what it received, through
+ * a stub that appends every byte it reads to a file: the client's screen cannot answer this,
+ * because a local terminal echo and a byte that crossed the mesh look identical on it. The Ctrl-C
+ * cell grades the seat's PID, not the manager's session count, because a count that returns to base
+ * is equally consistent with an agent that died and one that never noticed.
+ *
+ * WHY THE TIMING IS MEASURED AND NOT WAITED FOR. The window is one round trip wide, so the cells
+ * act from INSIDE the proxy's connection handler on the client's own dial (issue #582 is the same
+ * lesson from the other side). The link has three states here: healed; severed but LOUD, where the
+ * port keeps listening and destroys what it accepts, so every dial is a timestamped knock; and
+ * HELD, where the port accepts and then answers nothing, which is how an attempt is kept in flight
+ * long enough to type into the middle of it.
+ *
+ * WHAT EACH CELL PROVES:
+ *   A. bytes typed in the WAIT between attempts never reach the agent. Its premise is measured:
+ *      it types only once the client's own dials have been quiet long enough to be between them.
+ *   B. bytes typed during an attempt that FAILS never reach the agent (a HELD link, so the attempt
+ *      is genuinely in flight). This one held before the fix too: it is the boundary, not the bug.
+ *   C. bytes typed during an attempt that SUCCEEDS never reach the agent, and typing into the
+ *      session that came up still does. The second half matters: dropping everything would pass
+ *      the first.
+ *   D. Ctrl-C in that window does not reach the agent as a signal, graded on its pid.
+ *   E. the detach key in that window ends the attach, does not reach the agent as data, and hands
+ *      the late-landing session back, so the manager's count returns to base with no slot leaked.
+ *   F. a detach byte sharing one read with another byte is not a detach and is not delivered.
+ *   G. the same chunk in a LIVE session is data, forwarded with the 0x1d in it, and still not a
+ *      detach: that is the cost of the exact-match test, paid where it is paid.
+ */
+import { randomUUID } from "node:crypto";
+import { spawn } from "node:child_process";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer, connect as netConnect, type AddressInfo, type Server, type Socket } from "node:net";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import * as pty from "@lydell/node-pty";
+import {
+  isReachable, createSpaceAuth, serverConfig, setupSpaceStreams, mintCreds, newIdentity,
+  registry, type Connector, type LaunchOpts, type LaunchSpec,
+} from "@cotal-ai/core";
+import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
+import { Manager } from "../src/manager.js";
+import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const repoRoot = resolve(here, "../../..");
+const BIN = join(repoRoot, "bin", "cotal.ts");
+const SEAT_STUB = join(here, "attach-stdin-seat.mjs");
+const DETACH = "\x1d";
+const SEAT = "stdinseat";
+
+let pass = 0;
+let fail = 0;
+const check = (name: string, cond: boolean, extra?: unknown) => {
+  if (cond) { pass++; console.log(`  ✓ ${name}`); }
+  else { fail++; console.log(`  ✗ FAIL: ${name}`, extra !== undefined ? String(JSON.stringify(extra)).slice(0, 600) : ""); }
+};
+const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
+const freePort = (): Promise<number> =>
+  new Promise((res, rej) => {
+    const s = createServer();
+    s.on("error", rej);
+    s.listen(0, "127.0.0.1", () => { const p = (s.address() as AddressInfo).port; s.close(() => res(p)); });
+  });
+
+// --- live-space guard: this suite only ever runs against its own ephemeral loopback broker ------
+const LIVE_HOST = "broker.cotal.ai";
+for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete process.env[k];
+for (const [k, v] of Object.entries(process.env))
+  if (typeof v === "string" && v.includes(LIVE_HOST)) throw new Error(`refusing to run: ${k} points at the live broker (${v})`);
+
+const BROKER_PORT = await freePort();
+const PROXY_PORT = await freePort();
+const BROKER = `nats://127.0.0.1:${BROKER_PORT}`;
+const PROXY = `nats://127.0.0.1:${PROXY_PORT}`;
+if (!/^nats:\/\/127\.0\.0\.1:\d+$/.test(BROKER)) throw new Error(`this suite only runs against an ephemeral loopback broker; got ${BROKER}`);
+console.log(`broker-url guard: ${BROKER} (manager+seat) / ${PROXY} (attach client) are ephemeral loopback; no env var references ${LIVE_HOST}\n`);
+
+const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
+const home = join(dir, "home");
+mkdirSync(home, { recursive: true });
+process.env.COTAL_HOME = home;
+// The connector seed store lives under `globalConfigDir()`, not COTAL_HOME, so without this the
+// suite reads the operator's real `~/.config/cotal` and a newer seed generation refuses every cell
+// with a version message that looks exactly like a behaviour red.
+process.env.XDG_CONFIG_HOME = join(dir, "xdg");
+mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
+const space = `stdin-${randomUUID().slice(0, 8)}`;
+const auth = await createSpaceAuth(space);
+const SINK = join(dir, "seat-input.bin");
+const PIDSINK = join(dir, "seat.pid");
+writeFileSync(SINK, "");
+
+// A fast-ping broker, so a dead link is noticed in seconds rather than in the stock two minutes.
+writeFileSync(
+  join(dir, "server.conf"),
+  serverConfig(auth, [auth], { transport: { kind: "plaintext" }, port: BROKER_PORT, storeDir: join(dir, "js") }) +
+    `\nping_interval: "2s"\nping_max: 1\n`,
+);
+const srv = spawn("nats-server", ["-c", join(dir, "server.conf")], { stdio: "ignore" });
+const releaseBroker = teardownOnSignal(srv, dir);
+
+// --- the faultable link, in its three states ----------------------------------------------------
+const liveSockets = new Set<Socket>();
+let proxy: Server | undefined;
+const knocks: number[] = [];
+let onKnock: (() => void) | undefined;
+const fireKnock = () => { knocks.push(Date.now()); const h = onKnock; onKnock = undefined; h?.(); };
+const heal = (): Promise<void> =>
+  new Promise((res, rej) => {
+    const s = createServer((client) => {
+      const up = netConnect(BROKER_PORT, "127.0.0.1");
+      liveSockets.add(client); liveSockets.add(up);
+      const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
+      for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
+      client.pipe(up); up.pipe(client);
+    });
+    s.on("error", rej);
+    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
+  });
+/** Severed but LOUD: every dial lands here, is timestamped, and is reset. A failed attempt to the
+ *  client either way, and the only way to know WHEN it is attempting. */
+const severLoud = (): Promise<void> =>
+  new Promise((res, rej) => {
+    knocks.length = 0;
+    const s = createServer((sock) => { fireKnock(); sock.destroy(); });
+    s.on("error", rej);
+    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
+  });
+/** HELD: the dial connects and then nothing ever comes back. This is what holds an establishment
+ *  open long enough for a key pressed in the middle of one to be pressed in the middle of one. */
+const holdOpen = (): Promise<void> =>
+  new Promise((res, rej) => {
+    knocks.length = 0;
+    const s = createServer((sock) => { liveSockets.add(sock); fireKnock(); });
+    s.on("error", rej);
+    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
+  });
+const closeLink = (): Promise<void> =>
+  new Promise((res) => {
+    const s = proxy; proxy = undefined;
+    for (const sock of liveSockets) sock.destroy();
+    liveSockets.clear();
+    if (!s) return res();
+    s.close(() => res());
+  });
+
+const envFor = (o: LaunchOpts): Record<string, string> => ({
+  COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? BROKER), COTAL_CREDS: String(o.creds),
+  COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
+  COTAL_INPUT_SINK: SINK, COTAL_PID_SINK: PIDSINK,
+  ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
+});
+registry.register({
+  kind: "connector", name: "stdin-seat", requires: ["node"],
+  buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [SEAT_STUB], env: envFor(o) }),
+} as Connector);
+
+type Attached = {
+  seen: () => string;
+  write: (s: string) => void;
+  exit: () => { code: number; signal: number } | undefined;
+  waitFor: (re: RegExp, ms: number) => Promise<boolean>;
+  waitExit: (ms: number) => Promise<boolean>;
+  kill: () => void;
+};
+const started: Attached[] = [];
+function attachUnderPty(root: string): Attached {
+  const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
+    name: "xterm-256color", cols: 100, rows: 30, cwd: root,
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
+  });
+  let buf = "";
+  let exited: { code: number; signal: number } | undefined;
+  child.onData((d) => { buf += d; });
+  child.onExit((e) => { exited = { code: e.exitCode, signal: e.signal ?? 0 }; });
+  const seen = () => buf;
+  const a: Attached = {
+    seen,
+    write: (s) => child.write(s),
+    exit: () => exited,
+    kill: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
+    waitFor: async (re, ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) { if (re.test(seen())) return true; await wait(100); }
+      return re.test(seen());
+    },
+    waitExit: async (ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) { if (exited) return true; await wait(100); }
+      return exited !== undefined;
+    },
+  };
+  started.push(a);
+  return a;
+}
+
+const sink = (): Buffer => readFileSync(SINK);
+const seatPid = (): number => Number(readFileSync(PIDSINK, "utf8"));
+const seatAlive = (): boolean => { try { process.kill(seatPid(), 0); return true; } catch { return false; } };
+const saidReconnected = (a: Attached): number => (a.seen().match(/\[cotal: reconnected\]/g) ?? []).length;
+const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
+
+let manager: InstanceType<typeof Manager> | undefined;
+
+try {
+  let up = false;
+  for (let i = 0; i < 60; i++) { if (await isReachable(BROKER)) { up = true; break; } await wait(200); }
+  if (!up) throw new Error(`nats-server did not come up on ${BROKER_PORT}`);
+  await setupSpaceStreams({ servers: BROKER, space, creds: await mintCreds(auth, newIdentity(), "provisioner") });
+  await heal();
+
+  const root = join(dir, "ws");
+  mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
+  writeFileSync(join(root, ".cotal", "agents", `${SEAT}.md`), `---\nname: ${SEAT}\nrole: worker\n---\n`);
+  saveSpaceAuth(authDir(root), auth);
+  const { recordMesh } = await import("@cotal-ai/workspace");
+  recordMesh({ space, server: BROKER, root, mode: "auth", ts: new Date().toISOString() });
+
+  manager = new Manager({ space, servers: BROKER, runtime: "pty", workspaceRoot: root });
+  await manager.start();
+  const s = await manager.startAgent({ name: SEAT, agent: "stdin-seat", cwd: repoRoot });
+  if (!s.ok) throw new Error(`seat did not start: ${JSON.stringify(s)}`);
+  for (let i = 0; i < 60 && !seatAlive(); i++) await wait(200);
+  const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
+  const settle = async (target: number, ms: number): Promise<number> => {
+    const deadline = Date.now() + ms;
+    for (;;) { const n = live(); if (n === target || Date.now() > deadline) return n; await wait(200); }
+  };
+
+  /** One attach, up and reading, with the seat's byte count marked. */
+  const attached = async (): Promise<{ a: Attached; mark: number }> => {
+    const a = attachUnderPty(root);
+    if (!await a.waitFor(new RegExp(`attached to ${SEAT}`), 90_000)) throw new Error(`attach never came up: ${a.seen().slice(-400)}`);
+    await wait(500);
+    return { a, mark: sink().length };
+  };
+  /** Sever the link and wait for the client to say so, which is the start of every window below. */
+  const loseTheLink = async (a: Attached): Promise<void> => {
+    await closeLink();
+    await severLoud();
+    if (!await a.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000)) throw new Error("the loss was never announced");
+  };
+  /** Resolve on the client's next dial, from INSIDE the connection handler: the only moment early
+   *  enough to act on the attempt that dial belongs to rather than on the one after it. */
+  const nextDial = (): Promise<void> => new Promise((r) => { onKnock = () => r(); });
+  const detachAndSettle = async (a: Attached, base: number, label: string): Promise<void> => {
+    a.write(DETACH);
+    check(`${label}: the attach detaches and exits clean`, await a.waitExit(30_000) && a.exit()?.code === 0, a.exit());
+    check(`${label}: the manager is back on the session count it started with`, await settle(base, 20_000) === base, { base, now: live() });
+  };
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nA. bytes typed while the loop is WAITING never reach the agent");
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    const n = nonce();
+    await loseTheLink(a);
+    // The premise is MEASURED, not waited for: type only once the client's own dials have been
+    // quiet long enough that the loop can only be in a backoff rung. An attempt dials several
+    // times within a few milliseconds, so "no knock for 1.5s" is the honest test for between them.
+    const quiet = Date.now() + 25_000;
+    while (Date.now() - (knocks.at(-1) ?? 0) < 1_500 && Date.now() < quiet) await wait(100);
+    const sinceLastDial = Date.now() - (knocks.at(-1) ?? 0);
+    check("the loop is between attempts, which is this cell's premise", sinceLastDial >= 1_500, { sinceLastDial, knocks: knocks.length });
+    a.write(`${n}\r`);
+    await wait(300);
+    await closeLink();
+    await heal();
+    check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
+    await wait(2_000);
+    check("...and the seat read nothing of what was typed at a terminal with no session",
+      !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
+    await detachAndSettle(a, base, "A");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nB. bytes typed during an attempt that FAILS never reach the agent");
+  // The link is HELD for this one so the attempt is genuinely in flight while the key is struck:
+  // the dial connects, no INFO ever comes back, and the mesh preflight refuses about a second
+  // later. A severed-but-resetting link fails the attempt within a millisecond of the dial, which
+  // is too narrow to aim at through a pty.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    const n = nonce();
+    await loseTheLink(a);
+    await closeLink();
+    await holdOpen();
+    await nextDial();
+    a.write(`${n}\r`); // this attempt is now stalled on a link that will never answer it
+    await wait(2_500);
+    await closeLink();
+    await heal();
+    check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
+    await wait(2_000);
+    check("...and the seat read nothing of what was typed during the failed attempt",
+      !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
+    await detachAndSettle(a, base, "B");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nC. bytes typed during an attempt that SUCCEEDS never reach the agent");
+  // THE DEFECT. Measured before the fix, these bytes sat in the paused stream and were flushed
+  // into the seat by the `stdin.resume()` that the new session's own reader performs, a second or
+  // more after they were typed and after `[cotal: reconnected]` had been printed.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    const n = nonce();
+    await loseTheLink(a);
+    await nextDial();
+    await closeLink();
+    await heal();       // this dial's attempt will now succeed
+    a.write(`${n}\r`);  // typed while it is establishing: no session, and nobody used to be reading
+    check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
+    await wait(2_500);
+    check("...and the seat read nothing of what was typed while the session was being established",
+      !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
+    // The handoff is only correct if the session's OWN reader works after it, so the same cell
+    // types again once the session is up: dropping everything would pass the assertion above.
+    const after = nonce();
+    const mark2 = sink().length;
+    a.write(`${after}\r`);
+    const echoed = await a.waitFor(new RegExp(`ECHO\\[${after}`), 20_000);
+    check("...while typing into the session that came up does reach the agent",
+      echoed && sink().subarray(mark2).includes(Buffer.from(after)),
+      { echoed, got: sink().subarray(mark2).toString("utf8") });
+    await detachAndSettle(a, base, "C");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nD. Ctrl-C typed in that window does not reach the agent as a signal");
+  // Graded on the SEAT's pid and its own record of the signal. The manager's session count cannot
+  // answer this: it returns to base whether the agent died or never noticed.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    const pidBefore = seatPid();
+    check("the seat is alive before the window", seatAlive(), { pid: pidBefore });
+    await loseTheLink(a);
+    await nextDial();
+    await closeLink();
+    await heal();
+    a.write("\x03");
+    check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
+    await wait(2_500);
+    check("...the agent recorded no signal", !sink().subarray(mark).includes(Buffer.from("<SIGINT>")),
+      { got: sink().subarray(mark).toString("utf8") });
+    check("...and the agent is still running, on the pid it had", seatAlive() && seatPid() === pidBefore,
+      { pidBefore, now: seatPid() });
+    await detachAndSettle(a, base, "D");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nE. the detach key struck in that same window ends the attach and hands the slot back");
+  // The other half of the defect, and the reason the window has an owner rather than a drop. Before
+  // the fix the same press was not a detach at all: the byte was flushed into the session that had
+  // just opened, `onInput` forwarded it to the agent as data, and the attach carried on running.
+  // The session that lands after the press is a slot the manager counts, so it goes on the
+  // abandoned list and `done` hands it back; the count returning to base is that hand-back.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    await loseTheLink(a);
+    await nextDial();
+    await closeLink();
+    await heal();
+    const tPress = Date.now();
+    const reconnectsAtPress = saidReconnected(a);
+    a.write(DETACH);
+    const ended = await a.waitExit(30_000);
+    // Reported, not asserted. Before the fix the same press was not a detach at all, so there is no
+    // threshold here that separates two behaviours; the number is here because a press that ends
+    // the attach a minute later is a different product from one that ends it now, and the next
+    // reader should be able to see which one this run got.
+    console.log(`    (press to exit: ${ended ? `${Date.now() - tPress}ms` : "never, inside 30s"})`);
+    check("the press ends the attach, though it landed with no session to detach from",
+      ended, a.seen().slice(-300));
+    check("...exiting clean", a.exit()?.code === 0, a.exit());
+    check("...without announcing the session that landed behind it", saidReconnected(a) === reconnectsAtPress,
+      { reconnectsAtPress, now: saidReconnected(a), tail: a.seen().slice(-200) });
+    check("...without the detach byte reaching the agent as data",
+      !sink().subarray(mark).includes(0x1d), { got: sink().subarray(mark).toString("utf8") });
+    check("...saying NOTHING about a held session, because it handed back what it had taken",
+      !/the manager still holds/.test(a.seen()), a.seen().slice(-300));
+    check("...and the manager is back on the session count it started with, with no slot left behind",
+      await settle(base, 25_000) === base, { base, now: live(), pressToExitMs: Date.now() - tPress });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nF. a detach byte sharing a read with another byte is not a detach, and is not delivered");
+  // Exact match is deliberate: measured on a pty, a real keypress arrives in a read of its own even
+  // at 3ms spacing, and the only two ways the byte arrives with company are a paste and a reader
+  // that was not reading. Treating a paste that happens to contain 0x1d as a detach would turn data
+  // into a control action on input nobody typed.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    await loseTheLink(a);
+    const quiet = Date.now() + 25_000;
+    while (Date.now() - (knocks.at(-1) ?? 0) < 1_500 && Date.now() < quiet) await wait(100);
+    a.write(`x${DETACH}`); // one write, two bytes, while there is no session
+    await wait(1_500);
+    check("the attach is still up: the chunk is not a keypress", a.exit() === undefined, a.exit());
+    await closeLink();
+    await heal();
+    check("...the reconnect still lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
+    await wait(2_000);
+    check("...and neither byte reached the agent", sink().subarray(mark).length === 0,
+      { got: sink().subarray(mark).toString("utf8") });
+    await detachAndSettle(a, base, "F");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nG. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach");
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    const n = nonce();
+    // The trailing CR is not decoration: the seat's pty is cooked, so its line discipline holds
+    // un-newlined text and the seat PROCESS would never read what its pty had already received.
+    a.write(`${n}${DETACH}\r`);
+    let carried = false;
+    for (let i = 0; i < 75 && !carried; i++) { carried = sink().subarray(mark).includes(0x1d); if (!carried) await wait(200); }
+    check("the agent receives it, detach byte included", carried, { got: sink().subarray(mark).toString("utf8") });
+    check("...with the nonce it was typed with", sink().subarray(mark).includes(Buffer.from(n)),
+      { got: sink().subarray(mark).toString("utf8") });
+    check("...and the attach is still up", a.exit() === undefined, a.exit());
+    await detachAndSettle(a, base, "G");
+  }
+} catch (e) {
+  fail++;
+  console.log(`  ✗ FAIL: the suite threw: ${(e as Error).message}`);
+} finally {
+  for (const a of started) a.kill();
+  onKnock = undefined;
+  await closeLink();
+  await manager?.stop().catch(() => {});
+  // Kill and remove FIRST, release LAST: `releaseBroker` hands the kill duty back rather than doing
+  // it, so releasing before the kill leaves a window where nobody owns this broker.
+  srv.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
+  releaseBroker();
+}
+
+console.log(`\n${fail === 0 ? "PASS" : "FAIL"} - ${pass} passed, ${fail} failed`);
+process.exit(fail === 0 ? 0 : 1);

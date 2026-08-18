@@ -1,4 +1,4 @@
-// The seat for the stdin-ownership probe (#585). A real mesh agent, as the other stubs are, plus
+// The seat for the stdin-ownership gate and its probe (#585). A real mesh agent, as the other stubs are, plus
 // the three witnesses this probe needs and the reconnect seat does not have:
 //
 //   - COTAL_PID_SINK: its own pid, written at boot. The issue's Ctrl-C evidence stopped at the

@@ -1,0 +1,73 @@
+{
+  "suite": "implementations/manager/smoke/attach-stdin.smoke.ts",
+  "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
+  "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
+  "completionMarker": "G. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-stdin.json",
+  "why": [
+    "EVERY CELL HERE RUNS THE BINARY, so every command builds first. The suite drives `tsx",
+    "bin/cotal.ts`, and `@cotal-ai/cli` resolves to `dist/`, so a mutation on `src` that is not built",
+    "is a mutation the run never sees: it would come back SURVIVED and read as `this line does not",
+    "matter` when what was measured is `this line was not in the artifact`. `dist/` is gitignored, so",
+    "git cannot be the recovery for it either, hence the rebuild in every `afterRestore`.",
+    "",
+    "THE SET IS AIMED AT THE WITNESS CELLS, NOT AT THE BOUNDARY ONES. Cells A and B (typed during a",
+    "WAIT, typed during an attempt that FAILS) pass with this whole change reverted: the old watcher",
+    "owned the wait, and an attempt that fails is followed by a wait whose watcher reads and drops",
+    "what was typed. They are in the suite as the boundary of the claim, and nothing here is aimed at",
+    "them, because a kill there would say the fix matters when the old code passes the same cell.",
+    "Cells C, E, F and G are the ones whose behaviour the change actually inverts."
+  ],
+  "mutations": [
+    {
+      "name": "nobody owns stdin between sessions: the reader is not reinstalled after a session ends",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "      if (reconnect) ownStdin();",
+      "replace": "",
+      "expectRed": "...and the seat read nothing of what was typed while the session was being established",
+      "cell": "C. bytes typed during an attempt that SUCCEEDS never reach the agent",
+      "note": "The defect itself, in one statement. Without this the stream has no reader for the whole non-session period, so bytes typed there buffer and the new session's own `stdin.resume()` flushes them into the agent. Aimed at cell C rather than at A, because A passes either way: the old code installed a reader for the WAIT, and it is the attempt, not the wait, that the fix adds an owner for.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the detach key is not read while a session is being established",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    if (idle) {\n      const raced = await Promise.race([\n        attempting.then((e) => ({ est: e }) as const, () => ({ est: undefined }) as const),\n        idle.pressed.then(() => ({ detached: true }) as const),\n      ]);\n      if (\"detached\" in raced) {\n        releaseStdin();\n        const late = await attempting.catch(() => undefined);\n        if (late?.ok) {\n          abandoned.push({ grant: late.grant, creds: late.creds, inbox: late.inbox, server: late.server });\n          // And CLOSE the link that session came up on. Nothing here will ever read it, and an open\n          // NATS connection is a ref'd handle: measured, the attach printed `detached from` and then\n          // sat there forever, because the hand-back mints its own short-lived connection from the\n          // abandoned session's own credential and never touches this one. Same shape as the\n          // abandoned backoff timer, one layer down.\n          await closeLink(late.nc);\n        }\n        return await done({ kind: \"ended\" });\n      }\n    }\n",
+      "replace": "",
+      "expectRed": "the press ends the attach, though it landed with no session to detach from",
+      "cell": "E. the detach key struck in that same window ends the attach and hands the slot back",
+      "note": "Removes the race between the in-flight establishment and the press, which is the whole of the second half of this change. Without it the press is not a detach at all: the byte is flushed into the session that just opened and forwarded to the agent as data, and the attach carries on running. The cell's exit assertion is the one that reddens; its `the detach byte never reached the agent` assertion reddens too, which is the same mutation seen from the agent's side.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a session that lands behind the press is forgotten instead of handed back",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "          abandoned.push({ grant: late.grant, creds: late.creds, inbox: late.inbox, server: late.server });",
+      "replace": "",
+      "expectRed": "...and the manager is back on the session count it started with, with no slot left behind",
+      "cell": "E. the detach key struck in that same window ends the attach and hands the slot back",
+      "note": "Ownership, graded on the manager's own live-session count rather than on anything the client says. The seat this suite uses is SILENT, so nothing on the serving side reaps that session for us: the count coming back to base is the client's hand-back or nobody's. This is the assertion that makes the late-landing session a slot returned rather than a slot leaked.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the between-sessions reader SCANS for the detach byte instead of matching one alone",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };",
+      "replace": "  const onData = (d: Buffer) => { if (d.includes(byte)) hit(); };",
+      "expectRed": "the attach is still up: the chunk is not a keypress",
+      "cell": "F. a detach byte sharing a read with another byte is not a detach, and is not delivered",
+      "note": "The exact-match decision, stated as a mutation. A chunk carrying 0x1d alongside anything else is a paste or a reader that was not reading, never a keypress: measured on a pty, a real keypress arrives in a read of its own even at 3ms spacing. Widening the test to a scan makes a paste end someone's attach, and the cell catches it because the attach exits where it should have stayed up.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the session's own reader SCANS for the detach byte instead of matching one alone",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "      if (d.length === 1 && d[0] === detach.byte) {",
+      "replace": "      if (d.includes(detach.byte)) {",
+      "expectRed": "...and the attach is still up",
+      "cell": "G. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach",
+      "note": "The same decision on the other side of the handoff, and the cost of it: in a LIVE session a chunk containing 0x1d is DATA and goes to the agent with the byte in it. Widening the test here turns that paste into a detach. Both readers are mutated separately on purpose: one test passing is not evidence about the other, and they are in different packages.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    }
+  ]
+}

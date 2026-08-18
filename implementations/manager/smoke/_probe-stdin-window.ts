@@ -26,7 +26,7 @@
  *   --arm coalesce-live  a nonce and the detach key in ONE write to a LIVE session: the same test
  *                   fails in `onInput`, which forwards the chunk to the seat with the 0x1d in it.
  *
- * The seat writes every byte it reads to a file (`_probe-stdin-seat.mjs`), so the verdict is what
+ * The seat writes every byte it reads to a file (`attach-stdin-seat.mjs`), so the verdict is what
  * the agent's own process received, not what the terminal showed. It prints and grades nothing;
  * the gate is where assertions live.
  */
@@ -49,7 +49,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const BIN = join(repoRoot, "bin", "cotal.ts");
-const SEAT_STUB = join(here, "_probe-stdin-seat.mjs");
+const SEAT_STUB = join(here, "attach-stdin-seat.mjs");
 const DETACH = "\x1d";
 const NONCE = `N${randomUUID().slice(0, 8).toUpperCase()}`;
 
