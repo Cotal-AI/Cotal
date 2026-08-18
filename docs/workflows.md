@@ -37,20 +37,26 @@ log("outcome", outcome.index)
 ```
 
 Read it as the flowchart it is. `spawn` brings agents in; `ask` is the narrow case where the
-program itself needs a value; `checkpoint` is a durable pause a human resolves from anywhere,
-raced against a durable timer; `turn` wakes an agent for one turn and returns how it yielded;
-`race` runs two branches and keeps the earliest. Agents talk to each other in channels as they
-always do; the program never speaks in a channel, and the one thing it can put in front of an agent
-(`notify`) is a bounded decision record, not prose.
+program itself needs a value (`schema` is a record the program hands the handler unchanged; the
+language hashes it and gives it no meaning, and no handler in this repository enforces one yet);
+`checkpoint` is a durable pause a human resolves from anywhere, raced against a durable timer; `turn`
+wakes an agent for one turn and returns how it yielded; `race` runs two branches and keeps the one
+whose recorded clock is earliest. Agents talk to each other in channels as they always do; the
+program never speaks in a channel, and the one thing it can put in front of an agent (`notify`) is a
+bounded decision record, not prose.
 
 ## The mental model
 
 - **Pure code is JavaScript.** Loops, records, arrays, closures, template literals, destructuring,
-  `try`/`catch`, arithmetic: what you would write anyway, with the parts that hide effects or make
-  meaning depend on the host removed (`class`, `this`, `new`, `for...in`, `==`, regex literals,
-  `Math`/`Date`/`JSON`, promises). Every refusal names its code and the edit that fixes it. The
-  builtins are a short list (`keys`, `map`, `sort`, `json.stringify`, `now()`, `random()`), and
-  arrays and strings have their usual methods.
+  `try`/`catch`, arithmetic, `switch`, compound assignment, optional chaining, spread and rest: what
+  you would write anyway, with the parts that hide effects or make meaning depend on the host removed
+  (`class`, `this`, `new`, `for...in`, `==`, labels, regex literals, `Math`/`Date`/`JSON`, promises,
+  generators). Every refusal names its code and the edit that fixes it. The builtins are a short list
+  (`keys`, `map`, `sort`, `json.stringify`, `now()`, `random()`), and arrays, strings and numbers
+  answer their usual methods (`xs.map`, `s.trim()`, `n.toFixed()`) and nothing outside that table.
+  Records and arrays you build are yours to change until they cross an effect boundary; a member you
+  do not own, a host prototype, or a value another branch built is refused with a code, never a
+  surprise.
 - **Every effect is journalled and hashed.** A step is keyed `(scope path, kind, name, occurrence)`
   and its inputs are hashed. Reorder your program, add a step, rename a variable: recorded steps
   still match. Change what a step asks (a checkpoint's prompt, a sleep's duration, a turn's
@@ -67,7 +73,11 @@ always do; the program never speaks in a channel, and the one thing it can put i
   recorded, and it cannot change afterwards; build a new value.
 - **The journal is the debugger.** Every entry carries its key, its inputs' hash, its outcome and
   its timing, and every error is in the program's own coordinates. A run can be **simulated** with a
-  scripted handler and **dry-run** to a plan before it touches an agent.
+  scripted handler and **dry-run** to a plan before it touches an agent. One thing to know about the
+  simulator: it advances a single virtual clock in the order effects are asked, so under it a `race`
+  is decided by that order and declaration order, not by the durations you wrote (a `sleep("1h")` arm
+  declared first beats a `sleep("1m")` arm declared second). That is the simulator, not the rule; on
+  a live handler each arm's clock is the wall time its effects ended.
 
 Full rules, with every code: [`spec/cotal-lang.md`](../spec/cotal-lang.md).
 
@@ -85,8 +95,8 @@ already happened, a removed `spawn` is a live agent you must adopt or release, a
 `migration` record with the actor's name on it.
 
 **Fork** starts a new run from a named step of an old one, copying the prefix under the parent's
-pins (seed included, so the copied history's pure draws are the same draws) and recording the
-parent and the cut on the child. The parent is untouched.
+pins (seed included, so the copied history's pure draws are the same draws). The child is a new run
+under a new id, and this revision records no lineage on it; the parent is untouched.
 
 ## What is on the wire
 
@@ -106,11 +116,17 @@ a space-wide grant.
 ## What ships today
 
 The language, its validator, interpreter, simulator and dry run are `@cotal-ai/lang`
-(`packages/lang`), usable in-process with your own effect handler and with no broker. The wire
+(`packages/lang`), usable in-process with your own effect handler and with no broker: `validate(src)`,
+then `run(src, { runId, handler })`, and `resume(src, journal, { runId, pins, handler })` to pick a
+run up from its journal (the package README has the snippet, with `SimHandler` as the handler). That
+is the only way to run a program today. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
 `wait(message(...))`, `wait(idle(...))` and `notify` are durable; `spawn`, `turn`, `ask`,
 `monitor`, `wait(replied(...))`, `wait(down(...))` and `conclave` refuse with **L5016 (effect not
-durable on this host)** until the durable action machinery they ride lands, and no `cotal` command
-starts or resumes a run yet. Those are the next lanes, and this page will say so when they change.
+durable on this host)** until the durable action machinery they ride lands. That refusal is terminal
+for the run that hits it: the step is recorded as attempted and failed, and a resume replays the
+failure rather than retrying it, so a run started today does not heal the day those effects land. No
+`cotal` command starts or resumes a run yet. Those are the next lanes, and this page will say so
+when they change.

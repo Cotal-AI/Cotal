@@ -43,11 +43,15 @@ const again = await run(source, {
 `run` performs effects through the `EffectHandler` you pass and records each in the `Journal`;
 hand the same journal and pins back and the same program resumes. `SimHandler` scripts turns, asks,
 checkpoints and events and refuses anything unscripted (L6001), so a simulation cannot silently
-invent an answer.
+invent an answer. It does advance ONE virtual clock in the order effects are asked, so a `race` under
+it is decided by that order and declaration order rather than by the durations the arms wrote; the
+rule (least recorded clock, ties by declaration order) is what is applied, the clocks are the
+simulator's.
 
 ## Suites
 
 `pnpm test` in this directory runs every smoke: grammar, keys, journal, pins, scopes, sim,
 interpret, fuel, dryrun, examples, options, notify-fact, migrate, semantics (the pure fragment
-against node) and surface (the syntax table, the library tables, the reference's examples).
+against node) and surface (the syntax table, the library tables, and that every example in the
+reference and the guide validates).
 `smoke/mutations/*.json` are the `pnpm mutation-proof` targets.

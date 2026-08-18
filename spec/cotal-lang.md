@@ -122,9 +122,12 @@ The validator MUST also refuse, before a program runs:
 - **A call that starts an effect and is not awaited (L2013).** A call to an effect primitive, or to
   a user function declared `async` (or bound by `const` to an async function expression), MUST be
   the operand of `await`, the operand of `return`, or the concise body of an arrow function passed
-  as a branch to `parallel`, `race` or `fanOut`. Anything else starts work whose result nothing
-  waits for, and calls outside a combinator run in sequence, so the program would say
-  "concurrently" while the runtime did the opposite.
+  as a branch to `parallel`, `race`, `fanOut` or `conclave`. Anything else starts work whose result
+  nothing waits for, and calls outside a combinator run in sequence, so the program would say
+  "concurrently" while the runtime did the opposite. The validator enforces this where the call
+  site is syntactically visible; an effect reached through a function value it cannot follow (an
+  arrow passed to a user function that calls it without awaiting) is not refused, and the program
+  is responsible for awaiting it.
 - The effect call-shape rules of §6.2 and §6.3 (L3011 to L3044).
 - **A write from a concurrent branch to a binding declared outside it (L2032, §7.7).**
 
@@ -142,7 +145,7 @@ and a `fanOut` over a literal list whose items carry no `id` and no `key` (L3021
 
 A program may reference, and MUST NOT redeclare, the **reserved names**: the primitives (§6),
 the event constructors (`replied`, `message`, `idle`, `down`), the pure primitives (`channel`,
-`run`), the builtins (§5.1), the value `undefined`, and the words `any` and `all`. Every other name
+`run`), the builtins (§5.1), and the value `undefined`. Every other name
 a program uses it declares. Name resolution is lexical and static: `let`/`const` are block-scoped,
 `function` declarations are hoisted within their block, `for (let ...)` binds per iteration, and a
 `catch` parameter is `const`.
@@ -191,9 +194,12 @@ not a function is L4011.
 ### 4.3 Mutation and freezing
 
 A record or array the program builds is **writable by the frame that built it**: member assignment
-(`o.a = v`, `xs[i] = v`, `xs.length = n`), update (`o.n++`), compound assignment, and the mutating
-array methods (`push`, `pop`, `shift`, `unshift`, `splice`) are ordinary JavaScript. Two writes are
-refused:
+(`o.a = v`, `xs[i] = v`), update (`o.n++`), compound assignment, and the mutating array methods
+(`push`, `pop`, `shift`, `unshift`, `splice`) are ordinary JavaScript. `xs.length = n` truncates as
+in JavaScript, and only truncates: `n` MUST be an integer between 0 and the current length, because a
+longer length would create holes, a value class this language does not have (its methods do not skip
+holes, so a program with holes would read differently here and on a real engine); anything else is
+L4017. Two writes are refused:
 
 - **L2031, a frozen value.** Every value that crosses an effect boundary in either direction is
   deep-frozen: an effect's arguments, its result, and the result of a concurrency scope. What
@@ -368,13 +374,22 @@ on `spawn` are policy over a result and are never hashed.
 - **`turn`** wakes an agent for one turn; it reads its own channels and speaks for itself. The
   result is its yield status: `done`, `blocked`, or `handoff` (with `to`), and `at`. The handler
   reports a handoff to an agent outside the run as L4005, one across worktrees as L4004, an elapsed
-  `deadline` as L4003, and a dead agent as L4002.
+  `deadline` as L4003, and a dead agent as L4002. The language does not refuse two concurrent turns
+  on one handle (two branches turning the same agent); whether they are serialized or refused is the
+  handler's, and the reference handlers do neither in this revision.
 - **`ask`** is the narrow case where the program needs a value: the agent publishes a record, the
   program awaits it, and the handler checks it against `schema`; `attempts` bounds how many
-  non-conforming replies are tolerated before the handler reports L4006.
+  non-conforming replies are tolerated before the handler reports L4006. `schema` (here and on
+  `checkpoint`) is an opaque record to the language: it is canonicalized into the input hash and
+  handed to the handler unchanged, and its meaning is the handler's. No handler in the reference
+  implementation interprets it in this revision (the simulator and the mesh handler accept any
+  value), so a program MUST NOT rely on a shape being enforced.
 - **`checkpoint`** is a durable pause a human or an agent resolves from anywhere, raced against a
   durable timer. The handler reports the **raw** outcome, `resolved` (`value?`, `by?`, `artifact?`,
-  `answerId?`, `at`) or `expired` (`at`), and that is what the journal holds; the **disposition** is
+  `answerId?`, `at`) or `expired` (`at`); the journal holds that outcome plus the interpreter's
+  `attempts` chain, `[{ attempt, requestId, to?, settled }]`, one row per mint under the entry, so
+  an escalation's second identity is in the record and a recovery completes the open attempt rather
+  than re-running the chain; the **disposition** is
   computed from the current source afterwards, on the live and the replay path alike: `fail`
   (default) throws L4007, `proceed` returns `{ status: "expired", at }`, `escalate` mints exactly one
   further checkpoint addressed to `to` under the same entry (a second attempt with its own request
@@ -477,8 +492,9 @@ if (outcome.index === "giveUp") {
 ### 7.4 `fanOut`
 
 Runs `fn(item, index)` for every item concurrently and settles all of them; the value is the array
-of results in item order. Its journal namespace per branch is the branch key, so a reordered or
-filtered list keeps every recorded step where it was.
+of results in item order. The first rejection cancels the rest (§7.6) and the scope fails with it,
+carrying the losers, exactly as `parallel`. Its journal namespace per branch is the branch key, so a
+reordered or filtered list keeps every recorded step where it was.
 
 ### 7.5 `conclave`
 
@@ -534,9 +550,10 @@ a convention.
 ### 8.2 Randomness
 
 `random()`, `randomInt(n)` and `pick(xs)` draw from a PRNG seeded per run and **derived per scope
-path**: the *n*-th draw in scope *p* is the first 48 bits of `SHA-256("<seed> <p> <n>")` (the
-UTF-8 bytes of the seed, a space, the scope path string of §10.2, a space, and the decimal draw
-index) divided by 2^48. Draws are never journalled: they are a pure function of the seed and the
+path**: the *n*-th draw in scope *p* is the first 48 bits of the SHA-256 of the concatenation
+`seed, U+0000, p, U+0000, n` (the UTF-8 bytes of the seed, ONE NUL BYTE, the scope path string of
+§10.2, ONE NUL BYTE, and the decimal draw index; the separator is U+0000, not a space) divided by
+2^48. Draws are never journalled: they are a pure function of the seed and the
 scope, so an edit that adds a draw elsewhere in the program does not disturb this scope's sequence.
 
 ### 8.3 Pins
@@ -719,7 +736,9 @@ with journalled effects returning recorded results by key. Out-of-order concurre
 correctly because keys are structural, and no continuation or interpreter state is ever serialized.
 A resume MUST refuse a journal that belongs to another run (L5011), a pin that differs (L5009), a
 language version that differs (L5008), and history without pins (L5021); it MUST stop on the first
-divergence (L5001) and on a `pending` scope's missing branch (L5022). A resume performs live every
+divergence (L5001). (A recorded branch missing from the source is L5022 only on a migration or fork
+walk entering a SETTLED scope, §11.2; a `pending` scope records no arm names to check and is
+re-entered by a resume.) A resume performs live every
 effect the journal has not settled, so a run that stops before its next effect (L5012, the host's
 release, asked before every unrecorded effect and never inside one) is exactly where its journal
 says it is.
@@ -759,8 +778,9 @@ be reached by the parent program's own path (L5018), and MUST NOT lie inside a s
 was already decided (L5020, a race loser's step); a fork that asks to pin a new program hash is
 refused (L5002) until the run record carries one. Agents the prefix spawned are respawned at the
 frontier by default and adopted only where the spawn said `onFork: "adopt"`, and a host that cannot
-honour that refuses (L5019). The child's run record names its parent and the cut (SPEC.md §14,
-`forkedFrom`); the parent is untouched.
+honour that refuses (L5019). The child is a new run under a new id; this revision records no
+lineage on it (SPEC.md §14.3), so the parent and the cut are known to the caller that forked, and
+the parent is untouched.
 
 ## 12. Limits
 
@@ -843,6 +863,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4014 | Unknown member |
 | L4015 | Not iterable |
 | L4016 | Builtin failed |
+| L4017 | Invalid array length |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -873,9 +894,13 @@ time, L5xxx durability, L6xxx simulation.
 does not name. L3022, L4001 to L4006 and L4008 are the effect handler's failure vocabulary: a host
 reports them, the interpreter journals and delivers them, and none is raised by the language itself.
 L1006, L1014, L5005, L5006, L5007 and L6002 are reserved: no path in this revision raises them.
+L6001 and L6002 belong to the reference implementation's simulator (`SimHandler`, `dryRun`), which
+runs a program against a script of scripted answers and refuses an effect the script does not
+answer; simulation is a tool, not part of this language, and this document does not define it.
 
 ## Appendix B. Change log
 
 | Date | Revision |
 | --- | --- |
 | 2026-08-18 | First normative reference, language version `1`, alongside SPEC.md v0.5 §14. |
+| 2026-08-18 | Review folds, same revision: the PRNG separator is U+0000 (§8.2, the earlier text said a space and was wrong; the code never changed); `any`/`all` are no longer reserved (§3); `xs.length = n` truncates only, L4017 (§4.3); the L2013 rule states where the validator can see (§2.3); `fanOut` fails like `parallel` (§7.4); L5022 is a walk refusal, not a resume stop (§11.1); no lineage on a fork's child (§11.3); `schema` is opaque and concurrent turns on one handle are the handler's (§6.5); the checkpoint entry's `attempts` chain (§6.5). |
