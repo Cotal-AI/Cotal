@@ -20,7 +20,7 @@ import { LangError, LangErrors, RuntimeFault,} from "./errors.js";
 export { RuntimeFault } from "./errors.js";
 import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
-import { Prng, assertCrossable, birthDepth, born, deepFreeze, setOwn } from "./values.js";
+import { NotCrossable, Prng, assertCrossable, birthDepth, born, deepFreeze, setOwn } from "./values.js";
 import { parseDuration } from "./duration.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
@@ -1169,6 +1169,19 @@ class Interpreter {
 
     const args: unknown[] = [];
     for (const a of argNodes) args.push(await this.evaluate(a, env, frame));
+    // Every argument crosses the effect boundary: it is hashed, recorded, or handed to the handler,
+    // and a value with no canonical form can be none of those. Refused HERE, before any entry is
+    // written, with the argument named: `undefined`, a non-finite number and an opaque object are
+    // L3041, a function is L3042. The result of the effect is held to the same rule in
+    // {@link Interpreter.performEffect}.
+    args.forEach((arg, i) => {
+      try {
+        assertCrossable(arg, `argument ${i + 1} of \`${name}\``);
+      } catch (e) {
+        if (e instanceof NotCrossable) throw new RuntimeFault(e.why === "function" ? "L3042" : "L3041", e.message);
+        throw e;
+      }
+    });
     const bag = args[spec.optionsAt];
     const stepName = (name === "checkpoint" ? args[0] : this.option(bag, "name")) as string | undefined;
     const handler = this.options.handler;

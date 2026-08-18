@@ -61,7 +61,7 @@ export {
   type RunResult,
 } from "./interpret.js";
 
-export { Prng, assertCrossable, deepFreeze } from "./values.js";
+export { NotCrossable, Prng, assertCrossable, deepFreeze } from "./values.js";
 
 export {
   LANGUAGE_VERSION,

@@ -295,6 +295,23 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
   ok("a value born inside a branch may be written there and is returned frozen",
     JSON.stringify(await logsOf("const r = await parallel({ a: async () => { const xs = []; xs.push(1); return xs; } }); log(r.a);")) === "[[1]]"
       && await logsOf("const r = await parallel({ a: async () => [1] }); r.a.push(2);").then(() => false, (e: Error) => e.message.startsWith("L2031")));
+  // The boundary refuses INPUTS as well as results, before any entry is written: `undefined` and a
+  // non-finite number are L3041, a function is L3042, and the argument is named.
+  const refusedAs = (source: string): Promise<string> =>
+    logsOf(source).then(() => "accepted", (e: Error) => e.message.slice(0, 5));
+  ok("`undefined` inside an effect's argument is L3041, naming the argument",
+    await refusedAs('const b = await spawn("b"); await ask(b, { name: "q", schema: { x: undefined } });') === "L3041"
+      && await logsOf('const b = await spawn("b"); await ask(b, { name: "q", schema: { x: undefined } });')
+        .then(() => false, (e: Error) => e.message.includes("argument 2 of `ask`.schema.x")));
+  ok("a non-finite number inside an effect's argument is L3041",
+    await refusedAs('const b = await spawn("b"); await ask(b, { name: "q", schema: { x: 1 / 0 } });') === "L3041");
+  ok("a function inside an effect's argument is L3042",
+    await refusedAs('const b = await spawn("b"); await ask(b, { name: "q", schema: { f: (x) => x } });') === "L3042");
+  ok("a refused input writes no journal entry",
+    await (async () => {
+      const r = await run('const b = await spawn("b"); try { await ask(b, { name: "q", schema: { x: undefined } }); } catch (e) { log(e.code); }', { runId: "surf", handler: new SimHandler({}) });
+      return r.journal.entries().map((e) => e.kind).join(",") === "spawn";
+    })());
 }
 
 // ---- 6) the language reference parses ------------------------------------------------------------------
