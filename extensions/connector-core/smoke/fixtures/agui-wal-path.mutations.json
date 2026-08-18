@@ -14,6 +14,13 @@
       "find": "  if (ownerIsAlive(r.pid as number))\n    throw new PrincipalLockError(path, \"the recorded owner is gone\", `pid ${r.pid} on ${here} is still running and holds this principal's emitter`);",
       "replace": "",
       "expectRed": "[L] a lock held by a LIVE process on this host is refused, never reclaimed"
+    },
+    {
+      "name": "L3 the subject record resolves under the THREAD dir instead of the principal dir, which is the released defect reintroduced at the layout layer: every session gets its own frontier again",
+      "file": "extensions/connector-core/src/agui-wal-path.ts",
+      "find": "    subjectPath: join(principalDir, \"subject.json\"),",
+      "replace": "    subjectPath: join(threadDir, \"subject.json\"),",
+      "expectRed": "the subject record is a sibling of the THREAD dir, i.e. per-principal not per-thread"
     }
   ]
 }

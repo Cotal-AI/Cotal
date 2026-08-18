@@ -155,12 +155,36 @@ export class AguiEmitterHolder<T> {
     if (this.boundPath === undefined) {
       this.boundPath = path;
       try {
-        // Started INSIDE the chain, which is the only thing keeping this to one emitter. There is
-        // deliberately no second guard: two emitters on one principal's channel would each hold
-        // their own bracket machine and their own view of the frontier — the writer-cardinality
-        // failure the design names as a stated limit — but a belt-and-braces memo here would mean a
-        // cell asserting "started once" passed whether or not either mechanism worked. One
-        // mechanism, one cell that can actually fail.
+        // WHAT KEEPS THIS TO ONE EMITTER IS THE `boundPath` GATE ABOVE, AND ONLY IT. It is set on
+        // the line before this one, BEFORE the await, so every later call for this same path finds
+        // it set and never reaches `startEmitter` again, whether that call arrives after the start
+        // resolved or while it is still in flight. A call for a DIFFERENT path is refused earlier.
+        //
+        // EVERYTHING ELSE ON THIS PATH RETURNS WHATEVER `this.emitter` HOLDS, IT DOES NOT GUARD
+        // ONE. The shortcut above and the `return this.emitter` at the end of this method are
+        // interchangeable once a start has resolved, and neither is what stops a second start: with
+        // the shortcut gone, the trailing return answers the same call with the same object. While
+        // a start is still IN FLIGHT that field is unset, so a same-path caller reaching the
+        // trailing return gets `undefined`, which is the honest answer and is still not a second
+        // start. Anyone editing here should know that before reading a green run as a verdict on
+        // the piece they touched.
+        //
+        // THE CHAIN IS NOT ONE OF THESE MECHANISMS. It serializes hook events so two flushes cannot
+        // read the source at one cursor, which is its own job and a real one. An earlier version of
+        // this comment credited it with start-once as well; that was measured and it is not true.
+        //
+        // WHAT A SECOND EMITTER WOULD BREAK IS NOT DESCRIBED HERE, AND THE REASON IS THE POINT.
+        // Earlier versions of this comment restated protections that live in other files and were
+        // wrong within the hour: one credited a mechanism with another's work, one named the wrong
+        // mechanism for the path it was discussing. A comment that restates a guarantee it does not
+        // own drifts away from it, and nothing in the edit that moves the guarantee tells the author
+        // this sentence exists. The refusals belong next to the code that performs them: the
+        // record's are in `subject-frontier.ts`, the log's stale-handle check is in `event-wal.ts`,
+        // and the expectation carried on a publish is the broker's to enforce.
+        //
+        // What this file does own is the bracket interleave, and it is OPEN: two emitters would
+        // each keep their own bracket machine and nothing detects the interleave. That is the
+        // stated writer-cardinality limit.
         this.emitter = await this.startEmitter(path);
         return this.emitter;
       } catch (e) {

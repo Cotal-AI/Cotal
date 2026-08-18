@@ -302,3 +302,5 @@ smoke:user-spawn:live
 smoke:agui-authorship
 smoke:agui-map
 smoke:attach-reconnect
+smoke:agui-multi-session
+smoke:subject-frontier

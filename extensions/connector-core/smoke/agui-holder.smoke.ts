@@ -14,12 +14,35 @@
  * graded, and the two failure modes — "the mapping is wrong" and "the emitter never started" —
  * would have arrived together looking identical from the channel.
  *
- * THE DESIGN CHANGED BECAUSE OF THIS SUITE, which is worth recording. The holder first had TWO
- * mechanisms preventing a double start: the serialized chain, and a memo on the in-flight start
- * promise. Both work, and that is the problem — a cell asserting "started exactly once" would have
- * passed with either one broken, so it would have proved neither. The memo is gone. The chain is
- * the single mechanism, and `lazy:a-second-adopt-of-the-SAME-path-does-not-start-a-second` can now
- * actually fail.
+ * THE DESIGN CHANGED BECAUSE OF THIS SUITE, AND THEN THE RECORD OF IT WENT STALE. Both halves are
+ * worth keeping. The holder first had TWO mechanisms preventing a double start: the serialized
+ * chain, and a memo on the in-flight start promise. Both work, and that is the problem: a cell
+ * asserting "started exactly once" would have passed with either one broken, so it would have
+ * proved neither. The in-flight memo went. What this header then claimed, that the chain is the
+ * single mechanism and the `lazy:` cells can now actually fail, was never re-measured. It is wrong.
+ *
+ * MEASURED AT THIS TIP, one mutation at a time, each run to a full verdict:
+ *
+ *   the chain de-serialized                  -> SURVIVED, 33 passed 0 failed
+ *   the `this.emitter` shortcut removed      -> SURVIVED, 33 passed 0 failed
+ *   `boundPath` bound AFTER the await        -> SURVIVED, 33 passed 0 failed
+ *   the `boundPath` gate forced always-taken -> SURVIVED, 33 passed 0 failed
+ *   shortcut removed AND gate forced         -> KILLED both `lazy:` cells
+ *   the `this.emitter =` assignment dropped  -> KILLED both `CONTROL:` cells
+ *
+ * So start-once is held by the `boundPath` gate, and the shortcut and the trailing
+ * `return this.emitter` answer for each other on every sequential call this surface can make. It is
+ * the same masking the M5/M7 pair below documents, found a second time in the same file, which is
+ * the argument for measuring a claim like this one rather than carrying it forward.
+ *
+ * AND THE FIRST CONCLUSION DRAWN FROM THAT TABLE WAS ALSO WRONG, WHICH IS WORTH LEAVING IN. It said
+ * no mutation could be registered, because `scripts/mutation-proof.mjs` takes one find and one
+ * replace per mutation. That treated "one find/replace" as "one site", and the two sites here are
+ * ADJACENT: a single contiguous span covers the shortcut and the gate together, which is a legal
+ * mutation and kills. A reviewer proved it with the shipped tool instead of arguing it. It is
+ * registered as H1 in `mutations/agui-holder.json`, reds this file's two `lazy:` cells, and
+ * `expectRed` names the first while the config states the second. Claiming a property cannot be
+ * graded is a claim like any other, and this one was false.
  *
  * KILL SET — predicted as NAMES before the run, with what actually happened recorded rather than
  * the prediction restated. Each mutation was verified present in the file that RUNS (the suite
@@ -27,9 +50,12 @@
  *
  *   M1  drop the empty-path guard -> KILLED `pump:a-flush-with-NO-usable-path-starts-nothing`
  *       and `pump:a-flush-with-NO-usable-path-pumps-nothing`. As predicted.
- *   M2  drop the started-emitter memo -> KILLED
- *       `lazy:a-second-adopt-of-the-SAME-path-does-not-start-a-second` (3 starts) and
- *       `lazy:a-flush-after-an-adopt-does-not-start-a-second` (2). As predicted.
+ *   M2  drop the started-emitter memo, the `this.emitter =` assignment -> KILLED
+ *       `CONTROL:a-holder-that-adopted-reports-running` and `CONTROL:a-healthy-flush-DOES-call-pump`.
+ *       NOT the two `lazy:` cells this line claimed for it until the table above was measured: a
+ *       holder that never memoizes still starts exactly once, because the gate is what stops the
+ *       second start and the memo only decides what a later caller gets back. Corrected in place
+ *       rather than deleted, because the wrong version is the one a reader would have acted on.
  *   M3  re-adopt a different path instead of refusing -> KILLED the three `rebind:` REFUSAL cells.
  *       It did NOT kill `rebind:a-refused-rebind-starts-NO-second-emitter` or
  *       `rebind:the-holder-stays-bound-to-the-FIRST-path`, and that is the lesson rather than a

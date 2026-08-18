@@ -63,7 +63,9 @@ import { AGUI_FRAME_KIND, AGUI_EVENT_TYPE, isAguiFramePart } from "@cotal-ai/cor
 import { randomUUID } from "node:crypto";
 import { isCasLoss, principalKey, type Part } from "@cotal-ai/core";
 import type { DurableSource } from "./durable-source.js";
+import type { SubjectFrontier } from "./subject-frontier.js";
 import type { EventWal } from "./event-wal.js";
+import { dirname } from "node:path";
 import { eventChannelForSession } from "./launch.js";
 
 /**
@@ -1305,6 +1307,16 @@ export class AguiEmitter<T> {
     /** Already open, so the caller owns `space`, the WAL path, and the `subjectMayExist` judgement
      *  — none of which the emitter can make honestly on the caller's behalf. */
     wal: EventWal;
+    /**
+     * The PRINCIPAL-scoped subject frontier. **Required, and not optional with a zero default.**
+     *
+     * The subject is shared by every thread of one principal, so the expectation a publish carries
+     * is a fact about the principal and not about the thread. An optional parameter here would let
+     * a new connector omit it and reintroduce, silently, the defect where an agent's second session
+     * expects an empty subject its own first session filled. There is one thing to pass and there
+     * is no legal way to not pass it.
+     */
+    subjectFrontier: SubjectFrontier;
     source: DurableSource<T>;
     map: RecordMapper<T>;
   }): Promise<AguiEmitter<T>> {
@@ -1324,6 +1336,21 @@ export class AguiEmitter<T> {
 
     // THE SINGLE-REPLICA PREFLIGHT: before recovery, before any publish.
     await endpoint.assertExpectationSemantics();
+
+    // REQUIRED AT RUNTIME, NOT ONLY IN THE TYPE. Smoke files in this repo are not typechecked, so a
+    // caller that omits this would bind `undefined`, fall back to the per-thread number, and pass
+    // every existing cell while shipping the exact defect this parameter exists to remove. A type
+    // that only the compiler enforces is not a guard for the callers the compiler never sees.
+    if (!opts.subjectFrontier || typeof opts.subjectFrontier.advance !== "function")
+      throw new Error(
+        `event emitter for ${channel}: a subject frontier is required — the subject is shared by every ` +
+          `thread of this principal, so the publish expectation cannot come from one thread's log`,
+      );
+
+    // BOUND BEFORE RECOVERY, and the order matters for the same reason the preflight's does:
+    // recovery can republish a frozen frame, and a WAL whose expectation still came from its own
+    // thread would republish against the wrong tip.
+    await wal.bindSubjectFrontier(opts.subjectFrontier);
 
     const em = new AguiEmitter<T>(endpoint, wal, opts.source, opts.map, channel, wal.threadId);
     await em.recover();
@@ -1530,7 +1557,11 @@ export class AguiEmitter<T> {
     for (const e of frame.events) this.brackets.accept(e);
     const brackets = this.brackets.snapshot();
     const id = randomUUID();
-    const E = this.wal.frontier.lastSubjectSeq;
+    // THE SUBJECT'S TIP, NOT THIS THREAD'S LAST ACK. The two were the same number until a second
+    // session of the same principal existed, and then they were not: the subject is per principal
+    // and the log is per thread, so a new thread's own `lastSubjectSeq` is 0 on a subject its
+    // predecessor already filled.
+    const E = this.wal.expectedTip;
     const body: Part[] = [frame as unknown as Part];
     // Durable BEFORE the wire. The order is the whole state machine: a crash between this line and
     // the next is recoverable precisely because the id and `E` are already frozen on disk.
@@ -1569,9 +1600,31 @@ export class AguiEmitter<T> {
         throw this.halt(
           "cas-loss",
           `event emitter for ${this.channel}: the subject tip is no longer ${o.E} (${(e as Error).message}). ` +
-            `This subject is writable by one principal, so a moved tip means another writer, a restored ` +
-            `stream, or a filtered purge — none of which a publisher may resolve by re-reading the tip. ` +
-            `Clearing it is an explicit abandonment, which resets epoch, seq, E and cursor together.`,
+            `The broker ACL confines this subject to one principal, so the tip moved for one of: a ` +
+            `CONCURRENT emitter under this same principal. The per-principal lock refuses a second ` +
+            `one, but the lock FILE lives under a workspace root, so an emitter started against a ` +
+            `DIFFERENT root, or by a path that never takes the lock, meets no lock at all. Another ` +
+            `host and a stale pid do not get past it; they refuse the start instead, loudly; a ` +
+            `subject frontier record that disagrees with the stream, ` +
+            `which is what an interrupted upgrade or a restored backup leaves behind; a RESTORED ` +
+            `stream; or a FILTERED PURGE, which returns the tip to 0 for every thread on the channel. ` +
+            `One more cause is not a second writer at all: this log's OWN last ack. The shared record ` +
+            `advances before the log records the ack, so a crash between those two writes leaves the ` +
+            `record ahead of the frozen expectation this frame carries, and the retry publishes a ` +
+            `sequence the subject has already passed. On disk it reads as a pending frame in state ` +
+            `sent_unacked whose E is BEHIND the record's tip, which a restored record can also look ` +
+            `like, so it narrows the search rather than ending it. ` +
+            `None of these is resolvable by re-reading the tip, which agent credentials cannot read in ` +
+            `any case. Clearing it is an explicit abandonment of epoch, seq, E, cursor and the shared ` +
+            `subject record together, and it is VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY, which ` +
+            `of the causes above is true of the FILTERED PURGE alone. On any other cause the tip is ` +
+            `still where it is, so removing this state does not clear the halt: the next session ` +
+            `opens virgin, expects 0, halts on the same tip, and the sibling logs a tip could have ` +
+            `been rebuilt from are gone. Purge the channel first, or find the second writer, or match the ` +
+            `signature above and stop looking for one. Once ` +
+            `the subject really is back to 0, no command performs the abandonment, so by hand it ` +
+            `means removing ${dirname(dirname(this.wal.path))} whole, and removing less than that ` +
+            `leaves a mixed state the next start refuses.`,
         );
       throw e;
     }
