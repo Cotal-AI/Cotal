@@ -29,21 +29,21 @@
     {
       "name": "R1 the user-mesh refusal prints a bare actor grant, whose omitted flags mean the wide default",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    ? `\\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +",
-      "replace": "    ? `\\`cotal actor grant <reader> --owner ${owner}` +",
+      "find": "      ? `\\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +",
+      "replace": "      ? `\\`cotal actor grant <reader> --owner ${owner}` +",
       "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "note": "This is the shipped state of the text until a security lens read it against `runActor`'s defaults. The second cell reddens too, because the parsed flags fall back to `>` and the row that lands is the wide one an operator would have written.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
-      "name": "R2 the helper prints the route for the OTHER mesh than the one it is running on",
+      "name": "R2 the spawn door prints the route for the OTHER mesh, on a user mesh",
       "file": "implementations/manager/src/manager.ts",
-      "find": "            `spawn: ${readerRemedy(this.userMode, agentTriple.owner, foreign[0]!)}`,",
-      "replace": "            `spawn: ${readerRemedy(false, agentTriple.owner, foreign[0]!)}`,",
+      "find": "            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,",
+      "replace": "            `spawn: \\`cotal mint <reader> --profile agent --allow-subscribe ${foreign[0]!} --provision\\`, where there is no actor ledger for \\`actor grant\\` to write to.`,",
       "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
-      "note": "Only ONE route is printed, so the selector is load-bearing: printed for the wrong mesh, a fully spelled-out command is still the wrong command, and an operator on a user mesh who runs `cotal mint` gets a credential no ledger row backs. The cell greps the refusal for an `actor grant` and finds a `mint`.",
+      "note": "The opposite polarity of E9, and the only one this suite can see: a user mesh handed the static `mint` route, whose authority lives in the actor ledger the route does not write to. The helper takes no mode any more, so the mutant inlines the wrong route rather than passing a wrong flag.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]

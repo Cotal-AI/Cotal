@@ -595,41 +595,6 @@ export async function epAwaitReply(
  * form, which is what a caller writes when it knows which agent it wants to read, and not the
  * wildcard form, which is what an operator writes deliberately for an observer.
  */
-/**
- * The out-of-band route for the mesh the refusal is running on, as ONE paste-ready command.
- *
- * **A REMEDY A REFUSAL PRINTS IS AUTHORITY THE REFUSAL LENDS, AND BOTH HALVES OF THIS ONE WERE
- * WIDER THAN THE SENTENCE AROUND THEM.** The static half named `--profile observer`, and `mint`
- * reads `--allow-subscribe` only for the agent profile while the observer arm of `permissionsFor`
- * hardcodes `chat.>`: an operator narrowing a reader to one event plane was handed a reader of every
- * channel in the space. The user half named a bare `cotal actor grant`, and an omitted flag there is
- * not "leave it alone" but the WIDE default (`>` read, `>` post, `spawn` scope), so the same
- * sentence handed out a full-mesh reader-writer with spawn. Both were found by running the printed
- * command and decoding what it produced, which is the only way this class of defect surfaces.
- *
- * So the command is spelled out in full and only ONE is printed: the one for the mesh this manager
- * is actually running, because a sentence carrying both routes is a sentence an operator picks the
- * wrong half of. `smoke:events-grant` section 9 runs the static half and grades the credential;
- * `smoke:user-spawn:live` section E runs the user half and grades the row.
- *
- * BOTH call sites pass the MANAGER's mode. The resume door used to pass the resumed DOCUMENT's
- * (`entry.identity.mode === "user"`), which agrees on an honest inventory and disagrees on the
- * shape section 8 exercises: a user-mode record under a static manager, where it handed a static
- * operator `cotal actor grant` for a mesh with no actor ledger to write it to. The operator reading
- * the refusal is on the manager's mesh, never on the record's.
- */
-function readerRemedy(userMode: boolean, owner: string, channel: string): string {
-  return userMode
-    ? `\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +
-        `--allow-publish ''\`, with every field spelled out: \`actor grant\` is an upsert of the ` +
-        `WHOLE row and an omitted flag means the WIDE default (\`>\` read, \`>\` post, \`spawn\` ` +
-        `scope), not "leave it alone".`
-    : `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
-        `is no actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer ` +
-        `one: \`mint\` reads --allow-subscribe only for that profile, so an observer mint would ` +
-        `ignore the channel and hand out a reader of the whole chat plane.`;
-}
-
 function foreignEventChannels(channels: readonly string[], owner: string, actor: string): string[] {
   return channels.filter((ch) => {
     const p = eventChannelPrincipal(ch);
@@ -862,6 +827,43 @@ export class Manager {
   /** The console page URL (manager-hosted, loopback). */
   get consoleUrl(): string {
     return this.attach.consoleUrl();
+  }
+
+  /**
+   * The out-of-band route for the mesh the refusal is running on, as ONE paste-ready command.
+   *
+   * **A REMEDY A REFUSAL PRINTS IS AUTHORITY THE REFUSAL LENDS, AND BOTH HALVES OF THIS ONE WERE
+   * WIDER THAN THE SENTENCE AROUND THEM.** The static half named `--profile observer`, and `mint`
+   * reads `--allow-subscribe` only for the agent profile while the observer arm of `permissionsFor`
+   * hardcodes `chat.>`: an operator narrowing a reader to one event plane was handed a reader of every
+   * channel in the space. The user half named a bare `cotal actor grant`, and an omitted flag there is
+   * not "leave it alone" but the WIDE default (`>` read, `>` post, `spawn` scope), so the same
+   * sentence handed out a full-mesh reader-writer with spawn. Both were found by running the printed
+   * command and decoding what it produced, which is the only way this class of defect surfaces.
+   *
+   * So the command is spelled out in full and only ONE is printed: the one for the mesh this manager
+   * is actually running, because a sentence carrying both routes is a sentence an operator picks the
+   * wrong half of. `smoke:events-grant` section 9 runs the static half and grades the credential;
+   * `smoke:user-spawn:live` section E runs the user half and grades the row.
+   *
+   * It takes NO mode argument, on purpose. It used to, and the resume door passed the resumed
+   * DOCUMENT's (`entry.identity.mode === "user"`) rather than the manager's: those agree on an honest
+   * inventory and disagree on the shape section 8 exercises, a user-mode record under a static
+   * manager, where it handed a static operator `cotal actor grant` for a mesh with no actor ledger to
+   * write it to. The operator reading the refusal is on the manager's mesh, never on the record's. A
+   * boolean parameter is how that happened, so the mode is read from `this` and a third door cannot
+   * pass the wrong one.
+   */
+  private readerRemedy(owner: string, channel: string): string {
+    return this.userMode
+      ? `\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +
+          `--allow-publish ''\`, with every field spelled out: \`actor grant\` is an upsert of the ` +
+          `WHOLE row and an omitted flag means the WIDE default (\`>\` read, \`>\` post, \`spawn\` ` +
+          `scope), not "leave it alone".`
+      : `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
+          `is no actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer ` +
+          `one: \`mint\` reads --allow-subscribe only for that profile, so an observer mint is ` +
+          `refused outright and writes no creds file.`;
   }
 
   async start(): Promise<void> {
@@ -3282,7 +3284,7 @@ export class Manager {
           `this spawn asks for another agent's event channel: ${foreign.join(", ")}. An ` +
             `agent may be granted its OWN event plane and no other, because that plane carries the ` +
             `session's tool inputs and outputs. Grant a reader out of band rather than through a ` +
-            `spawn: ${readerRemedy(this.userMode, agentTriple.owner, foreign[0]!)}`,
+            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,
         );
       }
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
@@ -3640,7 +3642,7 @@ export class Manager {
             `(${foreign.join(", ")}). An agent may hold its OWN event plane and no other, because that ` +
             `plane carries the session's tool inputs and outputs. Remove it from the inventory and ` +
             `grant the reader out of band instead: ` +
-            `${readerRemedy(this.userMode, owner, foreign[0]!)}`,
+            `${this.readerRemedy(owner, foreign[0]!)}`,
         );
     }
     if (entry.identity.mode === "open") {

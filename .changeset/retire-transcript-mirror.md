@@ -30,8 +30,10 @@ MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. 
 longer mirrors its prose there under any flag or environment variable, and a spawn that passes
 `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
 channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
-the principal the manager allocated rather than on the display name. `cotal console` and the web
-console render event frames directly.
+the principal the manager allocated rather than on the display name. On a static mesh `<owner>` is
+the literal `local`. `cotal console` and the web console render event frames directly. Unlike
+`tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+it is under "To let something read a plane" below.
 
 What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
 end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner

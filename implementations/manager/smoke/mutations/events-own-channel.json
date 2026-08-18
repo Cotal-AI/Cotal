@@ -105,8 +105,8 @@
     {
       "name": "E7 the refusal names a mint profile that ignores the channel it prints",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
-      "replace": "    : `\\`cotal mint <reader> --profile observer --allow-subscribe ${channel}\\`, where there ` +",
+      "find": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "      : `\\`cotal mint <reader> --profile observer --allow-subscribe ${channel}\\`, where there ` +",
       "expectRed": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
       "cell": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
       "note": "This is the shipped state of the text until a live mint decoded what it produced. `mint` reads --allow-subscribe only for the agent profile and the observer arm of permissionsFor hardcodes chat.>, so the printed command handed an operator a reader of the whole chat plane while the sentence around it promised one channel. Section 9 parses the profile out of the refusal rather than hardcoding one, so this mutant is the drift it exists to catch."
@@ -114,29 +114,38 @@
     {
       "name": "E8 the refusal prints a channel other than the one it refused",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
-      "replace": "    : `\\`cotal mint <reader> --profile agent --allow-subscribe events.local.UNOTTHEONEREFUSED --provision\\`, where there ` +",
+      "find": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe events.local.UNOTTHEONEREFUSED --provision\\`, where there ` +",
       "expectRed": "the channel it prints is the channel it refused",
       "cell": "the channel it prints is the channel it refused",
       "note": "E7's sibling, one field over, and an engineering lens is why it exists: a section that grades the PROFILE the refusal names while minting the suite's own channel leaves the channel field ungraded, and a refusal pointing an operator at the wrong plane is the same defect class as one naming the wrong profile. Section 9 now mints on the channel the refusal printed and compares the result against the channel the manager refused, so this mutant reddens twice."
     },
     {
-      "name": "E9 the helper prints the route for the OTHER mesh than the one it is running on",
+      "name": "E9 the spawn door prints the route for the OTHER mesh than the one it is running on",
       "file": "implementations/manager/src/manager.ts",
-      "find": "            `spawn: ${readerRemedy(this.userMode, agentTriple.owner, foreign[0]!)}`,",
-      "replace": "            `spawn: ${readerRemedy(true, agentTriple.owner, foreign[0]!)}`,",
+      "find": "            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,",
+      "replace": "            `spawn: \\`cotal actor grant <reader> --owner ${agentTriple.owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",
       "cell": "the refusal prints a mint command, naming a profile and a channel",
-      "note": "The mesh-mode selector is a field like the profile (E7) and the channel (E8), and it was the one field section 9 read past: the section parsed a mint command out of a static-mesh refusal without ever asserting that a static mesh is what selected it. Pinned to the user branch, this static suite is handed an `actor grant` against a mesh with no actor ledger, and the parse finds nothing to grade."
+      "note": "The helper no longer takes a mode, so this mutant can no longer be written as a wrong argument: it inlines the USER route at the static door instead, which is the same defect with the parameter removed. Under it the spawn refusal on a static mesh hands the operator `actor grant` for a mesh with no actor ledger to write it to."
     },
     {
-      "name": "E10 the resume door selects the remedy off the resumed document, not off the manager",
+      "name": "E10 the resume door prints the route for the OTHER mesh, the defect that shipped there",
       "file": "implementations/manager/src/manager.ts",
-      "find": "            `${readerRemedy(this.userMode, owner, foreign[0]!)}`,",
-      "replace": "            `${readerRemedy(entry.identity.mode === \"user\", owner, foreign[0]!)}`,",
+      "find": "            `${this.readerRemedy(owner, foreign[0]!)}`,",
+      "replace": "            `\\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
       "expectRed": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
       "cell": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
-      "note": "Byte-for-byte the shipped expression. It needs its OWN find string: E9 and R2 pin the spawn seam and cannot reach this line, which is why the gap survived a pair of mutants that looked like they covered the field. Section 8's record is user-mode under a static manager on purpose, so the two selectors disagree and the mutant prints the ledger route on a mesh that has no ledger."
+      "note": "The resume door shipped `entry.identity.mode === \"user\"`, the resumed DOCUMENT's mode rather than the manager's, which on the shape section 8 builds selects the user route under a static manager. That expression is now unwritable, since the method takes no mode, so the mutant inlines the route it used to select. E9 and E10 are separate because they are separate doors: one graded door would leave the other free."
+    },
+    {
+      "name": "E11 the single selector, inverted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    return this.userMode\n",
+      "replace": "    return !this.userMode\n",
+      "expectRed": "the refusal prints a mint command, naming a profile and a channel",
+      "cell": "the refusal prints a mint command, naming a profile and a channel",
+      "note": "After the fold there is exactly ONE mode expression for both doors, and this is it. The mutant reddens the spawn cell AND the resume cell in this suite, which is the point: a single selector cannot be wrong at one door and right at the other. The named cell is the spawn one. On the user mesh the opposite polarity is graded by R2 in the auth config."
     }
   ]
 }
