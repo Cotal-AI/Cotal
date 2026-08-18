@@ -211,22 +211,46 @@ function undeliverableAlone(i: InboxItem, budget = INBOX_WINDOW_CHARS): boolean 
  * the held-note. Both are bounded, and this is comfortably above the longest either can be, so the
  * total response stays inside {@link INBOX_WINDOW_CHARS} rather than inside it plus the framing.
  */
-const RESPONSE_OVERHEAD = 512;
+const RESPONSE_OVERHEAD = 768;
 
-/** The tail that keeps a windowed response honest: what is still there, and that it was not lost. */
+/**
+ * The tail that keeps a windowed response honest: what is still there, and that it was not lost.
+ *
+ * TWO KINDS OF HELD, because they are not the same promise. Most held mail is waiting its turn and
+ * a later call delivers it. A message larger than one whole response is not waiting for anything:
+ * calling again will never produce it, and saying "call again for the next batch" over it would be
+ * a queue that looks like it is moving when it is not.
+ *
+ * THE NOTE IS BOUNDED. It names at most {@link NAMED_STUCK} of the stuck messages and counts the
+ * rest, and it truncates a sender's name, because a steady stream of oversized mail would otherwise
+ * fill every reply with metadata about mail it cannot carry, which is the same overflow one layer up.
+ */
 function heldNote(held: readonly InboxItem[]): string {
   if (!held.length) return "";
-  const dms = held.filter((i) => i.kind !== "channel").length;
-  const note = `\n\n… ${held.length} more message${held.length === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. Call cotal_inbox again for the next batch.`;
-  // A message too big for any single response would otherwise sit in the buffer forever with the
-  // reply saying only that "more is held", which reads as a queue that is moving when it is not.
   const stuck = held.filter((i) => undeliverableAlone(i));
-  if (!stuck.length) return note;
-  const each = stuck
-    .map((i) => `${fmtFrom(i)} (${itemCost(i).toLocaleString("en-US")} chars)`)
-    .join(", ");
-  return `${note} ${stuck.length} of them cannot be delivered by this tool at all, being larger than one response can carry: ${each}. ${stuck.length === 1 ? "It stays" : "They stay"} buffered and uncleared.`;
+  const waiting = held.length - stuck.length;
+  const parts: string[] = [];
+  if (waiting) {
+    const dms = held.filter((i) => i.kind !== "channel" && !undeliverableAlone(i)).length;
+    parts.push(
+      `${waiting} more message${waiting === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. Call cotal_inbox again for the next batch.`,
+    );
+  }
+  if (stuck.length) {
+    const named = stuck
+      .slice(0, NAMED_STUCK)
+      .map((i) => `${fmtFrom(i).slice(0, 40)} (${itemCost(i).toLocaleString("en-US")} chars)`)
+      .join(", ");
+    const rest = stuck.length - Math.min(NAMED_STUCK, stuck.length);
+    parts.push(
+      `${stuck.length} message${stuck.length === 1 ? " is" : "s are"} larger than one response can carry and cannot be delivered by this tool at all: ${named}${rest ? `, and ${rest} more` : ""}. ${stuck.length === 1 ? "It stays" : "They stay"} buffered and uncleared, and calling again will not produce ${stuck.length === 1 ? "it" : "them"}.`,
+    );
+  }
+  return `\n\n… ${parts.join(" ")}`;
 }
+
+/** How many oversized messages the note names before it starts counting them instead. */
+const NAMED_STUCK = 3;
 
 function fmtItem(i: InboxItem): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join — pre-dates you, not live

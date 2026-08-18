@@ -117,6 +117,24 @@
       "cell": "...and the reply names it rather than leaving it silently stuck",
       "expectRed": "...and the reply names it rather than leaving it silently stuck",
       "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
+    },
+    {
+      "name": "K11 the note names every oversized message instead of a few",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "      .slice(0, NAMED_STUCK)",
+      "replace": "      .slice(0, stuck.length)",
+      "cell": "twelve undeliverable messages do not produce twelve lines of metadata",
+      "expectRed": "twelve undeliverable messages do not produce twelve lines of metadata",
+      "note": "The obvious authoring choice, and the one the second lens flagged before it existed: naming them all is more informative per message and unbounded in aggregate, so a steady stream of oversized mail overflows the reply with metadata about mail it cannot carry."
+    },
+    {
+      "name": "K12 the stuck note borrows the waiting note's promise",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "buffered and uncleared, and calling again will not produce ${stuck.length === 1 ? \"it\" : \"them\"}.`,",
+      "replace": "buffered and uncleared. Call cotal_inbox again for the next batch.`,",
+      "cell": "...and it does not promise that calling again will deliver them",
+      "expectRed": "...and it does not promise that calling again will deliver them",
+      "note": "A queue that looks like it is moving when it is not. The caller keeps calling, the same messages keep not arriving, and nothing in the reply says why."
     }
   ]
 }

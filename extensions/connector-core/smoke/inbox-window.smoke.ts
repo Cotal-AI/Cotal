@@ -317,7 +317,27 @@ try {
     agent.ep.emit("message", dmMsg("huge", "z".repeat(60_000)), noop(), dmMeta);
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("a buffer holding only undeliverable mail does not report an empty inbox",
-      !text.includes("Inbox empty") && text.includes("held"), text.slice(0, 200));
+      !text.includes("Inbox empty") && text.includes("stays buffered and uncleared"), text.slice(0, 200));
+  }
+
+  // ── 12) THE NOTE ABOUT UNDELIVERABLE MAIL IS ITSELF BOUNDED ───────────────────────────────────
+  //
+  // Named by the second lens while the repair was being written: naming every stuck message lets a
+  // steady stream of oversized mail fill each reply with metadata about mail it cannot carry, which
+  // is the same overflow one layer up. The note names a few and counts the rest.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    for (let n = 0; n < 12; n++) agent.ep.emit("message", dmMsg(`huge-${n}`, "z".repeat(60_000)), noop(), dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    const named = (text.match(/chars\)/g) ?? []).length;
+    check("twelve undeliverable messages do not produce twelve lines of metadata",
+      named <= 3 && text.includes("and 9 more"), { named, tail: text.slice(-200) });
+    check("...and the reply stays inside the window while nothing is cleared",
+      text.length <= INBOX_WINDOW_CHARS && agent.inboxCount() === 12, { chars: text.length, held: agent.inboxCount() });
+    check("...and it does not promise that calling again will deliver them",
+      text.includes("calling again will not produce them") && !text.includes("next batch"), text.slice(-240));
   }
 
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
