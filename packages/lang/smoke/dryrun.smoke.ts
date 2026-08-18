@@ -43,6 +43,16 @@ const SCRIPT = {
   checkpoints: { "approve-plan": { status: "resolved", value: true, by: "sim" } },
 } as const;
 
+/**
+ * What PROGRAM does under SCRIPT: spawn, spawn, turn, checkpoint, turn, sleep. Four kinds.
+ *
+ * Stated here rather than inline because two sections below compare one derived list against
+ * another, and a comparison between two lists that shrink together is true when both are empty. The
+ * number is what stops those comparisons from passing over a run that did nothing.
+ */
+const EFFECTS = 6;
+const KINDS = 4;
+
 // ---- 1) the report answers the questions a dry run exists to answer -----------------------------
 
 const realStart = Date.now();
@@ -112,12 +122,11 @@ const realMs = Date.now() - realStart;
   // is `"[]" === "[]"`. A run that journalled nothing would pass the two cells this file calls the
   // ones that matter, and the drift they exist to catch is exactly the drift they would miss in the
   // case where it is total. `report.agents` and `report.checkpoints` are pinned above but they are
-  // built from the recorder's own arrays, not from the journal, so they floor nothing here. Pin the
-  // corpus itself: six effects, and all four kinds the program uses.
+  // built from the recorder's own arrays, not from the journal, so they floor nothing here.
   const realKinds = new Set(real.journal.entries().map((e) => e.kind));
   ok(
-    "the real run journalled the program's six effects, across all four of its kinds",
-    realKeys.length === 6 && realKinds.size === 4,
+    "the real run journalled every effect the program has, across all of its kinds",
+    realKeys.length === EFFECTS && realKinds.size === KINDS,
     { keys: realKeys, kinds: [...realKinds] },
   );
 
@@ -165,10 +174,10 @@ const realMs = Date.now() - realStart;
   const rec = new RecordingHandler(inner);
   ok("the recorder delegates the clock rather than owning one", rec.now() === inner.now());
   const r = await run(PROGRAM, { runId: "dry-run", handler: rec });
-  // Another identity, floored transitively: section 4 pins `realKeys` at six and then equates it to
-  // `planKeys`, so `report.effects` is non-empty by the time this line runs, or the suite is already
-  // red. If section 4's floor is ever removed, this cell goes unfloored with it.
-  ok("a run through the recorder behaves identically", r.journal.entries().length === report.effects.length, {
+  // Same identity, same reason, and floored here rather than left to section 4: a floor one section
+  // away is an ordering someone can change, and a comment saying so is a claim rather than a term.
+  ok("a run through the recorder behaves identically",
+    r.journal.entries().length === report.effects.length && report.effects.length === EFFECTS, {
     through: r.journal.entries().length,
     plan: report.effects.length,
   });
