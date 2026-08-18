@@ -301,3 +301,5 @@ smoke:seat-input
 smoke:user-spawn:live
 smoke:agui-authorship
 smoke:agui-map
+smoke:agui-multi-session
+smoke:subject-frontier

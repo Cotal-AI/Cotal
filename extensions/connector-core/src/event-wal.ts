@@ -26,6 +26,7 @@ import { open, readFile, rename, unlink, type FileHandle } from "node:fs/promise
 import { dirname, join } from "node:path";
 import { assertIdToken, type Part } from "@cotal-ai/core";
 import type { BracketState } from "./agui.js";
+import type { SubjectFrontier } from "./subject-frontier.js";
 
 /**
  * Bump ONLY with a migration. An OLDER document is migrated forward; a NEWER one fails loud.
@@ -527,6 +528,9 @@ export class EventWal {
    * and guessing `E := 0` either CAS-halts forever or appends under a stale expectation. Recovery
    * from that state is an explicit operator act, never a startup heuristic.
    */
+  /** Bound by {@link bindSubjectFrontier}; absent for a WAL nothing publishes from. */
+  private subject?: SubjectFrontier;
+
   static async open(
     path: string,
     opts: { space: string; threadId: string; principal: string; subjectMayExist: boolean },
@@ -588,6 +592,40 @@ export class EventWal {
     };
   }
 
+  /**
+   * Bind the PRINCIPAL-scoped subject frontier this thread publishes onto.
+   *
+   * **THE TIP IS NOT THIS THREAD'S TO REMEMBER, AND THAT IS THE WHOLE CORRECTION.**
+   * `frontier.lastSubjectSeq` records the last sequence THIS thread was assigned, which is a true
+   * fact about this log and was mistaken for the subject's tip. The subject is per principal, so a
+   * second session of the same agent opened virgin, expected an empty subject its own predecessor
+   * had filled, and halted forever. Once bound, the bound record is authoritative for the
+   * expectation and this document's own number is history.
+   *
+   * Called once, by {@link AguiEmitter.start}, which is the only thing that drives a WAL toward a
+   * publish. A WAL that is never bound behaves exactly as it did before, which is what a caller
+   * that is not publishing at all means.
+   */
+  async bindSubjectFrontier(frontier: SubjectFrontier): Promise<void> {
+    if (this.subject) throw new Error(`event WAL ${this.path}: a subject frontier is already bound`);
+    this.subject = frontier;
+    // NO SEEDING HERE, and the first version of this method did it here and was wrong. The upgrade
+    // case is a NEW thread whose own log is virgin while the sequence sits in a PREVIOUS thread's
+    // log, so seeding from `this` document recovers nothing in exactly the case that matters. That
+    // recovery belongs to whoever can see every thread log of the principal, which is the record's
+    // own `open`.
+  }
+
+  /**
+   * The sequence a publish must expect, which is the SUBJECT's tip and not this thread's.
+   *
+   * Unbound it falls back to this document's own last ack, which is what a WAL driven directly by a
+   * suite means and what every caller meant before the shared record existed.
+   */
+  get expectedTip(): number {
+    return this.subject ? this.subject.tip : this.doc.frontier.lastSubjectSeq;
+  }
+
   /** Transition 1 — record the frame, with `id` and `E` frozen, BEFORE any publish. */
   async beginSend(frame: {
     id: string;
@@ -606,8 +644,8 @@ export class EventWal {
     // id is supposed to be one token on the wire and in the WAL; importing the check is what makes
     // that true rather than asserted.
     assertIdToken(frame.id, "event WAL pending id");
-    if (frame.E !== this.doc.frontier.lastSubjectSeq)
-      throw new Error(`event WAL ${this.path}: E=${frame.E} is not the frontier's tip ${this.doc.frontier.lastSubjectSeq}`);
+    if (frame.E !== this.expectedTip)
+      throw new Error(`event WAL ${this.path}: E=${frame.E} is not the subject's tip ${this.expectedTip}`);
     if (frame.seq !== this.doc.frontier.seq + 1)
       throw new Error(`event WAL ${this.path}: seq=${frame.seq} is not the frontier's successor ${this.doc.frontier.seq + 1}`);
     // Refuse an unpublishable body HERE rather than freezing it and discovering it on the retry
@@ -633,8 +671,14 @@ export class EventWal {
     // not on the boot after it.
     if (!isSafeNonNegInt(ackSeq))
       throw new Error(`event WAL ${this.path}: ackSeq must be a safe non-negative integer, got ${String(ackSeq)}`);
-    if (ackSeq <= this.doc.frontier.lastSubjectSeq)
-      throw new Error(`event WAL ${this.path}: ackSeq=${ackSeq} is not ahead of the frontier's tip ${this.doc.frontier.lastSubjectSeq}`);
+    if (ackSeq <= this.expectedTip)
+      throw new Error(`event WAL ${this.path}: ackSeq=${ackSeq} is not ahead of the subject's tip ${this.expectedTip}`);
+    // THE SHARED RECORD ADVANCES FIRST, and the order is deliberate. A crash between the two leaves
+    // the shared tip AHEAD of this log, so the next start expects a sequence the subject has not
+    // reached and the broker refuses it: loud, and diagnosable. The other order leaves the shared
+    // tip BEHIND, so the next thread expects a sequence already taken, which is the same permanent
+    // halt by a longer road. Both fail closed; this one fails closed on the easier value to explain.
+    await this.subject?.advance(ackSeq);
     await this.write({ ...this.doc, pending: { ...p, state: "acked", ackSeq } });
     });
   }
@@ -678,6 +722,10 @@ export class EventWal {
    */
   async abandon(): Promise<void> {
     return this.serialize(async () => {
+    // A purge returns the subject tip to 0 for EVERY thread on the channel, so the shared record
+    // goes with it. Leaving it standing would make the next thread expect a tip the subject no
+    // longer has, which is this defect's mirror image: the same permanent halt from the other side.
+    await this.subject?.reset();
     await this.write({
       ...this.doc,
       epoch: randomUUID(),

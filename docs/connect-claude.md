@@ -292,6 +292,13 @@ Events are written to a per-session write-ahead log before they are published, s
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
 open when the session stopped is closed rather than left dangling.
 
+One channel carries **every session of one agent**, because it is named after the principal and not
+after the session. Alongside the per-session logs the connector keeps one small record per principal,
+holding the last sequence the broker assigned on that channel, so a new session continues the stream
+its predecessor left instead of starting again from nothing. Both live under the events state root
+(`COTAL_WORKSPACE_ROOT`), and neither is something you edit by hand: if either goes missing or
+disagrees with the broker, the connector stops publishing and says so rather than guessing.
+
 Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
 part by design, so a surface that renders a message as flat text shows a marker instead of prose.
 

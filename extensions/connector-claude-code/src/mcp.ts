@@ -22,6 +22,7 @@ import {
   AguiEmitter,
   AguiEmitterHolder,
   EventWal,
+  FileSubjectFrontier,
   JsonlFileSource,
   ensureEventWalDir,
   resolveEventsStateRoot,
@@ -82,7 +83,13 @@ async function main(): Promise<void> {
 
         // The directory chain is made durable BEFORE the first transition, so a crash cannot lose
         // the thread directory's own link and let a published thread reboot as virgin.
-        const { walPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+
+        // The subject is per PRINCIPAL and the log is per thread, so the expectation a publish
+        // carries lives beside the thread directories rather than inside one of them. Without it a
+        // second session of this agent opens virgin, expects an empty subject its own first session
+        // filled, and halts for good.
+        const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
 
         // `subjectMayExist: false` is an honest claim rather than a convenient default: this is a
         // native session id, so nothing published under this (principal, thread) pair before this
@@ -96,6 +103,7 @@ async function main(): Promise<void> {
         return AguiEmitter.start<ClaudeEntry>({
           endpoint: agent.ep,
           wal,
+          subjectFrontier,
           source: new JsonlFileSource<ClaudeEntry>(transcriptPath),
           map: mapper.map,
         });
