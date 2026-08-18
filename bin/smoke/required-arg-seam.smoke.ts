@@ -61,13 +61,22 @@
  * site whose own argument is an identifier, which lands as `unverifiable` rather than as a pass.
  *
  * THE ALIAS REFUSAL IS NOT A PROOF OF TOTAL CLOSURE, and it should not be read as one. It refuses
- * every spelling that names the seam STATICALLY, as an identifier or as a string, in the positions
- * that can obtain it. What it cannot refuse is a property selected by an expression this file does
- * not evaluate: a key assembled at runtime (`core["standalone" + "ConnectOpts"]`), a key held in a
- * variable, or a reflective get. Those reach the same binding with no static spelling to catch, and
- * closing them means evaluating expressions or resolving symbols with a type checker, which is a
- * different instrument rather than a better rule. They are measured, not assumed: the assembled-key
- * form is executed against this check and observed green. The floors are the only cover they have.
+ * every spelling that names the seam statically, as an identifier or as a string, in the positions
+ * that can obtain it: a property read off a namespace or a table, a computed rename in a
+ * destructure, a quoted import or re-export rename, a shorthand capture, and the name handed to a
+ * call as data. The key it reads may be assembled, because `"standalone" + "ConnectOpts"` and a
+ * same-file `const` holding it are arithmetic a reader does by eye; review showed both are ordinary
+ * code rather than exotica, and documenting an escape is not closing it.
+ *
+ * What it still cannot refuse is a key this file cannot evaluate: one computed from a runtime value,
+ * a function's return, or an import it would have to resolve. Closing those means executing the
+ * program or running a type checker, which is a different instrument rather than a better rule, and
+ * the floors are the only cover they have.
+ *
+ * It also has NO SCOPE. Any local that happens to share the seam's name is read as the seam, so a
+ * parameter or variable of that name used as a value is flagged, and a call to it is classified.
+ * Both directions are conservative, neither has an occupant here, and resolving them is the same
+ * type checker as above.
  *
  * A file that does not parse loses the sites in whatever the recovery produces, which is bounded by
  * the fact that a file which cannot parse cannot execute either: its own suite is red at import,
@@ -148,15 +157,49 @@ const isCalleeOf = (n: ts.Node): boolean => {
   return !!o.parent && ts.isCallExpression(o.parent) && o.parent.expression === o;
 };
 
+/**
+ * The string an expression provably evaluates to, or undefined when this file cannot say.
+ *
+ * Literals fold, `+` of foldable parts folds, and a same-file `const` bound to a foldable value
+ * folds. That is deliberately not a symbol table: it is the arithmetic a reader does by eye, and it
+ * exists because review showed `core["standalone" + "ConnectOpts"]` and `const k = "..."; core[k]`
+ * are ordinary code rather than exotica. Documenting an escape is not closing it.
+ */
+function foldString(e: ts.Expression, consts: Map<string, string>): string | undefined {
+  const x = unwrap(e);
+  if (ts.isStringLiteralLike(x)) return x.text;
+  if (ts.isIdentifier(x)) return consts.get(x.text);
+  if (ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.PlusToken) {
+    const l = foldString(x.left, consts), r = foldString(x.right, consts);
+    return l !== undefined && r !== undefined ? l + r : undefined;
+  }
+  if (ts.isTemplateExpression(x) || ts.isNoSubstitutionTemplateLiteral(x))
+    return ts.isNoSubstitutionTemplateLiteral(x) ? x.text : undefined;
+  return undefined;
+}
+
+/** Every same-file `const x = <foldable string>`, so a key held in one variable is still a spelling. */
+function constStrings(src: ts.SourceFile): Map<string, string> {
+  const out = new Map<string, string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+      const v = foldString(n.initializer, out);
+      if (v !== undefined) out.set(n.name.text, v);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  return out;
+}
+
+type Folds = (e: ts.Expression | undefined) => boolean;
+
 /** `seam(...)`, `ns.seam(...)`, `ns["seam"](...)`, and any of them behind casts or parens. */
-function callsSeam(call: ts.CallExpression, fn: string): boolean {
+function callsSeam(call: ts.CallExpression, fn: string, folds: Folds): boolean {
   const c = unwrap(call.expression);
   if (ts.isIdentifier(c)) return c.text === fn;
   if (ts.isPropertyAccessExpression(c)) return c.name.text === fn;
-  if (ts.isElementAccessExpression(c)) {
-    const a = c.argumentExpression;
-    return ts.isStringLiteralLike(a) && a.text === fn;
-  }
+  if (ts.isElementAccessExpression(c)) return folds(c.argumentExpression);
   return false;
 }
 
@@ -183,7 +226,13 @@ function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
       || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p)
       || ts.isTypeAliasDeclaration(p) || ts.isInterfaceDeclaration(p) || ts.isClassDeclaration(p)
       || ts.isEnumDeclaration(p) || ts.isModuleDeclaration(p) || ts.isParameter(p)
-      || ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))) return true;
+      // A property assignment's KEY names a slot; its VALUE is a separate node and is asked
+      // separately. SHORTHAND is deliberately absent: `{ seam }` is the key AND a read of the
+      // seam, and review built the read that proves it, taking the value straight back out with
+      // `Object.values` without ever spelling the key again.
+      || ts.isPropertyAssignment(p)
+      // `import seam from "x"` binds the scannable name, exactly as `import { default as seam }` does.
+      || ts.isImportClause(p))) return true;
   // A binding is safe exactly when the name it binds LOCALLY is still the one this reader scans
   // for. `import { seam }`, `import { default as seam }` and `const { seam } = core` all bind it;
   // every rename AWAY from it (`{ seam as other }`) is the hazard, whichever half is being visited.
@@ -212,15 +261,22 @@ function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
  * "ConnectOpts"]`) is not constant-folded here and stays invisible. Closing it means evaluating
  * expressions, which is a different instrument; the floors are the only cover it has.
  */
-function stringEscapesTheName(s: ts.StringLiteralLike): boolean {
-  const p = s.parent;
-  if (!p) return false;
-  if (ts.isElementAccessExpression(p) && p.argumentExpression === s) return !isCalleeOf(p);
-  if (ts.isComputedPropertyName(p) && p.expression === s) return ts.isBindingElement(p.parent);
-  // `import { "seam" as f }` and `export { "seam" as f }`: ordinary syntax, and the propertyName is
-  // a string rather than an identifier, so the rule above it never sees the rename.
-  if ((ts.isImportSpecifier(p) || ts.isExportSpecifier(p)) && p.propertyName === s)
-    return !(ts.isIdentifier(p.name) && p.name.text === s.text);
+function escapesAt(n: ts.Node, fn: string, folds: Folds): boolean {
+  const bindsTheName = (name: ts.Node): boolean => ts.isIdentifier(name) && name.text === fn;
+  // Reading the property off a namespace, a module object, or any table: `core["seam"]`. When the
+  // access IS the callee it is a call and is counted instead.
+  if (ts.isElementAccessExpression(n)) return folds(n.argumentExpression) && !isCalleeOf(n);
+  // `const { ["seam"]: f } = core`, unless it binds the name back.
+  if (ts.isBindingElement(n) && n.propertyName && ts.isComputedPropertyName(n.propertyName))
+    return folds(n.propertyName.expression) && !bindsTheName(n.name);
+  // `import { "seam" as f }` / `export { "seam" as f }`: ordinary syntax whose propertyName is a
+  // string rather than an identifier, so no rule about identifiers can see the rename.
+  if ((ts.isImportSpecifier(n) || ts.isExportSpecifier(n)) && n.propertyName
+    && ts.isStringLiteralLike(n.propertyName))
+    return n.propertyName.text === fn && !bindsTheName(n.name);
+  // The name handed to something else AS DATA, which is how a reflective get obtains it:
+  // `Reflect.get(core, "seam")`, `Object.getOwnPropertyDescriptor(core, "seam")`, and friends.
+  if (ts.isCallExpression(n)) return n.arguments.some((a) => folds(a));
   return false;
 }
 
@@ -323,13 +379,15 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
 function sitesIn(file: string, text: string, seam: Seam): Site[] {
   const src = parse(file, text);
   const found: Site[] = [];
+  const consts = constStrings(src);
+  const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
   const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
   const visit = (n: ts.Node): void => {
-    if (ts.isCallExpression(n) && callsSeam(n, seam.fn)) {
+    if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
       const { verdict, detail } = classify(n.arguments[0], seam.key, src);
       found.push({ file, line: lineOf(n), verdict, detail });
     } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
-      || (ts.isStringLiteralLike(n) && n.text === seam.fn && stringEscapesTheName(n))) {
+      || escapesAt(n, seam.fn, folds)) {
       found.push({
         file, line: lineOf(n), verdict: "aliased",
         detail: `the name is rebound here (${ts.SyntaxKind[n.parent.kind]}); call the seam by its own name so this check can see the argument`,
@@ -484,14 +542,32 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     && fx(`const { standaloneConnectOpts } = await import("@cotal-ai/core");`).length === 0);
   check("`import { default as standaloneConnectOpts }` binds the scannable name, so it is not a rebinding",
     fx(`import { default as standaloneConnectOpts } from "@cotal-ai/core";`).length === 0);
-  // A key NAMES a slot; it does not read the seam. A call through such a table is counted by
-  // `callsSeam` and a READ of it is caught above, so flagging the key says something untrue.
-  check("an object KEY of the same name is not a rebinding, in either spelling",
+  // A key NAMES a slot and is not a read, so flagging it would say something untrue.
+  check("an object KEY of the same name is not a rebinding",
     fx(`const tbl = { standaloneConnectOpts: mockFn };`).length === 0
-    && fx(`const tbl = { standaloneConnectOpts };`).length === 0
     && fx(`const tbl = { ["standaloneConnectOpts"]: mockFn };`).length === 0);
-  check("...and reading that table back IS caught, which is why allowing the key loses nothing",
+  check("...but its VALUE is asked separately, so a key cannot launder one",
+    one(`const tbl = { standaloneConnectOpts: standaloneConnectOpts };`) === "aliased");
+  // SHORTHAND is the key and the value at once, and the difference is not academic: review took the
+  // value straight back out with `Object.values`, never spelling the key again, so there was nothing
+  // left for any rule about names to catch.
+  check("SHORTHAND is a value capture, not just a key, and is flagged",
+    one(`const tbl = { standaloneConnectOpts };`) === "aliased");
+  check("...and reading a table back by name IS caught too",
     one(`const f = tbl.standaloneConnectOpts;`) === "aliased");
+  check("a BARE DEFAULT import binds the scannable name, so it is not a rebinding",
+    fx(`import standaloneConnectOpts from "@cotal-ai/core";`).length === 0);
+  // The residual both reviews called ordinary rather than exotic, and they were right: this is
+  // arithmetic a reader does by eye, so the reader does it too.
+  check("a key ASSEMBLED from literals is the same spelling, and is folded",
+    one(`const f = core["standalone" + "ConnectOpts"];`) === "aliased");
+  check("...including through a same-file `const`",
+    one(`const k = "standalone" + "ConnectOpts";\nconst f = core[k];`) === "aliased"
+    && one(`const k = "standaloneConnectOpts";\nconst { [k]: f } = core;`) === "aliased");
+  check("...while a call through such a key is a counted CALL, not an escape",
+    one(`const k = "standaloneConnectOpts";\ncore[k]({ creds: c })`) === "missing-key");
+  check("the name handed to a REFLECTIVE get as data is an escape",
+    one(`const f = Reflect.get(core, "standaloneConnectOpts");`) === "aliased");
   check("a TYPE named like the seam declares a type, and cannot invoke anything",
     fx(`type standaloneConnectOpts = (a: unknown) => unknown;`).length === 0
     && fx(`interface standaloneConnectOpts { x: number }`).length === 0);
