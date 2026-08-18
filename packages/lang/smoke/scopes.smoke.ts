@@ -80,11 +80,13 @@ let racePins: import("../src/index.js").RunPins;
   ok("it records the branches it launched", JSON.stringify((scope?.result as { branches: string[] }).branches) === '["slow","fast"]');
 
   const value = (scope?.result as { value: { index: string; value: unknown } }).value;
-  // On the LIVE pass the simulator advances ONE virtual clock serially, so the arm that runs first
-  // is the arm that records the earlier endedAt whatever duration it asked for. That is a property
-  // of the simulator, not of the rule, and it is fine: the live pass is where the choice is MADE
-  // and RECORDED. What must never vary is what a replay does with the record, which is section 4.
-  ok("the live pass records a winner", value.index === "slow", value);
+  // On the LIVE pass the simulator advances ONE virtual clock serially and both sleeps are in
+  // flight before either settles, so both arms record the SAME endedAt (measured: 360000 and
+  // 360000) and the tie goes to declaration order. That is a property of the simulator, not of the
+  // rule, and it is fine: the live pass is where the choice is MADE and RECORDED, and the rule
+  // itself is held by the disagreeing-clocks cell below and by section 4's replay. What must never
+  // vary is what a replay does with the record.
+  ok("the live pass records a winner (a simulator tie, broken by declaration order)", value.index === "slow", value);
   ok("both arms did run on the live pass", logged.some((l) => l[0] === "entered-slow") && logged.some((l) => l[0] === "entered-fast"));
   ok(
     "and BOTH the index and the value are recorded, so an edit to the arm's expression cannot resume as the new value",
@@ -99,6 +101,34 @@ let racePins: import("../src/index.js").RunPins;
     "and the intent is UNDISCHARGED: a journal write cancels nothing by itself",
     scope?.cancel?.issued === false,
   );
+}
+
+// ---- 1b) LIVE, the recorded clocks decide, not the order the arms woke in -------------------
+//
+// A handler whose sleeps resolve in WALL order that disagrees with the clocks they record: the arm
+// declared first wakes first with the LATER clock, the arm declared second wakes 25ms later with the
+// EARLIER clock. Under "first to wake wins" the winner is `slow`; under the rule (least branch clock
+// among settled arms) it is `fast`. This is the only live shape in which the two rules disagree, so
+// it is the cell that goes red if the live pick ever falls back to wake order.
+{
+  class RecordedClock extends SimHandler {
+    private stamp = 0;
+    override now(): number { return this.stamp; }
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], _ctx: Parameters<SimHandler["sleep"]>[1]) {
+      const ms = req.duration === "5m" ? 0 : 25;
+      await new Promise((r) => setTimeout(r, ms));
+      this.stamp = req.duration === "5m" ? 300000 : 60000;
+      return null;
+    }
+  }
+  logged.length = 0;
+  const r = await run(RACE, { runId: "r-1b", handler: new RecordedClock({}), onLog: sink });
+  const scope = scopeOf(r.journal, "race");
+  const value = (scope?.result as { value: { index: string; value: unknown } }).value;
+  ok("a live race is decided by the recorded clocks, not by which arm woke first",
+    value.index === "fast" && value.value === "from-fast", value);
+  ok("and the program saw that winner", logged.some((l) => l[0] === "fast" && l[1] === "from-fast"), logged);
+  ok("and the arm that woke first is the recorded loser", JSON.stringify(scope?.cancel?.losers) === '["slow"]', scope?.cancel);
 }
 
 // ---- 2) a parallel records branch keys and NO selected winner --------------------------------
