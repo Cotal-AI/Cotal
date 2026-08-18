@@ -22,8 +22,8 @@ you did not press the detach key, it prints `[cotal: connection lost, reconnecti
 asks the manager for a fresh grant, mints a fresh per-session credential, opens a fresh connection
 and a fresh session, prints `[cotal: reconnected]`, and carries on in the same raw-mode terminal.
 The manager repaints the seat's current screen through the path it already uses for any attach.
-Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists, and the detach key works
-throughout, including mid-reconnect. Every attempt re-runs the manager's full authorization, so a
+Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists, and the detach key is read
+during the waits between attempts, so a reconnect never traps you. Every attempt re-runs the manager's full authorization, so a
 reconnect cannot keep a revoked or expired grant alive: no grant is ever presented twice.
 
 Giving up always says why. A manager that refuses the attach exits non-zero with the manager's own

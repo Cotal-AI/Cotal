@@ -352,9 +352,11 @@ const flushed = (nc: NatsConnection): Promise<boolean> =>
   Promise.race([nc.flush().then(() => true, () => false), after(LINK_DEADLINE_MS).then(() => false)]);
 
 /** Give a connection back, bounded. Draining is another flush, so a link that has already missed
- *  its deadline is closed outright instead of being asked to drain through the same dead socket. */
+ *  its deadline is closed outright instead of being asked to drain through the same dead socket.
+ *  A drain that REJECTS has closed nothing either: it gives up inside that same flush, before the
+ *  close it would have done, so a rejection means close it here or leak the socket. */
 const closeLink = async (nc: NatsConnection): Promise<void> => {
-  const drained = await Promise.race([nc.drain().then(() => true, () => true), after(LINK_DEADLINE_MS).then(() => false)]);
+  const drained = await Promise.race([nc.drain().then(() => true, () => false), after(LINK_DEADLINE_MS).then(() => false)]);
   if (!drained) await nc.close().catch(() => { /* already gone */ });
 };
 

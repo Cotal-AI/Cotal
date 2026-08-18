@@ -635,8 +635,10 @@ sleeps, a VPN that drops or a wifi handover kills it. When that happens `attach`
 a fresh grant, a fresh per-session credential, a fresh connection, so every attempt re-runs the same
 authorization the first attach did. On success it prints `[cotal: reconnected]`, the manager repaints
 the seat's current screen the way it does for any attach, and you carry on in the same terminal.
-Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key works
-throughout, including while a reconnect is in flight.
+Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key is read
+during those waits, so a reconnect never traps you; it is not read across the round trip that
+hands the old session back and opens the new one, so a press inside that window takes effect when
+the round trip returns, within seconds.
 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there
@@ -1031,6 +1033,7 @@ ledger at connect time. `logout` revokes the IdP session and clears the cache. S
 ## actor
 
 ```bash
+# an upsert of the WHOLE row: a flag left off is the WIDE default below, not "unchanged"
 cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
 cotal actor list
@@ -1049,9 +1052,12 @@ cotal actor list
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
 A bare `grant` is the **full** envelope (all channels, may spawn); the flags narrow it. A
-re-grant **replaces** the row, so to add a capability, re-grant with it added to the current
-scope (`cotal actor list` shows what a row holds). `revoke` denies the next exchange and the
-next connect with no restart, and evicts the principal's live connections. Managed-agent rows
+re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
+every field out: the new scope plus the row's current read set, post set, role and label
+(`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
+reverts to the wide default in the table above, which is how a narrow reader becomes a reader
+of every channel. `revoke` denies the next exchange and the next connect with no restart, and
+evicts the principal's live connections. Managed-agent rows
 (written by the spawn path) live in a disjoint row space this command never touches. See
 [identity & auth](identity-and-auth.md).
 
