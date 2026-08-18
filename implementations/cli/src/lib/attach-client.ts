@@ -200,7 +200,7 @@ export function isTransportEnd(reason: string): boolean {
  * by default, {@link detachKey}) detaches without killing the agent. Transport-agnostic over the
  * mesh §13.6 session.
  */
-export function attachClient(transport: TerminalTransport, hold?: TerminalHold): Promise<AttachOutcome> {
+export function attachClient(transport: TerminalTransport, hold?: TerminalHold, takeStdin?: () => void): Promise<AttachOutcome> {
   // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
   // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
   let detach: ReturnType<typeof detachKey>;
@@ -316,6 +316,13 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
     };
 
     transport.onReady(() => {
+      // Take stdin from whoever was holding it BETWEEN sessions, synchronously and before anything
+      // below touches the stream. A reconnecting caller keeps a reader installed for the whole
+      // non-session period so bytes typed at a terminal with no session are read and dropped rather
+      // than buffered; without this handoff both readers would be live at once and a detach byte
+      // would be seen twice. Synchronous by construction: `data` is emitted on a later tick, so the
+      // gap between the caller's `off` and the `on` below cannot lose a byte.
+      takeStdin?.();
       // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
       // default label). Only on override, so the default case stays free of duplicate noise.
       if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (via COTAL_DETACH_KEY)`));

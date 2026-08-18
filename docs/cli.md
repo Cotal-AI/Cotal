@@ -634,10 +634,13 @@ sleeps, a VPN that drops or a wifi handover kills it. When that happens `attach`
 a fresh grant, a fresh per-session credential, a fresh connection, so every attempt re-runs the same
 authorization the first attach did. On success it prints `[cotal: reconnected]`, the manager repaints
 the seat's current screen the way it does for any attach, and you carry on in the same terminal.
-Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key is read
-during those waits, so a reconnect never traps you; it is not read across the round trip that
-hands the old session back and opens the new one, so a press inside that window takes effect when
-the round trip returns, within seconds.
+Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key is read the
+whole time the loop runs, the waits and the attempts alike, so a reconnect never traps you: press it
+while a session is being established and the attach ends there, and a session that lands behind the
+press is handed back to the manager rather than left holding a slot. Everything else you type while
+there is no session is dropped rather than queued, so keystrokes aimed at a terminal that turned out
+to be frozen, Ctrl-C included, are not delivered to the agent by a reconnect you did not know had
+happened.
 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there
