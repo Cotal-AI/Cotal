@@ -118,11 +118,13 @@ const realMs = Date.now() - realStart;
     .map((e) => `${e.scope}/${e.kind}${e.name === "" ? "" : `:${e.name}`}#${e.occurrence}`);
   const planKeys = report.effects.map((e) => e.step);
 
-  // Both comparisons below are identities, and an identity holds at zero: `0 === 0` is true, and so
-  // is `"[]" === "[]"`. A run that journalled nothing would pass the two cells this file calls the
-  // ones that matter, and the drift they exist to catch is exactly the drift they would miss in the
-  // case where it is total. `report.agents` and `report.checkpoints` are pinned above but they are
-  // built from the recorder's own arrays, not from the journal, so they floor nothing here.
+  // The floor and the two comparisons below catch DIFFERENT failures, and neither replaces the
+  // other. Empty `report.effects` alone and the comparisons go red at `{plan: 0, real: 6}` while the
+  // floor passes: that is reporter drift, the failure named at the top of this section, and the
+  // comparisons are the right instrument for it. Stop the run journalling and BOTH sides fall to
+  // zero together — `0 === 0` and `"[]" === "[]"` are true, and the comparisons see nothing at all.
+  // That second one is the floor's, and `report.agents` / `report.checkpoints` do not cover it: they
+  // are pinned above but built from the recorder's own arrays rather than from the journal.
   const realKinds = new Set(real.journal.entries().map((e) => e.kind));
   ok(
     "the real run journalled every effect the program has, across all of its kinds",
