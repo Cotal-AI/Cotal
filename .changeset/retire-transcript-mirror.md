@@ -61,7 +61,7 @@ To let something read a plane, grant it out of band. The refusal prints one comm
 full, for the mesh it is running on. On a user-auth mesh:
 `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
 ''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
-wide default (`>` read, `>` post, `spawn` scope), not "leave it alone". On a static mesh there is no
+wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
 actor ledger for `actor grant` to write to, so mint the reader instead:
 `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
 not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off

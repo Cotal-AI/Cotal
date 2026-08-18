@@ -837,7 +837,7 @@ export class Manager {
    * reads `--allow-subscribe` only for the agent profile while the observer arm of `permissionsFor`
    * hardcodes `chat.>`: an operator narrowing a reader to one event plane was handed a reader of every
    * channel in the space. The user half named a bare `cotal actor grant`, and an omitted flag there is
-   * not "leave it alone" but the WIDE default (`>` read, `>` post, `spawn` scope), so the same
+   * not "leave it alone" but the WIDE default (`>` read, `>` post, `spawn,role:default` scope), so the same
    * sentence handed out a full-mesh reader-writer with spawn. The static half was found by RUNNING
    * the printed command and decoding what it produced; the user half was found by READING it against
    * `runActor`'s defaults. Neither is the only way in, and a remedy string is not proved by either
@@ -860,7 +860,7 @@ export class Manager {
     return this.userMode
       ? `\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +
           `--allow-publish ''\`, with every field spelled out: \`actor grant\` is an upsert of the ` +
-          `WHOLE row and an omitted flag means the WIDE default (\`>\` read, \`>\` post, \`spawn\` ` +
+          `WHOLE row and an omitted flag means the WIDE default (\`>\` read, \`>\` post, \`spawn,role:default\` ` +
           `scope), not "leave it alone".`
       : `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
           `is no actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer ` +

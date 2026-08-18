@@ -779,6 +779,15 @@ try {
   check("the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
     grantCmd.length > 0 && flag("allow-subscribe") === VICTIM && flag("allow-publish") === "" && flag("scope") === "" && ownerFlag === OWNER,
     { grantCmd, sub: flag("allow-subscribe"), pub: flag("allow-publish"), scope: flag("scope"), owner: ownerFlag });
+  // A THIRD claim, and the one no cell read until now: the RATIONALE. The two cells above grade the
+  // printed command and the row it writes; both stay green while the sentence explaining WHY every
+  // field must be spelled out understates how wide the default is. It said `spawn` scope when
+  // `runActor` omitting `--scope` writes `spawn,role:default` - dropping a DELEGATION capability
+  // from a sentence whose only job is calibration. An operator auditing a past omitted-scope grant
+  // by that sentence concludes it "only got spawn" and closes a question that is open.
+  const remedyText = overText.error ?? "";
+  check("the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
+    /spawn,role:default/.test(remedyText) && !/`spawn` scope/.test(remedyText), remedyText);
   const READER = "evtreader";
   grantActor(dir, {
     owner: ownerFlag ?? "",

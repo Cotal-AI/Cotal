@@ -253,7 +253,7 @@ cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe 'events.
 ```
 
 Every field, deliberately. `actor grant` is an upsert of the whole row, and an omitted flag is not
-"leave it alone": it is the wide default, `>` read, `>` post, and `spawn` scope. A bare
+"leave it alone": it is the wide default, `>` read, `>` post, and `spawn,role:default` scope. A bare
 `cotal actor grant <reader>` therefore grants a reader of every channel in the space, which is the
 opposite of what a scoped watcher is for.
 
