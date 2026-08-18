@@ -526,6 +526,45 @@ try {
       text.length <= INBOX_WINDOW_CHARS && agent.inboxCount() === 0, { chars: text.length, left: agent.inboxCount() });
   }
 
+  // ── 20) TWO RECALL ITEMS IN THE SAME MILLISECOND, WITH THE WINDOW BETWEEN THEM ────────────────
+  //
+  // The first lens found this against the cursor that closed the starvation: a cursor advanced to
+  // the last DELIVERED timestamp filters out a twin sharing that millisecond, so the reply says to
+  // call again and calling again never produces it. The same broken promise the peek copy carried,
+  // arriving through the new machinery.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    // Twins at index 14 and 15, which is where a window of ~3,000-character items falls.
+    const items = Array.from({ length: 30 }, (_, n) => ({
+      id: `TW-${n}`,
+      ts: 5_000 + (n === 15 ? 14 : n),
+      fromId: "peer",
+      fromName: "Peer",
+      kind: "channel" as const,
+      channel: "general",
+      mentionsMe: false,
+      historical: false,
+      text: `${"t".repeat(3_000)} TW_${n}`,
+    }));
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items,
+      droppedChannels: [],
+    });
+
+    const seen = new Set<string>();
+    let calls = 0;
+    while (calls < 12 && seen.size < 30) {
+      const text = textOf(await inboxSpec().run(agent, cfg, {}));
+      assert.ok(text.length <= INBOX_WINDOW_CHARS, `tie call ${calls} returned ${text.length} chars`);
+      for (let n = 0; n < 30; n++) if (text.includes(` TW_${n}\n`) || text.endsWith(` TW_${n}`)) seen.add(`TW_${n}`);
+      calls++;
+    }
+    check("a recall twin sharing a millisecond with a delivered item is not filtered out for good",
+      seen.size === 30, { seen: seen.size, missing: Array.from({ length: 30 }, (_, n) => `TW_${n}`).filter((t) => !seen.has(t)), calls });
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {

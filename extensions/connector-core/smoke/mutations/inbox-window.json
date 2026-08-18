@@ -164,6 +164,15 @@
       "cell": "successive calls walk the whole of focus recall instead of repeating its first window",
       "expectRed": "successive calls walk the whole of focus recall instead of repeating its first window",
       "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one."
+    },
+    {
+      "name": "K17 the recall cursor advances to the last item the reply delivered",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "              heldFresh.length\n                ? Math.min(lastDelivered, Math.min(...heldFresh.map((i) => i.ts)) - 1)\n                : lastDelivered,",
+      "replace": "              lastDelivered,",
+      "cell": "a recall twin sharing a millisecond with a delivered item is not filtered out for good",
+      "expectRed": "a recall twin sharing a millisecond with a delivered item is not filtered out for good",
+      "note": "The obvious cursor, and it is wrong for exactly one input: two recall items in the same millisecond with the window between them. The delivered twin's timestamp filters the held one out for good while the reply promises a next batch, which is the broken-promise class arriving through the machinery that closed the starvation."
     }
   ]
 }
