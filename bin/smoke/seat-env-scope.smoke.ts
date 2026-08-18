@@ -24,6 +24,17 @@
  * against: the seat is a real `node` process started with the connector's env, and the observer is a
  * real child of THAT, so what it reports is what the operating system actually inherited.
  *
+ * WHAT THIS SUITE DOES NOT PROVE, stated here rather than left for a reader to discover:
+ *
+ *  - A2's seat is a bare `node` process, NOT a real pi session, so it never runs the connector's
+ *    own scrub. A2 therefore proves that the VALUES are not inherited. It says nothing about whether
+ *    a connector that drops the material POINTER actually drops it; that happens inside a live
+ *    harness and is evidenced by a live spawn, not here.
+ *  - A3 skips the control token for hermes, because that connector mints its control endpoint inside
+ *    its own launcher and `buildLaunch` returns none to skip. Hermes' control path, including its
+ *    PYTHON lifecycle hooks, is covered by `pnpm smoke:hermes-hooks-control` instead. That gap is
+ *    not theoretical: it is exactly where a real defect lived until a reviewer read the Python.
+ *
  * Run: `pnpm smoke:seat-env-scope`
  */
 import assert from "node:assert/strict";

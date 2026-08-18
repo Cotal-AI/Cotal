@@ -228,6 +228,7 @@ smoke:tool-input-closed
 smoke:opencode-tool-closed
 smoke:pi-tool-closed
 smoke:hermes-tool-closed
+smoke:hermes-hooks-control
 smoke:codex-tool-closed
 smoke:control-reply
 smoke:manager-invoke-verdict
