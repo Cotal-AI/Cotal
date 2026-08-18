@@ -921,6 +921,8 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // code, and this file treats crying wolf as its own kind of failure.
   check("...but a name the script declares ITSELF still folds, even when another script declares it too",
     html(`<script>var N = "other";</script>\n<script>var N = "standaloneConnectOpts";\ncore[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
+  check("...and a local name that folds to something ELSE is not the seam, so it is not refused either",
+    html(`<script>var N = "other";</script>\n<script>var N = "unrelated";\ncore[N]({ creds: c });</script>`).length === 0);
   check("...and the same holds when the rebinding is a MODULE, whose scope is not the page's at all",
     html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>\n<script type="module">const N = "other";</script>`)[0]?.verdict === "unverifiable");
   check("...while a module still folds its OWN constants, so the split does not cost it that",
