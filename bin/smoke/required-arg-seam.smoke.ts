@@ -816,8 +816,9 @@ function settledStrings(src: ts.SourceFile, consts: Map<string, string>): Map<st
  *  alone answers. Bound once with no initializer or an undefined one: undefined, which is the value
  *  the seam throws on. Bound more than once, by any declaration or assignment: unsettled, refused in
  *  both directions rather than answered from whichever binding the text happens to show first. Bound
- *  nowhere in this file, which is what a PARAMETER or an import is: unknown, and untouched. That
- *  last case is the house idiom feeding `{ creds, tls }`, and it must stay green.
+ *  by something this file cannot value, which is what a parameter, a destructured local, a catch
+ *  variable or an import is: unknown, and untouched. That last case is the house idiom feeding
+ *  `{ creds, tls }`, and it must stay green.
  *
  *  Residual, stated rather than papered over: a nested BLOCK binding is folded into its enclosing
  *  function rather than given its own scope, so a name declared in both is unsettled and refused
@@ -840,34 +841,46 @@ function scopeOf(n: ts.Node): ts.Node | undefined {
   return cur;
 }
 
-/** A PARAMETER of this scope, destructuring included. It binds the name to something this file
- *  cannot read, which is exactly why it must stop the outward walk instead of letting an unrelated
- *  outer binding of the same name answer for it. */
-function paramBinds(scope: ts.Node, name: string): boolean {
-  if (!ts.isFunctionLike(scope)) return false;
-  let found = false;
-  const visit = (n: ts.Node): void => {
-    if (ts.isIdentifier(n) && n.text === name) found = true;
-    else ts.forEachChild(n, visit);
-  };
-  scope.parameters.forEach((prm) => visit(prm.name));
-  return found;
+/** A binding of this name that this reader cannot VALUE: a parameter, a destructured local, a catch
+ *  variable, an import, a function or class of that name.
+ *
+ *  It matters that these are recognised as bindings rather than skipped as unreadable, because the
+ *  walk below goes outward until something binds the name, and anything it fails to recognise sends
+ *  it one scope further out to an unrelated binding that then answers for a name it has nothing to
+ *  do with. A parameter got that treatment first; the general rule arrived after two more spellings
+ *  of it turned up as false reds, `const { tls } = cfg` and `catch (tls)`. The catch clause was the
+ *  worse of the two: it parses as a declaration with NO INITIALIZER, which is the one shape this
+ *  reader had just learned to call undefined, so it did not merely walk past the binding, it read
+ *  the wrong answer off it. */
+function opaqueBinding(n: ts.Node, name: string): boolean {
+  const named = (x: ts.Node | undefined): boolean => !!x && ts.isIdentifier(x) && x.text === name;
+  if (ts.isBindingElement(n)) return named(n.name);
+  if (ts.isParameter(n)) return named(n.name);
+  if (ts.isImportSpecifier(n) || ts.isNamespaceImport(n) || ts.isImportClause(n)) return named(n.name);
+  if (ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)) return named(n.name);
+  return false;
 }
 
 function nameFact(id: ts.Identifier): NameFact {
   for (let scope = scopeOf(id); scope; scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope)) {
-    if (paramBinds(scope, id.text)) return "unknown";
     const decls: ts.VariableDeclaration[] = [];
-    let writes = 0;
+    let writes = 0, opaque = 0;
     const visit = (n: ts.Node): void => {
       if (n !== scope && ts.isFunctionLike(n)) return; // another scope answers for its own names
-      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) decls.push(n);
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) {
+        // A catch variable is bound by the throw, not by this text, and it has no initializer to
+        // read. Counting it as a readable declaration made `catch (tls)` claim undefined.
+        if (ts.isCatchClause(n.parent)) opaque += 1;
+        else decls.push(n);
+      } else if (opaqueBinding(n, id.text)) opaque += 1;
       else if (rebinds(n, id.text)) writes += 1;
       ts.forEachChild(n, visit);
     };
     visit(scope);
-    if (decls.length === 0 && writes === 0) continue; // not bound here: the enclosing scope answers
-    if (decls.length !== 1 || writes > 0) return "unsettled";
+    const binds = decls.length + writes + opaque;
+    if (binds === 0) continue; // not bound here: the enclosing scope answers
+    if (binds > 1) return "unsettled";
+    if (opaque === 1) return "unknown"; // bound here, by something this file cannot value
     const init = decls[0].initializer;
     return !init || literalUndefined(unwrap(init)) ? "undefined" : "unknown";
   }
@@ -1536,6 +1549,12 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // a destructured parameter fed straight into the call. If this goes red the check is unusable.
   check("a PARAMETER value stays green, since this file binds it nowhere and claims nothing about it",
     one(`function f({ tls }: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  check("...and a DESTRUCTURED local shadows it too, since the walk stops at any binding of the name",
+    one(`const tls = undefined;\nfunction f(cfg: any) { const { tls } = cfg; return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  check("...and a CATCH variable likewise, which parses as a declaration with no initializer and is not one",
+    one(`const tls = undefined;\nfunction f() { try { g(); } catch (tls) { return standaloneConnectOpts({ creds: c, tls }); } }`) === "has-key");
+  check("...and an IMPORTED name is bound by another file, so this one claims nothing about it",
+    one(`import { tls } from "./x";\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("...and a parameter SHADOWING an outer undefined binding stays green, since it is not that name",
     one(`const tls = undefined;\nfunction f({ tls }: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
 
