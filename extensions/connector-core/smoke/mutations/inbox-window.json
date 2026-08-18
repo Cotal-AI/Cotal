@@ -39,7 +39,13 @@
     "A SECOND SURVIVOR, resolved the same way as the first. A mutation on a walk that recomputed the",
     "mark over the delivered prefix SURVIVED: the ordered lane already stops at its first gap, so the",
     "last recall item shown IS the end of the prefix and no input could tell the two versions apart.",
-    "The walk was deleted rather than the test weakened, and the mark is the last item shown."
+    "The walk was deleted rather than the test weakened, and the mark is the last item shown.",
+    "",
+    "A THIRD SURVIVOR, and this one was a mutation of unreachable code rather than untested code. It",
+    "cleared the held gap when an undeliverable message was met, but a strict item after a gap never",
+    "reaches that line (the walk skips it earlier) and a buffered item never sorts after a recall gap,",
+    "so no input could produce the difference. It was replaced by the mutation above, which turns on the",
+    "distinction that line actually makes, rather than kept as a kill the suite could not honestly claim."
   ],
   "mutations": [
     {
@@ -205,13 +211,13 @@
       "note": "Stepping over a gap looks like better packing: the window is fuller and nothing is lost yet. But a lane walked by one mark cannot record a hole, so everything delivered past it is served again on the next call, forever. The free lane may step over its own gaps because each of its items is acked by id. It reddens on the stranding half of the invariant first: with the gap stepped over, the mark passes the hole and what was in it never comes back, which is the harm. The re-serving half is asserted in the same cell one line later."
     },
     {
-      "name": "K21 a message nothing can carry clears the gap the walk was holding",
+      "name": "K21 a message nothing can carry is treated as a gap the walk must wait behind",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "      if (strict && !stuck.has(i.id)) strictGap = true;",
-      "replace": "      strictGap = strict && !stuck.has(i.id);",
+      "replace": "      if (strict) strictGap = true;",
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
-      "note": "Stepping over an undeliverable message is correct; forgetting that the walk was already holding a gap is not. The combination it needs is a budget-skipped item followed by an oversized one, which no instance cell in this suite happens to contain and which the enumeration produces by construction. That is the point of enumerating the universe rather than the cases someone thought of."
+      "note": "The distinction the walk turns on: a message no response could ever carry will never become deliverable, so waiting behind it is waiting forever, while anything else is a real gap and waiting is correct. Collapse the two and one oversized recall message stops the walk for good. No instance cell in this suite puts an undeliverable message in the recall lane; the enumeration does it by construction."
     }
   ]
 }
