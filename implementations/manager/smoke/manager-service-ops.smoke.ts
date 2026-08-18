@@ -4,7 +4,7 @@
  *
  *  1. The cluster document serves ALL 18 commands (describe lists them; targeted commands
  *     declare their modes).
- *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 16-field request into
+ *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 15-field request into
  *     StartAgentOpts (field-for-field, captured at the single `startAgent` chokepoint), with the
  *     right spawner attribution. Deep semantics (empty `resume`) refuse through the shared handler.
  *     (The ctl `start` door this once mirrored was deleted in 1d — the ep door is the only door.)
@@ -200,12 +200,12 @@ try {
     };
     const fields = {
       agent: "e2e-stub", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
-      launchOptions: { flag: "v", n: 2 }, resume: "sess-1", transcript: true, cwd: "/tmp/x", prompt: "hello",
+      launchOptions: { flag: "v", n: 2 }, resume: "sess-1", cwd: "/tmp/x", prompt: "hello",
       subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: "all",
     };
     const rEp = await A.call("spawn", { name: "wp1", ...fields });
     M.startAgent = orig;
-    check("the ep door accepted the 16-field request", rEp.reply.ok === true, rEp.reply);
+    check("the ep door accepted the 15-field request", rEp.reply.ok === true, rEp.reply);
     const [ep] = captured;
     const strip = (o: Record<string, unknown>) => { const { name: _n, ...rest } = o; return rest; };
     // The coercion oracle: every declared field round-trips into StartAgentOpts (a schema drift

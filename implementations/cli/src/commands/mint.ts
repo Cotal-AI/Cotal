@@ -55,6 +55,25 @@ export async function mint(args: ParsedArgs): Promise<void> {
     console.error(c.red(`--role and --provision apply to the agent profile only (got ${offAgent})`));
     process.exit(1);
   }
+  // AND SO DO THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED. They are read
+  // below only inside the `profile === "agent"` branch, while `permissionsFor`'s observer/admin arm
+  // emits a FIXED read set over the whole chat plane. So `--profile observer --allow-subscribe
+  // <one channel>` exited 0, printed a success line, and handed out a credential that reads every
+  // channel in the space: an operator asking to narrow got the opposite, and nothing said so. The
+  // paragraph above already states the principle this violated, one flag pair over.
+  if ((values["allow-subscribe"] !== undefined || values["allow-publish"] !== undefined) && offAgent) {
+    console.error(
+      c.red(
+        `--allow-subscribe and --allow-publish apply to the agent profile only (got ${offAgent}). ` +
+          (values.signer
+            ? `A signer file is account material and carries no per-identity ACL for these to narrow. `
+            : `The observer and admin profiles carry a FIXED read set, the chat plane for observer and ` +
+              `the whole messaging plane for admin, and it is not per-identity. `) +
+          `They are refused here rather than narrowing anything: mint a scoped reader with --profile agent.`,
+      ),
+    );
+    process.exit(1);
+  }
 
   // `--signer`: no identity, no name — strip this space's auth.json to its account signing material.
   if (values.signer) {
@@ -77,7 +96,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
 
   const name = positionals[0];
   if (!name) {
-    console.error(c.red("usage: cotal mint <name> --profile <agent|observer|admin> [--allow-subscribe a,b] [--allow-publish a,b] [--role <role>] [--provision] [--out <path>]"));
+    console.error(c.red("usage: cotal mint <name> [--profile <agent|observer|admin>] [--out <path>]  (agent profile also: [--allow-subscribe a,b] [--allow-publish a,b] [--role <role>] [--provision])"));
     process.exit(1);
   }
   const splitList = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);
@@ -112,7 +131,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
   }
   // For agents, derive the read/post ACLs AND role from the agent file if one exists (flags
   // override): allowSubscribe (read; defaults to subscribe) and allowPublish (post; default-deny);
-  // role scopes the TASK-queue consumer to svc_<role>. observers/managers ignore all three.
+  // role scopes the TASK-queue consumer to svc_<role>. Only the agent profile reaches this: all
+  // three are REFUSED above off that profile, so there is no arm here that reads them and discards
+  // them.
   // NOTE: this mints CREDS only — the bind-only chat/DM/TASK durables are pre-created separately by
   // a privileged provisioner (`cotal up` / manager / `cotal spawn`), as for DM/TASK already.
   let allowSubscribe: string[] | undefined;

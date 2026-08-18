@@ -77,10 +77,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
-      "events:boolean", "file:string:f", "live-only:boolean", "model:string", "name:string", "no-events:boolean", "no-transcript:boolean",
+      "events:boolean", "file:string:f", "live-only:boolean", "model:string", "name:string", "no-events:boolean",
       "on:string", "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
-      "server:string", "share-tools:string", "space:string", "subscribe:string",
-      "transcript:boolean", "variant:string",
+      "server:string", "share-tools:string", "space:string", "subscribe:string", "variant:string",
     ],
     positionals: true,
   },
