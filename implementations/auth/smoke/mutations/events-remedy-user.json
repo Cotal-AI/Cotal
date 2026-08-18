@@ -33,7 +33,7 @@
       "replace": "      ? `\\`cotal actor grant <reader> --owner ${owner}` +",
       "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
-      "note": "This is the shipped state of the text until a security lens read it against `runActor`'s defaults. The second cell reddens too, because the parsed flags fall back to `>` and the row that lands is the wide one an operator would have written.",
+      "note": "This is the shipped state of the text until a security lens read it against `runActor`'s defaults. The second cell reddens too, because the parsed flags fall back to `>` and the row that lands is the wide one an operator would have written. MARK COUNT: named cell plus cascade. Both mutants take the suite from 84 marks to 58. The named cell reds first and that is the evidence; the cells after it are a different run, because an empty parsed grant command feeds the real ledger writer on its defaults. The twenty-six are not twenty-six independent findings and are not read as any.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     },
     {
@@ -43,7 +43,7 @@
       "replace": "            `spawn: \\`cotal mint <reader> --profile agent --allow-subscribe ${foreign[0]!} --provision\\`, where there is no actor ledger for \\`actor grant\\` to write to.`,",
       "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
-      "note": "The opposite polarity of E9, and the only one this suite can see: a user mesh handed the static `mint` route, whose authority lives in the actor ledger the route does not write to. The helper takes no mode any more, so the mutant inlines the wrong route rather than passing a wrong flag.",
+      "note": "The opposite polarity of E9, and the only one this suite can see: a user mesh handed the static `mint` route, whose authority lives in the actor ledger the route does not write to. The helper takes no mode any more, so the mutant inlines the wrong route rather than passing a wrong flag. MARK COUNT: named cell plus cascade. Both mutants take the suite from 84 marks to 58. The named cell reds first and that is the evidence; the cells after it are a different run, because an empty parsed grant command feeds the real ledger writer on its defaults. The twenty-six are not twenty-six independent findings and are not read as any.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
