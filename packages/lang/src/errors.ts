@@ -46,11 +46,13 @@ export const CATALOG = {
   // forbidden row of its own, and is not in the language either. Naming it here is what lets the
   // interpreter's own "unsupported" fault stay unreachable from a validated program.
   L1029: "Syntax outside the language",
+  L1030: "Forbidden literal: bigint",
 
   // ---- L2xxx: name resolution and static rules ----------------------------------------------
   L2001: "Unknown identifier",
   L2002: "Shadows a builtin or a primitive",
   L2003: "Assignment to a `const` binding",
+  L2004: "Use before declaration",
   L2011: "The Promise API is not available",
   L2013: "An async call is not awaited",
   L2012: "Host global is not available",

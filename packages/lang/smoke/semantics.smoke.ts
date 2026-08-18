@@ -318,4 +318,26 @@ await bothThrow("repeat with a negative count throws", `log("a".repeat(-1));`);
 await bothThrow("reduce of an empty array with no seed throws", `log([].reduce((a, b) => a + b));`);
 await bothThrow("json.parse of malformed text throws", `log(json.parse("{"));`);
 
+// ---- 7) block scoping, the dead zone at run time, and named function expressions ---------------
+
+await same("a named function expression binds its own name inside itself", `
+const f = function fact(n) { return n <= 1 ? 1 : n * fact(n - 1); };
+log(f(5), typeof f);
+`);
+
+await same("a closure reads a binding declared later, called after the declaration ran", `
+function g() { return x; }
+let x = 1;
+log(g());
+`);
+
+await bothThrow("a closure called BEFORE the declaration ran finds the dead zone on both sides", `
+let x = "outer";
+{
+  function g() { return x; }
+  log(g());
+  let x = "inner";
+}
+`);
+
 console.log(`semantics.smoke: ${pass} checks passed`);

@@ -354,6 +354,14 @@ function walkShape(
           "Use `contains`, `startsWith`, `endsWith`, or `split`.",
         );
       }
+      if (node.bigint !== undefined || typeof node.value === "bigint") {
+        v.fail(
+          "L1030",
+          node,
+          "Numbers here are IEEE doubles with a canonical JSON form; a bigint has neither, so it could not be journalled or cross an effect boundary.",
+          "Use a number, or a string for an identifier that exceeds 2^53.",
+        );
+      }
       break;
 
     case "IfStatement": {
@@ -502,12 +510,39 @@ class Scope {
   readonly names = new Map<string, "const" | "let" | "param">();
   /** The function node a name is bound to HERE, when it is bound to one at all. */
   private readonly fns = new Map<string, AnyNode>();
+  /**
+   * Names declared LATER in this scope than the point the walk has reached. A `let`/`const` binds
+   * the WHOLE block it is in, so a reference above the declaration resolves to it — and, executed,
+   * would find a binding that does not hold a value yet (JavaScript's temporal dead zone, a
+   * guaranteed runtime ReferenceError in straight-line code). This language refuses it when the
+   * program is read (L2004), the way it already refuses an unknown name (L2001) that JavaScript
+   * would also only catch at runtime. A reference from inside a NESTED FUNCTION is exempt: the
+   * function runs later, when the binding may well be initialized — that is the mutual-recursion
+   * shape — so the walk only refuses what straight-line execution is certain to hit.
+   */
+  readonly pending = new Set<string>();
+  /** True where this scope is a function body: references from inside it to a pending outer name are deferred, not certain. */
+  fnBoundary = false;
   constructor(readonly parent: Scope | null) {}
 
   declare(name: string, kind: "const" | "let" | "param", fn?: AnyNode): void {
     this.names.set(name, kind);
     if (fn !== undefined) this.fns.set(name, fn);
     else this.fns.delete(name);
+  }
+
+  /**
+   * Is a reference to `name` FROM this scope certain to land in a dead zone? True only when the
+   * scope that owns the binding still has it pending and no function boundary lies between the
+   * reference and the owner.
+   */
+  refersToPending(name: string): boolean {
+    let crossedFn = false;
+    for (let s: Scope | null = this; s !== null; s = s.parent) {
+      if (s.names.has(name)) return s.pending.has(name) && !crossedFn;
+      if (s.fnBoundary) crossedFn = true;
+    }
+    return false;
   }
 
   lookup(name: string): "const" | "let" | "param" | undefined {
@@ -1207,6 +1242,15 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
   switch (node.type) {
     case "Identifier": {
       const name = node.name as string;
+      if (scope.refersToPending(name)) {
+        v.fail(
+          "L2004",
+          node,
+          `\`${name}\` is declared later in this block, and a \`let\` or \`const\` binds the whole block: executed, this line would find a binding that holds no value yet (JavaScript's temporal dead zone, a guaranteed runtime error in straight-line code).`,
+          "Move the declaration above its first use, or rename one of the two.",
+        );
+        return;
+      }
       if (scope.lookup(name) !== undefined) return;
       if (RESERVED_NAMES.has(name)) return;
       if (PROMISE_NAMES.has(name)) {
@@ -1261,6 +1305,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
             );
           }
           scope.declare(n, kind, bound);
+          scope.pending.delete(n);
         }
       }
       return;
@@ -1311,10 +1356,35 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
         scope.declare(fname, "const", node);
       }
       const inner = new Scope(scope);
-      for (const p of (node.params as AnyNode[]) ?? []) {
+      inner.fnBoundary = true;
+      // A NAMED function expression binds its own name inside itself, which is how a function
+      // assigned to a `const` recurses: `const f = function walk(n) { ... walk(n - 1) ... }`.
+      if (node.type === "FunctionExpression" && isNode(node.id)) {
+        const fname = (node.id as AnyNode).name as string;
+        if (RESERVED_NAMES.has(fname)) {
+          v.fail(
+            "L2002",
+            node.id as AnyNode,
+            `\`${fname}\` is a builtin, so a function expression of that name would shadow it inside itself.`,
+            "Rename the function.",
+          );
+        }
+        inner.declare(fname, "const", node);
+      }
+      // Parameters bind LEFT TO RIGHT, and a default sees only the parameters before it: every
+      // name is pre-declared pending, and each parameter leaves the dead zone only after its own
+      // default was walked, so `(a = b, b = 1)` and `(a = a)` are L2004 the way straight-line
+      // block references are — JavaScript would throw the same at every call that evaluates the
+      // default, and a default that cannot ever evaluate is a landmine, not a feature.
+      const params = (node.params as AnyNode[]) ?? [];
+      const paramNames: string[][] = params.map((p) => {
         const names: string[] = [];
         patternNames(p, names);
-        for (const n of names) {
+        return names;
+      });
+      for (let i = 0; i < params.length; i += 1) {
+        const p = params[i] as AnyNode;
+        for (const n of paramNames[i] as string[]) {
           if (RESERVED_NAMES.has(n)) {
             v.fail(
               "L2002",
@@ -1324,9 +1394,13 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
             );
           }
           inner.declare(n, "param");
+          inner.pending.add(n);
         }
-        // Default values are evaluated in the inner scope.
+      }
+      for (let i = 0; i < params.length; i += 1) {
+        const p = params[i] as AnyNode;
         if (p.type === "AssignmentPattern" && isNode(p.right)) walkResolve(p.right as AnyNode, v, inner);
+        for (const n of paramNames[i] as string[]) inner.pending.delete(n);
       }
       if (isNode(node.body)) walkResolve(node.body as AnyNode, v, inner);
       return;
@@ -1335,6 +1409,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     case "BlockStatement": {
       const inner = new Scope(scope);
       hoistFunctions(node, inner);
+      hoistBindings(node, inner);
       for (const s of (node.body as AnyNode[]) ?? []) walkResolve(s, v, inner);
       return;
     }
@@ -1375,6 +1450,25 @@ function hoistFunctions(block: AnyNode, scope: Scope): void {
   for (const s of (block.body as AnyNode[]) ?? []) {
     if (s.type === "FunctionDeclaration" && isNode(s.id)) {
       scope.declare((s.id as AnyNode).name as string, "const", s);
+    }
+  }
+}
+
+/**
+ * `let`/`const` bind the whole block too — as PENDING, so a straight-line reference above the
+ * declaration is L2004 rather than a resolution to whatever outer binding shares the name.
+ */
+function hoistBindings(block: AnyNode, scope: Scope): void {
+  for (const s of (block.body as AnyNode[]) ?? []) {
+    if (s.type !== "VariableDeclaration") continue;
+    const kind = s.kind === "const" ? "const" : "let";
+    for (const d of (s.declarations as AnyNode[]) ?? []) {
+      const names: string[] = [];
+      patternNames(d.id as AnyNode, names);
+      for (const n of names) {
+        scope.declare(n, kind);
+        scope.pending.add(n);
+      }
     }
   }
 }
@@ -1425,6 +1519,7 @@ export function validate(source: string, file = "program.cotal.js"): ValidateRes
 
   const top = new Scope(null);
   hoistFunctions(ast, top);
+  hoistBindings(ast, top);
   for (const s of (ast.body as AnyNode[]) ?? []) walkResolve(s, v, top);
 
   if (v.errors.length > 0) throw new LangErrors(v.errors, source);

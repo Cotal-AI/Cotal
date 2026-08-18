@@ -82,6 +82,15 @@ class Binding {
   ) {}
 }
 
+/**
+ * The value a `let`/`const` binding holds between the top of its block and its declaration: the
+ * temporal dead zone, materialized. The validator refuses every straight-line reference into it
+ * (L2004), so the only way here at run time is a function called before the declaration executed —
+ * which JavaScript answers with a ReferenceError, and this language answers with the same code the
+ * static refusal carries.
+ */
+const TDZ: unique symbol = Symbol("cotal-lang temporal dead zone");
+
 class Env {
   private readonly names = new Map<string, Binding>();
 
@@ -136,6 +145,12 @@ class Env {
   get(name: string): unknown {
     const b = this.find(name);
     if (b === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
+    if (b.value === TDZ) {
+      throw new RuntimeFault(
+        "L2004",
+        `${name} is used before its declaration was reached: the binding exists for the whole block, but it holds no value until the \`let\`/\`const\` line runs. Call this function after the declaration, or move the declaration up.`,
+      );
+    }
     return b.value;
   }
 
@@ -147,6 +162,12 @@ class Env {
     const owner = this.owner(name);
     if (owner === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
     const b = owner.names.get(name) as Binding;
+    if (b.value === TDZ) {
+      throw new RuntimeFault(
+        "L2004",
+        `${name} is assigned before its declaration was reached: the binding exists for the whole block, but it holds no value until the \`let\`/\`const\` line runs.`,
+      );
+    }
     if (!b.mutable) throw new RuntimeFault("L2003", `${name} is declared const`);
     if (owner.depth < atDepth) {
       throw new RuntimeFault(
@@ -1063,10 +1084,14 @@ class Interpreter {
     const params = (node.params as AnyNode[]) ?? [];
     const body = node.body as AnyNode;
     const isExpressionBody = body.type !== "BlockStatement";
-    return async (frame: Frame, args: unknown[]): Promise<unknown> => {
+    const self = async (frame: Frame, args: unknown[]): Promise<unknown> => {
       // The calling FRAME decides the depth, not the closure: a helper declared at the top level
       // and called from inside a branch is executing concurrently, whatever scope it was written in.
       const env = new Env(closure, frame.depth);
+      // A named function expression sees its own name: `const f = function walk(n) { ... walk() }`.
+      if (node.type === "FunctionExpression" && node.id !== null && node.id !== undefined) {
+        env.declare((node.id as AnyNode).name as string, self, false);
+      }
       for (let i = 0; i < params.length; i += 1) {
         const param = params[i] as AnyNode;
         if (param.type === "RestElement") {
@@ -1079,6 +1104,7 @@ class Interpreter {
       const c = await this.executeBlock(body, env, frame);
       return c.type === "return" ? c.value : undefined;
     };
+    return self;
   }
 
   /**
@@ -2085,6 +2111,15 @@ class Interpreter {
         inner.declare(((s.id as AnyNode).name as string), this.makeFunction(s, inner), false);
       }
     }
+    // `let`/`const` bind the whole block, holding the dead-zone marker until their line runs, so a
+    // closure called early finds "declared, not yet initialized" (L2004) rather than an outer
+    // binding of the same name — which is what JavaScript does, minus the host error class.
+    for (const s of body) {
+      if (s.type !== "VariableDeclaration") continue;
+      for (const d of (s.declarations as AnyNode[]) ?? []) {
+        for (const n of declaredNames(d.id as AnyNode)) inner.declare(n, TDZ, s.kind === "let");
+      }
+    }
     for (const s of body) {
       const c = await this.execute(s, inner, frame);
       if (c.type !== "normal") return c;
@@ -2253,6 +2288,35 @@ class Interpreter {
 }
 
 // ---- helpers -------------------------------------------------------------------------------------
+
+/** The names a declaration's pattern introduces, for the dead-zone pre-pass. */
+function declaredNames(pattern: AnyNode): string[] {
+  const out: string[] = [];
+  const walk = (n: AnyNode | null | undefined): void => {
+    if (n === null || n === undefined) return;
+    switch (n.type) {
+      case "Identifier":
+        out.push(n.name as string);
+        return;
+      case "ObjectPattern":
+        for (const p of (n.properties as AnyNode[]) ?? []) walk((p.type === "RestElement" ? p.argument : p.value) as AnyNode);
+        return;
+      case "ArrayPattern":
+        for (const el of (n.elements as (AnyNode | null)[]) ?? []) walk(el);
+        return;
+      case "AssignmentPattern":
+        walk(n.left as AnyNode);
+        return;
+      case "RestElement":
+        walk(n.argument as AnyNode);
+        return;
+      default:
+        return;
+    }
+  };
+  walk(pattern);
+  return out;
+}
 
 /**
  * The binary operators, with JavaScript's meaning. The casts are for the type checker: at run time

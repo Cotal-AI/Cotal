@@ -1,0 +1,58 @@
+{
+  "suite": "packages/lang/smoke/grammar.smoke.ts",
+  "guard": "The dead zone is refused when the program is read (L2004), a named function expression binds its own name, and bigint literals are refused (L1030). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-grammar",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/static-bindings.json",
+  "mutations": [
+    {
+      "name": "references into the dead zone resolve silently, the shipped defect",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "      if (scope.refersToPending(name)) {",
+      "replace": "      if (false) {",
+      "expectRed": "a block reference above a shadowing `let` is the dead zone, not the outer binding",
+      "completionMarker": "ok the worked example from the design doc, at the top level",
+      "cell": "a block reference above a shadowing `let` is the dead zone, not the outer binding",
+      "note": "With the check gone the reference resolves to the outer binding and validates, which is the measured pre-fix behavior (the program logged \"outer\", a meaning JavaScript never gave it)."
+    },
+    {
+      "name": "a function boundary no longer defers the dead zone, so mutual recursion is refused",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "      if (s.fnBoundary) crossedFn = true;",
+      "replace": "",
+      "expectRed": "a nested function may reference a binding declared later: it runs later",
+      "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
+      "cell": "a nested function may reference a binding declared later: it runs later",
+      "note": "The exemption is load-bearing in the other direction: without it every closure over a later binding — the mutual-recursion shape — is refused. Note the marker here is the L2004 cell itself (upstream), proving the refusal side still held while the acceptance side broke."
+    },
+    {
+      "name": "parameters bind all-at-once instead of left to right",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "          inner.declare(n, \"param\");\n          inner.pending.add(n);",
+      "replace": "          inner.declare(n, \"param\");",
+      "expectRed": "a parameter default may not read a LATER parameter",
+      "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
+      "cell": "a parameter default may not read a LATER parameter",
+      "note": "Without the pending marks a default sees every parameter, and `f(a = b, b = 1)` resolves — the measured pre-fix behavior, where the interpreter then read the OUTER `b` and returned 9."
+    },
+    {
+      "name": "a named function expression does not bind its own name",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "        inner.declare(fname, \"const\", node);\n      }\n      // Parameters bind LEFT TO RIGHT",
+      "replace": "      }\n      // Parameters bind LEFT TO RIGHT",
+      "expectRed": "a named function expression recurses through its own name",
+      "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
+      "cell": "a named function expression recurses through its own name",
+      "note": "The declare under mutation is the FunctionExpression id binding; without it `walk` inside the body is L2001, the measured pre-fix behavior."
+    },
+    {
+      "name": "bigint literals validate",
+      "file": "packages/lang/src/grammar.ts",
+      "find": "      if (node.bigint !== undefined || typeof node.value === \"bigint\") {",
+      "replace": "      if (false) {",
+      "expectRed": "a bigint literal is not a value here",
+      "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
+      "cell": "a bigint literal is not a value here",
+      "note": "With the refusal gone `1n` validates and runs, producing a value whose typeof no admitted kind names — the measured pre-fix behavior."
+    }
+  ]
+}
