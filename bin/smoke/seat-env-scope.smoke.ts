@@ -79,6 +79,27 @@ const CONNECTORS = ["claude", "opencode", "codex", "hermes", "pi"] as const;
 
 console.log(`• broker: ${SERVERS} (suite constant; this suite opens no connection to it)`);
 
+// A2 — a REAL grandchild of a REAL seat process inherits none of it.
+//
+// The seat is started with the pi connector's env (any of them would do; pi is the one whose whole
+// session runs in the seat process, so it is the tightest case). The seat spawns a child with no env
+// argument at all, which is exactly what a coding agent's shell tool does, and that child reports
+// what the operating system gave it.
+const piSpec = registry.resolve<Connector>("connector", "pi").buildLaunch(opts);
+const observer = `const found = Object.keys(process.env).filter((k) => ${JSON.stringify([...FORBIDDEN])}.includes(k)); console.log("GRANDCHILD " + JSON.stringify(found));`;
+const seat = `require("node:child_process").execFileSync(process.execPath, ["-e", ${JSON.stringify(observer)}], { stdio: "inherit" });`;
+const run = spawnSync(process.execPath, ["-e", seat], { env: piSpec.env, encoding: "utf8" });
+assert.equal(run.status, 0, `A2: the seat process could not run a child (${run.stderr})`);
+const line = run.stdout.split("\n").find((l) => l.startsWith("GRANDCHILD "));
+assert.ok(line, `A2: the grandchild produced no report (stdout: ${JSON.stringify(run.stdout)})`);
+const inherited = JSON.parse(line.slice("GRANDCHILD ".length)) as string[];
+assert.deepEqual(
+  inherited,
+  [],
+  `A2: a real grandchild of a seat inherited ${inherited.join(", ")} — the material is still ambient`,
+);
+console.log("✓ A2: a real grandchild of a real seat process inherited none of the connection material");
+
 for (const name of CONNECTORS) {
   assert.ok(registry.has("connector", name), `connector "${name}" is registered`);
   const connector = registry.resolve<Connector>("connector", name);
@@ -115,27 +136,6 @@ for (const name of CONNECTORS) {
   }
   console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file`);
 }
-
-// A2 — a REAL grandchild of a REAL seat process inherits none of it.
-//
-// The seat is started with the pi connector's env (any of them would do; pi is the one whose whole
-// session runs in the seat process, so it is the tightest case). The seat spawns a child with no env
-// argument at all, which is exactly what a coding agent's shell tool does, and that child reports
-// what the operating system gave it.
-const piSpec = registry.resolve<Connector>("connector", "pi").buildLaunch(opts);
-const observer = `const found = Object.keys(process.env).filter((k) => ${JSON.stringify([...FORBIDDEN])}.includes(k)); console.log("GRANDCHILD " + JSON.stringify(found));`;
-const seat = `require("node:child_process").execFileSync(process.execPath, ["-e", ${JSON.stringify(observer)}], { stdio: "inherit" });`;
-const run = spawnSync(process.execPath, ["-e", seat], { env: piSpec.env, encoding: "utf8" });
-assert.equal(run.status, 0, `A2: the seat process could not run a child (${run.stderr})`);
-const line = run.stdout.split("\n").find((l) => l.startsWith("GRANDCHILD "));
-assert.ok(line, `A2: the grandchild produced no report (stdout: ${JSON.stringify(run.stdout)})`);
-const inherited = JSON.parse(line.slice("GRANDCHILD ".length)) as string[];
-assert.deepEqual(
-  inherited,
-  [],
-  `A2: a real grandchild of a seat inherited ${inherited.join(", ")} — the material is still ambient`,
-);
-console.log("✓ A2: a real grandchild of a real seat process inherited none of the connection material");
 
 // A4 — a material file other local users can read is refused, not read. Without this the carrier
 // could be quietly weaker than the environment it replaced, and nothing would say so.
