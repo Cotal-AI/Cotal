@@ -368,7 +368,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
           const { shown, held } = windowInbox(buffered);
-          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));
           if (!shown.length)
             return ok(
               scope
@@ -378,7 +377,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const head = scope
             ? `${shown.length} pull-only message${shown.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
             : `${shown.length} message${shown.length === 1 ? "" : "s"}${peek ? " (peek — not cleared)" : ""}:`;
-          return ok(`${head}\n${shown.map(fmtItem).join("\n")}${heldNote(held)}`);
+          // The response exists before anything is acked: an ack is a claim that these messages were
+          // handed over, so nothing may be cleared while the handing-over is still hypothetical.
+          const body = `${head}\n${shown.map(fmtItem).join("\n")}${heldNote(held)}`;
+          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));
+          return ok(body);
         }
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
@@ -388,7 +391,6 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // lane is destructive, so only ids from it are ever cleared. Recall stays re-readable.
         const { shown: all, held } = windowInbox([...buffered, ...recall.items]);
         const bufferedIds = new Set(buffered.map((i) => i.id));
-        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
         if (!all.length && !recall.droppedChannels.length)
           return ok(
             scope
@@ -402,6 +404,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             : `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek — live buffer not cleared)" : ""} — focus mode, channel items are recall since you focused:`;
           parts.push(`${head}\n${all.map(fmtItem).join("\n")}${heldNote(held)}`);
         }
+        // Same order as above: render first, ack second, and only ever ids from the buffered lane.
+        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
         if (recall.droppedChannels.length)
           parts.push(
             `⚠ Some earlier chatter could not be recalled completely on ${recall.droppedChannels
