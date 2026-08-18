@@ -89,7 +89,10 @@ const UNGATED: Record<string, string> = {
   "smoke:renewal-terminal-race": `${BROKEN} reproduction of an open defect; gate when the fix lands`,
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
-  "smoke:user-auth-launch:live": "full live stack", "smoke:user-spawn:live": "full live stack",
+  // `smoke:user-spawn:live` left this list when it was gated: it had thrown at section B1e on a
+  // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
+  // heard about it. "Too slow for the gate" was 105 seconds.
+  "smoke:user-auth-launch:live": "full live stack",
   "smoke:web-seed:live": "full live stack",
   // NOT dead, despite the obvious reading. v0.4 removed the MANAGER's ctl tiers, not the ctl rail:
   // `ctl.delivery` survives as the delivery daemon's carve-out, still built by subjects.ts and still

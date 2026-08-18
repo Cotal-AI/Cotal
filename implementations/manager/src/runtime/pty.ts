@@ -145,6 +145,13 @@ export class PtyRuntime implements Runtime {
       interrupt: () => {
         if (alive) proc.write("\x03");
       },
+      // Type into the child without standing up an attach session. Guarded on `alive` exactly as
+      // `interrupt` and the session's own `write` are: node-pty throws on a dead handle, and the
+      // manager has already refused a non-running agent before it gets here, so this guard covers
+      // only the narrow race where the child exits between that check and this call.
+      write: (data) => {
+        if (alive) proc.write(data);
+      },
       attach: (): AttachSession => ({
         get cols() {
           return cols;

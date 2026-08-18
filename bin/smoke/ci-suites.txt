@@ -297,4 +297,6 @@ smoke:agui-close-run
 smoke:claude-events-arm
 smoke:events-grant
 smoke:spawn-foreground-events
+smoke:seat-input
+smoke:user-spawn:live
 smoke:agui-authorship
