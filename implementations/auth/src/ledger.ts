@@ -62,11 +62,22 @@ export interface ActorRow {
   owner: string;
   /** The agent-instance id under that owner. */
   actor: string;
-  /** Capability scope the bearer carries (`act.scope`, e.g. `["spawn"]`). Explicit; default none. */
+  /** Capability scope the bearer carries (`act.scope`, e.g. `["spawn"]`). Explicit HERE: this layer
+   *  invents no default. The CLI above it does, so read the caveat on {@link ActorRow.allowSubscribe}. */
   scope: string[];
-  /** Channel read ACL minted at connect. Explicit at grant time — the resolver invents no default. */
+  /** Channel read ACL minted at connect. Explicit HERE: this layer invents no default.
+   *
+   *  THE LAYER ABOVE DOES, and that is the part a reader of this line will get wrong. `runActor`
+   *  (`commands.ts`) fills every flag the operator omits before the row ever reaches this type:
+   *  `>` read, `>` post, `spawn,role:default` scope. So a row written by `cotal actor grant`
+   *  without `--allow-subscribe` reads EVERY channel in the space, and because `grant` is an upsert
+   *  of the whole row, omitting the flag on a re-grant WIDENS a previously narrow row rather than
+   *  leaving it alone. This sentence used to stop at the first line, which was true of the resolver
+   *  and false of the system. */
   allowSubscribe: string[];
-  /** Channel post ACL minted at connect. Explicit at grant time (empty = cannot post anywhere). */
+  /** Channel post ACL minted at connect. Explicit HERE (empty = cannot post anywhere), with the
+   *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant` supplies `>` for an
+   *  omitted `--allow-publish`. */
   allowPublish: string[];
   /** Role (scopes the TASK-queue consumer), when the actor serves one. */
   role?: string;
