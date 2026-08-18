@@ -112,6 +112,7 @@
     "smoke:channel-attention:auth": "tsx extensions/connector-core/smoke/per-channel-attention-auth.smoke.ts",
     "smoke:presence-scrub": "tsx packages/core/smoke/presence-offline-scrub.smoke.ts",
     "smoke:cross-path-dedup": "tsx extensions/connector-core/smoke/cross-path-dedup.smoke.ts",
+    "smoke:inbox-window": "tsx extensions/connector-core/smoke/inbox-window.smoke.ts",
     "smoke:feedback": "tsx extensions/connector-core/smoke/feedback.smoke.ts",
     "smoke:claude-wake": "tsx extensions/connector-claude-code/smoke/wake-path.smoke.ts",
     "smoke:claude-launch-model": "tsx extensions/connector-claude-code/smoke/launch-model.smoke.ts",
