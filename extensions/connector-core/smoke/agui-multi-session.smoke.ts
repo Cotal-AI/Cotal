@@ -201,9 +201,11 @@ try {
     // the halt cannot send an operator looking for a command; it has to hand them the directory.
     // `includes(PRINCIPAL_DIR)` alone does NOT discriminate, and S9 proved it: a message naming
     // `<PRINCIPAL_DIR>/<thread>/wal.json` contains the principal directory as a prefix and passes.
-    // The cell has to pin where the path ENDS, so it requires the directory followed by the word
-    // that follows it and refuses any deeper path.
-    c("control:the-halt-LOCATES-the-state-to-remove", (s4.err ?? "").includes(`${PRINCIPAL_DIR} whole`) && !/wal\.json/.test(s4.err ?? ""), { err: s4.err, dir: PRINCIPAL_DIR });
+    // Requiring the following word is better and still a prefix test, which a reviewer caught: a
+    // path ending `...principal wholeheartedly` satisfies it too. So the cell EXTRACTS the path the
+    // message names and compares it whole. A prefix test cannot decide where a path ends.
+    const located = /removing (\S+) whole/.exec(s4.err ?? "")?.[1];
+    c("control:the-halt-LOCATES-the-state-to-remove", located === PRINCIPAL_DIR, { located, dir: PRINCIPAL_DIR, err: s4.err });
   }
 
   // ------------------------------------------------------------------ the upgrade path

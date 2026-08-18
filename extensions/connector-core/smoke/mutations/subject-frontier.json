@@ -35,6 +35,24 @@
       "expectRed": "recover:an-UNREADABLE-sibling-log-is-fatal-not-skipped",
       "cell": "recover:an-UNREADABLE-sibling-log-is-fatal-not-skipped",
       "note": "Skipping under-counts the tip, which does not fail here. It fails later, permanently, with a message about a moved subject tip that points at everything except the file quietly ignored."
+    },
+    {
+      "name": "S10 a symlinked thread directory is followed instead of refused",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (ent.isSymbolicLink())\n",
+      "replace": "      if (false)\n",
+      "expectRed": "recover:a-SYMLINKED-thread-directory-is-refused-not-followed",
+      "cell": "recover:a-SYMLINKED-thread-directory-is-refused-not-followed",
+      "note": "The create path refuses a symlinked component, so the recovery path following one puts the guard on only the half nobody attacks. The planted log carries the SAME principal on purpose, because a foreign one would be refused by the principal check and would red this cell without proving anything about the link."
+    },
+    {
+      "name": "S11 the log inside a real thread directory is opened following symlinks",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "        const fh = await open(walPath, constants.O_RDONLY | constants.O_NOFOLLOW);\n",
+      "replace": "        const fh = await open(walPath, constants.O_RDONLY);\n",
+      "expectRed": "recover:a-SYMLINKED-log-inside-a-real-thread-directory-is-refused",
+      "cell": "recover:a-SYMLINKED-log-inside-a-real-thread-directory-is-refused",
+      "note": "The entry check clears the directory and stops there. Without O_NOFOLLOW a real directory holding a linked wal.json reaches the same foreign log by one more hop, which is the guard being one level short rather than absent."
     }
   ]
 }

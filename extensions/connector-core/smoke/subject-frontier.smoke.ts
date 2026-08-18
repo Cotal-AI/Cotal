@@ -14,7 +14,7 @@
  *
  * Run: pnpm smoke:subject-frontier
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileSubjectFrontier, SubjectFrontierCorruptError } from "../src/subject-frontier.js";
@@ -175,6 +175,36 @@ try {
       () => FileSubjectFrontier.open(p, { space: SPACE, principal: P }), /valid UTF-8/);
     c("corrupt:the-refusal-is-a-typed-error-a-caller-can-branch-on",
       await (async () => { try { await FileSubjectFrontier.open(p, { space: SPACE, principal: P }); return false; } catch (e) { return e instanceof SubjectFrontierCorruptError; } })());
+  }
+  // ---------------------------------------------------------------- the scan may not be walked out
+  //
+  // The CREATE path refuses a symlinked component (`ensureDirNoSymlink`), so a symlink under the
+  // principal directory is a state this writer cannot produce. The recovery path reads the same
+  // tree and used not to check, which meant a planted link took the scan to a log in another tree
+  // and the guard was only on the half nobody attacks. Both halves have to agree.
+  {
+    const d = dir();
+    const outside = join(root, `elsewhere-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(outside, { recursive: true });
+    // SAME principal on purpose: the principal check already refuses a foreign one, so a foreign
+    // log would red this cell for the wrong reason and prove nothing about following the link.
+    writeFileSync(join(outside, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 4242 } }));
+    symlinkSync(outside, join(d, "t-linked"));
+    await threw("recover:a-SYMLINKED-thread-directory-is-refused-not-followed",
+      () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /never a symlink/);
+  }
+  {
+    const d = dir();
+    const outside = join(root, `elsewhere2-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 5353 } }));
+    // A REAL thread directory holding a symlinked log: the entry check above clears the directory
+    // and stops there, so without O_NOFOLLOW this reaches the same foreign log by one more hop.
+    const td = join(d, "t-real");
+    mkdirSync(td, { recursive: true });
+    symlinkSync(join(outside, "wal.json"), join(td, "wal.json"));
+    await threw("recover:a-SYMLINKED-log-inside-a-real-thread-directory-is-refused",
+      () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /never a symlink/);
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -30,6 +30,7 @@
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import { open, readdir, readFile, rename, unlink } from "node:fs/promises";
+import type { Dirent } from "node:fs";
 import { dirname, join } from "node:path";
 
 /** The document on disk. Versioned, because a shape change must be refused rather than misread. */
@@ -167,22 +168,40 @@ export class FileSubjectFrontier implements SubjectFrontier {
    * pointing at everything except the file that was quietly ignored here.
    */
   private static async recoverTipFromThreadLogs(principalDir: string, principal: string): Promise<number> {
-    let entries: string[];
+    let entries: Dirent[];
     try {
-      entries = await readdir(principalDir);
+      entries = await readdir(principalDir, { withFileTypes: true });
     } catch (e) {
       if ((e as NodeJS.ErrnoException).code === "ENOENT") return 0;
       throw e;
     }
     let best = 0;
-    for (const name of entries) {
-      const walPath = join(principalDir, name, "wal.json");
+    for (const ent of entries) {
+      // THE SCAN MAY NOT BE WALKED OUTSIDE THE PRINCIPAL DIRECTORY. The writer that creates these
+      // directories refuses a symlinked component (`ensureDirNoSymlink`), so a symlink here is a
+      // state it cannot produce, and following one would take a tip from a log belonging to some
+      // other tree. The create path and the recovery path have to agree about that or the guard is
+      // only on the half nobody attacks.
+      if (ent.isSymbolicLink())
+        throw new SubjectFrontierCorruptError(join(principalDir, ent.name), "a real directory beside the record, never a symlink", "following it would carry this scan outside the principal directory, and the writer that creates these directories refuses a symlinked component for the same reason");
+      if (!ent.isDirectory()) continue; // the record itself, the lock, anything else that is not a thread
+      const walPath = join(principalDir, ent.name, "wal.json");
+      // O_NOFOLLOW, because the entry check above clears the directory and not the file inside it:
+      // a real thread directory holding a symlinked `wal.json` reaches the same log the entry check
+      // just refused, by one more hop.
       let raw: Buffer;
       try {
-        raw = await readFile(walPath);
+        const fh = await open(walPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        try {
+          raw = await fh.readFile();
+        } finally {
+          await fh.close();
+        }
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
         if (code === "ENOENT" || code === "ENOTDIR") continue; // not a thread directory
+        if (code === "ELOOP")
+          throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "following it would read a log this principal's writer never wrote");
         throw e;
       }
       let doc: { principal?: unknown; frontier?: { lastSubjectSeq?: unknown } };
