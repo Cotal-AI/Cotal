@@ -1558,6 +1558,8 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // a destructured parameter fed straight into the call. If this goes red the check is unusable.
   check("a PARAMETER value stays green, since this file binds it nowhere and claims nothing about it",
     one(`function f({ tls }: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  check("...and a PLAIN identifier parameter shadows it as well, which is a different branch entirely",
+    one(`const tls = undefined;\nfunction f(tls: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
   check("...and a DESTRUCTURED local shadows it too, since the walk stops at any binding of the name",
     one(`const tls = undefined;\nfunction f(cfg: any) { const { tls } = cfg; return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
   check("...and a CATCH variable likewise, which parses as a declaration with no initializer and is not one",
