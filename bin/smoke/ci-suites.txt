@@ -301,6 +301,7 @@ smoke:seat-input
 smoke:user-spawn:live
 smoke:agui-authorship
 smoke:agui-map
+smoke:attach-reconnect
 
 # The cotal-lang runtime: the language package, the durable step journal and run driver, and the
 # mesh handler that binds the effect interface onto the real planes.
