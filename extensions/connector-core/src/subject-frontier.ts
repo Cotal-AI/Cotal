@@ -29,7 +29,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { open, readdir, readFile, rename, unlink } from "node:fs/promises";
+import { lstat, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { dirname, join } from "node:path";
 
@@ -186,12 +186,29 @@ export class FileSubjectFrontier implements SubjectFrontier {
         throw new SubjectFrontierCorruptError(join(principalDir, ent.name), "a real directory beside the record, never a symlink", "following it would carry this scan outside the principal directory, and the writer that creates these directories refuses a symlinked component for the same reason");
       if (!ent.isDirectory()) continue; // the record itself, the lock, anything else that is not a thread
       const walPath = join(principalDir, ent.name, "wal.json");
-      // O_NOFOLLOW, because the entry check above clears the directory and not the file inside it:
-      // a real thread directory holding a symlinked `wal.json` reaches the same log the entry check
-      // just refused, by one more hop.
+      // The entry check above clears the DIRECTORY and stops there, so a real thread directory
+      // holding a symlinked `wal.json` reaches the same foreign log by one more hop. Two layers,
+      // and they are not redundant:
+      //
+      //  - `lstat` is the GRADED guard and the portable one. It decides the refusal on every
+      //    platform, which matters because `O_NOFOLLOW` does not exist on Windows and a guard that
+      //    silently evaporates there is worse than one that was never claimed.
+      //  - `O_NOFOLLOW` closes the window between the `lstat` and the `open`, where the file could
+      //    be replaced by a link. NO CELL CAN GRADE THAT WINDOW, and the mutation config says so
+      //    rather than registering a mutant that would survive and be explained away.
+      let st;
+      try {
+        st = await lstat(walPath);
+      } catch (e) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === "ENOENT" || code === "ENOTDIR") continue; // not a thread directory
+        throw e;
+      }
+      if (st.isSymbolicLink())
+        throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "following it would read a log this principal's writer never wrote");
       let raw: Buffer;
       try {
-        const fh = await open(walPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+        const fh = await open(walPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
         try {
           raw = await fh.readFile();
         } finally {
@@ -199,9 +216,9 @@ export class FileSubjectFrontier implements SubjectFrontier {
         }
       } catch (e) {
         const code = (e as NodeJS.ErrnoException).code;
-        if (code === "ENOENT" || code === "ENOTDIR") continue; // not a thread directory
+        if (code === "ENOENT" || code === "ENOTDIR") continue;
         if (code === "ELOOP")
-          throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "following it would read a log this principal's writer never wrote");
+          throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "the file became a symlink between the check and the open");
         throw e;
       }
       let doc: { principal?: unknown; frontier?: { lastSubjectSeq?: unknown } };
