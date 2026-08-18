@@ -22,7 +22,12 @@
     "cell here can drive that race, and no mutation is registered against the flag, because a",
     "mutant that survives and gets explained away is worse evidence than an absence stated plainly.",
     "The flag is also absent on Windows, which is why the refusal is decided by the lstat and not",
-    "by the flag: a guard that evaporates on one platform is not a guard, it is a platform note."
+    "by the flag: a guard that evaporates on one platform is not a guard, it is a platform note.",
+    "",
+    "THE ACKED PENDING IS THE SECOND HALF OF THE UPGRADE PATH AND IT WAS MISSING FROM THE FIRST",
+    "VERSION. A reviewer executed it: absent record plus a sibling holding frontier 5 and an acked",
+    "pending at 12 recovered 5 and persisted it. The frontier alone is not where the assigned",
+    "sequence lives when a log took an ack and died before folding."
   ],
   "mutations": [
     {
@@ -69,6 +74,24 @@
       "expectRed": "recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
       "cell": "recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
       "note": "A hard link presents a real directory holding a real file, so `isSymbolicLink` is false and `O_NOFOLLOW` has nothing to refuse, while the file is the same inode as one outside the principal directory. The writer creates each log fresh, so a second name for it is a state it cannot produce."
+    },
+    {
+      "name": "S13 recovery reads the frontier only, and loses the sequence an acked pending holds",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (pending && pending.state === \"acked\") {\n",
+      "replace": "      if (false && pending && pending.state === \"acked\") {\n",
+      "expectRed": "recover:an-ACKED-but-unfolded-log-carries-its-ackSeq-not-its-stale-frontier",
+      "cell": "recover:an-ACKED-but-unfolded-log-carries-its-ackSeq-not-its-stale-frontier",
+      "note": "The crash window the acked state exists for, met on the upgrade path. The recovered under-count is PERSISTED, and a present record is never rescanned, so the wrong tip is frozen in on the first open. The session that could fold that log never runs again because upgrading forks the session id."
+    },
+    {
+      "name": "S14 an acked pending behind its own frontier is taken instead of refused",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "        if (!(acked > seq))\n",
+      "replace": "        if (false)\n",
+      "expectRed": "recover:an-acked-pending-BEHIND-its-own-frontier-is-refused-not-ignored",
+      "cell": "recover:an-acked-pending-BEHIND-its-own-frontier-is-refused-not-ignored",
+      "note": "EventWal enforces ackSeq > frontier.lastSubjectSeq when it writes an acked pending, so a document that violates it has halves from different vintages. This scan refuses what its own writer cannot produce rather than picking whichever number is larger."
     }
   ]
 }

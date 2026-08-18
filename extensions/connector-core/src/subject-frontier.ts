@@ -230,7 +230,7 @@ export class FileSubjectFrontier implements SubjectFrontier {
           throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "the file became a symlink between the check and the open");
         throw e;
       }
-      let doc: { principal?: unknown; frontier?: { lastSubjectSeq?: unknown } };
+      let doc: { principal?: unknown; frontier?: { lastSubjectSeq?: unknown }; pending?: { state?: unknown; ackSeq?: unknown } | null };
       try {
         doc = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(raw)) as typeof doc;
       } catch (e) {
@@ -245,6 +245,25 @@ export class FileSubjectFrontier implements SubjectFrontier {
       if (!isSafeNonNegInt(seq))
         throw new SubjectFrontierCorruptError(walPath, "frontier.lastSubjectSeq is a safe non-negative integer", String(seq));
       if (seq > best) best = seq;
+      // AN ACKED PENDING HOLDS A SEQUENCE THE BROKER ASSIGNED AND THE FRONTIER DOES NOT.
+      //
+      // A log that took an ack and died before folding keeps the assigned sequence in
+      // `pending.ackSeq`, which `EventWal` requires to be strictly AHEAD of
+      // `frontier.lastSubjectSeq` (that is the crash window the acked state exists to survive).
+      // Reading the frontier alone recovers the older number, persists it, and hands the next
+      // publish an expectation the subject passed some time ago. The session that could fold it
+      // will never run again, because upgrading forks the session id, so this log is the only
+      // place that sequence survives. Under-counting here is the same defect this file fixes,
+      // reintroduced at the one boundary the file exists for.
+      const pending = doc.pending;
+      if (pending && pending.state === "acked") {
+        const acked = pending.ackSeq;
+        if (!isSafeNonNegInt(acked))
+          throw new SubjectFrontierCorruptError(walPath, "an acked pending carries a safe non-negative ackSeq", String(acked));
+        if (!(acked > seq))
+          throw new SubjectFrontierCorruptError(walPath, "an acked pending is ahead of the frontier it will fold into", `ackSeq=${acked} frontier.lastSubjectSeq=${seq}`);
+        if (acked > best) best = acked;
+      }
     }
     return best;
   }

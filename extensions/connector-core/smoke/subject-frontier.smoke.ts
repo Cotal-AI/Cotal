@@ -228,6 +228,55 @@ try {
     await threw("recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
       () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /exactly one name/);
   }
+  // ---------------------------------------------------------------- the acked-but-unfolded log
+  //
+  // THE CRASH WINDOW THE `acked` STATE EXISTS FOR, MET ON THE UPGRADE PATH. A log that took an ack
+  // and died before folding holds the assigned sequence in `pending.ackSeq`, strictly ahead of the
+  // frontier it has not folded into. Reading the frontier alone recovers the OLDER number and
+  // persists it, and the session that could fold it never runs again because upgrading forks the
+  // session id. That is this file's own defect reintroduced at the one boundary it exists for.
+  {
+    const d = dir();
+    const td = join(d, "t-acked");
+    mkdirSync(td, { recursive: true });
+    writeFileSync(join(td, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 5 }, pending: { state: "acked", ackSeq: 12 } }));
+    const f = await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P });
+    c("recover:an-ACKED-but-unfolded-log-carries-its-ackSeq-not-its-stale-frontier", f.tip === 12, f.tip);
+    const again = await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P });
+    c("recover:the-acked-sequence-was-PERSISTED-so-the-under-count-cannot-be-frozen-in", again.tip === 12, again.tip);
+  }
+  {
+    // Two siblings, and the higher number is in the one that did not fold. Taking the max of the
+    // frontiers alone picks the folded 10 and loses the 15 the broker actually assigned.
+    const d = dir();
+    mkdirSync(join(d, "t-folded"), { recursive: true });
+    writeFileSync(join(d, "t-folded", "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 10 }, pending: null }));
+    mkdirSync(join(d, "t-unfolded"), { recursive: true });
+    writeFileSync(join(d, "t-unfolded", "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 3 }, pending: { state: "acked", ackSeq: 15 } }));
+    const f = await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P });
+    c("recover:the-max-spans-BOTH-the-frontiers-and-the-acked-pendings", f.tip === 15, f.tip);
+  }
+  {
+    // A sent-but-unacked pending carries no assigned sequence, and `EventWal` refuses an `ackSeq`
+    // on it. Recovery must not invent one from a frame the broker never answered.
+    const d = dir();
+    const td = join(d, "t-sent");
+    mkdirSync(td, { recursive: true });
+    writeFileSync(join(td, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 7 }, pending: { state: "sent_unacked", seq: 3 } }));
+    const f = await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P });
+    c("recover:a-SENT-but-unacked-pending-adds-nothing-because-nothing-was-assigned", f.tip === 7, f.tip);
+  }
+  {
+    // An acked pending that is NOT ahead of its own frontier contradicts the invariant `EventWal`
+    // enforces when it writes one, so it is a document from another vintage and is refused rather
+    // than quietly ignored.
+    const d = dir();
+    const td = join(d, "t-bad");
+    mkdirSync(td, { recursive: true });
+    writeFileSync(join(td, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 9 }, pending: { state: "acked", ackSeq: 9 } }));
+    await threw("recover:an-acked-pending-BEHIND-its-own-frontier-is-refused-not-ignored",
+      () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /ahead of the frontier/);
+  }
 } finally {
   rmSync(root, { recursive: true, force: true });
 }
