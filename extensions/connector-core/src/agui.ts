@@ -1610,9 +1610,14 @@ export class AguiEmitter<T> {
             `stream; or a FILTERED PURGE, which returns the tip to 0 for every thread on the channel. ` +
             `None of these is resolvable by re-reading the tip, which agent credentials cannot read in ` +
             `any case. Clearing it is an explicit abandonment of epoch, seq, E, cursor and the shared ` +
-            `subject record together; no command performs it, so by hand it means removing ` +
-            `${dirname(dirname(this.wal.path))} whole, and removing less than that leaves a mixed ` +
-            `state the next start refuses.`,
+            `subject record together, and it is VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY, which ` +
+            `of the causes above is true of the FILTERED PURGE alone. On any other cause the tip is ` +
+            `still where it is, so removing this state does not clear the halt: the next session ` +
+            `opens virgin, expects 0, halts on the same tip, and the sibling logs a tip could have ` +
+            `been rebuilt from are gone. Purge the channel first, or find the second writer. Once ` +
+            `the subject really is back to 0, no command performs the abandonment, so by hand it ` +
+            `means removing ${dirname(dirname(this.wal.path))} whole, and removing less than that ` +
+            `leaves a mixed state the next start refuses.`,
         );
       throw e;
     }

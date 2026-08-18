@@ -47,6 +47,15 @@ try {
     loc.lockPath === join(loc.principalDir, ".lock") && loc.threadDir.startsWith(loc.principalDir + sep),
     { lock: loc.lockPath, thread: loc.threadDir });
   c("the thread dir holds the wal", loc.walPath === join(loc.threadDir, "wal.json"));
+  // THE FIX'S CENTRAL LINE, GRADED HERE AND NOWHERE ELSE UNTIL NOW. The subject is per PRINCIPAL
+  // and the log is per THREAD; putting the record under the thread dir gives every session its own
+  // frontier, which IS the released defect rather than a near miss. Asserted against the resolver's
+  // own field, because every suite that hand-builds this path tests a copy of the layout instead of
+  // the layout: the mutant that moves it survived 303 cells across five suites, and reproduced the
+  // defect live through ensureEventWalDir.
+  c("the subject record is a sibling of the THREAD dir, i.e. per-principal not per-thread",
+    loc.subjectPath === join(loc.principalDir, "subject.json") && !loc.subjectPath.startsWith(loc.threadDir + sep),
+    { subject: loc.subjectPath, thread: loc.threadDir });
 
   // NO RAW VALUE APPEARS. This is what "hashed path component" means operationally, and it is
   // asserted per component rather than on the whole string, so a single un-hashed one cannot hide
@@ -61,10 +70,14 @@ try {
   const t2 = eventWalLocation({ ...BENIGN, threadId: "sess-2" });
   c("two threads of one principal get DIFFERENT wal files", loc.walPath !== t2.walPath);
   c("...but SHARE the principal lock, because the lock is per-principal", loc.lockPath === t2.lockPath);
+  // The same statement from the other side: sharing is the property, not an artefact of one call.
+  // A record that differs per thread is the defect; a record that differs per PRINCIPAL is the fix.
+  c("...and SHARE the subject record, because the subject is per-principal", loc.subjectPath === t2.subjectPath);
 
   const p2 = eventWalLocation({ ...BENIGN, principal: "owner.other" });
   c("two principals get different directories", loc.principalDir !== p2.principalDir);
   c("two principals get different locks", loc.lockPath !== p2.lockPath);
+  c("two principals get different subject records", loc.subjectPath !== p2.subjectPath);
 
   const s2 = eventWalLocation({ ...BENIGN, space: "other" });
   c("the SAME principal and thread in two spaces get different WALs", loc.walPath !== s2.walPath);
