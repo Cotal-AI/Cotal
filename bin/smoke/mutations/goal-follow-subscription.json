@@ -31,11 +31,11 @@
     {
       "name": "the subscription error is discarded again, so a denied caller is handed a timeout",
       "file": "packages/core/src/endpoint-invoke.ts",
-      "find": "      if (err) {\n        // Keep the FIRST error (later ones are consequences) and wake every waiter: once this\n        // subscription is refused, no further waiting can change the answer.\n        subError ??= err instanceof Error ? err : new Error(String(err));\n        for (const wake of waiters.values()) wake();\n        return;\n      }",
-      "replace": "      if (err) return;",
+      "find": "        subError ??= err instanceof Error ? err : new Error(String(err));\n        for (const wake of waiters.values()) wake();\n        return;",
+      "replace": "        return;",
       "expectRed": "the reply is a refusal, not a deadline",
       "cell": "the reply is a refusal, not a deadline",
-      "note": "The defect exactly as shipped, in one line. A denied subscription becomes indistinguishable from an empty one, and the caller blames the goal for a terminal that was committed on time. The broker's own wording for this is that a denied peer looks absent; this line is what made the client believe it.",
+      "note": "The defect exactly as shipped: the error is discarded and a denied subscription becomes indistinguishable from an empty one, so the caller blames the goal for a terminal that was committed on time. The broker's own wording for this is that a denied peer looks absent; discarding the error is what made the client believe it. Anchored on the three code lines rather than on the `if (err) {` line above them, because the comment between the two is prose a tidying commit could move, and a guard that a docs change can disarm is not a guard.",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     },
     {
