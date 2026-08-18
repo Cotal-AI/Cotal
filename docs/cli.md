@@ -1026,9 +1026,12 @@ cotal actor list
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
 A bare `grant` is the **full** envelope (all channels, may spawn); the flags narrow it. A
-re-grant **replaces** the row, so to add a capability, re-grant with it added to the current
-scope (`cotal actor list` shows what a row holds). `revoke` denies the next exchange and the
-next connect with no restart, and evicts the principal's live connections. Managed-agent rows
+re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
+every field out: the new scope plus the row's current read set, post set, role and label
+(`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
+reverts to the wide default in the table above, which is how a narrow reader becomes a reader
+of every channel. `revoke` denies the next exchange and the next connect with no restart, and
+evicts the principal's live connections. Managed-agent rows
 (written by the spawn path) live in a disjoint row space this command never touches. See
 [identity & auth](identity-and-auth.md).
 

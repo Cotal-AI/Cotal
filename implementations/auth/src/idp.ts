@@ -170,7 +170,10 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         if (!(grant.scope ?? []).includes(need))
           throw new Error(
             `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant with "${need}" ADDED to your current scope: ` +
-              `cotal actor grant ${req.actor} --owner ${owner} --scope ${[...(grant.scope ?? []), need].join(",")}  (the upsert replaces the scope list; the operator can confirm with \`cotal actor list\`)`,
+              `cotal actor grant ${req.actor} --owner ${owner} --scope ${[...(grant.scope ?? []), need].join(",")} ` +
+              `--allow-subscribe '<its current read set>' --allow-publish '<its current post set>'  (the upsert replaces the ` +
+              `WHOLE row, not just the scope: every field left off reverts to the WIDE default, \`>\` read and \`>\` post, so ` +
+              `carry the current sets over from \`cotal actor list\`)`,
           );
       }
       // Lifecycle-BIND every human bearer at the MINT boundary (SPEC 13.1), views included: the

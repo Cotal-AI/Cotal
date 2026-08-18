@@ -764,6 +764,19 @@ try {
   // cli's scope is still [spawn] here — every admin-gated view must refuse naming the gate.
   const deniedView = await humanViewEx("admin");
   check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
+  // ...and the re-grant it prints is a WHOLE-row upsert, not a scope edit. `runActor` fills every
+  // omitted flag from `csv(v, dflt)` with the WIDE default, so a scope-only paste silently resets
+  // this row's read/post to `>`/`>`: adding a view would widen the operator to the whole chat
+  // plane. The copy must name every field it is replacing.
+  const viewRegrant = /cotal actor grant [^(]+/.exec(deniedView.body.error ?? "")?.[0] ?? "";
+  check(
+    "the view refusal's re-grant names read AND post, not scope alone, and says the upsert replaces the WHOLE row",
+    /--scope \S/.test(viewRegrant) &&
+      /--allow-subscribe /.test(viewRegrant) &&
+      /--allow-publish /.test(viewRegrant) &&
+      /WHOLE row/.test(deniedView.body.error ?? ""),
+    { viewRegrant, error: deniedView.body.error },
+  );
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
   const vg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {

@@ -315,7 +315,7 @@ function assertWithinSpawnerGrant(
     if (!parent)
       throw new Error(
         boundary === "spawn"
-          ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain; grant it first (\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\`)`
+          ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain; grant it first, spelling out EVERY field (\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn --allow-subscribe '<what its agents may read>' --allow-publish '<what they may post>'\`): an omitted flag is the WIDE default, \`>\` read and \`>\` post, and a spawner's reach is the ceiling for everything spawned under it`
           : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`)`,
       );
     if (parent.scope.includes("admin")) return;
@@ -428,7 +428,7 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
       if (findManagedActor(dir, owner, actor))
         throw new Error(`actor "${actor}" is a managed agent - it authenticates with its own spawn-time secret; interact with it via the mesh, or respawn it with \`cotal spawn\``);
       throw new Error(
-        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`)`,
+        `actor "${actor}" is not granted for this user - the mesh operator lets them in with \`cotal actor grant ${actor} --owner ${owner}\` (or --sub <their IdP subject>, printed by their \`cotal login\`), which is the FULL grant: all channels, may spawn. Narrow it by naming --allow-subscribe/--allow-publish/--scope, since an omitted flag is the wide default`,
       );
     }
     // MINT-boundary lifecycle stamp (SPEC 13.1): EVERY minted bearer - view or not - carries the

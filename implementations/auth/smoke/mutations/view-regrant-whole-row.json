@@ -1,0 +1,39 @@
+{
+  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "guard": "the re-grant an elevated-view refusal prints names every field the upsert replaces, so following it adds a scope instead of resetting the row's read and post sets to the wide default",
+  "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
+  "completionMarker": "USER-SPAWN",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/view-regrant-whole-row.json",
+  "why": [
+    "`cotal actor grant` is an upsert of the WHOLE row, and `runActor` fills every flag the operator",
+    "does not name from `csv(v, dflt)` with the WIDE default: `>` read, `>` post, `spawn,role:default`",
+    "scope. This refusal printed a re-grant naming --scope and nothing else, and described it as",
+    "replacing the scope LIST.",
+    "",
+    "So an operator adding one view to a deliberately narrow row reset that row's read and post sets to",
+    "`>` and `>` in the same paste, and the parenthetical sent them to `cotal actor list`, which shows",
+    "the widened row and reads as confirmation that the change worked. This widens an EXISTING narrow",
+    "row rather than authoring a wide new one, and the row is a human operator's.",
+    "",
+    "The cell parses the command out of the service's OWN refusal rather than matching a hardcoded",
+    "string, so the text and the assertion cannot drift apart. V1 is the shipped state of that text; it",
+    "removes only the two ACL flags and leaves the WHOLE-row wording standing, so the kill is",
+    "attributable to the flags rather than to the prose around them.",
+    "",
+    "SPECIFIER BOUNDARY. The suite exchanges against the auth service loaded from",
+    "`implementations/auth/dist`, so the command builds it before running and `afterRestore` rebuilds",
+    "it, or a restored source would sit behind a mutated dist."
+  ],
+  "mutations": [
+    {
+      "name": "V1 the elevated-view refusal prints a scope-only re-grant of a whole-row upsert",
+      "file": "implementations/auth/src/idp.ts",
+      "find": "              `--allow-subscribe '<its current read set>' --allow-publish '<its current post set>'  (the upsert replaces the ` +",
+      "replace": "              `  (the upsert replaces the ` +",
+      "expectRed": "the view refusal's re-grant names read AND post, not scope alone, and says the upsert replaces the WHOLE row",
+      "cell": "the view refusal's re-grant names read AND post, not scope alone, and says the upsert replaces the WHOLE row",
+      "note": "Every other cell in section V stays green under this mutant: the view is still refused, still 401, still names the gate scope. Only the command the operator would run changes.",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build"
+    }
+  ]
+}

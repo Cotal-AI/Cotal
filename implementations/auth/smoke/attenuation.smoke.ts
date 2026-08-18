@@ -113,13 +113,23 @@ try {
     }),
     "cross-owner",
   );
-  rejects(
+  const ghostMsg = rejects(
     "an unknown spawner principal is refused (no grant = no delegation authority)",
     () => grantManagedActor(dir, {
       owner: OWNER, actor: "ghostkid", scope: [], parent: `${OWNER}.ghost`,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash,
     }),
     "has no grant in this space",
+  );
+  // The repair command that refusal prints carries the ledger's authority, and a spawner's own ACL
+  // is the CEILING for everything spawned under it. Named with --scope alone it pastes into
+  // `runActor`'s wide defaults, so the operator repairing one delegation gap authors a spawner that
+  // reads and posts on every channel in the space, and hands that ceiling to every descendant.
+  const ghostFix = /cotal actor grant [^`]+/.exec(ghostMsg)?.[0] ?? "";
+  check(
+    "the missing-spawner repair command names read AND post, not --scope alone",
+    /--scope \S/.test(ghostFix) && /--allow-subscribe /.test(ghostFix) && /--allow-publish /.test(ghostFix),
+    ghostFix,
   );
   rejects(
     "a malformed ACL entry is refused at the row WRITE (non-terminal '>' never enters an envelope)",

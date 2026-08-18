@@ -1,0 +1,30 @@
+{
+  "suite": "implementations/auth/smoke/attenuation.smoke.ts",
+  "guard": "the repair command a delegation refusal prints authors the narrow spawner the sentence describes, not the whole-plane one an omitted flag defaults to",
+  "command": "pnpm smoke:auth-attenuation",
+  "completionMarker": "ATTENUATION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/spawner-repair-flags.json",
+  "why": [
+    "The same composition as the view refusal, one door over, and with a longer reach. This refusal",
+    "printed `cotal actor grant <a> --owner <o> --scope spawn` and stopped, so an operator repairing a",
+    "broken delegation chain authored a spawner that reads and posts on every channel in the space.",
+    "",
+    "A spawner's own ACL is the CEILING every agent under it is attenuated against, so that ceiling then",
+    "governed everything spawned under it from that point on. The sentence promised a spawn capability",
+    "and delivered the whole plane, indefinitely.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the ledger by relative source path (../src/index.js), so the",
+    "mutated file is the file that runs and there is no build in the command."
+  ],
+  "mutations": [
+    {
+      "name": "S1 the missing-spawner repair command names --scope and stops",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first, spelling out EVERY field (\\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn --allow-subscribe '<what its agents may read>' --allow-publish '<what they may post>'\\`): an omitted flag is the WIDE default, \\`>\\` read and \\`>\\` post, and a spawner's reach is the ceiling for everything spawned under it`",
+      "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first (\\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\\`)`",
+      "expectRed": "the missing-spawner repair command names read AND post, not --scope alone",
+      "cell": "the missing-spawner repair command names read AND post, not --scope alone",
+      "note": "This is the shipped state of the text. Every other cell stays green: the row is still refused, the refusal still names the missing spawner and still carries the `has no grant in this space` needle the neighbouring cell matches on."
+    }
+  ]
+}
