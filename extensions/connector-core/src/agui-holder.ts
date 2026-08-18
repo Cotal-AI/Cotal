@@ -155,28 +155,33 @@ export class AguiEmitterHolder<T> {
     if (this.boundPath === undefined) {
       this.boundPath = path;
       try {
-        // Started INSIDE the chain, which is the only thing keeping this to one emitter, and
-        // there is deliberately no second guard here. A belt-and-braces memo would not add one. It
-        // would mean a cell asserting "started once" passed whether or not the chain worked, and a
-        // second copy of a real guard answers for the original, so the mutation that breaks the
-        // original goes on passing and the cell that reads as proof stops being proof without any
-        // change to its own text.
+        // WHAT KEEPS THIS TO ONE EMITTER IS THE `boundPath` GATE ABOVE, AND ONLY IT. It is set on
+        // the line before this one, BEFORE the await, so every later call for this same path finds
+        // it set and never reaches `startEmitter` again, whether that call arrives after the start
+        // resolved or while it is still in flight. A call for a DIFFERENT path is refused earlier.
         //
-        // WHAT A SECOND EMITTER WOULD BREAK IS NO LONGER DESCRIBED HERE, AND THE REASON IS THE
-        // POINT. Two earlier versions of this comment restated protections that live in other
-        // files, and both were wrong inside an hour: the first credited one mechanism with a second
-        // one's work, and the second named the wrong mechanism for the path it was discussing. A
-        // comment that restates a guarantee it does not own drifts away from it, and nothing in the
-        // edit that moves the guarantee tells the author this sentence exists. The refusals belong
-        // next to the code that performs them: the record's are in `subject-frontier.ts`, the log's
-        // stale-handle check is in `event-wal.ts`, and the expectation carried on a publish is the
-        // broker's to enforce.
+        // EVERYTHING ELSE ON THIS PATH HANDS BACK AN EMITTER, IT DOES NOT GUARD ONE. The
+        // `this.emitter` shortcut above and the `return this.emitter` at the end of this method are
+        // redundant with each other, and neither is what stops a second start: with the shortcut
+        // gone the trailing return answers the same call with the same object. Anyone editing here
+        // should know that before reading a green run as a verdict on the piece they touched.
+        //
+        // THE CHAIN IS NOT ONE OF THESE MECHANISMS. It serializes hook events so two flushes cannot
+        // read the source at one cursor, which is its own job and a real one. An earlier version of
+        // this comment credited it with start-once as well; that was measured and it is not true.
+        //
+        // WHAT A SECOND EMITTER WOULD BREAK IS NOT DESCRIBED HERE, AND THE REASON IS THE POINT.
+        // Earlier versions of this comment restated protections that live in other files and were
+        // wrong within the hour: one credited a mechanism with another's work, one named the wrong
+        // mechanism for the path it was discussing. A comment that restates a guarantee it does not
+        // own drifts away from it, and nothing in the edit that moves the guarantee tells the author
+        // this sentence exists. The refusals belong next to the code that performs them: the
+        // record's are in `subject-frontier.ts`, the log's stale-handle check is in `event-wal.ts`,
+        // and the expectation carried on a publish is the broker's to enforce.
         //
         // What this file does own is the bracket interleave, and it is OPEN: two emitters would
         // each keep their own bracket machine and nothing detects the interleave. That is the
-        // stated writer-cardinality limit, and this chain is the only thing between the process and
-        // it, which is why the chain is the mechanism and there is exactly one cell that can fail
-        // if it breaks.
+        // stated writer-cardinality limit.
         this.emitter = await this.startEmitter(path);
         return this.emitter;
       } catch (e) {

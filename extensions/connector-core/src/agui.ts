@@ -1608,13 +1608,20 @@ export class AguiEmitter<T> {
             `subject frontier record that disagrees with the stream, ` +
             `which is what an interrupted upgrade or a restored backup leaves behind; a RESTORED ` +
             `stream; or a FILTERED PURGE, which returns the tip to 0 for every thread on the channel. ` +
+            `One more cause is not a second writer at all: this log's OWN last ack. The shared record ` +
+            `advances before the log records the ack, so a crash between those two writes leaves the ` +
+            `record ahead of the frozen expectation this frame carries, and the retry publishes a ` +
+            `sequence the subject has already passed. On disk it reads as a pending frame in state ` +
+            `sent_unacked whose E is BEHIND the record's tip, which a restored record can also look ` +
+            `like, so it narrows the search rather than ending it. ` +
             `None of these is resolvable by re-reading the tip, which agent credentials cannot read in ` +
             `any case. Clearing it is an explicit abandonment of epoch, seq, E, cursor and the shared ` +
             `subject record together, and it is VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY, which ` +
             `of the causes above is true of the FILTERED PURGE alone. On any other cause the tip is ` +
             `still where it is, so removing this state does not clear the halt: the next session ` +
             `opens virgin, expects 0, halts on the same tip, and the sibling logs a tip could have ` +
-            `been rebuilt from are gone. Purge the channel first, or find the second writer. Once ` +
+            `been rebuilt from are gone. Purge the channel first, or find the second writer, or match the ` +
+            `signature above and stop looking for one. Once ` +
             `the subject really is back to 0, no command performs the abandonment, so by hand it ` +
             `means removing ${dirname(dirname(this.wal.path))} whole, and removing less than that ` +
             `leaves a mixed state the next start refuses.`,

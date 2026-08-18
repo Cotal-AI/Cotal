@@ -704,12 +704,24 @@ export class EventWal {
     // was not allowed to write. The record is shared by every thread of the principal; a refusal
     // that arrives after the mutation refuses the wrong thing.
     //
-    // THEN THE SHARED RECORD ADVANCES FIRST, and that order is deliberate too. A crash between the
-    // two leaves the shared tip AHEAD of this log, so the next start expects a sequence the subject
-    // has not reached and the broker refuses it: loud, and diagnosable. The other order leaves the
-    // shared tip BEHIND, so the next thread expects a sequence already taken, which is the same
-    // permanent halt by a longer road. Both fail closed; this one fails closed on the easier value
-    // to explain.
+    // THEN THE SHARED RECORD ADVANCES FIRST, and the crash window between these two lines was
+    // written backwards here until somebody executed it. What a crash between them actually leaves
+    // is the record AHEAD of this log: the frame landed, the record took the sequence the broker
+    // assigned it, and the log still holds that frame as `sent_unacked` with its `E` frozen at the
+    // tip BEFORE it. The next start republishes the frozen expectation, the subject has already
+    // passed it, and a single-replica stream evaluates the expectation BEFORE the dedup cache, so
+    // the retry cannot come back as the duplicate it really is. It comes back as a lost CAS.
+    //
+    // Loud, then, but not attributable on its own: it is the same halt a foreign writer produces.
+    // That is why the halt message names this cause and the shape it leaves on disk, instead of
+    // sending an operator to look for a second writer that was never there.
+    //
+    // THE ORDER IS STILL THIS ONE, and the failure mode above does not change the argument. The
+    // record is shared by every thread of this principal and the log is not. Advancing the record
+    // first leaves the record TRUE about the stream and one thread's log behind it. Writing the log
+    // first would leave the record BEHIND the stream, and the record is where every sibling thread
+    // of this principal reads its expectation from. Both orders fail closed. Only one of them fails
+    // closed on a value the whole principal reads.
     //
     // A LOCAL, NOT `this.subject?.advance(ackSeq)`. The optional call was not a hole: `expectedTip`
     // above throws when nothing is bound, so an unbound log never reaches this statement, and that

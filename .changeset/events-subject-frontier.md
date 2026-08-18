@@ -29,16 +29,20 @@ zero is never re-seeded, because that is what abandonment writes.
 The halt message previously offered three causes, another writer, a restored stream, or a filtered
 purge, and the real one was not among them, so an operator went looking for a rogue writer. It now
 names what a moved tip can actually mean, including a concurrent session under the same principal
-and a frontier record that disagrees with the stream. It also states the real gap in the
-per-principal lock rather than claiming the lock prevents the case the halt fires on: the lock file
-lives under a workspace root, so a second emitter started against a different root meets no lock,
-while another host or a stale pid refuse the start instead of slipping past. And where it used to
-name an abandonment as the remedy, it now says no command performs one, names the directory that has
-to go, and says removing less leaves a mixed state the next start refuses. Clearing that state is
-valid only once the channel itself is back to empty, which of the causes above is true of a filtered
-purge alone; on any other cause the tip has not moved, so removing the directory returns the same
-halt with the logs a tip could have been rebuilt from now gone, and the channel purge is the half
-that comes first.
+and a frontier record that disagrees with the stream. It also names the one cause that is not
+another writer at all: a crash between the shared record's advance and the log's own record of the
+ack leaves the record ahead of the expectation the log is still holding, so the retry publishes a
+sequence the subject has already passed and the halt looks exactly like a foreign write. The
+message says what that state looks like on disk. It also states the real gap in the per-principal
+lock rather than claiming the lock prevents the case the halt fires on: the lock file lives under a
+workspace root, so a second emitter started against a different root meets no lock, while another
+host or a stale pid refuse the start instead of slipping past. And where it used to name an
+abandonment as the remedy, it now says no command performs one, names the directory that has to go,
+and says removing less leaves a mixed state the next start refuses. Clearing that state is valid
+only once the channel itself is back to empty, which of the causes above is true of a filtered
+purge alone; on any other cause the tip stays where it is, so removing the directory returns the
+same halt with the logs a tip could have been rebuilt from now gone, and the channel purge is the
+half that comes first.
 
 The scan that recovers a tip from the session logs refuses a linked entry and refuses a linked log,
 matching the directory chain that creates this state and already refused a symlinked component.
