@@ -166,8 +166,18 @@ export interface InboxWindow {
  *     stays in the buffer, unacked, and the caller is told it is there. Only what this function
  *     returns as `shown` may be cleared.
  *
- * A single item larger than the whole budget is still shown, alone: refusing it would wedge the
- * inbox behind a message that can never fit, which is a worse failure than one oversized response.
+ *  3. **The budget is the whole response, not the items.** The head line and the held-note are part
+ *     of what the host has to carry, so the item budget is the window minus room for both. Budgeting
+ *     the items alone let a reply that was 47,971 characters of messages ship at 48,135.
+ *
+ * AN ITEM TOO LARGE FOR AN EMPTY WINDOW IS HELD, NOT SHOWN ALONE. Showing it alone was the escape
+ * this file first shipped, on the reasoning that refusing it would wedge the inbox behind a message
+ * that can never fit. Measured, that escape reproduced #603 in miniature: a 60,000-character message
+ * came back as a 60,026-character response, over the bound this function advertises, and was ACKED,
+ * so a payload the host may refuse to deliver was already marked read. Holding it wedges nothing,
+ * because everything else in the buffer flows past it, and {@link heldNote} names it rather than
+ * leaving it silently stuck. What it costs is stated where the caller can see it: through this tool
+ * such a message is not deliverable at all until something else consumes or evicts it.
  */
 export function windowInbox(items: readonly InboxItem[], budget = INBOX_WINDOW_CHARS): InboxWindow {
   const rank = (i: InboxItem): number => (i.kind !== "channel" ? 0 : i.historical ? 2 : 1);
@@ -176,8 +186,8 @@ export function windowInbox(items: readonly InboxItem[], budget = INBOX_WINDOW_C
   const held: InboxItem[] = [];
   let used = 0;
   for (const i of ordered) {
-    const cost = fmtItem(i).length + 1; // + the newline that joins it
-    if (shown.length && used + cost > budget) held.push(i);
+    const cost = itemCost(i);
+    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);
     else {
       shown.push(i);
       used += cost;
@@ -186,11 +196,36 @@ export function windowInbox(items: readonly InboxItem[], budget = INBOX_WINDOW_C
   return { shown, held };
 }
 
+/** What one rendered item costs a response: its own text plus the newline that joins it. */
+function itemCost(i: InboxItem): number {
+  return fmtItem(i).length + 1;
+}
+
+/** Whether this item can never ride a response of its own, however empty the window is. */
+function undeliverableAlone(i: InboxItem, budget = INBOX_WINDOW_CHARS): boolean {
+  return itemCost(i) > budget - RESPONSE_OVERHEAD;
+}
+
+/**
+ * Room the window keeps back for the parts of a response that are not messages: the head line and
+ * the held-note. Both are bounded, and this is comfortably above the longest either can be, so the
+ * total response stays inside {@link INBOX_WINDOW_CHARS} rather than inside it plus the framing.
+ */
+const RESPONSE_OVERHEAD = 512;
+
 /** The tail that keeps a windowed response honest: what is still there, and that it was not lost. */
 function heldNote(held: readonly InboxItem[]): string {
   if (!held.length) return "";
   const dms = held.filter((i) => i.kind !== "channel").length;
-  return `\n\n… ${held.length} more message${held.length === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. Call cotal_inbox again for the next batch.`;
+  const note = `\n\n… ${held.length} more message${held.length === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. Call cotal_inbox again for the next batch.`;
+  // A message too big for any single response would otherwise sit in the buffer forever with the
+  // reply saying only that "more is held", which reads as a queue that is moving when it is not.
+  const stuck = held.filter((i) => undeliverableAlone(i));
+  if (!stuck.length) return note;
+  const each = stuck
+    .map((i) => `${fmtFrom(i)} (${itemCost(i).toLocaleString("en-US")} chars)`)
+    .join(", ");
+  return `${note} ${stuck.length} of them cannot be delivered by this tool at all, being larger than one response can carry: ${each}. ${stuck.length === 1 ? "It stays" : "They stay"} buffered and uncleared.`;
 }
 
 function fmtItem(i: InboxItem): string {
@@ -371,11 +406,15 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
           const { shown, held } = windowInbox(buffered);
+          // Held-but-nothing-shown is not an empty inbox, and saying so would hide exactly the case
+          // that needs saying: everything waiting is too large for a response of its own.
           if (!shown.length)
             return ok(
-              scope
-                ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                : "Inbox empty — no new messages.",
+              held.length
+                ? `Nothing could be delivered in this response.${heldNote(held)}`
+                : scope
+                  ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+                  : "Inbox empty — no new messages.",
             );
           const head = scope
             ? `${shown.length} pull-only message${shown.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
@@ -396,9 +435,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const bufferedIds = new Set(buffered.map((i) => i.id));
         if (!all.length && !recall.droppedChannels.length)
           return ok(
-            scope
-              ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-              : "Inbox empty — no new messages, and no channel chatter since you entered focus.",
+            held.length
+              ? `Nothing could be delivered in this response.${heldNote(held)}`
+              : scope
+                ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+                : "Inbox empty — no new messages, and no channel chatter since you entered focus.",
           );
         const parts: string[] = [];
         if (all.length) {

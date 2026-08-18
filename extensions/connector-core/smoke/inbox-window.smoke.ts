@@ -263,6 +263,63 @@ try {
     check("focus + peek: the buffered lane is NOT cleared", agent.inboxCount() === 4, agent.inboxCount());
   }
 
+  // ── 8) AN ITEM TOO LARGE FOR ANY RESPONSE IS HELD, NOT SHOWN ALONE AND ACKED ──────────────────
+  //
+  // The first shape of this fix let an oversized item ride alone, reasoning that refusing it would
+  // wedge the inbox. Measured, that was #603 in miniature: a 60,000-character DM produced a 60,026
+  // character response, past the bound this code advertises, and ACKED it. Reported by the second
+  // review lens with a working repro, reproduced here before the repair.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    let acked = 0;
+    agent.ep.emit("message", dmMsg("huge", "z".repeat(60_000)), { ack: () => { acked++; }, nak: () => {}, durable: true }, dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("an oversized message does not blow the window it advertises", text.length <= INBOX_WINDOW_CHARS, text.length);
+    check("...and is NOT consumed: still buffered, never acked", agent.inboxCount() === 1 && acked === 0, { held: agent.inboxCount(), acked });
+    check("...and the reply names it rather than leaving it silently stuck",
+      text.includes("cannot be delivered by this tool at all") && text.includes("Ada"), text.slice(0, 400));
+  }
+
+  // ── 9) ...and holding it wedges nothing: the rest of the buffer still flows past it ────────────
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    agent.ep.emit("message", dmMsg("huge", "z".repeat(60_000)), noop(), dmMeta);
+    for (let n = 0; n < 3; n++) agent.ep.emit("message", dmMsg(`ord-${n}`, `ordinary ${n}`), noop(), dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    const delivered = [0, 1, 2].every((n) => text.includes(`ordinary ${n}`));
+    check("ordinary mail is delivered past an item that can never fit", delivered && agent.inboxCount() === 1,
+      { remaining: agent.peekInbox().map((i) => i.id) });
+  }
+
+  // ── 10) THE BUDGET IS THE WHOLE RESPONSE, not the items in it ─────────────────────────────────
+  //
+  // Also from the second lens: the window budgeted `fmtItem` only, so the head line and the
+  // held-note rode outside the bound. Measured at 48,135 characters for 47,971 of messages.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    agent.ep.emit("message", dmMsg("near", "y".repeat(47_950)), noop(), dmMeta);
+    agent.ep.emit("message", dmMsg("second", "s".repeat(500)), noop(), dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("the head line and the held-note are inside the budget, not outside it",
+      text.length <= INBOX_WINDOW_CHARS, { chars: text.length, window: INBOX_WINDOW_CHARS });
+  }
+
+  // ── 11) HELD-BUT-NOTHING-SHOWN IS NOT AN EMPTY INBOX ──────────────────────────────────────────
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    agent.ep.emit("message", dmMsg("huge", "z".repeat(60_000)), noop(), dmMeta);
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a buffer holding only undeliverable mail does not report an empty inbox",
+      !text.includes("Inbox empty") && text.includes("held"), text.slice(0, 200));
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {

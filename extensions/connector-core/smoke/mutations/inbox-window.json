@@ -12,6 +12,10 @@
     "tells a caller the rest is still there, and K6 collapses the two lanes of the focus reply into",
     "one, acking read-only recall the read never owned, and K7 drops peek on that same focus path.",
     "",
+    "K8, K9 and K10 come from the second review lens's working repro, not from the author: the window",
+    "budgeted the items and not the framing, and an item too large for an empty window was shown alone",
+    "AND acked, which reproduced the original defect in miniature at 60,026 characters.",
+    "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent and the tool specs",
     "by RELATIVE SOURCE PATH (../src/agent.js, ../src/tool-specs.js), so the bytes mutated are the",
     "bytes graded: no dist in the path and no build in the command. Its only package-name import is",
@@ -86,6 +90,33 @@
       "cell": "focus + peek: the buffered lane is NOT cleared",
       "expectRed": "focus + peek: the buffered lane is NOT cleared",
       "note": "K4 covers the same slip on the ordinary path only. Without this one a focus reply could clear while peeking, and peek is the workaround this whole change exists to retire, so it has to hold on both paths."
+    },
+    {
+      "name": "K8 the window budgets the items and forgets the framing",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
+      "replace": "    if (used + cost > budget) held.push(i);",
+      "cell": "the head line and the held-note are inside the budget, not outside it",
+      "expectRed": "the head line and the held-note are inside the budget, not outside it",
+      "note": "The original arithmetic, and the reason it looked right: the items are what the caller reads, so budgeting them feels like budgeting the response. The head and the note are carried by the host too, measured at 48,135 characters for 47,971 of messages."
+    },
+    {
+      "name": "K9 an item too large for an empty window is shown alone again",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
+      "replace": "    if (shown.length && used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
+      "cell": "an oversized message does not blow the window it advertises",
+      "expectRed": "an oversized message does not blow the window it advertises",
+      "note": "This is exactly the escape this file first shipped, defended in its own comment as better than wedging. It reproduced the defect the file exists to close: a 60,000-character message came back as a 60,026-character response and was acked."
+    },
+    {
+      "name": "K10 nothing shown is reported as an empty inbox, whatever is held",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "              held.length\n                ? `Nothing could be delivered in this response.${heldNote(held)}`\n                : scope",
+      "replace": "              false\n                ? `Nothing could be delivered in this response.${heldNote(held)}`\n                : scope",
+      "cell": "a buffer holding only undeliverable mail does not report an empty inbox",
+      "expectRed": "a buffer holding only undeliverable mail does not report an empty inbox",
+      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there."
     }
   ]
 }
