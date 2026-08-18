@@ -41,6 +41,7 @@ import {
   parseEpSubject,
   controlServiceSubject,
   isEventChannel,
+  eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
@@ -575,6 +576,33 @@ export async function epAwaitReply(
  * through a pluggable {@link Runtime} (pty by default). It does NOT proxy agent
  * mesh traffic — terminal I/O streams over its own attach endpoint instead.
  */
+/**
+ * Event channels in `channels` that do NOT belong to `{owner, actor}`.
+ *
+ * ONE HELPER FOR EVERY SEAM THAT ARMS AN ACL, and that is the whole design. The rule first existed
+ * only at the spawn accept seam, and a security review found the hole that shape guarantees: resume
+ * re-arms a managed row straight from the inventory document, and `renewManagedStaticCred` re-mints
+ * the JWT from that row, so an admin-supplied inventory could carry a foreign concrete event channel
+ * past a fence that only ever looked at spawns. A rule with one call site is a rule that covers one
+ * door.
+ *
+ * IT COMPARES PRINCIPALS, NOT STRINGS. `eventChannelPrincipal` decodes the channel back to the
+ * `{owner, actor}` it names, so this is mode-independent: static keys the actor on the allocated
+ * nkey and user mode keys it on the alias, and neither needs its own branch here.
+ *
+ * STATED LIMIT, unchanged and asserted by a cell: the decode refuses anything that is not exactly
+ * two principal tokens, so a WILDCARD is not an event channel to it. `events.<owner>.>` and
+ * `events.>` pass untouched and are governed by ordinary ACL authority. This closes the concrete
+ * form, which is what a caller writes when it knows which agent it wants to read, and not the
+ * wildcard form, which is what an operator writes deliberately for an observer.
+ */
+function foreignEventChannels(channels: readonly string[], owner: string, actor: string): string[] {
+  return channels.filter((ch) => {
+    const p = eventChannelPrincipal(ch);
+    return p !== null && !(p.owner === owner && p.actor === actor);
+  });
+}
+
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
@@ -3210,17 +3238,14 @@ export class Manager {
       // closes the concrete form and not the wildcard form. It is worth having anyway: it is the
       // form a caller writes when it knows which agent it wants to read, and the wildcard form is
       // the one an operator writes deliberately for an observer.
-      const ownEventChannel = connector.eventChannel?.({ owner: agentTriple.owner, actor: agentTriple.actor });
-      const foreignEventChannels = [...allowSubscribe, ...(allowPublish ?? [])].filter(
-        (ch) => isEventChannel(ch) && ch !== ownEventChannel,
-      );
-      if (foreignEventChannels.length) {
+      const foreign = foreignEventChannels([...allowSubscribe, ...(allowPublish ?? [])], agentTriple.owner, agentTriple.actor);
+      if (foreign.length) {
         // Throws rather than returning, because this seam is inside the accept body: the throw
         // unwinds before `onAccepted`, so no goal is bound and no identity is minted, and the
         // enclosing `finally` releases the reserved name. Returning here would be a value nobody
         // reads.
         throw new Error(
-          `this spawn asks for another agent's event channel: ${foreignEventChannels.join(", ")}. An ` +
+          `this spawn asks for another agent's event channel: ${foreign.join(", ")}. An ` +
             `agent may be granted its OWN event plane and no other, because that plane carries the ` +
             `session's tool inputs and outputs. Grant a reader out of band with \`cotal actor grant\` ` +
             `rather than through a spawn.`,
@@ -3539,13 +3564,47 @@ export class Manager {
     }
   }
 
-  /** Re-read every retained identity input and its current authority without provisioning. This runs
+  /**
+
+/** Re-read every retained identity input and its current authority without provisioning. This runs
    * during whole-inventory preflight, immediately before each individual spawn, and at commit. */
   private async validateRetainedAuthority(
     entry: ManagerResumeAgent,
   ): Promise<Pick<PreparedResume, "id" | "creds" | "userAuth">> {
     const referenceError = this.inventoryReferenceError(entry);
     if (referenceError) throw new Error(`retained agent ${entry.name}: ${referenceError}`);
+    // THE OWN-CHANNEL RULE, ON THE RESUME DOOR, and it belongs here rather than beside the launch
+    // because BOTH resume paths funnel through this function and neither may skip it.
+    //
+    // A resume document is admin-supplied JSON. It carries the ACLs the managed row is re-armed
+    // from, and `renewManagedStaticCred` re-mints the credential out of that row at half TTL, so a
+    // foreign event channel written into an inventory becomes a minted read on another agent's tool
+    // inputs and outputs one renewal later. In static mode nothing else stops it: the checks below
+    // pin the credential's PATH, its IDENTITY and the broker's acceptance of it, and say nothing at
+    // all about its ACL. User mode compares the adopted authority's ACL against the inventory's, so
+    // it refuses a divergence on both fields already, but it refuses it as DRIFT rather than as this
+    // rule, and an inventory whose record and credential agree with each other and disagree with
+    // this rule is exactly the document an operator would not notice.
+    //
+    // Refuses rather than strips. Silently narrowing an admin document would leave the operator
+    // holding a record that says one thing and a mesh that does another, and the whole reason this
+    // is reachable is that nobody reads the record.
+    {
+      const owner = entry.identity.mode === "user" ? entry.identity.owner : DEV_OWNER;
+      const actor = entry.identity.mode === "user" ? entry.name : entry.identity.id;
+      const foreign = foreignEventChannels(
+        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],
+        owner,
+        actor,
+      );
+      if (foreign.length)
+        throw new Error(
+          `retained agent ${entry.name}: its record claims another agent's event channel ` +
+            `(${foreign.join(", ")}). An agent may hold its OWN event plane and no other, because that ` +
+            `plane carries the session's tool inputs and outputs. Remove it from the inventory, or ` +
+            `grant the reader out of band with \`cotal actor grant\`.`,
+        );
+    }
     if (entry.identity.mode === "open") {
       if (this.auth || this.userMode)
         throw new Error(`retained agent ${entry.name} is open-mode but the current manager is authenticated`);

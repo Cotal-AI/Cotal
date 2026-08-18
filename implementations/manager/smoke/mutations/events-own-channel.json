@@ -1,41 +1,42 @@
 {
   "suite": "implementations/manager/smoke/events-grant-acl.smoke.ts",
-  "guard": "a spawn may be granted the event plane of the agent it is creating and no other, over both ACL fields, and the wildcard form is deliberately left to ordinary ACL authority",
+  "guard": "a spawn or a resume may arm the event plane of the agent it names and no other, over both ACL fields and at every seam, and the wildcard form is deliberately left to ordinary ACL authority",
   "command": "pnpm smoke:events-grant",
   "completionMarker": "EVENTS-GRANT/ACL SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/events-own-channel.json",
   "why": [
     "An event channel carries a session's tool inputs and outputs verbatim. On a static mesh there is",
-    "no ledger, so a caller-supplied allowSubscribe/allowPublish is attenuated by nothing at all: a",
-    "caller that may spawn may otherwise mint its child a read on any subject it names, including",
-    "another live agent's plane.",
+    "no ledger, so a caller-supplied allowSubscribe/allowPublish is attenuated by nothing at all, and a",
+    "resume document is admin-supplied JSON that re-arms a managed row which `renewManagedStaticCred`",
+    "then re-mints a credential out of at half TTL.",
     "",
-    "The three mutations are chosen so that no two of them redden the same cell. E1 removes the rule",
-    "entirely. E2 leaves the rule but narrows its INPUT to one of the two ACL fields, which is the",
-    "shape a refactor produces and which E1 cannot distinguish. E3 goes the other way and makes the",
-    "rule catch more than it claims to, which is the only way to show the stated-limit cell is an",
-    "assertion rather than a sentence.",
+    "E1 removes the rule's predicate. E2 leaves the rule but narrows its INPUT to one of the two ACL",
+    "fields, which is the shape a refactor produces and which E1 cannot distinguish. E3 goes the other",
+    "way and makes the rule catch MORE than it claims to, which is the only way to show the",
+    "stated-limit cell is an assertion rather than a sentence. E4 removes the rule from the RESUME door",
+    "while leaving it on the spawn door, which is the state this PR was in when a security review found",
+    "it: every spawn cell stayed green and a foreign concrete channel was mintable through an inventory.",
     "",
     "SPECIFIER BOUNDARY. The suite imports the manager by relative source path (../src/manager.js), so",
     "the mutated file is the file that runs and there is no build in the command. Its package-name",
-    "imports are core's eventChannel/eventChannelPrincipal/isEventChannel, which the cells compare the",
-    "manager AGAINST; no mutation below replaces them, so a kill cannot come from moving both sides."
+    "imports are core's eventChannel/eventChannelPrincipal, which the cells compare the manager",
+    "AGAINST; no mutation below replaces them, so a kill cannot come from moving both sides."
   ],
   "mutations": [
     {
       "name": "E1 the rule finds nothing foreign, ever",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        (ch) => isEventChannel(ch) && ch !== ownEventChannel,",
-      "replace": "        () => false,",
+      "find": "    return p !== null && !(p.owner === owner && p.actor === actor);",
+      "replace": "    return false;",
       "expectRed": "a spawn asking for ANOTHER agent's event channel to READ is refused",
       "cell": "a spawn asking for ANOTHER agent's event channel to READ is refused",
-      "note": "The rule deleted at its predicate rather than at its call site, so the surrounding throw and its message survive and cannot pass the cell by themselves."
+      "note": "The rule deleted at its predicate rather than at a call site, so every surrounding throw and message survives and cannot pass a cell by itself."
     },
     {
-      "name": "E2 the rule reads the read-set only, and forgets the post-set",
+      "name": "E2 the spawn seam reads the read-set only, and forgets the post-set",
       "file": "implementations/manager/src/manager.ts",
-      "find": "const foreignEventChannels = [...allowSubscribe, ...(allowPublish ?? [])].filter(",
-      "replace": "const foreignEventChannels = [...allowSubscribe].filter(",
+      "find": "const foreign = foreignEventChannels([...allowSubscribe, ...(allowPublish ?? [])], agentTriple.owner, agentTriple.actor);",
+      "replace": "const foreign = foreignEventChannels([...allowSubscribe], agentTriple.owner, agentTriple.actor);",
       "expectRed": "a spawn asking to POST to another agent's event channel is refused too",
       "cell": "a spawn asking to POST to another agent's event channel is refused too",
       "note": "The half-fence. It reads as the obvious one, because read amplification is the risk people name first, and it leaves a caller able to mint publish rights onto another agent's plane, which is forgery rather than eavesdropping. E1 cannot tell this mutant from a healthy tree."
@@ -43,11 +44,20 @@
     {
       "name": "E3 the rule catches the wildcard form too, which it does not claim to",
       "file": "implementations/manager/src/manager.ts",
-      "find": "        (ch) => isEventChannel(ch) && ch !== ownEventChannel,",
-      "replace": "        (ch) => (isEventChannel(ch) || ch.startsWith(\"events.\")) && ch !== ownEventChannel,",
+      "find": "    const p = eventChannelPrincipal(ch);",
+      "replace": "    const p = eventChannelPrincipal(ch) ?? (ch.startsWith(\"events.\") ? { owner: \"\", actor: \"\" } : null);",
       "expectRed": "a WILDCARD event pattern is NOT refused by this rule",
       "cell": "a WILDCARD event pattern is NOT refused by this rule",
-      "note": "The limit asserted from the other side. Without this, the cell recording the gap would be satisfied by any tree, including one that had quietly closed it, and the comment describing the limit would be a sentence nobody tests."
+      "note": "The limit asserted from the other side. Without it, the cell recording the gap is satisfied by any tree including one that had quietly closed it, and the comment describing the limit is a sentence nobody tests."
+    },
+    {
+      "name": "E4 the rule covers the spawn door but not the resume door",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const foreign = foreignEventChannels(\n        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
+      "replace": "      const foreign = foreignEventChannels(\n        [],",
+      "expectRed": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
+      "cell": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
+      "note": "Not an invented mutant: this is exactly the state the change was in when a security review reproduced a foreign concrete event channel being minted through an admin inventory plus one credential renewal. Every spawn cell stays green under it, which is why it needed its own cell rather than trust in the existing ones."
     }
   ]
 }

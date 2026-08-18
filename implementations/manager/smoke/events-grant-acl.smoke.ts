@@ -14,13 +14,21 @@
  * real before minting; we boot our own JWT-auth nats-server, let the real spawn path run end to end,
  * then read the publish ACL out of the written creds.
  *
- * WHAT THE RESUME HALF PROVES, AND WHY IT IS NOT A SECOND MINT. A resume ADOPTS the credential the
- * spawn wrote; it does not re-mint one, and it refuses outright if the adopted authority's
- * `allowPublish` no longer matches the inventory's. So the question a restart raises is not "is the
- * grant re-derived correctly" but "does the record carry it forward at all", and there are two ways
- * to lose it: the inventory can drop the channel from `allowPublish`, or it can drop the ARMING flag
- * and bring the session back holding a grant it will never publish to. The last cells assert both
- * halves survive the round trip.
+ * WHAT THE RESUME HALF PROVES. A resume ADOPTS the credential the spawn wrote rather than minting a
+ * second one, so the question a restart raises is not "is the grant re-derived correctly" but "does
+ * the record carry it forward at all", and there are two ways to lose it: the inventory can drop the
+ * channel from `allowPublish`, or it can drop the ARMING flag and bring the session back holding a
+ * grant it will never publish to. Cells below assert both halves survive the round trip.
+ *
+ * ⚠️ THIS PARAGRAPH USED TO CLAIM THAT A RESUME REFUSES WHEN THE INVENTORY'S `allowPublish` NO
+ * LONGER MATCHES THE ADOPTED AUTHORITY'S. That is true in USER mode and was never true in static,
+ * where the retained-authority check pins the credential's path, its identity and the broker's
+ * acceptance of it and says nothing about its ACL. A security review found the consequence: the
+ * managed row is re-armed straight from the inventory, `renewManagedStaticCred` re-mints the JWT out
+ * of that row at half TTL, and a foreign concrete event channel written into an admin-supplied
+ * document therefore became a minted read on another agent's tool inputs and outputs one renewal
+ * later. Section 7 is the reproduction, and it exists because a comment asserting a refusal that
+ * does not happen is worse than no comment: it is the reason nobody looked.
  *
  * Run with: pnpm smoke:events-grant
  */
@@ -87,6 +95,27 @@ writeFileSync(
   "---\nname: eventbot\nrole: worker\nsubscribe: [work]\nallowSubscribe: [work]\nallowPublish: [work]\n---\nbody\n",
 );
 
+/** A manager wired for this smoke. Called twice: a restart is a NEW manager adopting an inventory
+ *  the old one wrote, and section 7 has to be that rather than a same-instance call. */
+const newManager = (): Manager => {
+  const m = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
+  (m as unknown as { auth: unknown }).auth = auth; // real trust material; the broker enforces it
+  (m as unknown as { runtime: { kind: string; spawn: (n: string, s: LaunchSpec) => AgentHandle } }).runtime = {
+    kind: "fake",
+    spawn: (name) => fakeHandle(name),
+  };
+  (m as unknown as { ep: Record<string, unknown> }).ep = {
+    ref: () => ({ id: "smoke-mgr" }),
+    on: () => {},
+    off: () => {},
+    waitForPresenceSnapshot: async () => {},
+    getRoster: () =>
+      [...(m as unknown as { agents: Map<string, { id: string; name: string; lifecycleUid: string }> }).agents.values()].map(
+        (a) => ({ card: { id: principalKey(DEV_OWNER, a.id).key, name: a.name }, status: "idle", lifecycleUid: a.lifecycleUid }),
+      ),
+  };
+  return m;
+};
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
 (mgr as unknown as { auth: unknown }).auth = auth; // real trust material; the broker enforces it
 
@@ -331,6 +360,57 @@ try {
     check("and its agent reads as unarmed rather than being refused", parsed?.inventory.agents[0]?.launch.events === false, refusal ?? parsed?.inventory.agents[0]?.launch);
   }
 
+
+  // 7 — THE RESUME DOOR. The rule has to hold on every seam that ARMS an acl, not only on spawn.
+  //
+  // This is a reproduction, not a hypothesis. A resume document is admin-supplied JSON; the managed
+  // row is re-armed from it, and `renewManagedStaticCred` re-mints the static credential out of that
+  // row at half TTL. So a foreign concrete event channel written into an inventory was a minted read
+  // on another agent's tool inputs and outputs one renewal later, past a fence that only ever looked
+  // at spawns. Static's retained-authority check pins the credential's PATH, its IDENTITY and the
+  // broker's acceptance of it, and nothing about its ACL, so nothing else stopped it.
+  {
+    const foreign = eventChannel({ owner: DEV_OWNER, actor: "UVICTIMPRINCIPALNOTOURS" });
+    const smuggled = JSON.parse(JSON.stringify(preserved)) as ManagerResumeInventory;
+    const victimEntry = smuggled.agents[0]!;
+    victimEntry.launch.allowSubscribe = [...(victimEntry.launch.allowSubscribe ?? []), foreign];
+
+    // Driven through `resumePreserved`, the real door, rather than through the private validator:
+    // the defect was that a door did not call the rule, so calling the rule directly would prove
+    // the rule and not the door.
+    // A SECOND manager, because that is what a restart is: the instance above is in preserving mode
+    // and refuses every resume with "manager is in preserving mode", which is a refusal that would
+    // satisfy these cells without the rule existing at all. It did, on the first run.
+    const mgr2 = newManager();
+    const r = await mgr2.resumePreserved(smuggled);
+    const refusal = JSON.stringify(r);
+    check(
+      "an inventory naming ANOTHER agent's event channel is refused at the resume door",
+      /another agent's event channel/.test(refusal),
+      refusal.slice(0, 400),
+    );
+    check("and the refusal names the channel it refused", refusal.includes(foreign), refusal.slice(0, 400));
+    check(
+      "no row is armed from the smuggled record",
+      !(mgr2 as unknown as { agents: Map<string, { launch: { allowSubscribe?: string[] } }> }).agents.has(victimEntry.name) ||
+        !((mgr2 as unknown as { agents: Map<string, { launch: { allowSubscribe?: string[] } }> }).agents.get(victimEntry.name)!.launch.allowSubscribe ?? []).includes(foreign),
+      [...(mgr2 as unknown as { agents: Map<string, unknown> }).agents.keys()],
+    );
+
+    // THE CONTROL. Every cell above is satisfied by a resume that refuses for any reason at all, and
+    // this one refuses easily: the manager is in preserving mode, the names are taken, the broker is
+    // shared. So the SAME document without the foreign channel has to reach a DIFFERENT outcome, and
+    // the discriminator is the refusal TEXT rather than ok/not-ok, because a legitimate resume here
+    // fails for its own unrelated reasons.
+    const clean = JSON.parse(JSON.stringify(preserved)) as ManagerResumeInventory;
+    const rc = JSON.stringify(await newManager().resumePreserved(clean));
+    check(
+      "the SAME inventory without the foreign channel is NOT refused by this rule",
+      !/another agent's event channel/.test(rc),
+      rc.slice(0, 400),
+    );
+  }
+
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
@@ -338,7 +418,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 27;
+const EXPECTED = 31;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
