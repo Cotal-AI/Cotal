@@ -27,8 +27,18 @@ throughout, including mid-reconnect. Every attempt re-runs the manager's full au
 reconnect cannot keep a revoked or expired grant alive: no grant is ever presented twice.
 
 Giving up always says why. A manager that refuses the attach exits non-zero with the manager's own
-message; a seat the manager no longer knows exits cleanly with `seat <name> is gone`. Pressing the
-detach key, or the agent's process exiting, ends the attach as before.
+message; a reconnect that finds the seat no longer there exits cleanly with `seat <name> is gone`. A
+refusal that could still pass, such as a manager at its session ceiling, is relayed in the manager's
+own words while the loop keeps trying, so waiting is never unexplained. Pressing the detach key, or
+the agent's process exiting while you are attached, ends the attach as before.
+
+Each reconnect also hands the abandoned session back to the manager, over the first link that can
+carry the message, so an attach that rides out several outages does not consume a session slot per
+outage. Nothing on the serving side reaps a session whose caller went away while the seat is quiet:
+the stall watchdog only arms once the send window fills, and an idle seat never fills it. The client
+is the only party that knows, so it says so, using the session's own credential, the only one
+scoped to that session's subjects. If it never gets a link that can carry the message, it says that
+instead, on exit.
 
 `--no-reconnect` restores the single-session behaviour for scripts that want one run and one exit
 code.

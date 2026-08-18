@@ -1,4 +1,4 @@
-import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
@@ -338,8 +338,8 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  *  it rather than by prose. `gone`/`denied` stop the loop; `fatal` is a refusal that retrying can
  *  never fix; everything else is worth another attempt. */
 type Established =
-  | { ok: true; nc: NatsConnection; grant: SessionGrant }
-  | { ok: false; kind: AttachRefusal | "fatal"; message: string };
+  | { ok: true; nc: NatsConnection; grant: SessionGrant; creds: string; inbox: string; server: string }
+  | { ok: false; kind: AttachRefusal | "fatal"; message: string; fromManager?: true };
 
 /** What a caller should DO about a manager refusal. `denied` will not change by asking again;
  *  `gone` is the seat the manager no longer knows, so there is nothing left to attach to; anything
@@ -357,6 +357,25 @@ export function attachRefusal(code: string | undefined): AttachRefusal {
   if (code === "permission-denied") return "denied";
   if (code === "not-found") return "gone";
   return "transient";
+}
+
+/**
+ * What a re-establishment TELLS the operator while it keeps trying, and what it keeps to itself.
+ * Returns the line to print, or undefined for silence.
+ *
+ * Only the MANAGER's own refusal is relayed, and only when it changes. An operator watching
+ * `reconnecting` for ten minutes cannot otherwise tell a sleeping laptop from a manager that is at
+ * its session ceiling, and the ceiling is the one a person can act on. Repeating a steady refusal
+ * on every attempt would bury it.
+ *
+ * A LOCAL failure to reach anything is deliberately silent: it is already what `connection lost,
+ * reconnecting` says, and the copy on this path is written for someone who just typed a command
+ * ("no mesh running at X - run `cotal up`"), which is the wrong thing to tell someone whose wifi
+ * dropped.
+ */
+export function reconnectNotice(est: { fromManager?: true; message: string }, alreadySaid: string): string | undefined {
+  if (!est.fromManager || est.message === alreadySaid) return undefined;
+  return `[cotal: ${est.message}]`;
 }
 
 /**
@@ -393,7 +412,7 @@ async function establishAttachSession(
   const t = await resolveControlTarget(v, "control-caller-admin", on, first ? {} : { onRefusal: "throw" });
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
-  if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code), message: reply.error ?? "error" };
+  if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code), message: reply.error ?? "error", fromManager: true };
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
   // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
@@ -428,9 +447,49 @@ async function establishAttachSession(
     // ping with two misses the client would not learn its link was dead for about four minutes,
     // with the terminal frozen the whole time. Ten seconds puts that in tens of seconds. Only on
     // the reconnecting path, so `--no-reconnect` keeps today's timing along with today's exit.
+    //
+    // NOT MEASURED by this change's suite, and said so rather than implied: the smoke severs the
+    // link by destroying sockets, so every number it prints is close detection. A fault model that
+    // half-opens a link is what would grade this line, and it does not exist here yet.
     ...(reconnect ? { pingInterval: 10_000 } : {}),
   });
-  return { ok: true, nc, grant };
+  return { ok: true, nc, grant, creds, inbox: id.id, server: t.server };
+}
+
+/** A session this side can no longer reach, plus the one credential that can still speak for it. */
+type Abandoned = { grant: SessionGrant; creds: string; inbox: string; server: string };
+
+/**
+ * Tell the manager a session is over, so it gets its slot back.
+ *
+ * NOTHING on the serving side reaps a session whose caller went away while the seat is quiet: the
+ * rail's stall watchdog only arms once the send window FILLS (`endpoint-session-rail.ts`), an idle
+ * seat never fills it, and the bridge has no expiry timer of its own. Measured against a manager
+ * with an idle seat: 45s of dead link left the live-session count at 1, and the reconnect took it
+ * to 2 — one slot per outage, held until the seat or the manager ends it, against a ceiling of 64.
+ *
+ * The mechanism is the advisory close frame the rail already defines; the manager's bridge ends on
+ * it. It has to be published with THIS session's caller credential, the only one scoped to this
+ * session's subjects, so a re-establishment cannot send it on the abandoned session's behalf — a
+ * fresh session's credential covers a fresh session's subjects. Hence a short-lived connection
+ * minted from the credential the abandoned session already had.
+ */
+async function releaseAbandonedSession(s: Abandoned): Promise<void> {
+  const nc = await connect({
+    servers: s.server,
+    ...standaloneConnectOpts({ creds: s.creds, tls: false }),
+    inboxPrefix: `_INBOX_${s.inbox}`,
+    maxReconnectAttempts: 0,
+    timeout: 5_000,
+  });
+  try {
+    // The rail is opened only because `close()` is the public way to speak the framing; no timers,
+    // and it tears itself down on the same call.
+    openSessionRail({ nc, grant: s.grant, role: "caller", onData: () => {}, idleCreditMs: 0, stallTimeoutMs: 0 }).close();
+    await nc.flush();
+  } finally {
+    await nc.drain().catch(() => nc.close());
+  }
 }
 
 /** Watch stdin for the detach key while there is NO session reading it. Without this the key is
@@ -461,6 +520,15 @@ async function runAttachLoop(
 ): Promise<AttachVerdict> {
   let first = true;
   let attempt = 0; // consecutive re-establishment attempts since the last live session
+  let abandoned: Abandoned | undefined; // a session the manager still counts, waiting to be told
+  let saidWhy = ""; // the last transient refusal printed, so a steady reason prints once, not per attempt
+  // Every exit runs through here, so the one thing an operator cannot see for themselves — that
+  // the manager is still holding a session this attach could never close — is never swallowed.
+  const done = (v: AttachVerdict): AttachVerdict => {
+    if (abandoned)
+      console.error(c.dim("[cotal: the manager still holds the session from the lost link; it frees when the seat or the manager ends it]"));
+    return v;
+  };
   for (;;) {
     if (!first) {
       // Back off BEFORE the attempt, and stay interruptible: the detach key must work while we
@@ -469,8 +537,17 @@ async function runAttachLoop(
       const watch = watchDetachKey(key.byte);
       const detached = await Promise.race([sleep(wait).then(() => false), watch.pressed.then(() => true)]);
       watch.stop();
-      if (detached) return { kind: "ended" };
+      if (detached) return done({ kind: "ended" });
       attempt++;
+    }
+    // Give the manager its slot back BEFORE claiming another one. The order is load-bearing at the
+    // ceiling: a client that claims first is refused by the very session it abandoned. A failure
+    // here is the link still being down, which the next attempt retries and `done` accounts for.
+    if (abandoned) {
+      try {
+        await releaseAbandonedSession(abandoned);
+        abandoned = undefined;
+      } catch { /* still unreachable; retried on the next attempt, reported by `done` if never */ }
     }
     let est: Established;
     try {
@@ -483,35 +560,56 @@ async function runAttachLoop(
     }
     if (!est.ok) {
       // Nothing changes for the first attach: any refusal is the same loud exit as before.
-      if (first || est.kind === "fatal" || est.kind === "denied") return { kind: "failed", message: est.message };
-      if (est.kind === "gone") return { kind: "gone" };
+      if (first || est.kind === "fatal" || est.kind === "denied") return done({ kind: "failed", message: est.message });
+      if (est.kind === "gone") return done({ kind: "gone" });
+      const notice = reconnectNotice(est, saidWhy);
+      if (notice) {
+        saidWhy = est.message;
+        console.error(c.dim(notice));
+      }
       continue; // transient: the manager or the link is unreachable right now
     }
+    saidWhy = "";
     if (first) console.error(c.dim(`attached to ${vv.name} - ${key.label} to detach`));
     else console.error(c.dim("[cotal: reconnected]"));
     first = false;
-    attempt = 0;
     let outcome;
+    const transport = meshSessionTransport(est.nc, est.grant);
     try {
       // The manager replays its byte-exact backlog snapshot on every open (the `ready` handshake
       // in session/bridge.ts), so the reconnected screen repaints through the path that already
       // exists; there is no second backlog here.
-      outcome = await attachClient(meshSessionTransport(est.nc, est.grant), hold);
+      outcome = await attachClient(transport, hold);
     } finally {
+      // Hand the session back. With the link still up that is one advisory frame over the
+      // connection already open (a rail that broke while the socket lived — a stall, a gap — is
+      // exactly this case, and it is idempotent after a detach has already closed it). With the
+      // link gone nothing can be published, so the credential is kept and the next attempt sends
+      // it; see releaseAbandonedSession for why no other credential can.
+      if (!est.nc.isClosed()) {
+        transport.close();
+        await est.nc.flush().catch(() => { /* the link died between the check and the frame */ });
+      } else if (reconnect) {
+        abandoned = { grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server };
+      }
       await est.nc.drain().catch(() => est.nc.close());
     }
+    // The backoff resets on a session that WORKED, not on one that merely opened. A link that comes
+    // up long enough for the control round trip and then dies would otherwise never leave the 1s
+    // rung, and each of those rungs costs a grant, a credential and two connections.
+    if (outcome.carried) attempt = 0;
     if (!reconnect) {
       // One-shot: a faulted session still throws, so `--no-reconnect` exits the way it does today.
       if (outcome.error) throw outcome.error;
-      return { kind: "ended" };
+      return done({ kind: "ended" });
     }
     if (!isTransportEnd(outcome.reason)) {
       // A faulted end this classification does not recognise is NOT a detach. Printing
       // `detached from` over it would be the silent swallow this whole change exists to remove,
       // so it exits non-zero carrying the fault. Every `fireEnd` site passes a reason today, so
       // this is a guard against a future one that forgets, not a live path.
-      if (outcome.error) return { kind: "failed", message: outcome.error.message };
-      return { kind: "ended" };
+      if (outcome.error) return done({ kind: "failed", message: outcome.error.message });
+      return done({ kind: "ended" });
     }
     console.error(c.dim("[cotal: connection lost, reconnecting]"));
   }

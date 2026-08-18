@@ -2,12 +2,12 @@
   "suite": "implementations/manager/smoke/attach-reconnect.smoke.ts",
   "guard": "`cotal attach` re-establishes its session when the LINK dies, and stops, saying why, when re-establishing cannot help",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-reconnect",
-  "completionMarker": "F. the two classifications the loop turns on",
+  "completionMarker": "F. the three classifications the loop turns on",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-reconnect.json",
   "why": [
     "SPECIFIER BOUNDARY, and it is the reason every command here builds first. The suite reads the",
-    "code under test through TWO different paths on purpose. Cell F imports `attachRefusal` and",
-    "`isTransportEnd` from `implementations/cli/src` directly, so a mutation lands on the bytes it",
+    "code under test through TWO different paths on purpose. Cell F imports `attachRefusal`,",
+    "`isTransportEnd` and `reconnectNotice` from `implementations/cli/src` directly, so a mutation lands on the bytes it",
     "grades with no build at all. Cells A to E run the real binary, `tsx bin/cotal.ts`, and",
     "`@cotal-ai/cli` resolves to `dist/` -- so those cells audit the last BUILD. Without a build in",
     "the command a mutation would kill the hand-built cell and leave every end-to-end cell green,",
@@ -16,8 +16,8 @@
     "because `dist/` is gitignored and git cannot be the recovery for it.",
     "",
     "THE PAIRING IS THE POINT, not the count. Cell F builds its inputs by hand, so on its own it",
-    "proves only that the suite depends on those two functions. Mutations 1, 2 and 4 are aimed at",
-    "END-TO-END cells, which is what shows a real entry point reaches them: mutation 4 changes what",
+    "proves only that the suite depends on those three functions. Mutations 1, 2, 4, 5, 6 and 7 are",
+    "aimed at END-TO-END cells, which is what shows a real entry point reaches them: mutation 4 changes what",
     "`attachRefusal` answers for `not-found` and the despawn cell goes red, having travelled the",
     "whole path from a real `cotal stop` through the manager's reply code into the loop's verdict.",
     "Mutation 3 is the one aimed at the hand-built cell, and it is aimed there because nothing this",
@@ -43,7 +43,16 @@
     "`gap` is the reason the original defect was FOUND. `gap` is what the client saw when the link",
     "healed quickly; the fix stops waiting for that symptom and acts on the connection going away,",
     "so `connection-closed` is the member of the set the end-to-end cells actually travel through.",
-    "Aiming at `gap` would have produced a survivor and a false sense of coverage."
+    "Aiming at `gap` would have produced a survivor and a false sense of coverage.",
+    "",
+    "MUTATIONS 6 AND 7 GRADE THE TWO THINGS THIS CHANGE ADDED BEYOND THE LOOP ITSELF, and both are",
+    "aimed end to end. 6 makes a reconnecting client forget the session it abandoned, and cell H reads",
+    "the manager's OWN live-session count to catch it: that cell uses a SILENT seat on purpose, because",
+    "a ticking seat fills the send window, arms the rail's stall watchdog and reaps the abandoned",
+    "session for free -- which would have made the client's hand-back look load-bearing when it was not.",
+    "7 lets a LOCAL refusal reach the terminal, and cell A catches it, because the mesh preflight really",
+    "does refuse there for several backoff rungs while the broker is down. Cell F's third check pins the",
+    "same branch by hand; the kill at cell A is what shows the real binary travels it."
   ],
   "mutations": [
     {
@@ -84,6 +93,36 @@
       "expectRed": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
       "cell": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
       "note": "THE REACHABILITY PROOF for the classifier. This is one line in a pure function, and the cell it reddens is a full end-to-end run: a real `cotal stop` despawns the seat while the client is reconnecting, the manager answers `not-found` on the wire, the CLI's inspect resolution carries that code, and the loop turns it into a clean exit. A kill here is the evidence that cell F is grading a function the product actually calls, rather than one the suite happens to import.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the first attach takes the RETRY path, so its refusal is rethrown instead of printed and exited",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const t = await resolveControlTarget(v, \"control-caller-admin\", on, first ? {} : { onRefusal: \"throw\" });",
+      "replace": "  const t = await resolveControlTarget(v, \"control-caller-admin\", on, reconnect ? { onRefusal: \"throw\" } : {});",
+      "expectRed": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
+      "cell": "...with ONE failure mark, not the doubled one a rethrown refusal renders",
+      "note": "The shipped defect, restored. `reconnect` is ON by default, so keying the disposition on the flag rather than on `first` sends the very first attach down the path meant only for re-establishments: its refusal escapes as an exception, the dispatcher's generic handler renders it as `✗ ${message}` over a sentence that already opens with `✗`, and the refusal's hint line is dropped. Aimed at the ONE load-bearing check in cell G: non-zero exit, the `no mesh running` sentence, and the absent reconnect banner all stay green under this mutation, because a first-attempt connect failure never announces a reconnect on either path. A kill here is therefore a claim about the failure MARK specifically, which is the whole finding.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a reconnecting client forgets the session it abandoned, so it never hands it back",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "      } else if (reconnect) {",
+      "replace": "      } else if (!reconnect) {",
+      "expectRed": "...and the reconnect left ONE live session, not two: the abandoned one was handed back",
+      "cell": "...and the reconnect left ONE live session, not two: the abandoned one was handed back",
+      "note": "The state of the world before this change, restored in one word. When the link is gone the client is the only party that knows the session is over -- nothing on the serving side reaps a session whose caller went away while the seat is quiet -- so a client that does not record the abandoned session's credential can never tell the manager, and each outage costs one of its 64 slots. Aimed at cell H, which is end to end: a real seat, a real severed link, a real re-establishment, and the manager's own live-session count read on the way through.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a LOCAL refusal is relayed to the terminal, so a dropped wifi is answered with `run `cotal up``",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (!est.fromManager || est.message === alreadySaid) return undefined;",
+      "replace": "  if (est.message === alreadySaid) return undefined;",
+      "expectRed": "a broker that is down AT the reconnect step produces another wait, never an exit",
+      "cell": "a broker that is down AT the reconnect step produces another wait, never an exit",
+      "note": "The notice exists so a manager that is refusing for a reason a person can act on is not hidden behind `reconnecting`. It must not become a channel for copy written for a different reader: the mesh preflight's refusal ends with `run `cotal up``, which is the wrong instruction for someone whose laptop lid was shut. Aimed at cell A, where the preflight really does refuse for several backoff rungs, so a kill shows the silent branch is travelled by the real binary rather than only by cell F's hand-built input.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]

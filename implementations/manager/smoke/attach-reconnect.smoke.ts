@@ -36,15 +36,21 @@
  *      used to hang forever rather than exit.
  *   E. a seat despawned while the client is reconnecting ends the attach CLEAN, saying the seat is
  *      gone, rather than retrying forever against something that no longer exists.
- *   F. the two classifications the loop turns on, as functions.
+ *   G. a FIRST attach against a mesh that is not there still refuses the way it always did: one
+ *      failure mark, the refusal's own remedy, and no reconnect it was never going to make.
+ *   H. a reconnect hands the abandoned session back to the manager. Against a SILENT seat, which
+ *      is the one nothing on the serving side reaps, so the count is the client's doing or nobody's.
+ *   F. the three classifications the loop turns on, as functions.
  *
  * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
  * depends on those functions. The reachability it does not prove is proven beside it: cell E
- * drives `attachRefusal("not-found")` through the real `cotal attach` binary end to end, and cells
- * A to D drive `isTransportEnd` the same way. Cell F then pins the REMAINING inputs of the same two
- * functions, which no end-to-end fault in this harness can produce (a static single-owner mesh
- * mints an admin instrument for every attach, so the manager has no reason to answer
- * `permission-denied`).
+ * drives `attachRefusal("not-found")` through the real `cotal attach` binary end to end, cells
+ * A to D drive `isTransportEnd` the same way, and cell A drives `reconnectNotice`'s SILENT branch
+ * end to end (the mesh preflight refuses at the reconnect step for several attempts there, and the
+ * cell asserts its remedy line never reaches the terminal). Cell F then pins the REMAINING inputs
+ * of the same three functions, which no end-to-end fault in this harness can produce: a static
+ * single-owner mesh mints an admin instrument for every attach, so the manager has no reason to
+ * answer `permission-denied`, and nothing here can drive it to its 64-session ceiling.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -59,7 +65,7 @@ import {
   registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { attachRefusal } from "../../cli/src/commands/agents.js"; // dev-only cross-impl smoke import
+import { attachRefusal, reconnectNotice } from "../../cli/src/commands/agents.js"; // dev-only cross-impl smoke import
 import { isTransportEnd } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -160,6 +166,14 @@ registry.register({
   kind: "connector", name: "rc-seat", requires: ["node"],
   buildLaunch: (o): LaunchSpec => ({ command: process.execPath, args: [SEAT_STUB], env: envFor(o) }),
 } as Connector);
+// The same seat with its ticker off. Cell H needs a serving side that never fills the send window,
+// because that is the seat whose abandoned session nothing on the manager reaps.
+registry.register({
+  kind: "connector", name: "rc-seat-quiet", requires: ["node"],
+  buildLaunch: (o): LaunchSpec => ({
+    command: process.execPath, args: [SEAT_STUB], env: { ...envFor(o), SEAT_SILENT: "1" },
+  }),
+} as Connector);
 
 /** One `cotal attach` under a real pty, with its whole transcript and its exit. */
 type Attached = {
@@ -170,8 +184,8 @@ type Attached = {
   waitExit: (ms: number) => Promise<boolean>;
   kill: () => void;
 };
-function attachUnderPty(root: string, extra: string[] = []): Attached {
-  const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
+function attachUnderPty(root: string, extra: string[] = [], seat: string = SEAT): Attached {
+  const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", seat, "--space", space, "--server", PROXY, ...extra], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
   });
@@ -252,7 +266,11 @@ try {
     const detectMs = Date.now() - tSever;
     console.log(`    (sever to "connection lost": ${detectMs}ms)`);
     check("the link dying is announced on the terminal", announced, a.seen().slice(-600));
-    check("...within 30s of the link dying, not on the NATS default ping (about four minutes)",
+    // What this measures is CLOSE detection: the proxy destroys every socket, so the client learns
+    // through a socket error. It is deliberately not a measurement of the client ping, which exists
+    // for the other shape of dead link (half-open, no error, nothing arriving) that this harness
+    // cannot produce -- deleting `pingInterval` leaves this number where it is.
+    check("...within 30s of the link dying, on the socket closing under it",
       announced && detectMs < 30_000, { detectMs });
     check("...and the attach does NOT exit (it used to die of `gap` the moment the link returned)",
       a.exit() === undefined, a.exit());
@@ -384,7 +402,51 @@ try {
   }
 
   // ---------------------------------------------------------------------------------------------
-  console.log("\nF. the two classifications the loop turns on");
+  console.log("\nH. a reconnect hands the abandoned session back, so the manager does not lose the slot");
+  {
+    // Every other cell runs against a seat that TICKS, and a ticking seat fills the manager's send
+    // window, which arms the rail's stall watchdog and reaps the abandoned session for free. This
+    // cell uses a SILENT seat, where nothing on the serving side reaps anything: the watchdog only
+    // arms once the window is FULL (`endpoint-session-rail.ts`) and the bridge has no expiry timer.
+    // Measured before the fix, against this same manager: 45s of dead link left the count at 1, and
+    // the reconnect took it to 2 — one of the manager's 64 slots per outage, held until the seat or
+    // the manager ends it.
+    const QUIET = "rcquiet";
+    writeFileSync(join(root, ".cotal", "agents", `${QUIET}.md`), `---\nname: ${QUIET}\nrole: worker\n---\n`);
+    const q = await manager.startAgent({ name: QUIET, agent: "rc-seat-quiet", cwd: repoRoot });
+    if (!q.ok) throw new Error(`quiet seat did not start: ${JSON.stringify(q)}`);
+    // The manager's own accounting, read off the plane the ceiling is enforced against.
+    const live = (): number => (manager as unknown as { sessionPlane?: { liveSessions: number } }).sessionPlane?.liveSessions ?? -1;
+    const settle = async (want: number, ms: number): Promise<number> => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline && live() !== want) await wait(200);
+      return live();
+    };
+
+    const before = live();
+    const a = attachUnderPty(root, [], QUIET); started.push(a);
+    check("the attach to the silent seat comes up", await a.waitFor(new RegExp(`attached to ${QUIET}`), 90_000), a.seen().slice(-400));
+    const withOne = live();
+    check("...and the manager counts one more live session", withOne === before + 1, { before, withOne });
+
+    await sever();
+    check("the reconnect is under way", await a.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000), a.seen().slice(-400));
+    // Well past the 30s stall watchdog, with the caller gone. Nothing reaps this — the honest half
+    // of the cell, and the whole reason the client has to say so itself.
+    await wait(35_000);
+    const orphaned = live();
+    check("a silent seat's session is NOT reaped while the caller is away (the watchdog never arms)",
+      orphaned === withOne, { withOne, orphaned });
+
+    await heal();
+    check("the link healing is announced", await a.waitFor(/\[cotal: reconnected\]/, 90_000), a.seen().slice(-600));
+    const after = await settle(withOne, 20_000);
+    check("...and the reconnect left ONE live session, not two: the abandoned one was handed back",
+      after === withOne, { before, withOne, orphaned, after });
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  console.log("\nF. the three classifications the loop turns on");
   check("transport-class: the rail's own fault vocabulary reconnects",
     ["gap", "stall", "subscription", "peer-closed", "connection-closed", "publish", "flood", "credit-overrun", "garbled-frame", "handler", "seq-exhausted", "closed"]
       .every((r) => isTransportEnd(r)));
@@ -395,6 +457,13 @@ try {
   check("refusal: not-found means the seat is gone", attachRefusal("not-found") === "gone");
   check("refusal: anything else is worth another attempt",
     attachRefusal("unavailable") === "transient" && attachRefusal(undefined) === "transient" && attachRefusal("failed-precondition") === "transient");
+  check("notice: the manager's own refusal is relayed while the loop keeps trying",
+    reconnectNotice({ fromManager: true, message: "the manager is already serving its maximum of 64 concurrent sessions" }, "")
+      === "[cotal: the manager is already serving its maximum of 64 concurrent sessions]");
+  check("notice: a steady refusal is said once, not on every attempt",
+    reconnectNotice({ fromManager: true, message: "same refusal" }, "same refusal") === undefined);
+  check("notice: a LOCAL refusal is not relayed (its copy is written for someone who just typed a command)",
+    reconnectNotice({ message: "✗ no mesh running at nats://127.0.0.1:4222 - run `cotal up`" }, "") === undefined);
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} - ${pass} passed, ${fail} failed`);
 } finally {

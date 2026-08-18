@@ -164,6 +164,10 @@ function swallowStdoutPipeErrors(): void {
 export interface AttachOutcome {
   readonly reason: string;
   readonly error?: Error;
+  /** Did any seat output actually reach the terminal? The manager replays its backlog snapshot on
+   *  every open, so a session that carried nothing never got that far — which is how a caller that
+   *  reconnects tells a session that worked from one that died on the way up. */
+  readonly carried: boolean;
 }
 
 /**
@@ -224,6 +228,8 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
     // Wheel-scroll state (see MOUSE_ON above): whether the child is in the alternate screen (on the
     // hold, since it outlives one session) and a buffer for an SGR mouse report split across stdin
     // reads (per-session: bytes still in flight when a link dies are gone with it).
+    // Did this session ever put bytes on the terminal (see AttachOutcome.carried)?
+    let carried = false;
     let mouseBuf = "";
     // Carry the tail of the previous output frame so an alt-screen escape split across ws frames
     // (e.g. `ESC[?10` then `49h`) is still detected; 16 bytes covers these private-mode sequences.
@@ -320,6 +326,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
       stdin.on("data", onInput);
     });
     transport.onData((data) => {
+      carried = true;
       trackAltScreen(data);
       process.stdout.write(data);
     });
@@ -329,7 +336,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
       // link broke or the session finished. A transport with nothing to say about a faulted end
       // reports `error`, which is never in the transport-class set; the loop exits non-zero on it
       // rather than calling it a detach, so an unnamed fault is still loud.
-      resolve({ reason: reason ?? (err ? "error" : "detached"), ...(err ? { error: err } : {}) });
+      resolve({ reason: reason ?? (err ? "error" : "detached"), carried, ...(err ? { error: err } : {}) });
     });
   });
 }

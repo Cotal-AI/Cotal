@@ -12,7 +12,13 @@
  *     raw-mode path is the one under test.
  *
  * It measures and prints; it asserts nothing. Run: pnpm probe:attach-reconnect
- * Env: PROBE_HEAL_AFTER_MS (default 45000) — how long the link stays dead before it heals.
+ * Env: PROBE_HEAL_AFTER_MS (default 90000) — how long the link stays dead before it heals. The
+ *        default is past the SERVING side's own stall, which is the arm that used to hang forever
+ *        with no output and no exit; 10000 (or 45000, which is still on this side of 64 frames ×
+ *        400ms + 30s) gives the other arm, the one that dies of `gap` the moment the link returns.
+ *      SEAT_SILENT=1 — a seat that emits nothing, so the serving window never fills and neither
+ *        side's watchdog arms. The third arm: it used to self-heal, and it is what an operator who
+ *        walks away from an idle agent actually has.
  *      PROBE_CAP_MS (default 180000) — hard stop.
  */
 import { randomUUID } from "node:crypto";
@@ -36,7 +42,8 @@ const repoRoot = resolve(here, "../../..");
 const BIN = join(repoRoot, "bin", "cotal.ts");
 const SEAT_STUB = join(here, "attach-reconnect-seat.mjs");
 
-const HEAL_AFTER_MS = Number(process.env.PROBE_HEAL_AFTER_MS ?? 45_000);
+const HEAL_AFTER_MS = Number(process.env.PROBE_HEAL_AFTER_MS ?? 90_000);
+const SILENT = process.env.SEAT_SILENT === "1";
 const CAP_MS = Number(process.env.PROBE_CAP_MS ?? 180_000);
 
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -110,6 +117,10 @@ const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? BROKER), COTAL_CREDS: String(o.creds),
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
+  // The seat's own knobs reach it, so the silent arm is reachable with the shipped command rather
+  // than by editing this function.
+  ...(process.env.SEAT_SILENT ? { SEAT_SILENT: process.env.SEAT_SILENT } : {}),
+  ...(process.env.SEAT_TICK_MS ? { SEAT_TICK_MS: process.env.SEAT_TICK_MS } : {}),
 });
 registry.register({
   kind: "connector", name: "rc-seat", requires: ["node"],
@@ -165,10 +176,11 @@ try {
   };
 
   if (!(await waitFor(/attached to/, 60_000, "attach banner"))) throw new Error("the attach never came up");
-  if (!(await waitFor(/TICK-\d+/, 20_000, "first tick"))) throw new Error("no seat output reached the client");
+  // A SILENT seat has no first tick to wait for; that is the point of that arm.
+  if (!SILENT && !(await waitFor(/TICK-\d+/, 20_000, "first tick"))) throw new Error("no seat output reached the client");
   const ticksBefore = [...seen().matchAll(/TICK-(\d+)/g)].map((m) => Number(m[1]));
   const tSever = Date.now() - T0;
-  console.log(`t=${tSever}ms  attach is live (last tick seen: TICK-${Math.max(...ticksBefore)}). SEVERING the client link.`);
+  console.log(`t=${tSever}ms  attach is live (${ticksBefore.length ? `last tick seen: TICK-${Math.max(...ticksBefore)}` : "silent seat, no ticks"}). SEVERING the client link.`);
   stamp(`\n<<PROBE: SEVER at t=${tSever}ms>>\n`);
   await sever();
 
@@ -204,7 +216,8 @@ try {
   const err = /mesh session transport error: (\S+)/.exec(tail);
   console.log(`  transport error reason: ${err ? err[1] : "(none printed)"}`);
   const ticksAfter = [...tail.matchAll(/TICK-(\d+)/g)].map((m) => Number(m[1]));
-  console.log(`  ticks before sever: max TICK-${Math.max(...ticksBefore)}; ticks overall: max TICK-${Math.max(...ticksAfter)}`);
+  const maxTick = (t: number[]) => (t.length ? `TICK-${Math.max(...t)}` : "none (silent seat)");
+  console.log(`  ticks before sever: ${maxTick(ticksBefore)}; ticks overall: ${maxTick(ticksAfter)}`);
   console.log(`  healed at: ${healed ? "yes" : "no"}`);
 } finally {
   child?.kill("SIGKILL");
