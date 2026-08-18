@@ -289,6 +289,14 @@ export const cotal: Plugin = async () => {
    * the decision: an event reaches the holder only if that holder is ALREADY bound to its thread, or
    * is not bound to anything yet and is free to take it. A holder bound elsewhere is not the route
    * for this event, whatever the ambient id currently says.
+   *
+   * THIS IS NOT ATOMIC WITH BINDING, and does not need to be. `flush` enqueues, and the binding is
+   * taken on the holder's own chain, so two calls in one synchronous block could both read an
+   * unbound holder and the second would be refused terminally. Nothing here would stop that. What
+   * stops it is that every flush/close site is fed the AMBIENT id below, one variable holding one
+   * value, so two events present the SAME path and a repeat for one path is allowed rather than
+   * refused; the only site fed an event-carried id is the swap's adopt, which is serialized on the
+   * swap chain. Feed a site an event-carried id off that chain and this becomes reachable.
    */
   function eventsFor(id: string | undefined): AguiEmitterHolder<OpenCodeRecord> | undefined {
     const holder = events;
@@ -486,7 +494,12 @@ export const cotal: Plugin = async () => {
   });
 
   /** Match an event's session against the one we drive. Adopt the first session id we see, then
-   *  filter to it; later top-level `session.created` events adopt explicitly as reset-in-place. */
+   *  filter to it; later top-level `session.created` events adopt explicitly as reset-in-place.
+   *
+   *  LOAD-BEARING FOR THE EVENT PLANE, not merely tidy. The flush sites are fed the AMBIENT id, so
+   *  an event that gets past this filter does not address its own session — it pumps whichever one
+   *  this process drives, publishing that session's staged turn early. R7 in
+   *  `smoke/mutations/opencode-events-reset.json` opens this filter and requires a cell to notice. */
   const ours = (id?: string): boolean => {
     if (!id) return !sessionID; // a session-less event counts as ours only before we've adopted one
     if (!sessionID) adoptSession(id, "first event");
