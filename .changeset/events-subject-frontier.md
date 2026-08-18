@@ -25,7 +25,16 @@ writes.
 The halt message previously offered three causes, another writer, a restored stream, or a filtered
 purge, and the real one was not among them, so an operator went looking for a rogue writer. It now
 names what a moved tip can actually mean, including a concurrent session under the same principal and
-a frontier record that disagrees with the stream.
+a frontier record that disagrees with the stream. It also states the limit of the per-principal lock
+rather than claiming the lock prevents the case the halt fires on, since that lock excludes a second
+emitter only within one workspace root on one host. And where it used to name an abandonment as the
+remedy, it now says no command performs one, names the directory that has to go, and says removing
+less leaves a mixed state the next start refuses.
+
+The scan that recovers a tip from the session logs refuses a symlinked entry and opens each log
+without following links, matching the directory chain that creates this state and already refused a
+symlinked component. Without that, a link planted where a session directory belongs took the scan to
+a log in another tree.
 
 MIGRATION: `AguiEmitter.start` now requires a `subjectFrontier`, and refuses at runtime without one
 rather than falling back to the per-session number, because that fallback is the defect. Anyone
