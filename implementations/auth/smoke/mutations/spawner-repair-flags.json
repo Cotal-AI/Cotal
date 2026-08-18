@@ -1,0 +1,81 @@
+{
+  "suite": "implementations/auth/smoke/attenuation.smoke.ts",
+  "guard": "a delegation refusal with no row to copy from names the flags and their wide default in prose, and prints no pasteable grant line at all",
+  "command": "pnpm smoke:auth-attenuation",
+  "completionMarker": "ATTENUATION SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/spawner-repair-flags.json",
+  "why": [
+    "A spawner's own ACL is the CEILING every agent beneath it is attenuated against, so the repair for",
+    "a broken delegation chain decides that ceiling. Both arms of this branch are arms with NO ROW to",
+    "copy that ceiling from: the missing-spawner row does not exist yet, and the revoke DELETED the",
+    "revoked one, so `cotal actor list` cannot help on either.",
+    "",
+    "THE PROPERTY. An arm with no row to copy from prints NO pasteable grant line. Not a better line: no",
+    "line. Every line such an arm could print is wrong in one of exactly two ways, and this site shipped",
+    "both in turn and had both caught by a reviewer who pasted them:",
+    "  - a line carrying channel values invents them (S2), and the shortest route to a command that does",
+    "    not throw is to delete the flags,",
+    "  - a line short of all three flags widens on paste (S1, S4), because `runActor` fills every omitted",
+    "    flag with the WIDE default `>`.",
+    "The refusal therefore names the verb, the flags and the default in prose, and leaves nothing an",
+    "operator can select and run. S1/S2/S4 are the three shapes that were rejected, replayed.",
+    "",
+    "S1 is the text shipped in v0.21.0. S4 is the first fix for it, which added correct prose and left",
+    "the runnable line in place: it is the one that proves the prose cell alone does not close this, and",
+    "the two cells are not redundant. S2 is the second fix, with placeholder values.",
+    "",
+    "S5 is S4 with two spaces after the verb. It exists because the first version of the no-line cell",
+    "matched a single ASCII space, so the property as coded was narrower than the property as stated,",
+    "and a security lens closed that gap by running the shape rather than reading the regex.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the ledger by relative source path (../src/index.js), so the",
+    "mutated file is the file that runs and there is no build in the command."
+  ],
+  "mutations": [
+    {
+      "name": "S1 the v0.21.0 text: the missing-spawner repair prints a runnable line naming --scope only",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain, so grant \"${pActor}\" under owner \"${pOwner}\" first, carrying \"spawn\" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \\`cotal actor grant\\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`",
+      "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first (\\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\\`)`",
+      "expectRed": "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
+      "cell": "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
+      "note": "Byte-for-byte the string released in v0.21.0. Paste it and the spawner comes back with `>` read and `>` post. The `has no grant in this space` needle the neighbouring cell matches on is untouched, so only the remedy cells move. It reddens the no-line cell too; the prose cell is the one named because it is the assertion that fails first and describes what this mutant removed."
+    },
+    {
+      "name": "S4 correct prose, and the runnable widening line left in place beside it",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain, so grant \"${pActor}\" under owner \"${pOwner}\" first, carrying \"spawn\" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \\`cotal actor grant\\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`",
+      "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\\`, and DECIDE its --allow-subscribe and --allow-publish rather than leaving them off: an omitted flag is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against. No command is printed with those two filled in because there is no row to copy them from and this refusal will not invent them`",
+      "expectRed": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "cell": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "note": "The first fix for S1, blocked by a security lens that extracted the backticked command and ran it through csv+grantActor: scope ['spawn'], allowSubscribe ['>'], allowPublish ['>']. The prose after the ticks is not what gets pasted. Under this mutant the prose cell stays GREEN and only the no-line cell reddens, which is exactly why both cells exist."
+    },
+    {
+      "name": "S5 the runnable line comes back with two spaces after the verb",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain, so grant \"${pActor}\" under owner \"${pOwner}\" first, carrying \"spawn\" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \\`cotal actor grant\\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`",
+      "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \\`cotal actor grant  ${pActor} --owner ${pOwner} --scope spawn\\`, and DECIDE its --allow-subscribe and --allow-publish rather than leaving them off: an omitted flag is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against. No command is printed with those two filled in because there is no row to copy them from and this refusal will not invent them`",
+      "expectRed": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "cell": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "note": "A security lens broke the FIRST version of this cell with exactly this shape. The regex was `cotal actor grant [^`\\\\s]`, one ASCII space, so a line with two spaces, a tab or a newline after the verb passed the cell and still pasted wide. The property as stated is \"followed by an operand\"; the cell as coded was narrower than the property. It is `\\\\s+\\\\S` now and this mutant is the guard for that, since S4 with one space would keep passing a cell that only knew one shape."
+    },
+    {
+      "name": "S2 the prose is right and the printed line carries invented channel values",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain, so grant \"${pActor}\" under owner \"${pOwner}\" first, carrying \"spawn\" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \\`cotal actor grant\\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`",
+      "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn --allow-subscribe '<what its agents may read>' --allow-publish '<what they may post>'\\`: an omitted flag is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`",
+      "expectRed": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "cell": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "note": "The second fix, blocked in turn: the command throws `invalid channel \"<what its agents may read>\"` on paste, and the shortest route to one that succeeds is to delete the flags, which is `>`. Same cell as S4 on purpose: one property kills both bad shapes, which is the whole reason the property is 'no line' and not 'a better line'."
+    },
+    {
+      "name": "S3 the shipped text on the revoked arm: re-grant it, then respawn, and no warning",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          : `agent \"${leaf}\": spawner \"${parentKey}\"${deep ? ` (an ancestor)` : \"\"} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\\`cotal spawn\\`). The revoke deleted the row, so \\`cotal actor list\\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\\`>\\` read, \\`>\\` post) and a spawner's ACL is the ceiling for everything under it`,",
+      "replace": "          : `agent \"${leaf}\": spawner \"${parentKey}\"${deep ? ` (an ancestor)` : \"\"} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\\`cotal spawn\\`)`,",
+      "expectRed": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
+      "cell": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
+      "note": "The arm nobody had looked at, found by a security lens reading the sibling branch of the one being fixed. It is the worst arm to be silent on: the revoke deleted the row, so nothing is left for `cotal actor list` to show and the operator re-grants from memory."
+    }
+  ]
+}

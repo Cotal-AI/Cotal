@@ -90,7 +90,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid,
+  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
   resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds,
 } = await import("@cotal-ai/core");
@@ -340,6 +340,11 @@ try {
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   for (const n of ["alpha", "beta", "delta"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
+  // `epsilon` and `zeta` carry NO role on purpose: section E asks what a peer may delegate on the EVENT
+  // PLANE, and a role is itself a delegated capability, so a `role: worker` persona would be
+  // refused for the role before the channel was ever weighed and the cell would read as a pass.
+  for (const n of ["epsilon", "zeta"])
+    writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
 
   authChild = spawnAuthService();
   await waitAuthReady();
@@ -402,11 +407,15 @@ try {
   {
     const bearerClaims = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { sub: string; act: { actor: string; lifecycleUid: string } };
     const epCaller = { owner: bearerClaims.sub, actor: bearerClaims.act.actor, uid: bearerClaims.act.lifecycleUid };
-    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds }), maxReconnectAttempts: 0 });
+    // `tls: false` is REQUIRED, not decorative: this file is outside every tsconfig, so the guard
+    // in `standaloneConnectOpts` is the only thing that reaches it, and it throws rather than
+    // defaulting. SERVER is a plaintext local broker, the same value its two sibling auth smokes
+    // pass. Without it this line threw and took every cell below it with it.
+    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
     try {
       const svc = await resolveService(epNc, SPACE, "manager", epCaller, { deadlineMs: 10_000 });
       check("user bearer resolves the manager generically (describe + store fetch + digest-verified recompile, all over the bearer)",
-        svc.commands.size === 17 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+        svc.commands.size === 18 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
       const ri = await invokeCommand(epNc, SPACE, svc, "inspect", { name: "alpha" }, {});
       check("user bearer invokes `inspect` over ep (a spawn-set row; describe-bound currency, no epoch stub)",
         ri.reply.ok === true && (ri.reply.data as { name: string }).name === "alpha", ri.reply);
@@ -560,11 +569,11 @@ try {
   // PRIVILEGED ctl subject, admitted by the callout-minted scope grants and decided by the
   // manager's owner-domain authorization.
   console.log("O) own-agent control: owner-domain attach/stop on the spawn tier");
-  const ctlCaller = async (actor: string, owner: string, scope: string[]) => {
+  const ctlCaller = async (actor: string, owner: string, scope: string[], acl?: { allowSubscribe?: string[]; allowPublish?: string[] }) => {
     // The row's lifecycleUid ALSO rides the endpoint options: invokeService's caller triple is
     // (owner, actor, uid) and refuses without it (SPEC 13.1 — no alias-keyed fallback).
     const uid = mintLifecycleUid();
-    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [], lifecycleUid: uid });
+    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: acl?.allowSubscribe ?? [], allowPublish: acl?.allowPublish ?? [], lifecycleUid: uid });
     const ex = await agentExchange(actor, g.actorToken, owner);
     if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
     const ep = new CotalEndpoint({
@@ -585,7 +594,7 @@ try {
   // a spawn-only cross-owner op is broker-DENIED at publish while an admin operator's is admitted
   // and the manager's fresh ledger read governs.
   type EpReply = { ok: boolean; data?: unknown; error?: string };
-  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop", name: string): Promise<EpReply> => {
+  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop" | "input", name: string, forceMode?: "owner" | "any"): Promise<EpReply> => {
     let info;
     try { info = await ep.invokeService("manager", "inspect", { name }); }
     catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
@@ -593,10 +602,17 @@ try {
     const rowInfo = info.reply.data as { id: string; lifecycleUid: string };
     const dot = rowInfo.id.indexOf(".");
     const [tOwner, tActor] = dot > 0 ? [rowInfo.id.slice(0, dot), rowInfo.id.slice(dot + 1)] : [ep.principal.owner, rowInfo.id];
-    const mode = tOwner !== ep.principal.owner ? "any" : "owner";
-    const command = op === "stop" ? "despawn" : "attach";
+    // Derived from the owners, EXCEPT when a caller forces it. The derivation is right for every
+    // ordinary call, and wrong for one question: a same-owner target always derives `owner`, so a
+    // cell that wants to prove the ANY-mode subject is also closed can never reach it by asking
+    // nicely. `forceMode` exists for exactly that cell and for nothing else.
+    const mode = forceMode ?? (tOwner !== ep.principal.owner ? "any" : "owner");
+    const command = op === "stop" ? "despawn" : op;
+    // `input` is the one op here that carries a body. Everything else about the call is identical,
+    // which is the point: the same resolve, the same derived mode, the same rails.
+    const body = op === "input" ? { text: "/compact", enter: false } : undefined;
     try {
-      const r = await ep.invokeService("manager", command, undefined, { target: { mode, owner: tOwner, actor: tActor, lifecycleUid: rowInfo.lifecycleUid } });
+      const r = await ep.invokeService("manager", command, body, { target: { mode, owner: tOwner, actor: tActor, lifecycleUid: rowInfo.lifecycleUid } });
       return r.reply.ok === true ? { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
@@ -615,6 +631,34 @@ try {
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
   check("delta is gone from the manager after the sibling stop", !manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  // THE SIBLING-WRITE VECTOR, executed on a real user mesh rather than argued from the mint table.
+  // The two cells above are the reason it exists: on a user mesh the own-domain arm admits any seat
+  // under the caller's owner, so `opsmate` attaches and stops an agent it never spawned. That is the
+  // policy working as designed, because both are denial. Seat INPUT is not denial, it is control of
+  // whatever the peer is running, so it must NOT ride the same spawn scope. It does not: a spawn
+  // bearer is minted no `input` row in either mode, so the publish is broker-denied before the
+  // manager sees it. `alpha` rather than `delta` because the sibling stop above took delta.
+  // The refusal is asserted BY SHAPE, not just by `ok === false`, because an absence assertion is
+  // the kind that passes for the wrong reason. A broker drop surfaces as `unavailable` or
+  // `deadline-exceeded`: the publish never reached a manager, so nothing answered. Restoring the
+  // grant would not merely change that string, it would make the owner-mode call SUCCEED, since the
+  // own-domain arm admits the sibling. A `permission-denied` would mean the publish was ADMITTED
+  // and the handler refused, which is a weaker property than the one these cells are for.
+  const brokerDropped = (r: EpReply): boolean =>
+    r.ok === false && /unavailable|deadline-exceeded/.test(r.error ?? "");
+  // BOTH modes, and the second one has to be forced. The helper derives `owner` for a same-owner
+  // target, so without the override the any-mode subject is never published and a claim about it
+  // would be untested text sitting next to a green cell.
+  const sibInput = await epTargeted(opsmate, "input", "alpha", "owner");
+  check("owner-domain: the SAME sibling actor that could attach and stop is REFUSED owner-mode seat input, dropped at the BROKER",
+    brokerDropped(sibInput), sibInput);
+  const sibInputAny = await epTargeted(opsmate, "input", "alpha", "any");
+  check("...and the any-mode subject is closed to it too, so the refusal is the missing grant and not the mode derivation",
+    brokerDropped(sibInputAny), sibInputAny);
+  // Named for what it proves and no more. `input` never removes a seat, so this rules out a wild
+  // despawn rather than a successful write; the load-bearing half is the pair above.
+  check("the refused input did not take alpha with it (it never should; this is the belt, not the braces)",
+    manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
   // A CROSS-OWNER caller with only spawn scope: the ep any-mode row it would need is broker-DENIED
   // at publish (a spawn bearer holds owner-mode rows only), so the op fails before the manager.
   const OWNER_B = "u_" + "b".repeat(26);
@@ -629,11 +673,76 @@ try {
   const auditor = await ctlCaller("auditor", OWNER_B, ["spawn", "admin"]);
   const adminAttach = await epTargeted(auditor, "attach", "alpha");
   check("cross-owner attach with ledger admin passes (any-mode admin rows + fresh ledger read)", adminAttach.ok === true, adminAttach);
+  // And the same ledger row reaches seat input, which is the whole point of putting `input` on the
+  // operator instrument instead of on `spawn`: the authority that already crosses owners carries it,
+  // and nothing weaker does. This is also the live proof that the any-mode `input` row the admin
+  // mint emits is REACHABLE, not merely present in a decoded JWT.
+  const adminInput = await epTargeted(auditor, "input", "alpha");
+  check("cross-owner seat input with ledger admin passes, and reports the bytes it wrote",
+    adminInput.ok === true && (adminInput.data as { bytes?: number })?.bytes === 8, adminInput);
   // Narrow the auditor back to [spawn] (upsert) — its NEXT exchange mints owner-mode-only rows, so a
   // cross-owner op loses the any-mode reach (the callout re-reads the ledger per exchange).
   await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
+
+  // ---------- E. the event plane rides the SAME delegation envelope, at the real door ----------
+  // The question this answers: can a peer that merely holds `spawn` hand its own child a READ grant
+  // on ANOTHER principal's event channel, where that plane is defined to carry tool inputs and
+  // outputs? Not through a unit call into the ledger: through the real ep `spawn` command, over a
+  // real bearer, at a live broker.
+  //
+  // WHAT IS ASSERTED AND WHY IT IS NOT THE REPLY TEXT. `spawn` is an ACTION: the door replies the
+  // instant the identity is minted, BEFORE provisioning, so the acceptance says the request was
+  // admitted and says nothing about the outcome. The verdict rides the goal terminal, and a
+  // spawn-scoped bearer following its own goal times out here (recorded as a finding, not worked
+  // around). So the cells assert the two facts that cannot be produced any other way: the door
+  // ACCEPTED the request, and the ledger then refused it, leaving no managed row and no live agent.
+  // A refusal at the schema or at the door would fail the first; a refusal that leaked would fail
+  // the second.
+  console.log("E) a peer cannot delegate a foreign event channel to its own child");
+  const VICTIM = eventChannel({ owner: OWNER_B, actor: "auditor" });
+  type Accepted = { ok: boolean; name?: string; error?: string };
+  const epSpawnAccept = async (ep: CotalEndpoint, args: Record<string, unknown>): Promise<Accepted> => {
+    try {
+      const r = await ep.invokeService("manager", "spawn", args, { deadlineMs: 15_000 });
+      if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+      return { ok: true, name: (r.reply.data as { name?: string }).name };
+    } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
+  };
+  const settle = async (ms: number) => { await new Promise((r) => setTimeout(r, ms)); };
+  const evtpeer = await ctlCaller("evtpeer", OWNER, ["spawn"], { allowSubscribe: ["general"], allowPublish: ["general"] });
+  const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is ACCEPTED at the door (the contract admits the field)",
+    readOverAsk.ok === true, readOverAsk);
+  await settle(1500);
+  check("...and the ledger then refuses it: no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  check("...and no live agent by that name", !manager.list().some((a) => a.name === "epsilon"), manager.list().map((a) => a.name));
+  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
+  check("the same over-ask on the child's WRITE set is accepted at the door too", writeOverAsk.ok === true, writeOverAsk);
+  await settle(1500);
+  check("...and refused the same way: publishing INTO another agent's plane leaves no row",
+    !existsSync(rowFile("managed", OWNER, "epsilon")));
+  // The other half, and the reason this is containment rather than a ban: an OPERATOR widening the
+  // peer's own grant admits the very same request. The authority is the ledger, not a special case
+  // for `events.`, so the plane inherits the delegation rule every other channel already has.
+  const widened = await ctlCaller("evtpeer2", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("with the peer's OWN grant widened by the operator, the identical spawn is accepted", admitted.ok === true, admitted);
+  await settle(2500);
+  const epsilonRow = existsSync(rowFile("managed", OWNER, "epsilon"))
+    ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "epsilon"), "utf8")) as { allowSubscribe?: string[]; parent?: string })
+    : undefined;
+  check("...and THIS time a row is written, carrying exactly the channel it asked for",
+    epsilonRow?.allowSubscribe?.includes(VICTIM) === true, epsilonRow);
+  check("...recording the peer that delegated it as parent", epsilonRow?.parent === `${OWNER}.evtpeer2`, epsilonRow);
+  // The same over-ask, run through the op core directly with the SAME spawner principal, so the
+  // refusal TEXT is on the record next to the door cells above. The route is proved by them; this
+  // names what the ledger said.
+  const overText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("the refusal is the delegation envelope, and it names the event channel it would have granted",
+    overText.ok === false && /delegation only narrows/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
 
   // ---------- V. elevated views (exchange-gated per-connection profiles), live ----------
   // The live half of the views design (unit layers: smoke:views). Real wire: refused under-scoped
@@ -655,6 +764,45 @@ try {
   // cli's scope is still [spawn] here — every admin-gated view must refuse naming the gate.
   const deniedView = await humanViewEx("admin");
   check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
+  // ...and the re-grant it prints is a WHOLE-row upsert, not a scope edit. `runActor` fills every
+  // omitted flag from `csv(v, dflt)` with the WIDE default, so a scope-only paste silently resets
+  // this row's read/post to `>`/`>`: adding a view would widen the operator to the whole chat
+  // plane.
+  //
+  // Naming the flags is NOT enough, and a security lens is why this cell says more than that: a
+  // command that names `--allow-subscribe '<its current read set>'` reads as paste-ready, fails on
+  // an invalid channel, and the operator's shortest route to a command that succeeds is to delete
+  // the flag or write `>`. So the values are graded against the ROW, not the sentence: whatever the
+  // refusal prints must be what the row actually holds right now.
+  const viewErr = deniedView.body.error ?? "";
+  const viewRegrant = /cotal actor grant [^(]+/.exec(viewErr)?.[0] ?? "";
+  const flagOf = (name: string): string | undefined =>
+    new RegExp(`--${name} '([^']*)'`).exec(viewRegrant)?.[1];
+  const liveRow = JSON.parse(readFileSync(rowFile("interactive", OWNER, "cli"), "utf8")) as {
+    allowSubscribe: string[]; allowPublish: string[]; scope: string[]; label?: string;
+  };
+  check(
+    "the view refusal's re-grant names read AND post, not scope alone, and says the upsert replaces the WHOLE row",
+    /--scope '/.test(viewRegrant) &&
+      /--allow-subscribe '/.test(viewRegrant) &&
+      /--allow-publish '/.test(viewRegrant) &&
+      /WHOLE row/.test(viewErr),
+    { viewRegrant, error: viewErr },
+  );
+  check(
+    "the ACL values it prints are the row's REAL current sets, not a placeholder and not the wide default",
+    flagOf("allow-subscribe") === liveRow.allowSubscribe.join(",") &&
+      flagOf("allow-publish") === liveRow.allowPublish.join(",") &&
+      !/[<>]/.test(`${flagOf("allow-subscribe")}${flagOf("allow-publish")}`),
+    { printed: { sub: flagOf("allow-subscribe"), pub: flagOf("allow-publish") }, row: liveRow },
+  );
+  check(
+    "and it carries the scope ADDED to the row's own, plus the label the upsert would otherwise drop",
+    (flagOf("scope") ?? "").split(",").includes("admin") &&
+      liveRow.scope.every((sc) => (flagOf("scope") ?? "").split(",").includes(sc)) &&
+      flagOf("label") === liveRow.label,
+    { printedScope: flagOf("scope"), printedLabel: flagOf("label"), row: liveRow },
+  );
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
   const vg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {
@@ -694,6 +842,10 @@ try {
   // asserts on; a space-wide tap would be a silent sub violation and see nothing.
   godEye.tap((subject: string) => { tapped.push(subject); }, { subject: `cotal.${SPACE}.inst.>` });
   await wait(300); // let the tap subscription settle
+  // A written `<owner>.<actor>` literal, so it is a valid recipient by construction rather than
+  // by anything checking it here. Any future change to the principal grammar has to visit this
+  // line: it builds a recipient instead of borrowing one from a card, and this suite is not in
+  // the CI chain, so nothing would fail if it stopped being well formed.
   await opsmate.unicast(`${OWNER}.alpha`, "psst — a DM between two other principals");
   let sawDm = false;
   for (let i = 0; i < 20 && !sawDm; i++) { await wait(100); sawDm = tapped.some((s) => s.includes(".inst.")); }

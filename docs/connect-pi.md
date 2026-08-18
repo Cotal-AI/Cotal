@@ -16,7 +16,9 @@ options are not wired yet and **fail loud** rather than degrade.
 
 One standalone artifact supports three Pi-hosted surfaces:
 
-1. `cotal spawn --agent pi` launches the installed `pi` binary in the manager's PTY.
+1. `cotal spawn --agent pi` launches the installed `pi` binary in the manager's PTY. `--prompt` is
+   delivered as Pi's initial message (its first turn); a prompt that is empty or starts with `-` or
+   `@` refuses the launch, since Pi would read it as an option or a file reference.
 2. Interactive Pi discovers a copied `~/.pi/agent/extensions/cotal.js`.
 3. Pi SDK applications using the default resource loader discover that same copy. SDK applications
    must bind Pi's extension lifecycle when they expect an idle session to be driven proactively.

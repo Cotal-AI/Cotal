@@ -295,6 +295,7 @@ export interface ManagerResumeAgent {
     allowPublish?: string[];
     capabilities?: string[];
     transcript: boolean;
+    events: boolean;
     shareTools?: string;
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -385,6 +386,10 @@ export interface StartAgentOpts {
   /** Mirror the session's transcript to `tr-<name>`. Defaults to off; `true` (the
    *  `--transcript` flag) opts in. */
   transcript?: boolean;
+  /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
+   *  off; `true` (the `--events` flag) opts in. Independent of `transcript`: they are two surfaces
+   *  with two grants, and one must never authorize the other. */
+  events?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
    *  and rejects this flag alongside it (one source, no merge). */
@@ -422,6 +427,7 @@ interface ManagedLaunch {
   allowPublish?: string[];
   capabilities?: string[];
   transcript: boolean;
+  events: boolean;
   shareTools?: string;
   forkSource?: string;
   unresolvedLaunchOptionKeys?: string[];
@@ -1474,6 +1480,7 @@ export class Manager {
         allowPublish: a.launch.allowPublish,
         capabilities: a.launch.capabilities,
         transcript: a.launch.transcript,
+        events: a.launch.events,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         unresolvedLaunchOptionKeys: a.launch.unresolvedLaunchOptionKeys,
@@ -2014,6 +2021,15 @@ export class Manager {
         const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
+      }),
+      // C3 `input`: the SAME authorization as `attach`, deliberately written out rather than
+      // factored with it - the two share a policy, not a body, and a shared wrapper would be a
+      // place for one of them to quietly acquire a condition the other does not have.
+      input: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        return this.inputAuthorized(a, args(ctx));
       }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
@@ -2761,6 +2777,7 @@ export class Manager {
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
         transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
+        events: typeof args.events === "boolean" ? args.events : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
         prompt: args.prompt ? String(args.prompt) : undefined,
         subscribe,
@@ -3128,6 +3145,20 @@ export class Manager {
       }
       allowPublish = [...(allowPublish ?? []), connector.transcriptChannel(name)];
     }
+    // The AG-UI event plane (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1). Refused HERE, where the
+    // transcript refusal already lives, because nothing has been minted yet: a connector that cannot
+    // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
+    // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
+    // the principal's owner is resolved further down, so deriving it from anything in scope here
+    // would mean guessing at the identity the child will actually connect as. It is added at the
+    // accept seam below, where the allocated triple exists.
+    const events = opts.events ?? process.env.COTAL_EVENTS_DEFAULT === "1";
+    if (events && !connector.eventChannel) {
+      // Release the just-reserved name on this fail-fast path. A leaked reserve is silent: it costs
+      // the next spawn of this persona its un-suffixed name and nothing reports why.
+      this.reserved.delete(name);
+      return { ok: false, error: `connector "${connector.name}" does not publish an AG-UI event plane, but events was requested` };
+    }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
     // but-uncompleted endpoint obligation could execute AFTER its uid is declared retired. The
@@ -3169,6 +3200,15 @@ export class Manager {
       const agentTriple = this.userMode
         ? { owner: opts.owner ?? (spawner && parsePrincipalKey(spawner)?.owner.startsWith("u_") ? parsePrincipalKey(spawner)!.owner : DEV_OWNER), actor: name, uid: lifecycleUid }
         : { owner: DEV_OWNER, actor: identity.id, uid: lifecycleUid };
+      // THE EVENT GRANT, derived from the principal that was actually ALLOCATED and never from the
+      // display name. A display name is UI convenience: this mesh permits two live agents to carry
+      // one, so a name-keyed channel fuses two principals onto one subject and, in auth mode,
+      // authorizes both onto it from the same name-only value. `agentTriple` is the triple the child
+      // will connect as in both modes, so the grant and the subject the session derives from its own
+      // endpoint are the same derivation. Placed here rather than beside the transcript grant
+      // because this is the first point at which that triple exists, and still before every
+      // provisioning call that consumes `allowPublish`.
+      if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
       await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
@@ -3294,6 +3334,7 @@ export class Manager {
         allowPublish,
         capabilities,
         transcript,
+        events,
         mcpServers,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
@@ -3336,6 +3377,7 @@ export class Manager {
           allowPublish,
           capabilities,
           transcript,
+          events,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
@@ -3719,6 +3761,7 @@ export class Manager {
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
           transcript: entry.launch.transcript,
+          events: entry.launch.events,
           mcpServers,
           workspaceRoot: this.workspaceRoot,
         });
@@ -3784,6 +3827,7 @@ export class Manager {
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
           transcript: entry.launch.transcript,
+          events: entry.launch.events,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
         },
@@ -5250,6 +5294,45 @@ export class Manager {
       return { ok: false, error: (e as Error).message };
     }
     return { ok: true, data: { name, path } };
+  }
+
+  /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
+   *  had. The single call an external UI needs to deliver a harness command (`/compact`, `/clear`,
+   *  `/model`) without holding a terminal open on the caller's side.
+   *
+   *  Why the runtime HANDLE and not an attach session: a session is a stream (backlog, subscriber
+   *  set, a lifetime the session plane accounts for and caps). Opening and discarding one per
+   *  keystroke line would burn a session slot for a write, and would put a capacity refusal in the
+   *  path of an operation that has no capacity cost. {@link AgentHandle.write} is the one-shot
+   *  sibling of `interrupt()`, which already writes into the same pty.
+   *
+   *  Three refusals, each for a different reason and each with its own code, so a caller can tell
+   *  "never going to work" from "not right now":
+   *   - the name was refilled while authorization awaited: act on the incarnation the caller was
+   *     authorized for or on nothing at all (the same guard {@link attachAuthorized} carries, for
+   *     the same reason: a name is a reusable slot and `authorizeNamed` can await a ledger read);
+   *   - the agent is not running: there is no terminal to type into;
+   *   - the runtime cannot write (tmux/cmux/orca/herdr attach to an externally-owned process, so
+   *     they own no input stream for it): `unimplemented`, named by runtime kind. NOT a fallback
+   *     to an attach session and NOT a silent success - a dropped keystroke would leave the caller
+   *     believing a command was delivered that never was.
+   *
+   *  `enter` defaults to true: a harness command typed but not submitted has not been delivered.
+   *  Nothing is echoed back; the caller reads the resulting turns from the event plane. */
+  private inputAuthorized(a: ManagedAgent, args: Record<string, unknown>): { name: string; bytes: number } {
+    if (this.agents.get(a.name) !== a)
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`);
+    if (a.handle.status() !== "running")
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to type into`);
+    const write = a.handle.write?.bind(a.handle);
+    if (!write)
+      throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`);
+    // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
+    // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
+    // and an explicit `true` must behave identically, and only `false` may suppress the return.
+    const data = `${String(args.text)}${args.enter !== false ? "\r" : ""}`;
+    write(data);
+    return { name: a.name, bytes: Buffer.byteLength(data, "utf8") };
   }
 
   /** The post-authorization attach effect (P2 item 6): mint the holder-bound §13.6 offer, redeem it

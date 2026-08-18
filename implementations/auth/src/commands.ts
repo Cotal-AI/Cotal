@@ -190,7 +190,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
     if (sub === "list") {
       const rows = loadActorLedger(dir);
       if (!rows.length) {
-        console.log("no actors granted - grant one with: cotal actor grant <actor> --sub <IdP subject>");
+        console.log("no actors granted - grant one with: cotal actor grant <actor> --sub <IdP subject>   (that's the full grant - all channels, may spawn; narrow with --allow-subscribe/--allow-publish/--scope)");
         return;
       }
       for (const r of rows.sort((a, b) => (a.owner + a.actor).localeCompare(b.owner + b.actor)))
@@ -200,7 +200,7 @@ async function runActor(args: ParsedArgs): Promise<void> {
       return;
     }
     if (sub === "grant") {
-      if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]");
+      if (!actor) throw new Error("usage: cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role r] [--label l]   (an upsert of the WHOLE row: an omitted flag is the WIDE default - scope spawn,role:default, read '>', post '>' - so narrowing means naming every field, e.g. --scope '' --allow-subscribe general --allow-publish '')");
       const owner = await resolveGrantOwner(st, values);
       // Default = the FULL grant (all channels, spawn + the stock role): `actor grant` is an
       // operator act of letting a user in, so omitting flags means "fully", and narrowing is the
