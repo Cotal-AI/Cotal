@@ -379,7 +379,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             );
           const head = scope
             ? `${shown.length} pull-only message${shown.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
-            : `${shown.length} message${shown.length === 1 ? "" : "s"}${peek ? " (peek — not cleared)" : ""}:`;
+            : `${shown.length} message${shown.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`;
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical.
           const body = `${head}\n${shown.map(fmtItem).join("\n")}${heldNote(held)}`;
@@ -404,7 +404,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         if (all.length) {
           const head = scope
             ? `${all.length} message${all.length === 1 ? "" : "s"} — buffered pull-only items were cleared; normal focus channel items are read-only recall and may appear again:`
-            : `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek — live buffer not cleared)" : ""} — focus mode, channel items are recall since you focused:`;
+            : `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`;
           parts.push(`${head}\n${all.map(fmtItem).join("\n")}${heldNote(held)}`);
         }
         // Same order as above: render first, ack second, and only ever ids from the buffered lane.
