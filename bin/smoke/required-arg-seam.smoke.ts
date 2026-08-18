@@ -158,14 +158,16 @@ const EXTS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
  *    it is itself a failure that says so. Crude, exact, and fail-closed: a tripwire cannot bless a
  *    call, only refuse to answer for one.
  */
-const CONTAINERS: Record<string, "frontmatter" | "tripwire" | "excluded"> = {
-  ".astro": "frontmatter", ".mdx": "tripwire",
-  // EXCLUDED, which is a decision and not an oversight, and that difference is the whole point of
-  // the table. Both can carry an inline `<script>`, so they belong on the watchlist; both are
-  // markup DELIVERED TO A BROWSER, and a browser has no NATS client and therefore no path to this
-  // seam. They are named here so the exclusion is on the record and is revisited if either ever
-  // becomes a build-time surface, which is exactly what `.astro` turned out to be.
-  ".html": "excluded", ".svg": "excluded",
+const CONTAINERS: Record<string, "frontmatter" | "script" | "tripwire"> = {
+  ".astro": "frontmatter",
+  ".mdx": "tripwire",
+  // `.html` and `.svg` both carry inline `<script>`, and five pages here already do. An earlier cut
+  // EXCLUDED them on the reasoning that a browser cannot reach a NATS seam. That reasoning was
+  // wrong as stated: browsers run NATS over WebSocket, and this package ships a browser entry. The
+  // true reason the path is closed today is narrower and lives in another file, which is exactly
+  // the kind of premise that rots without anyone noticing. So they are READ instead, and no
+  // rationale has to stay true for this check to be right.
+  ".html": "script", ".svg": "script",
 };
 
 /** Container extensions this repo could plausibly grow. A cell asserts every one PRESENT in the tree
@@ -174,8 +176,33 @@ const CONTAINERS: Record<string, "frontmatter" | "tripwire" | "excluded"> = {
 const CONTAINER_WATCHLIST = [".astro", ".vue", ".svelte", ".mdx", ".marko", ".riot", ".html", ".svg"];
 
 const extOf = (f: string): string => { const i = f.lastIndexOf("."); return i < 0 ? "" : f.slice(i); };
-/** Decided AND read. An `excluded` container is decided and deliberately not walked. */
-const scanned = (ext: string): boolean => CONTAINERS[ext] === "frontmatter" || CONTAINERS[ext] === "tripwire";
+const scanned = (ext: string): boolean => CONTAINERS[ext] !== undefined;
+
+/**
+ * An HTML/SVG document split into the JavaScript it EXECUTES and everything else, both blank-padded
+ * so every line number is the document's own. A `<script>` with no type, `type="module"`, or a
+ * JavaScript mime is code; anything else (a template, JSON-LD, an unknown language) is not, and
+ * lands in the remainder where the tripwire can see it.
+ *
+ * The remainder is not discarded, and that is deliberate: this splitter is a regex over HTML, which
+ * is a thing that can be wrong. Tripwiring what it did NOT treat as code means a mis-slice loses a
+ * call into a region that still fails the run, rather than into silence.
+ */
+function htmlSplit(text: string): { code: string; rest: string } {
+  const blank = (t: string): string => t.replace(/[^\n]/g, " ");
+  let code = "", rest = "", last = 0;
+  const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
+  for (let m = re.exec(text); m; m = re.exec(text)) {
+    const attrs = m[1], body = m[2];
+    const type = /type\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase();
+    const isJs = !type || type === "module" || /javascript|ecmascript/.test(type);
+    const bodyStart = m.index + m[0].indexOf(">") + 1;
+    code += blank(text.slice(last, bodyStart)) + (isJs ? body : blank(body));
+    rest += text.slice(last, bodyStart) + (isJs ? blank(body) : body);
+    last = bodyStart + body.length;
+  }
+  return { code: code + blank(text.slice(last)), rest: rest + text.slice(last) };
+}
 
 /** The fenced TypeScript head of an Astro component, plus where the rest of the file starts. The
  *  head is blank-padded so every line number in it is the file's own. */
@@ -202,6 +229,8 @@ const parse = (file: string, text: string): ts.SourceFile => {
   const container = CONTAINERS[extOf(file)];
   if (container === "frontmatter")
     return ts.createSourceFile(file, frontmatter(text)?.code ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  if (container === "script")
+    return ts.createSourceFile(file, htmlSplit(text).code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
   return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
     /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : undefined);
 };
@@ -567,9 +596,15 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   // time, so extracting only the fenced head would leave a second live surface unread. It is not
   // TypeScript and cannot be parsed as any, so the same tripwire covers it. Extract what is a
   // program, refuse the rest: the two together are what makes the container claim honest.
-  const fm = CONTAINERS[extOf(file)] === "frontmatter" ? frontmatter(text) : undefined;
-  if (CONTAINERS[extOf(file)] === "frontmatter")
+  const kind = CONTAINERS[extOf(file)];
+  if (kind === "frontmatter") {
+    const fm = frontmatter(text);
     found.push(...tripwire(fm ? fm.restAt : 0, `outside the frontmatter of a ${extOf(file)} file, in its template half`));
+  }
+  if (kind === "script" && htmlSplit(text).rest.includes(seam.fn)) found.push({
+    file, line: text.slice(0, text.indexOf(seam.fn)).split("\n").length, verdict: "unverifiable",
+    detail: `\`${seam.fn}\` is named in a ${extOf(file)} file OUTSIDE any JavaScript this reader extracted (markup, an attribute, or a script whose type it does not treat as code); move the call into a script it can read, or teach this check to extract that form`,
+  });
   return found;
 }
 
@@ -785,6 +820,27 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     mdx(`import { standaloneConnectOpts } from "x";`)[0]?.verdict === "unverifiable");
   check("...and is silent when it does not name the seam, so it is a tripwire and not a ban",
     mdx(`# just documentation`).length === 0);
+  // Inline `<script>` in HTML/SVG, which five pages here already carry. An earlier cut EXCLUDED
+  // these on the reasoning that a browser cannot reach a NATS seam; that reasoning was wrong as
+  // stated (browsers run NATS over WebSocket) and the true reason lived in another file, which is
+  // the kind of premise that rots unwatched. Reading them means no rationale has to stay true.
+  const html = (body: string): Site[] => sitesIn("p.html", body, SEAMS[0]);
+  check("an inline MODULE script is read, so a call in a page is classified like any other",
+    html(`<!doctype html>\n<script type="module">\nstandaloneConnectOpts({ creds: c });\n</script>`)[0]?.verdict === "missing-key");
+  check("...and a CLASSIC script with no type at all is code too",
+    html(`<script>\nstandaloneConnectOpts({ creds: c });\n</script>`)[0]?.verdict === "missing-key");
+  check("...and a well-formed one is accepted, so the split reads rather than merely refusing",
+    html(`<script type="module">\nstandaloneConnectOpts({ creds: c, tls: false });\n</script>`)[0]?.verdict === "has-key");
+  check("...at the real line of the real document",
+    html(`<!doctype html>\n<body>\n<script type="module">\nstandaloneConnectOpts({ creds: c });\n</script>`)[0]?.line === 4);
+  // The remainder is tripwired rather than dropped, because this split is a regex over HTML and a
+  // regex over HTML can be wrong. A mis-slice then loses a call into a failure, not into silence.
+  check("a script whose TYPE is not JavaScript is not read, and naming the seam there is refused",
+    html(`<script type="text/x-template">standaloneConnectOpts({ creds: c })</script>`)[0]?.verdict === "unverifiable");
+  check("...as is the seam named in MARKUP, an attribute, or anywhere the split did not treat as code",
+    html(`<button onclick="standaloneConnectOpts({ creds: c })">go</button>`)[0]?.verdict === "unverifiable");
+  check("...while a document that never names the seam is silent",
+    html(`<!doctype html>\n<script type="module">\nconst x = 1;\n</script>`).length === 0);
   check("a BARE DEFAULT import binds the scannable name, so it is not a rebinding",
     fx(`import standaloneConnectOpts from "@cotal-ai/core";`).length === 0);
   // The residual both reviews called ordinary rather than exotic, and they were right: this is
@@ -821,21 +877,19 @@ check("the scan reached a source tree at all (a zero-file walk would pass every 
 // so all of them would still pass if the WALK stopped admitting container files. A fixture proves
 // the reader; only the real tree proves it is reached. This floor is tied to the components that
 // exist here today.
-const walkedContainers = files.filter((f) => CONTAINERS[extOf(f)]).length;
-check("the WALK admits container files, not just the classifier that can read them",
-  walkedContainers >= 7, walkedContainers);
+// Per EXTENSION rather than as a total, because a total is defeated by arithmetic: once `.svg`
+// contributes nineteen files, a floor of seven survives `.html` being dropped from the walk
+// entirely. Each declared container that EXISTS here must actually appear in the walked set.
+const walkedExts = new Set(files.map((f) => extOf(f)));
+const unwalked = Object.keys(CONTAINERS).filter((x) => extensionsPresent(ROOT).has(x) && !walkedExts.has(x));
+check("the WALK admits every declared container extension present in the tree, not just the classifier",
+  unwalked.length === 0, unwalked);
 
 const present = extensionsPresent(ROOT);
 const undecided = CONTAINER_WATCHLIST.filter((x) => present.has(x) && !CONTAINERS[x]);
 check("every container language present in this tree has a recorded decision, read or tripwire",
   undecided.length === 0, undecided);
 
-// ...and the other half of "decided": an EXCLUDED extension is one the walk deliberately does not
-// enter, which is only a decision if something proves the exclusion is real rather than a typo.
-const excluded = CONTAINER_WATCHLIST.filter((x) => CONTAINERS[x] === "excluded");
-check("an EXCLUDED container is decided but not walked, so exclusion is on the record rather than an omission",
-  excluded.length > 0 && files.every((f) => CONTAINERS[extOf(f)] !== "excluded"),
-  { excluded, walkedAnyway: files.filter((f) => CONTAINERS[extOf(f)] === "excluded").length });
 
 for (const seam of SEAMS) {
   const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
