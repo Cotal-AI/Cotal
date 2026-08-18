@@ -39,6 +39,17 @@
  *   F. a detach byte sharing one read with another byte is not a detach and is not delivered.
  *   G. the same chunk in a LIVE session is data, forwarded with the 0x1d in it, and still not a
  *      detach: that is the cost of the exact-match test, paid where it is paid.
+ *   H. the detach key pressed after the reconnect is ANNOUNCED but before the session is READY still
+ *      detaches. That window is a round trip wide, so this cell runs over a fourth link state: up,
+ *      correct, and slow.
+ *   I. the same defect on the commonest path of all: bytes typed at a TERMINAL before the FIRST
+ *      attach comes up never reach the agent either.
+ *   J. the boundary of I, and the reason the reader is for terminals only: with stdin a PIPE, what
+ *      a script wrote before the session opened is still delivered, and a lone detach byte on a
+ *      pipe still detaches.
+ *   K. a detach pressed while a faulted session is being HANDED BACK is still a keypress. This one
+ *      needs a fifth link state, slow and lossy, because it is the only one that ends a session
+ *      without closing the socket, which is the only way the hand-back's own round trips run at all.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -141,6 +152,82 @@ const severLoud = (): Promise<void> =>
     s.on("error", rej);
     s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
   });
+/** SLOW: up and correct, but every frame arrives late. Nothing here is a fault; it is the round trip
+ *  a real operator has and a loopback does not, and it is the only way to make the window between
+ *  "the reconnect is announced" and "the session is ready" wide enough to type into on purpose.
+ *  Equal delays preserve order, so this changes the clock and nothing else. */
+const healSlow = (delayMs: number): Promise<void> =>
+  new Promise((res, rej) => {
+    knocks.length = 0;
+    const s = createServer((client) => {
+      const up = netConnect(BROKER_PORT, "127.0.0.1");
+      liveSockets.add(client); liveSockets.add(up);
+      fireKnock();
+      const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
+      for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
+      const relay = (from: Socket, to: Socket) =>
+        from.on("data", (b) => { setTimeout(() => { if (!to.destroyed) to.write(b); }, delayMs); });
+      relay(client, up); relay(up, client);
+    });
+    s.on("error", rej);
+    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
+  });
+/** SLOW, and able to LOSE a frame without losing the CONNECTION. Every other state here kills the
+ *  socket, and on those the hand-back below a faulted session is a skipped branch, so the order of
+ *  the statements inside it is unobservable. A `gap` is the way in: the caller's rail raises it the
+ *  moment a data frame is missing and the next one lands, it is transport-class, and it does nothing
+ *  to the link. So this reads NATS framing on the broker-to-client direction and removes whole MSG
+ *  frames while armed, passing PING, PONG and INFO through untouched; the connection stays healthy
+ *  and only the rail notices. The client's own PING is announced because a flush IS a PING, and that
+ *  is the one edge of the hand-back window visible from outside the process. */
+let dropping = false;
+let droppedFrames = 0;
+let sawClientPing: (() => void) | undefined;
+const healSlowLossy = (delayMs: number): Promise<void> =>
+  new Promise((res, rej) => {
+    knocks.length = 0;
+    dropping = false; droppedFrames = 0;
+    const s = createServer((client) => {
+      const up = netConnect(BROKER_PORT, "127.0.0.1");
+      liveSockets.add(client); liveSockets.add(up);
+      fireKnock();
+      const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
+      for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
+      client.on("data", (b) => {
+        if (b.includes("PING\r\n")) { const h = sawClientPing; sawClientPing = undefined; h?.(); }
+        const copy = Buffer.from(b);
+        setTimeout(() => { if (!up.destroyed) up.write(copy); }, delayMs);
+      });
+      let buf = Buffer.alloc(0);
+      up.on("data", (chunk) => {
+        buf = Buffer.concat([buf, chunk]);
+        for (;;) {
+          const nl = buf.indexOf("\r\n");
+          if (nl < 0) break;
+          const line = buf.subarray(0, nl).toString("latin1");
+          const sp = line.indexOf(" ");
+          const verb = (sp < 0 ? line : line.slice(0, sp)).toUpperCase();
+          let total = nl + 2;
+          let isMsg = false;
+          if (verb === "MSG" || verb === "HMSG") {
+            const parts = line.trim().split(/\s+/);
+            const n = Number(parts[parts.length - 1]);
+            if (Number.isFinite(n)) {
+              total = nl + 2 + n + 2;
+              isMsg = true;
+              if (buf.length < total) break; // the payload has not all arrived yet
+            }
+          }
+          const frame = Buffer.from(buf.subarray(0, total));
+          buf = buf.subarray(total);
+          if (isMsg && dropping) { droppedFrames++; continue; }
+          setTimeout(() => { if (!client.destroyed) client.write(frame); }, delayMs);
+        }
+      });
+    });
+    s.on("error", rej);
+    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
+  });
 /** HELD: the dial connects and then nothing ever comes back. This is what holds an establishment
  *  open long enough for a key pressed in the middle of one to be pressed in the middle of one. */
 const holdOpen = (): Promise<void> =>
@@ -207,6 +294,37 @@ function attachUnderPty(root: string): Attached {
   };
   started.push(a);
   return a;
+}
+
+/** The same command with stdin as a PIPE rather than a terminal: what a script gets. Kept separate
+ *  from the pty helper because the difference between the two is the whole point of the cell that
+ *  uses it. */
+type Piped = { seen: () => string; write: (s: string) => void; exit: () => number | undefined; waitExit: (ms: number) => Promise<boolean>; kill: () => void };
+const pipedChildren: Piped[] = [];
+function attachPiped(root: string): Piped {
+  const child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
+    cwd: root,
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+    stdio: ["pipe", "pipe", "pipe"],
+  });
+  let buf = "";
+  let code: number | undefined;
+  child.stdout.on("data", (d) => { buf += String(d); });
+  child.stderr.on("data", (d) => { buf += String(d); });
+  child.on("close", (c) => { code = c ?? 0; });
+  const p: Piped = {
+    seen: () => buf,
+    write: (str) => { child.stdin.write(str); },
+    exit: () => code,
+    kill: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
+    waitExit: async (ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) { if (code !== undefined) return true; await wait(100); }
+      return code !== undefined;
+    },
+  };
+  pipedChildren.push(p);
+  return p;
 }
 
 const sink = (): Buffer => readFileSync(SINK);
@@ -444,12 +562,151 @@ try {
     check("...and the attach is still up", a.exit() === undefined, a.exit());
     await detachAndSettle(a, base, "G");
   }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nH. the detach key pressed while the new session is OPENING still detaches");
+  // Found by review, not by this suite, and the reason it was missed is the reason this cell needs a
+  // slow link. The loop announces the reconnect and then opens the session, and the reader that owns
+  // stdin is handed over only when that session is READY, a round trip later. On loopback that round
+  // trip is under a millisecond, so a press lands after it and the session's own reader handles it.
+  // On a real link it is tens or hundreds of milliseconds, and the press lands in between: seen by
+  // the loop's reader, awaited by nobody, and thrown away when the handoff happens. The operator
+  // watches their detach do nothing and their next keystrokes go to the agent.
+  //
+  // THE MUTATION FOR THIS CELL IS ITS PREMISE CHECK. Restore the swallow and this cell only passes
+  // if the press landed AFTER ready, which is the window it exists to avoid; so a killed mutation is
+  // what proves the press is landing where the cell claims.
+  {
+    const base = live();
+    const { a, mark } = await attached();
+    await loseTheLink(a);
+    await nextDial();
+    await closeLink();
+    await healSlow(400); // every frame 400ms each way: the ready handshake is now visible from here
+    check("the reconnect is announced, which is where an operator would give up",
+      await a.waitFor(/\[cotal: reconnected\]/, 90_000), a.seen().slice(-300));
+    const tPress = Date.now();
+    a.write(DETACH); // announced, but the session's ready handshake is still in flight
+    const gone = await a.waitExit(60_000);
+    console.log(`    (announce to exit: ${gone ? `${Date.now() - tPress}ms` : "never, inside 60s"})`);
+    check("the press ends the attach, though it landed while the session was opening", gone, a.seen().slice(-300));
+    check("...exiting clean", a.exit()?.code === 0, a.exit());
+    check("...without the detach byte reaching the agent as data",
+      !sink().subarray(mark).includes(0x1d), { got: sink().subarray(mark).toString("utf8") });
+    await closeLink();
+    await heal();
+    check("...and the manager is back on the session count it started with, with no slot left behind",
+      await settle(base, 30_000) === base, { base, now: live() });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nI. bytes typed before the FIRST attach comes up never reach the agent either");
+  // The same defect on the commonest path there is. An attach that has not come up yet is an attach
+  // with no session, and the loop used to own the keyboard only from the first RECONNECT onwards,
+  // so everything typed at a terminal while the first establishment ran was buffered and flushed
+  // into the seat by the session's own resume. Found by review on this PR.
+  {
+    const base = live();
+    const n = nonce();
+    const mark = sink().length;
+    const a = attachUnderPty(root);
+    a.write(`${n}\r`); // typed while the FIRST establishment is still running
+    check("the attach comes up", await a.waitFor(new RegExp(`attached to ${SEAT}`), 90_000), a.seen().slice(-300));
+    await wait(2_500);
+    check("...and the seat read nothing of what was typed before it came up",
+      !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
+    await detachAndSettle(a, base, "I");
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nJ. with stdin a PIPE, what was written before the session opened still arrives");
+  // The boundary of cell I, and the reason the reader is installed only for a terminal. `echo cmd |
+  // cotal attach` is a real thing to do, and there is no operator at a frozen screen in it: the
+  // bytes are a script's input, written before the session could possibly be open, and dropping
+  // them would eat the command with no fault anywhere in sight. So a pipe keeps the old behaviour,
+  // buffered by the stream and delivered when the session opens, and this cell is what says so.
+  {
+    const base = live();
+    const n = nonce();
+    const mark = sink().length;
+    const p = attachPiped(root);
+    p.write(`${n}\n`); // written before the command has even resolved the mesh
+    let arrived = false;
+    for (let i = 0; i < 150 && !arrived; i++) { arrived = sink().subarray(mark).includes(Buffer.from(n)); if (!arrived) await wait(200); }
+    check("the agent receives what the script wrote", arrived, { got: sink().subarray(mark).toString("utf8") });
+    p.write(DETACH); // one byte, one write: a detach on a pipe is still a detach
+    check("...and the detach key still ends a piped attach", await p.waitExit(30_000) && p.exit() === 0, p.exit());
+    check("...leaving the manager on the session count it started with", await settle(base, 25_000) === base, { base, now: live() });
+  }
+
+  // -----------------------------------------------------------------------------------------
+  console.log("\nK. a detach pressed while a FAULTED session is being HANDED BACK is still a keypress");
+  // Where the reader goes inside the session `finally`, measured rather than argued. Below the
+  // reader are a publish, a flush and a close, each bounded by LINK_DEADLINE_MS, and they only run
+  // at all when the connection outlived the session. Every other cell here faults by killing the
+  // socket, so that branch is skipped and the statement order cannot be seen; this one faults the
+  // RAIL and leaves the link up, which is the shape of the real complaint (a laptop whose link goes
+  // slow and lossy rather than instantly away).
+  //
+  // Deleting the reader from this position does not LOSE the press, it delays it: stdin stays
+  // paused, the byte waits in the terminal, and the backoff wait resumes and reads it a moment
+  // later, so a lone press would still detach and prove nothing. What the ownerless window really
+  // costs is what the second keystroke shows: buffered bytes come back in ONE read, and a detach
+  // that shares a read is not a detach (cells F and G). So the operator here does what an operator
+  // does when the screen has frozen: presses detach, then touches another key. Owned, those are two
+  // reads and the first one ends the attach. Unowned, they are one chunk, the exact-match test
+  // refuses it, and the attach reconnects into a session the operator meant to leave.
+  {
+    const base = live();
+    await closeLink();
+    await healSlowLossy(400);
+    const a = attachUnderPty(root);
+    check("the attach comes up over a link that is slow and readable frame by frame",
+      await a.waitFor(new RegExp(`attached to ${SEAT}`), 120_000), a.seen().slice(-300));
+    await wait(1_000);
+    const mark = sink().length;
+    // The seat echoes what it is typed, so a burst of lines is a burst of data frames. Drop them,
+    // then stop: the first frame delivered after the window is ahead of what the rail expects.
+    const flushLeft = new Promise<void>((r) => { sawClientPing = () => r(); });
+    dropping = true;
+    for (let i = 0; i < 6; i++) { a.write(`k${i}\r`); await wait(120); }
+    await wait(500);
+    dropping = false;
+    for (let i = 0; i < 4; i++) { a.write(`m${i}\r`); await wait(150); }
+    // The client's flush is a PING and the proxy sees it leave: that is the hand-back starting, on
+    // a connection the fault did not close. Waiting for it is waiting for the window itself.
+    check("the faulted session is handed back over a link that is still up",
+      await Promise.race([flushLeft.then(() => true), wait(25_000).then(() => false)]), { droppedFrames });
+    const seenAtPress = a.seen();
+    const tPress = Date.now();
+    a.write(DETACH);
+    await wait(8); // two keystrokes, 8ms apart: separate reads for a reader that is reading
+    a.write("z");
+    // The premise, checked and not assumed: the press has to land INSIDE the hand-back, before the
+    // loop announces the loss. After the announcement it is the backoff wait's reader that has the
+    // stream, which is a window this cell is not about and other cells already cover.
+    check("...and the press landed while that hand-back was still in flight, not after it",
+      !/\[cotal: connection lost, reconnecting\]/.test(seenAtPress), seenAtPress.slice(-200));
+    const gone = await a.waitExit(60_000);
+    console.log(`    (press to exit: ${gone ? `${Date.now() - tPress}ms` : "never, inside 60s"})`);
+    check("the press ends the attach, though it landed while the session was being handed back", gone, a.seen().slice(-300));
+    check("...exiting clean", a.exit()?.code === 0, a.exit());
+    check("...with neither keystroke reaching the agent",
+      !sink().subarray(mark).includes(0x1d) && !sink().subarray(mark).includes(0x7a),
+      { got: sink().subarray(mark).toString("utf8").slice(-200) });
+    await closeLink();
+    await heal();
+    check("K: the manager is back on the session count it started with",
+      await settle(base, 30_000) === base, { base, now: live() });
+  }
 } catch (e) {
   fail++;
   console.log(`  ✗ FAIL: the suite threw: ${(e as Error).message}`);
 } finally {
   for (const a of started) a.kill();
+  for (const p of pipedChildren) p.kill();
   onKnock = undefined;
+  sawClientPing = undefined;
   await closeLink();
   await manager?.stop().catch(() => {});
   // Kill and remove FIRST, release LAST: `releaseBroker` hands the kill duty back rather than doing
