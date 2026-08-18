@@ -29,7 +29,11 @@
  *   A. bytes typed in the WAIT between attempts never reach the agent. Its premise is measured:
  *      it types only once the client's own dials have been quiet long enough to be between them.
  *   B. bytes typed during an attempt that FAILS never reach the agent (a HELD link, so the attempt
- *      is genuinely in flight). This one held before the fix too: it is the boundary, not the bug.
+ *      is genuinely in flight while the key is struck). Its premise is measured too, and had to be:
+ *      an establishment on a held link runs to the 5s link deadline, so a hold that ends before
+ *      that heals an attempt still IN FLIGHT, and the client's own re-dial is the only proof the
+ *      attempt is over. A witness, not a boundary: with the premise true, a revert delivers the
+ *      nonce to the seat as the next session opens.
  *   C. bytes typed during an attempt that SUCCEEDS never reach the agent, and typing into the
  *      session that came up still does. The second half matters: dropping everything would pass
  *      the first.
@@ -410,9 +414,24 @@ try {
   // -----------------------------------------------------------------------------------------
   console.log("\nB. bytes typed during an attempt that FAILS never reach the agent");
   // The link is HELD for this one so the attempt is genuinely in flight while the key is struck:
-  // the dial connects, no INFO ever comes back, and the mesh preflight refuses about a second
-  // later. A severed-but-resetting link fails the attempt within a millisecond of the dial, which
-  // is too narrow to aim at through a pty.
+  // the dial connects and no INFO ever comes back. A severed-but-resetting link fails the attempt
+  // within a millisecond of the dial, which is too narrow to aim at through a pty.
+  //
+  // AND THE ATTEMPT HAS TO BE OVER BEFORE THE LINK HEALS. That half was asserted in a comment and
+  // never measured, and it was false: an establishment on a held link does not refuse in about a
+  // second. Measured over a 20s hold, the client's own dials land at 0, 5039, 5040, 6041, 6041 and
+  // 16047, so the attempt runs to the 5s link deadline and a 2.5s hold never outlived it. The
+  // premise is measured now, and by the only party that knows: the client re-dials, which it can
+  // only do by having finished the attempt those bytes were typed into.
+  //
+  // WITH THE PREMISE TRUE, THIS CELL IS A WITNESS AND NOT THE BOUNDARY IT WAS FILED AS. Measured
+  // both ways at the same tip, same cell, same nonce shape: against a full revert the nonce reaches
+  // the seat 6ms after `[cotal: reconnected]` prints, so it waited in the terminal across the
+  // failed attempt, across the backoff, and across the next establishment, and the new session's
+  // own resume delivered it. Against this fix it never arrives at all. Review found this by running
+  // the cell against a revert and getting the nonce delivered twice while this file still claimed
+  // the cell passed either way; the claim came from a probe whose failed attempt died at the dial
+  // instead of running its deadline, which is a different window with a different answer.
   {
     const base = live();
     const { a, mark } = await attached();
@@ -422,7 +441,13 @@ try {
     await holdOpen();
     await nextDial();
     a.write(`${n}\r`); // this attempt is now stalled on a link that will never answer it
-    await wait(2_500);
+    const dialsAtType = knocks.length;
+    const deadline = Date.now() + 40_000;
+    while (knocks.length <= dialsAtType && Date.now() < deadline) await wait(100);
+    const redialled = knocks.length > dialsAtType;
+    check("the attempt those bytes were typed into is OVER, which is this cell's premise",
+      redialled, { dialsAtType, dials: knocks.length, waited: 40_000 - (deadline - Date.now()) });
+    await wait(300); // let the loop settle into the backoff rung the re-dial proves it reached
     await closeLink();
     await heal();
     check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));

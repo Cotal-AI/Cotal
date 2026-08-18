@@ -640,7 +640,14 @@ while a session is being established and the attach ends there, and a session th
 press is handed back to the manager rather than left holding a slot. Everything else you type while
 there is no session is dropped rather than queued, so keystrokes aimed at a terminal that turned out
 to be frozen, Ctrl-C included, are not delivered to the agent by a reconnect you did not know had
-happened.
+happened. That starts before the first session, not at the first reconnect: at a terminal, `attach`
+reads and drops what you type while it is still resolving the mesh, so a key struck at a prompt that
+has not come up yet does not reach the agent when it does.
+
+With stdin a **pipe** the contract is the opposite, and deliberately so. `printf 'ls\n' | cotal
+attach --name web` is a script's input rather than an operator at a frozen screen, so it is buffered
+by the stream and delivered to the seat when the session opens, exactly as it always was. Only a
+terminal gets the reader; `--no-reconnect` keeps the old behaviour on both.
 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there

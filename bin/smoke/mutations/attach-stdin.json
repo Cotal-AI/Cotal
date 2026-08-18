@@ -2,7 +2,7 @@
   "suite": "implementations/manager/smoke/attach-stdin.smoke.ts",
   "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
-  "completionMarker": "G. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach",
+  "completionMarker": "K. a detach pressed while a FAULTED session is being HANDED BACK is still a keypress",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-stdin.json",
   "why": [
     "EVERY CELL HERE RUNS THE BINARY, so every command builds first. The suite drives `tsx",
@@ -53,7 +53,17 @@
       "replace": "    releaseStdin();\n    const attempting = establishAttachSession(vv, pin, reconnect, first);",
       "expectRed": "...and the seat read nothing of what was typed while the session was being established",
       "cell": "C. bytes typed during an attempt that SUCCEEDS never reach the agent",
-      "note": "The shipped defect restored, in the shape it actually had: the old code stopped the watcher and paused stdin before each attempt, so bytes typed while a session was being established buffered and were flushed into the seat by `attachClient`'s own `stdin.resume()`. `releaseStdin()` rather than `idle?.stop()` on purpose, so the next wait builds a FRESH reader exactly as the old code did: a mutant that leaves a stopped reader in place is not the old behaviour, and it would redden cells A and B, which the old code passed. Run at the tip it grades, this reddens C, D and E and leaves A, B, F and G green, which is both the kill and a check on this file's claim about which cells are boundaries and which are witnesses.",
+      "note": "The shipped defect restored, in the shape it actually had: the old code stopped the watcher and paused stdin before each attempt, so bytes typed while a session was being established buffered and were flushed into the seat by `attachClient`'s own `stdin.resume()`. `releaseStdin()` rather than `idle?.stop()` on purpose, so the next wait builds a FRESH reader exactly as the old code did: a mutant that leaves a stopped reader in place is not the old behaviour, and it would redden cells A and B, which the old code passed. MEASURED at the tip it grades, by hand, with the suite's full output captured rather than inferred from a mark count: A and B stay GREEN, C reddens on the assertion named here with the nonce visible in the seat's own sink, and D reddens twice, on the recorded SIGINT and on the seat's pid being gone. E, F and G are then UNREACHED rather than green: the mutant's own defect killed the agent, so the next cell's attach refuses with `no agent \"stdinseat\"` and the suite ends there. Unreached is not passed, and the boundary claim above rests on A and B, which did run.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the wait's reader is stopped when the wait ends, so an attempt runs with nobody reading",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);\n      clearTimeout(timer);",
+      "replace": "      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);\n      clearTimeout(timer);\n      watch.stop();",
+      "expectRed": "...and the seat read nothing of what was typed during the failed attempt",
+      "cell": "B. bytes typed during an attempt that FAILS never reach the agent",
+      "note": "PLACEHOLDER-B",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -94,6 +104,46 @@
       "expectRed": "...and the attach is still up",
       "cell": "G. the same chunk in a LIVE session is data, forwarded to the agent, and still not a detach",
       "note": "The same decision on the other side of the handoff, and the cost of it: in a LIVE session a chunk containing 0x1d is DATA and goes to the agent with the byte in it. Widening the test here turns that paste into a detach. Both readers are mutated separately on purpose: one test passing is not evidence about the other, and they are in different packages.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the handoff swallows a press that landed while the session was opening",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "      if (takeStdin?.()) {\n        transport.close();\n        return;\n      }",
+      "replace": "      takeStdin?.();",
+      "expectRed": "the press ends the attach, though it landed while the session was opening",
+      "cell": "H. the detach key pressed while the new session is OPENING still detaches",
+      "note": "Restores the swallow review found: the caller's reader owns stdin until the handoff, the handoff runs when the session is READY, and a press in between is seen by that reader and awaited by nobody. This mutation is also cell H's PREMISE CHECK: with the swallow back, the cell can only pass if the press landed after ready, which is not the window it is aiming at, so the kill is what proves the aim. It needs the suite's slow link to be reachable at all: on loopback the window is under a millisecond wide.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the first attach does not own the keyboard, so what is typed before it comes up is flushed into the seat",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (reconnect && process.stdin.isTTY) ownStdin();\n  for (;;) {",
+      "replace": "  for (;;) {",
+      "expectRed": "...and the seat read nothing of what was typed before it came up",
+      "cell": "I. bytes typed before the FIRST attach comes up never reach the agent either",
+      "note": "The reader used to be installed only from the first RECONNECT onwards, which left the commonest path of all uncovered: an attach that has not come up yet is an attach with no session, and everything typed at the terminal while the first establishment ran buffered in the paused stream and was flushed into the seat by the session's own resume. Deleting the line restores exactly that. This mutation must leave cell J green: a pipe is not supposed to have a reader, and a mutation that reddened both would be measuring the gate's existence rather than its position.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the first attach owns a PIPE too, so a script's input is eaten before the session opens",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (reconnect && process.stdin.isTTY) ownStdin();",
+      "replace": "  if (reconnect) ownStdin();",
+      "expectRed": "the agent receives what the script wrote",
+      "cell": "J. with stdin a PIPE, what was written before the session opened still arrives",
+      "note": "The other half of the same gate, and the reason the condition is on the POPULATION rather than on the moment. Widen the reader to every stdin and `printf 'ls\\n' | cotal attach` loses its command to a reader that drops what it reads, with no fault anywhere in sight and nothing on screen to say so. The two mutations are a pair on purpose: one says the gate must exist, the other says it must be exactly this gate.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the keyboard is unowned while a faulted session is handed back",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "      if (reconnect) ownStdin();",
+      "replace": "",
+      "expectRed": "the press ends the attach, though it landed while the session was being handed back",
+      "cell": "K. a detach pressed while a FAULTED session is being HANDED BACK is still a keypress",
+      "note": "PLACEHOLDER",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
