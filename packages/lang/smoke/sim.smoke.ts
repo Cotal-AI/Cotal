@@ -8,7 +8,7 @@
  */
 import { SimHandler, SimUnscriptedError } from "../src/sim.js";
 import { EffectError, type EffectContext } from "../src/effects.js";
-import { KeyScope, type StepKey } from "../src/keys.js";
+import { KeyScope, stepKeyString, type StepKey } from "../src/keys.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -18,9 +18,15 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 };
 
 const bound: Record<string, unknown>[] = [];
-const ctxFor = (key: StepKey): EffectContext => ({
+// ⚠️ THIS DOUBLE WAS MISSING TWO FIELDS THE INTERPRETER ALWAYS SUPPLIES. `requestId` and
+// `attempt` are not optional on `EffectContext`, so a handler reading either one saw `undefined`
+// under these tests and a real value in production — the double and the thing it stands in for
+// disagreeing, with nothing to say so while the suite ran under tsx.
+const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   key,
   signal: { cancelled: false, onCancel: () => {} },
+  requestId: `${stepKeyString(key)}@${attempt}`,
+  attempt,
   bind: async (e) => {
     bound.push(e);
   },
@@ -58,7 +64,7 @@ const ctxFor = (key: StepKey): EffectContext => ({
   ok("an unscripted step throws rather than inventing a result", err !== null);
   ok("the error carries the L6001 code", err?.code === "L6001", err?.code);
   ok("and names the step key", err?.stepKey === "/turn:verify#0", err?.stepKey);
-  ok("and tells the author exactly what to add", err?.message.includes('{ turns: { "verify"'), err?.message);
+  ok("and tells the author exactly what to add", err?.message.includes('{ turns: { "verify"') === true, err?.message);
 }
 
 // ---- 3) running past the end of a scripted list also fails --------------------------------------
@@ -95,7 +101,7 @@ const ctxFor = (key: StepKey): EffectContext => ({
 
 {
   const sim = new SimHandler({
-    checkpoints: { "approve-plan": { status: "resolved", value: true, by: "sim", at: 0 } },
+    checkpoints: { "approve-plan": { status: "resolved", value: true, by: "sim" } },
     clock: { start: 500 },
   });
   const s = new KeyScope();

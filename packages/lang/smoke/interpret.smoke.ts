@@ -291,7 +291,7 @@ const out = await fanOut(
   }
   ok("editing what the human saw diverges the resume", div !== null);
   ok("and the error names the exact step", div?.stepKey === "/checkpoint:approve-plan#0", div?.stepKey);
-  ok("and offers fork as the repair", div?.message.includes('fork(run, "/checkpoint:approve-plan#0")'));
+  ok("and offers fork as the repair", div?.message.includes('fork(run, "/checkpoint:approve-plan#0")') === true);
 }
 
 // ---- 8) an edit to an observation-stopping limit DOES diverge -----------------------------------
@@ -467,7 +467,7 @@ else { await sleep("1s", { name: "short-path" }); }
 const c = await checkpoint("gate", "ok?", { timeout: "1m", onExpiry: "${onExpiry}" });
 if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
 `;
-  const script = { checkpoints: { gate: { status: "expired", by: "sim" } }, clock: { start: 0 } };
+  const script = { checkpoints: { gate: { status: "expired" as const, by: "sim" } }, clock: { start: 0 } };
 
   const live = await run(gate("proceed"), { runId: "r-14", handler: new SimHandler(script) });
   ok("under proceed the program continues", keysOf(live.journal).some((k) => k.includes("continued")));

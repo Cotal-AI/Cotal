@@ -33,7 +33,11 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 /** Capture the request object handed to each handler method, then delegate. */
 const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<string, unknown[]> } => {
   const seen = new Map<string, unknown[]>();
-  const wrap = <A extends { [k: string]: unknown }, R>(
+  // The constraint used to be `A extends { [k: string]: unknown }`, which no request type can
+  // satisfy: an INTERFACE has no implicit index signature, so every handler method failed to
+  // infer and the whole object leaned on the `as unknown as EffectHandler` below to stay quiet.
+  // `A` is only ever pushed into `unknown[]`, so the bound bought nothing and cost ten methods.
+  const wrap = <A, R>(
     name: string,
     fn: (req: A, ctx: EffectContext) => Promise<R>,
   ) => {

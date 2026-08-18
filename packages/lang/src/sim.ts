@@ -47,7 +47,13 @@ export interface SimFault {
 export interface SimScript {
   readonly turns?: Readonly<Record<string, Scripted<TurnResultValue>>>;
   readonly asks?: Readonly<Record<string, Scripted<unknown>>>;
-  readonly checkpoints?: Readonly<Record<string, Scripted<CheckpointResultValue>>>;
+  /**
+   * ⚠️ `at` IS NOT SCRIPTABLE, AND THE TYPE NOW SAYS SO. The handler stamps it from virtual time —
+   * `{ ...scripted, at: this.virtualNow }` — so a value written here was required by the type and
+   * then silently discarded. Demanding a field the implementation overwrites makes every fixture
+   * carry a number that means nothing, and reads to the next author as though it were honoured.
+   */
+  readonly checkpoints?: Readonly<Record<string, Scripted<Omit<CheckpointResultValue, "at">>>>;
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
   readonly events?: Readonly<Record<string, Scripted<unknown>>>;
   readonly clock?: {
