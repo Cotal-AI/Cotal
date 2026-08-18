@@ -420,6 +420,36 @@ function constObjects(src: ts.SourceFile, consts: Map<string, string>): Objects 
     ts.forEachChild(n, assigns);
   };
   assigns(src);
+
+  // And if the TABLE ITSELF ever leaves this reader's sight, nothing above can be trusted: an alias
+  // (`const U = T; U.k = "other"`) or a handoff (`Object.assign(T, {...})`) mutates the same object
+  // through a name the sweep never looked at, and both were measured producing a FALSE RED.
+  //
+  // Enumerating the routes is the losing shape, and this file has lost it four times already: alias,
+  // then Object.assign, then whatever the next one is called. So the question is not "which mutation
+  // did I miss" but "does this table stay where I can see it": every mention of the name must be the
+  // object of a property access. Anything else, passed as an argument, aliased, returned, spread,
+  // exported, closed over, gives some other code a handle on it, and a table with a handle out is
+  // not settled by its own text. That question has a complete answer; the other one does not.
+  const escapes = new Set<string>();
+  const walkNames = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && out.has(n.text)) {
+      const parent = n.parent;
+      const isReceiver = (ts.isPropertyAccessExpression(parent) || ts.isElementAccessExpression(parent))
+        && parent.expression === n;
+      // Its own declaration is not a handle out, UNLESS the declaration is EXPORTED, which hands
+      // the object to files this reader never opens: `import { T } from "./x"; T.k = "other"` is a
+      // mutation no single-file reader can see, and folding through it would be a false red.
+      const exported = ts.isVariableDeclaration(parent) && ts.isVariableDeclarationList(parent.parent)
+        && ts.isVariableStatement(parent.parent.parent)
+        && !!parent.parent.parent.modifiers?.some((m) => m.kind === ts.SyntaxKind.ExportKeyword);
+      const isOwnDeclaration = ts.isVariableDeclaration(parent) && parent.name === n && !exported;
+      if (!isReceiver && !isOwnDeclaration) escapes.add(n.text);
+    }
+    ts.forEachChild(n, walkNames);
+  };
+  walkNames(src);
+  for (const name of escapes) out.delete(name);
   return out;
 }
 
@@ -1191,6 +1221,22 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     fx(`const T = { ...rest, k: "standaloneConnectOpts" };\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
   check("...and an assignment to a DIFFERENT property leaves this one settled",
     fx(`const T = { k: "standaloneConnectOpts", other: "x" };\nT.other = "y";\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
+
+  // Enumerating mutation ROUTES is the losing shape, and this file has lost it four times. A table
+  // that leaves this reader's sight can be mutated through a name the sweep never looked at, so the
+  // question is not which route was missed but whether the table stays where it can be seen. Both of
+  // the shapes below were measured producing a FALSE RED before this rule existed.
+  check("a table ALIASED to another name can be mutated through the alias, so it is not settled",
+    fx(`const T = { k: "standaloneConnectOpts" };\nconst U = T;\nU.k = "other";\ncore[T.k]({ creds: c });`).length === 0);
+  check("...and a table HANDED to something else can be mutated by it, whatever that something does",
+    fx(`const T = { k: "standaloneConnectOpts" };\nObject.assign(T, { k: "other" });\ncore[T.k]({ creds: c });`).length === 0);
+  check("...and an EXPORTED table is reachable from files this reader never opens",
+    fx(`export const T = { k: "standaloneConnectOpts" };\ncore[T.k]({ creds: c });`).length === 0);
+  check("...and one RETURNED from a function is handed out just as plainly",
+    fx(`const T = { k: "standaloneConnectOpts" };\nexport function get() { return T; }\ncore[T.k]({ creds: c });`).length === 0);
+  // The other direction again, so "stays where it can be seen" cannot collapse into "fold nothing".
+  check("...while a table only ever READ through its properties stays settled and still folds",
+    fx(`const T = { k: "standaloneConnectOpts" };\nconst other = T.k.length;\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
 
   // The seam throws on `undefined`, and a `const` bound to it is exactly that value spelled in two
   // steps. Review passed this through as a COUNTED, GREEN site while it threw at runtime.
