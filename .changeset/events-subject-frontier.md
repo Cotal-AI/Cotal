@@ -36,16 +36,31 @@ host or a stale pid refuse the start instead of slipping past. And where it used
 remedy, it now says no command performs one, names the directory that has to go, and says removing
 less leaves a mixed state the next start refuses.
 
-The scan that recovers a tip from the session logs refuses a linked entry and reads each log without
-following links, matching the directory chain that creates this state and already refused a symlinked
-component. Without that, a link planted where a session directory belongs took the scan to a log in
-another tree. A log reachable under more than one name is refused for the same reason.
+The scan that recovers a tip from the session logs refuses a linked entry and refuses a linked log,
+matching the directory chain that creates this state and already refused a symlinked component.
+Without that, a link planted where a session directory belongs took the scan to a log in another
+tree. What it does not close is a session directory swapped for a link in the moment between the
+check and the open: the non-following open flag covers the final name only, and closing that window
+would take a per-component walk the scan does not do. A log reachable under more than one name is
+refused too, and the ordinary way to produce one is copying a workspace with hard links, which makes
+the recovery refuse every log rather than half-trust them.
+
+The record itself is now graded on the file rather than on the writer's view of it. A second view of
+one record could take the tip backwards with no error at all, because the comparison was against
+memory while the rule was written about the value on disk. Nothing shipped reaches that today, and
+that is measured rather than assumed: a stale view publishes a stale expectation and the broker
+refuses it before an acknowledgement exists to record. It is guarded anyway, because an assumption
+recorded in prose where a guard belongs is what produced this defect in the first place. A record
+that goes corrupt underneath a live writer is now refused before the write instead of being
+overwritten, and an abandonment refuses outright when it cannot reach the shared record, rather than
+clearing the log's half and reporting a completed abandonment.
 
 MIGRATION: `AguiEmitter.start` now requires a `subjectFrontier`, and refuses at runtime without one
 rather than falling back to the per-session number, because that fallback is the defect. `EventWal`
 refuses the same way: a log with no record bound has no publish expectation and says so instead of
-offering its own last acknowledged sequence, so anyone driving a log toward a publish outside the
-emitter must bind one first. Anyone
+offering its own last acknowledged sequence, and an abandonment on an unbound log now refuses rather
+than clearing half of the state, so anyone driving a log outside the emitter must bind one first.
+Anyone
 embedding the emitter directly must open a `FileSubjectFrontier` at the `subjectPath` that
 `ensureEventWalDir` now returns and pass it. Connectors in this repository are updated. No wire bytes
 move and no grant changes: the channel grammar is unchanged.

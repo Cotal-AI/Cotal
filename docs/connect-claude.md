@@ -301,7 +301,9 @@ its predecessor left instead of starting again from nothing. Both live under the
 A **missing** record is not a fault: the connector rebuilds it from the session logs beside it, which
 is how an agent that was already running before this record existed keeps its stream. A record that
 **disagrees with the broker** is a fault, and the connector stops publishing and says why rather than
-guessing. There is no command to clear it. The state is the principal's directory under the events
+guessing. A record that **moved while a session was writing to it** is refused the same way: it means
+something else wrote the principal's record, and the connector reports which value it held and which
+the file holds rather than writing over the later one. There is no command to clear it. The state is the principal's directory under the events
 root, and clearing it by hand means removing that directory whole: the sequence, the cursor and the
 per-session logs only mean anything together, so removing part of it leaves a state the next start
 refuses.
