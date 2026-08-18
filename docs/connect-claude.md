@@ -126,7 +126,7 @@ delivers, the other only wakes:
   the connector's control socket to the hook process (which gives up after 2s), and the hook
   process's own stdout to Claude Code (which it force-exits 1s after starting to write). The relay
   sends a receipt back down the control socket from that stdout write's callback, and only on a
-  clean write — a runtime whose pipe has gone away fails it — and the connector treats that receipt,
+  clean write (a runtime whose pipe has gone away fails it), and the connector treats that receipt,
   not its own socket write, as delivery. So a large injection killed mid-flush, or one written to a
   broken pipe, leaves the message un-acked and JetStream redelivers it. What this does *not* prove is
   that Claude Code read or applied the reply: a payload small enough to fit the pipe buffer is
@@ -140,7 +140,7 @@ delivers, the other only wakes:
 - **Channel nudge (wake).** An arriving message fires a `notifications/claude/channel`
   event that wakes an *idle* session into a turn, so the drain runs *now* instead of at
   the next prompt. The nudge never acks anything. A nudge that the host rejects is retried with a
-  bounded backoff while anything is still pending — for an idle session it is the only wake source,
+  bounded backoff while anything is still pending. For an idle session it is the only wake source,
   so dropping it means silence until someone types. If a nudge is lost anyway (a race in the host's
   channel startup), JetStream redelivery re-announces the unacked durable item through the same
   attention policy, so a durable message always wakes the session eventually. If the channel cannot
