@@ -371,7 +371,12 @@ export function meshSessionTransport(nc: NatsConnection, grant: SessionGrant): T
     if (ended) return;
     try { rail.send({ k: "ready" }); } catch { /* broken/full: the onProtocolError path ends the session */ }
     onReadyCb?.();
-  }).catch((e) => fireEnd(e as Error));
+    // A flush that FAILS means the connection went away before the session ever opened, which is the
+    // link and not the session. Without a reason here the end reads as a plain `error`, which is in
+    // no classification, so a reconnect would treat a link that died between connect() and the first
+    // flush as a finished session and stop: the exact failure this path exists to remove, in the
+    // window where a flapping link is most likely to land.
+  }).catch((e) => fireEnd(e as Error, "connection-closed"));
 
   return {
     onReady: (cb) => { onReadyCb = cb; },
