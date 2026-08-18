@@ -587,13 +587,17 @@ async function runAttachLoop(
     } finally {
       // Hand the session back. With the link still up that is one advisory frame over the
       // connection already open (a rail that broke while the socket lived — a stall, a gap — is
-      // exactly this case, and it is idempotent after a detach has already closed it). With the
-      // link gone nothing can be published, so the credential is kept and the next attempt sends
-      // it; see releaseAbandonedSession for why no other credential can.
+      // exactly this case, and it is idempotent after a detach has already closed it). The FLUSH is
+      // what decides whether it left, not the publish: a link can die between the closed-check and
+      // the frame, which is the same slow death this whole change is about. Only a flush that
+      // returned counts as handed back; anything else keeps the credential for the next attempt,
+      // and see releaseAbandonedSession for why no other credential can carry it.
+      let handedBack = false;
       if (!est.nc.isClosed()) {
         transport.close();
-        await est.nc.flush().catch(() => { /* the link died between the check and the frame */ });
-      } else if (reconnect) {
+        handedBack = await est.nc.flush().then(() => true).catch(() => false);
+      }
+      if (!handedBack && reconnect) {
         abandoned = { grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server };
       }
       await est.nc.drain().catch(() => est.nc.close());
