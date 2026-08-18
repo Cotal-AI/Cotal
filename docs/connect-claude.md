@@ -262,8 +262,9 @@ cotal mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>' --
 ```
 
 The **agent** profile, not the observer one. `mint` reads `--allow-subscribe` only for that
-profile: an observer mint ignores the flag and hands out a reader of the whole chat plane, which is
-the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
+profile, and refuses it anywhere else: `--profile observer --allow-subscribe <channel>` exits
+non-zero and writes no creds file, because the observer profile carries a fixed read set over the
+whole chat plane, which is the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
 reader needs, since an authed consuming endpoint refuses to start without one.
 
 Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event

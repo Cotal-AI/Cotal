@@ -57,8 +57,8 @@ full, for the mesh it is running on. On a user-auth mesh:
 wide default (`>` read, `>` post, `spawn` scope), not "leave it alone". On a static mesh there is no
 actor ledger for `actor grant` to write to, so mint the reader instead:
 `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
-not the observer one, since `mint` reads `--allow-subscribe` only for that profile and an observer
-mint hands out a reader of the whole chat plane.
+not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+that profile.
 
 `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
 ignoring them. The observer and admin profiles carry a fixed read set over the whole chat plane, so
