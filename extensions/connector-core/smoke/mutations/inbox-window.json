@@ -166,13 +166,22 @@
       "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one."
     },
     {
-      "name": "K17 the recall cursor advances to the last item the reply delivered",
-      "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "              heldFresh.length\n                ? Math.min(lastDelivered, Math.min(...heldFresh.map((i) => i.ts)) - 1)\n                : lastDelivered,",
-      "replace": "              lastDelivered,",
+      "name": "K17 the fresh filter compares timestamps only, so a tie is skipped",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;",
+      "replace": "  return a.ts > b.ts;",
       "cell": "a recall twin sharing a millisecond with a delivered item is not filtered out for good",
       "expectRed": "a recall twin sharing a millisecond with a delivered item is not filtered out for good",
-      "note": "The obvious cursor, and it is wrong for exactly one input: two recall items in the same millisecond with the window between them. The delivered twin's timestamp filters the held one out for good while the reply promises a next batch, which is the broken-promise class arriving through the machinery that closed the starvation."
+      "note": "A timestamp is not a place in a queue when two items share it. Compare on time alone and the held twin is behind the mark forever, while the reply keeps promising a next batch: the starvation direction of the tie."
+    },
+    {
+      "name": "K18 the mark keeps the time and drops the id that breaks its ties",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (last) agent.noteRecalled({ ts: last.ts, id: last.id });",
+      "replace": "          if (last) agent.noteRecalled({ ts: last.ts, id: \"\" });",
+      "cell": "...and the twin already delivered is not re-served to pay for it",
+      "expectRed": "...and the twin already delivered is not re-served to pay for it",
+      "note": "The other direction of the same tie: a mark that forgets which item it stopped at leaves the delivered twin ahead of it, so the next call serves it again. Starvation and repetition are the two ways a tie can be got wrong, and the cell asserts against both."
     }
   ]
 }

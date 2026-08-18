@@ -100,6 +100,17 @@ interface Pending {
   pullOnly: boolean;
 }
 
+/** Where a session's focus-mode recall has been read to: a timestamp plus the id that breaks its ties. */
+export interface RecallMark {
+  ts: number;
+  id: string;
+}
+
+/** Total order on {@link RecallMark}: by time, then by id, so items sharing a millisecond still queue. */
+export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
+  return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;
+}
+
 const MAX_INBOX = 200;
 const CLASSIFICATION_CAP = 4096;
 const FOCUS_EXCLUSION_CAP = 4096;
@@ -163,7 +174,7 @@ export class MeshAgent extends EventEmitter {
   private _connected = false;
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
-  private _recallCursor = 0;
+  private _recallCursor: RecallMark = { ts: 0, id: "" };
   /** Per-channel attention overrides — the AUTHORITATIVE runtime state (read by {@link ingest} on
    *  every message). Seeded from the agent-file default; mutated by {@link setChannelMode}; mirrored
    *  to presence for peers. An absent key ⇒ that channel follows the global {@link _attention}. Reset
@@ -570,13 +581,20 @@ export class MeshAgent extends EventEmitter {
    * moves when a response actually delivered recall items, and it is session-local by design: it
    * says how far THIS incarnation has read, not what the stream still holds.
    */
-  get recallCursor(): number {
+  get recallCursor(): RecallMark {
     return this._recallCursor;
   }
 
-  /** Record that recall up to this timestamp was actually handed to the caller. */
-  noteRecalled(ts: number): void {
-    if (ts > this._recallCursor) this._recallCursor = ts;
+  /**
+   * Record the last recall item actually handed to the caller.
+   *
+   * The mark is a PAIR, not a timestamp, because two recall items can share a millisecond: a
+   * timestamp alone either filters the twin out for good, if it advances past both, or re-serves the
+   * one already delivered, if it stops below them. Ordering by `(ts, id)` gives every item a place of
+   * its own, so the next call resumes strictly after the last one delivered.
+   */
+  noteRecalled(mark: RecallMark): void {
+    if (afterRecallMark(mark, this._recallCursor)) this._recallCursor = mark;
   }
 
   /** Buffered receive-time lane for one id. Undefined means it is no longer pending. */

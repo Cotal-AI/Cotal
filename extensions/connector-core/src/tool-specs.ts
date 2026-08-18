@@ -10,7 +10,7 @@
 import { execFileSync } from "node:child_process";
 import { z } from "zod";
 import { isConcreteChannel, channelInAllow, AmbiguousPeerError, isPermissionDenied, type PresenceStatus } from "@cotal-ai/core";
-import type { MeshAgent, InboxItem } from "./agent.js";
+import { afterRecallMark, type MeshAgent, type InboxItem } from "./agent.js";
 import { FEEDBACK_URL, PUBLIC_FEEDBACK_URL, type AgentConfig } from "./config.js";
 import { buildOrientation, renderOrientation, type OrientationTool } from "./orientation.js";
 import { runDocs } from "./docs.js";
@@ -510,8 +510,8 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // where fifteen of thirty messages never appeared. The cursor is this session's own mark of
         // how far it has read, and it moves only when a call actually delivered them.
         const fresh = recall.items
-          .filter((i) => i.ts > agent.recallCursor)
-          .sort((a, b) => a.ts - b.ts);
+          .filter((i) => afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor))
+          .sort((a, b) => (a.ts !== b.ts ? a.ts - b.ts : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
         const warning = droppedNote(recall.droppedChannels);
         const bufferedIds = new Set(buffered.map((i) => i.id));
         const { text, shown: all } = renderInbox({
@@ -533,23 +533,15 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // would mark it handled, so a later live copy of that channel message would be dropped.
         if (!peek) {
           agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
-          // THE CURSOR STOPS BELOW THE FIRST THING THIS REPLY DID NOT CARRY, not at the last thing it
-          // did. Two recall items can share a millisecond, and if the window falls between them,
-          // advancing to the delivered one's timestamp filters its twin out for good: the reply says
-          // to call again, and calling again never produces it. Stopping short can re-show an item
-          // whose twin was held, which costs a duplicate; recall is read-only and already says it may
-          // appear again, so a duplicate is the cheap failure and starvation is the expensive one.
+          // THE CURSOR ADVANCES PAST WHAT THIS REPLY DELIVERED, and past nothing else. Two recall
+          // items can share a millisecond, so the mark is a (timestamp, id) pair: a timestamp alone
+          // either filters the twin out for good, if it moves past both, or re-serves the one already
+          // delivered, if it stops below them. The pair leaves the held twin strictly ahead of the
+          // mark and the delivered one strictly behind it, so the next call resumes with neither a
+          // gap nor a repeat.
           const shownRecall = all.filter((i) => !bufferedIds.has(i.id));
-          if (shownRecall.length) {
-            const shownIds = new Set(shownRecall.map((i) => i.id));
-            const heldFresh = fresh.filter((i) => !shownIds.has(i.id));
-            const lastDelivered = Math.max(...shownRecall.map((i) => i.ts));
-            agent.noteRecalled(
-              heldFresh.length
-                ? Math.min(lastDelivered, Math.min(...heldFresh.map((i) => i.ts)) - 1)
-                : lastDelivered,
-            );
-          }
+          const last = shownRecall[shownRecall.length - 1];
+          if (last) agent.noteRecalled({ ts: last.ts, id: last.id });
         }
         return ok(text);
       },

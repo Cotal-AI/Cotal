@@ -553,16 +553,25 @@ try {
       droppedChannels: [],
     });
 
-    const seen = new Set<string>();
+    // BOTH DIRECTIONS, because a cursor can fail either way at a tie: move past both twins and the
+    // held one starves, stop below both and the delivered one comes back as a repeat.
+    const times = new Map<string, number>();
     let calls = 0;
-    while (calls < 12 && seen.size < 30) {
+    while (calls < 12 && times.size < 30) {
       const text = textOf(await inboxSpec().run(agent, cfg, {}));
       assert.ok(text.length <= INBOX_WINDOW_CHARS, `tie call ${calls} returned ${text.length} chars`);
-      for (let n = 0; n < 30; n++) if (text.includes(` TW_${n}\n`) || text.endsWith(` TW_${n}`)) seen.add(`TW_${n}`);
+      for (let n = 0; n < 30; n++) {
+        const hits = (text.match(new RegExp(` TW_${n}(?![0-9])`, "g")) ?? []).length;
+        if (hits) times.set(`TW_${n}`, (times.get(`TW_${n}`) ?? 0) + hits);
+      }
       calls++;
     }
+    const repeated = [...times.entries()].filter(([, n]) => n > 1).map(([t]) => t);
     check("a recall twin sharing a millisecond with a delivered item is not filtered out for good",
-      seen.size === 30, { seen: seen.size, missing: Array.from({ length: 30 }, (_, n) => `TW_${n}`).filter((t) => !seen.has(t)), calls });
+      times.size === 30,
+      { seen: times.size, missing: Array.from({ length: 30 }, (_, n) => `TW_${n}`).filter((t) => !times.has(t)), calls });
+    check("...and the twin already delivered is not re-served to pay for it",
+      repeated.length === 0, { repeated, calls });
   }
 
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
