@@ -83,7 +83,7 @@
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    return holder.path === undefined || holder.path === id ? holder : undefined;\n",
       "replace": "    return holder.path === id ? holder : undefined;\n",
-      "expectRed": "reset:the session created by /new PUBLISHES, which is the whole defect"
+      "expectRed": "boot:the first event of the process reaches a holder nothing has bound yet"
     }
   ]
 }

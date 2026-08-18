@@ -185,14 +185,26 @@ try {
   const part = (sessionID: string): Promise<void> => fire({ type: "message.part.updated", properties: { part: { sessionID } } });
 
   // ---- The first session. Its run is left OPEN on purpose: the drain below is what must close it.
+  //
+  // AND THE PROCESS BOOTS ON AN ORDINARY EVENT, NOT ON A CREATE. OpenCode attaches to sessions that
+  // already exist, so a create is not guaranteed to be the first thing a run sees; `ours()` adopts
+  // an unseen id on first sight and does NOT touch the holder. The first event of a run therefore
+  // reaches a holder nothing has bound yet, and the route has to hand it over rather than read
+  // "unbound" as "not mine". Booting this suite on a create left that arm ungraded: breaking it on
+  // purpose changed no cell anywhere, which is how the gap was found.
   content.set(A, []);
-  await fire({ type: "session.created", properties: { info: { id: A } } });
-  await sleep(1_500);
   await part(A); // parks the cursor on the near-empty session, as a live one does
   await sleep(1_500);
   content.set(A, turn(A, 1));
   await part(A);
   await sleep(2_500);
+  const afterBoot = await onSubject();
+  check("boot:the first event of the process reaches a holder nothing has bound yet",
+    afterBoot > 0, { afterBoot });
+
+  // A create for the session already adopted is a no-op, not a second binding.
+  await fire({ type: "session.created", properties: { info: { id: A } } });
+  await sleep(1_500);
   const afterA = await onSubject();
   check("control:the FIRST session's turn reaches the subject", afterA > 0, { afterA });
 
@@ -339,7 +351,7 @@ try {
     !seen.some((e) => e.thread === CHILD), seen.filter((e) => e.thread === CHILD).length);
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 16;
+  const EXPECTED = 17;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
