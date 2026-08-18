@@ -230,7 +230,8 @@ export function discardLaunchMaterial(path: string): void {
   if (basename(file) !== MATERIAL_FILE || !basename(dir).startsWith(DIR_PREFIX)) return;
   try {
     if (realpathSync(dirname(dir)) !== realpathSync(tmpdir())) return;
-    rmdirSync(dir); // rmdir cannot recurse: anything else inside means this is not ours to delete
+    // rmdir cannot recurse: anything else inside means this is not ours to delete.
+    rmdirSync(dir);
   } catch {
     /* not empty, not there, or not resolvable: leaving it is always the safe answer */
   }

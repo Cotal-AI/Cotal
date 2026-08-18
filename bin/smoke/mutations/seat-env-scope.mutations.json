@@ -52,7 +52,13 @@
     "that and must redden an assertion about a BYSTANDER file, not about the directory: the directory",
     "disappearing is the correct outcome in the ordinary case, so an assertion watching the directory",
     "alone would stay green. M10 removes the location check and leaves the name check, which is the",
-    "version that looks careful and is not."
+    "version that looks careful and is not.",
+    "",
+    "M8 AND M9 ANCHOR ON THE BARE CALL, not on the line plus its trailing comment, and that is not a",
+    "style preference. Their first version anchored on `rmdirSync(dir); // rmdir cannot recurse...` and",
+    "`smoke:mutation-fixtures` refused both: an anchor that spans prose is disarmed by anyone tidying a",
+    "comment, and a comment-only commit cannot announce that it disabled a guard. The comment moved to",
+    "its own line above the call so the anchor is code and the reason still reads."
   ],
   "mutations": [
     {
@@ -121,7 +127,7 @@
     {
       "name": "M8 the scrub unlinks the file but leaves its private directory",
       "file": "packages/core/src/launch-material.ts",
-      "find": "    rmdirSync(dir); // rmdir cannot recurse: anything else inside means this is not ours to delete",
+      "find": "    rmdirSync(dir);",
       "replace": "    void dir;",
       "expectRed": "A5: the material's private directory was left behind",
       "note": "Found on a live sandbox spawn, not here: the file was gone and an empty 0700 directory per launch stayed in the OS temp tree. Litter this change would have introduced rather than found, which is a different and worse kind of defect than one it inherited.",
@@ -130,7 +136,7 @@
     {
       "name": "M9 the discard removes the directory recursively again",
       "file": "packages/core/src/launch-material.ts",
-      "find": "    rmdirSync(dir); // rmdir cannot recurse: anything else inside means this is not ours to delete",
+      "find": "    rmdirSync(dir);",
       "replace": "    rmSync(dir, { recursive: true, force: true });",
       "expectRed": "A9: the discard deleted a file it did not write",
       "note": "The dangerous first version, restored. It reddens an assertion about a BYSTANDER file rather than about the directory, because the directory going away is the intended outcome in the ordinary case and an assertion watching the directory alone would stay green under this mutant. Two earlier attempts at this mutation are worth recording: one wrote a recursive call using a symbol the module did not import, which failed the BUILD and graded WRONG-RED at zero progress marks (a mutation that cannot compile grades the compiler, not the suite); the other reached for rmSync with recursive false as the real implementation, which does not remove a directory at all, so the SUITE caught the wrong fix before the mutation could. The module now removes the file with rmSync and the directory with rmdirSync, which is both the correct behaviour and a shape this mutation can express in one line.",
