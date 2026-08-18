@@ -66,8 +66,8 @@
     {
       "name": "G5 the refusal keeps the reserved name",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (events && !connector.eventChannel) {\n      this.reserved.delete(name); // release the just-reserved name on this fail-fast path",
-      "replace": "    if (events && !connector.eventChannel) {",
+      "find": "      this.reserved.delete(name);\n      return { ok: false, error: `connector \"${connector.name}\" does not publish an AG-UI event plane",
+      "replace": "      return { ok: false, error: `connector \"${connector.name}\" does not publish an AG-UI event plane",
       "expectRed": "the refusal releases the reserved name",
       "cell": "the refusal releases the reserved name",
       "note": "A leaked reserve is silent: the next spawn of that persona is auto-numbered and nothing says why."

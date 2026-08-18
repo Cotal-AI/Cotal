@@ -3145,7 +3145,9 @@ export class Manager {
     // accept seam below, where the allocated triple exists.
     const events = opts.events ?? process.env.COTAL_EVENTS_DEFAULT === "1";
     if (events && !connector.eventChannel) {
-      this.reserved.delete(name); // release the just-reserved name on this fail-fast path
+      // Release the just-reserved name on this fail-fast path. A leaked reserve is silent: it costs
+      // the next spawn of this persona its un-suffixed name and nothing reports why.
+      this.reserved.delete(name);
       return { ok: false, error: `connector "${connector.name}" does not publish an AG-UI event plane, but events was requested` };
     }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
