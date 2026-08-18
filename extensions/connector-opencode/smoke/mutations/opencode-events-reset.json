@@ -86,11 +86,11 @@
       "expectRed": "boot:the first event of the process reaches a holder nothing has bound yet"
     },
     {
-      "name": "R7 the identity gate stops filtering, so a SECOND unseen id in the same synchronous block also reaches the free holder and one of the two is refused terminally",
+      "name": "R7 the ownership filter stops filtering, so a FOREIGN session's event pumps the owned session and puts its staged turn on the wire early - every flush site is fed the ambient id, so a foreign event does not address its own session, it speaks for this one",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    return id === sessionID;\n",
       "replace": "    return true;\n",
-      "expectRed": "boot:and a second unseen id in that same block did not kill the emitter"
+      "expectRed": "boot:a foreign session's event does not pump the owned session's staged turn"
     }
   ]
 }
