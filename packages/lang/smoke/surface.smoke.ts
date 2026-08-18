@@ -290,8 +290,35 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
   ok("`sort` returns a new array and leaves its input alone", JSON.stringify(await logsOf("const xs = [2, 1]; const ys = sort(xs); log(xs, ys);")) === JSON.stringify([[[2, 1], [1, 2]]]));
   ok("`json.stringify` is the canonical form (sorted keys, no spaces)", (await logsOf('log(json.stringify({ b: 1, a: [2, { d: 3, c: 4 }] }));'))[0] === '{"a":[2,{"c":4,"d":3}],"b":1}');
   ok("a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
-    (await logsOf("const o = { a: 1 }; o.b = 2; const xs = [1]; xs.push(2); xs[5] = 6; log(o, xs.length);"))[0]?.toString() === "[object Object],6"
+    (await logsOf("const o = { a: 1 }; o.b = 2; const xs = [1]; xs.push(2); xs[2] = 6; xs[0] = 0; log(o, xs.length);"))[0]?.toString() === "[object Object],3"
       && await logsOf('const b = await spawn("b"); b.x = 1;').then(() => false, (e: Error) => e.message.startsWith("L2031")));
+  // Contiguous or refused: a write past the end would create holes, a value class this language
+  // does not have (measured before the rule: `xs[2] = 1` on an empty array built a sparse array
+  // whose holes crossed an effect boundary as silent nulls). At the length it appends.
+  ok("an array index write past the end is L4019, catchable, and names the index and the length",
+    await logsOf("const xs = [1, 2]; xs[5] = 6;").then(() => false, (e: Error) => e.message.startsWith("L4019") && e.message.includes("index 5") && e.message.includes("length 2"))
+      && JSON.stringify(await logsOf("const xs = []; try { xs[2] = 1; } catch (e) { log(e.code); } log(xs);")) === '["L4019",[]]');
+  // No implicit conversion: a container or function where a primitive is needed is L4018 rather
+  // than the host's ToPrimitive machinery (measured before the rule: `o + 1` with an own `valueOf`
+  // closure crashed with a raw host TypeError, and `${f}` printed the interpreter's compiled
+  // closure source).
+  ok("`+`, comparison, unary minus, and `${...}` refuse a record, an array, or a function with L4018",
+    await logsOf("const o = { a: 1 }; log(o + 1);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("log([1] + 1);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("const o = { a: 1 }; log(o > o);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("log(-[1]);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("const f = () => 1; log(`${f}`);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && JSON.stringify(await logsOf('const o = { a: 1 }; try { log(`${o}`); } catch (e) { log(e.code); }')) === '["L4018"]');
+  ok("but identity comparison takes any operands, and primitives coerce as JavaScript coerces them",
+    JSON.stringify(await logsOf('const o = { a: 1 }; const p = o; log(o === p, o !== p, "a" + 1, true + 1, null + 1);')) === '[[true,false,"a1",2,1]]');
+  // A method is not a value: it is looked up at the call and exists nowhere else (measured before
+  // the rule: `xs.map === xs.map` was false where JavaScript says true, and an extracted `push`
+  // wrote to its receiver where strict JavaScript throws).
+  ok("a bare method read is L4020, catchable, and names the method",
+    await logsOf("const xs = [1]; const m = xs.map;").then(() => false, (e: Error) => e.message.startsWith("L4020") && e.message.includes("map"))
+      && await logsOf('log("a".trim === "a".trim);').then(() => false, (e: Error) => e.message.startsWith("L4020"))
+      && await logsOf("const xs = [1]; const { push } = xs;").then(() => false, (e: Error) => e.message.startsWith("L4020"))
+      && JSON.stringify(await logsOf("const xs = [1, 2]; log(xs.map((x) => x * 2));")) === '[[2,4]]');
   // `xs.length = n` is a write the table permits; a LONGER length is refused with its own code rather
   // than escaping as the host's "Cannot redefine property: length" (measured before the rule).
   ok("`xs.length = n` longer than the array, negative, or not an integer is L4017, catchable, and names the bound",

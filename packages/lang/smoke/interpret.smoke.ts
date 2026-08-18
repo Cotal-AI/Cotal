@@ -335,6 +335,62 @@ const out = await fanOut(
   ok("a catch still catches an ordinary program error and the run performs the effect after it",
     performed.join(",") === "3m" && ordinary.journal.entries().some((e) => e.name === "later" && e.status === "ok"),
     { performed, entries: ordinary.journal.entries().map((e) => [e.name, e.status]) });
+
+  // AND `finally` IS BOUND BY THE SAME LAW. Measured before the rule: a finalizer performed a NEW
+  // effect after a divergence, and a `finally { throw ... }` REPLACED the divergence, which an
+  // outer catch then swallowed as an ordinary error — the two doors §7 just closed, reopened by
+  // the cleanup clause. An uncatchable fault now unwinds past the finalizer too.
+  performed.length = 0;
+  logged.length = 0;
+  {
+    const j3 = new Journal({ run: "r-div", entries: first.journal.entries() });
+    let out: unknown;
+    try {
+      await resume(
+        `try { await sleep("2m") } finally { log("cleanup"); await sleep("4m", { name: "cleanup" }) }`,
+        j3,
+        { runId: "r-div", pins: first.pins, handler: new Counting(), onLog: sink },
+      );
+    } catch (e) {
+      out = e;
+    }
+    ok("a `finally` does not run past a divergence: no effect, no log, and the divergence survives",
+      out instanceof RunDivergence && performed.length === 0 && logged.length === 0
+        && j3.entries().every((e) => e.name !== "cleanup"),
+      { out: `${(out as Error)?.name}`, performed, logged });
+  }
+  {
+    const j4 = new Journal({ run: "r-div", entries: first.journal.entries() });
+    let out: unknown;
+    try {
+      await resume(
+        `try { await sleep("2m") } finally { throw { code: "mine" } }`,
+        j4,
+        { runId: "r-div", pins: first.pins, handler: new Counting() },
+      );
+    } catch (e) {
+      out = e;
+    }
+    ok("and a `finally { throw }` cannot replace a divergence with a catchable error",
+      out instanceof RunDivergence, `${(out as Error)?.name} ${String((out as { code?: string })?.code)}`);
+  }
+  // The inverse control, JavaScript's own meaning: for ORDINARY completions the finalizer runs,
+  // and its abrupt completion replaces the try's (measured before the fix: `try { return 1 }
+  // finally { return 2 }` returned 1 — the finalizer's completion was discarded).
+  performed.length = 0;
+  logged.length = 0;
+  {
+    const r = await run(
+      `function f() { try { return 1; } finally { log("ran"); return 2; } }
+try { throw { code: "E" } } catch (e) { log("caught") } finally { await sleep("5m", { name: "tidy" }) }
+log("f", f());`,
+      { runId: "r-fin", handler: new Counting(), onLog: sink },
+    );
+    ok("an ordinary path still runs its finalizer, performs its effects, and a finally return wins",
+      performed.join(",") === "5m" && r.journal.entries().some((e) => e.name === "tidy" && e.status === "ok")
+        && JSON.stringify(logged) === '[["caught"],["ran"],["f",2]]',
+      { performed, logged });
+  }
 }
 
 // ---- 8) an edit to an observation-stopping limit DOES diverge -----------------------------------

@@ -92,6 +92,9 @@ export const CATALOG = {
   L4015: "Not iterable",
   L4016: "Builtin failed",
   L4017: "Invalid array length",
+  L4018: "No implicit conversion",
+  L4019: "Array write past the end",
+  L4020: "A method is not a value",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

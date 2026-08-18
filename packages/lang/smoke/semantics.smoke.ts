@@ -127,7 +127,7 @@ log(i, a, b, c, d, o.c, xs);
 
 await same("arithmetic, exponent, bitwise, comparison, coercion", `
 log(2 ** 3 ** 2, 7 % 3, -7 % 3, 5 & 3, 5 | 2, 5 ^ 1, 1 << 3, -8 >> 1, -8 >>> 28, ~5);
-log("a" + 1, 1 + "a", true + 1, null + 1, "3" * "4", "10" / 2, [1] + 1, "b" > "a", "10" < "9", 10 < 9);
+log("a" + 1, 1 + "a", true + 1, null + 1, "3" * "4", "10" / 2, "b" > "a", "10" < "9", 10 < 9);
 log(0 / 0 === 0 / 0, 1 / 0 > 1e308, -0 === 0, typeof (0 / 0), 0.1 + 0.2 === 0.3, (0.1 + 0.2).toFixed(2));
 `);
 
@@ -265,9 +265,9 @@ let s1 = 1; let s2 = 2; [s1, s2] = [s2, s1];
 log(a, renamed, c, restO, x, y, restA, q, f({ k: "K" }, [1, 2]), s1, s2);
 `);
 
-await same("template literals and string coercion", `
-const o = { a: 1 }; const xs = [1, 2]; const n = null; const u = undefined;
-log(\`v=\${o.a} \${xs} \${n} \${u} \${true} \${1 + 1} \${"s"}\`, \`\${o}\`, "" + xs);
+await same("template literals interpolate primitives as JavaScript does", `
+const o = { a: 1 }; const n = null; const u = undefined;
+log(\`v=\${o.a} \${n} \${u} \${true} \${1 + 1} \${"s"}\`);
 `);
 
 // ---- 5) the method tables against the host's own --------------------------------------------------
@@ -317,6 +317,35 @@ await bothThrow("iterating a record throws", `for (const x of { a: 1 }) { log(x)
 await bothThrow("repeat with a negative count throws", `log("a".repeat(-1));`);
 await bothThrow("reduce of an empty array with no seed throws", `log([].reduce((a, b) => a + b));`);
 await bothThrow("json.parse of malformed text throws", `log(json.parse("{"));`);
+
+// ---- 6b) selection and completion: `switch` order and `finally` overrides ----------------------
+
+await same("`default` written above a matching case does not shadow it", `
+switch (2) {
+  default: { log("default"); break; }
+  case 2: { log("two"); break; }
+}
+switch (9) {
+  default: { log("none-matched"); break; }
+  case 2: { log("two"); break; }
+}
+switch (1) {
+  case 1: { log("one"); break; }
+  default: { log("after"); break; }
+}
+`);
+
+await same("a `finally` return overrides the try's, and a `finally` break overrides a pending return", `
+function f() { try { return 1; } finally { return 2; } }
+function g() {
+  for (const i of [1, 2, 3]) {
+    try { return "from-try"; } finally { break; }
+  }
+  return "after-loop";
+}
+function h() { try { throw { code: "x" }; } catch (e) { return "caught"; } finally { log("tidy"); } }
+log(f(), g(), h());
+`);
 
 // ---- 7) block scoping, the dead zone at run time, and named function expressions ---------------
 

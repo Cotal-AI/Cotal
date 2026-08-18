@@ -615,23 +615,23 @@ class Interpreter {
    * numbers answer `length`, an index, or an entry of their method table, and refuse anything else
    * (L4014). Functions and booleans have no members.
    */
-  memberOf(obj: unknown, prop: string): unknown {
+  memberOf(obj: unknown, prop: string, asCallee = false): unknown {
     switch (typeof obj) {
       case "string": {
         if (prop === "length") return obj.length;
         const i = arrayIndex(prop);
         if (i !== undefined) return obj[i];
-        return this.method(this.methods.string, obj, prop, "a string");
+        return this.method(this.methods.string, obj, prop, "a string", asCallee);
       }
       case "number":
-        return this.method(this.methods.number, obj, prop, "a number");
+        return this.method(this.methods.number, obj, prop, "a number", asCallee);
       case "object": {
         if (obj === null) throw new RuntimeFault("L4010", `cannot read \`${prop}\` of null`);
         if (Array.isArray(obj)) {
           if (prop === "length") return obj.length;
           const i = arrayIndex(prop);
           if (i !== undefined) return obj[i];
-          return this.method(this.methods.array, obj, prop, "an array");
+          return this.method(this.methods.array, obj, prop, "an array", asCallee);
         }
         return Object.prototype.hasOwnProperty.call(obj, prop) ? (obj as Record<string, unknown>)[prop] : undefined;
       }
@@ -647,12 +647,24 @@ class Interpreter {
     receiver: unknown,
     prop: string,
     kind: string,
+    asCallee: boolean,
   ): Callable {
     const m = table[prop];
     if (m === undefined) {
       throw new RuntimeFault(
         "L4014",
         `\`${prop}\` is not a member of ${kind}. The members are: length, an index, ${Object.keys(table).join(", ")}.`,
+      );
+    }
+    // A method is looked up at the call and exists nowhere else — a declared difference from
+    // JavaScript, where `xs.map` is a value. Handing one out produced everything a bound-function
+    // factory produces (measured): `xs.map === xs.map` was false where JavaScript says true, and
+    // an extracted `push` wrote to its receiver where strict JavaScript throws. Refusing the read
+    // is honest on both counts.
+    if (!asCallee) {
+      throw new RuntimeFault(
+        "L4020",
+        `\`${prop}\` is a method of ${kind}, and a method is not a value here: it is looked up at the call, so it cannot be extracted, compared, or passed. Call it — \`.${prop}(...)\` — or wrap it: \`(...args) => value.${prop}(...args)\`.`,
       );
     }
     return async (frame, args) => await m(frame, receiver as never, args);
@@ -680,8 +692,19 @@ class Interpreter {
         obj.length = value;
         return;
       }
-      if (arrayIndex(prop) === undefined) {
+      const i = arrayIndex(prop);
+      if (i === undefined) {
         throw new RuntimeFault("L4014", `\`${prop}\` is not a member of an array: an array takes an index or \`length\``);
+      }
+      // Contiguous or refused: JavaScript would fill the gap with holes, and a hole is a value
+      // class this language does not have (measured before the refusal: `xs[2] = 1` on an empty
+      // array built a sparse array whose holes then crossed an effect boundary as silent nulls).
+      // Writing AT the length appends, which is `push` by another spelling and makes no hole.
+      if (i > obj.length) {
+        throw new RuntimeFault(
+          "L4019",
+          `index ${i} is past the end of this array (length ${obj.length}), and JavaScript would fill the gap with holes, which this language does not have. Write at an existing index, at the length to append, or use \`push\`.`,
+        );
       }
     } else if (prop === "__proto__") {
       throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
@@ -904,7 +927,15 @@ class Interpreter {
         let out = "";
         for (let i = 0; i < quasis.length; i += 1) {
           out += ((quasis[i] as AnyNode).value as { cooked: string }).cooked;
-          if (i < exprs.length) out += String(await this.evaluate(exprs[i] as AnyNode, env, frame));
+          if (i < exprs.length) {
+            // Primitives interpolate as JavaScript interpolates them; a container or a function is
+            // refused (L4018). Measured before the refusal: `${o}` on a record with its own
+            // `toString` crashed in the host's ToPrimitive, and `${f}` on a function PRINTED THE
+            // INTERPRETER'S OWN COMPILED CLOSURE — an implementation detail leaking into a value.
+            const v = await this.evaluate(exprs[i] as AnyNode, env, frame);
+            refuseCoercion("${...}", v);
+            out += String(v);
+          }
         }
         return out;
       }
@@ -955,10 +986,13 @@ class Interpreter {
           case "!":
             return !v;
           case "-":
+            refuseCoercion("-", v);
             return -(v as number);
           case "+":
+            refuseCoercion("+", v);
             return +(v as number);
           case "~":
+            refuseCoercion("~", v);
             return ~(v as number);
           case "typeof":
             return typeof v;
@@ -1193,7 +1227,16 @@ class Interpreter {
       return await this.callPrimitive(callee.name as string, argNodes, env, frame);
     }
 
-    const fn = await this.evaluate(callee, env, frame);
+    let fn: unknown;
+    if (callee.type === "MemberExpression") {
+      // The one place a method NAME may appear: as the callee. Resolving it here, with the flag,
+      // is what lets `memberOf` refuse the same name everywhere else (L4020).
+      const obj = await this.evaluate(callee.object as AnyNode, env, frame);
+      if ((obj === null || obj === undefined) && callee.optional === true) throw SHORT_CIRCUIT;
+      fn = this.memberOf(obj, await this.memberKey(callee, env, frame), true);
+    } else {
+      fn = await this.evaluate(callee, env, frame);
+    }
     if ((fn === null || fn === undefined) && node.optional === true) throw SHORT_CIRCUIT;
     const args: unknown[] = [];
     for (const a of argNodes) {
@@ -2214,64 +2257,99 @@ class Interpreter {
       case "ThrowStatement":
         throw await this.evaluate(node.argument as AnyNode, env, frame);
       case "TryStatement": {
+        // What a `catch` may not have: none of these is a program error, and none is this
+        // program's to handle. Three kinds, six classes.
+        //
+        // A cancellation is the scope being unwound, and swallowing it would keep a branch
+        // working after it lost a race.
+        //
+        // A durability failure is the JOURNAL refusing to record: the run losing its ability to
+        // have a result at all. A program that catches one goes on performing effects against the
+        // world with nothing recorded from the refusal onward, so those effects exist only in the
+        // world and a resume performs them again. An unrecordable run must stop, and no `catch`
+        // may decide otherwise.
+        //
+        // And a DIVERGENCE, or a migration walk's refusal to enter a scope, is the journal saying
+        // this program is not the one that wrote it. Measured before this line existed: a resume
+        // whose edited `sleep` diverged inside a `try` caught `{ code: "L4000", kind: "host" }`,
+        // logged past it, and performed a NEW effect against the journal it had just diverged
+        // from; a migration's dry walk would have reported the same program clean.
+        //
+        // AND `finally` IS BOUND BY THE SAME LAW. A finalizer runs on the way out, so an
+        // unconditional one handed the program a landing past every class above: measured, a
+        // `finally` performed a NEW effect after a RunReleased and after a store rejection, and a
+        // `finally { throw ... }` REPLACED a divergence, which an outer catch then swallowed as an
+        // ordinary error. An uncatchable fault now unwinds past the finalizer too: the run's
+        // continuation is forfeit, and that includes its cleanup — the world-side recovery belongs
+        // to the driver and the journal, not to the program that just lost the right to run.
+        const uncatchable = (e: unknown): boolean =>
+          e instanceof Cancelled ||
+          e instanceof JournalAppendRejected ||
+          e instanceof RunReleased ||
+          e instanceof RunDivergence ||
+          e instanceof ScopeBranchMissing ||
+          e instanceof UnwalkableScope;
+        // JavaScript's completion semantics, which the one-`try` shape this replaced could not
+        // express (measured: `try { return 1; } finally { return 2; }` returned 1): the finalizer
+        // always runs for ordinary completions, and an ABRUPT finalizer completion — a return, a
+        // break, a throw — replaces whatever the try or catch had decided.
+        let completion: Completion = NORMAL;
+        let pendingThrow: unknown;
+        let hasThrow = false;
         try {
-          const c = await this.execute(node.block as AnyNode, env, frame);
-          if (c.type !== "normal") return c;
+          completion = await this.execute(node.block as AnyNode, env, frame);
         } catch (e) {
-          // What a `catch` may not have: none of these is a program error, and none is this
-          // program's to handle. Three kinds, six classes.
-          //
-          // A cancellation is the scope being unwound, and swallowing it would keep a branch
-          // working after it lost a race.
-          //
-          // A durability failure is the JOURNAL refusing to record: the run losing its ability to
-          // have a result at all. A program that catches one goes on performing effects against the
-          // world with nothing recorded from the refusal onward, so those effects exist only in the
-          // world and a resume performs them again. An unrecordable run must stop, and no `catch`
-          // may decide otherwise.
-          //
-          // And a DIVERGENCE, or a migration walk's refusal to enter a scope, is the journal saying
-          // this program is not the one that wrote it. Measured before this line existed: a resume
-          // whose edited `sleep` diverged inside a `try` caught `{ code: "L4000", kind: "host" }`,
-          // logged past it, and performed a NEW effect against the journal it had just diverged
-          // from; a migration's dry walk would have reported the same program clean.
-          if (
-            e instanceof Cancelled ||
-            e instanceof JournalAppendRejected ||
-            e instanceof RunReleased ||
-            e instanceof RunDivergence ||
-            e instanceof ScopeBranchMissing ||
-            e instanceof UnwalkableScope
-          ) {
-            throw e;
-          }
+          if (uncatchable(e)) throw e;
           const handlerNode = node.handler as AnyNode | null;
-          if (handlerNode === null || handlerNode === undefined) throw e;
-          const catchEnv = new Env(env);
-          if (handlerNode.param !== null && handlerNode.param !== undefined) {
-            await this.bindPattern(handlerNode.param as AnyNode, toProgramError(e), catchEnv, frame, "const");
-          }
-          const c = await this.executeBlock(handlerNode.body as AnyNode, catchEnv, frame);
-          if (c.type !== "normal") return c;
-        } finally {
-          if (node.finalizer !== null && node.finalizer !== undefined) {
-            await this.execute(node.finalizer as AnyNode, env, frame);
+          if (handlerNode === null || handlerNode === undefined) {
+            hasThrow = true;
+            pendingThrow = e;
+          } else {
+            try {
+              const catchEnv = new Env(env);
+              if (handlerNode.param !== null && handlerNode.param !== undefined) {
+                await this.bindPattern(handlerNode.param as AnyNode, toProgramError(e), catchEnv, frame, "const");
+              }
+              completion = await this.executeBlock(handlerNode.body as AnyNode, catchEnv, frame);
+            } catch (ce) {
+              if (uncatchable(ce)) throw ce;
+              hasThrow = true;
+              pendingThrow = ce;
+            }
           }
         }
-        return NORMAL;
+        if (node.finalizer !== null && node.finalizer !== undefined) {
+          // A throw inside the finalizer — its own, or an uncatchable — propagates from here,
+          // replacing any pending completion, exactly as JavaScript replaces it.
+          const f = await this.execute(node.finalizer as AnyNode, env, frame);
+          if (f.type !== "normal") return f;
+        }
+        if (hasThrow) throw pendingThrow;
+        return completion;
       }
       case "SwitchStatement": {
+        // JavaScript's selection: the case tests are tried in source order, the `default` clause's
+        // position is skipped during matching, and `default` is entered only when NO case matched.
+        // The one-pass walk this replaced treated `default` as an immediate match, so a `default`
+        // written above a matching case shadowed it (measured: `default` ran, `case 2` did not).
+        // Execution then falls through from the selected clause in source order, `default`
+        // included, exactly as JavaScript falls.
         const disc = await this.evaluate(node.discriminant as AnyNode, env, frame);
         const cases = node.cases as AnyNode[];
         const switchEnv = new Env(env);
-        let matched = false;
-        for (const c of cases) {
-          if (!matched) {
-            if (c.test === null || c.test === undefined) matched = true;
-            else if ((await this.evaluate(c.test as AnyNode, switchEnv, frame)) === disc) matched = true;
+        let start = -1;
+        for (let i = 0; i < cases.length; i += 1) {
+          const c = cases[i] as AnyNode;
+          if (c.test === null || c.test === undefined) continue;
+          if ((await this.evaluate(c.test as AnyNode, switchEnv, frame)) === disc) {
+            start = i;
+            break;
           }
-          if (!matched) continue;
-          for (const s of (c.consequent as AnyNode[]) ?? []) {
+        }
+        if (start === -1) start = cases.findIndex((c) => (c as AnyNode).test === null || (c as AnyNode).test === undefined);
+        if (start === -1) return NORMAL;
+        for (let i = start; i < cases.length; i += 1) {
+          for (const s of ((cases[i] as AnyNode).consequent as AnyNode[]) ?? []) {
             const comp = await this.execute(s, switchEnv, frame);
             if (comp.type === "break") return NORMAL;
             if (comp.type !== "normal") return comp;
@@ -2319,11 +2397,27 @@ function declaredNames(pattern: AnyNode): string[] {
 }
 
 /**
- * The binary operators, with JavaScript's meaning. The casts are for the type checker: at run time
- * each line applies the host operator to whatever the operands are, so `"a" + 1`, `true + 1` and
- * `[1] + 1` mean here exactly what they mean in JavaScript. `==` and `!=` never reach this
- * function: the validator refuses them (L1025).
+ * The binary operators, with JavaScript's meaning ON PRIMITIVES. `"a" + 1`, `true + 1` and
+ * `null + 1` mean here exactly what they mean in JavaScript — primitive coercion is pure and
+ * deterministic. A record, an array or a function operand is refused (L4018), a declared
+ * difference: JavaScript would reach for the host's ToPrimitive machinery, which reads `valueOf`/
+ * `toString` off the value — own fields a program can set to its OWN closures. Measured before the
+ * refusal: `o + 1` invoked such a closure without an interpreter frame and crashed with a raw host
+ * TypeError, and without one it silently produced `"[object Object]1"`. `==` and `!=` never reach
+ * this function: the validator refuses them (L1025). `===`/`!==` compare identity and take any
+ * operands.
  */
+/** Refuse a container or function where a primitive is needed: there is no implicit conversion. */
+function refuseCoercion(where: string, v: unknown): void {
+  if (v !== null && (typeof v === "object" || typeof v === "function")) {
+    const kind = typeof v === "function" ? "a function" : Array.isArray(v) ? "an array" : "a record";
+    throw new RuntimeFault(
+      "L4018",
+      `\`${where}\` cannot take ${kind}: there is no implicit conversion here, because converting would read \`valueOf\`/\`toString\` off the value — host machinery this language does not have. Convert explicitly: \`json.stringify(value)\` for text, or read the field you mean.`,
+    );
+  }
+}
+
 function applyBinary(op: string, l: unknown, r: unknown): unknown {
   const a = l as number;
   const b = r as number;
@@ -2332,6 +2426,12 @@ function applyBinary(op: string, l: unknown, r: unknown): unknown {
       return l === r;
     case "!==":
       return l !== r;
+    default:
+      break;
+  }
+  refuseCoercion(op, l);
+  refuseCoercion(op, r);
+  switch (op) {
     case "<":
       return a < b;
     case "<=":
