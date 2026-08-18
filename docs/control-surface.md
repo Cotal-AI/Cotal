@@ -75,8 +75,11 @@ later against the exact instance that accepted. Presence within the 30-second re
 window settles the goal `succeeded`; an early process exit is `failed`; the window passing
 with neither is `uncertain`, a bounded, durable outcome that a later `ps` or status read
 settles against the live roster. `uncertain` is a real terminal outcome, not an absence and
-not a silent hang: it says "the success signal did not arrive within the readiness
-deadline", and the agent's own eventual state is then observable on its presence record.
+not a silent hang. It carries the diagnosis of whoever owned the deadline: for a launch that
+names the agent and says to inspect it rather than re-issue, since re-issuing after a launch
+that in fact succeeded mints a duplicate. A committer that supplies no diagnosis falls back to
+"the success signal did not arrive within the readiness deadline". The agent's own eventual
+state is then observable on its presence record.
 
 ## Instance addressing and scatter
 

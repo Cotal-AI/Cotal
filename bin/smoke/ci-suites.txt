@@ -335,4 +335,5 @@ smoke:agui-opencode-map
 smoke:agui-opencode-source
 smoke:opencode-events-arm
 smoke:opencode-events-reset
+smoke:goal-follow
 smoke:required-arg-seam
