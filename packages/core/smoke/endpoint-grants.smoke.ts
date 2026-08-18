@@ -85,22 +85,22 @@ c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect ride untargeted (the 1c table's connector reads)",
-  spawnCallerCapabilities("u_abc").length === 5
+c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach/input ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect ride untargeted (the 1c table's connector reads)",
+  spawnCallerCapabilities("u_abc").length === 6
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.input.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*`);
 // The operator INSTRUMENT rollups (the 1c grant-migration table's admin row): the privileged
 // instrument is read + create + persona only (structurally barred from cross-agent reach, like its
-// ctl row); the admin instrument adds ANY-mode despawn/attach (tOwner "*": operator-policy-mintable
+// ctl row); the admin instrument adds ANY-mode despawn/attach/input (tOwner "*": operator-policy-mintable
 // only, §13.2 - the broker grant IS the tier boundary) and the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + define-persona, NOTHING targeted",
   operatorInstrumentCapabilities("privileged").length === 6
   && operatorInstrumentCapabilities("privileged").every((cap) => cap.target === undefined)
   && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,spawn,define-persona");
 const adminCaps = operatorInstrumentCapabilities("admin");
-c("the admin instrument set adds any-mode despawn/attach + the manager.admin family",
-  adminCaps.length === 16
-  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach"
+c("the admin instrument set adds any-mode despawn/attach/input + the manager.admin family",
+  adminCaps.length === 17
+  && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input"
   && adminCaps.filter((cap) => cap.target?.mode === "any").every((cap) => (cap.target as { tOwner?: string }).tOwner === "*")
   && ["purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((cmd) => adminCaps.some((cap) => cap.command === cmd && cap.target === undefined)));
 c("an any-mode instrument row spans the target owner (grant `*`), pinned to the caller triple",
