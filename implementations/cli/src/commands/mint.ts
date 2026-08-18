@@ -65,8 +65,11 @@ export async function mint(args: ParsedArgs): Promise<void> {
     console.error(
       c.red(
         `--allow-subscribe and --allow-publish apply to the agent profile only (got ${offAgent}). ` +
-          `The observer and admin profiles carry a fixed read set over the whole chat plane, so these ` +
-          `two flags are refused here rather than narrowing anything: mint a scoped reader with --profile agent.`,
+          (values.signer
+            ? `A signer file is account material and carries no per-identity ACL for these to narrow. `
+            : `The observer and admin profiles carry a FIXED read set, the chat plane for observer and ` +
+              `the whole messaging plane for admin, and it is not per-identity. `) +
+          `They are refused here rather than narrowing anything: mint a scoped reader with --profile agent.`,
       ),
     );
     process.exit(1);

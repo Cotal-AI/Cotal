@@ -40,7 +40,10 @@ end and its result, in a vocabulary a program can read, where the mirror gave a 
 of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
 every prompt, and the event plane withholds the body of a turn the agent did not author, because
 republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
-peer-authored turn still opens a run and still shows the work it caused.
+peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+because the loss column is only useful if it is complete: a tool result is this session's own output
+and is republished, so peer text quoted inside one still reaches the wire. A cell in
+`agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
 
 A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
 a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
@@ -63,7 +66,8 @@ not the observer one, since `mint` reads `--allow-subscribe` only for that profi
 that profile.
 
 `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
-ignoring them. The observer and admin profiles carry a fixed read set over the whole chat plane, so
+ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+messaging plane for admin, so
 `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
 out a credential that reads every channel in the space: an operator asking to narrow got the
 opposite, silently. `--role` and `--provision` were already refused there for the same reason. The

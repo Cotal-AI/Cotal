@@ -145,7 +145,7 @@
       "replace": "    return !this.userMode\n",
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",
       "cell": "the refusal prints a mint command, naming a profile and a channel",
-      "note": "After the fold there is exactly ONE mode expression for both doors, and this is it. The mutant reddens the spawn cell AND the resume cell in this suite, which is the point: a single selector cannot be wrong at one door and right at the other. The named cell is the spawn one. On the user mesh the opposite polarity is graded by R2 in the auth config."
+      "note": "After the fold there is exactly ONE mode expression for both doors, and this is it. The mutant reddens the spawn cell AND the resume cell in this suite, which is the point: a single selector cannot be wrong at one door and right at the other. The named cell is the spawn one. On the user mesh the opposite polarity is graded by R2 in the auth config. It exists because an engineering lens asked for the selector to be closed by construction rather than by assertion, and the fold is what made a single-selector mutant writable at all."
     }
   ]
 }
