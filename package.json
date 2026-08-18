@@ -102,6 +102,7 @@
     "smoke:agui-map:real": "tsx extensions/connector-claude-code/smoke/agui-map.smoke.ts",
     "smoke:agui-opencode-map": "tsx extensions/connector-opencode/smoke/agui-map.smoke.ts",
     "smoke:agui-opencode-source": "tsx extensions/connector-opencode/smoke/agui-source.smoke.ts",
+    "smoke:opencode-events-arm": "tsx extensions/connector-opencode/smoke/events-arm.smoke.ts",
     "smoke:spawn-foreground-events": "tsx implementations/cli/smoke/spawn-foreground-events.smoke.ts",
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
     "smoke:opencode-coop": "tsx extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",

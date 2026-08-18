@@ -1,0 +1,35 @@
+{
+  "suite": "extensions/connector-opencode/smoke/events-arm.smoke.ts",
+  "guard": "the launch arms the event plane, a grant never does, and an armed launch with no workspace root refuses instead of putting the write-ahead log somewhere no later start looks",
+  "command": "pnpm smoke:opencode-events-arm",
+  "completionMarker": "opencode-events-arm smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-events-arm.json",
+  "why": [
+    "THIS SUITE EXISTS BECAUSE THE WIRING WAS DEAD AND EVERY OTHER SUITE WAS GREEN. The mapper and",
+    "the source were complete and correct, their two suites passed, eight mutations killed, and the",
+    "connector still could not have published a single frame in production: the launch path never set",
+    "COTAL_EVENTS, so the plugin never built an emitter. A suite that drives a component directly",
+    "cannot tell you whether a real entry point reaches it, and this is the cell set that answers the",
+    "second question rather than the first.",
+    "",
+    "A1 is the arm itself. A2 is the refusal that keeps the write-ahead log out of the launch cwd,",
+    "where a later start would never look for it and would republish an already-published thread as",
+    "virgin. Both anchors are pure code."
+  ],
+  "mutations": [
+    {
+      "name": "A1 the launch stops arming the emitter, which is exactly the state this connector shipped in before",
+      "file": "extensions/connector-opencode/src/extension.ts",
+      "find": "      env.COTAL_EVENTS = \"1\";\n",
+      "replace": "",
+      "expectRed": "--events arms the emitter (COTAL_EVENTS=1)"
+    },
+    {
+      "name": "A2 the missing workspace root falls back to the process cwd instead of refusing",
+      "file": "extensions/connector-opencode/src/extension.ts",
+      "find": "      if (!opts.workspaceRoot)\n        throw new Error(\n",
+      "replace": "      if (false)\n        throw new Error(\n",
+      "expectRed": "an armed launch with no workspace root refuses"
+    }
+  ]
+}

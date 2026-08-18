@@ -306,3 +306,4 @@ smoke:agui-multi-session
 smoke:subject-frontier
 smoke:agui-opencode-map
 smoke:agui-opencode-source
+smoke:opencode-events-arm

@@ -141,6 +141,28 @@ export const opencodeConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // publish grant on a channel is not a request to publish to it, so an agent file that can write
+    // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.
+    // `COTAL_WORKSPACE_ROOT` rides with it because the emitter's write-ahead log has to live
+    // somewhere a LATER start will look, and there is no safe default: a log written under the
+    // launch cwd is invisible to the next start, which then reads an already-published thread as
+    // virgin and republishes sequences the stream has already seen. Sent only when events are on.
+    //
+    // This is deliberately NOT folded into `COTAL_OPENCODE_HOME` below, which falls back to the
+    // process cwd. That fallback is safe for a SQLite file and a pidfile, which only ever have to be
+    // found by the process that wrote them. It is not safe for the log, which exists to be found by
+    // a process that has not started yet.
+    if (opts.events === true) {
+      env.COTAL_EVENTS = "1";
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "opencode connector: events were requested but the launch carries no workspaceRoot, so the " +
+            "event write-ahead log has nowhere to live that a later start would look. Refusing rather " +
+            "than defaulting to the working directory.",
+        );
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
