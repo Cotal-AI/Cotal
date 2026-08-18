@@ -81,6 +81,16 @@
  * `({ seam: f } = core)` is an ordinary object KEY, which this reader allows everywhere else
  * because a key normally names a slot rather than reading one. Only position tells them apart.
  *
+ * THE PLAIN-SOURCE DOOR IS TWO LINES WIDE, and saying so is the point of writing it here. A document
+ * refuses a computed key it cannot settle; a plain source does not, so `export const KEY = "<seam>"`
+ * in one file and `core[KEY]({ ... })` in another is SILENT. Review measured it. The fence was not
+ * extended to plain sources because that was measured too: refusing every unsettled computed key
+ * across the tree reddens eleven call sites that have nothing to do with this seam, most of them in
+ * vendored bundles, and a check that cries wolf on ordinary code teaches people to route around it.
+ * What IS closed everywhere, because it can be closed for free, is the order-dependent name: a key
+ * folding through a name declared more than once, where some declaration spells the seam, is refused
+ * in a plain source exactly as in a document.
+ *
  * THREE OF ITS BOUNDARIES ARE CURATION, not deduction, and adversarial review measured each one
  * silent. The container WATCHLIST decides which markup languages get a recorded decision, so an
  * arrival it does not list (a `.php` naming the seam was the probe) is read by nothing and reddens
@@ -328,6 +338,41 @@ function constStrings(src: ts.SourceFile): Map<string, string> {
   };
   visit(src);
   return out;
+}
+
+/** Names declared MORE THAN ONCE where at least one declaration spells the seam. The folding map is
+ *  last-wins over the whole program, so its answer for such a name is the value after the LAST
+ *  declaration, not the value at any particular call, and review used exactly that: a redeclaration
+ *  written AFTER a call retroactively changed the key the call appeared to use, and the call went
+ *  silent while a browser ran it.
+ *
+ *  The "at least one spells the seam" half is what keeps this from crying wolf. A name redeclared
+ *  with values that are never the seam cannot make any call the seam whatever the order, so refusing
+ *  it would say nothing; measured, the unrestricted form reddened two vendored bundles, where short
+ *  names are reused constantly and none of it is about this seam. */
+function orderDependent(src: ts.SourceFile, fn: string, consts: Map<string, string>): Set<string> {
+  const count = new Map<string, number>(), spellsSeam = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+      count.set(n.name.text, (count.get(n.name.text) ?? 0) + 1);
+      if (foldString(n.initializer, consts) === fn) spellsSeam.add(n.name.text);
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  return new Set([...spellsSeam].filter((x) => (count.get(x) ?? 0) > 1));
+}
+
+/** Whether an expression reads any of those names. */
+function reads(e: ts.Expression, names: Set<string>): boolean {
+  let hit = false;
+  const visit = (n: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(n)) { visit(n.expression); return; }
+    if (ts.isIdentifier(n) && names.has(n.text)) hit = true;
+    ts.forEachChild(n, visit);
+  };
+  visit(e);
+  return hit;
 }
 
 type Folds = (e: ts.Expression | undefined) => boolean;
@@ -628,24 +673,20 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   const multiProgram = CONTAINERS[extOf(file)] === "script";
   programs.forEach((src) => {
     const consts = constStrings(src);
+    const redeclared = orderDependent(src, seam.fn, consts);
     const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
     const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
     const visit = (n: ts.Node): void => {
-      if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
-        const { verdict, detail } = classify(n.arguments[0], seam.key, src);
-        found.push({ file, line: lineOf(n), verdict, detail });
-      } else if (multiProgram && ts.isCallExpression(n) && ts.isElementAccessExpression(n.expression)
-        && foldString(n.expression.argumentExpression, consts) === undefined) {
-        // No question is asked about WHERE the key comes from, because every version of that
-        // question was answerable only by running the page. Asking whether the name was declared
-        // elsewhere missed a helper function, then missed an external script's global, then missed a
-        // key holding no identifier at all (`core["".seamKey()]`, resolved through a prototype another
-        // script installed). Cross-program dependency is not always an identifier read, so the only
-        // sound local question is whether this script's own text settles the key.
+      if (ts.isCallExpression(n) && ts.isElementAccessExpression(n.expression)
+        && ((multiProgram && foldString(n.expression.argumentExpression, consts) === undefined)
+          || reads(n.expression.argumentExpression, redeclared))) {
         found.push({
           file, line: lineOf(n), verdict: "unverifiable",
-          detail: `this call's key does not settle within its own script, so answering it would mean running the page; call the seam by its own name, or spell the key from literals this script holds`,
+          detail: `this call's key does not settle in its own ${multiProgram ? "script" : "file"}, so answering it would mean running the program; call the seam by its own name, or spell the key from a name declared once here`,
         });
+      } else if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
+        const { verdict, detail } = classify(n.arguments[0], seam.key, src);
+        found.push({ file, line: lineOf(n), verdict, detail });
       } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
         || escapesAt(n, seam.fn, folds)) {
         found.push({
@@ -952,6 +993,21 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // floors already cover; refusing it would redden ordinary code across the tree.
   check("a computed key in a PLAIN source stays the documented residual, since only a document is fenced",
     fx(`const r = core[k()]({ creds: c });`).length === 0);
+  // ORDER WITHIN one program, which is where the retreat stopped one dimension short. The folding
+  // map is last-wins over the whole program, so a redeclaration written AFTER a call retroactively
+  // changed what the call appeared to be spelled with, and a seam call went silent while a browser
+  // ran it. The fold is only trusted for a name declared once.
+  check("a redeclaration written AFTER the call cannot retroactively hide it: the key is refused",
+    html(`<script>var N = "standaloneConnectOpts";\ncore[N]({ creds: c });\nvar N = "unrelated";</script>`)[0]?.verdict === "unverifiable");
+  check("...and the same holds in a PLAIN source, where the fold is last-wins for the same reason",
+    fx(`var N = "standaloneConnectOpts";\ncore[N]({ creds: c });\nvar N = "unrelated";`)[0]?.verdict === "unverifiable");
+  check("...while a name declared ONCE still folds and is classified, so the fold survives being honest",
+    fx(`var N = "standaloneConnectOpts";\ncore[N]({ creds: c });`)[0]?.verdict === "missing-key");
+  // The bound that keeps this off ordinary code: a name redeclared with values that are never the
+  // seam cannot make any call the seam, whatever the order. Without it the rule reddened two
+  // vendored bundles, where short names are reused constantly and none of it concerns this seam.
+  check("...and a name redeclared with values that are never the seam is not refused at all",
+    fx(`var e = "a";\nvar e = "b";\ncore[e]({ creds: c });`).length === 0);
   check("...and a local name that folds to something ELSE is not the seam, so it is not refused either",
     html(`<script>var N = "other";</script>\n<script>var N = "unrelated";\ncore[N]({ creds: c });</script>`).length === 0);
   check("...and the same holds when the rebinding is a MODULE, whose scope is not the page's at all",
