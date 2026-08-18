@@ -25,7 +25,14 @@
     "rail's own re-launch would not be caught here.",
     "",
     "The last mutation is about an upgrade rather than a spawn: a strict schema is the correct instinct",
-    "everywhere except on a document the previous version wrote, where it converts a restart into a loss."
+    "everywhere except on a document the previous version wrote, where it converts a restart into a loss.",
+    "",
+    "The read side is asserted from the decoded credential rather than from the design, because the",
+    "question a plane carrying full tool inputs and outputs raises is who may SUBSCRIBE to it. Arming",
+    "grants publish on one channel and adds nothing to what the agent may read, not even its own",
+    "plane. What a credential admits on the read side is exactly what the agent's access set names,",
+    "so a persona file that names a foreign event channel would grant that read: that is local",
+    "operator capability, and it is not reachable from any peer-facing tool."
   ],
   "mutations": [
     {
@@ -80,6 +87,15 @@
       "expectRed": "an inventory written before the event plane still parses",
       "cell": "an inventory written before the event plane still parses",
       "note": "The upgrade hazard: a manager restarted onto a new binary reads an inventory the old one wrote, and a required field turns that restart into a loss of every agent it was preserving."
+    },
+    {
+      "name": "G7 arming grants the channel on the READ side too, so an armed agent can subscribe to a plane",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];",
+      "replace": "      if (events) { allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })]; allowSubscribe = [...allowSubscribe, connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })]; }",
+      "expectRed": "arming grants no event channel on the READ side",
+      "cell": "arming grants no event channel on the READ side",
+      "note": "The symmetric-looking edit a later reader could make while 'tidying up', and the one that turns arming into a read capability. An event channel carries a session's full tool inputs and outputs, so what a credential ADMITS matters more than what it may write."
     }
   ]
 }

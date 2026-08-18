@@ -60,6 +60,15 @@ function pubAcl(path: string): string[] {
   return ((claims.nats?.pub?.allow as string[] | undefined) ?? []).filter((s) => s.includes(".chat.") && !s.startsWith("$JS"));
 }
 
+/** The chat-SUBSCRIBE subjects a minted creds file admits. The publish side says what an agent may
+ *  put on its own event channel; this side says what it may READ, which is the question a plane
+ *  carrying full tool inputs and outputs actually raises. */
+function subAcl(path: string): string[] {
+  const jwt = readFileSync(path, "utf8").split("\n").find((l) => l && !l.startsWith("-") && l.split(".").length === 3)!;
+  const claims = JSON.parse(Buffer.from(jwt.split(".")[1], "base64url").toString("utf8"));
+  return ((claims.nats?.sub?.allow as string[] | undefined) ?? []).filter((s) => s.includes(".chat.") && !s.startsWith("$JS"));
+}
+
 /** The channel a chat subject names. A chat subject is `cotal.<space>.chat.<owner>.<actor>.<channel>`,
  *  so the channel is what remains after BOTH principal segments; taking the whole tail would let the
  *  agent's own nkey satisfy a substring check about the channel. */
@@ -145,6 +154,23 @@ try {
       { granted: armedChannel, name: armedName },
     );
     check("the persona's own post ACL is untouched", pub.some((s) => channelOf(s) === "work"), pub);
+
+    // THE READ SIDE, stated from the credential rather than from the design. An event channel
+    // carries a session's full tool inputs and outputs, so "who can subscribe to it" is the
+    // question that matters most, and it is answered here: arming a session grants it PUBLISH on
+    // its own channel and adds NOTHING to what it may read. An agent reads what its persona's
+    // access set says and nothing else, so no agent gains sight of another's plane by being armed.
+    const sub = subAcl(join(credsDir, `${armedName}.${uid}.creds`));
+    check(
+      "arming grants no event channel on the READ side",
+      !sub.map(channelOf).some((c) => c.startsWith("events.")),
+      sub,
+    );
+    check(
+      "including its OWN: an armed agent is not subscribed to the plane it publishes",
+      !sub.map(channelOf).includes(armedChannel),
+      { sub, armedChannel },
+    );
   }
 
   // 2 — events OFF: nothing is granted. Without this, a grant added unconditionally passes cell 1.
@@ -213,7 +239,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 18;
+const EXPECTED = 20;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
