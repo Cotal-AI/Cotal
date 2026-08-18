@@ -1544,6 +1544,13 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // calling the seam with `const tls = false`. The dead path answered for the live call.
   check("a dead `const tls = undefined` in ANOTHER function does not redden a live call's own `tls`",
     one(`function a() { const tls = undefined; return tls; }\nfunction b() { const tls = false; return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  // A NESTED function is another scope too, in both directions. Mutation caught this pair missing:
+  // the scope boundary lives in two places, the walk outward and the refusal to descend, and the
+  // cell above exercises neither, since two sibling functions are invisible to both spellings.
+  check("a NESTED function's own `tls` does not answer for the enclosing function's call",
+    one(`function outer() { const tls = false; function inner() { const tls = undefined; return tls; } inner(); return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  check("...and the nested call is answered by the nested binding, not by the one it shadows",
+    one(`function outer() { const tls = false; function inner() { const tls = undefined; return standaloneConnectOpts({ creds: c, tls }); } return inner(); }`) === "missing-key");
   check("...and the same file with only the dead binding still reds, so scope did not become a blanket",
     one(`function a() { const tls = undefined; return standaloneConnectOpts({ creds: c, tls }); }`) === "missing-key");
 
