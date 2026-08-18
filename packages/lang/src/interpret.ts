@@ -602,11 +602,18 @@ class Interpreter {
     }
   }
 
-  /** The property key a member expression names, as JavaScript would spell it. */
+  /** The property key a member expression names, as JavaScript would spell it. A computed key is
+   *  held to the same no-implicit-conversion law as every other coercion site (L4018): `String(k)`
+   *  on a record would enter the host's ToPrimitive, which calls the value's own `toString` — a
+   *  program closure invoked without a Frame. Measured before the refusal: the closure's rejection
+   *  escaped as an unhandled host TypeError AFTER the run returned, and `o[{}] = 1` silently minted
+   *  the own field `"[object Object]"`. Primitives keep JavaScript's spelling (`o[1]`, `o[true]`). */
   private async memberKey(node: AnyNode, env: Env, frame: Frame): Promise<string> {
     if (node.computed !== true) return (node.property as AnyNode).name as string;
     const k = await this.evaluate(node.property as AnyNode, env, frame);
-    return typeof k === "string" ? k : String(k);
+    if (typeof k === "string") return k;
+    refuseCoercion("[...]", k);
+    return String(k);
   }
 
   /**

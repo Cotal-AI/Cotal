@@ -33,6 +33,15 @@
       "completionMarker": "ok the table's sets are disjoint",
       "cell": "every admitted node type has a case in the interpreter",
       "note": "The parity check reads the interpreter's source: an admitted node type without a `case` is exactly the drift this table exists to end (`x++`, `?.`, `**` were admitted by the validator and refused at run time). `switch` is chosen because no cell upstream of the parity check executes one; renaming a case an earlier cell exercises would redden that cell first and grade WRONG-RED in this fail-fast suite."
+    },
+    {
+      "name": "the computed-key guard is dropped, so host ToPrimitive runs a program closure again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    refuseCoercion(\"[...]\", k);\n    return String(k);",
+      "replace": "    return String(k);",
+      "expectRed": "a computed member key that is a record, array, or function is L4018, catchable, on write and read",
+      "cell": "a computed member key that is a record, array, or function is L4018, catchable, on write and read",
+      "note": "No completionMarker on purpose: under this mutant the cell's LAST conjunct (the toString-closure read) can kill the process after the named red prints, and a marker would grade that KILLED run INCONCLUSIVE. The cell's conjuncts are ordered so the silent write-mint shape reds FIRST and short-circuits before any closure is invoked, so the red is clean; the crash shape exists in the cell only to pin the live behavior under the fix."
     }
   ]
 }

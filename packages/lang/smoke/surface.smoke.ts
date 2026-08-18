@@ -354,6 +354,17 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && JSON.stringify(await logsOf('const o = { a: 1 }; try { log(`${o}`); } catch (e) { log(e.code); }')) === '["L4018"]');
   ok("but identity comparison takes any operands, and primitives coerce as JavaScript coerces them",
     JSON.stringify(await logsOf('const o = { a: 1 }; const p = o; log(o === p, o !== p, "a" + 1, true + 1, null + 1);')) === '[[true,false,"a1",2,1]]');
+  // A computed member key is the same coercion site (measured before the rule: `o[k] = 1` with a
+  // record key silently minted the own field "[object Object]", and `o[key]` with an own `toString`
+  // closure logged a raw L4000 host error and then killed the process AFTER the run returned — the
+  // closure ran inside host ToPrimitive with no Frame).
+  ok("a computed member key that is a record, array, or function is L4018, catchable, on write and read",
+    await logsOf("const k = {}; const o = {}; o[k] = 1;").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("const xs = [1]; log(xs[[0]]);").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf('const f = () => "x"; const o = { x: 1 }; log(o[f]);').then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && JSON.stringify(await logsOf('const key = { toString: () => "x" }; const o = { x: 1 }; try { log(o[key]); } catch (e) { log(e.code); }')) === '["L4018"]');
+  ok("a primitive computed key spells as JavaScript spells it, and no host field is minted",
+    JSON.stringify(await logsOf('const o = {}; o[1] = "a"; o[true] = "b"; log(o["1"], o["true"], keys(o));')) === '[["a","b",["1","true"]]]');
   // A method is not a value: it is looked up at the call and exists nowhere else (measured before
   // the rule: `xs.map === xs.map` was false where JavaScript says true, and an extracted `push`
   // wrote to its receiver where strict JavaScript throws).
