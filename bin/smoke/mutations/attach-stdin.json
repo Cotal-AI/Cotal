@@ -2,7 +2,7 @@
   "suite": "implementations/manager/smoke/attach-stdin.smoke.ts",
   "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
-  "completionMarker": "M: the manager is back on the session count it started with",
+  "completionMarker": "N: the manager is back on the session count it started with",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-stdin.json",
   "why": [
     "EVERY CELL HERE RUNS THE BINARY, so every command builds first. The suite drives `tsx",
@@ -224,12 +224,23 @@
     {
       "name": "the exit path leaves the process's own claim on stdin, so a piped attach never gives the shell back",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "    process.stdin.unref();\n",
+      "find": "    if (typeof process.stdin.unref === \"function\") process.stdin.unref();\n",
       "replace": "",
       "expectRed": "M: the piped one-shot exits clean",
       "cell": "M. a piped one-shot attach still gives the process back when it detaches",
-      "completionMarker": "M: the manager is back on the session count it started with",
+      "completionMarker": "N: the manager is back on the session count it started with",
       "note": "This mutation proves the line is LOAD-BEARING in this build on that route: delete it and the piped one-shot never gives the shell back. It is deliberately not the attribution, because \"pre-existing\" is a claim about the build that ships and no mutation of this tree can measure another artifact. That half is measured directly instead: `pnpm probe:pipe-oneshot` in a worktree at origin/main (a8589c11) reports exit=HANG ms=>30000 with the detach honoured and `detached from` printed, and the same probe at this tip reports exit=0 ms=102. Honouring the population gate made the same hang reachable on the RECONNECTING piped route as well, where the pause inside the watcher's `stop` had been giving the stream back as a side effect. Measured on the lingering process itself with an unref'd-timer preload: `getActiveResourcesInfo()` reported three PipeWraps and nothing else, no timers and no sockets, after `detached from` had already printed. A pause alone was measured and was not enough.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the exit release is called on a stream kind that has no `unref`, so a file-backed attach crashes on the way out",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "if (typeof process.stdin.unref === \"function\") process.stdin.unref();",
+      "replace": "process.stdin.unref();",
+      "expectRed": "N: ...and never crashed releasing a stream that has nothing to release",
+      "cell": "N. an attach whose stdin is a FILE exits without crashing on the way out",
+      "completionMarker": "N: the manager is back on the session count it started with",
+      "note": "The shipped defect in one line. Dropping the capability test restores the unguarded call, and a file-backed stdin is an `fs.ReadStream` with no `unref`, so `done` throws `process.stdin.unref is not a function` on the way out. Registered on the check that names that text rather than on the exit code, because an exit code says only that the route is broken and this cell exists to say HOW. Found by CI in `smoke:cli-on-instance`, which spawns attach with stdin ignored for an unrelated claim; every cell in this file drove the attach through a pty or a pipe, the two kinds that HAVE `unref`, so the gate had no cell in the universe where the bug lived.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]

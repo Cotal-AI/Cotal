@@ -54,10 +54,18 @@
  *   K. a detach pressed while a faulted session is being HANDED BACK is still a keypress. This one
  *      needs a fifth link state, slow and lossy, because it is the only one that ends a session
  *      without closing the socket, which is the only way the hand-back's own round trips run at all.
+ *   L. J again, in every OTHER window: a pipe that RECONNECTS still delivers what the script wrote
+ *      while there was no session, so `tail -f log | cotal attach` loses nothing. This is the cell a
+ *      lens footnote asked for, and it was red before the population test moved inside `ownStdin`.
+ *   M. a piped attach with `--no-reconnect` gives the process back when it detaches. The route with
+ *      no reader anywhere: it is where releasing the stream stopped happening once the gate was
+ *      honoured, because the release had been hiding inside the detach watcher's `stop`.
+ *   N. the third stream kind. A stdin that is a FILE has no `unref` at all, so the exit release
+ *      crashed there while the pty and pipe cells all passed; CI found it in another suite.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect as netConnect, type AddressInfo, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -319,6 +327,45 @@ function attachPiped(root: string, extra: readonly string[] = []): Piped {
   const p: Piped = {
     seen: () => buf,
     write: (str) => { child.stdin.write(str); },
+    exit: () => code,
+    kill: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
+    waitFor: async (re, ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) { if (re.test(buf)) return true; await wait(100); }
+      return re.test(buf);
+    },
+    waitExit: async (ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) { if (code !== undefined) return true; await wait(100); }
+      return code !== undefined;
+    },
+  };
+  pipedChildren.push(p);
+  return p;
+}
+
+/** The same command with stdin a FILE rather than a pipe or a terminal, which is a THIRD stream kind
+ *  and not a spelling of the second: measured, a terminal gives `tty.ReadStream` and a pipe
+ *  `net.Socket`, both sockets with an `unref`, while a file gives `fs.ReadStream`, which has none. A
+ *  parent that spawns with stdio "ignore" lands on the same `fs.ReadStream`, so this helper covers
+ *  that route too; the file is the one an operator writes by hand. */
+function attachFromFile(root: string, contents: string, extra: readonly string[] = []): Piped {
+  const path = join(dir, `stdin-${randomUUID().slice(0, 8)}.txt`);
+  writeFileSync(path, contents);
+  const fd = openSync(path, "r");
+  const child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
+    cwd: root,
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+    stdio: [fd, "pipe", "pipe"],
+  });
+  let buf = "";
+  let code: number | undefined;
+  child.stdout.on("data", (d) => { buf += String(d); });
+  child.stderr.on("data", (d) => { buf += String(d); });
+  child.on("close", (c) => { code = c ?? 0; });
+  const p: Piped = {
+    seen: () => buf,
+    write: () => { throw new Error("a file-backed stdin is written before the spawn, not after it"); },
     exit: () => code,
     kill: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
     waitFor: async (re, ms) => {
@@ -804,6 +851,39 @@ try {
     check("M: the piped one-shot exits clean", await p.waitExit(30_000) && p.exit() === 0,
       { code: p.exit(), tail: p.seen().slice(-400) });
     check("M: the manager is back on the session count it started with", await settle(base, 25_000) === base, { base, now: live() });
+  }
+  // -----------------------------------------------------------------------------------------
+  console.log("\nN. an attach whose stdin is a FILE exits without crashing on the way out");
+  // THE CELL THIS FILE OWED AND DID NOT HAVE. Every cell above drives the attach through a pty or a
+  // pipe, so all thirteen lived in the two stream kinds that HAVE `unref`, and the exit release
+  // crashed on the third: `cotal attach < seed.txt` and any parent spawning with stdio "ignore" get
+  // an `fs.ReadStream`, where the call is a TypeError. CI found it in `smoke:cli-on-instance`, which
+  // spawns attach with stdin ignored for an entirely different claim and reported
+  // `process.stdin.unref is not a function` as that cell's tail. A gate with no cell in the universe
+  // where a bug lives cannot see the bug, so this is the universe added rather than the report filed.
+  //
+  // The crash text is asserted BY NAME as well as through the exit code, because an exit code alone
+  // says only that this route is broken, not that it is broken the way it was broken before.
+  //
+  // THE FILE HOLDS ONE BYTE, and that is a measurement rather than a preference. Written as
+  // `nonce\n` plus the detach byte, this cell went red twice: a file hands the reader every byte it
+  // has in ONE read, so the detach shares a read with the nonce, the exact-match test refuses it
+  // exactly as cells F and G say it must, and the seat echoed `^]` as data while the attach stayed
+  // up. That is the documented cost of the one-byte match arriving on a third stream kind, not a new
+  // defect, so the cell asks the question it can actually ask: a lone detach byte, which a file
+  // delivers as a single-byte read the same way a keypress does.
+  {
+    const base = live();
+    const mark = sink().length;
+    const p = attachFromFile(root, DETACH, ["--no-reconnect"]);
+    check("the attach comes up with stdin a file", await p.waitFor(new RegExp(`attached to ${SEAT}`), 90_000), p.seen().slice(-300));
+    check("N: the attach exits clean, with stdin a file", await p.waitExit(30_000) && p.exit() === 0,
+      { code: p.exit(), tail: p.seen().slice(-400) });
+    check("N: ...and never crashed releasing a stream that has nothing to release",
+      !/unref is not a function/.test(p.seen()), { tail: p.seen().slice(-400) });
+    check("N: ...with the detach byte consumed as a keypress rather than forwarded to the agent",
+      !sink().subarray(mark).includes(Buffer.from(DETACH)), { got: sink().subarray(mark).toString("utf8").slice(-200) });
+    check("N: the manager is back on the session count it started with", await settle(base, 25_000) === base, { base, now: live() });
   }
 } catch (e) {
   fail++;

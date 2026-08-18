@@ -17,4 +17,7 @@ everywhere.
 
 Also: a piped attach now gives the shell back when it detaches. `printf 'ls\n' | cotal attach --name
 web --no-reconnect` printed `detached from web` and then held the process open, because nothing
-released the command's own claim on stdin on the way out.
+released the command's own claim on stdin on the way out. That release is made where there is
+something to release: a terminal and a pipe are sockets, while a stdin that is a file
+(`cotal attach --name web < seed.txt`, or a parent that spawns attach with stdin ignored) is not,
+and releasing it there raised `process.stdin.unref is not a function` on the way out.

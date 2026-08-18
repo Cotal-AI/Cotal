@@ -655,7 +655,18 @@ async function runAttachLoop(
     // with the reader correctly not installed: the detach was honoured, the manager freed the slot,
     // `detached from` printed, and the process then sat past 30s with its three stdio pipes as the
     // only resources keeping the loop alive. A pause was not enough on its own.
-    process.stdin.unref();
+    //
+    // ONLY THE SOCKET KINDS HAVE `unref`, and this is a test of the stream rather than a fallback.
+    // Measured: at a terminal stdin is a `tty.ReadStream` and at a pipe a `net.Socket`, both of which
+    // have it; given a FILE (`cotal attach < seed.txt`) or a parent that spawns with stdio "ignore",
+    // stdin is an `fs.ReadStream` and has no `unref` at all. Calling it there is a TypeError, which
+    // is how `smoke:cli-on-instance` caught this: it spawns attach with stdin ignored, and the
+    // unguarded call turned a pinned-rail deadline into `process.stdin.unref is not a function`. The
+    // same measurement says the other branch needs nothing: a file-backed stdin ends at EOF instead
+    // of staying open like a socket, and a process that takes one and releases it exits at once with
+    // an empty resource list, where the pipe leaves a PipeWrap behind. So the release exists exactly
+    // where there is something to release. Cell N of `smoke:attach-stdin` is the file-backed route.
+    if (typeof process.stdin.unref === "function") process.stdin.unref();
     if (v.kind !== "gone") await releaseAbandoned();
     const notice = heldSessionNotice(abandoned.length, v.kind);
     if (notice) console.error(c.dim(notice));
