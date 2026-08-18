@@ -3496,7 +3496,7 @@ export class Manager {
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
-      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain" }); return { ok: false, error: readiness.detail }; } // uncertain — non-success, but kept
+      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } }); return { ok: false, error: readiness.detail }; } // uncertain — non-success, but kept, and the detail rides the terminal (#605)
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
       // would never match and down -f would treat the agent as foreign).
@@ -4971,7 +4971,10 @@ export class Manager {
         } else if (o.kind === "failed") {
           ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
         } else {
-          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch } }));
+          // Forward the readiness detail as the terminal's reason: this manager owns the deadline,
+          // so it owns what elapsing it MEANS. Absent, core commits its own generic line (#605).
+          const why = (o.data as { reason?: unknown } | undefined)?.reason;
+          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch }, ...(typeof why === "string" && why.length > 0 ? { reason: why } : {}) }));
         }
         this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
         await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it

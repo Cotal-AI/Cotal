@@ -1019,7 +1019,7 @@ export type GoalCommitCause =
   | { cause: "complete"; state: "succeeded" | "failed"; data?: unknown; executor?: GoalExecutor; resolveCurrentEpoch?: (target: { owner: string; actor: string; lifecycleUid: string }) => Promise<number | null> | number | null; epochResolveBudgetMs?: number }
   | { cause: "cancel"; data?: unknown }
   | { cause: "deny"; denial: GoalDenial; data?: unknown }
-  | { cause: "readiness" };
+  | { cause: "readiness"; data?: unknown };
 
 /** Commit the goal's terminal state at the ONE mediated commit point, BOUND to the persisted
  *  accepted goal and its CAUSE (see {@link GoalCommitCause}). First terminal fact wins uniformly
@@ -1059,7 +1059,7 @@ export async function commitGoalResult(
     | { cause: "complete"; state: "succeeded" | "failed"; executor?: GoalExecutor; resolver?: (target: { owner: string; actor: string; lifecycleUid: string }) => Promise<number | null> | number | null; budget: number }
     | { cause: "cancel" }
     | { cause: "deny"; denial: { kind: "hold-expired"; token: string } | { kind: "owner" } }
-    | { cause: "readiness" };
+    | { cause: "readiness"; data?: unknown };
   let plan: CommitPlan;
   if (cause === "complete") {
     const state = args.state;
@@ -1159,7 +1159,18 @@ export async function commitGoalResult(
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" declares no readiness deadline; an unbounded goal is never settled uncertain (SPEC 13.6)`);
   if (now < spec.value.acceptedAt + spec.value.readinessDeadlineMs)
     throw new EpEnvelopeError("failed-precondition", `goal "${snap.goalId}" is not past its readiness deadline (acceptedAt ${spec.value.acceptedAt} + ${spec.value.readinessDeadlineMs}ms > now ${now}); an early uncertain settle would steal a still-possible success (SPEC 13.6)`);
-  return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", { reason: "the success signal did not arrive within the readiness deadline", readinessDeadlineMs: spec.value.readinessDeadlineMs }, now, committer));
+  // The COMMITTER's reason wins when it supplied one. Core knows the deadline elapsed; only the
+  // owner of that deadline knows what it means and what the operator should do about it, and that
+  // guidance is the whole operational value of an `uncertain` terminal (#605): the generic line
+  // below reads as a plain failure, which is exactly what teaches an operator to re-issue — and a
+  // re-issue after a launch that actually succeeded mints a duplicate.
+  const suppliedReason = (data as { reason?: unknown } | undefined)?.reason;
+  return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", {
+    reason: typeof suppliedReason === "string" && suppliedReason.length > 0
+      ? suppliedReason
+      : "the success signal did not arrive within the readiness deadline",
+    readinessDeadlineMs: spec.value.readinessDeadlineMs,
+  }, now, committer));
 }
 
 // ---- cancel (§13.6 item 4) --------------------------------------------------------------------
@@ -1222,9 +1233,9 @@ export async function requestGoalCancel(
  *  required). A racing late success that committed first wins and this returns the winner. */
 export async function settleGoalUncertain(
   ctx: ActionContext,
-  args: { ref: GoalRef; now: number; committer?: { instanceId: string; epoch: number } },
+  args: { ref: GoalRef; now: number; committer?: { instanceId: string; epoch: number }; reason?: string },
 ): Promise<{ won: boolean; fact: GoalResultFact; status: GoalStatusValue }> {
-  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(args.committer !== undefined ? { committer: args.committer } : {}) });
+  return commitGoalResult(ctx, { ref: args.ref, now: args.now, cause: "readiness", ...(args.reason !== undefined ? { data: { reason: args.reason } } : {}), ...(args.committer !== undefined ? { committer: args.committer } : {}) });
 }
 
 // ---- the reconcile index (§13.6 crash recovery for the Model-B inline executor) ---------------
