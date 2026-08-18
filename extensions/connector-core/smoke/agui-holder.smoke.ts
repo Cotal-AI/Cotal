@@ -9,10 +9,10 @@
  * get that far". `agui-emitter.smoke.ts` grades the emitter; this file grades WHEN it exists.
  *
  * WHY THIS FILE EXISTS AT ALL, and it is a sequencing argument rather than a coverage one. The
- * cutover deletes the transcript mirror and puts the emitter behind the same hooks. If the holder
- * is written in that commit, the irreversible step also carries a lifecycle nobody has graded, and
- * the two failure modes — "the mapping is wrong" and "the emitter never started" — arrive together
- * looking identical from the channel.
+ * cutover deleted the transcript mirror and put the emitter behind the same hooks. Had the holder
+ * been written in that commit, the irreversible step would also have carried a lifecycle nobody had
+ * graded, and the two failure modes — "the mapping is wrong" and "the emitter never started" —
+ * would have arrived together looking identical from the channel.
  *
  * THE DESIGN CHANGED BECAUSE OF THIS SUITE, which is worth recording. The holder first had TWO
  * mechanisms preventing a double start: the serialized chain, and a memo on the in-flight start

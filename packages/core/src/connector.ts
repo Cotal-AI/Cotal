@@ -70,11 +70,6 @@ export interface LaunchOpts {
    *  left untouched — resuming MUST NOT hijack the source session. A connector that can't fork
    *  THROWS at {@link Connector.buildLaunch} rather than silently spawning fresh. */
   resume?: string;
-  /** Mirror this session's transcript to the connector's per-agent transcript channel (see
-   *  {@link Connector.transcriptChannel}) so peers/observers can read what the agent actually did
-   *  (sets `COTAL_TRANSCRIPT`). Defaults to OFF; set `true` to opt in — surfaced as the `--transcript`
-   *  flag on `cotal spawn` / `cotal start`. */
-  transcript?: boolean;
   /** Publish this session's AG-UI event plane to the agent's own event channel (see
    *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
    *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to OFF; set `true`
@@ -165,19 +160,10 @@ export interface Connector extends Extension {
   /** Optional model catalog hook. The manager calls this for selector UIs; launch remains authority-free
    *  and still accepts any string the operator supplies. */
   listModels?(opts?: ModelCatalogOpts): ModelCatalog | Promise<ModelCatalog>;
-  /** The channel this connector publishes an agent's transcript mirror to (see
-   *  {@link LaunchOpts.transcript}). OPTIONAL — only connectors that actually mirror (Claude Code,
-   *  OpenCode) implement it; one that doesn't (e.g. Hermes) omits it. The
-   *  naming convention is the CONNECTOR's, not the wire standard, so it's defined in the extension, not
-   *  core. The manager calls it to grant the agent publish rights on its transcript channel at provision
-   *  time (auth-mode publish is default-deny), so the grant and what the connector publishes to come from
-   *  one source and can't drift. If `transcript` is requested for a connector that lacks this, the
-   *  manager fails loud rather than silently skipping the grant. */
-  transcriptChannel?(name: string): string;
   /** The channel this connector publishes an agent's AG-UI event plane to (see
-   *  {@link LaunchOpts.events}). OPTIONAL exactly as {@link transcriptChannel} is: only connectors
-   *  that actually emit implement it, and asking for `events` from one that does not FAILS LOUD in
-   *  the manager rather than minting a grant nothing will ever use.
+   *  {@link LaunchOpts.events}). OPTIONAL: only connectors that actually emit implement it, and
+   *  asking for `events` from one that does not FAILS LOUD in the manager rather than minting a
+   *  grant nothing will ever use.
    *
    *  It takes the agent's PRINCIPAL, never its display name. A display name is UI convenience and is
    *  not an identity: this mesh permits two live agents to carry one name, so a name-keyed channel

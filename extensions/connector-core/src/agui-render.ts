@@ -7,13 +7,11 @@
  * `part-renderer`, named for the part kind it draws, self-registering on import exactly as a
  * terminal-layout provider does.
  *
- * **IT LANDS BEFORE ANY PRODUCER, AND THAT ORDERING IS THE POINT.** At this tip nothing in
- * production publishes a frame: no connector constructs an emitter and every connector still writes
- * its `tr-<name>` text mirror. So this renderer has no live traffic to draw yet, and saying that
- * plainly matters more than it sounds, because the alternative ordering is the one that fails. A
- * cutover shipped first would replace a mirror a human can read with a part every surface shows as a
- * marker, and the regression would be invisible to the change that caused it. Display first, then
- * the producer.
+ * **IT LANDED BEFORE ANY PRODUCER, AND THAT ORDERING WAS THE POINT.** It shipped while nothing in
+ * production published a frame, and the Claude connector's emitter followed it. The alternative
+ * ordering is the one that fails: a cutover shipped first would have replaced a mirror a human can
+ * read with a part every surface shows as a marker, and the regression would have been invisible to
+ * the change that caused it. Display first, then the producer.
  *
  * **CORE NEVER LEARNS AG-UI.** `partsToText` resolves a renderer by the part's own kind and calls
  * it. The knowledge of what a `TOOL_CALL_ARGS` means lives here, in the package that defined the

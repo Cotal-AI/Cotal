@@ -2,9 +2,10 @@
  * The AG-UI event VOCABULARY and the Cotal frame envelope.
  *
  * This is the file that makes the change an abolition rather than a rename. Renaming `tr-<name>` to
- * `events.<name>` while the connectors still publish `condense()` output would move glyph-prefixed
- * text to a new channel and change nothing a consumer can do with it — the channel name was never
- * the complaint.
+ * `events.<name>` while the connectors went on publishing `condense()` output would have moved
+ * glyph-prefixed text to a new channel and changed nothing a consumer can do with it — the channel
+ * name was never the complaint. The mirror is now gone from the tree rather than renamed, and this
+ * vocabulary is what replaced it.
  *
  * **The vocabulary is adopted; the SDK is not.** `@ag-ui/core` is a `devDependency`,
  * pinned EXACT at `0.0.57`, and this file imports from it with `import type` ONLY. The reason is

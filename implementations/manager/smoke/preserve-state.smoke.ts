@@ -228,7 +228,6 @@ function managed(name: string, id: string, handle: AgentHandle, source: "manifes
       allowSubscribe: ["general"],
       allowPublish: [],
       capabilities: ["spawn"],
-      transcript: false,
     },
   };
 }
@@ -460,7 +459,6 @@ let openInventory: ManagerResumeAgent;
       subscribe: ["general"],
       allowSubscribe: ["general"],
       allowPublish: [],
-      transcript: false,
     },
     dependencies: [join(runDir, "r1.json"), runPersonaPath],
     spawner: "local.manager",

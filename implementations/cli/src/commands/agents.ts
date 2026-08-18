@@ -33,7 +33,7 @@ export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to
  *  the point: a harness command is exactly the payload that would be eaten by a positional
  *  grammar. `--no-enter` is a declared boolean literally named `no-enter` rather than a negation
  *  of an `enter` flag: node's `parseArgs` does not negate under `strict`, and the CLI already
- *  spells this shape (`--no-open`, `--no-replay`, `--no-transcript`). */
+ *  spells this shape (`--no-open`, `--no-replay`). */
 export const inputFlags = [
   ...targetFlags,
   nameFlag("managed agent to type into (required)"),
