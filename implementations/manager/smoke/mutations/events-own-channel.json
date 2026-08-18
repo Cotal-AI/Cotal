@@ -17,6 +17,9 @@
     "E5 swaps the resume door's actor half from the principal to the display name. A resume document",
     "supplies both independently, so that mutant re-arms the victim's plane for a different principal while",
     "E4's cell and every spawn cell stay green.",
+    "E6 is E2 on the OTHER door: the resume seam reads the read-set only and forgets the post-set.",
+    "E4 zeroes the whole list at once and so cannot see it, which is how the gap survived a review that",
+    "had already asked for the half-fence on the spawn side.",
     "while leaving it on the spawn door, which is the state this PR was in when a security review found",
     "it: every spawn cell stayed green and a foreign concrete channel was mintable through an inventory.",
     "",
@@ -70,6 +73,15 @@
       "expectRed": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
       "cell": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
       "note": "The two halves agree in every honest inventory, which is why this survives E4 and every spawn cell. They are supplied independently by admin JSON, and the row the document re-arms is keyed by the principal, so the name is the half that does not own the plane."
+    },
+    {
+      "name": "E6 the resume door reads the read-set only, and forgets the post-set",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
+      "replace": "        [...(entry.launch.allowSubscribe ?? [])],",
+      "expectRed": "an inventory naming another agent's event channel to POST to is refused at the resume door too",
+      "cell": "an inventory naming another agent's event channel to POST to is refused at the resume door too",
+      "note": "The half-fence, on the door E2 does not touch. Every other cell in sections 7 and 8 smuggles through allowSubscribe and stays green under it."
     }
   ]
 }

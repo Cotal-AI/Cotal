@@ -397,6 +397,24 @@ try {
       [...(mgr2 as unknown as { agents: Map<string, unknown> }).agents.keys()],
     );
 
+    // THE OTHER HALF OF THE SAME DOOR. Both cells above smuggle through `allowSubscribe`, so a
+    // resume door that read only the read-set would keep every one of them green while a document
+    // could still mint PUBLISH rights onto another agent's plane, which is forgery rather than
+    // eavesdropping. The spawn seam has that cell already; the resume seam did not, and the gap was
+    // invisible because the mutation that covers the resume door zeroes the WHOLE list at once.
+    {
+      const mgr3 = newManager();
+      const post = JSON.parse(JSON.stringify(preserved)) as ManagerResumeInventory;
+      const e3 = post.agents[0]!;
+      e3.launch.allowPublish = [...(e3.launch.allowPublish ?? []), foreign];
+      const rp = JSON.stringify(await mgr3.resumePreserved(post));
+      check(
+        "an inventory naming another agent's event channel to POST to is refused at the resume door too",
+        /another agent's event channel/.test(rp) && rp.includes(foreign),
+        rp.slice(0, 400),
+      );
+    }
+
     // THE CONTROL. Every cell above is satisfied by a resume that refuses for any reason at all, and
     // this one refuses easily: the manager is in preserving mode, the names are taken, the broker is
     // shared. So the SAME document without the foreign channel has to reach a DIFFERENT outcome, and
@@ -472,7 +490,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 33;
+const EXPECTED = 34;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

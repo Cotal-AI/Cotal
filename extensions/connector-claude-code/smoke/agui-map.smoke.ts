@@ -486,8 +486,25 @@ const promptSources = [...new Set(entries.map((e) => e.promptSource ?? "<absent>
  * value this restatement has not been told about, and the mapper THROWS on it, so returning false
  * would quietly disagree with a loud refusal.
  */
+/**
+ * A `user` entry that carries a PROMPT rather than a tool result, which is the shape question the
+ * attribution question sits behind. AN ARRAY IS TWO DIFFERENT RECORDS WEARING ONE SHAPE: the
+ * harness writes an array for tool results, and a person writes one by attaching something to a
+ * prompt. The discriminator is the presence of a `tool_result` block, NOT the array-ness, and the
+ * mapper says so at `agui-map.ts`. Requiring a string here was the FOURTH time this restatement
+ * disagreed with the mapper, found the same way as the first three: by running the real arm at a
+ * session the author had not run it at. An attached-file prompt opens a run in the mapper and did
+ * not open one here, so the cells that count openers were short by exactly those records.
+ */
+const carriesPromptShape = (e: ClaudeEntry): boolean => {
+  const c = e.message?.content;
+  if (typeof c === "string") return true;
+  if (!Array.isArray(c)) return false;
+  return !c.some((b) => b.type === "tool_result" && b.tool_use_id);
+};
+
 const attributableTurn = (e: ClaudeEntry): boolean => {
-  if (e.type !== "user" || typeof e.message?.content !== "string") return false;
+  if (e.type !== "user" || !carriesPromptShape(e)) return false;
   if (e.isCompactSummary === true || e.isVisibleInTranscriptOnly === true) return false;
   const k = e.origin?.kind;
   if (k === undefined) return e.promptSource === "sdk" || e.promptSource === "typed";
@@ -1089,11 +1106,27 @@ c("real:the-non-conversational-record-types-map-to-nothing", (() => {
   return entries.filter((e) => dropped.includes(String(e.type))).every((e) => m.map(e) === null);
 })(), { types: [...typeHist] });
 
-c("real:the-majority-of-this-session-maps-to-nothing", (() => {
+// WHAT THIS CELL USED TO ASSERT AND WHY IT NO LONGER DOES. It required a MAJORITY of the session to
+// map to nothing, and that is a claim about the SESSION rather than about the mapper: on a session
+// whose records are mostly assistant text and tool results INSIDE an open run, most records map to
+// something, and the cell reddened on a correct mapper. A real arm has to hold for any real session
+// or it is a bug report about whichever session it was written against.
+//
+// What replaces it is session independent and has more teeth than the count did: the drop path is
+// EXERCISED here, and no record ever produces a unit with an empty event list. An empty unit is the
+// failure this whole path is shaped to avoid, a frame published with nothing in it, and it is
+// invisible to a count of nulls because it is not a null.
+c("real:the-drop-path-runs-and-no-record-produces-an-EMPTY-unit", (() => {
   const m = createClaudeMapper({ threadId: THREAD, mintRunId: mint, now: () => 0 });
   m.map(OPENER);
-  const nulls = entries.filter((e) => m.map(e) === null).length;
-  return nulls > entries.length / 2;
+  let nulls = 0;
+  for (const e of entries) {
+    const unit = m.map(e);
+    if (unit === null) { nulls += 1; continue; }
+    if (unit.events.length === 0) return false;
+    if (typeof unit.runId !== "string" || unit.runId.length === 0) return false;
+  }
+  return nulls > 0;
 })(), { records: entries.length });
 
 // BRACKET SEAM. `closeOpenRun` is the vehicle a ruling plugs the `Stop` hook into (defect A).
