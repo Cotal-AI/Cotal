@@ -60,6 +60,15 @@
       "expectRed": "recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
       "cell": "recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
       "note": "The entry check clears the directory and stops there. Without this the guard is one level short rather than absent: a real thread directory holding a linked wal.json reaches the same foreign log by one more hop. The lstat is the graded layer because it is the portable one; O_NOFOLLOW behind it closes the check-to-open window, which no cell in this suite can reach. It survived once against a cell that only required a refusal: on a platform holding O_NOFOLLOW the flag refuses too, and both refusals say `never a symlink`. The cell now asserts the portable layer's own detail, because the claim under test is which layer decides."
+    },
+    {
+      "name": "S12 a hardlinked log is read, because neither the entry check nor the flag can see one",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (st.nlink > 1)\n",
+      "replace": "      if (false)\n",
+      "expectRed": "recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
+      "cell": "recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
+      "note": "A hard link presents a real directory holding a real file, so `isSymbolicLink` is false and `O_NOFOLLOW` has nothing to refuse, while the file is the same inode as one outside the principal directory. The writer creates each log fresh, so a second name for it is a state it cannot produce."
     }
   ]
 }

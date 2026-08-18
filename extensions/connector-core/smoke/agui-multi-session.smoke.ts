@@ -174,6 +174,13 @@ try {
   //
   // A genuine second writer takes the subject behind our back. The expectation must still refuse
   // it. Without this cell, "stop expecting anything" passes every cell above.
+  //
+  // WHAT "FOREIGN" MEANS HERE, STATED SO A LATER READER CANNOT OVER-READ IT: the writer below is a
+  // SECOND ENDPOINT UNDER THE SAME PRINCIPAL on a broker with no authentication. It grades
+  // SEQUENCING, that a tip moved without our ack still refuses our next publish. It does NOT grade
+  // authorization and cannot: no credential here is narrower than any other. Whether a DIFFERENT
+  // principal is denied this subject is decided by the grant the manager mints and is proved in
+  // `implementations/manager/smoke/events-grant-acl.smoke.ts`, not in this file.
   {
     const foreign = endpoint();
     await foreign.start();
@@ -204,7 +211,9 @@ try {
     // Requiring the following word is better and still a prefix test, which a reviewer caught: a
     // path ending `...principal wholeheartedly` satisfies it too. So the cell EXTRACTS the path the
     // message names and compares it whole. A prefix test cannot decide where a path ends.
-    const located = /removing (\S+) whole/.exec(s4.err ?? "")?.[1];
+    // `whole\b`, because `whole` alone is satisfied by a path ending `... wholeheartedly`, which
+    // is the SAME prefix mistake in its third costume. A boundary is what pins the word.
+    const located = /removing (\S+) whole\b/.exec(s4.err ?? "")?.[1];
     c("control:the-halt-LOCATES-the-state-to-remove", located === PRINCIPAL_DIR, { located, dir: PRINCIPAL_DIR, err: s4.err });
   }
 

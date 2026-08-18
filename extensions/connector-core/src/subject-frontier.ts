@@ -193,9 +193,12 @@ export class FileSubjectFrontier implements SubjectFrontier {
       //  - `lstat` is the GRADED guard and the portable one. It decides the refusal on every
       //    platform, which matters because `O_NOFOLLOW` does not exist on Windows and a guard that
       //    silently evaporates there is worse than one that was never claimed.
-      //  - `O_NOFOLLOW` closes the window between the `lstat` and the `open`, where the file could
-      //    be replaced by a link. NO CELL CAN GRADE THAT WINDOW, and the mutation config says so
-      //    rather than registering a mutant that would survive and be explained away.
+      //  - `O_NOFOLLOW` narrows the window between the `lstat` and the `open`, where the file could
+      //    be replaced by a link. It applies to the FINAL COMPONENT ONLY, so a thread directory
+      //    swapped for a link in that same window is still followed; closing that would take an
+      //    `openat` walk per component, which this scan does not do. NO CELL CAN GRADE EITHER
+      //    WINDOW, and the mutation config says so rather than registering a mutant that would
+      //    survive and be explained away.
       let st;
       try {
         st = await lstat(walPath);
@@ -206,6 +209,12 @@ export class FileSubjectFrontier implements SubjectFrontier {
       }
       if (st.isSymbolicLink())
         throw new SubjectFrontierCorruptError(walPath, "a real thread log, never a symlink", "following it would read a log this principal's writer never wrote");
+      // A HARD link is not a symlink and neither check above sees one, so a log hardlinked into
+      // this directory from elsewhere reads as an ordinary file and hands over its tip. The writer
+      // creates each log fresh, so more than one name for it is a state it cannot produce, which
+      // is the same reason the symlink is refused rather than resolved.
+      if (st.nlink > 1)
+        throw new SubjectFrontierCorruptError(walPath, "a thread log with exactly one name", `it has ${st.nlink}, so the same file is reachable from outside this principal's directory and its tip is not this principal's to read`);
       let raw: Buffer;
       try {
         const fh = await open(walPath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));

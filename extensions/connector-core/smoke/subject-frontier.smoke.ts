@@ -14,7 +14,7 @@
  *
  * Run: pnpm smoke:subject-frontier
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, readFileSync, symlinkSync, linkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { FileSubjectFrontier, SubjectFrontierCorruptError } from "../src/subject-frontier.js";
@@ -214,6 +214,19 @@ try {
       () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /never a symlink/);
     await threw("recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
       () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /writer never wrote/);
+  }
+  {
+    const d = dir();
+    const outside = join(root, `elsewhere3-${Math.random().toString(36).slice(2)}`);
+    mkdirSync(outside, { recursive: true });
+    writeFileSync(join(outside, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 6464 } }));
+    const td = join(d, "t-hard");
+    mkdirSync(td, { recursive: true });
+    // A HARD link, which is the hop neither `isSymbolicLink` nor `O_NOFOLLOW` can see: the entry is
+    // a real directory and the file is a real file, and it is the SAME file as one outside.
+    linkSync(join(outside, "wal.json"), join(td, "wal.json"));
+    await threw("recover:a-HARDLINKED-log-is-refused-because-a-log-this-writer-made-has-one-name",
+      () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /exactly one name/);
   }
 } finally {
   rmSync(root, { recursive: true, force: true });
