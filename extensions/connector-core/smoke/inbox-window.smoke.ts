@@ -931,6 +931,38 @@ try {
       { acked: [...acked] });
   }
 
+  // ── 27) THE ONE BOUNDARY THAT NEEDS THE CLOCK TO ACTUALLY MOVE ──────────────────────────────
+  //
+  // The first lens built this trying to break the seventh fix, and it half-worked: it could not
+  // reach a starvation, because a future stamp sorts above all ordinary traffic and the ordered lane
+  // stops at the first thing it did not carry, so the mark cannot jump past unread mail. What it DID
+  // reach is the other direction. An item handed over while it was ahead of the clock is tracked by
+  // id, and the mark never moved for it; when the local clock passes its stamp it arrives in the
+  // clocked lane, above the mark, and was handed over a second time.
+  //
+  // Every other cell here stamps the clock rather than waits for it, which is why no other cell can
+  // see this: the two lanes only swap when real time passes. This one waits.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const items = [{
+      id: "DECAY", ts: Date.now() + 80, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+      channel: "general", mentionsMe: false, historical: false, text: "body DECAY_MARK",
+    }];
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items, droppedChannels: [],
+    });
+
+    const first = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("an item stamped just ahead of the clock is handed over once, by the lane that has no mark",
+      first.includes("DECAY_MARK"), first.slice(0, 120));
+    await new Promise((r) => setTimeout(r, 150)); // the clock really does pass the stamp here
+    const second = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("...and crossing into the clocked lane does not hand it over a second time",
+      !second.includes("DECAY_MARK"), second.slice(0, 160));
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {

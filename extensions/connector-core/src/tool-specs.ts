@@ -605,6 +605,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         let aheadRoom = agent.recallAheadRoom();
         for (const i of recall.items) {
           if (!agent.recallAhead(i)) {
+            // AN ITEM CAN CROSS BETWEEN THE LANES, because the local clock eventually passes a stamp
+            // that was ahead of it. It was handed over by id while it was ahead, and the mark never
+            // moved for it, so the mark alone would offer it a second time the moment it decays into
+            // this lane. The record it was handed over under is what closes that.
+            if (agent.recallAheadSeen(i.id)) continue;
             if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);
             continue;
           }

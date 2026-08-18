@@ -74,7 +74,12 @@
     "quiet one is the lesson: a mutation whose target moves does not fail, it passes for the wrong reason,",
     "and a count of kills cannot tell you which kind you have. The trim is now ONE loop that a single",
     "mutation can turn off, and the note's tier list is authoritative rather than shadowed by a fallback",
-    "that ignored it, so both of those mutations grade what their names claim again."
+    "that ignored it, so both of those mutations grade what their names claim again.",
+    "",
+    "K29 is the seventh defect's other side, and it is worth naming why it needed a different kind of",
+    "cell. The two lanes swap membership when the local clock passes a stamp, which no fixture can",
+    "arrange by choosing timestamps: the cell has to wait. It waits 150ms. That is the whole of the",
+    "time-dependence in this mechanism, and it is graded rather than reasoned about."
   ],
   "mutations": [
     {
@@ -310,6 +315,15 @@
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "note": "Shortening the note closes the measured case but not the class: a message can be large enough that not even a count fits beside it, and then counting is still chosen over delivering. Nothing is lost by dropping the note, because the held mail is still buffered, still uncleared, and named by the very next reply, which the same cell asserts. The enumeration is what reddens FIRST now, not the instance cell written after the finding: this defect is reachable from the universe's own inputs, which is the whole point of having enumerated them. The instance cell stays because it is the measured occupant and it says what the numbers were."
+    },
+    {
+      "name": "K29 an item that decays out of the ahead lane is handed over a second time",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "            if (agent.recallAheadSeen(i.id)) continue;\n            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);",
+      "replace": "            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);",
+      "cell": "...and crossing into the clocked lane does not hand it over a second time",
+      "expectRed": "...and crossing into the clocked lane does not hand it over a second time",
+      "note": "Found by the first lens attacking the seventh fix from the other side. The mark never moves for an item handed over while it was ahead of the clock, so when the clock passes that stamp the item arrives in the clocked lane above the mark and is offered again. The lanes are kept honest with each other by the same record that makes the ahead lane exactly-once. Its cell is the only one in this suite that WAITS for real time, because the crossing cannot be staged by stamping the clock."
     }
   ]
 }

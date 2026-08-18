@@ -629,6 +629,13 @@ export class MeshAgent extends EventEmitter {
    * moves the mark. An item ahead of it is not ordered at all and NEVER moves the mark: it is handed
    * over once and remembered by id ({@link noteRecalledAhead}), so it neither leads the walk nor
    * comes back on the next call.
+   *
+   * THE LANES SWAP MEMBERSHIP, and the record is what keeps them honest with each other. An item
+   * stamped just ahead of the clock crosses into the ordered lane the moment the clock passes it,
+   * arriving above a mark that never moved for it, so the reader has to consult
+   * {@link recallAheadSeen} there too or hand it over a second time. That crossing is the one part of
+   * this mechanism that cannot be staged by choosing timestamps, so its cell waits for real time
+   * rather than reasoning about it.
    */
   recallAhead(item: { ts: number }): boolean {
     return item.ts > Date.now();
