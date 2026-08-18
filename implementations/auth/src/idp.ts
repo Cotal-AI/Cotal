@@ -166,14 +166,15 @@ function regrantRemedy(owner: string, actor: string, grant: ActorGrant, need: st
   const scope = [...new Set([...(grant.scope ?? []), need])];
   if (grant.allowSubscribe === undefined || grant.allowPublish === undefined)
     return (
-      `re-grant \`${actor}\` under owner ${owner} with --scope '${scope.join(",")}', AND name its ` +
-      `--allow-subscribe and --allow-publish explicitly with what the row holds today ` +
-      "(`cotal actor list`). The upsert replaces the WHOLE row, not just the scope: every field " +
-      "left off comes back as the WIDE default, `>` read and `>` post. No ready-made command is " +
-      "printed here because this bridge did not supply the row's current ACLs and this refusal " +
-      "will not invent them."
+      "no ready-to-run line is printed here, and that is deliberate: this bridge did not supply the row's " +
+      "current ACLs, so a printed command would either invent them or leave them off, and a flag " +
+      "left off comes back as the WIDE default, `>` read and `>` post. Read the row first " +
+      "(`cotal actor list`), then re-grant it whole: " +
+      `\`${actor}\` under owner ${owner} with --scope '${scope.join(",")}', and --allow-subscribe ` +
+      "and --allow-publish set to exactly what that row holds today."
     );
   return (
+    "run exactly the line below, which already carries every other field the row holds today. " +
     grantCommandLine(owner, actor, {
       scope,
       allowSubscribe: grant.allowSubscribe,
@@ -218,7 +219,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         const need = VIEW_REQUIRED_SCOPE[req.view];
         if (!(grant.scope ?? []).includes(need))
           throw new Error(
-            `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant the WHOLE ROW with "${need}" ADDED to its scope. This is not a scope edit: run exactly the line below, which already carries every other field the row holds today. ` +
+            `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant the WHOLE ROW with "${need}" ADDED to its scope. This is not a scope edit: ` +
               regrantRemedy(owner, req.actor, grant, need),
           );
       }

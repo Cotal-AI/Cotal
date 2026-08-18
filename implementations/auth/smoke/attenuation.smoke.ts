@@ -122,20 +122,22 @@ try {
     "has no grant in this space",
   );
   // A spawner's own ACL is the CEILING for everything spawned under it, so the repair for a missing
-  // spawner decides that ceiling. There is no row to copy the ACLs from here, and a printed command
-  // carrying invented channel names would fail on paste and push the operator toward deleting the
-  // flags, which is `runActor`'s wide default. So this refusal must NAME the two flags and the
-  // default in prose, and must NOT ship a runnable command with values it made up.
-  const ghostFix = /cotal actor grant [^`]+/.exec(ghostMsg)?.[0] ?? "";
+  // spawner decides that ceiling - and this is the arm with NO ROW to copy that ceiling from. Every
+  // line it could print is wrong in one of two ways: one carrying real-looking channel values invents
+  // them, and one short of all three flags widens the spawner on paste, because `runActor` fills an
+  // omitted flag with `>`. Both were shipped here in turn and both were caught by pasting them. So
+  // the property is not "print a better command", it is PRINT NO COMMAND: the refusal names the verb,
+  // the flags and the default in prose, and leaves nothing an operator can select and run.
+  const ghostPasteable = /cotal actor grant [^`\s]/.exec(ghostMsg)?.[0] ?? "";
   check(
     "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
     /--allow-subscribe/.test(ghostMsg) && /--allow-publish/.test(ghostMsg) && /WIDE default/.test(ghostMsg),
     ghostMsg,
   );
   check(
-    "and the command it prints invents no channel values (no placeholder, no bare `>`)",
-    ghostFix.length > 0 && !/[<>]/.test(ghostFix) && !/--allow-(subscribe|publish)/.test(ghostFix),
-    ghostFix,
+    "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+    /cotal actor grant/.test(ghostMsg) && ghostPasteable === "",
+    ghostPasteable || ghostMsg,
   );
   rejects(
     "a malformed ACL entry is refused at the row WRITE (non-terminal '>' never enters an envelope)",
