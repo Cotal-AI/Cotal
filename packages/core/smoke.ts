@@ -12,6 +12,8 @@ import {
   dmStream,
   taskStream,
   presenceBucket,
+  membersBucket,
+  openMembersRegistry,
   principalKey,
   DEV_OWNER,
   type Delivery,
@@ -27,6 +29,20 @@ for (let i = 0; i < 50; i++) {
 
 // Unique space per run → isolated streams, no cross-run history bleed, deterministic.
 const space = `smoke-${randomUUID().slice(0, 8)}`;
+
+// Provision this run's members registry BEFORE any endpoint exists.
+//
+// `cotal up` creates the members bucket for the space IT provisions; this suite invents its own
+// (`smoke-<uuid>`), so nothing ever created the bucket that `channelMembers` reads. The read path
+// opens without creating (`openMembersRegistry`, `create` defaults false), so the call threw
+// StreamNotFoundError and killed the process at that line. That throw is why the final `ok` and its
+// `SMOKE FAILED` line were unreachable: the suite could not report on any assertion after it,
+// including the offline-DM durability one this file exists to exercise. Creating it here is what
+// lets the run reach its own verdict instead of dying before it.
+const provision = await connect();
+await openMembersRegistry(provision, space, { create: true });
+await provision.close();
+
 const a = new CotalEndpoint({
   space,
   card: { name: "alice", role: "planner", kind: "agent" },
@@ -156,7 +172,7 @@ await a.stop();
 // Tear down this run's (uniquely-named) streams + presence bucket — race-free, no litter.
 const cleanup = await connect();
 const jsm = await jetstreamManager(cleanup);
-for (const s of [chatStream(space), dmStream(space), taskStream(space), `KV_${presenceBucket(space)}`]) {
+for (const s of [chatStream(space), dmStream(space), taskStream(space), `KV_${presenceBucket(space)}`, `KV_${membersBucket(space)}`]) {
   await jsm.streams.delete(s).catch(() => {});
 }
 await cleanup.close();
