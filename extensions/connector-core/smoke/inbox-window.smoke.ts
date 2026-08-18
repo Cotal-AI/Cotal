@@ -190,6 +190,49 @@ try {
     check("...and it says what it is holding back", text.includes("held ("), text.slice(-160));
   }
 
+  // ── 6) FOCUS: the response carries two lanes, and only one of them is destructive ──────────────
+  //
+  // In focus mode the reply mixes the live buffer (DMs/anycast, clearable) with read-only channel
+  // recall pulled back from the stream. Passing a recall id to drainInboxIds would not merely be
+  // untidy: ids are marked HANDLED there, so a later live copy of that message would be dropped as
+  // a duplicate — mail lost by a read that never owned it.
+  //
+  // WHAT THIS CELL DOES AND DOES NOT GRADE, so it is not read as more than it is: it stubs the
+  // agent's attention and `recallAmbient`, because both need a live broker, and grades the TOOL's
+  // handling of whatever recall returns. The agent's own focus machinery — the frontier, the
+  // exclusion list, what recall is allowed to replay — is graded in attention.smoke.ts against a
+  // real broker; nothing here stands in for that.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const recalled = [0, 1, 2].map((n) => ({
+      id: `recall-${n}`,
+      ts: 500 + n,
+      fromId: "peer",
+      fromName: "Peer",
+      kind: "channel" as const,
+      channel: "general",
+      mentionsMe: false,
+      historical: false,
+      text: `recalled chatter ${n}`,
+    }));
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: recalled,
+      droppedChannels: [],
+    });
+    for (let n = 0; n < 5; n++) agent.ep.emit("message", dmMsg(`fdm-${n}`, `focus dm ${n}`), noop(), dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("focus: the reply carries both lanes", text.includes("focus dm 0") && text.includes("recalled chatter 0"));
+    check("focus: the buffered lane was cleared, because it was delivered", agent.inboxCount() === 0, agent.inboxCount());
+
+    // The sharp one: a recall id must not have been marked handled by a read that only displayed it.
+    agent.ep.emit("message", { ...replayMsg(0), id: "recall-1" }, noop(), { historical: false, kind: "channel" });
+    check("focus: a recall id was NOT marked handled — a later live copy of it still buffers",
+      agent.peekInbox().some((i) => i.id === "recall-1"), agent.peekInbox().map((i) => i.id));
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {
