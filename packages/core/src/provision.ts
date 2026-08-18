@@ -77,7 +77,7 @@ import {
   type EpCapability,
 } from "./endpoint-grants.js";
 import { assertServeGrantMintable, finalizeServeIssuance, type EpServeGrant, type EpIssuanceGate } from "./endpoint-service.js";
-import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName } from "./endpoint-binding.js";
+import { effectsBindGrants, poolOwnerBindGrants, goalWriterGrants, sessionLedgerGrants, epAuthBucket, sessionsBucket, epcStreamName, epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName, wfjStreamName } from "./endpoint-binding.js";
 import { epsSubject, epCallerReplyFilter, AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE } from "./endpoint-subjects.js";
 import { recordsBucket, recordSpecKey, recordStatusKey, recordAtomicKey, RECORD_KINDS, GOVERN_HEAD } from "./endpoint-records.js";
 import { lifecycleHeadKey, uidReservationKey, issuanceGateKey, staticSlotKey, STATIC_SLOT_PREFIX, epgateKey, epcredFamilyPrefix } from "./lifecycle-state.js";
@@ -1709,7 +1709,12 @@ function provisionerPermissions(space: string, pr: MintPrincipal): Record<string
   // before (no manager code wrote to them), so `createEndpointStreams` now runs at the manager's
   // start-time ensure over this provisioner. Create-or-verify only (idempotent, fail-loud on drift);
   // the provisioner holds no value-write on any of them (goal facts ride the scoped goal-writer cred).
-  const endpointStreams = [epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName].map((f) => f(space));
+  // WFJ joins them without joining "the seven": it is the workflow step journal, a RUNTIME layer
+  // over the control surface rather than one of the §13.12 endpoint streams, and it is listed here
+  // for exactly one reason — `createEndpointStreams` creates it, so a provisioner without its
+  // CREATE/INFO rows fails the ensure. Create-or-verify only; the provisioner appends nothing (a
+  // run's entries ride the per-run driver grant, which is minted per run and never space-wide).
+  const endpointStreams = [epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eprStreamName, eptStreamName, epwStreamName, wfjStreamName].map((f) => f(space));
   // The artifact Object Store joins the list: `setupSpaceStreams` creates it, and under auth mode the
   // provisioner is the cred doing that creating. Its backing stream is `OBJ_<bucket>` - named
   // explicitly, because `$O.<bucket>.>` is outside the `cotal.<space>.>` grammar and no space-prefix

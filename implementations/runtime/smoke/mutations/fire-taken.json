@@ -1,0 +1,122 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-sleep.smoke.ts",
+  "guard": "the handler takes the broker's own `.fire` and lets the checkpoint plane judge it, so a pause nobody answers actually expires",
+  "command": "pnpm smoke:runtime-mesh-sleep",
+  "completionMarker": "mesh-sleep.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/fire-taken.json",
+  "why": [
+    "THE DEFECT WAS AN ABSENT CALLER, and every suite that should have caught it supplied one by",
+    "hand. `handleCheckpointFire` is the function that turns the broker's fire into the settlement",
+    "the fire names, and nothing outside the suites called it. Each timeout cell in mesh-sleep,",
+    "mesh-wait and mesh-checkpoint called it directly, so what they graded was that the checkpoint",
+    "plane expires a pause WHEN SOMEBODY DELIVERS ITS FIRE. That was true, and it was never the",
+    "question. Reproduced on a live broker with nothing hand-delivered: a two-second sleep, the timer",
+    "writer arming one schedule, the broker publishing `.fire` on the token's own subject, and four",
+    "seconds later the status still `waiting`, the settle fact ABSENT, and the effect still pending.",
+    "Durable, correct, and permanent.",
+    "",
+    "A TEST THAT DOES THE SUBJECT'S WORK FOR IT GRADES ITSELF. That is the general shape and it is",
+    "worth more than the fix: the injected call sat in a helper named for what the broker does, so it",
+    "read as scaffolding rather than as the mechanism under test. The helpers are now OBSERVATIONS --",
+    "`brokerFired` asks whether the broker published, and nothing delivers anything.",
+    "",
+    "TWO CALL SITES, ONE MECHANISM, and they are graded separately because they fail apart. `sleep`",
+    "and `checkpoint` await a settle fact through the watcher, so they pump the fire alongside the",
+    "wait. `wait` POLLS its deadlines, so it takes the fire on the same poll it was already making.",
+    "Mutation 4 removes only the polling half: the sleep suite stays green and every wait with a",
+    "timeout waits past its timeout forever.",
+    "",
+    "THE CLOCK MATTERS AND THE SUITES HAD TO CHANGE FOR IT. Expiry is a judgement about the owner's",
+    "clock against a durable absolute deadline, so the handler judges the fire with the clock it was",
+    "given. Two suites pinned that clock to one reading so a deadline could be named exactly -- and a",
+    "clock frozen BEFORE its own deadline judges every real fire premature and re-arms the schedule",
+    "instead of expiring it, forever. Neither smoke could have shown that while it was expiring the",
+    "pause itself. The pinned clock is now advanced when real time passes, and the checkpoint suite's",
+    "expiry block runs its own handler on a moving clock.",
+    "",
+    "EVERY CELL THAT ASSERTS TERMINATION CARRIES ITS OWN DEADLINE. `mutation-proof` grades a hang",
+    "INCONCLUSIVE -- \"a hang is not a red\" -- so a guard against a pause that never ends, asserted by",
+    "a bare `await`, grades nothing at all: the suite stops, the tool declines to call it, and the",
+    "mutation goes unscored. `withDeadline` turns the hang into a named red.",
+    "",
+    "SPECIFIER BOUNDARY: checked rather than assumed. All three suites import the mutated module",
+    "through a relative `../src/*.js` path and every command is bare `tsx` with no build step, so the",
+    "bytes mutated are the bytes the suites load. The `@cotal-ai/core` and `@cotal-ai/lang` imports in",
+    "these files resolve to `dist`, which is why no mutation here targets either package.",
+    "",
+    "THE SMALLEST EDIT THAT STILL BREAKS THIS AND STILL PASSES, named rather than left to be found:",
+    "changing `FIRE_POLL_MS` from 2_000 to something enormous. Every cell here still passes, because",
+    "each waits long enough for one poll, and a pause would then expire minutes late in production.",
+    "It is not given a mutation because the cells cannot distinguish a slow pump from a prompt one",
+    "without asserting a latency, and a latency assertion on a real broker is a flake. It is a",
+    "CONSTANT this file names, not a branch, and it is called out here so the next reader knows the",
+    "guard proves the fire is taken and not how soon."
+  ],
+  "mutations": [
+    {
+      "name": "the pump is never started: `settle` waits on the watcher alone, which is the shipped state",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const pump = this.pumpFires(ref, wait);",
+      "replace": "    const pump = Promise.resolve();",
+      "command": "pnpm smoke:runtime-mesh-sleep",
+      "completionMarker": "• 1 — the pause is durable and exactly one schedule was armed",
+      "expectRed": "the sleep effect did not end within 20000ms",
+      "cell": "the sleep effect did not end within 20000ms",
+      "note": "The exact shipped state, reproduced on a live broker before the fix. It reddens as a wait that never ends rather than as a wrong answer, which is why nothing was red for as long as it was: the pause is durable and correct in every observable way except that it is permanent."
+    },
+    {
+      "name": "the pump checks once and gives up, so it only ever works if the deadline already passed",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    while (!wait.over) {\n      await this.takeFire(ref);",
+      "replace": "    if (!wait.over) {\n      await this.takeFire(ref);",
+      "command": "pnpm smoke:runtime-mesh-sleep",
+      "completionMarker": "• 2 — the same step after a crash",
+      "expectRed": "both waiters did not end within 20000ms",
+      "cell": "both waiters did not end within 20000ms",
+      "note": "The half-fix that passes a reading. A single look at mint time finds nothing, because the fire is published at the deadline and the wait begins before it -- so the pump has to be a pump. Graded on the second block, where two waiters attach to one pause, so it names a different cell from mutation 1."
+    },
+    {
+      "name": "the fire is read at a neighbouring epoch, so a live fire is invisible on the wrong subject",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "      this.binding.instanceId, this.binding.epoch, ref.token, \"fire\",",
+      "replace": "      this.binding.instanceId, this.binding.epoch + 1, ref.token, \"fire\",",
+      "command": "pnpm smoke:runtime-mesh-sleep",
+      "completionMarker": "• 1 — the pause is durable and exactly one schedule was armed",
+      "expectRed": "the sleep effect did not end within 20000ms",
+      "cell": "the sleep effect did not end within 20000ms",
+      "note": "A fire belongs to the instance and epoch that armed it, and the subject carries both. This is the one-character version of the defect: everything about the pump is present and correct and it is listening one epoch away. It matters because a run ADOPTED at a new epoch re-arms at the new coordinates, so a pump bound to the wrong one is exactly the takeover case."
+    },
+    {
+      "name": "the polling half is removed, so a `wait`'s timeout is read for and never produced",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (!(await this.takeFire(ref))) return undefined;",
+      "replace": "    return undefined;",
+      "command": "pnpm smoke:runtime-mesh-wait",
+      "completionMarker": "• 5 — the wait's timeout is minted, armed, and past due",
+      "expectRed": "the timed-out wait did not end within 25000ms",
+      "cell": "the timed-out wait did not end within 25000ms",
+      "note": "The two call sites fail apart, and this is the one a fix written from the sleep report alone would miss. `wait` never awaits a settle fact through the watcher; it POLLS for one, which means it reads for a fact only it can produce. With this applied the sleep suite is entirely green and every wait with a timeout, and every idle window, waits forever."
+    },
+    {
+      "name": "PAIRED: the pump is never started, graded on `checkpoint` rather than on `sleep`",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    const pump = this.pumpFires(ref, wait);",
+      "replace": "    const pump = Promise.resolve();",
+      "command": "pnpm smoke:runtime-mesh-checkpoint",
+      "completionMarker": "• 3 — nobody answers: the deadline is armed and past due",
+      "expectRed": "the run did not end within 30000ms",
+      "cell": "the run did not end within 30000ms",
+      "note": "Same edit as mutation 1, a different suite, and it is here because the two effects are not the same claim. A `sleep` is a pause nobody will ever answer; a `checkpoint` has a resolver, and its expiry is the case where the resolver did not come. Graded through the run driver end to end, so what reddens is a RUN that does not finish rather than an effect that does not return."
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "that a fire handed over twice is harmless",
+      "why": "It is a property of the checkpoint plane's one-use settlement, not of this file: the second hand-over finds the pause already settled and declines. It is graded in `packages/core/smoke/endpoint-checkpoint.smoke.ts`, where the verdicts themselves are the subject. A mutation here would be aimed at code this change does not own."
+    },
+    {
+      "name": "the `re-armed` verdict under owner-behind clock skew",
+      "why": "It needs a host clock genuinely behind the broker's, which these suites cannot produce without freezing the handler's clock -- and a frozen clock is the state that re-arms forever, so the fixture and the failure are the same thing. What the suites DO carry is the consequence: `armPending`'s fetch window is short so it cannot straddle a deadline and count a correct re-arm as a second arming."
+    }
+  ]
+}

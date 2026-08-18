@@ -7,7 +7,7 @@
  * those are the programs the rules have to catch.
  */
 import { validate } from "../src/grammar.js";
-import { LangErrors, type LangErrorCode } from "../src/errors.js";
+import { CATALOG, LangErrors, type LangErrorCode } from "../src/errors.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -285,6 +285,111 @@ accepts(
   'const a = await spawn("x");\nawait monitor(a);\nawait parallel({ one: () => turn(a, { name: "b" }) }, { name: "p" });',
 );
 
+// ---- 5e) a branch may not write a binding it captured (L2032) ---------------------------------
+
+// This is the program that was found by EXECUTING rather than by reading, and it is the
+// worst-behaved one in the language: live, `a` finishes last so `winner` is "a" and the run takes
+// `a-won`; on resume the journalled sleeps return instantly, the assignments run in launch order
+// instead of completion order, `winner` is "b", and the resumed run PERFORMS `b-won`. A replay that
+// abandons the recorded path and does new work, with no divergence raised, because no effect's
+// inputs changed. Freeze-on-share cannot see it: nothing crosses an effect boundary.
+rejects(
+  "the captured-write program is refused",
+  "L2032",
+  'let winner = "none";\nawait parallel({\n  a: async () => { await sleep("5s", { name: "a" }); winner = "a"; },\n  b: async () => { await sleep("1s", { name: "b" }); winner = "b"; },\n}, { name: "p" });\nif (winner === "a") { await sleep("1s", { name: "a-won" }); } else { await sleep("1s", { name: "b-won" }); }',
+);
+rejects(
+  "a compound write is the same defect",
+  "L2032",
+  'let n = 0;\nawait parallel({ a: async () => { n += 1; }, b: async () => { n += 2; } }, { name: "p" });',
+);
+rejects(
+  "and so is an increment",
+  "L2032",
+  'let n = 0;\nawait race({ a: async () => { n++; return 1; }, b: async () => 2 }, { name: "r" });',
+);
+rejects(
+  "a fanOut body is a concurrent thunk too",
+  "L2032",
+  'let seen = 0;\nawait fanOut(["a", "b"], async (x) => { seen = 1; return x; }, { name: "f", key: (x) => x });',
+);
+rejects(
+  "nesting does not launder it: the write is still outside the thunk that makes it",
+  "L2032",
+  'let winner = "none";\nawait parallel({ a: async () => { if (true) { winner = "a"; } } }, { name: "p" });',
+);
+// A BRANCH IS A BRANCH HOWEVER IT IS SPELLED. This is the same program with the arrows replaced by
+// named declarations. A `branchThunks` that looks only at function nodes written at the call site
+// finds no branches at all in `parallel({ a, b })`, so both spellings are pinned here.
+rejects(
+  "a NAMED branch is checked, not skipped because it was declared elsewhere",
+  "L2032",
+  'let winner = "none";\nasync function a() { await sleep("5s", { name: "a" }); winner = "a"; }\nasync function b() { await sleep("1s", { name: "b" }); winner = "b"; }\nawait parallel({ a, b }, { name: "p" });',
+);
+rejects(
+  "and so is a branch named through a const arrow",
+  "L2032",
+  'let n = 0;\nconst bump = async () => { n += 1; };\nawait race({ bump, other: async () => 2 }, { name: "r" });',
+);
+rejects(
+  "a fanOut whose body is named is checked too",
+  "L2032",
+  'let seen = 0;\nasync function mark(x) { seen = 1; return x; }\nawait fanOut(["a"], mark, { name: "f", key: (i) => i });',
+);
+// One level down, and invisible at the combinator call: the branch writes nothing, the helper does.
+rejects(
+  "a helper the branch CALLS is followed, because the write is the same defect one level down",
+  "L2032",
+  'let winner = "none";\nfunction claim(who) { winner = who; }\nawait parallel({ a: async () => { await sleep("5s", { name: "a" }); claim("a"); }, b: async () => { await sleep("1s", { name: "b" }); claim("b"); } }, { name: "p" });',
+);
+accepts(
+  "but a helper that only touches its own locals stays ordinary shared code",
+  'function label(x) { let out = x; out = out + "!"; return out; }\nawait parallel({ a: async () => label("a"), b: async () => label("b") }, { name: "p" });',
+);
+// A NAME the branch declared is that name, not the program-level function that happens to share it.
+// Without this, following the call graph would reach a function the branch never calls and blame it
+// — the failure mode that turns a real rule into one authors work around.
+accepts(
+  "a name a branch bound itself is not the program function of the same name",
+  'let flag = 0;\nfunction bump() { flag = 1; }\nfunction apply(bump) { return bump(1); }\nawait parallel({ a: async () => apply((x) => x), b: async () => 2 }, { name: "p" });',
+);
+// THE SAME RULE AT THE COMBINATOR CALL, which is where it was missing. The branch here is the
+// PARAMETER `branch`, which only returns 1; the top-level `branch` is never passed and never
+// called. Resolving the name through a program-wide map instead of through its binding rejected
+// this program for a write in a function it does not use — an unrelated declaration elsewhere
+// making a clean program unwriteable, which is how a real rule becomes one authors route around.
+// The branch that arrives through a parameter is UNPROVEN, not innocent: the interpreter's
+// concurrency-depth check refuses the write at runtime if one is ever made.
+accepts(
+  "a branch identifier resolves through its BINDING: a parameter is not the program function of the same name",
+  'let flag = 0;\nfunction branch() { flag = 1; }\nasync function use(branch) { await parallel({ branch }, { name: "p" }); }\nawait use(async () => 1);',
+);
+accepts(
+  "and a helper called only from sequential code is not a branch at all",
+  'let notes = "";\nfunction note(x) { notes = x; }\nnote("start");\nawait parallel({ a: async () => 1 }, { name: "p" });',
+);
+// The other half of the rule, and the half that decides whether it is usable. A branch that writes
+// only what it declared is ordinary code, and the language would be much worse if this were caught.
+accepts(
+  "a branch writing its OWN binding is fine",
+  'await parallel({ a: async () => { let n = 0; n += 1; return n; }, b: async () => 2 }, { name: "p" });',
+);
+accepts(
+  "so is writing a parameter",
+  'await fanOut(["a"], async (x) => { let y = x; y = y + "!"; return y; }, { name: "f", key: (i) => i });',
+);
+accepts(
+  "and returning the value instead of assigning it is the repair the error asks for",
+  'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);',
+);
+// `conclave` is one body with nothing to race, so a write from inside it is as ordered as a write
+// anywhere else in the program. Sweeping it in with the concurrent combinators would ban correct
+// code, which is the failure mode a static rule cannot afford.
+accepts(
+  "a conclave body may write an outer binding, because nothing runs beside it",
+  'let notes = "";\nconst a = await spawn("x");\nawait conclave([a], async (ch) => { notes = ch.channel; return 1; }, { name: "t" });\nlog(notes);',
+);
+
 // ---- 6) the Jessie diff --------------------------------------------------------------------
 
 rejects("no classes", "L1001", "class Foo { }");
@@ -306,6 +411,10 @@ rejects("no computed property names", "L1011", "function f(k) { return { [k]: 1 
 // is frequently semicolon-free, and ASI is parse-deterministic so determinism is untouched. Only
 // the two constructs where a newline genuinely changes meaning stay errors.
 accepts("semicolon-free source is ordinary", 'const a = await spawn("x")\nlog(a)\n');
+// The TITLE is part of the error, and it was naming a rule this language does not have: an author
+// reading "Missing semicolon" over semicolon-free code that the validator accepts everywhere else
+// is being told the opposite of what is true.
+ok("L1008 is titled for the hazard, not for a semicolon rule that does not exist", CATALOG.L1008 === "Newline hazard", CATALOG.L1008);
 accepts("explicit terminators are fine too", 'const a = await spawn("x");\nlog(a);\n');
 rejects(
   "a return whose value is on the next line is a hazard",

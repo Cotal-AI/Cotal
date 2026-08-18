@@ -1896,6 +1896,12 @@ command presenting the checkpoint token; resume authorization is **one-use** (jo
 create-only CAS on the checkpoint token; duplicate resume is `conflict`) and holder-bound
 (§13.10). Expiry fails the checkpoint closed.
 
+A settlement MAY name the answer it accepted. The one-use settle fact carries an OPTIONAL
+`answerId`, and the status carries the matching OPTIONAL `settledAnswerId`; both are id tokens,
+both are permitted ONLY on a `resumed` settlement, and an implementation MUST reject either on an
+expiry. Their key sets are closed: an endpoint that does not know these keys MUST hard-error on a
+fact that carries one. The answer's payload MUST NOT ride either field.
+
 **Guard checkpoint**, the pre-effect authorization hook. A command carrying the governed
 `ai.cotal.guarded` trait MUST NOT effect until the guard endpoint named by the trait value
 answered **allow** (class call). Answers: `allow | deny | hold` plus optional signed

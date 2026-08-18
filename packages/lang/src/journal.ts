@@ -12,8 +12,8 @@
  * miss that quietly re-runs the effect and lets two versions of the truth coexist.
  */
 
-import type { EffectKind } from "./primitives.js";
-import { type StepKey, stepKeyString } from "./keys.js";
+import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
+import { EFFECT_KINDS } from "./primitives.js";
 
 export type EntryState = "pending" | "settled";
 export type EntryStatus = "ok" | "failed" | "cancelled";
@@ -31,7 +31,7 @@ export interface JournalEntry {
   readonly seq: number;
   readonly run: string;
   readonly scope: string;
-  readonly kind: EffectKind;
+  readonly kind: JournalKind;
   readonly name: string;
   readonly occurrence: number;
   readonly inputHash: string;
@@ -58,6 +58,54 @@ export interface JournalEntry {
   readonly error?: EntryError;
   /** The external resource this effect bound, so a crash mid-effect is recoverable. */
   readonly external?: Readonly<Record<string, unknown>>;
+  /**
+   * A cancelling scope's INTENT, durable with its outcome.
+   *
+   * A journal write cancels nothing by itself: marking a branch cancelled while its agent keeps
+   * working is how two agents come to share a worktree, one of them invisibly. So the losers are
+   * recorded WITH the result, and `issued` flips only once the world agrees they are quiescent —
+   * which is a fact about the world, established by whoever is driving, not by this record.
+   */
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  /**
+   * `branchDigest`: what the arms this scope did NOT walk looked like when it ran.
+   *
+   * A settled `race` is replayed from its own entry, and a migration walks the RECORDED WINNING
+   * branch alone — so an edit inside a LOSING arm is invisible to every check the walk performs.
+   * Measured, not assumed: editing the winner's arm is caught, editing the loser's arm produced a
+   * plan byte-identical to the plan for source that was never edited, and the child ran silently.
+   * This binds the losers' bodies into the entry so that edit diverges directly.
+   *
+   * Optional in the entry shape and optional here: it is written only where the branch bodies are
+   * literals in the source the interpreter is holding. A `race` over a variable has no branch node
+   * to digest, and inventing one is worse than carrying nothing — hence "compare it IF the entry
+   * carries one" rather than "require it".
+   */
+  readonly branchDigest?: string;
+  /**
+   * `branches`: the arm names this scope was made of, on a scope that FAILED.
+   *
+   * A successful scope carries them inside `result`, and `settle` writes `result` only when the
+   * status is `ok` — result and error are exclusive, which is right. The consequence was not: a
+   * FAILED scope recorded no arm names anywhere, so a migration reconstructed an empty winner set,
+   * entered no branch, and awaited `Promise.race([])`, which never settles. It hung on source
+   * nobody had edited. The names are not an outcome; they are what the scope WAS, and a scope that
+   * failed was still made of arms.
+   *
+   * Written only on the failed path, because the ok path already carries them and duplicating a
+   * fact into two places is how the two come to disagree.
+   */
+  readonly branches?: readonly string[];
+  /**
+   * A `conclave`'s CLOSURE, stated rather than inferred from the entry's state.
+   *
+   * The state cannot answer it. A cancelled conclave is `settled`/`cancelled` while its membership
+   * is deliberately still live, and a scope whose body failed AND whose close failed settled
+   * `failed` too — indistinguishable from "body failed, close succeeded", which an orphan walk
+   * reads as closed. So the disposition is its own fact: `true` only once the handler acknowledged
+   * the close. An entry that never settled is open by definition and carries nothing.
+   */
+  readonly closed?: boolean;
   readonly startedAt: number;
   readonly endedAt?: number;
 }
@@ -82,11 +130,79 @@ export type LookupVerdict =
       readonly programHash: string;
     };
 
+/**
+ * Where a journal entry goes to survive the process that wrote it.
+ *
+ * The interpreter owns WHAT is recorded and WHEN; a store owns only durability, and it is handed
+ * whole entries rather than deltas so it never has to reconstruct one. `append` must resolve only
+ * once the entry is somewhere a resume on another host will find it — the pending half is awaited
+ * before the handler runs, so a store that resolves early hands back exactly the crash window the
+ * two-phase write exists to close.
+ *
+ * A run with no store is in-memory, which is what the simulator, the dry run and every test want:
+ * durability is a property of where a run is hosted, not of what a program means.
+ */
+export interface JournalStore {
+  append(entry: JournalEntry): Promise<void>;
+}
+
+/**
+ * A store's refusal that could NOT be determined to have failed.
+ *
+ * A store that knows the append never landed says so by throwing an ordinary error. One that cannot
+ * tell — a publish that timed out, a connection that died mid-flight — sets this, because the two
+ * are different facts and the run must not be told the safer one. Everything else about the failure
+ * is identical: the run stops either way.
+ */
+export interface IndeterminateAppend {
+  readonly indeterminate: true;
+}
+
 export interface JournalInit {
   readonly run: string;
   readonly entries?: readonly JournalEntry[];
   /** Refuse to append. A migration's dry replay must never mutate the run it is checking. */
   readonly readOnly?: boolean;
+  /** Where appends go to survive this process. Omitted, the journal is in-memory only. */
+  readonly store?: JournalStore;
+}
+
+/**
+ * A durable append the store REFUSED.
+ *
+ * This is not an effect failure, and conflating the two is not cosmetic. A handler that completed
+ * plus a log that would not accept the completion, recorded as one fact, is an entry saying the
+ * work FAILED: a later replay then reports failure for work the world actually did, which is the
+ * journal lying about the one thing it exists to remember. The domains are separate: "the world
+ * said no" is the run's result, "the log said no" is the run losing its ability to have one. A
+ * driver reads the second as
+ * "stop, and do not record anything else", never as an outcome.
+ *
+ * Nothing was written and nothing in memory moved, so a caller holding this error knows exactly as
+ * much as it did before the call.
+ */
+export class JournalAppendRejected extends Error {
+  readonly code = "L5010";
+
+  /** True when the store could not tell whether the entry landed. See {@link IndeterminateAppend}. */
+  readonly indeterminate: boolean;
+
+  constructor(
+    readonly stepKey: string,
+    readonly state: EntryState,
+    readonly reason: Error,
+  ) {
+    const indeterminate = (reason as Partial<IndeterminateAppend> | null | undefined)?.indeterminate === true;
+    super(
+      `L5010 Journal append rejected\n\n  step  ${stepKey}   ${state}\n\n${reason.message}\n\n${
+        indeterminate
+          ? "Whether the entry was recorded is UNKNOWN — the store could not tell — and the in-memory journal was left as it was."
+          : "The entry was not recorded and the in-memory journal was left as it was."
+      } This is a durability failure, not an effect failure: whatever the effect did, it stands, and this run can no longer say so.`,
+    );
+    this.indeterminate = indeterminate;
+    this.name = "JournalAppendRejected";
+  }
 }
 
 export class JournalReadOnlyError extends Error {
@@ -96,23 +212,69 @@ export class JournalReadOnlyError extends Error {
   }
 }
 
+/**
+ * The step-key string an entry was written under, rebuilt from the entry itself.
+ *
+ * A recorded entry keeps the scope path as a STRING and its own `(kind, name, occurrence)` beside
+ * it, so the key it was filed under is recoverable — but only by re-applying the grammar that
+ * `stepKeyString` owns. That grammar lives in exactly one place and this is how anything outside
+ * the language addresses a recorded step: a caller that re-joined the parts by hand would be
+ * maintaining a second copy of a rule, and the first edit to the naming would silently address a
+ * different step rather than fail.
+ */
+export function journalEntryKeyString(entry: JournalEntry): string {
+  const named = entry.name === "" ? entry.kind : `${entry.kind}:${entry.name}`;
+  return `${entry.scope}/${named}#${entry.occurrence}`;
+}
+
 export class Journal {
   readonly run: string;
   readonly readOnly: boolean;
+  private readonly store?: JournalStore;
   private readonly byKey = new Map<string, JournalEntry>();
   private readonly order: string[] = [];
+  /**
+   * Append order, allocated where the entry is BUILT rather than read off `order.length`.
+   *
+   * `begin` awaits a durable append before the key joins `order`, so two concurrent branches — which
+   * is the normal shape, not an edge case — both read the same length and both claimed the same
+   * `seq`. Rendering then showed two "first" steps, and any tooling ordering by it saw a tie it had
+   * no way to break. A counter is allocated synchronously, so the two branches cannot observe the
+   * same value however their awaits interleave.
+   */
+  private nextSeq = 0;
   /** Every key the current replay has looked up. What is left over is an orphan. */
   private readonly consumed = new Set<string>();
 
   constructor(init: JournalInit) {
     this.run = init.run;
     this.readOnly = init.readOnly === true;
+    if (init.store !== undefined) this.store = init.store;
     for (const e of init.entries ?? []) {
+      // A journal is ONE run's. Seeding it with another run's entry would make this run resume
+      // against a history it never had — the keys are structural, so a foreign entry with the same
+      // scope and name matches, and its recorded result is returned as if this run had produced it.
+      if (e.run !== this.run)
+        throw new Error(`journal for run ${this.run} was seeded with an entry from run ${e.run}; a run resumes only from its own journal`);
       // The stored `scope` string is authoritative: it is what makes a journal readable back
       // without re-running the program that produced it.
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;
       this.byKey.set(full, e);
-      this.order.push(full);
+      // FOLD THE LOG. A seed is an APPEND LOG, not a keyed view: the stream carries the pending
+      // record and the settled one as two records (`journal-store.smoke`: "settling appends a second
+      // record rather than editing the first"), `RunJournalAppender.steps()` replays both, and the
+      // driver seeds a journal straight from that. `byKey` already folds — last write wins, which is
+      // the settled row — so pushing the key again put the SAME entry in `order` twice and left the
+      // journal's two views disagreeing: the ceiling counted one step and `entries()` reported two,
+      // both resolving through `byKey`, so the pending row came back as a second copy of the settled
+      // one. `orphans()` reads `order`, so an unconsumed step reached the migrate table twice — one
+      // decision presented to an operator as two, about a step that happened once.
+      //
+      // FIRST occurrence, not last: `order` is the order the run PERFORMED its steps in, and a step
+      // begins when its pending row is written. Re-pushing on settle would reorder history by
+      // completion, which is a different sequence and not the one a reader is looking for.
+      if (!this.order.includes(full)) this.order.push(full);
+      if (e.seq >= this.nextSeq) this.nextSeq = e.seq + 1;
     }
   }
 
@@ -143,13 +305,39 @@ export class Journal {
     return { verdict: "replay", entry };
   }
 
-  /** Append the `pending` half: the effect is about to be performed. */
-  begin(key: StepKey, inputHash: string, startedAt: number, requestId?: string): JournalEntry {
+  /**
+   * Durably record one entry, BEFORE the in-memory map is allowed to hold it.
+   *
+   * The order is the whole point. Mutating first leaves a volatile transition behind when the store
+   * refuses: a `begin` whose append was rejected still reads as `pending`, and a `settle` whose
+   * append was rejected still reads as settled, so the in-memory journal claims a durability the
+   * store explicitly declined to provide. Persisting first means a rejected append changes nothing
+   * at all, which is the only state a caller can reason about.
+   *
+   * With no store there is nothing to refuse: `persist` returns, the map is updated, and nothing is
+   * awaited that could fail.
+   */
+  private async persist(k: string, entry: JournalEntry): Promise<void> {
+    if (this.store === undefined) return;
+    try {
+      await this.store.append(entry);
+    } catch (e) {
+      throw new JournalAppendRejected(k, entry.state, e as Error);
+    }
+  }
+
+  /**
+   * Append the `pending` half: the effect is about to be performed.
+   *
+   * AWAIT THIS BEFORE DISPATCHING. The entry carries the request id the handler will submit under,
+   * and an identity that is not durable when the work is issued names nothing a resume can find.
+   */
+  async begin(key: StepKey, inputHash: string, startedAt: number, requestId?: string): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry: JournalEntry = {
       v: 1,
-      seq: this.order.length,
+      seq: this.nextSeq++,
       run: this.run,
       scope: k.slice(0, k.lastIndexOf("/")),
       kind: key.kind,
@@ -160,6 +348,7 @@ export class Journal {
       state: "pending",
       startedAt,
     };
+    await this.persist(k, entry);
     this.byKey.set(k, entry);
     this.order.push(k);
     this.consumed.add(k);
@@ -178,31 +367,49 @@ export class Journal {
    * The INDEX moves with the id, and it is the half that recovery reads: an id says what to submit
    * under, the index says how much of the chain is already spent.
    */
-  reissueAs(key: StepKey, requestId: string, attempt: number): void {
+  async reissueAs(key: StepKey, requestId: string, attempt: number): Promise<void> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`reissueAs before begin for ${k}`);
-    this.byKey.set(k, { ...entry, requestId, attempt });
+    const next = { ...entry, requestId, attempt };
+    await this.persist(k, next);
+    this.byKey.set(k, next);
   }
 
-  bind(key: StepKey, external: Readonly<Record<string, unknown>>): void {
+  async bind(key: StepKey, external: Readonly<Record<string, unknown>>): Promise<void> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
     if (entry === undefined) throw new Error(`bind before begin for ${k}`);
-    this.byKey.set(k, { ...entry, external });
+    const next = { ...entry, external };
+    await this.persist(k, next);
+    this.byKey.set(k, next);
   }
 
-  /** Append the `settled` half. */
-  settle(
+  /**
+   * Append the `settled` half.
+   *
+   * `facts.cancel` is for a scope that cancels siblings: the intent is recorded WITH the outcome
+   * rather than after it, because a process dies between instructions and two appends are two
+   * network operations however few keywords separate them. `facts.closed` is a `conclave`'s
+   * membership disposition, for the same reason and with the same rule: it goes down with the
+   * outcome or not at all.
+   */
+  async settle(
     key: StepKey,
     outcome:
       | { readonly status: "ok"; readonly result: unknown }
       | { readonly status: "failed"; readonly error: EntryError }
       | { readonly status: "cancelled" },
     endedAt: number,
-  ): JournalEntry {
+    facts: {
+      readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+      readonly closed?: boolean;
+      readonly branchDigest?: string;
+      readonly branches?: readonly string[];
+    } = {},
+  ): Promise<JournalEntry> {
     if (this.readOnly) throw new JournalReadOnlyError(key);
     const k = Journal.keyOf(key);
     const entry = this.byKey.get(k);
@@ -214,9 +421,58 @@ export class Journal {
       endedAt,
       ...(outcome.status === "ok" ? { result: outcome.result } : {}),
       ...(outcome.status === "failed" ? { error: outcome.error } : {}),
+      ...(facts.cancel !== undefined ? { cancel: facts.cancel } : {}),
+      ...(facts.closed !== undefined ? { closed: facts.closed } : {}),
+      ...(facts.branchDigest !== undefined ? { branchDigest: facts.branchDigest } : {}),
+      // Only where `result` is not carrying them, so the two can never disagree.
+      ...(outcome.status !== "ok" && facts.branches !== undefined ? { branches: facts.branches } : {}),
     };
+    await this.persist(k, settled);
     this.byKey.set(k, settled);
     return settled;
+  }
+
+  /**
+   * Account for everything under a settled scope WITHOUT entering a branch.
+   *
+   * A settled scope is delivered from its own entry, so the branches are never walked — and an
+   * entry nothing walks is an orphan, which on a migration means "the edit removed this step". The
+   * branches were not removed; they were decided. So the subtree is marked consumed explicitly.
+   *
+   * A loser still sitting `pending` is settled `cancelled` in the same pass, because that is what
+   * it is: the scope resolved without it. Settling the record is NOT the cancellation — the world
+   * has to be told separately, which is what `cancel.issued` tracks — but leaving it pending would
+   * make a resumed run try to recover work the scope already decided to abandon.
+   */
+  async consumeScope(
+    scopeKeyString: string,
+    endedAt: number,
+    /**
+     * Restrict the accounting to these branch keys.
+     *
+     * A resume passes nothing and takes the whole subtree, which is correct because the program
+     * hash is unchanged and nothing under the scope can have been removed. A MIGRATION passes the
+     * losers alone: the branches it does not name are walked instead, so that an effect the edited
+     * source removed still shows up as an orphan rather than being accounted for by a scope that
+     * never entered it.
+     */
+    only?: ReadonlySet<string>,
+  ): Promise<readonly string[]> {
+    const prefix = `${scopeKeyString}/b:`;
+    const wanted = only === undefined ? undefined : new Set([...only].map((b) => `${prefix}${b}/`));
+    const touched: string[] = [];
+    for (const k of this.order) {
+      if (!k.startsWith(prefix)) continue;
+      if (wanted !== undefined && ![...wanted].some((w) => k.startsWith(w))) continue;
+      this.consumed.add(k);
+      touched.push(k);
+      const entry = this.byKey.get(k);
+      if (entry === undefined || entry.state !== "pending") continue;
+      const cancelled: JournalEntry = { ...entry, state: "settled", status: "cancelled", endedAt };
+      await this.persist(k, cancelled);
+      this.byKey.set(k, cancelled);
+    }
+    return touched;
   }
 
   /** Every entry, in append order. The journal is the prompt context for repair. */
@@ -238,6 +494,33 @@ export class Journal {
       .filter((k) => !this.consumed.has(k))
       .map((k) => this.byKey.get(k))
       .filter((e): e is JournalEntry => e !== undefined);
+  }
+
+  /**
+   * How many EFFECTS this run has already dispatched, counted from what is recorded.
+   *
+   * The effect ceiling is a RUN bound (L4009, "Run effect ceiling reached") and the
+   * interpreter's counter is per-instance, so without this a run got a fresh allowance at every
+   * activation and a runaway loop that crashed periodically could never reach the ceiling. The
+   * journal is the only thing that survives an activation, and it already holds the answer.
+   *
+   * Distinct KEYS, not entries: a dispatch writes a pending entry and then a settled one under the
+   * same key, and the interpreter counts the dispatch once. A pending entry still counts — the
+   * effect was performed, which is exactly why it was written before the handler was called.
+   *
+   * `conclave` is excluded because the interpreter does not count it either: it dispatches
+   * `openConclave` from the scope walker rather than through `performEffect`, so counting it here
+   * would make a resumed run's tally disagree with a fresh one's. That asymmetry is a real gap in
+   * what the ceiling sees and it is reported separately; this method mirrors the counter rather
+   * than quietly repairing it, because a seed that does not match the thing it seeds is worse than
+   * the gap it would paper over.
+   */
+  dispatchedEffects(): number {
+    let n = 0;
+    for (const e of this.byKey.values()) {
+      if (e.kind !== "conclave" && (EFFECT_KINDS as readonly string[]).includes(e.kind)) n += 1;
+    }
+    return n;
   }
 
   /** Start a fresh replay pass. */

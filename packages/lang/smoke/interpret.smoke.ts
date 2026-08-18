@@ -12,9 +12,10 @@
  */
 import { run, resume, RunDivergence } from "../src/interpret.js";
 import { requestId } from "../src/keys.js";
+import { resolvePins, type RunPins } from "../src/pins.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
-import { EffectError } from "../src/effects.js";
+import { EffectError, RunReleased } from "../src/effects.js";
 
 /** Collect what a program logged. A program has no return value: its outcome is what it did. */
 const logged: unknown[][] = [];
@@ -66,9 +67,13 @@ const SCRIPT = {
 };
 
 let firstJournal: Journal;
+// Every replay below is a resume and carries the pins the recorded run was pinned to: re-resolving
+// them would put the replay on this host's clock and a re-seeded PRNG, silently.
+let firstPins: RunPins;
 {
   const r = await run(PROGRAM, { runId: "r-1", handler: new SimHandler(SCRIPT) });
   firstJournal = r.journal;
+  firstPins = r.pins;
   const keys = keysOf(r.journal);
   ok("the program ran to completion", keys.length > 0);
   ok(
@@ -97,7 +102,7 @@ let firstJournal: Journal;
   // that nothing was re-performed. This is the claim the whole durability design rests on.
   const replayed = new Journal({ run: "r-1", entries: firstJournal.entries() });
   const empty = new SimHandler({});
-  const r = await resume(PROGRAM, replayed, { runId: "r-1", handler: empty });
+  const r = await resume(PROGRAM, replayed, { runId: "r-1", pins: firstPins, handler: empty });
   // The proof was real and IMPLICIT: an empty script refuses every unscripted effect, so reaching
   // this line meant nothing re-ran. Written as `true` it was indistinguishable from decoration, so
   // it now counts what the handler actually did rather than relying on the absence of a throw.
@@ -166,7 +171,7 @@ log(built.status);
   // And it replays: the recorded failure is re-thrown, the catch runs again, the retry replays.
   const again = new Journal({ run: "r-3b", entries: r.journal.entries() });
   logged.length = 0;
-  await resume(RETRY, again, { runId: "r-3b", handler: new SimHandler({}), onLog: sink });
+  await resume(RETRY, again, { runId: "r-3b", pins: r.pins, handler: new SimHandler({}), onLog: sink });
   ok("a recovered run replays end to end with no effects performed", (logged[0] ?? [])[0] === "done", logged[0]);
 }
 
@@ -197,7 +202,7 @@ const out = await parallel({
   // The same emptiness proof, now for a concurrent program: replay must touch no handler.
   const again = new Journal({ run: "r-4", entries: r.journal.entries() });
   const emptyC = new SimHandler({});
-  await resume(CONCURRENT, again, { runId: "r-4", handler: emptyC });
+  await resume(CONCURRENT, again, { runId: "r-4", pins: r.pins, handler: emptyC });
   ok("a concurrent run replays performing ZERO effects", emptyC.performed().length === 0, emptyC.performed());
 }
 
@@ -285,7 +290,7 @@ const out = await fanOut(
   const j = new Journal({ run: "r-1", entries: firstJournal.entries() });
   let div: RunDivergence | null = null;
   try {
-    await resume(EDITED, j, { runId: "r-1", handler: new SimHandler({}) });
+    await resume(EDITED, j, { runId: "r-1", pins: firstPins, handler: new SimHandler({}) });
   } catch (e) {
     div = e instanceof RunDivergence ? e : null;
   }
@@ -310,7 +315,7 @@ const out = await fanOut(
   const j = new Journal({ run: "r-1", entries: firstJournal.entries() });
   let diverged: unknown;
   try {
-    await resume(RETIMED, j, { runId: "r-1", handler: new SimHandler({}) });
+    await resume(RETIMED, j, { runId: "r-1", pins: firstPins, handler: new SimHandler({}) });
   } catch (e) {
     diverged = e;
   }
@@ -357,7 +362,7 @@ log(random());
   await resume(
     RAND,
     new Journal({ run: "r-10", entries: first.journal.entries() }),
-    { runId: "r-10", seed: "seed-1", handler: new SimHandler({}), onLog: sink },
+    { runId: "r-10", pins: first.pins, handler: new SimHandler({}), onLog: sink },
   );
   const replayDraw = (logged[0] ?? [])[0];
   ok("a replayed run draws the same random value", firstDraw === replayDraw, { firstDraw, replayDraw });
@@ -438,7 +443,7 @@ else { await sleep("1s", { name: "short-path" }); }
 
   let diverged: unknown;
   try {
-    await resume(timed("1m"), live.journal, { runId: "r-13", handler: new SimHandler({ clock: { start: 0 } }) });
+    await resume(timed("1m"), live.journal, { runId: "r-13", pins: live.pins, handler: new SimHandler({ clock: { start: 0 } }) });
   } catch (e) {
     diverged = e;
   }
@@ -483,7 +488,7 @@ if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
 
   let threw: unknown;
   try {
-    await resume(gate("fail"), live.journal, { runId: "r-14", handler: new SimHandler(script) });
+    await resume(gate("fail"), live.journal, { runId: "r-14", pins: live.pins, handler: new SimHandler(script) });
   } catch (e) {
     threw = e;
   }
@@ -599,7 +604,7 @@ log(c.status);
     seen.push(ctx.requestId);
     return innerTurn(req, ctx as never);
   };
-  await run(P, { runId: "r-16b", handler: sim, journal: new Journal({ run: "r-16b", entries }) });
+  await run(P, { runId: "r-16b", handler: sim, pins: live.pins, journal: new Journal({ run: "r-16b", entries }) });
   ok("a pending effect is reissued under the RECORDED id", seen.includes("PLANTED-ID"), seen);
 }
 
@@ -732,7 +737,9 @@ log(c.status);
       },
     });
 
-    const r = await run(ESC, { runId: "r-17", journal: crashed(), handler: spied as never, onLog: (l) => logs.push(l.values[0]) });
+    const r = await run(ESC, {
+      runId: "r-17", journal: crashed(), pins: live.pins, handler: spied as never, onLog: (l) => logs.push(l.values[0]),
+    });
 
     // THE COUNT IS THE TEST. One mint is outstanding, so exactly one call completes it. Two calls
     // means the hop was replayed, and the second one lands on an id the far side already answered.
@@ -819,7 +826,7 @@ log(c.status);
     sawAttempt = ctx.attempt;
     return innerTurn(req, ctx as never);
   };
-  await run(P, { runId: "r-19", handler: sim, journal: new Journal({ run: "r-19", entries }) });
+  await run(P, { runId: "r-19", handler: sim, pins: live.pins, journal: new Journal({ run: "r-19", entries }) });
 
   ok("a recovered effect is handed the resource the crashed attempt bound", JSON.stringify(sawResume) === JSON.stringify({ simGoal: "goal-42" }), sawResume);
   ok("alongside the recorded identity to submit under", sawId === "REQ-19", sawId);
@@ -827,6 +834,96 @@ log(c.status);
   // that cannot hop. Reading `undefined` here would make `ctx.attempt > 0` throw off a NaN compare
   // rather than take the ordinary path.
   ok("and an entry with no recorded index recovers as attempt 0", sawAttempt === 0, sawAttempt);
+}
+
+// ── the host's stop: a driver leaving is not a program failing ───────────────────────────────
+//
+// A driver holds its run under an absolute work horizon and can be asked to hand it back. Neither
+// is a fact about the workflow, so neither may be RECORDED as one — the run has to stop where its
+// journal already says it is, so the next driver resumes from there rather than from a fiction.
+{
+  const P = `
+let a = await sleep("1s")
+let b = await sleep("1s")
+let c = await sleep("1s")
+`;
+  let effects = 0;
+  const journal = new Journal({ run: "r-stop" });
+  let released: unknown;
+  // Resolved once, here, because the recorded run is released rather than returned and there is no
+  // result to take pins from — and both resumes below have to be the SAME run as it.
+  const stopPins = resolvePins({ runId: "r-stop" }, 0);
+  try {
+    await run(P, {
+      runId: "r-stop",
+      handler: new SimHandler({}),
+      journal,
+      pins: stopPins,
+      // Stop before the SECOND effect: the first must have run to completion, so the cell is about
+      // a stop between effects rather than a run that never started.
+      shouldStop: () => (effects++ === 1 ? "work horizon reached" : undefined),
+    });
+  } catch (e) { released = e; }
+  ok("a host that stops before the next effect releases the run rather than failing it",
+    released instanceof RunReleased, `${(released as Error)?.name}`);
+  ok("and it carries the host's reason, not a fabricated program error",
+    (released as RunReleased)?.reason === "work horizon reached", (released as RunReleased)?.reason);
+
+  // The load-bearing half. A pending entry here would be a durable record of work nobody performed,
+  // and the next driver would recover it — handing a resume token for a handler that never ran.
+  const entries = journal.entries();
+  ok("the effect it stopped before was never begun: one settled entry, nothing pending",
+    entries.length === 1 && entries[0]!.state === "settled",
+    entries.map((e) => e.state));
+
+  // And the run walks back to exactly where it stopped, which is the whole reason for stopping
+  // between effects rather than inside one.
+  const finished = await resume(P, new Journal({ run: "r-stop", entries }), { runId: "r-stop", pins: stopPins, handler: new SimHandler({}) });
+  ok("a fresh driver resumes it from there and finishes it",
+    finished.journal.entries().length === 3 && finished.journal.entries().every((e) => e.state === "settled"),
+    finished.journal.entries().map((e) => e.state));
+  ok("replaying the recorded prefix is not itself stopped: it performs nothing to stop before",
+    (await (async () => {
+      let asked = 0;
+      await resume(P, new Journal({ run: "r-stop", entries }), {
+        runId: "r-stop", pins: stopPins, handler: new SimHandler({}),
+        shouldStop: () => { asked += 1; return undefined; },
+      });
+      return asked;
+    })()) === 2, "the two effects that were NOT recorded");
+}
+
+// ── a program cannot catch its host leaving ──────────────────────────────────────────────────
+//
+// `try` is the workflow's own handling of the world going wrong, and a driver's shutdown is not the
+// world going wrong. A program that could catch it would carry on performing effects past the
+// horizon it was granted, which is the thing the stop exists to end — the same reason `Cancelled`
+// and a refused journal append are uncatchable.
+{
+  const P = `
+try {
+  let a = await sleep("1s")
+  let b = await sleep("1s")
+} catch (e) {
+  await notify(["ops"], { decision: "swallow", outcome: "caught" })
+}
+`;
+  let effects = 0;
+  const journal = new Journal({ run: "r-stop-2" });
+  let released: unknown;
+  try {
+    await run(P, {
+      runId: "r-stop-2", handler: new SimHandler({}), journal,
+      shouldStop: () => (effects++ === 1 ? "paused" : undefined),
+    });
+  } catch (e) { released = e; }
+  ok("a workflow's catch does not swallow its host's stop", released instanceof RunReleased,
+    `${(released as Error)?.name}`);
+  // The fact is a VALID one on purpose. With a malformed fact the effect boundary refuses it
+  // (L3043) and this assertion goes green whether the stop worked or not — the assertion would
+  // still read correctly and would have stopped being about the stop.
+  ok("and the catch block performed nothing: no notify was recorded",
+    journal.entries().every((e) => e.kind !== "notify"), journal.entries().map((e) => e.kind));
 }
 
 console.log(`interpret.smoke: ${pass} checks passed`);

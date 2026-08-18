@@ -303,6 +303,46 @@ r = runTool([
 ]);
 check("a real red followed by a crash is still KILLED", r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
 
+// 7e-quater. THE SAME RUN, UNDER A SUITE THAT OPTED IN — and the control that keeps the cell above
+// meaning what it says. `completionMarker` lets a suite declare "a run of mine that did not finish
+// is not evidence I want counted", which is a STRICTER bargain than the default, not a correction
+// to it. The two cells differ in exactly one config field, so if the opt-in ever stops being an
+// opt-in and becomes global, the control goes red and says so.
+writeFileSync(
+  join(root, "marked.mjs"),
+  [
+    "import { admit, unrelated } from './src/impl.js';",
+    "const c = (n, v) => { console.log(v ? `  ✓ ${n}` : `  ✗ FAIL: ${n}`); if (!v) process.exitCode = 1; };",
+    "c('the guard refuses an oversized value', admit(50) === false);",
+    "if (unrelated() !== 'untouched') throw new Error('the unrelated helper blew up');",
+    "c('the unrelated helper is untouched', admit(7) === true);",
+    "console.log('SELFTEST SUITE DONE');",
+    "",
+  ].join("\n"),
+);
+const crashAfterRed = {
+  name: "reddens the named cell for real, then crashes before the suite ends",
+  file: "src/impl.js",
+  find: "if (n > 10)\n    return false;",
+  replace: "if (false)\n    return false;\n  if (n === 7) throw new Error('and then a crash');",
+  expectRed: "the guard refuses an oversized value",
+};
+writeFileSync(
+  join(root, "completion-optin.json"),
+  JSON.stringify({ command: `${process.execPath} marked.mjs`, completionMarker: "SELFTEST SUITE DONE", mutations: [crashAfterRed] }),
+);
+writeFileSync(
+  join(root, "completion-control.json"),
+  JSON.stringify({ command: `${process.execPath} marked.mjs`, mutations: [crashAfterRed] }),
+);
+execSync("git add -A && git -c user.email=a@b -c user.name=c commit -qm completion", { cwd: root });
+r = runTool(["--config", "completion-optin.json"]);
+check("a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early",
+  r.status !== 0 && verdictIs(r.stdout, "INCONCLUSIVE") && r.stdout.includes("SELFTEST SUITE DONE"), r.stdout.slice(-400));
+r = runTool(["--config", "completion-control.json"]);
+check("...and THE SAME RUN with no marker declared is still KILLED, so this is opt-in and not a new default",
+  r.status === 0 && r.stdout.includes("KILLED"), r.stdout.slice(-400));
+
 // 7e-ter. EXIT STATUS IS NOT THE EVIDENCE, THE OTHER WAY ROUND. A teardown that calls
 // `process.exit(0)` after the suite printed real failures and set `exitCode = 1` hands the grader a
 // green status over a red run. Graded on status alone that reads SURVIVED — "the suite PASSED with

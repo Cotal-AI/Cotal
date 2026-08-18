@@ -48,6 +48,30 @@ export function eprStreamName(space: string): string { return `EPR_${token(space
 export function epwStreamName(space: string): string { return `EPW_${token(space)}`; }
 export function epcStreamName(space: string): string { return `EPC_${token(space)}`; }
 
+/** The workflow STEP JOURNAL stream. Deliberately outside the `ep*` plane letters: the step
+ *  journal is a runtime layer over the control surface, not part of the normative §13 endpoint
+ *  contract, and a reader that confuses the two would take a run's private trace for a decision
+ *  fact. It sits beside the §13 decision-fact journal, never on top of it. */
+export function wfjStreamName(space: string): string { return `WFJ_${token(space)}`; }
+
+/**
+ * The ONE subject a run's journal entries append to.
+ *
+ * ONE SUBJECT PER RUN, not one per entry — a deviation from the per-entry subject first sketched
+ * for it, and a CHOICE rather than a necessity. Per-entry subjects can be fenced:
+ * `Nats-Expected-Last-Subject-Sequence-Subject` evaluates the expectation against a wildcard
+ * comparator, measured working on the repo's broker floor. They are not used because the three
+ * properties a subject range is wanted for here — per-run ordering, replay by consumer filter, and
+ * retirement by subject purge — are all properties of the RUN subject, while the entry level buys
+ * only per-entry point reads, which an append-only journal replayed in full never issues. Against
+ * that it costs one stream subject per entry forever in a stream with no age eviction, and a second
+ * header whose absence degrades silently to a per-publish-subject comparison — on a fresh entry
+ * subject that is `0`, i.e. no fence at all.
+ */
+export function wfjSubject(space: string, runId: string): string {
+  return `${spacePrefix(space)}.wfj.${assertIdToken(runId, "runId")}`;
+}
+
 /** The CLOSED set of streams a §13.1 retirement may record a frontier cutoff over: exactly the
  *  per-space streams that carry a retired lifecycle's durable data a later durable reader can
  *  replay (facts EPF, work EPW, events EPE, and the records KV). A retirement intent's
@@ -283,6 +307,20 @@ export async function createEndpointStreams(
     name: epwStreamName(space),
     subjects: [`${p}.epw.>`],
     retention: RetentionPolicy.Workqueue,
+    storage: StorageType.File,
+    allow_direct: false,
+  });
+  // WFJ — the workflow step journal, one subject per run (see wfjSubject: the activation barrier
+  // is per-subject, so the subject is the run). NO max_age: a run's journal must outlive any
+  // retention window a control-surface plane wants, because a run that sleeps for a month resumes
+  // by re-reading it, and an evicted prefix is not a shorter journal, it is a run that will
+  // re-perform effects it already performed. Retirement is by subject purge, deliberately.
+  // NO allow_direct: a resume must read its own predecessor's last appends, and Direct Get is
+  // follower-servable — a stale miss there reads as "this step never ran".
+  await jsm.streams.add({
+    name: wfjStreamName(space),
+    subjects: [`${p}.wfj.*`],
+    retention: RetentionPolicy.Limits,
     storage: StorageType.File,
     allow_direct: false,
   });
@@ -826,6 +864,9 @@ const JSAPI = "$JS.API";
  *  the wildcard matches (a `*` durable grants INFO/MSG.NEXT/ACK on ALL durables of the stream).
  *  Every grammar in this module emits `[A-Za-z0-9_-]`, so anything else is refused loudly. */
 function assertGrantName(v: string, what: string): string {
+  // No wildcard, not even a partial one. A `*` inside a token is not a wildcard in NATS — it is a
+  // literal asterisk that matches only itself — so admitting the shape would mint rows that look
+  // like authority and grant none (measured, and it shipped for exactly one round).
   if (!/^[A-Za-z0-9_-]+$/.test(v))
     throw new Error(`${what} ${JSON.stringify(v)} must be a literal wildcard-free name component ([A-Za-z0-9_-]+)`);
   return v;
@@ -890,6 +931,82 @@ export function canonicalizerWorkGrants(space: string, endpoint: string): string
   return [
     `${spacePrefix(space)}.epw.${endpointToken(endpoint)}.>`,
     `${JSAPI}.STREAM.MSG.GET.${epwStreamName(space)}`,
+  ];
+}
+
+/** A run's journal replay durable on WFJ (`wfj_<runId>`, filter the run's own subject): the
+ *  driver reads the run's entries in append order to reproduce the deterministic prefix. Filtered
+ *  to ONE run, because a driver that can read every run's journal can read every run's effect
+ *  results, and a journal entry carries what an agent said.
+ *
+ *  It is named rather than ephemeral so the create row can pin the durable AND the filter (an
+ *  ephemeral's server-generated name would need a `*` in the name token), and it is DELETED and
+ *  recreated at every takeover rather than resumed — see `replayRunJournal`: a durable remembers
+ *  how far it delivered, and a successor needs the prefix from the top, so a reused one would hand
+ *  it the empty tail. That is why the driver's grants carry a delete row. */
+export function runJournalConsumerConfig(
+  space: string,
+  runId: string,
+  /**
+   * A token unique to ONE takeover attempt. A per-run durable is shared by contenders, and sharing
+   * it makes replay a race with itself: `add` on an existing durable returns it, so one driver
+   * inherits another's half-read consumer, and each contender's delete tears down the other's live
+   * fetch. A consumer nobody else names cannot be inherited, nor deleted out from under its owner.
+   * The grant pins this token EXACTLY — a consumer name is one
+   * subject token and no pattern covers part of one — so it is chosen when the rows are minted, with
+   * the lease, and not afterwards by the driver.
+   */
+  takeoverId: string,
+  opts: { ackWaitMs?: number; maxAckPending?: number; inactiveThresholdMs?: number } = {},
+): Partial<ConsumerConfig> {
+  return family(wfjStreamName(space), {
+    durable_name: `wfj_${assertIdToken(runId, "runId")}_${assertIdToken(takeoverId, "takeoverId")}`,
+    filter_subject: wfjSubject(space, runId),
+    ack_policy: AckPolicy.Explicit,
+    ack_wait: nanos(opts.ackWaitMs ?? 60_000),
+    deliver_policy: DeliverPolicy.All,
+    max_ack_pending: opts.maxAckPending ?? 1000,
+    // A REAPER, because nothing else is one. This consumer is created, read and deleted inside a
+    // single replay, so it should never outlive one — but a delete can fail, and the stream cannot
+    // clean up after it: WFJ sets neither `max_consumers` nor `consumer_limits`, which normalize to
+    // unlimited and to an inactive threshold of zero, and a durable at zero is given no delete timer
+    // at all. Without this, one takeover whose delete failed leaks a durable permanently.
+    inactive_threshold: nanos(opts.inactiveThresholdMs ?? 300_000),
+  });
+}
+
+/**
+ * The RUN DRIVER's journal rows, minted per RUN and never per space.
+ *
+ * Publish on exactly one subject — the run's — plus the replay durable it owns on that same
+ * subject, create, bind and DELETE, because every takeover recreates it to read the prefix from the
+ * top. There is no row here for reading the subject's current sequence, and there does not need to
+ * be one: the activation barrier's expectation is the last sequence the driver REPLAYED, so the
+ * read it would otherwise make is the replay it makes anyway.
+ *
+ * There is no wildcard form of this on purpose. A space-wide `wfj.>` publish would let one run's
+ * driver append to another run's journal, which is not a read leak but a corruption: the other run
+ * would replay a step it never took. And the barrier's whole premise is that the run subject has
+ * exactly one authoritative appender at a time; a grant that spans runs describes a different
+ * system.
+ */
+export function runDriverJournalGrants(space: string, runId: string, takeoverId: string): string[] {
+  const stream = wfjStreamName(space);
+  // The replay consumer is named per TAKEOVER, and its name is one subject token, so it cannot be
+  // covered by a pattern: NATS treats `*` as a wildcard only as a WHOLE token, and `wfj_<run>_*` is
+  // a literal that matches nothing (measured: a subscription to `api.WFJ.wfj_r-1_*` received
+  // `api.WFJ.wfj_r-1_*` and NOT `api.WFJ.wfj_r-1_ab12cd34`). A whole-token `*` would be every
+  // consumer on the stream, i.e. every other run's journal.
+  //
+  // So the takeover id belongs to the CREDENTIAL: the rows are minted for the one attempt that will
+  // use them, exactly as pinned as a per-run name was, and unique the way a shared name was not.
+  const cfg = runJournalConsumerConfig(space, runId, takeoverId);
+  const durable = cfg.durable_name!;
+  return [
+    wfjSubject(space, runId),
+    consumeCreateRow(stream, cfg),
+    ...consumeBindRows(stream, durable),
+    consumeDeleteRow(stream, durable),
   ];
 }
 
