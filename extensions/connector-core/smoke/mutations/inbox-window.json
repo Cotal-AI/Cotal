@@ -64,7 +64,17 @@
     "while every one of them promised a next batch. The rule the kills defend is that the note yields",
     "before the last message does, in order (names, counts, nothing), and only when it is the last:",
     "while another message still rides along, the full note is worth an item and K26 proves the suite",
-    "notices if that boundary moves either way."
+    "notices if that boundary moves either way.",
+    "",
+    "WHAT THIS KILL SET GOT WRONG ABOUT ITSELF, recorded where the next reader will look rather than in a",
+    "commit message. Four mutations had to be RE-ANCHORED after the refactors that closed the seventh and",
+    "eighth defects moved their targets, and one of those, K1, had SURVIVED: the line it mutated had",
+    "stopped deciding anything once the trim was restructured, so the class guard was reporting a kill for",
+    "a shape it no longer graded. Two others simply stopped matching, which is loud and harmless. The",
+    "quiet one is the lesson: a mutation whose target moves does not fail, it passes for the wrong reason,",
+    "and a count of kills cannot tell you which kind you have. The trim is now ONE loop that a single",
+    "mutation can turn off, and the note's tier list is authoritative rather than shadowed by a fallback",
+    "that ignored it, so both of those mutations grade what their names claim again."
   ],
   "mutations": [
     {
