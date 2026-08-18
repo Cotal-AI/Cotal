@@ -203,8 +203,17 @@ try {
     const td = join(d, "t-real");
     mkdirSync(td, { recursive: true });
     symlinkSync(join(outside, "wal.json"), join(td, "wal.json"));
+    // THE CELL PINS WHICH LAYER REFUSED, and that is not pedantry. Two layers stand here, an
+    // `lstat` and `O_NOFOLLOW`, and on a platform that has the flag either one alone produces a
+    // refusal matching `/never a symlink/`. A cell that only asked for a refusal could not tell
+    // them apart, and the pre-registered mutation on the lstat SURVIVED against exactly that
+    // wording. Since the claim being made is that the PORTABLE layer decides, the portable layer's
+    // own detail is what gets asserted; the flag behind it has no cell because no cell can drive
+    // the check-to-open race it exists for.
     await threw("recover:a-SYMLINKED-log-inside-a-real-thread-directory-is-refused",
       () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /never a symlink/);
+    await threw("recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
+      () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /writer never wrote/);
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

@@ -57,9 +57,9 @@
       "file": "extensions/connector-core/src/subject-frontier.ts",
       "find": "      if (st.isSymbolicLink())\n",
       "replace": "      if (false)\n",
-      "expectRed": "recover:a-SYMLINKED-log-inside-a-real-thread-directory-is-refused",
-      "cell": "recover:a-SYMLINKED-log-inside-a-real-thread-directory-is-refused",
-      "note": "The entry check clears the directory and stops there. Without this the guard is one level short rather than absent: a real thread directory holding a linked wal.json reaches the same foreign log by one more hop. The lstat is the graded layer because it is the portable one; O_NOFOLLOW behind it closes the check-to-open window, which no cell in this suite can reach."
+      "expectRed": "recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
+      "cell": "recover:the-symlinked-log-refusal-comes-from-the-PORTABLE-check-not-the-flag",
+      "note": "The entry check clears the directory and stops there. Without this the guard is one level short rather than absent: a real thread directory holding a linked wal.json reaches the same foreign log by one more hop. The lstat is the graded layer because it is the portable one; O_NOFOLLOW behind it closes the check-to-open window, which no cell in this suite can reach. It survived once against a cell that only required a refusal: on a platform holding O_NOFOLLOW the flag refuses too, and both refusals say `never a symlink`. The cell now asserts the portable layer's own detail, because the claim under test is which layer decides."
     }
   ]
 }
