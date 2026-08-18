@@ -116,8 +116,8 @@
     {
       "name": "K10 nothing shown is reported as an empty inbox, whatever is held",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "              held.length\n                ? `Nothing could be delivered in this response.${heldNote(held)}`\n                : scope",
-      "replace": "              false\n                ? `Nothing could be delivered in this response.${heldNote(held)}`\n                : scope",
+      "find": "              held.length\n                ? `Nothing could be delivered in this response.${heldNote(held, peek)}`\n                : scope",
+      "replace": "              false\n                ? `Nothing could be delivered in this response.${heldNote(held, peek)}`\n                : scope",
       "cell": "...and the reply names it rather than leaving it silently stuck",
       "expectRed": "...and the reply names it rather than leaving it silently stuck",
       "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
@@ -141,13 +141,13 @@
       "note": "A queue that looks like it is moving when it is not. The caller keeps calling, the same messages keep not arriving, and nothing in the reply says why."
     },
     {
-      "name": "K13 the recall warning is appended outside the budget again",
+      "name": "K13 the window keeps back no room for the framing",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          INBOX_WINDOW_CHARS - (warning ? warning.length + 2 : 0), // + the blank line that joins it",
-      "replace": "          INBOX_WINDOW_CHARS,",
-      "cell": "a long recall warning cannot push an acking response past the window",
-      "expectRed": "a long recall warning cannot push an acking response past the window",
-      "note": "The shape the first lens found on its re-pointed pass: the warning was pushed after the window was filled, so it rode outside the bound. Measured at 49,598 characters with twenty already-acked messages inside."
+      "find": "const RESPONSE_OVERHEAD = 1024;",
+      "replace": "const RESPONSE_OVERHEAD = 0;",
+      "cell": "the worst framing this tool can emit still fits inside the window",
+      "expectRed": "the worst framing this tool can emit still fits inside the window",
+      "note": "The first lens found the warning riding outside the budget; the repair pays for it, the head and the note out of one reserve. That is only honest if the reserve is above their combined worst case, which is what this mutation tests: with no reserve the framing is what pushes an acking reply past the cap. An earlier form of this mutation, subtracting the warning length a second time inside the focus branch, SURVIVED and was removed rather than kept: with the warning already bounded and paid for here, no input could tell the two versions apart."
     },
     {
       "name": "K14 the recall warning names every dropped channel",

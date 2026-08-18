@@ -421,6 +421,33 @@ try {
       worst <= INBOX_WINDOW_CHARS, { worst, window: INBOX_WINDOW_CHARS, cases: cases.length });
   }
 
+  // ── 16) THE FRAMING RESERVE IS BIG ENOUGH FOR THE LONGEST FRAMING THERE IS ────────────────────
+  //
+  // The window pays for the head line, the held-note in both of its kinds, and the recall warning
+  // out of one reserve. That is only honest if each of those is bounded AND the reserve is above
+  // their sum, so this cell builds the worst case of all three at once and packs the window tight.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: [],
+      droppedChannels: Array.from({ length: 60 }, (_, n) => `${"c".repeat(40)}-${n}`),
+    });
+    // A stuck message (its own note kind) beside enough ordinary mail to fill the window and leave
+    // some held (the other note kind), with long sender names so the notes are at their longest.
+    agent.ep.emit("message", { ...dmMsg("huge", "z".repeat(60_000)), from: { id: "x", name: "A".repeat(60), role: "B".repeat(60), kind: "agent" } }, noop(), dmMeta);
+    for (let n = 0; n < 190; n++) agent.ep.emit("message", dmMsg(`w-${n}`, "w".repeat(400)), noop(), dmMeta);
+
+    const before = agent.inboxCount();
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("the worst framing this tool can emit still fits inside the window",
+      text.length <= INBOX_WINDOW_CHARS, { chars: text.length, window: INBOX_WINDOW_CHARS });
+    check("...and that case really did exercise all three: it cleared mail, held mail, and warned",
+      agent.inboxCount() < before && text.includes("stays buffered and uncleared") && text.includes("could not be recalled"),
+      { before, after: agent.inboxCount() });
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {

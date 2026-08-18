@@ -207,11 +207,17 @@ function undeliverableAlone(i: InboxItem, budget = INBOX_WINDOW_CHARS): boolean 
 }
 
 /**
- * Room the window keeps back for the parts of a response that are not messages: the head line and
- * the held-note. Both are bounded, and this is comfortably above the longest either can be, so the
- * total response stays inside {@link INBOX_WINDOW_CHARS} rather than inside it plus the framing.
+ * Room the window keeps back for every part of a response that is not a message: the head line, the
+ * held-note, and the focus branch's recall warning.
+ *
+ * Each of those is bounded in code, which is what makes one number honest here rather than a guess.
+ * Worst case, measured against the longest form of each: a head of about 200 characters, a held-note
+ * carrying both of its kinds with {@link NAMED_STUCK} senders truncated at 40 characters, about 500,
+ * and a recall warning naming {@link NAMED_DROPPED} channels truncated at 40, about 300. This sits
+ * above their sum, so the whole response stays inside {@link INBOX_WINDOW_CHARS} rather than inside
+ * it plus the framing. Set this to zero and the framing is what pushes an acking reply past the cap.
  */
-const RESPONSE_OVERHEAD = 768;
+const RESPONSE_OVERHEAD = 1024;
 
 /**
  * The tail that keeps a windowed response honest: what is still there, and that it was not lost.
@@ -479,13 +485,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const recall = await agent.recallAmbient();
         // The window spans both lanes, because the response carries both; but only the buffered
         // lane is destructive, so only ids from it are ever cleared. Recall stays re-readable.
-        // The warning is part of the response, so it is part of the budget. Appending it after the
-        // window was filled put its length outside the bound this tool advertises.
+        // The warning is part of the response, so it is part of the budget: it is bounded by
+        // droppedNote and paid for out of RESPONSE_OVERHEAD, not appended after the window was
+        // filled, which is how its length used to ride outside the bound this tool advertises.
         const warning = droppedNote(recall.droppedChannels);
-        const { shown: all, held } = windowInbox(
-          [...buffered, ...recall.items],
-          INBOX_WINDOW_CHARS - (warning ? warning.length + 2 : 0), // + the blank line that joins it
-        );
+        const { shown: all, held } = windowInbox([...buffered, ...recall.items]);
         const bufferedIds = new Set(buffered.map((i) => i.id));
         if (!all.length && !recall.droppedChannels.length)
           return ok(
