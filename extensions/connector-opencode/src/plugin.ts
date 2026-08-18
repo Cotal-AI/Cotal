@@ -61,6 +61,11 @@ const INTERRUPT_INTENT_TTL_MS = 30_000;
  *  dies silently, which is the failure mode a guard exists to prevent. Reword the sentence freely;
  *  do not change this token without updating the cells that import it. */
 export const SESSION_RETIRED = "opencode-session-retired";
+/** A bounded wait gave up. Exported so a cell keys on the token rather than on the sentence. */
+export const SETTLE_ABANDONED = "opencode-settle-abandoned";
+/** How long one swap step may hold the chain, or a teardown may hold the process, before it is
+ *  abandoned loudly rather than waited on forever. */
+const SWAP_SETTLE_MS = 10_000;
 
 export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
@@ -304,7 +309,47 @@ export const cotal: Plugin = async () => {
     return holder.path === undefined || holder.path === id ? holder : undefined;
   }
 
-  function adoptSession(id: string, reason: string): void {
+  /**
+   * A BOUNDED WAIT, and the bound is the whole point of it.
+   *
+   * Every swap queues behind the one before it, so a single step that never settles does not stall
+   * one session, it stalls every session swap for the life of the process and the plane goes quiet
+   * with nothing saying why. What is waited on ends in a broker publish, which is exactly the kind
+   * of work that hangs rather than fails.
+   *
+   * Waiting forever and giving up quietly are both worse than this. Giving up is SAID: the caller
+   * learns it did not settle, and the line carries a token a cell can key on, so a plane that
+   * degraded is distinguishable from one that worked. Throwing would be worse rather than stricter,
+   * because the bus does not await this handler, so the rejection would surface as an unhandled one
+   * and take the wedge with it.
+   */
+  async function settleWithin(work: Promise<unknown> | undefined, ms: number, what: string): Promise<boolean> {
+    if (work === undefined) return true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const expired = new Promise<boolean>((resolve) => {
+      timer = setTimeout(() => resolve(false), ms);
+      timer.unref?.();
+    });
+    try {
+      const settled = await Promise.race([work.then(() => true, () => true), expired]);
+      if (!settled) log(`${SETTLE_ABANDONED} ${what} did not settle within ${ms}ms; continuing without it`);
+      return settled;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
+    }
+  }
+
+  /**
+   * `drivePending` exists because a swap must not prompt into the new session halfway through its
+   * own cutover. `drive()` is a TURN SUBMISSION rather than an event-plane consumer, so routing by
+   * the holder's binding does not reach it: fired from here during a swap it runs against the new
+   * id while the replacement holder is not installed yet, and the records it produces can land
+   * before that holder adopts. A fresh adopt takes the position of the END of the store, so
+   * anything written in between is passed over rather than published. The swap therefore drives
+   * after its cutover completes. Boot and first-event adoption keep driving at once, because
+   * neither has a cutover to be halfway through.
+   */
+  function adoptSession(id: string, reason: string, drivePending = true): void {
     if (sessionID === id) return;
     const previous = sessionID;
     sessionID = id;
@@ -319,7 +364,7 @@ export const cotal: Plugin = async () => {
     clearErrorRetry(true);
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
-      if (pendingForWake() > 0) void drive();
+      if (drivePending && pendingForWake() > 0) void drive();
     }
   }
 
@@ -548,7 +593,7 @@ export const cotal: Plugin = async () => {
             // in this window reaches a holder only if that holder is already bound to its thread.
             // Ordering these two flips against each other was the earlier attempt; it only ever moved
             // the gap, because two variables cannot be made one by sequencing them.
-            adoptSession(created, "top-level session create");
+            adoptSession(created, "top-level session create", false);
             const previous = events;
             if (previous && previous.path !== undefined && previous.path !== created) {
               // DRAIN, THEN SWAP. Flush first so the session being left publishes what it settled,
@@ -564,15 +609,20 @@ export const cotal: Plugin = async () => {
               // frames left to publish and its open handle looks identical to a cleanly retired one.
               previous.flush(previous.path);
               previous.closeRun(Date.now());
-              await previous.settled();
+              const drained = await settleWithin(previous.settled(), SWAP_SETTLE_MS, `drain of ${previous.path}`);
               // AFTER the settle, never before it. Logged before, this line reports that the retire
               // path was ENTERED, and a cell keyed on it stays green even if the drain never finishes.
-              log(`${SESSION_RETIRED} ${previous.path} superseded by ${created}; drained before release`);
+              log(`${SESSION_RETIRED} ${previous.path} superseded by ${created}; ${drained ? "drained before release" : "ABANDONED UNDRAINED"}`);
               events = newEventHolder();
             }
             // Adopt READS FROM HERE. A resumed session must not republish its history, and the
             // source's fresh adopt returns the position of the end for exactly that reason.
             eventsFor(created)?.adopt(created);
+            // THE DEFERRED DRIVE, and it belongs here rather than in the adopt above. The cutover is
+            // complete at this line: the predecessor is drained and settled and the replacement holder
+            // is installed and bound, so a turn started now produces records the holder publishes
+            // rather than records it adopted past.
+            if (pendingForWake() > 0) void drive();
           });
           // The chain carries the SUCCESSFUL tail only: a rejected swap is absorbed so the next one
           // still runs, while this invocation still sees its own failure.
@@ -661,6 +711,16 @@ export const cotal: Plugin = async () => {
       } catch {
         /* ignore */
       }
+      // NOTHING MAY PUBLISH AFTER TEARDOWN. A queued swap still holds a drain that flushes and
+      // closes a run, and it runs on its own chain rather than on this one, so without joining it
+      // here a shutdown can be followed by frames for a session the process has stopped serving.
+      // Serializing the swap did not create that exposure, but it does lengthen it: drains that
+      // used to overlap now complete one after another, so the last one finishes later than it did
+      // before. Joining the chain is therefore this change's own debt rather than a courtesy.
+      // Bounded for the same reason the drain is: a teardown that waits forever on a drain is a
+      // worse outcome than one that says it gave up.
+      await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
+      await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
       await safeStatus("offline");
       clearErrorRetry(true);
       await agent.stop();
