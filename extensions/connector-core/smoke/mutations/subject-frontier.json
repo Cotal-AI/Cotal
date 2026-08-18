@@ -1,0 +1,40 @@
+{
+  "suite": "extensions/connector-core/smoke/subject-frontier.smoke.ts",
+  "guard": "the per-principal subject record refuses every state its own writer cannot produce, and never conflates a record that is MISSING with one that reads zero",
+  "command": "pnpm smoke:subject-frontier",
+  "completionMarker": "subject-frontier smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/subject-frontier.json",
+  "why": [
+    "An absent record means this principal never published, so a tip may be recovered from the session",
+    "logs beside it. A record that READS ZERO is what abandonment writes after a channel purge, and",
+    "recovering into that one silently undoes the abandonment and restores an expectation the subject",
+    "no longer has. Missing and zero are different states, and this is the second place in this plane",
+    "where conflating them is the defect rather than a nicety.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed: the suite imports ../src/subject-frontier.js by",
+    "relative source path, and imports nothing else from this repository. No dist, no build step.",
+    "",
+    "NOT PROVED HERE: that a real publish takes its expectation from this record. That needs a broker",
+    "and is graded by smoke:agui-multi-session and its own config."
+  ],
+  "mutations": [
+    {
+      "name": "S5 recover a tip into a record that READS zero, not only into an absent one",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    return new FileSubjectFrontier(path, { v: d.v, space: d.space, principal: d.principal, tip: d.tip });",
+      "replace": "    return new FileSubjectFrontier(path, { v: d.v, space: d.space, principal: d.principal, tip: d.tip || (await FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal)) });",
+      "expectRed": "reset:a-record-that-READS-zero-is-not-re-seeded-from-a-thread-log",
+      "cell": "reset:a-record-that-READS-zero-is-not-re-seeded-from-a-thread-log",
+      "note": "The tempting simplification: treat a zero tip as 'nothing yet' wherever it appears. It reads as a tidy-up and it undoes an abandonment."
+    },
+    {
+      "name": "S7 an unreadable sibling log is skipped instead of refused",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "        throw new SubjectFrontierCorruptError(walPath, \"a readable thread log while recovering the subject tip\", (e as Error).message);",
+      "replace": "        continue;",
+      "expectRed": "recover:an-UNREADABLE-sibling-log-is-fatal-not-skipped",
+      "cell": "recover:an-UNREADABLE-sibling-log-is-fatal-not-skipped",
+      "note": "Skipping under-counts the tip, which does not fail here. It fails later, permanently, with a message about a moved subject tip that points at everything except the file quietly ignored."
+    }
+  ]
+}

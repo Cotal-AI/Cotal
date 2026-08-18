@@ -29,7 +29,12 @@
  *   S3  drop `seedFromThread` at bind
  *       -> `upgrade:a-log-from-before-the-shared-record-carries-its-tip-across` ONLY.
  *   S4  `abandon` leaves the shared record standing
- *       -> `abandon:resets-the-shared-record-with-the-log`.
+ *       -> `abandon:resets-the-shared-record-with-the-log` and its durability cell.
+ *   S5  recover a tip into a record that READS zero, not only into an absent one
+ *       -> `reset:a-record-that-READS-zero-is-not-re-seeded-from-a-thread-log`, in
+ *          `smoke:subject-frontier`. Named here because it is the same rule seen from the log side.
+ *   S6  drop the runtime requirement and keep only the type
+ *       -> `guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME`.
  *
  * Run: pnpm smoke:agui-multi-session   (needs nats-server on PATH; starts its own broker)
  */
@@ -206,6 +211,31 @@ try {
     const after = await session("ses_upgrade_two", { principalDir: upDir, actor: upActor });
     c("upgrade:a-log-from-before-the-shared-record-carries-its-tip-across", after.err === undefined && after.published === 1, after);
     c("upgrade:...and-the-rebuilt-record-is-ahead-of-the-tip-it-was-seeded-from", after.tip > carried.tip, { seeded: carried.tip, now: after.tip });
+  }
+
+  // ------------------------------------------------------------------ abandonment is TOTAL
+  //
+  // A filtered purge returns the subject tip to 0 for EVERY thread on the channel, so abandoning a
+  // log must clear the shared record with it. Leaving the record standing is this defect's mirror
+  // image: the next session expects a tip the subject no longer has, and halts just as permanently
+  // from the other side.
+  {
+    const abActor = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;
+    const abPrincipal = principalKey(OWNER, abActor).key;
+    const abDir = join(root, "abandon-principal");
+    mkdirSync(abDir, { recursive: true });
+    const first = await session("ses_abandon", { principalDir: abDir, actor: abActor });
+    c("abandon:CONTROL-the-record-held-a-tip-before-the-abandonment", first.published === 1 && first.tip > 0, first);
+
+    const wal = await EventWal.open(join(abDir, "ses_abandon", "wal.json"), {
+      space: SPACE, threadId: "ses_abandon", principal: abPrincipal, subjectMayExist: false,
+    });
+    const frontier = await FileSubjectFrontier.open(join(abDir, "subject.json"), { space: SPACE, principal: abPrincipal });
+    await wal.bindSubjectFrontier(frontier);
+    await wal.abandon();
+    c("abandon:resets-the-shared-record-with-the-log", frontier.tip === 0, frontier.tip);
+    const onDisk = await FileSubjectFrontier.open(join(abDir, "subject.json"), { space: SPACE, principal: abPrincipal });
+    c("abandon:...and-the-reset-is-DURABLE-not-only-in-memory", onDisk.tip === 0, onDisk.tip);
   }
 
   // ------------------------------------------------------------------ the runtime requirement

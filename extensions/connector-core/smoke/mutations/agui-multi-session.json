@@ -1,0 +1,75 @@
+{
+  "suite": "extensions/connector-core/smoke/agui-multi-session.smoke.ts",
+  "guard": "many sessions of one principal share one subject, so the publish expectation comes from a record that outlives any single session, while a genuine foreign writer is still refused",
+  "command": "pnpm smoke:agui-multi-session",
+  "completionMarker": "agui-multi-session smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-multi-session.json",
+  "why": [
+    "The write-ahead log is keyed per session and the event channel is keyed per principal, so a new",
+    "session opened expecting an empty channel that its own predecessor had filled. Only the first",
+    "session of any agent ever published, and the halt named three causes with the real one absent.",
+    "",
+    "THE CONTROL CARRIES THE WEIGHT, NOT THE HAPPY PATH. Making a second session publish is easy and",
+    "one wrong way to do it is to stop expecting anything at all, which passes every regression cell",
+    "while deleting the guarantee. So a real second writer takes the subject and our next publish must",
+    "still halt. A mutation that removes the expectation would leave the regression cells green.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the emitter, the log and the",
+    "record by RELATIVE SOURCE PATH (../src/agui.js, ../src/event-wal.js, ../src/subject-frontier.js),",
+    "so the bytes mutated are the bytes graded. There is no dist in the path and no build in the",
+    "command. Its package-name imports are from @cotal-ai/core (a real broker client, unmutated here)",
+    "and @cotal-ai/smoke-kit (test-only), neither of which carries the behaviour under test.",
+    "",
+    "NOT PROVED HERE, named rather than implied. The record's own refusals (a decrease, a foreign",
+    "principal, a zero-byte file, an unreadable sibling log) are graded by smoke:subject-frontier and",
+    "its own config, not by this suite. And S5, recovering a tip into a record that READS zero rather",
+    "than only into an absent one, is proved there because that is where the distinction has a cell."
+  ],
+  "mutations": [
+    {
+      "name": "S1 the expectation comes from this session's own log again, which is the defect verbatim",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    const E = this.wal.expectedTip;",
+      "replace": "    const E = this.wal.frontier.lastSubjectSeq;",
+      "expectRed": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "cell": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "note": "The released behaviour, restored in one line. It must not be able to hide: this is the mutation the whole file exists to catch."
+    },
+    {
+      "name": "S2 the shared record is never advanced, so it stays virgin forever",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await this.subject?.advance(ackSeq);\n",
+      "replace": "",
+      "expectRed": "session-1:the-shared-record-holds-the-assigned-sequence",
+      "cell": "session-1:the-shared-record-holds-the-assigned-sequence",
+      "note": "The plausible omission: reading the record and forgetting to write it. It fails on the FIRST session rather than the second, which is why the cell named is that one."
+    },
+    {
+      "name": "S3 an absent record is virgin, without looking at the session logs beside it",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      const recovered = await FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal);",
+      "replace": "      const recovered = 0;",
+      "expectRed": "upgrade:a-log-from-before-the-shared-record-carries-its-tip-across",
+      "cell": "upgrade:a-log-from-before-the-shared-record-carries-its-tip-across",
+      "note": "This was the first version of the fix and it is why the cell exists: without the recovery the repair helps only installations whose first session ever comes after it, and every other cell stays green."
+    },
+    {
+      "name": "S4 abandonment clears the log and leaves the shared record standing",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await this.subject?.reset();\n",
+      "replace": "",
+      "expectRed": "abandon:resets-the-shared-record-with-the-log",
+      "cell": "abandon:resets-the-shared-record-with-the-log",
+      "note": "Partial abandonment is not a state. A record left standing after a purge expects a tip the subject no longer has, which is the same permanent halt reached from the other side."
+    },
+    {
+      "name": "S6 the frontier is required only in the type, which does not reach an untypechecked caller",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (!opts.subjectFrontier || typeof opts.subjectFrontier.advance !== \"function\")",
+      "replace": "    if (false)",
+      "expectRed": "guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME",
+      "cell": "guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME",
+      "note": "Smoke files in this repository are not typechecked, so the type alone is not a guard for the callers that matter most: the ones a compiler never sees."
+    }
+  ]
+}
