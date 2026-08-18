@@ -130,10 +130,13 @@ try {
     check("--events reaches the connector on the foreground path", r.opts?.events === true, r.stderr.slice(0, 300));
     // THE CELL THAT WAS MISSING. The flag alone launches nothing: a connector that publishes an
     // event plane refuses an armed launch whose write-ahead log has nowhere to live.
+    // Compared against THE MESH ROOT this suite registered, not merely checked for non-emptiness.
+    // Any wrong-but-present path passes the weaker test, and a write-ahead log under a path the next
+    // start does not look in fails in exactly the way an absent one does.
     check(
-      "an armed foreground launch carries a workspace root for the write-ahead log",
-      typeof r.opts?.workspaceRoot === "string" && r.opts.workspaceRoot.length > 0,
-      r.opts?.workspaceRoot,
+      "an armed foreground launch carries the mesh's own root for the write-ahead log",
+      r.opts?.workspaceRoot === root,
+      { got: r.opts?.workspaceRoot, expected: root },
     );
   }
 

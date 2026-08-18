@@ -42,6 +42,14 @@ one, so what a restart can lose is the record: either the channel leaves `allowP
 arming flag does and the session returns holding publish rights it will never use, which reads as a
 working system with an empty panel. Both halves are now carried and both are asserted.
 
+**One behaviour change to state plainly.** The foreground launch now passes the mesh's root as the
+launch's workspace root, on every foreground spawn rather than only on an armed one, which is what the
+manager has always done. One connector already reads that field: the Codex connector roots its
+per-agent home at it, and previously fell back to the directory the operator happened to run the
+command in. A foreground Codex session therefore moves its home from that directory to the mesh root,
+which is where its detached counterpart has always put it. Operators who ran `cotal spawn` from
+somewhere other than the mesh root will find that session's local state under the mesh root instead.
+
 **Supporting pieces in the shared connector runtime.** The event vocabulary is exported from
 `@cotal-ai/connector-core` for the first time, so a connector can reach it by package name instead of
 by deep path. The emitter gained a way to close an open run out of band: a harness reports the end of

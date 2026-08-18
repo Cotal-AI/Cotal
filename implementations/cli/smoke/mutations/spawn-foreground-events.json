@@ -29,8 +29,8 @@
       "file": "implementations/cli/src/commands/spawn.ts",
       "find": "      workspaceRoot: target.root,",
       "replace": "",
-      "expectRed": "an armed foreground launch carries a workspace root for the write-ahead log",
-      "cell": "an armed foreground launch carries a workspace root for the write-ahead log",
+      "expectRed": "an armed foreground launch carries the mesh's own root for the write-ahead log",
+      "cell": "an armed foreground launch carries the mesh's own root for the write-ahead log",
       "note": "Not a contrived mutation: it is the code as it shipped, where cotal spawn --events failed at launch construction for every armed session while --detach worked."
     },
     {
