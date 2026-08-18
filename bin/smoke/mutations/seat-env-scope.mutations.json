@@ -1,0 +1,56 @@
+{
+  "suite": "bin/smoke/seat-env-scope.smoke.ts",
+  "guard": "a manager-spawned seat hands no connection material to the processes it spawns, and still resolves its own identity and control token from the launch-material file",
+  "command": "pnpm build > /dev/null && pnpm smoke:seat-env-scope",
+  "afterRestore": "pnpm build > /dev/null",
+  "completionMarker": "seat-env-scope: PASS",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-env-scope.mutations.json",
+  "why": [
+    "THE SUITE MAKES TWO OPPOSITE CLAIMS AND EACH NEEDS ITS OWN KILL. It asserts an ABSENCE (no",
+    "credential, broker URL or control token in the seat's environment) and a PRESENCE (the seat can",
+    "still resolve all three from the launch material). An absence assertion alone passes on a",
+    "completely broken seat: a connector that exported nothing at all would sail through it while",
+    "being unable to connect to anything. So M1/M2 break the absence and M3 breaks the presence, and",
+    "the two families must redden different named assertions or the suite is only half proven.",
+    "",
+    "M1 IS THE ONE THAT MATTERS MOST, because it is killed by observing a REAL PROCESS TREE rather",
+    "than by reading the object the assertion was written against. A2 starts a real node process with",
+    "the connector's env and has THAT process start a child with no env argument, which is exactly",
+    "what a coding agent's shell tool does. What the child reports is what the operating system",
+    "actually inherited. A1 covers the same ground by reading the launch spec, and would also catch",
+    "M1 - which is why A2 runs FIRST in the suite, so the assertion that watched a real process is",
+    "the one that reddens.",
+    "",
+    "EVERY MUTATION BUILDS FIRST, and that is not ceremony. `@cotal-ai/core` and",
+    "`@cotal-ai/connector-core` resolve to `dist/`, so a mutation to `src` that is not compiled is a",
+    "mutation the suite never sees: the run would be green and the verdict would be a lie in the",
+    "reassuring direction. `afterRestore` rebuilds, because `dist/` is gitignored and git cannot be",
+    "the recovery for a tree left holding a build compiled from the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the pi connector puts the broker URL back into the seat environment",
+      "file": "extensions/pi/src/connector.ts",
+      "find": "    if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;",
+      "replace": "    if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;\n    if (opts.servers) env.COTAL_SERVERS = opts.servers;",
+      "expectRed": "A2: a real grandchild of a seat inherited COTAL_SERVERS",
+      "note": "Also reds A1 for pi, later in the run. A2 is named because it is the assertion that observed a real descendant process rather than the launch spec."
+    },
+    {
+      "name": "M2 the claude connector puts the control token back into the seat environment",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "      COTAL_CONTROL_SOCKET: control.path,\n    };",
+      "replace": "      COTAL_CONTROL_SOCKET: control.path,\n      COTAL_CONTROL_TOKEN: control.token,\n    };",
+      "expectRed": "A1: the claude connector exports COTAL_CONTROL_TOKEN into the seat environment",
+      "note": "The control token is the half a build script has least business holding. Claude is the connector that cannot drop the material reference after startup, so its env is the one worth pinning explicitly."
+    },
+    {
+      "name": "M3 the launch material silently loses the broker URL",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  if (opts.servers) material.servers = opts.servers;",
+      "replace": "  if (opts.servers) material.servers = undefined;",
+      "expectRed": "A3: claude lost the broker URL",
+      "note": "The failure the absence assertions cannot see: material removed from the environment and not delivered anywhere else. Without this kill, a connector that exported nothing would read as fixed."
+    }
+  ]
+}
