@@ -1,0 +1,72 @@
+{
+  "suite": "extensions/connector-core/smoke/inbox-window.smoke.ts",
+  "guard": "cotal_inbox clears only the messages it actually returned, and one response stays inside a receivable window with first-party mail ahead of replayed history",
+  "command": "pnpm smoke:inbox-window",
+  "completionMarker": "INBOX WINDOW SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/inbox-window.json",
+  "why": [
+    "The defect this guards is a composition, so the kills are split along the three parts of it",
+    "rather than aimed at one line. K1 removes the window (payload-exceeds-receivable), K2 restores",
+    "the old drain-the-whole-scope order (destructive read), K3 removes mail-before-replay (the",
+    "reason a DM survives the first window at all), K4 lets peek clear, and K5 silences the note",
+    "that tells a caller the rest is still there.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent and the tool specs",
+    "by RELATIVE SOURCE PATH (../src/agent.js, ../src/tool-specs.js), so the bytes mutated are the",
+    "bytes graded: no dist in the path and no build in the command. Its only package-name import is",
+    "`type` from @cotal-ai/core, erased at compile time and carrying no behaviour.",
+    "",
+    "NOT PROVED HERE, named rather than implied. The 48,000-character budget is a judgement, not a",
+    "measurement of any one host's cap: no mutation can show it is the RIGHT number, only that a",
+    "bound is enforced and that what falls outside it is kept. And the oversized-single-item escape",
+    "(one message larger than the whole budget is shown alone) is asserted by no cell, because the",
+    "measured occupant has no such message; it is stated in the source instead."
+  ],
+  "mutations": [
+    {
+      "name": "K1 the window selects everything — the response is capped by nothing",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (shown.length && used + cost > budget) held.push(i);",
+      "replace": "    if (false && shown.length && used + cost > budget) held.push(i);",
+      "expectRed": "the response is inside the receivable window, not 463,788 chars",
+      "cell": "the response is inside the receivable window, not 463,788 chars",
+      "note": "This is the pre-fix behaviour exactly: everything selected, one response, 463,788 chars on the measured occupant."
+    },
+    {
+      "name": "K2 clear the whole scope up front, the order the defect was written in",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));",
+      "replace": "          if (!peek) agent.drainInbox(undefined, inboxScope);",
+      "expectRed": "what did not fit was NOT consumed: the buffer still holds the rest",
+      "cell": "what did not fit was NOT consumed: the buffer still holds the rest",
+      "note": "The plausible authoring error rather than a contrived one: draining the scope is what the tool did before, and with a window in place it reads as a harmless simplification."
+    },
+    {
+      "name": "K3 rank every item the same — receive order alone decides the window",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const rank = (i: InboxItem): number => (i.kind !== \"channel\" ? 0 : i.historical ? 2 : 1);",
+      "replace": "  const rank = (_i: InboxItem): number => 0;",
+      "expectRed": "the first response is mail, not backfill: DMs occupy the window ahead of replayed history",
+      "cell": "the first response is mail, not backfill: DMs occupy the window ahead of replayed history",
+      "note": "Without the rank a DM behind a replay waits for as many calls as the replay takes; the loss is gone but the mail is still last."
+    },
+    {
+      "name": "K4 peek clears what it shows",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));",
+      "replace": "          agent.drainInboxIds(shown.map((i) => i.id));",
+      "expectRed": "peek clears nothing at all",
+      "cell": "peek clears nothing at all",
+      "note": "peek is the documented workaround for this very defect, so a peek that clears is the worst possible regression here."
+    },
+    {
+      "name": "K5 the response stops saying what it is holding back",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (!held.length) return \"\";",
+      "replace": "  if (held.length >= 0) return \"\";",
+      "expectRed": "...and it says what it is holding back",
+      "cell": "...and it says what it is holding back",
+      "note": "Held mail nobody is told about is mail nobody calls back for — the loss becomes a silent delay instead."
+    }
+  ]
+}

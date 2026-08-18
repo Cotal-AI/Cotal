@@ -134,6 +134,65 @@ export function fmtFrom(i: InboxItem): string {
   return i.fromRole ? `${i.fromName}/${i.fromRole}` : i.fromName;
 }
 
+/**
+ * HOW MUCH OF THE INBOX ONE RESPONSE MAY CARRY, in characters.
+ *
+ * A read is destructive, and the payload is largest exactly where recovery happens: reconnecting
+ * brings a channel-history replay with it. Measured on a real reconnect: 200 messages, 3,490 lines,
+ * 451 KB — an order of magnitude past what a host will hand to a model, so the call both CONSUMED
+ * its contents and failed to deliver them. Whatever the host's own cap is, a response above this
+ * bound is a response the caller may never see, so it is never a response we may clear.
+ *
+ * The budget is deliberately far below the smallest plausible host cap: overshooting costs a lost
+ * message, undershooting costs one more call, and the response says so in its own text.
+ */
+export const INBOX_WINDOW_CHARS = 48_000;
+
+/** What one response carries, and what it must leave buffered. */
+export interface InboxWindow {
+  shown: InboxItem[];
+  held: InboxItem[];
+}
+
+/**
+ * Choose the items a single response can actually deliver.
+ *
+ * Two rules, and the composition in #603 needs both:
+ *
+ *  1. **Mail before replay.** Direct messages and anycast requests are first-party traffic with a
+ *     sender waiting on them; replayed channel history is a backfill the channel still holds. When
+ *     only part of the buffer fits, the part that fits is the part nobody else can re-serve.
+ *  2. **A window, not a truncation.** What does not fit is not cut off the end of the text — it
+ *     stays in the buffer, unacked, and the caller is told it is there. Only what this function
+ *     returns as `shown` may be cleared.
+ *
+ * A single item larger than the whole budget is still shown, alone: refusing it would wedge the
+ * inbox behind a message that can never fit, which is a worse failure than one oversized response.
+ */
+export function windowInbox(items: readonly InboxItem[], budget = INBOX_WINDOW_CHARS): InboxWindow {
+  const rank = (i: InboxItem): number => (i.kind !== "channel" ? 0 : i.historical ? 2 : 1);
+  const ordered = [...items].sort((a, b) => rank(a) - rank(b)); // stable: receive order within a rank
+  const shown: InboxItem[] = [];
+  const held: InboxItem[] = [];
+  let used = 0;
+  for (const i of ordered) {
+    const cost = fmtItem(i).length + 1; // + the newline that joins it
+    if (shown.length && used + cost > budget) held.push(i);
+    else {
+      shown.push(i);
+      used += cost;
+    }
+  }
+  return { shown, held };
+}
+
+/** The tail that keeps a windowed response honest: what is still there, and that it was not lost. */
+function heldNote(held: readonly InboxItem[]): string {
+  if (!held.length) return "";
+  const dms = held.filter((i) => i.kind !== "channel").length;
+  return `\n\n… ${held.length} more message${held.length === 1 ? "" : "s"} held (${dms} direct) — this response was capped at the receivable window. Nothing held was cleared; call cotal_inbox again for the next batch.`;
+}
+
 function fmtItem(i: InboxItem): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join — pre-dates you, not live
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${h}${i.text}`;
@@ -295,31 +354,41 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. Clears them unless peek is true. In focus mode it also pulls back the channel chatter held since you entered focus.",
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply — call again for the next batch. In focus mode it also pulls back the channel chatter held since you entered focus.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
       async run(agent, _config, { peek, scope }: { peek?: boolean; scope?: "pull-only" }) {
         const inboxScope = scope ?? "all";
-        const live = peek ? agent.peekInbox(inboxScope) : agent.drainInbox(undefined, inboxScope);
+        // SELECT, RENDER, THEN CLEAR EXACTLY WHAT WENT OUT (#603). The old order drained the whole
+        // scope up front, so a payload too large for the host to deliver had already been marked
+        // read — and a reconnect replay is both the largest payload and the one most likely to have
+        // a real DM inside it. Nothing outside the returned window is acked, on any path.
+        const buffered = agent.peekInbox(inboxScope);
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
-          if (!live.length)
+          const { shown, held } = windowInbox(buffered);
+          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));
+          if (!shown.length)
             return ok(
               scope
                 ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
                 : "Inbox empty — no new messages.",
             );
           const head = scope
-            ? `${live.length} pull-only message${live.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
-            : `${live.length} message${live.length === 1 ? "" : "s"}${peek ? " (peek — not cleared)" : ""}:`;
-          return ok(`${head}\n${live.map(fmtItem).join("\n")}`);
+            ? `${shown.length} pull-only message${shown.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
+            : `${shown.length} message${shown.length === 1 ? "" : "s"}${peek ? " (peek — not cleared)" : ""}:`;
+          return ok(`${head}\n${shown.map(fmtItem).join("\n")}${heldNote(held)}`);
         }
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
         // "since you entered focus"). Recall is read-only — peek only affects the live buffer drain.
         const recall = await agent.recallAmbient();
-        const all = [...live, ...recall.items];
+        // The window spans both lanes, because the response carries both; but only the buffered
+        // lane is destructive, so only ids from it are ever cleared. Recall stays re-readable.
+        const { shown: all, held } = windowInbox([...buffered, ...recall.items]);
+        const bufferedIds = new Set(buffered.map((i) => i.id));
+        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
         if (!all.length && !recall.droppedChannels.length)
           return ok(
             scope
@@ -331,7 +400,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const head = scope
             ? `${all.length} message${all.length === 1 ? "" : "s"} — buffered pull-only items were cleared; normal focus channel items are read-only recall and may appear again:`
             : `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek — live buffer not cleared)" : ""} — focus mode, channel items are recall since you focused:`;
-          parts.push(`${head}\n${all.map(fmtItem).join("\n")}`);
+          parts.push(`${head}\n${all.map(fmtItem).join("\n")}${heldNote(held)}`);
         }
         if (recall.droppedChannels.length)
           parts.push(

@@ -72,7 +72,7 @@ No arguments.
 
 *read incoming messages*
 
-Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. Clears them unless peek is true. In focus mode it also pulls back the channel chatter held since you entered focus.
+Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply — call again for the next batch. In focus mode it also pulls back the channel chatter held since you entered focus.
 
 **Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Codex, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.
 

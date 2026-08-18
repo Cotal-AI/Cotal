@@ -182,6 +182,7 @@ smoke:down-lease-tombstone
 smoke:spawn-from-anywhere
 smoke:spawn-from-anywhere:live
 smoke:cross-path-dedup
+smoke:inbox-window
 smoke:backup-cli
 smoke:registry-staging
 smoke:materialize-concurrency
