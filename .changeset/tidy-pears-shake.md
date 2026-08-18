@@ -21,3 +21,11 @@ released the command's own claim on stdin on the way out. That release is made w
 something to release: a terminal and a pipe are sockets, while a stdin that is a file
 (`cotal attach --name web < seed.txt`, or a parent that spawns attach with stdin ignored) is not,
 and releasing it there raised `process.stdin.unref is not a function` on the way out.
+
+Also: a session that dies while it is still opening no longer leaves the keyboard unread. The
+window is one round trip wide, between the reconnect being announced and the session going live,
+and a link that dies inside it ended a session that had never taken the stream while the client
+paused it regardless, so the reader that was still installed read nothing for the whole backoff and
+everything typed at that frozen terminal was delivered to the agent when the next session opened.
+The stream is now paused only by a session that resumed it.
+
