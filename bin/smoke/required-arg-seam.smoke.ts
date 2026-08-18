@@ -61,11 +61,24 @@
  * this check is blind to it, by design, because the seam it guards demands a decision rather than a
  * particular decision. The one value it does judge is an `undefined` written AT THE CALL, on any
  * branch, which is not a boolean and which the seam throws on, so stating the key that way counts as
- * omitting it. A value held in a VARIABLE is not judged and cannot be: `{ tls }` and `{ tls: flag }`
- * are the same statement to this file, and deciding what the variable holds is symbol resolution. It
- * also
+ * omitting it. A value held in a VARIABLE is mostly not judged, and the one exception is a `const`
+ * bound to `undefined`, which is that value written in two steps rather than a value this reader
+ * cannot see. That exception now applies in BOTH spellings, `{ tls: t }` and shorthand `{ tls }`,
+ * because shorthand reads a binding of the key's own name; review demonstrated the gap by rewriting
+ * a real counted site into shorthand IN PLACE, leaving the counts and every cell green while the
+ * call threw. Anything else in a variable is not judged and cannot be, since deciding what it holds
+ * is symbol resolution. It also
  * cannot see through a WRAPPER: a function that takes an options object and passes it on is a call
  * site whose own argument is an identifier, which lands as `unverifiable` rather than as a pass.
+ *
+ * ONE KNOWN FALSE-RED CLASS is carried deliberately rather than fixed, and it is written here so it
+ * is a decision rather than a surprise. Both sides of `||` and `??` are treated as real alternatives,
+ * so `tls: (undefined as any) || false` is reported missing even though the expression can only ever
+ * evaluate to `false`, and `tls: false ?? undefined` likewise. Pruning provably dead branches would
+ * be sound and would only ever turn reds green, but it is arithmetic on operator semantics added to
+ * a file that has already produced four false-red classes by adding cleverness late, so the residual
+ * is stated instead. Neither spelling has an occupant here, and both are stiff enough that a person
+ * writing `false` would write `false`.
  *
  * THE ALIAS REFUSAL IS NOT A PROOF OF TOTAL CLOSURE, and it should not be read as one. It refuses
  * every spelling that names the seam statically, as an identifier or as a string, in the positions
@@ -111,12 +124,31 @@
  *   - a GETTER-valued property, `{ get k() { return "<seam>" } }`, where there is no initializer to
  *     fold at all.
  *
- * None of the five is closed, and that is a judgement rather than an oversight. Every closure in
- * this area has opened a sibling, four times running, and three of those cost a FALSE RED that had
- * to be found before it could be fixed. All five are MISS-side, the direction where being wrong
- * spends coverage instead of credibility, and the population counts are the only cover they have.
- * None gets a cell asserting the miss, deliberately: a cell that pins a hole reads as intent to the
- * next author, which is precisely how the previous hole survived two reviews.
+ * THOSE FIVE ARE A SAMPLE, NOT A CENSUS, and pretending otherwise was this file's own mistake for
+ * several rounds. Adversarial review measured NINE more silent spellings at one sitting: `Object.seal`,
+ * `Object.preventExtensions`, `Object.assign({}, ...)`, a class STATIC property, an enum member, an
+ * `as const` array indexed by literal, `Object.freeze` applied AFTER construction, a spread copy of
+ * another table, and a namespace const. Enumerating them would invite a fifteenth.
+ *
+ * So state the door by what the fold map ADMITS, which is closed and short, rather than by what it
+ * excludes, which is unbounded. A table is folded only when ALL THREE hold: its initializer is a
+ * bare object literal, its name is declared exactly once in the file, and every mention of that name
+ * is a property access. Anything failing any clause is not folded, its key does not settle, and a
+ * call through it is not seen. That is the whole door, and it is a description a reader can check.
+ *
+ * AND WRITING A NEW ONE IS FREE, which is the sharp end and was understated here until review
+ * measured it. A call in a non-admitted spelling was never counted, so ADDING one moves the
+ * population not at all: no conversion, no compensating call, nothing. The counts police only the
+ * SEEN population. The convert-and-compensate composite described above is what it takes to hide an
+ * EXISTING counted call; hiding a NEW one takes a single ordinary-looking edit.
+ *
+ * None of this is closed, and that is a judgement rather than an oversight. Every closure in this
+ * area has opened a sibling, five times running, and four of those cost a FALSE RED that had to be
+ * found before it could be fixed. It is all MISS-side, the direction where being wrong spends
+ * coverage instead of credibility. No cell asserts any individual miss, deliberately: a cell that
+ * pins a hole reads as intent to the next author, which is precisely how the previous hole survived
+ * two reviews. The census cell instead executes the SAMPLE plus a control, so the sample cannot rot
+ * unnoticed, while making no claim to completeness that it could not keep.
  *
  * THREE OF ITS BOUNDARIES ARE CURATION, not deduction, and adversarial review measured each one
  * silent. The container WATCHLIST decides which markup languages get a recorded decision, so an
@@ -133,7 +165,8 @@
  * not see; population-not-identity means an unseen call and a deleted one are the same number. So
  * rewriting one counted site into a door spelling AND adding any ordinary counted call elsewhere in
  * the same half leaves the count at exactly 94/67 with every cell green, while a call that throws at
- * runtime sits in the tree. That was reproduced here rather than reasoned about: one site converted
+ * runtime sits in the tree. That pair is only needed to hide an ALREADY COUNTED call; a call written
+ * in a non-admitted spelling from the start is never counted, so adding one costs nothing at all. That was reproduced here rather than reasoned about: one site converted
  * to a nested table with `tls` dropped, one plain compensating call added, suite green at 143 of 143.
  * The counts are therefore NOT cover for the door. They pin that the SEEN population stays seen, and
  * even that only against an author who does not add a call while removing one. Closing it needs
@@ -629,7 +662,12 @@ function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
     return true;
   if ((p as { name?: ts.Node }).name === id
     && (ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p) || ts.isVariableDeclaration(p)
+      // `MethodSignature` is an interface's method SLOT and `EnumMember` an enum's member slot;
+      // both name a slot exactly as `MethodDeclaration` and `PropertySignature` already did, and
+      // neither can hand anyone the seam. Review reddened a typed facade declaring the seam's shape
+      // with NO call anywhere in the file, which is a false red on ordinary TypeScript.
       || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p)
+      || ts.isMethodSignature(p) || ts.isEnumMember(p)
       || ts.isTypeAliasDeclaration(p) || ts.isInterfaceDeclaration(p) || ts.isClassDeclaration(p)
       || ts.isEnumDeclaration(p) || ts.isModuleDeclaration(p) || ts.isParameter(p)
       // A property assignment's KEY names a slot; its VALUE is a separate node and is asked
@@ -763,13 +801,15 @@ function alternatives(e: ts.Expression): ts.Expression[] {
 
 /** `key` named by this property, in any of the three spellings that all state it: `key:`, `"key":`
  *  and `["key"]:`. The shorthand `{ key }` arrives here as an identifier name and states it too. */
-function propertyNames(name: ts.PropertyName | undefined, key: string): boolean {
+function propertyNames(name: ts.PropertyName | undefined, key: string,
+  consts: Map<string, string>): boolean {
   if (!name) return false;
   if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text === key;
-  if (ts.isComputedPropertyName(name)) {
-    const e = unwrap(name.expression);
-    return ts.isStringLiteralLike(e) && e.text === key;
-  }
+  // A computed key folds by exactly the arithmetic the SEAM's own name folds by. Review found the
+  // asymmetry as a FALSE RED: this reader would fold `core["standalone" + "ConnectOpts"]` to find a
+  // call, then refuse to fold `{ [TLS]: false }` with `const TLS = "tls"` beside it and report the
+  // key missing from a call that states it. One arithmetic, both positions.
+  if (ts.isComputedPropertyName(name)) return foldString(name.expression, consts) === key;
   return false;
 }
 
@@ -784,7 +824,8 @@ function propertyNames(name: ts.PropertyName | undefined, key: string): boolean 
  *
  * Depth matters too: `{ opts: { tls: false } }` says nothing about the seam's own argument.
  */
-function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFile): { verdict: Verdict; detail: string } {
+function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFile,
+  consts: Map<string, string>): { verdict: Verdict; detail: string } {
   if (!arg) return { verdict: "missing-key", detail: "called with no argument at all" };
   const show = (n: ts.Node): string => n.getText(src).replace(/\s+/g, " ").slice(0, 100);
   let unverifiable = "";
@@ -800,18 +841,24 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
       // that matters depends entirely on WHERE it sits, which is why position is tracked and not
       // just presence: before the key it is an ordinary override idiom, after it, it can undo it.
       const opaqueKey = !ts.isSpreadAssignment(p) && !!p.name && ts.isComputedPropertyName(p.name)
-        && !ts.isStringLiteralLike(unwrap(p.name.expression));
+        && foldString(p.name.expression, consts) === undefined;
       if (ts.isSpreadAssignment(p) || opaqueKey) {
         if (ts.isSpreadAssignment(p)) anySpread = true;
         if (keyAt >= 0) overwrittenAfterKey = ts.isSpreadAssignment(p) ? "a spread" : "a computed key this file cannot resolve";
         return;
       }
-      if (!propertyNames(p.name, key)) return;
+      if (!propertyNames(p.name, key, consts)) return;
       keyAt = i;
       // Only a property assignment carries a value this file can look at. A getter is a function
       // body, and reading it would be evaluating code, so it states the key without a knowable
       // value and must not be answered as though the value were fine.
-      keyValue = ts.isPropertyAssignment(p) ? p.initializer : undefined;
+      // SHORTHAND states the key and reads a binding of the same name, so `{ tls }` carries a value
+      // just as `{ tls: tls }` does. Reading only PropertyAssignment let `const tls = undefined;
+      // seam({ creds, tls })` pass as has-key while the seam threw on it, and review demonstrated it
+      // by rewriting a real counted site in place: counts unmoved, every cell green, call throwing.
+      keyValue = ts.isPropertyAssignment(p) ? p.initializer
+        : ts.isShorthandPropertyAssignment(p) ? p.name
+        : undefined;
       keyIsOpaque = ts.isGetAccessorDeclaration(p);
       overwrittenAfterKey = ""; // a later restatement wins over an earlier one
     });
@@ -896,7 +943,7 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
           detail: `this call's key does not settle in its own ${multiProgram ? "script" : "file"}, so answering it would mean running the program; call the seam by its own name, or spell the key from a name declared once here`,
         });
       } else if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
-        const { verdict, detail } = classify(n.arguments[0], seam.key, src);
+        const { verdict, detail } = classify(n.arguments[0], seam.key, src, consts);
         found.push({ file, line: lineOf(n), verdict, detail });
       } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
         || escapesAt(n, seam.fn, folds)) {
@@ -1346,6 +1393,32 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const t = undefined;\nstandaloneConnectOpts({ creds: c, tls: t });`) === "missing-key");
   check("...while a `let` bound to undefined is NOT claimed, since it can hold a real boolean later",
     one(`let t = undefined;\nt = false;\nstandaloneConnectOpts({ creds: c, tls: t });`) !== "missing-key");
+  // SHORTHAND states the key AND reads a binding of that name, so it carries a value. Reading only
+  // PropertyAssignment let this pass as has-key while the seam threw, and review proved it on a real
+  // counted site rewritten IN PLACE: counts unmoved at 94/67, every cell green, call throwing.
+  check("...and SHORTHAND carries the same value, since `{ tls }` reads a binding of that very name",
+    one(`const tls = undefined;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...while shorthand holding a real boolean is untouched, so this is not a blanket on shorthand",
+    one(`const tls = false;\nstandaloneConnectOpts({ creds: c, tls });`) !== "missing-key");
+
+  // A computed ARGUMENT key folds by the arithmetic the SEAM's own name already folds by. The
+  // asymmetry was a FALSE RED: this reader would fold a key to FIND a call and then refuse to fold
+  // one to READ it, reporting the key missing from a call that states it.
+  check("a computed ARGUMENT key that FOLDS states the key, by the arithmetic the seam's name uses",
+    one(`const TLS = "tls";\nstandaloneConnectOpts({ creds: c, [TLS]: false });`) === "has-key");
+  check("...including one assembled from literals, so a key folds alike in both positions",
+    one(`standaloneConnectOpts({ creds: c, ["tl" + "s"]: false });`) === "has-key");
+  check("...while a key that does NOT fold stays opaque, so folding did not become a blanket",
+    one(`standaloneConnectOpts({ creds: c, [pick()]: false });`) === "missing-key");
+
+  // A TYPE's method slot and an enum member NAME a slot; neither can hand anyone the seam. Review
+  // reddened a typed facade that declared the seam's shape with no call anywhere in the file.
+  check("an interface METHOD SLOT of the seam's name is a slot, not a rebinding, and is no call",
+    fx(`export interface H { standaloneConnectOpts(a: { tls: boolean }): void; }`).length === 0);
+  check("...as is an ENUM MEMBER of that name, which can only ever reach a number",
+    fx(`enum E { standaloneConnectOpts = 1 }`).length === 0);
+  check("...while an actual rebinding of the name is still refused, so the slot rule is narrow",
+    fx(`const f = standaloneConnectOpts;`).length === 1);
   // Separate parsing must not turn a neighbour's syntax error into silence for the whole document.
   check("a script that does not PARSE refuses the document rather than scanning its recovery tree",
     html(`<script>function (</script>\n<script>standaloneConnectOpts({ creds: c });</script>`)[0]?.verdict === "unverifiable");
