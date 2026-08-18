@@ -29,7 +29,8 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 
 const CALLER = { owner: "u_probe", actor: "cli", uid: "0123456789abcdefghijklmnopqrst" };
 const GOAL = "goal-follow-probe";
-const DENIAL = 'permission denied: cannot subscription "cotal.s.epe.manager.*.*.goal.u_probe.cli.0123456789abcdefghijklmnopqrst.>"';
+const SUBJECT = "cotal.s.epe.manager.*.*.goal.u_probe.cli.0123456789abcdefghijklmnopqrst.>";
+const DENIAL = `permission denied: cannot subscription "${SUBJECT}"`;
 
 /** A connection whose subscribe is REFUSED: the callback is handed an error and no message ever
  *  arrives, which is exactly what a broker-denied subscription looks like from inside the client. */
@@ -38,7 +39,7 @@ const deniedConn = {
     // The REAL class the client delivers here, not a stand-in Error. The reply's diagnosis now keys
     // on it, so a fixture carrying a plain Error would assert the branch while quietly assuming the
     // shape, and would keep passing if the client ever stopped delivering this class.
-    queueMicrotask(() => opts.callback(new PermissionViolationError(DENIAL), undefined));
+    queueMicrotask(() => opts.callback(new PermissionViolationError(DENIAL, "subscription", SUBJECT), undefined));
     return { unsubscribe: () => {} };
   },
 };
