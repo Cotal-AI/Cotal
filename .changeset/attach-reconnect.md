@@ -38,7 +38,11 @@ outage. Nothing on the serving side reaps a session whose caller went away while
 the stall watchdog only arms once the send window fills, and an idle seat never fills it. The client
 is the only party that knows, so it says so, using the session's own credential, the only one
 scoped to that session's subjects. If it never gets a link that can carry the message, it says that
-instead, on exit.
+instead, on exit. Every wait on a link that is dying is bounded, and the bound is real: the timer
+that enforces it is what keeps the process alive while a socket that will never answer is waited
+on. A link that stays UP and carries nothing, which is what a sleeping laptop looks like from the
+client, ends with the same clean exit and the same message as any other fault instead of the
+command aborting on a wait that never returned.
 
 `--no-reconnect` restores the single-session behaviour for scripts that want one run and one exit
 code.

@@ -393,7 +393,7 @@ try {
     // The detach itself is local, so it lands at once; the exit then waits out the flush deadline
     // and the drain deadline against a socket that will never answer, which is what bounds it.
     check("the detach key ends the attach while the link is up but carries nothing", await a.waitExit(40_000), a.seen().slice(-300));
-    check("...exiting clean", a.exit()?.code === 0, a.exit());
+    check("...exiting clean, rather than aborting on a wait that could not be bounded", a.exit()?.code === 0, a.exit());
     check("...saying the manager is still holding the session, because the close frame's flush never returned",
       /the manager still holds a session/.test(a.seen()), a.seen().slice(-600));
     // The proxy was never severed here, so it is still listening: releasing the hold is the whole

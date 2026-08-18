@@ -138,9 +138,9 @@
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "        handedBack = await flushed(est.nc);",
       "replace": "        handedBack = true;",
-      "expectRed": "...saying the manager is still holding the session it could not hand back",
-      "cell": "...saying the manager is still holding the session it could not hand back",
-      "note": "Publishing is a local buffer write; the FLUSH is the round trip that says the frame left. This mutation restores the shape the code had before review: a link dying between the closed-check and the frame looked like a successful hand-back, the record was dropped, and nothing ever told the manager. Aimed at cell B, which detaches while the link is still down and therefore reaches the exit with something genuinely unhandled. That cell's line was ABSENT on the buggy code, which is how the defect was found.",
+      "expectRed": "...saying the manager is still holding the session, because the close frame's flush never returned",
+      "cell": "...saying the manager is still holding the session, because the close frame's flush never returned",
+      "note": "Publishing is a local buffer write; the FLUSH is the round trip that says the frame left. This mutation restores the shape the code had before review: a link dying between the closed-check and the frame looked like a successful hand-back, the record was dropped, and nothing ever told the manager. It is aimed at cell I, the only cell that reaches this line with a link that is UP: a severed socket closes the connection, so the guarded branch is skipped entirely and this mutation is unreachable from every other cell. It SURVIVED against the severed cells, which is how the coverage gap was found and why the HOLD state exists.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -151,6 +151,16 @@
       "expectRed": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
       "cell": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
       "note": "The `gone` verdict only exists because the manager answered `not-found`, and it only answers that once the seat has been freed; freeing a seat ends every session bound to it. So the sessions this line would name are already collected and naming them invents work. Aimed at the hand-built cell because the harness cannot produce the state that reaches it end to end: it needs a hand-back that FAILED on the same attempt whose control ask SUCCEEDED, over the same broker. Its sibling is mutation 8, which drives the same function's printing branch through the real binary.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the link deadline is unref'd again, so the timer cannot hold the process open while a dead socket is waited on",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  const deadline = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });",
+      "replace": "  const deadline = new Promise<boolean>((r) => { const t = setTimeout(() => r(false), ms); t.unref?.(); timer = t; });",
+      "expectRed": "...exiting clean, rather than aborting on a wait that could not be bounded",
+      "cell": "...exiting clean, rather than aborting on a wait that could not be bounded",
+      "note": "A wait bounded by an unref'd timer is not bounded. With something else holding the event loop open, which is true of every severed-link cell, the deadline fires and the bound looks real. On a HELD link the socket is idle, so an unref'd timer lets node empty its loop and abort the command on a pending await: exit 13, no message, the session dropped silently. Aimed at cell I, which is the only state where nothing else keeps the process alive.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
