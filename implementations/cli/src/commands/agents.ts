@@ -524,8 +524,12 @@ async function runAttachLoop(
   let saidWhy = ""; // the last transient refusal printed, so a steady reason prints once, not per attempt
   // Every exit runs through here, so the one thing an operator cannot see for themselves — that
   // the manager is still holding a session this attach could never close — is never swallowed.
+  // Not on `gone`, though: that verdict means the manager answered `not-found`, which it only does
+  // once the seat has been freed, and freeing a seat ends every session bound to it
+  // (`freeSlot` -> `endForTarget`, on despawn, self-stop, reap and exit alike). Saying the manager
+  // still holds it would be telling an operator to worry about something already collected.
   const done = (v: AttachVerdict): AttachVerdict => {
-    if (abandoned)
+    if (abandoned && v.kind !== "gone")
       console.error(c.dim("[cotal: the manager still holds the session from the lost link; it frees when the seat or the manager ends it]"));
     return v;
   };
