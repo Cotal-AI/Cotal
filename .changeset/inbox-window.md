@@ -16,5 +16,17 @@ A message larger than one whole response is never consumed. It is named in the r
 size and left buffered, because a payload that cannot be delivered must not be cleared. The rest of the
 buffer flows past it, so one such message wedges nothing else.
 
+Focus recall is walked by this session's own mark, and a sender's clock cannot move it. A recalled
+item carries the timestamp the sending endpoint stamped, so one peer running ahead, or one writing
+whatever it likes, could park the mark in the future and filter every ordinary message after it out
+of recall for the rest of the session. Items at or behind the local clock are ordered by timestamp
+and move the mark; items ahead of it are handed over once, tracked by id, and never move it, under a
+bound whose cost falls on the sender that spends it.
+
+A response that must choose between carrying a message and describing the ones it is not carrying
+carries the message. The held-note gives up its names, then its counts, then itself, rather than let
+a message that fits in the window go undelivered because a note about an undeliverable one was
+riding beside it.
+
 Migration: a caller with a large backlog now needs more than one `cotal_inbox` call to empty it, and the
 reply says how many messages are still held. Nothing is dropped and no argument changed.
