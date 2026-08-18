@@ -128,6 +128,17 @@
  * total and an untypechecked half catches a move ACROSS the halves, and nothing catches a move
  * within one.
  *
+ * That last boundary COMPOSES with the door spellings below, and the composition is worth stating
+ * because neither half is alarming alone. A door spelling is a way to write a call this reader does
+ * not see; population-not-identity means an unseen call and a deleted one are the same number. So
+ * rewriting one counted site into a door spelling AND adding any ordinary counted call elsewhere in
+ * the same half leaves the count at exactly 94/67 with every cell green, while a call that throws at
+ * runtime sits in the tree. That was reproduced here rather than reasoned about: one site converted
+ * to a nested table with `tls` dropped, one plain compensating call added, suite green at 143 of 143.
+ * The counts are therefore NOT cover for the door. They pin that the SEEN population stays seen, and
+ * even that only against an author who does not add a call while removing one. Closing it needs
+ * identity rather than population, which is the site manifest named below and a different instrument.
+ *
  * A FOURTH boundary is the TREE ITSELF, and it matters more now that the counts are matched exactly
  * rather than as floors. This walk reads the FILESYSTEM, not the commit, so a working copy that has
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
@@ -1296,6 +1307,20 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // the paragraph to match what the reader does. It does not say these five ought to stay silent.
   // The control carries the weight, because five silent probes and a harness that stopped running
   // produce identical output; only a probe that must be SEEN separates them.
+  //
+  // Two boundaries on this cell, because neither is visible from the cell itself. It does NOT guard
+  // REACH: if the walk stopped handing plain sources to the classifier, these fixtures would still
+  // pass. Reach belongs to the tree-tied family (the walk-reach cell, the per-extension cells, the
+  // exact counts), and the two families cover what neither covers alone, so this premise holds only
+  // while BOTH exist. Anyone reading one family as redundant and deleting it takes the other's cover
+  // with it. It also does not bound the door's CONSEQUENCE: see the composition note in the
+  // docblock, where a door spelling plus a compensating call defeats the counts outright.
+  //
+  // The IN-TREE form was considered and declined. The five spellings are misses, so planting them as
+  // real files would leave the population at 94 and a cell could assert exactly that. It is declined
+  // because files deliberately spelling the seam name are the intent hazard in tree form, the one
+  // that already survived two reviews here, and because it would spend the tree-independence that is
+  // the fixture form's whole advantage.
   const DOOR: Record<string, boolean> = {
     "CONTROL, a plain table, must be SEEN":
       fx(`const T = { k: "standaloneConnectOpts" };\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key",
