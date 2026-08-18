@@ -199,7 +199,11 @@ try {
 
     // A named remedy has to exist where it is named. Nothing in shipped code calls `abandon()`, so
     // the halt cannot send an operator looking for a command; it has to hand them the directory.
-    c("control:the-halt-LOCATES-the-state-to-remove", (s4.err ?? "").includes(PRINCIPAL_DIR), { err: s4.err, dir: PRINCIPAL_DIR });
+    // `includes(PRINCIPAL_DIR)` alone does NOT discriminate, and S9 proved it: a message naming
+    // `<PRINCIPAL_DIR>/<thread>/wal.json` contains the principal directory as a prefix and passes.
+    // The cell has to pin where the path ENDS, so it requires the directory followed by the word
+    // that follows it and refuses any deeper path.
+    c("control:the-halt-LOCATES-the-state-to-remove", (s4.err ?? "").includes(`${PRINCIPAL_DIR} whole`) && !/wal\.json/.test(s4.err ?? ""), { err: s4.err, dir: PRINCIPAL_DIR });
   }
 
   // ------------------------------------------------------------------ the upgrade path
