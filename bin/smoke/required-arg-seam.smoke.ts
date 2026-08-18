@@ -188,20 +188,25 @@ const scanned = (ext: string): boolean => CONTAINERS[ext] !== undefined;
  * is a thing that can be wrong. Tripwiring what it did NOT treat as code means a mis-slice loses a
  * call into a region that still fails the run, rather than into silence.
  */
-function htmlSplit(text: string): { code: string; rest: string } {
+function htmlSplit(text: string): { codes: string[]; rest: string } {
   const blank = (t: string): string => t.replace(/[^\n]/g, " ");
-  let code = "", rest = "", last = 0;
+  const codes: string[] = [];
+  let rest = "", last = 0;
   const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
   for (let m = re.exec(text); m; m = re.exec(text)) {
     const attrs = m[1], body = m[2];
     const type = /type\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase();
     const isJs = !type || type === "module" || /javascript|ecmascript/.test(type);
     const bodyStart = m.index + m[0].indexOf(">") + 1;
-    code += blank(text.slice(last, bodyStart)) + (isJs ? body : blank(body));
+    // One program per script, blank-padded from the FILE's start so it keeps the file's own line
+    // numbers. Emitting a single concatenation instead would invent a source the browser never
+    // runs: two adjacent tags put the second body on the same physical line as the first, where a
+    // trailing `//` comment in the first comments the second out and its calls vanish silently.
+    if (isJs) codes.push(blank(text.slice(0, bodyStart)) + body);
     rest += text.slice(last, bodyStart) + (isJs ? blank(body) : body);
     last = bodyStart + body.length;
   }
-  return { code: code + blank(text.slice(last)), rest: rest + text.slice(last) };
+  return { codes, rest: rest + text.slice(last) };
 }
 
 /** The fenced TypeScript head of an Astro component, plus where the rest of the file starts. The
@@ -225,14 +230,15 @@ function sources(dir: string, acc: string[] = []): string[] {
 }
 
 /** JSX is a different grammar, so a `.tsx` parsed as `.ts` mis-reads `<T>` and can drop call sites. */
-const parse = (file: string, text: string): ts.SourceFile => {
+const parseAll = (file: string, text: string): ts.SourceFile[] => {
   const container = CONTAINERS[extOf(file)];
   if (container === "frontmatter")
-    return ts.createSourceFile(file, frontmatter(text)?.code ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+    return [ts.createSourceFile(file, frontmatter(text)?.code ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)];
   if (container === "script")
-    return ts.createSourceFile(file, htmlSplit(text).code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
-  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
-    /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : undefined);
+    return htmlSplit(text).codes.map((c) =>
+      ts.createSourceFile(file, c, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS));
+  return [ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
+    /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : undefined)];
 };
 
 const WRAPPERS = new Set([
@@ -560,7 +566,7 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   };
   if (CONTAINERS[extOf(file)] === "tripwire")
     return tripwire(0, `in a ${extOf(file)} file, whose executable part is mixed into its prose`);
-  const src = parse(file, text);
+  const sources = parseAll(file, text);
   // A file that does not PARSE is refused rather than scanned, because the recovery tree the parser
   // hands back is not the program: it invents nodes that no valid source can produce, and a rule
   // asked about one of them answers about nothing. Review hit this exactly once, reporting a false
@@ -569,29 +575,37 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   // Refusing here is also fail-closed in the direction that matters: an unparseable file cannot run,
   // so nothing is lost by declining to report a count for it, while scanning it silently reports a
   // number that looks like coverage.
-  const diags = (src as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
-  if (diags.length) return [{
-    file, line: 1, verdict: "unverifiable",
-    detail: `this file does not parse (${ts.flattenDiagnosticMessageText(diags[0].messageText, " ")}), so the tree here is error recovery rather than the program`,
-  }];
+  for (const src of sources) {
+    const diags = (src as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+    if (diags.length) return [{
+      file, line: 1, verdict: "unverifiable",
+      detail: `this file does not parse (${ts.flattenDiagnosticMessageText(diags[0].messageText, " ")}), so the tree here is error recovery rather than the program`,
+    }];
+  }
   const found: Site[] = [];
-  const consts = constStrings(src);
+  // Unioned across the programs on purpose: classic scripts share one global scope, so a constant
+  // declared in an earlier script can spell the seam in a later one. Parsing separately without
+  // this would stop folding that name and lose the call, trading one silent miss for another.
+  const consts = new Map<string, string>();
+  for (const src of sources) for (const [k, v] of constStrings(src)) consts.set(k, v);
   const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
-  const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
-  const visit = (n: ts.Node): void => {
-    if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
-      const { verdict, detail } = classify(n.arguments[0], seam.key, src);
-      found.push({ file, line: lineOf(n), verdict, detail });
-    } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
-      || escapesAt(n, seam.fn, folds)) {
-      found.push({
-        file, line: lineOf(n), verdict: "aliased",
-        detail: `the name is rebound here (${ts.SyntaxKind[n.parent.kind]}); call the seam by its own name so this check can see the argument`,
-      });
-    }
-    ts.forEachChild(n, visit);
-  };
-  visit(src);
+  for (const src of sources) {
+    const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
+    const visit = (n: ts.Node): void => {
+      if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
+        const { verdict, detail } = classify(n.arguments[0], seam.key, src);
+        found.push({ file, line: lineOf(n), verdict, detail });
+      } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
+        || escapesAt(n, seam.fn, folds)) {
+        found.push({
+          file, line: lineOf(n), verdict: "aliased",
+          detail: `the name is rebound here (${ts.SyntaxKind[n.parent.kind]}); call the seam by its own name so this check can see the argument`,
+        });
+      }
+      ts.forEachChild(n, visit);
+    };
+    visit(src);
+  }
   // A frontmatter container's TEMPLATE half is executable too: Astro evaluates `{expr}` at build
   // time, so extracting only the fenced head would leave a second live surface unread. It is not
   // TypeScript and cannot be parsed as any, so the same tripwire covers it. Extract what is a
@@ -841,6 +855,23 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     html(`<button onclick="standaloneConnectOpts({ creds: c })">go</button>`)[0]?.verdict === "unverifiable");
   check("...while a document that never names the seam is silent",
     html(`<!doctype html>\n<script type="module">\nconst x = 1;\n</script>`).length === 0);
+  // EACH SCRIPT IS ITS OWN PROGRAM, and this is the cell that says why. Review found the container
+  // splitter reading two adjacent tags as one source: the browser runs them separately, but a single
+  // concatenation puts the second body on the same physical line as the first, so a trailing `//`
+  // in the first comments the whole second script out. It parsed clean and stayed GREEN while a
+  // tls-less call ran in a real headless browser: the exact failure this file exists to refuse,
+  // arrived at through the reader's own seam rather than through a rule.
+  check("ADJACENT scripts are separate programs: a trailing line comment cannot swallow the next one",
+    html(`<script>ready = true; // bootstrap</script><script type="module">standaloneConnectOpts({ creds: c });</script>`)[0]?.verdict === "missing-key");
+  check("...and the swallowed call keeps the real line of the real document, not the program's",
+    html(`<!doctype html>\n<body>\n<script>a = 1; // x</script><script>standaloneConnectOpts({ creds: c });</script>`)[0]?.line === 3);
+  // The same split must not cost the reach it had while concatenated. Classic scripts share one
+  // global scope, so a constant declared in an earlier script still spells the seam in a later one.
+  check("a constant declared in an EARLIER script still folds in a later one, since they share scope",
+    html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
+  // Separate parsing must not turn a neighbour's syntax error into silence for the whole document.
+  check("a script that does not PARSE refuses the document rather than scanning its recovery tree",
+    html(`<script>function (</script>\n<script>standaloneConnectOpts({ creds: c });</script>`)[0]?.verdict === "unverifiable");
   check("a BARE DEFAULT import binds the scannable name, so it is not a rebinding",
     fx(`import standaloneConnectOpts from "@cotal-ai/core";`).length === 0);
   // The residual both reviews called ordinary rather than exotic, and they were right: this is
