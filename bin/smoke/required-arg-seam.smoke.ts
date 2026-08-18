@@ -314,26 +314,39 @@ function constStrings(src: ts.SourceFile): Map<string, string> {
   return out;
 }
 
-/** Every name this program declares, foldable or not: what another program must not lean on. */
-function declaredNames(src: ts.SourceFile): Set<string> {
+/** Every name this program BINDS, in any of the ways a program can bind one. The question asked of
+ *  it is "is this name resolvable HERE", never "where else does it come from": proving a name is
+ *  foreign needs a complete model of every other program, including the ones behind a `<script src>`
+ *  this reader never sees, while proving it is LOCAL needs only the program in hand. Missing a
+ *  binding kind therefore over-refuses, which is loud, instead of under-refusing, which is silent. */
+function localNames(src: ts.SourceFile): Set<string> {
   const out = new Set<string>();
+  const add = (n: ts.BindingName): void => {
+    if (ts.isIdentifier(n)) { out.add(n.text); return; }
+    for (const el of n.elements) if (!ts.isOmittedExpression(el)) add(el.name);
+  };
   const visit = (n: ts.Node): void => {
-    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) out.add(n.name.text);
+    if (ts.isVariableDeclaration(n) || ts.isParameter(n) || ts.isBindingElement(n)) add(n.name);
+    else if ((ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)) && n.name) out.add(n.name.text);
+    else if (ts.isImportClause(n) && n.name) out.add(n.name.text);
+    else if (ts.isImportSpecifier(n) || ts.isNamespaceImport(n)) out.add(n.name.text);
+    else if (ts.isCatchClause(n) && n.variableDeclaration) add(n.variableDeclaration.name);
     ts.forEachChild(n, visit);
   };
   visit(src);
   return out;
 }
 
-/** Whether an expression reads any of those names, which is what makes it unresolvable here. */
-function leansOn(e: ts.Expression, foreign: Set<string>): boolean {
-  let hit = false;
+/** The names a key expression READS. A property name after a dot is not one of them. */
+function freeNames(e: ts.Expression): string[] {
+  const out: string[] = [];
   const visit = (n: ts.Node): void => {
-    if (ts.isIdentifier(n) && foreign.has(n.text)) hit = true;
+    if (ts.isPropertyAccessExpression(n)) { visit(n.expression); return; }
+    if (ts.isIdentifier(n)) out.push(n.text);
     ts.forEachChild(n, visit);
   };
   visit(e);
-  return hit;
+  return out;
 }
 
 type Folds = (e: ts.Expression | undefined) => boolean;
@@ -615,23 +628,22 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   // program is REFUSED by name rather than resolved. That turns the whole class from a silent miss
   // into a loud one, and it is the same answer this file already gives an alias: call the seam by
   // its own name so the argument can be seen.
-  const declaredElsewhere = programs.map((_, i) =>
-    new Set(programs.flatMap((o, j) => (i === j ? [] : [...declaredNames(o)]))));
-  programs.forEach((src, i) => {
+  const multiProgram = CONTAINERS[extOf(file)] === "script";
+  programs.forEach((src) => {
     const consts = constStrings(src);
-    const foreign = declaredElsewhere[i];
+    const local = localNames(src);
     const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
     const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
     const visit = (n: ts.Node): void => {
       if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
         const { verdict, detail } = classify(n.arguments[0], seam.key, src);
         found.push({ file, line: lineOf(n), verdict, detail });
-      } else if (ts.isCallExpression(n) && ts.isElementAccessExpression(n.expression)
+      } else if (multiProgram && ts.isCallExpression(n) && ts.isElementAccessExpression(n.expression)
         && foldString(n.expression.argumentExpression, consts) === undefined
-        && leansOn(n.expression.argumentExpression, foreign)) {
+        && freeNames(n.expression.argumentExpression).some((x) => !local.has(x))) {
         found.push({
           file, line: lineOf(n), verdict: "unverifiable",
-          detail: `this call is spelled through a name declared in ANOTHER script of this document, which cannot be resolved without running the page in order; call the seam by its own name, or declare the name in the same script`,
+          detail: `this call is spelled through a name this script does not declare, so resolving it would mean running the page in order, or reading a script this check never sees; call the seam by its own name, or spell the key from names declared here`,
         });
       } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
         || escapesAt(n, seam.fn, folds)) {
@@ -921,6 +933,22 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // code, and this file treats crying wolf as its own kind of failure.
   check("...but a name the script declares ITSELF still folds, even when another script declares it too",
     html(`<script>var N = "other";</script>\n<script>var N = "standaloneConnectOpts";\ncore[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
+  // The rule asks whether a name is resolvable HERE, not where else it came from, and these are the
+  // two shapes that killed the version which asked the other question. A helper FUNCTION in another
+  // script is an ordinary declaration that a variable-only collector never saw; a name from a
+  // `<script src>` is declared in a file this reader is never given. Neither can be proved foreign.
+  // Both are trivially not local.
+  check("a key built by a helper FUNCTION from another script is refused, not just a variable",
+    html(`<script>function k() { return "standaloneConnectOpts"; }</script>\n<script>core[k()]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
+  check("...as is a name declared NOWHERE in the document, which is what a `<script src>` leaves behind",
+    html(`<script src="v.js"></script>\n<script>core[vendorKey]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
+  check("...while a key built from names this script DECLARES is not refused, even when it cannot fold",
+    html(`<script>const a = 1;</script>\n<script>function k() { return "x"; }\ncore[k()]({ creds: c });</script>`).length === 0);
+  // The fence is the DOCUMENT's programs, not every computed call in the repository. A plain source
+  // is one program, so an unfoldable key there is the residual this file already documents and the
+  // floors already cover; refusing it would redden ordinary code across the tree.
+  check("a computed key in a PLAIN source stays the documented residual, since only a document is fenced",
+    fx(`const r = core[k()]({ creds: c });`).length === 0);
   check("...and a local name that folds to something ELSE is not the seam, so it is not refused either",
     html(`<script>var N = "other";</script>\n<script>var N = "unrelated";\ncore[N]({ creds: c });</script>`).length === 0);
   check("...and the same holds when the rebinding is a MODULE, whose scope is not the page's at all",
