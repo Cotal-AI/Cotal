@@ -193,7 +193,105 @@ try {
     check("the refusal releases the reserved name", (mgr as unknown as { reserved: Set<string> }).reserved.size === before, before);
   }
 
-  // 4 — RESTART. The record has to carry BOTH halves: the channel and the arming.
+
+  // 4 — THE OWN-CHANNEL RULE. A spawn may be granted the event plane of the agent it is CREATING,
+  // and no other.
+  //
+  // Why this rule exists where it does. `subscribe`, `allowSubscribe` and `allowPublish` are
+  // caller-supplied on every spawn door. On a per-user-auth mesh the ledger's spawner envelope
+  // already refuses a delegation wider than the spawner's own grant. On a STATIC mesh there is no
+  // ledger, so nothing attenuates a caller-supplied ACL at all, and a caller that may spawn may
+  // mint its child a read on any subject it names. An event channel is the subject worth naming:
+  // it carries the session's tool inputs and outputs verbatim.
+  //
+  // The rule does not ask WHO the caller is. On a static mesh that question has no answer worth
+  // acting on: the reach a static caller holds is true by construction of everyone who can reach
+  // the handler. It asks whether the event channel names the agent being created, which the
+  // manager knows because it has just allocated the principal.
+  //
+  // ⚠️ THE EXEMPTION HALF IS NOT REACHABLE FROM THIS SUITE, and saying so is the point. In static
+  // mode the allocated actor is a freshly minted nkey (`newIdentity()` inside the accept body), so
+  // no caller can name the child's own channel before it exists and every concrete event channel a
+  // static caller supplies is by construction foreign. The exemption is reachable in USER mode,
+  // where the allocated actor IS the requested name, and it is load-bearing there: without it a
+  // legitimate spawn that carries its child's own channel forward would be refused. That door is
+  // graded in `implementations/auth/smoke/user-spawn.smoke.ts` against a real user-mode mesh. This
+  // suite grades the refusal half and states which half it cannot see rather than implying both.
+  {
+    const foreign = eventChannel({ owner: DEV_OWNER, actor: "UVICTIMPRINCIPALNOTOURS" });
+
+    // (a) over the READ set, which is the form that matters: this is a read amplification.
+    const before = (mgr as unknown as { reserved: Set<string> }).reserved.size;
+    const rowsBefore = (mgr as unknown as { agents: Map<string, unknown> }).agents.size;
+    const r1 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: [foreign] });
+    check(
+      "a spawn asking for ANOTHER agent's event channel to READ is refused",
+      r1.ok === false && /another agent's event channel/.test(r1.error ?? ""),
+      r1,
+    );
+    check("the refusal releases the reserved name", (mgr as unknown as { reserved: Set<string> }).reserved.size === before, before);
+    // Nothing was minted. A refusal that returned an error but left a credential on disk would pass
+    // the cell above and hand out the channel anyway, which is the failure the cell is about.
+    // COUNTED, not name-guessed. The manager auto-numbers a collision, so naming the row a refused
+    // spawn "would have" taken bakes in an assumption about the suffix that is green whenever the
+    // guess is wrong. The count cannot be wrong in that direction.
+    check(
+      "and no managed row survives it",
+      (mgr as unknown as { agents: Map<string, unknown> }).agents.size === rowsBefore,
+      { before: rowsBefore, after: (mgr as unknown as { agents: Map<string, unknown> }).agents.size },
+    );
+
+    // (b) over the POST set. One filter reads both fields; a filter that read only `allowSubscribe`
+    // would pass (a) and still let a caller mint publish rights onto another agent's plane, which
+    // is a forgery surface rather than a read one.
+    const r2 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowPublish: [foreign] });
+    check(
+      "a spawn asking to POST to another agent's event channel is refused too",
+      r2.ok === false && /another agent's event channel/.test(r2.error ?? ""),
+      r2,
+    );
+
+    // (c) THE LOAD-BEARING CONTROL. Every cell above is satisfied by a manager that refuses this
+    // spawn for any reason at all — a bad connector, a name collision, a broken persona. The same
+    // spawn minus the foreign channel has to SUCCEED, or the three cells above are measuring the
+    // spawn and not the channel.
+    const r3 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: ["work"] });
+    check("the SAME spawn without the foreign channel succeeds", r3.ok === true, r3);
+
+    // (d) THE STATED LIMIT, asserted so it cannot quietly stop being true. `isEventChannel` derives
+    // a principal and refuses anything that is not exactly two principal tokens, so a WILDCARD is
+    // not an event channel to it. `events.<owner>.>` therefore passes this rule untouched and is
+    // governed by ordinary ACL authority, which on a user mesh is the delegation envelope and on a
+    // static mesh is the spawn credential itself. This closes the concrete form and not the
+    // wildcard form. Writing the gap down as a cell is what stops a later reader assuming it is
+    // closed, and what makes a future closure show up as a red here rather than as a silent
+    // behaviour change.
+    // `work` rides along because the persona's own read set has to stay inside the supplied
+    // `allowSubscribe`: without it the spawn dies at provisioning on an unrelated and correct check
+    // ("subscribe \"work\" is not within allowSubscribe"), and the cell would report a refusal it
+    // did not cause. That is what it did on its first run.
+    const r4 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: ["work", `events.${DEV_OWNER}.>`] });
+    check("a WILDCARD event pattern is NOT refused by this rule — the stated limit", r4.ok === true, r4);
+
+    // (e) and the arming grant still lands on top of a legal caller-supplied set, so the filter is
+    // not collateral damage to the feature it protects.
+    const r5 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", events: true, allowSubscribe: ["work"] });
+    check("arming still grants the child its OWN plane alongside a legal ACL", (() => {
+      if (!r5.ok) return false;
+      const d = r5.data as { name?: string; lifecycleUid?: string };
+      const actor = (mgr as unknown as { agents: Map<string, { id: string }> }).agents.get(String(d.name))!.id;
+      const pub = pubAcl(join(credsDir, `${String(d.name)}.${String(d.lifecycleUid)}.creds`));
+      return pub.map(channelOf).includes(eventChannel({ owner: DEV_OWNER, actor }));
+    })(), r5);
+  }
+
+  // 5 — RESTART. The record has to carry BOTH halves: the channel and the arming.
+  //
+  // ⚠️ EVERY SPAWNING CELL MUST SIT ABOVE THIS ONE. `preserveState` puts the manager into
+  // preserving mode and it never leaves: from here on every `startAgent` returns
+  // "manager is in preserving mode". A refusal cell placed below would go GREEN on that refusal
+  // instead of the one it names, and its sibling "no row survives it" would go green too. That
+  // is not hypothetical: it is what the own-channel cells did on their first run.
   let preserved: ManagerResumeInventory | undefined;
   {
     const captured: ManagerResumeInventory[] = [];
@@ -215,7 +313,7 @@ try {
     check("an unarmed agent stays unarmed in the same inventory", sibling !== undefined && sibling.launch.events === false, sibling?.launch);
   }
 
-  // 5 — the record an OLDER manager wrote. An upgrade restarts the manager against an inventory
+  // 6 — the record an OLDER manager wrote. An upgrade restarts the manager against an inventory
   // written by the previous version, which has no `events` field at all. Refusing that document
   // would lose every agent the restart was meant to preserve, so absent reads as off, which is what
   // it means: that session was not publishing a plane, because there was none to publish.
@@ -232,6 +330,7 @@ try {
     check("an inventory written before the event plane still parses", parsed?.inventory.agents.length === 1, refusal ?? parsed);
     check("and its agent reads as unarmed rather than being refused", parsed?.inventory.agents[0]?.launch.events === false, refusal ?? parsed?.inventory.agents[0]?.launch);
   }
+
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
@@ -239,7 +338,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 20;
+const EXPECTED = 27;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

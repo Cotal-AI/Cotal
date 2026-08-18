@@ -40,6 +40,7 @@ import {
   epCallerReplyFilter,
   parseEpSubject,
   controlServiceSubject,
+  isEventChannel,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
@@ -294,7 +295,6 @@ export interface ManagerResumeAgent {
     allowSubscribe: string[];
     allowPublish?: string[];
     capabilities?: string[];
-    transcript: boolean;
     events: boolean;
     shareTools?: string;
     /** Original connector fork source, not a captured id for the currently running host session. */
@@ -383,12 +383,9 @@ export interface StartAgentOpts {
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
-  /** Mirror the session's transcript to `tr-<name>`. Defaults to off; `true` (the
-   *  `--transcript` flag) opts in. */
-  transcript?: boolean;
   /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
-   *  off; `true` (the `--events` flag) opts in. Independent of `transcript`: they are two surfaces
-   *  with two grants, and one must never authorize the other. */
+   *  off; `true` (the `--events` flag) opts in. It is the only structured view of what a session
+   *  did: the prose mirror this replaced is gone. */
   events?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
@@ -426,7 +423,6 @@ interface ManagedLaunch {
   allowSubscribe: string[];
   allowPublish?: string[];
   capabilities?: string[];
-  transcript: boolean;
   events: boolean;
   shareTools?: string;
   forkSource?: string;
@@ -1479,7 +1475,6 @@ export class Manager {
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
         capabilities: a.launch.capabilities,
-        transcript: a.launch.transcript,
         events: a.launch.events,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
@@ -2767,7 +2762,6 @@ export class Manager {
         variant: args.variant ? String(args.variant) : undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
-        transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
         events: typeof args.events === "boolean" ? args.events : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
         prompt: args.prompt ? String(args.prompt) : undefined,
@@ -3121,23 +3115,8 @@ export class Manager {
       name = this.uniqueName(identityName);
     }
     this.reserved.add(name);
-    // Transcript mirroring (opt-in: `--transcript` / COTAL_TRANSCRIPT_DEFAULT=1) → grant the agent pub
-    // on its OWN transcript channel; auth-mode publish is default-deny, so without the grant the mirror's
-    // publish is rejected. Ask the resolved connector for the channel — the SAME one it publishes to, so
-    // the grant and the publish can't drift, and the literal stays out of core. Uses the spawned `name`
-    // (post-uniqueName) so the grant matches the actual identity. Mirroring is OPTIONAL per connector
-    // (like prompt): if it's requested for a connector that doesn't mirror, fail loud — never silently
-    // skip the grant (that would surface later as a confusing auth-mode publish rejection).
-    const transcript = opts.transcript ?? process.env.COTAL_TRANSCRIPT_DEFAULT === "1";
-    if (transcript) {
-      if (!connector.transcriptChannel) {
-        this.reserved.delete(name); // release the just-reserved name on this fail-fast path
-        return { ok: false, error: `connector "${connector.name}" does not support transcript mirroring, but transcript was requested` };
-      }
-      allowPublish = [...(allowPublish ?? []), connector.transcriptChannel(name)];
-    }
-    // The AG-UI event plane (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1). Refused HERE, where the
-    // transcript refusal already lives, because nothing has been minted yet: a connector that cannot
+    // The AG-UI event plane (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1). Refused HERE, before
+    // anything is minted: a connector that cannot
     // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
     // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
     // the principal's owner is resolved further down, so deriving it from anything in scope here
@@ -3196,9 +3175,48 @@ export class Manager {
       // one, so a name-keyed channel fuses two principals onto one subject and, in auth mode,
       // authorizes both onto it from the same name-only value. `agentTriple` is the triple the child
       // will connect as in both modes, so the grant and the subject the session derives from its own
-      // endpoint are the same derivation. Placed here rather than beside the transcript grant
+      // endpoint are the same derivation. Placed here rather than beside the refusal above
       // because this is the first point at which that triple exists, and still before every
       // provisioning call that consumes `allowPublish`.
+      // THE OWN-CHANNEL RULE FOR THE EVENT PLANE, and it is the first thing this seam does.
+      //
+      // An event channel carries a session's tool inputs and outputs, which makes it the most
+      // valuable read on the mesh, and `subscribe` / `allowSubscribe` / `allowPublish` are
+      // caller-supplied on every spawn door. On a per-user-auth mesh the ledger's spawner envelope
+      // already refuses a delegation wider than the spawner's own grant. On a STATIC mesh there is
+      // no ledger, so nothing attenuates a caller-supplied ACL at all, and a caller that may spawn
+      // may mint its child a read on any subject.
+      //
+      // What this rule asks is NOT who the caller is. That question has no answer on a static mesh:
+      // an untargeted spawn carries no authorization mode, and the admin reach a static caller
+      // holds is true by construction for everyone who can reach the handler. It asks whether the
+      // event channel being minted BELONGS TO THE AGENT BEING CREATED, which the manager knows
+      // because it has just allocated the principal.
+      //
+      // STATED LIMIT, because a fence whose gap is discovered later is worse than one whose gap is
+      // written down. `isEventChannel` derives a principal and refuses anything that is not exactly
+      // two principal tokens, so a WILDCARD is not an event channel to it: `events.<owner>.>` and
+      // `events.>` pass this rule untouched and are governed by ordinary ACL authority, which on a
+      // user mesh is the envelope and on a static mesh is the spawn credential itself. So this
+      // closes the concrete form and not the wildcard form. It is worth having anyway: it is the
+      // form a caller writes when it knows which agent it wants to read, and the wildcard form is
+      // the one an operator writes deliberately for an observer.
+      const ownEventChannel = connector.eventChannel?.({ owner: agentTriple.owner, actor: agentTriple.actor });
+      const foreignEventChannels = [...allowSubscribe, ...(allowPublish ?? [])].filter(
+        (ch) => isEventChannel(ch) && ch !== ownEventChannel,
+      );
+      if (foreignEventChannels.length) {
+        // Throws rather than returning, because this seam is inside the accept body: the throw
+        // unwinds before `onAccepted`, so no goal is bound and no identity is minted, and the
+        // enclosing `finally` releases the reserved name. Returning here would be a value nobody
+        // reads.
+        throw new Error(
+          `this spawn asks for another agent's event channel: ${foreignEventChannels.join(", ")}. An ` +
+            `agent may be granted its OWN event plane and no other, because that plane carries the ` +
+            `session's tool inputs and outputs. Grant a reader out of band with \`cotal actor grant\` ` +
+            `rather than through a spawn.`,
+        );
+      }
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
       await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
@@ -3324,7 +3342,6 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         capabilities,
-        transcript,
         events,
         mcpServers,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
@@ -3367,7 +3384,6 @@ export class Manager {
           allowSubscribe,
           allowPublish,
           capabilities,
-          transcript,
           events,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
@@ -3751,7 +3767,6 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
-          transcript: entry.launch.transcript,
           events: entry.launch.events,
           mcpServers,
           workspaceRoot: this.workspaceRoot,
@@ -3817,7 +3832,6 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
-          transcript: entry.launch.transcript,
           events: entry.launch.events,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
