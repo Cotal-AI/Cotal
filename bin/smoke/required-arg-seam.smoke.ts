@@ -431,6 +431,19 @@ function constObjects(src: ts.SourceFile, consts: Map<string, string>): Objects 
   // object of a property access. Anything else, passed as an argument, aliased, returned, spread,
   // exported, closed over, gives some other code a handle on it, and a table with a handle out is
   // not settled by its own text. That question has a complete answer; the other one does not.
+  // A table name DECLARED more than once is the multiply-bound rule one level up, and it fails the
+  // same way: this map is last-wins over the whole file and the reader has no scope, so an inner
+  // `const T = { k: "<seam>" }` in some other function decides what an OUTER `T.k` folds to. Measured
+  // as a FALSE RED before this existed: the outer table spelled something else entirely.
+  const declared = new Map<string, number>();
+  const countDecls = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name))
+      declared.set(n.name.text, (declared.get(n.name.text) ?? 0) + 1);
+    ts.forEachChild(n, countDecls);
+  };
+  countDecls(src);
+  for (const [name, count] of declared) if (count > 1) out.delete(name);
+
   const escapes = new Set<string>();
   const walkNames = (n: ts.Node): void => {
     if (ts.isIdentifier(n) && out.has(n.text)) {
@@ -1237,6 +1250,13 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // The other direction again, so "stays where it can be seen" cannot collapse into "fold nothing".
   check("...while a table only ever READ through its properties stays settled and still folds",
     fx(`const T = { k: "standaloneConnectOpts" };\nconst other = T.k.length;\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
+
+  // The multiply-bound rule one level up. This map is last-wins over the whole file and the reader
+  // has no scope, so a table declared in some OTHER function decides what this one folds to.
+  check("a table name DECLARED more than once is not settled, since this reader has no scope",
+    fx(`const T = { k: "otherConnect" };\nfunction f() { const T = { k: "standaloneConnectOpts" }; return T.k; }\ncore[T.k]({ creds: c });`).length === 0);
+  check("...while a table declared exactly ONCE still folds, so the shadow rule is not a blanket",
+    fx(`const T = { k: "standaloneConnectOpts" };\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
 
   // The seam throws on `undefined`, and a `const` bound to it is exactly that value spelled in two
   // steps. Review passed this through as a COUNTED, GREEN site while it threw at runtime.
