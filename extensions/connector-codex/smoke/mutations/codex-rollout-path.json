@@ -1,0 +1,33 @@
+{
+  "command": "pnpm smoke:codex-rollout-path",
+  "mutations": [
+    {
+      "name": "P1 the suffix match becomes a prefix match, letting one thread's emitter consume another's bytes",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "      else if (name.startsWith(\"rollout-\") && name.endsWith(suffix)) return p;",
+      "replace": "      else if (name.startsWith(\"rollout-\") && name.includes(threadId)) return p;",
+      "expectRed": "a thread id that merely PREFIXES a filename does not match"
+    },
+    {
+      "name": "P2 the search roots at the operator's home instead of the one it was handed, which is the campaign's own defect",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "  const stack = [join(codexHome, \"sessions\")];",
+      "replace": "  const stack = [join(codexHome, \"sessions\"), join(codexHome, \"..\", \"..\", \"..\", \"operator-codex\", \"sessions\")];",
+      "expectRed": "and never reaches into another home holding the same thread id"
+    },
+    {
+      "name": "P3 the waiter stops retrying, so a rollout that appears late is never adopted",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "  for (let i = 0; i < attempts; i++) {",
+      "replace": "  for (let i = 0; i < 1; i++) {",
+      "expectRed": "waits for a file that appears late"
+    },
+    {
+      "name": "P4 the waiter stops giving up, so a thread whose rollout never appears blocks behind a caller that cannot see it",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "  const attempts = opts?.attempts ?? 40;",
+      "replace": "  const attempts = 1;",
+      "expectRed": "and the budget is the one it was given"
+    }
+  ]
+}

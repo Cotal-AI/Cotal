@@ -335,3 +335,9 @@ smoke:agui-opencode-map
 smoke:agui-opencode-source
 smoke:opencode-events-arm
 smoke:opencode-events-reset
+
+# The Codex connector's AG-UI event plane: the mapper against a real app-server
+# thread, the launch arm, and the per-agent rollout resolution.
+smoke:agui-codex-map
+smoke:codex-events-arm
+smoke:codex-rollout-path

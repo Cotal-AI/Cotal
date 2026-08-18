@@ -1,0 +1,61 @@
+{
+  "command": "pnpm smoke:agui-codex-map",
+  "mutations": [
+    {
+      "name": "M1 the mapper stops branching on task_complete.error, so a failed turn publishes as a success",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      if (err !== undefined) {",
+      "replace": "      if (false) {",
+      "expectRed": "live:and RUN_ERROR was emitted anyway, from task_complete.error"
+    },
+    {
+      "name": "M2 the mapper stops withholding user and developer records",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      if (role !== \"assistant\") return null;",
+      "replace": "      if (role === \"zzz-never\") return null;",
+      "expectRed": "live:NO event carries a withheld record's id as its messageId"
+    },
+    {
+      "name": "M3 the tool identity becomes a synthesized key instead of the native call_id",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "          toolCallStart({ toolCallId, toolCallName, timestamp: ts }),",
+      "replace": "          toolCallStart({ toolCallId: `synth-${ts}`, toolCallName, timestamp: ts }),",
+      "expectRed": "shape:toolCallId is the NATIVE call_id, not a synthesized key"
+    },
+    {
+      "name": "M4 a list-shaped tool output is no longer serialized, so one of the two real shapes is dropped",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "  if (typeof o === \"string\") return o;",
+      "replace": "  if (typeof o === \"string\") return o;\n  if (Array.isArray(o)) throw new Error(\"unexpected list output\");",
+      "expectRed": "shape:a LIST-shaped tool output still produces exactly one RESULT"
+    },
+    {
+      "name": "M5 turn_aborted requires a turn id, turning a rare heterogeneity into a dead stream",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      const id = turn ?? runId;",
+      "replace": "      if (turn === undefined) return null;\n      const id = turn;",
+      "expectRed": "shape:turn_aborted WITHOUT a turn id still ends the run"
+    },
+    {
+      "name": "M6 the run stops being fenced on its turn, so any turn's completion closes it",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      if (turn !== undefined && openTurn !== undefined && turn !== openTurn) return null;\n      const runId = open;\n      const err = asRecord(payload.error);",
+      "replace": "      const runId = open;\n      const err = asRecord(payload.error);",
+      "expectRed": "shape:a task_complete for a DIFFERENT turn does not close the open run"
+    },
+    {
+      "name": "M7 the opaque reasoning blob is published alongside the summary",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      if (text.length === 0) return null;\n      const messageId = asString(payload.id) ?? `rsn:${runId}:${ts}`;",
+      "replace": "      text += asString(payload.encrypted_content) ?? \"\";\n      if (text.length === 0) return null;\n      const messageId = asString(payload.id) ?? `rsn:${runId}:${ts}`;",
+      "expectRed": "shape:encrypted_content is NEVER published"
+    },
+    {
+      "name": "M8 TOOL_CALL_RESULT loses the stable messageId section 3.1 owes",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      const messageId = `res:${toolCallId}`;",
+      "replace": "      const messageId = `res:${ts}`;",
+      "expectRed": "shape:TOOL_CALL_RESULT carries the messageId section 3.1 owes, derived from the call id"
+    }
+  ]
+}

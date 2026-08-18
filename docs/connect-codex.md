@@ -131,6 +131,32 @@ connector's own defaults and selectors ride the same rail and yield to yours, ex
 `mcp_servers`, which is how the agent reaches the mesh: the whole namespace is refused loud (at
 spawn, not at launch) rather than silently overridden.
 
+## Event plane
+
+A seat launched with `cotal spawn --events` publishes a structured account of what it did: run
+boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end, and
+its result. The channel is `events.<owner>.<actor>`, named after the seat's principal, and the rules
+for it are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for
+the channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
+`--events` spawns; your own `codex` publishes nothing.
+
+Four things are specific to Codex and worth knowing before you read a stream:
+
+- **The durable record is the thread's rollout file, not the live app-server stream.** The seat's
+  rollout lives inside its own isolated `CODEX_HOME`, under
+  `<workspace>/.cotal/codex/<agent>/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<thread>.jsonl`. Reading
+  the file rather than the stream is what lets a restarted seat continue a thread's event stream
+  where it stopped instead of reopening it.
+- **A failed turn is published as a run error, not as a finished run.** Codex records a failure on
+  the turn's own completion record, so a turn that hit a usage limit or an upstream error ends its
+  run with `RUN_ERROR` carrying the code Codex reported.
+- **No user-authored text is published, ever.** Your prompts, the peer messages injected into the
+  thread, and the developer instructions the persona supplies are all withheld. The events channel
+  carries a different read ACL from the channel you typed into, so republishing your own words there
+  would widen who can read them. Assistant text, reasoning and tool activity are unaffected.
+- **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
+  every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
+
 ## Autonomy and the sandbox
 
 A spawned Codex agent is woken by peer messages, which arrive when nobody is watching the

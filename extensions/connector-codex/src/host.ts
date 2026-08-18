@@ -55,9 +55,20 @@ import {
   startControlServer,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
+  AguiEmitter,
+  AguiEmitterHolder,
+  EventWal,
+  FileSubjectFrontier,
+  JsonlFileSource,
+  ensureEventWalDir,
+  resolveEventsStateRoot,
   type InboxItem,
 } from "@cotal-ai/connector-core";
+import { principalKey } from "@cotal-ai/core";
+import { randomUUID } from "node:crypto";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
+import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
+import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
 import { launchTui } from "./tui.js";
 
@@ -289,6 +300,52 @@ export async function runCodexHost(): Promise<void> {
     log,
   });
 
+  /** Publishes this thread's activity as AG-UI events on `events.<owner>.<actor>`.
+   *
+   *  Armed by the launch (`COTAL_EVENTS`), so a seat the operator did not arm never reaches the
+   *  broker for an event plane it has no grant for. The emitter is built LAZILY on the first
+   *  adopt, because its source is the rollout file, whose path is not known until the thread
+   *  exists, and because `start()` reaches the broker, work that must not run for a thread that
+   *  never publishes. */
+  let events: AguiEmitterHolder<CodexRecord> | undefined;
+  let mapper: CodexMapper | undefined;
+  /** The adopted rollout path. The holder binds to ONE path and refuses a second, so every flush
+   *  names the file the emitter is already reading rather than re-deriving it. */
+  let rollout: string | undefined;
+  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) {
+    events = new AguiEmitterHolder<CodexRecord>(
+      async (rolloutPath: string) => {
+        // Throws rather than defaulting to the working directory: a write-ahead log written
+        // somewhere no later start looks is a silent loss.
+        const workspaceRoot = resolveEventsStateRoot(process.env);
+        // The thread id is the rollout filename key, MEASURED equal to `session_meta.payload.id`
+        // and to the `thread/start` id on a real app-server thread. Taken from the path this
+        // emitter actually reads, so the log cannot be keyed to one thread while consuming
+        // another's bytes.
+        const threadId = (rolloutPath.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1]) ?? "";
+        if (threadId === "") throw new Error(`cannot derive a thread id from rollout path ${rolloutPath}`);
+        const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+        const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
+        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID() });
+        return AguiEmitter.start<CodexRecord>({
+          endpoint: agent.ep,
+          wal,
+          subjectFrontier,
+          source: new JsonlFileSource<CodexRecord>(rolloutPath),
+          map: mapper.map,
+        });
+      },
+      // Required, and not defaulted to a swallow. The holder is terminal on error and does not
+      // retry, so this line is the whole record of why events stopped.
+      (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
+      // A turn terminal closes a run the record stream never described. Without this the mapper
+      // would attribute the next records to a run the published stream has already finished.
+      (runId: string) => mapper?.forgetOpenRun(runId),
+    );
+  }
+
   // Presence is best-effort and must never throw into the turn loop — but it must also never
   // LIE. The mesh connect runs in the background, so an auto-prompt (`--prompt`) can open a real
   // turn while the endpoint is still connecting; dropping that "working" would leave the roster
@@ -500,7 +557,15 @@ export async function runCodexHost(): Promise<void> {
 
   // ---- events --------------------------------------------------------------
 
+  /** Ask the emitter to read what codex has appended. The rollout is written by the child, so
+   *  nothing tells this process a record landed; the driver's own boundaries are the closest
+   *  signal there is, and a flush is cheap and idempotent (the cursor decides what is new). */
+  const flushEvents = (): void => {
+    if (rollout !== undefined) events?.flush(rollout);
+  };
+
   driver.on("turnStarted", () => {
+    flushEvents();
     // Invalidate any prior turn's still-pending async boundary tail: a new turn owning presence
     // now means T(n-1)'s flush/status/pump must no longer publish a stale `idle` over this
     // `working`, nor pump this turn's batch past its backoff.
@@ -510,6 +575,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
   driver.on("turnCompleted", ({ status, owned }: { status: string; owned: boolean }) => {
+    flushEvents();
     feed(`— turn ${status}`);
     completeTurn(status, owned);
   });
@@ -523,6 +589,7 @@ export async function runCodexHost(): Promise<void> {
     }
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
+    flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
   });
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
@@ -552,6 +619,19 @@ export async function runCodexHost(): Promise<void> {
    *  never joined. */
   async function comeOnline(threadId: string): Promise<void> {
     agent.setContextId(threadId);
+    // Adopt the thread's rollout as the event plane's durable source. `thread/start` writes
+    // nothing to disk, so the file only exists once the driver's primer inject has landed; the
+    // wait is bounded and its failure is reported rather than swallowed, because an emitter with
+    // no source publishes nothing and would otherwise do so silently.
+    if (events !== undefined) {
+      void waitForRollout(codexHome, threadId).then((path) => {
+        if (path === undefined) log(`AG-UI: no rollout file for thread ${threadId} — events will not publish`);
+        else {
+          rollout = path;
+          events?.adopt(path);
+        }
+      });
+    }
     if (agentStarted) return;
     agentStarted = true;
     agent.start(); // background connect with retry
