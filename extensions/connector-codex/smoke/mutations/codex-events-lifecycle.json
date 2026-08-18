@@ -1,0 +1,40 @@
+{
+  "command": "pnpm smoke:codex-events-lifecycle",
+  "mutations": [
+    {
+      "name": "L1 a restarted thread is adopted into the bound holder, which is exactly the state this PR opened in",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      events = newEventHolder();\n      rollout = path;",
+      "replace": "      events = events ?? newEventHolder();\n      rollout = path;",
+      "expectRed": "the plane KEEPS PUBLISHING after the restart"
+    },
+    {
+      "name": "L2 the drain stops closing the old thread's run, so an observer is left holding a run that never ends",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        if (rollout !== undefined) events.flush(rollout);\n        events.closeRun(Date.now());\n        await events.settled();",
+      "replace": "        if (rollout !== undefined) events.flush(rollout);\n        await events.settled();",
+      "expectRed": "and no run the dead thread opened was left open"
+    },
+    {
+      "name": "L3 shutdown stops draining the plane, so a mid-turn exit publishes a run that is never closed",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      flushEvents();\n      events?.closeRun(Date.now());\n      await events?.settled();",
+      "replace": "      await Promise.resolve();",
+      "expectRed": "a mid-turn exit CLOSES the run it left open"
+    },
+    {
+      "name": "L4 the bind stops retrying at a turn boundary, so a seat whose rollout appeared late never publishes at all",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "    if (eventsArmed && eventsThread !== undefined) void bindEvents(eventsThread, 1);",
+      "replace": "    if (false) void bindEvents(\"\", 1);",
+      "expectRed": "a rollout that appeared AFTER the launch gave up still binds"
+    },
+    {
+      "name": "L5 the launch stops binding at all, so an armed seat publishes nothing on the ordinary path",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      eventsThread = threadId;\n      void bindEvents(threadId, ROLLOUT_ATTEMPTS);",
+      "replace": "      eventsThread = threadId;",
+      "expectRed": "an armed seat PUBLISHES its thread's activity"
+    }
+  ]
+}

@@ -13,7 +13,7 @@
  *
  * Run: pnpm smoke:codex-rollout-path
  */
-import { mkdirSync, writeFileSync, rmSync } from "node:fs";
+import { mkdirSync, writeFileSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { mkdtempSync } from "node:fs";
@@ -70,6 +70,42 @@ try {
     got: findRollout(sibling, THREAD),
   });
 
+  // A LINK IS REFUSED, NOT FOLLOWED, and the two halves are refused separately because they are two
+  // different escapes. `prepareCodexHome` already lstat-refuses a symlinked `.cotal`, `.cotal/codex`
+  // or agent home; a walk that followed a link planted anywhere under `sessions` would let whoever
+  // planted it choose which bytes this emitter publishes, so the two would enforce different rules
+  // over one tree. Same uid, so this is not a new capability; it is one connector holding one rule.
+  const outside = join(root, "outside");
+  const victim = plant(outside, THREAD, "2026-08-18T00-00-00");
+
+  // (a) a linked DIRECTORY anywhere on the walk
+  const linkedDir = join(root, "linked-dir");
+  mkdirSync(linkedDir, { recursive: true });
+  symlinkSync(join(outside, "sessions"), join(linkedDir, "sessions"));
+  check("a symlinked sessions directory is not walked", findRollout(linkedDir, THREAD) === undefined, {
+    got: findRollout(linkedDir, THREAD),
+  });
+
+  // (b) a linked FILE with a name that would otherwise match. This is the half an `lstat` that only
+  // replaced the directory test would still return: the name matches, and the bytes are the
+  // victim's.
+  const linkedFile = join(root, "linked-file");
+  const linkedFileDir = join(linkedFile, "sessions", "2026", "08", "18");
+  mkdirSync(linkedFileDir, { recursive: true });
+  symlinkSync(victim, join(linkedFileDir, `rollout-2026-08-18T18-38-42-${THREAD}.jsonl`));
+  check("a symlinked rollout file with a matching name is refused", findRollout(linkedFile, THREAD) === undefined, {
+    got: findRollout(linkedFile, THREAD),
+  });
+
+  // The refusal must be about the LINK, not about the tree being unreadable: the same shape with a
+  // real file resolves. Without this, a resolver that returned undefined for everything would pass
+  // both cells above.
+  const realCopy = join(root, "real-copy");
+  const realPath = plant(realCopy, THREAD);
+  check("and a REAL file in the same shape still resolves", findRollout(realCopy, THREAD) === realPath, {
+    got: findRollout(realCopy, THREAD),
+  });
+
   // The waiter exists because the file appears late. It must actually retry, and it must give up.
   const late = join(root, "late");
   mkdirSync(join(late, "sessions"), { recursive: true });
@@ -97,7 +133,27 @@ try {
   // BOUNDED, and reported. A waiter that blocked forever would hide the fault behind a caller that
   // cannot see it is stuck, and the emitter would have no durable source at all.
   check("gives up after its budget rather than waiting forever", never === undefined);
-  check("and the budget is the one it was given", giveUpTicks === 4, { giveUpTicks });
+  // THE SLEEP IS BETWEEN ATTEMPTS, NOT AFTER THE LAST ONE, so a budget of 4 looks costs 3 waits.
+  // The trailing sleep was removed deliberately: with a budget of ONE look the caller then resolves
+  // on the microtask queue, and a caller holding a one-at-a-time flag across this call releases it
+  // before the next event arrives instead of racing it.
+  check("and the budget is the one it was given, minus the wait it does not take", giveUpTicks === 3, { giveUpTicks });
+
+  // The count above is a claim about SLEEPS. This one is a claim about LOOKS, and they are different
+  // numbers: a file planted on the last wait must still be found, which can only happen if the
+  // fourth look happened at all.
+  const lastChance = join(root, "last-chance");
+  mkdirSync(join(lastChance, "sessions"), { recursive: true });
+  let lastTicks = 0;
+  const foundLate = await waitForRollout(lastChance, THREAD, {
+    attempts: 4,
+    intervalMs: 0,
+    sleep: async () => {
+      lastTicks++;
+      if (lastTicks === 3) plant(lastChance, THREAD);
+    },
+  });
+  check("a file planted on the LAST wait is still found, so the final look really happens", foundLate !== undefined, { foundLate, lastTicks });
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

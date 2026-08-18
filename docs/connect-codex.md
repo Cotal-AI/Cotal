@@ -134,19 +134,34 @@ spawn, not at launch) rather than silently overridden.
 ## Event plane
 
 A seat launched with `cotal spawn --events` publishes a structured account of what it did: run
-boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end, and
-its result. The channel is `events.<owner>.<actor>`, named after the seat's principal, and the rules
-for it are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for
-the channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
-`--events` spawns; your own `codex` publishes nothing.
+boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
+function-call and custom-tool interfaces, each with its arguments, its end, and its result. That
+covers the tools you watch a seat use, `shell` and `apply_patch` among them. The channel is
+`events.<owner>.<actor>`, named after the seat's principal, and the rules for it are the same on
+every connector: see [connect-claude.md](connect-claude.md#event-plane) for the channel, the grant,
+and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; your own
+`codex` publishes nothing.
 
-Four things are specific to Codex and worth knowing before you read a stream:
+Seven things are specific to Codex and worth knowing before you read a stream:
 
 - **The durable record is the thread's rollout file, not the live app-server stream.** The seat's
   rollout lives inside its own isolated `CODEX_HOME`, under
-  `<workspace>/.cotal/codex/<agent>/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<thread>.jsonl`. Reading
-  the file rather than the stream is what lets a restarted seat continue a thread's event stream
-  where it stopped instead of reopening it.
+  `<workspace>/.cotal/codex/<space>-<name>-<hash>/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<thread>.jsonl`.
+  Reading the file rather than the stream is what lets the seat resume a thread's stream where it
+  stopped after its own process restarts, rather than reopening it from the top.
+- **A restarted app-server is a NEW thread, and its stream is a new one.** When the child dies and
+  the seat brings up a replacement, Codex starts a fresh thread with a fresh rollout. The seat
+  finishes the old one first, publishing what it had and closing any run left open, then begins
+  publishing the new thread under its own write-ahead log. A reader sees one stream end and another
+  begin, never one stream silently continuing under a different thread.
+- **The stream starts where the seat binds to the file.** `thread/start` writes nothing to disk; the
+  file appears when the thread is primed. The seat binds to it then, and publishes from that point
+  forward. If the file is slow to appear the seat says so in its log and looks again at each turn
+  boundary, and whatever the thread wrote before the bind is not republished.
+- **Codex's own built-in tools are not published yet.** Web search, tool search and image generation
+  record an end with no start, and nothing joins the two halves: the start-shaped record carries no
+  call id and the end carries one. Rather than guess a pairing, the seat drops them, so those tool
+  uses are absent from the stream while everything on the function-call path is present.
 - **A failed turn is published as a run error, not as a finished run.** Codex records a failure on
   the turn's own completion record, so a turn that hit a usage limit or an upstream error ends its
   run with `RUN_ERROR` carrying the code Codex reported.

@@ -423,7 +423,8 @@
     "smoke:bind-fence:live": "tsx implementations/cli/smoke/bind-fence-live.smoke.ts",
     "smoke:agui-codex-map": "tsx extensions/connector-codex/smoke/agui-map.smoke.ts",
     "smoke:codex-events-arm": "tsx extensions/connector-codex/smoke/events-arm.smoke.ts",
-    "smoke:codex-rollout-path": "tsx extensions/connector-codex/smoke/rollout-path.smoke.ts"
+    "smoke:codex-rollout-path": "tsx extensions/connector-codex/smoke/rollout-path.smoke.ts",
+    "smoke:codex-events-lifecycle": "tsx extensions/connector-codex/smoke/events-lifecycle.smoke.ts"
   },
   "dependencies": {
     "@cotal-ai/auth": "workspace:*",

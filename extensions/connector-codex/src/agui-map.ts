@@ -109,6 +109,13 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
   let last = 0;
 
   const map = (record: CodexRecord): { runId: string; events: AguiEvent[] } | null => {
+    // A LINE THAT IS NOT AN OBJECT IS A DROP, NOT A THROW, and the difference is the whole plane.
+    // `JsonlFileSource` hands over `JSON.parse(line)` unchecked, so a line reading `null` arrives
+    // here as `null` and every field read below would throw. A throw from a mapper does not lose
+    // one record: it kills the emitter, the holder is terminal on error, and the seat publishes
+    // nothing for the rest of its life with one log line inside its own process as the only trace.
+    // `typeof null === "object"`, so null is named rather than implied.
+    if (record === null || typeof record !== "object") return null;
     const envelope = asString(record.type);
     const payload = asRecord(record.payload);
     if (envelope === undefined || payload === undefined) return null;

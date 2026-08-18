@@ -11,8 +11,8 @@
     {
       "name": "P2 the search roots at the operator's home instead of the one it was handed, which is the campaign's own defect",
       "file": "extensions/connector-codex/src/agui-rollout.ts",
-      "find": "  const stack = [join(codexHome, \"sessions\")];",
-      "replace": "  const stack = [join(codexHome, \"sessions\"), join(codexHome, \"..\", \"..\", \"..\", \"operator-codex\", \"sessions\")];",
+      "find": "  const stack = [sessions];",
+      "replace": "  const stack = [sessions, join(codexHome, \"..\", \"..\", \"..\", \"operator-codex\", \"sessions\")];",
       "expectRed": "and never reaches into another home holding the same thread id"
     },
     {
@@ -27,7 +27,28 @@
       "file": "extensions/connector-codex/src/agui-rollout.ts",
       "find": "  const attempts = opts?.attempts ?? 40;",
       "replace": "  const attempts = 1;",
-      "expectRed": "and the budget is the one it was given"
+      "expectRed": "and the budget is the one it was given, minus the wait it does not take"
+    },
+    {
+      "name": "P5 the walk follows a symlink again, so a link planted under sessions decides which bytes this emitter publishes",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "      if (entry.isSymbolicLink()) continue;",
+      "replace": "      if (false) continue;",
+      "expectRed": "a symlinked rollout file with a matching name is refused"
+    },
+    {
+      "name": "P6 the link test moves inside the loop only, so the one directory nobody discovers is the one the walk starts from",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "    if (lstatSync(sessions).isSymbolicLink()) return undefined;",
+      "replace": "    if (false) return undefined;",
+      "expectRed": "a symlinked sessions directory is not walked"
+    },
+    {
+      "name": "P7 the waiter sleeps after its last look instead of between looks, so a single-look retry costs the caller a macrotask",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "    if (i + 1 < attempts) await sleep(intervalMs);",
+      "replace": "    await sleep(intervalMs);",
+      "expectRed": "and the budget is the one it was given, minus the wait it does not take"
     }
   ]
 }

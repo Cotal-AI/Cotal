@@ -82,6 +82,10 @@ const MAX_RESTARTS = 3;
 const STATUS_FLUSH_MS = 500;
 /** How long a cooperative shutdown waits for the clean mesh leave before exiting regardless. */
 const SHUTDOWN_GRACE_MS = 5_000;
+/** Looks the launch spends waiting for a thread's rollout file to appear, at 250ms each. Bounded
+ *  because a caller that waits forever cannot report that it is stuck; giving up is not final,
+ *  because every later turn boundary looks again (see `bindEvents`). */
+const ROLLOUT_ATTEMPTS = 40;
 
 /** Once the Codex TUI owns the terminal, NOTHING else may write to it — a stray log line lands
  *  in the middle of its rendering. From that point the host's own diagnostics go to a file inside
@@ -307,13 +311,15 @@ export async function runCodexHost(): Promise<void> {
    *  adopt, because its source is the rollout file, whose path is not known until the thread
    *  exists, and because `start()` reaches the broker, work that must not run for a thread that
    *  never publishes. */
+  const eventsArmed = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "");
   let events: AguiEmitterHolder<CodexRecord> | undefined;
   let mapper: CodexMapper | undefined;
-  /** The adopted rollout path. The holder binds to ONE path and refuses a second, so every flush
-   *  names the file the emitter is already reading rather than re-deriving it. */
+  /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
+   *  names the file the emitter is already reading rather than re-deriving it, and a NEW thread
+   *  gets a new holder rather than a second adopt (see `bindEvents`). */
   let rollout: string | undefined;
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) {
-    events = new AguiEmitterHolder<CodexRecord>(
+  const newEventHolder = (): AguiEmitterHolder<CodexRecord> =>
+    new AguiEmitterHolder<CodexRecord>(
       async (rolloutPath: string) => {
         // Throws rather than defaulting to the working directory: a write-ahead log written
         // somewhere no later start looks is a silent loss.
@@ -344,7 +350,6 @@ export async function runCodexHost(): Promise<void> {
       // would attribute the next records to a run the published stream has already finished.
       (runId: string) => mapper?.forgetOpenRun(runId),
     );
-  }
 
   // Presence is best-effort and must never throw into the turn loop — but it must also never
   // LIE. The mesh connect runs in the background, so an auto-prompt (`--prompt`) can open a real
@@ -557,11 +562,90 @@ export async function runCodexHost(): Promise<void> {
 
   // ---- events --------------------------------------------------------------
 
+  /** The thread the plane should be publishing. Set at every `comeOnline`, so a restart's new
+   *  thread is what a retry binds to rather than the dead one. */
+  let eventsThread: string | undefined;
+  /** One bind at a time. `bindEvents` awaits a file that may not exist yet, and every turn
+   *  boundary can call it, so without this a slow resolve would be re-entered per boundary. */
+  let binding = false;
+  /** A boundary that arrived while a bind was in flight. It is REMEMBERED rather than dropped: the
+   *  boundary is the signal that the thread just did something, and the file it was waiting for may
+   *  have appeared during exactly that window. Without this the retry has to win a race with the
+   *  flag, and a turn whose start and end land in one burst would lose it. */
+  let missedBind = false;
+
+  /** Bind the plane to a thread's rollout, DRAINING and REPLACING any previous binding.
+   *
+   *  A holder binds one path and dies on a second, so a restarted app-server, which always brings
+   *  up a NEW thread and therefore a new rollout, cannot be handed to the old holder: that killed
+   *  the plane for the rest of the process, and a recovery mechanism that permanently disables what
+   *  it recovers is worse than none, because the first crash is survivable and looks survived.
+   *
+   *  DRAIN THEN SWAP, the same order the OpenCode connector uses when a `/new` session replaces the
+   *  one it was publishing: flush what the old thread settled, close the run it left open, wait for
+   *  both to land, and only then start a new holder with its own write-ahead log keyed to the new
+   *  thread. Closing first would terminate a run the flushed records still belong to.
+   *
+   *  `attempts` is the resolve budget. The launch spends the full one because `thread/start` writes
+   *  nothing to disk and the primer inject is what materializes the file; a turn boundary spends
+   *  one look, because it is a retry rather than a wait. */
+  async function bindEvents(threadId: string, attempts: number): Promise<void> {
+    if (!eventsArmed) return;
+    if (binding) {
+      missedBind = true;
+      return;
+    }
+    binding = true;
+    try {
+      const path = await waitForRollout(codexHome, threadId, { attempts, intervalMs: attempts > 1 ? 250 : 0 });
+      if (eventsThread !== threadId) return; // a newer thread arrived while this one waited
+      if (path === undefined) {
+        // NOT terminal, and that is the fix for a one-shot bind: an armed seat whose file was slow
+        // to appear would otherwise publish nothing for its whole life, with this line as the only
+        // trace. The next turn boundary looks again.
+        log(`AG-UI: no rollout file yet for thread ${threadId} — will look again at the next turn`);
+        return;
+      }
+      if (rollout === path && events !== undefined) return; // already publishing this thread
+      if (events !== undefined) {
+        if (rollout !== undefined) events.flush(rollout);
+        events.closeRun(Date.now());
+        await events.settled();
+      }
+      events = newEventHolder();
+      rollout = path;
+      events.adopt(path);
+      // `adopt` starts the emitter, it does not read. Without this the first records wait for a
+      // turn boundary that a seat sitting idle never reaches.
+      events.flush(path);
+      // SAID OUT LOUD, because it is a limit and not an implementation detail: a fresh adopt starts
+      // at the file's last COMPLETE record boundary, never at byte zero, so whatever the thread had
+      // already written before this moment is not republished. On the ordinary path that is nothing
+      // (the file is created by the primer inject and bound immediately after). On a late bind it
+      // is the turns that ran while the file did not exist, and a reader comparing the panel to the
+      // terminal deserves to know why they differ rather than to guess.
+      log(`AG-UI: publishing thread ${threadId} from ${path} — the stream starts here, anything already written is not republished`);
+    } finally {
+      binding = false;
+      const retry = missedBind;
+      missedBind = false;
+      // Two things were refused while this bind held the flag, and both are kicked from here
+      // because nothing else will: a NEWER thread (a restart landed mid-bind), and a boundary that
+      // arrived while this one was still looking.
+      if (eventsThread !== undefined && eventsThread !== threadId) void bindEvents(eventsThread, attempts);
+      else if (retry && rollout === undefined && eventsThread !== undefined) void bindEvents(eventsThread, 1);
+    }
+  }
+
   /** Ask the emitter to read what codex has appended. The rollout is written by the child, so
    *  nothing tells this process a record landed; the driver's own boundaries are the closest
    *  signal there is, and a flush is cheap and idempotent (the cursor decides what is new). */
   const flushEvents = (): void => {
-    if (rollout !== undefined) events?.flush(rollout);
+    if (rollout !== undefined) {
+      events?.flush(rollout);
+      return;
+    }
+    if (eventsArmed && eventsThread !== undefined) void bindEvents(eventsThread, 1);
   };
 
   driver.on("turnStarted", () => {
@@ -619,18 +703,15 @@ export async function runCodexHost(): Promise<void> {
    *  never joined. */
   async function comeOnline(threadId: string): Promise<void> {
     agent.setContextId(threadId);
-    // Adopt the thread's rollout as the event plane's durable source. `thread/start` writes
+    // Bind the thread's rollout as the event plane's durable source. `thread/start` writes
     // nothing to disk, so the file only exists once the driver's primer inject has landed; the
-    // wait is bounded and its failure is reported rather than swallowed, because an emitter with
-    // no source publishes nothing and would otherwise do so silently.
-    if (events !== undefined) {
-      void waitForRollout(codexHome, threadId).then((path) => {
-        if (path === undefined) log(`AG-UI: no rollout file for thread ${threadId} — events will not publish`);
-        else {
-          rollout = path;
-          events?.adopt(path);
-        }
-      });
+    // wait is bounded, and giving up is not final, because an emitter with no source publishes
+    // nothing and would otherwise do so silently for the rest of the process. A RESTART ARRIVES
+    // HERE TOO, with a new thread, and `bindEvents` drains the old binding rather than adopting a
+    // second path into a holder that would die on it.
+    if (eventsArmed) {
+      eventsThread = threadId;
+      void bindEvents(threadId, ROLLOUT_ATTEMPTS);
     }
     if (agentStarted) return;
     agentStarted = true;
@@ -891,6 +972,24 @@ export async function runCodexHost(): Promise<void> {
       await driver.stop();
     } catch {
       /* ignore */
+    }
+    // THE PLANE IS DRAINED ON THE WAY OUT, and the order is the whole content of it. `interrupt()`
+    // returns when the RPC is acknowledged, NOT when codex has written `turn_aborted` to the
+    // rollout, so the flush may still not see the record that ends the turn; `closeRun` is the
+    // backstop for exactly that run. Without both, a mid-turn exit publishes `RUN_STARTED` and
+    // nothing else, and an observer holds a run that never ends, because the next process is a new
+    // thread with a new write-ahead log and no one ever reads those bytes again.
+    //
+    // This connector has no per-turn `closeRun`, and that is not an omission: on Claude and
+    // OpenCode the record stream never says the turn ended so the harness must close the run,
+    // while a Codex `task_complete` IS the terminal and the mapper closes from it. Shutdown is the
+    // one boundary the records cannot describe.
+    try {
+      flushEvents();
+      events?.closeRun(Date.now());
+      await events?.settled();
+    } catch {
+      /* leaving anyway — the forced-exit timer above still owns the deadline */
     }
     try {
       await mcp.close(); // the tools existed only for the codex we just stopped

@@ -226,6 +226,10 @@ its end, and its result. Not prose about the work, the work itself, in a vocabul
 read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
 with the plugin installed publishes nothing.
 
+Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
+make the stream safe to widen: anything a tool reads or prints, including a secret in a command line
+or in the contents of a file, reaches every reader of the channel.
+
 The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
 half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh
 it is a key the manager allocated, never the display name, so two live agents sharing a display name

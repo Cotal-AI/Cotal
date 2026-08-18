@@ -341,3 +341,6 @@ smoke:opencode-events-reset
 smoke:agui-codex-map
 smoke:codex-events-arm
 smoke:codex-rollout-path
+# The same plane through the seam a spawn actually takes: a real broker, the real host process, a
+# real rollout on disk, and a subscriber reading the frames off the channel.
+smoke:codex-events-lifecycle

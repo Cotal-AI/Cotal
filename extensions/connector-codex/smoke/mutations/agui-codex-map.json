@@ -56,6 +56,20 @@
       "find": "      const messageId = `res:${toolCallId}`;",
       "replace": "      const messageId = `res:${ts}`;",
       "expectRed": "shape:TOOL_CALL_RESULT carries the messageId section 3.1 owes, derived from the call id"
+    },
+    {
+      "name": "M9 the mapper reads a record's fields without checking it is one, so a null JSONL line throws and kills the plane",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "    if (record === null || typeof record !== \"object\") return null;",
+      "replace": "    if (false) return null;",
+      "expectRed": "degenerate:a null JSONL line is DROPPED, not thrown on"
+    },
+    {
+      "name": "M10 the stated gap is filled by analogy, publishing the built-in family under a correlation nothing joins",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "    if (envelope === \"response_item\" && (inner === \"function_call\" || inner === \"custom_tool_call\")) {",
+      "replace": "    if (envelope === \"response_item\" && (inner === \"function_call\" || inner === \"custom_tool_call\" || inner === \"web_search_call\")) {",
+      "expectRed": "gap:a web_search_call is dropped, deliberately"
     }
   ]
 }

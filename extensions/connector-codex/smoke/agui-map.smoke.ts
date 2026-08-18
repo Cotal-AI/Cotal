@@ -249,6 +249,57 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   c("shape:and it ends it as an interrupt, not a success", (aborted.events.find((e) => (e as { type: string }).type === "RUN_FINISHED") as { outcome?: { type: string } }).outcome?.type === "interrupt");
 }
 
+// A LINE THAT IS NOT AN OBJECT IS A DROP, NOT A THROW. `JsonlFileSource` hands over
+// `JSON.parse(line)` unchecked, so a line reading `null` arrives at the mapper as `null`. The
+// asserted fact is the DROP rather than the absence of a throw: a throw kills the emitter, the
+// holder is terminal on error, and the seat then publishes nothing for the rest of its life with
+// one log line inside its own process as the only trace.
+{
+  const ts = "2026-08-18T15:00:00.000Z";
+  const start = { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } };
+  const done = { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } };
+  const degenerate = [null, undefined, 5, "x", []] as unknown as CodexRecord[];
+  const R = replay([start, ...degenerate, done]);
+  const k = kinds(R.events);
+  c("degenerate:a null JSONL line is DROPPED, not thrown on", R.perRecord[1] === null, { got: R.perRecord[1] });
+  c(
+    "degenerate:and so is every other non-object line",
+    R.perRecord.slice(1, 1 + degenerate.length).every((x) => x === null),
+    { perRecord: R.perRecord.slice(1, 1 + degenerate.length) },
+  );
+  // The drop is COUNTED, so it stays visible to a reader of the census rather than vanishing into
+  // "nothing happened". A silent drop and a correct map are the same shape from outside.
+  const dropped = R.perRecord.filter((x) => x === null).length;
+  c("degenerate:the census counts them as dropped", dropped === degenerate.length, { dropped, expected: degenerate.length });
+  c("degenerate:and the run around them still opens and closes exactly once", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R.bracketError === null, { k, err: R.bracketError });
+}
+
+// THE STATED GAP, PINNED. Codex's model-side built-in tools (web search, tool search, image
+// generation) are NOT published, and that is a decision rather than an oversight: their records are
+// an END with no START, and there is no key that joins the two halves. `response_item/web_search_call`
+// carries `id`, `status` and `action` and NO `call_id`; `event_msg/web_search_end` carries `call_id`.
+// A bracket built across that divide would be a correlation invented by analogy with `function_call`.
+// This cell exists so the gap is a stated limit rather than a silent drop, and so that anyone who
+// later publishes the family has to come here and change the sentence the docs make.
+{
+  const ts = "2026-08-18T15:00:00.000Z";
+  const start = { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } };
+  const done = { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } };
+  const R = replay([
+    start,
+    { timestamp: ts, type: "response_item", payload: { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "q" } } },
+    { timestamp: ts, type: "event_msg", payload: { type: "web_search_end", call_id: "call-ws", query: "q", action: { type: "search" } } },
+    done,
+  ]);
+  const k = kinds(R.events);
+  c("gap:a web_search_call is dropped, deliberately", R.perRecord[1] === null, { got: R.perRecord[1] });
+  c("gap:and so is its end record, which carries the only call id", R.perRecord[2] === null, { got: R.perRecord[2] });
+  c("gap:no tool event is published for the built-in family", k.TOOL_CALL_START === undefined && k.TOOL_CALL_RESULT === undefined, k);
+  // The run must survive the family it cannot describe. A gap that also broke the brackets would be
+  // a second defect wearing the first one's clothes.
+  c("gap:and the run still opens and closes exactly once around it", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R.bracketError === null, { k, err: R.bracketError });
+}
+
 // The census is printed, not just asserted: a reader who sees "28 passed" learns nothing about
 // whether the fixture had anything in it, and a cell count is not a coverage claim.
 {
