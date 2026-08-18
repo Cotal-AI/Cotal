@@ -150,9 +150,14 @@ export const BASELINE_SELF_LIFECYCLE_COMMANDS = Object.freeze(["stop"] as const)
  *  so they ride owner mode. Owner-mode `stop` is DELIBERATELY ABSENT: on the v0.3 surface a named
  *  stop and a despawn both free-slot + deprovision, so an owner-mode `stop` would be a wire synonym
  *  of `despawn` (distsys) — one owner-mode terminal command keeps the vocabulary single. Self-`stop`
- *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt. */
+ *  stays in the BASELINE (the v0.3 self-service tier's only op); it is the lighter self-halt.
+ *  `input` (type into the seat) joins the owner-mode set for the same reason `attach` is in it:
+ *  it acts on an EXISTING agent. It is NOT a widening of what this capability can do, and the
+ *  reason is mechanical, not a judgement: a holder of owner-mode `attach` already opens a session
+ *  whose `write` feeds that agent's terminal, so the keystroke authority is one this set has
+ *  always granted. `input` only removes the session from the path. */
 export const SPAWN_CREATE_COMMANDS = Object.freeze(["spawn"] as const);
-export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach"] as const);
+export const SPAWN_OWNER_LIFECYCLE_COMMANDS = Object.freeze(["despawn", "attach", "input"] as const);
 /** The spawn capability's UNTARGETED additions (the 1c grant-migration table): the connector's
  *  persona write (`define-persona`, caller-scoped by the pinned triple) and per-agent status read
  *  (`inspect` - the responder narrows the view to the caller's owner domain, like `ps`). These
@@ -283,8 +288,8 @@ export function spawnCallerCapabilities(callerOwner: string): EpCapability[] {
  *  `privileged` (the ps/start instrument): the manager reads + untargeted `spawn` +
  *  `define-persona` - structurally barred from cross-agent reach, exactly like its ctl row.
  *
- *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode `despawn`/`attach`
- *  (tOwner `"*"`) and the `manager.admin` command family. The 1c admin-reach decision: operator
+ *  `admin` (the stop/attach/deploy instrument): everything above plus ANY-mode
+ *  `despawn`/`attach`/`input` (tOwner `"*"`) and the `manager.admin` command family. The 1c admin-reach decision: operator
  *  cross-agent terminal/interactive ops ride authz-mode `any` on the SAME commands (no wire
  *  synonym) - the any-mode subject row is minted ONLY into operator-authorized credentials: the
  *  `control-caller-admin`/`deployer`/`teardown` instruments AND an agent credential explicitly
