@@ -161,6 +161,7 @@ smoke:flag-inventory
 smoke:start-overrides
 smoke:launch-parity
 smoke:seat-env-scope
+smoke:suite-ambient-env
 smoke:spawn-args
 smoke:own-agent-control
 smoke:views

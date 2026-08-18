@@ -180,4 +180,47 @@ if (process.platform !== "win32") {
   console.log("• A4 skipped: POSIX mode bits only (win32 privacy is the ACL hardenPrivate sets at write)");
 }
 
+// A6 — a material file that says nothing is refused on READ, not just on write.
+//
+// The write-side refusal was the only one for a while, and it is in the wrong place to stand alone:
+// the reader is handed a path by an environment variable, and a file that is empty, truncated or
+// shaped wrong reaches it without ever passing through the writer. `{}` used to parse cleanly into a
+// material with every field undefined, after which configFromEnv filled in its defaults - so a launch
+// that REFERENCED material and got nothing usable resolved to the default broker with no credential.
+// Open mode, silently, on a launch that asked for the opposite.
+{
+  const dir = mkdtempSync(join(tmpdir(), "cotal-material-shape-"));
+  const write = (name: string, body: string): string => {
+    const p = join(dir, name);
+    writeFileSync(p, body, { mode: 0o600 });
+    chmodSync(p, 0o600);
+    return p;
+  };
+  assert.throws(
+    () => readLaunchMaterial(write("empty.json", "{}")),
+    /carries nothing this reader recognises/,
+    "A6: an empty material object was read as a valid launch instead of refused",
+  );
+  assert.throws(
+    () => readLaunchMaterial(write("unknown.json", JSON.stringify({ somethingElse: 1 }))),
+    /carries nothing this reader recognises/,
+    "A6: a material with no recognised field was accepted",
+  );
+  assert.throws(
+    () => readLaunchMaterial(write("badservers.json", JSON.stringify({ servers: "" }))),
+    /servers that is not a non-empty string/,
+    "A6: an empty broker URL was accepted",
+  );
+  assert.throws(
+    () => readLaunchMaterial(write("baduser.json", JSON.stringify({ userAuth: { owner: "o", actor: "a", sentinelCredsPath: "s", bearerCmd: [] } }))),
+    /bearerCmd that is not a non-empty array/,
+    "A6: a user-mode identity with no bearer command was accepted",
+  );
+  // And the working path still reads, or the four refusals above would be satisfied by a reader that
+  // refuses everything.
+  const ok = readLaunchMaterial(write("ok.json", JSON.stringify({ servers: SERVERS, creds: credsPath })));
+  assert.equal(ok.servers, SERVERS, "A6: a valid material file no longer reads");
+}
+console.log("✓ A6: a material file that says nothing is refused on read, and a valid one still reads");
+
 console.log("\nseat-env-scope: PASS");

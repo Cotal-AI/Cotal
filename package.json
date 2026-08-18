@@ -352,6 +352,7 @@
     "smoke:start-overrides": "tsx implementations/manager/smoke/start-overrides.smoke.ts",
     "smoke:launch-parity": "tsx bin/smoke/launch-parity.smoke.ts",
     "smoke:seat-env-scope": "tsx bin/smoke/seat-env-scope.smoke.ts",
+    "smoke:suite-ambient-env": "tsx bin/smoke/suite-ambient-env.smoke.ts",
     "smoke:broker-disclosure": "tsx bin/smoke/broker-disclosure.smoke.ts",
     "smoke:spawn-detach:live": "tsx bin/smoke/spawn-detach-live.smoke.ts",
     "smoke:readiness:live": "tsx bin/smoke/readiness-window-live.smoke.ts",

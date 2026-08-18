@@ -147,10 +147,12 @@ export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: st
 /**
  * Drop the reference to the launch material once this process has read it.
  *
- * Only correct where the session runs IN the seat process and nothing starts later that has to read
- * the material again: pi, the OpenCode plugin, the codex host. There the seat's own tool calls are
- * the descendants that would otherwise inherit the reference, and after this they inherit nothing at
- * all. It is NOT correct for the Claude connector, whose readers are short-lived child processes
+ * Only correct where the caller is the process that RUNS THE SESSION'S TOOL CALLS and nothing starts
+ * later that has to read the material again. That is pi and the codex host, whose sessions run in the
+ * seat process, and the OpenCode plugin, which runs inside the `opencode serve` process the seat shim
+ * starts (the server is also what executes the tool calls, so the shim keeping the reference costs
+ * nothing). There the descendants that would otherwise inherit the reference are the session's own
+ * tool calls, and after this they inherit nothing at all. It is NOT correct for the Claude connector, whose readers are short-lived child processes
  * (the MCP server, each lifecycle hook) that start after the session is already running and would
  * find the reference gone.
  */

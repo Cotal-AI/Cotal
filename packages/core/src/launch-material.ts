@@ -112,5 +112,59 @@ export function readLaunchMaterial(path: string): LaunchMaterial {
   }
   if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed))
     throw new Error(`launch material: ${path} must contain a JSON object`);
-  return parsed as LaunchMaterial;
+  return validate(parsed as Record<string, unknown>, path);
+}
+
+/**
+ * Grade what came off disk, because the WRITE-side refusal is not a read-side guarantee.
+ *
+ * {@link writeLaunchMaterial} refuses to write an empty material, and for a while that was the only
+ * check. It is the wrong place for it to be alone: the reader is handed a path by an environment
+ * variable, and a file that is empty, truncated, half-written or shaped wrong reaches it without
+ * ever passing through the writer. `{}` parsed cleanly, produced a material with every field
+ * undefined, and `configFromEnv` then filled in its defaults — so a launch that REFERENCED material
+ * and got nothing usable resolved to the default broker with no credential. Open mode, silently,
+ * on a launch that asked for the opposite. That is the exact silent degradation this carrier is
+ * supposed to make impossible, arriving through the one door the write-side rule does not cover.
+ *
+ * So every field is graded here and a bad one throws. Unknown keys are ignored on purpose (a newer
+ * launcher may carry a field this reader does not know), but a material with nothing this reader
+ * RECOGNISES is refused: there is no launch it could correctly describe.
+ */
+function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
+  const material: LaunchMaterial = {};
+  const str = (key: "servers" | "creds" | "token" | "controlToken"): void => {
+    const v = raw[key];
+    if (v === undefined) return;
+    if (typeof v !== "string" || !v.trim())
+      throw new Error(`launch material: ${path} has a ${key} that is not a non-empty string`);
+    material[key] = v;
+  };
+  str("servers");
+  str("creds");
+  str("token");
+  str("controlToken");
+  if (raw.userAuth !== undefined) {
+    const u = raw.userAuth;
+    if (typeof u !== "object" || u === null || Array.isArray(u))
+      throw new Error(`launch material: ${path} has a userAuth that is not an object`);
+    const { owner, actor, sentinelCredsPath, bearerCmd } = u as Record<string, unknown>;
+    const named = { owner, actor, sentinelCredsPath };
+    for (const [k, v] of Object.entries(named))
+      if (typeof v !== "string" || !v.trim())
+        throw new Error(`launch material: ${path} has a userAuth.${k} that is not a non-empty string`);
+    if (!Array.isArray(bearerCmd) || bearerCmd.length === 0 || !bearerCmd.every((a) => typeof a === "string" && a))
+      throw new Error(`launch material: ${path} has a userAuth.bearerCmd that is not a non-empty array of strings`);
+    material.userAuth = {
+      owner: owner as string,
+      actor: actor as string,
+      sentinelCredsPath: sentinelCredsPath as string,
+      bearerCmd: bearerCmd as string[],
+    };
+  }
+  if (Object.keys(material).length === 0)
+    throw new Error(
+      `launch material: ${path} carries nothing this reader recognises. A launch that references material and supplies none is a broken launcher, not an open-mode launch, so it is refused rather than defaulted.`,
+    );
+  return material;
 }
