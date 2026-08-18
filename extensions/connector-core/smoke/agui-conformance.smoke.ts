@@ -676,17 +676,18 @@ refuses("an empty threadId is refused", () => aguiFrame({ threadId: "", runId: "
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 // 7. TWO PRINCIPALS THROUGH ONE CHANNEL STAY SEPARATE — AT THE ENVELOPE LAYER
 //
-//    ⚠️ Read the header warning before reading these cells. This is NOT channel isolation, and at
-//    this commit there is no channel derivation in the tree to be isolated: `transcriptChannel` is
-//    still the only channel convention here. What IS asserted below is the envelope half, and it is
-//    the half that survives whatever the channel is later keyed on: two writers sharing one subject
-//    remain attributable, because every frame carries its own writer identity.
+//    ⚠️ Read the header warning before reading these cells. This is NOT channel isolation. Channel
+//    derivation now exists in the tree — `eventChannel` in core keys a channel on the PRINCIPAL, so
+//    two principals do not in fact share one subject — but nothing below tests that, and these cells
+//    would pass unchanged if it were deleted. What IS asserted below is the envelope half, and it is
+//    the half that holds whatever the channel is keyed on: two writers sharing one subject remain
+//    attributable, because every frame carries its own writer identity. The channel half is graded
+//    in `agui-emitter.smoke.ts` and at the manager's grant seam.
 //
 //    THIS COMMENT HAS BEEN WRONG IN BOTH DIRECTIONS ALREADY, WHICH IS THE POINT. It once claimed
 //    isolation did not exist when it did, and then claimed it did when it does not, and no cell here
 //    could catch either, because a comment asserting something outside its own function is a test
-//    nobody wrote. Grade it against the tree before trusting it, and when the channel lands, this is
-//    one of the two places to correct, not one.
+//    nobody wrote. Grade it against the tree before trusting it.
 // ─────────────────────────────────────────────────────────────────────────────────────────────
 const alpha = aguiFrame({ threadId: "sess-alpha", runId: "turn-1", epoch: "epoch-alpha", seq: 0, events: turn(1) });
 const beta  = aguiFrame({ threadId: "sess-beta",  runId: "turn-1", epoch: "epoch-beta",  seq: 0, events: turn(1) });

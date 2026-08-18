@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/lang",
   "description": "cotal-lang: the restricted-JS workflow language. Parser and validator, the effect interface, the step journal, the interpreter, and the simulation handler. Depends on nothing else in the repo.",
-  "version": "0.20.1",
+  "version": "0.23.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

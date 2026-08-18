@@ -133,7 +133,7 @@ const waitPast = async (deadline: number) => {
 };
 const handler = new MeshHandler(
   kv, js, jsm,
-  { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER },
+  { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
   new EpfSettleWatcher(js, jsm, SPACE, 3_000),
   () => CLOCK,
 );
@@ -194,7 +194,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   const TOKEN2 = "cnRlc3RfYXR0YWNoX3Rva2VuXzAwMDI";
   const live = new MeshHandler(
     kv, js, jsm,
-    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER },
+    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
     new EpfSettleWatcher(js, jsm, SPACE, 3_000),
     () => Date.now(),
   );
@@ -243,7 +243,7 @@ const TOKEN = "cnRlc3Rfc2xlZXBfdG9rZW5fMDAwMQ";
   const TOKEN3 = "cnRlc3Rfb3ZlcmR1ZV90b2tlbl8wMDAz";
   const live = new MeshHandler(
     kv, js, jsm,
-    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER },
+    { space: SPACE, endpoint: EP, runId: "r-sleep", instanceId: IID, epoch: EPOCH, holder: HOLDER, defaultCheckpointTimeout: "1h" },
     new EpfSettleWatcher(js, jsm, SPACE, 3_000),
     () => Date.now(),
   );

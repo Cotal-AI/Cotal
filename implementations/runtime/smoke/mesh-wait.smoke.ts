@@ -410,7 +410,7 @@ const tok = (n: string) => `w${n}`.padEnd(20, "0");
     return await Promise.race([p, wait(6_000).then(() => new Error("DID NOT REFUSE"))]);
   };
   const wild = await refuse({ event: "message", channel: "team.>" });
-  c("a wildcard channel is refused: an await names one channel", wild?.message.includes("wildcard"), wild?.message?.slice(0, 60));
+  c("a wildcard channel is refused: an await names one channel", wild?.message.includes("wildcard") === true, wild?.message?.slice(0, 60));
   const evil = await refuse({ event: "message", channel: CHANNEL, matches: "^(a+)+$" });
   c("and a `matches` pattern outside the bounded-regex subset is refused before it is ever run",
     evil?.message.includes("bounded regular expression") === true, evil?.message?.slice(0, 70));

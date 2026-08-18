@@ -1,0 +1,43 @@
+{
+  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "guard": "the user-mesh remedy states the omitted-scope default in full, `spawn,role:default`, rather than the narrower `spawn`",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
+  "completionMarker": "USER-SPAWN",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/scope-default-full.json",
+  "why": [
+    "`runActor` fills an omitted `--scope` from `csv(values.scope, [\"spawn\", \"role:default\"])`, and",
+    "`csv` returns the default array verbatim when the flag is undefined. So omitting the flag hands",
+    "out TWO capabilities, and the second one is a DELEGATION capability.",
+    "",
+    "The refusal's rationale sentence said `spawn` scope. That is a true-sounding claim that is",
+    "narrower than the thing it warns about, in the one sentence whose entire job is to make an",
+    "operator spell every field out. An operator who FOLLOWS the remedy passes `--scope ''` and is",
+    "safe; an operator who AUDITS a past omitted-scope grant against that sentence concludes it only",
+    "got `spawn` and closes a question that is still open. The falsehood is action-inverting in the",
+    "audit direction, not the paste direction.",
+    "",
+    "WHY NO EXISTING CELL SAW IT. R1 and R2 grade the printed COMMAND and the ROW it writes. Nothing",
+    "read the RATIONALE, so six mutants across two configs stayed green with the wrong value shipped",
+    "in `dist/manager.js`. A sentence that no cell reads is not covered by the mutants around it.",
+    "",
+    "The cell asserts the full value is present AND that the narrower claim is absent, because a",
+    "presence-only check would pass on text that still carried the short form elsewhere in the same",
+    "sentence.",
+    "",
+    "SPECIFIER BOUNDARY. The suite loads the manager from `implementations/manager/dist/index.js`, so",
+    "the command builds the manager before running and `afterRestore` rebuilds it, or a restored",
+    "source would sit behind a mutated dist and every later run would grade the wrong tree."
+  ],
+  "mutations": [
+    {
+      "name": "S6 the rationale understates the omitted-scope default as `spawn`, dropping the delegation capability",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "spawn,role:default\\` ` +",
+      "replace": "spawn\\` ` +",
+      "expectRed": "the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
+      "cell": "the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
+      "note": "This is the state this branch shipped until a cold lens read the sentence against `commands.ts`. It is the ONLY mutant here, deliberately: the point is that this cell is the single thing standing between the rationale and a false capability claim, so a grid would obscure rather than sharpen it. MARK COUNT: the named cell alone. R1's and R2's cells read the printed command, which this mutant does not touch, so they stay green and the delta is exactly one.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

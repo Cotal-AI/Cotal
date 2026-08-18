@@ -54,6 +54,7 @@ import {
 import { AguiEmitterHolder } from "../src/agui-holder.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
+import { memorySubjectFrontier } from "@cotal-ai/smoke-kit";
 
 let ok = 0,
   fail = 0;
@@ -177,7 +178,7 @@ try {
   await block("AN OPEN RUN IS CLOSED, AND THE CLOSING FRAME CONSUMES NO RECORD", async () => {
     const { src, walPath, wal, source } = await fresh("closes");
     const ep = new FakeEndpoint();
-    const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
     // ADOPT FIRST. A fresh read starts at the current end of file, so a record appended before the
     // first pump is skipped BY DESIGN and a fixture that skips it measures nothing.
     const adopt = await em.pump();
@@ -254,7 +255,7 @@ try {
   await block("A CLOSE THAT WOULD BE A PROTOCOL VIOLATION IS REFUSED, NOT PUBLISHED", async () => {
     const { src, wal, source } = await fresh("dangling");
     const ep = new FakeEndpoint();
-    const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
     await em.pump(); // adopt
     append(src, { open: "run-a", dangling: true });
     ep.answers = [{ seq: 21, duplicate: false }];
@@ -276,7 +277,7 @@ try {
   await block("A RUN OPENED BY A PREVIOUS PROCESS CLOSES AFTER A RESTART", async () => {
     const { src, walPath, wal, source } = await fresh("restart");
     const ep = new FakeEndpoint();
-    const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
     await em.pump(); // adopt
     append(src, { open: "run-a" });
     ep.answers = [{ seq: 31, duplicate: false }];
@@ -285,7 +286,7 @@ try {
     // A NEW process: a fresh WAL object over the same file and a fresh emitter.
     const wal2 = await reopen(walPath);
     const ep2 = new FakeEndpoint();
-    const em2 = await AguiEmitter.start({ endpoint: ep2, wal: wal2, source: new JsonlFileSource<Rec>(src), map: mapper });
+    const em2 = await AguiEmitter.start({ endpoint: ep2, wal: wal2, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: mapper });
     ep2.answers = [{ seq: 32, duplicate: false }];
     const closed = await attempt(() => em2.closeRun({ timestamp: 99 }));
     c("close:a-run-opened-by-a-PREVIOUS-process-closes-after-a-restart", closed.value === "run-a", {
@@ -298,7 +299,7 @@ try {
   await block("A HALTED EMITTER REFUSES TO CLOSE", async () => {
     const { src, wal, source } = await fresh("halted");
     const ep = new FakeEndpoint();
-    const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
     await em.pump(); // adopt
     append(src, { open: "run-a" });
     ep.answers = [{ seq: 41, duplicate: true }]; // a body we never wrote holds our id
@@ -328,7 +329,7 @@ try {
   await block("AN UNCERTAIN FRAME REFUSES THE CLOSE", async () => {
     const { src, wal, source } = await fresh("pending");
     const ep = new FakeEndpoint();
-    const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
     await em.pump(); // adopt
     append(src, { open: "run-a" });
     ep.answers = [new Error("connection reset")];
@@ -355,7 +356,7 @@ try {
     const errors: Error[] = [];
     const closedRuns: string[] = [];
     const holder = new AguiEmitterHolder<Rec>(
-      async () => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }),
+      async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
       (e) => errors.push(e),
       (runId) => closedRuns.push(runId),
     );
@@ -389,7 +390,7 @@ try {
     const holder = new AguiEmitterHolder<Rec>(
       async () => {
         started += 1;
-        return AguiEmitter.start({ endpoint: ep, wal, source, map: mapper });
+        return AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
       },
       () => {},
       () => {},

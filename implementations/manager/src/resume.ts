@@ -66,7 +66,6 @@ const agent = z.strictObject({
     allowSubscribe: stringList,
     allowPublish: stringList.optional(),
     capabilities: z.array(z.string().min(1).max(256)).max(64).optional(),
-    transcript: z.boolean(),
     // Absent means OFF, and that is the field's meaning rather than a fallback: an inventory
     // written before the event plane existed describes a session that was not publishing one. A
     // required field here would refuse every inventory the previous version wrote, so an upgrade

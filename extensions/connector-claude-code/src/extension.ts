@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, mcpServerEnvKeys, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, mcpServerEnvKeys, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -63,7 +63,6 @@ function assertServableModel(model: string): void {
 export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
-  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   // The event channel is core's own derivation, exposed through the contract so the grant the
   // manager mints and the subject this session publishes to come from ONE function. Re-deriving it
   // here would be a second place the subject is decided, and the two would drift the first time
@@ -99,10 +98,6 @@ export const claudeConnector: Connector = {
       COTAL_CONTROL_SOCKET: control.path,
       COTAL_CONTROL_TOKEN: control.token, // env only — never argv/logs/persisted (token hygiene)
     };
-    // A session can mirror its own transcript to `tr-<name>` so peers can read what the
-    // agent actually did — OFF by default (transcripts are verbose and may carry sensitive
-    // content); `--transcript` (opts.transcript === true) opts in. Personal sessions never mirror.
-    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1";
     // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter and is what makes a grant meaningful:
     // holding publish rights on a channel is not a request to publish to it. `COTAL_WORKSPACE_ROOT`
     // rides with it because the emitter's write-ahead log has to live somewhere a LATER start will

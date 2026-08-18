@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** Env the codex child genuinely needs beyond the OS allow-list: the API key (API-key auth) and
  *  the operator's CODEX_HOME override (the host resolves auth.json from it). Forwarded BY NAME,
@@ -117,7 +117,6 @@ async function listCodexModels(): Promise<ModelCatalog> {
 export const codexConnector: Connector = {
   kind: "connector",
   name: "codex",
-  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
@@ -155,7 +154,6 @@ export const codexConnector: Connector = {
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
     if (opts.creds) env.COTAL_CREDS = opts.creds;
     if (opts.servers) env.COTAL_SERVERS = opts.servers;
-    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the host's transcript mirror
     // The auto-submitted first turn. A prompt with no text in it cannot be submitted, so refuse the
     // launch rather than start a seat that quietly ignores what the operator passed.
     if (opts.prompt !== undefined) {

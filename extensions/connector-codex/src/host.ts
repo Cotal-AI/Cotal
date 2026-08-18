@@ -53,14 +53,12 @@ import {
   formatInjection,
   fmtFrom,
   startControlServer,
-  transcriptChannel,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   type InboxItem,
 } from "@cotal-ai/connector-core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
-import { createTranscriptMirror } from "./transcript.js";
 import { launchTui } from "./tui.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
@@ -333,12 +331,6 @@ export async function runCodexHost(): Promise<void> {
     }
   };
 
-  // Transcript mirror → `tr-<name>`, opt-in via COTAL_TRANSCRIPT (the connector sets it for
-  // `--transcript` spawns; the manager grants pub rights on the same channel).
-  const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? "")
-    ? createTranscriptMirror(agent, transcriptChannel(config.name))
-    : undefined;
-
   // ---- the turn loop -------------------------------------------------------
   let ready = false; // thread up — never drive before then
   let agentStarted = false; // the mesh endpoint has been connected (once per process, ever)
@@ -494,7 +486,6 @@ export async function runCodexHost(): Promise<void> {
       if (status === "failed") scheduleErrorRetry();
       else clearErrorRetry(true);
       void (async () => {
-        if (transcript) await transcript.flush().catch((e) => log(`transcript publish failed: ${(e as Error).message}`));
         if (gen !== boundaryGen) return; // a newer turn boundary owns presence + the next drive
         await safeStatus("idle");
         if (gen !== boundaryGen) return;
@@ -533,7 +524,6 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
-    transcript?.observe(item);
   });
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
    *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
@@ -664,11 +654,8 @@ export async function runCodexHost(): Promise<void> {
       // (the launch tail died before `agent.start()`), so this is also the completion path for it.
       await comeOnline(tid);
       if (superseded(gen)) return;
-      // A restarted thread is a NEW Codex context: it never saw the channel briefing, and the
-      // dead thread's partial transcript must not merge into its first flush.
+      // A restarted thread is a NEW Codex context: it never saw the channel briefing.
       briefed = false;
-      await transcript?.flush().catch(() => {});
-      if (superseded(gen)) return;
       ready = true;
       log(`app-server restarted — thread ${tid}`);
       // The old UI was retired synchronously above; bring one up on the new listener.

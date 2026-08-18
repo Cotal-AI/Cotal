@@ -1,0 +1,130 @@
+{
+  "suite": "extensions/connector-core/smoke/agui-multi-session.smoke.ts",
+  "guard": "many sessions of one principal share one subject, so the publish expectation comes from a record that outlives any single session, while a genuine foreign writer is still refused",
+  "command": "pnpm smoke:agui-multi-session",
+  "completionMarker": "agui-multi-session smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-multi-session.json",
+  "why": [
+    "The write-ahead log is keyed per session and the event channel is keyed per principal, so a new",
+    "session opened expecting an empty channel that its own predecessor had filled. Only the first",
+    "session of any agent ever published, and the halt named three causes with the real one absent.",
+    "",
+    "THE CONTROL CARRIES THE WEIGHT, NOT THE HAPPY PATH. Making a second session publish is easy and",
+    "one wrong way to do it is to stop expecting anything at all, which passes every regression cell",
+    "while deleting the guarantee. So a real second writer takes the subject and our next publish must",
+    "still halt. A mutation that removes the expectation would leave the regression cells green.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the emitter, the log and the",
+    "record by RELATIVE SOURCE PATH (../src/agui.js, ../src/event-wal.js, ../src/subject-frontier.js),",
+    "so the bytes mutated are the bytes graded. There is no dist in the path and no build in the",
+    "command. Its package-name imports are from @cotal-ai/core (a real broker client, unmutated here)",
+    "and @cotal-ai/smoke-kit (test-only), neither of which carries the behaviour under test.",
+    "",
+    "NOT PROVED HERE, named rather than implied. The record's own refusals (a decrease, a foreign",
+    "principal, a zero-byte file, an unreadable sibling log) are graded by smoke:subject-frontier and",
+    "its own config, not by this suite. And S5, recovering a tip into a record that READS zero rather",
+    "than only into an absent one, is proved there because that is where the distinction has a cell.",
+    "",
+    "THE MESSAGE IS BEHAVIOUR, NOT DECORATION, so S8 and S9 grade it. A halt that names a guard",
+    "without its boundary, or a remedy with no command behind it, costs an operator the hour the",
+    "message was written to save. Neither find string anchors on a comment: both are shipped text an",
+    "assertion reads.",
+    "",
+    "THE ENTRY POINT IS PROVED, NOT ASSUMED. The mid-ack block drives a real emitter over a real",
+    "broker: the first session publishes, its log is rewritten into the state a death between the",
+    "ack and the fold leaves, the record is removed, and the next session must still publish. A",
+    "recovered tip that is merely self-consistent halts here, because only the broker can say",
+    "whether the number is the one the subject actually holds."
+  ],
+  "mutations": [
+    {
+      "name": "S1 the expectation comes from this session's own log again, which is the defect verbatim",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    const E = this.wal.expectedTip;",
+      "replace": "    const E = this.wal.frontier.lastSubjectSeq;",
+      "expectRed": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "cell": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "note": "The released behaviour, restored in one line. It must not be able to hide: this is the mutation the whole file exists to catch."
+    },
+    {
+      "name": "S2 the shared record is never advanced, so it stays virgin forever",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await subject.advance(ackSeq);\n",
+      "replace": "",
+      "expectRed": "session-1:the-shared-record-holds-the-assigned-sequence",
+      "cell": "session-1:the-shared-record-holds-the-assigned-sequence",
+      "note": "The plausible omission: reading the record and forgetting to write it. It fails on the FIRST session rather than the second, which is why the cell named is that one."
+    },
+    {
+      "name": "S3 an absent record is virgin, without looking at the session logs beside it",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      const recovered = await FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal);",
+      "replace": "      const recovered = 0;",
+      "expectRed": "upgrade:a-log-from-before-the-shared-record-carries-its-tip-across",
+      "cell": "upgrade:a-log-from-before-the-shared-record-carries-its-tip-across",
+      "note": "This was the first version of the fix and it is why the cell exists: without the recovery the repair helps only installations whose first session ever comes after it, and every other cell stays green."
+    },
+    {
+      "name": "S4 abandonment clears the log and leaves the shared record standing",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await this.subject.reset();\n",
+      "replace": "",
+      "expectRed": "abandon:resets-the-shared-record-with-the-log",
+      "cell": "abandon:resets-the-shared-record-with-the-log",
+      "note": "Partial abandonment is not a state. A record left standing after a purge expects a tip the subject no longer has, which is the same permanent halt reached from the other side."
+    },
+    {
+      "name": "S6 the frontier is required only in the type, which does not reach an untypechecked caller",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (!opts.subjectFrontier || typeof opts.subjectFrontier.advance !== \"function\")",
+      "replace": "    if (false)",
+      "expectRed": "guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME",
+      "cell": "guard:start-REFUSES-without-a-subject-frontier-at-RUNTIME",
+      "note": "Smoke files in this repository are not typechecked, so the type alone is not a guard for the callers that matter most: the ones a compiler never sees."
+    },
+    {
+      "name": "S8 the halt claims the per-principal lock PREVENTS a concurrent emitter, instead of stating its limit",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "            `CONCURRENT emitter under this same principal. The per-principal lock refuses a second ` +\n",
+      "replace": "            `CONCURRENT emitter under this same principal (two sessions publishing at once, which the per-principal lock is meant to prevent). The per-principal lock refuses a second ` +\n",
+      "expectRed": "control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
+      "cell": "control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
+      "note": "The lock is real and taken on the shipped path (acquirePrincipalLock, via ensureEventWalDir at connector-claude-code/src/mcp.ts), so naming it is honest. Its file is per workspace root on one host, so it cannot prevent the case this halt fires on, and a guard named without its boundary sends an operator hunting a writer the guard supposedly made impossible. The clause was wrong twice: first it claimed the lock prevents the case, then it named another host and a reused pid as ways past it, when both REFUSE the start loudly. The get-past is a second workspace root, because that is where the lock file lives."
+    },
+    {
+      "name": "S9 the halt points at this session's own log instead of the principal directory",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "dirname(dirname(this.wal.path))",
+      "replace": "this.wal.path",
+      "expectRed": "control:the-halt-LOCATES-the-state-to-remove",
+      "cell": "control:the-halt-LOCATES-the-state-to-remove",
+      "note": "abandon() has no shipped caller anywhere in the tree, so the directory is the whole remedy. One dirname short names one session's log, and removing that alone leaves the shared record and the other sessions standing, which is the mixed state the next start refuses. RE-ANCHORED ON THE EXPRESSION, not on the sentence around it. The previous anchor carried the surrounding words of the message, and the commit that stated the remedy's precondition reworded them, so the anchor matched nothing and the mutant silently became a no-op. A find that matches zero times reports the same green as a guard that holds. The whole-tree anchor gate is what caught it, and the expression is the part of this line that a future edit to the message cannot move."
+    },
+    {
+      "name": "S15 the acked sequence is dropped, proved against the REAL broker rather than a hand-built log",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (pending && pending.state === \"acked\") {\n",
+      "replace": "      if (false && pending && pending.state === \"acked\") {\n",
+      "expectRed": "midack:a-log-that-died-between-the-ACK-and-the-FOLD-still-carries-its-sequence-across",
+      "cell": "midack:a-log-that-died-between-the-ACK-and-the-FOLD-still-carries-its-sequence-across",
+      "note": "The same break as S13, reached through a real emitter against a real nats-server instead of through a log written by the suite. S13 proves the scan reads the right field; this proves the number it produces is the one the SUBJECT holds, which a self-consistent but wrong tip would not be. Mutation-proof's own scope note says a killed mutation shows the suite depends on the code and not that an entry point reaches it, so the entry point is proved here rather than assumed."
+    },
+    {
+      "name": "S26 the halt drops the precondition for its own remedy, so an operator destroys the principal directory on a cause that leaves the tip where it is and gets the same halt back, with the sibling logs a tip could have been rebuilt from now gone",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "`subject record together, and it is VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY, which ` +\n            `of the causes above is true of the FILTERED PURGE alone. ",
+      "replace": "`subject record together. ",
+      "expectRed": "control:the-halt-states-the-PRECONDITION-for-its-own-remedy",
+      "note": "Narrowed to the two cell literals that sit adjacent, and no wider. The previous find spanned four further lines including a sentence that was later reworded, so it matched nothing and planted nothing while the gate was the only thing that noticed. This form matches at the revision before that rewording and at the revision after it, which is the property that matters: a find no wider than the cell it grades does not die to an edit the cell does not read."
+    },
+    {
+      "name": "S30 the subject record resolves under the THREAD dir, plumbed all the way through a REAL emitter against a REAL broker: the same break as L3, registered a second time where it reproduces the reported defect rather than where it is convenient to catch",
+      "file": "extensions/connector-core/src/agui-wal-path.ts",
+      "find": "    subjectPath: join(principalDir, \"subject.json\"),",
+      "replace": "    subjectPath: join(threadDir, \"subject.json\"),",
+      "expectRed": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "cell": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "note": "REGISTERED BECAUSE A REVIEWER READ THE LEDGER RATHER THAN THE PROSE. The description of this branch said the plant kills in both suites, and it did, but only one of the two kills was registered: the other was a hand observation, so the claim was true of the code and false of the kill ledger, which is the same defect shape this branch exists to fix. The layout mutant is now driven end to end here as well, where it fails by making the SECOND and THIRD sessions of one principal publish nothing, which is the released defect itself rather than a layout assertion about it. EXPECT A BLAST RADIUS: the `layout:` cells go red before session 2 does, and they go red for the same reason. The pair is deliberate in the same way S15 is: the first kill proves the layout line is graded, and only this one proves a real emitter over a real broker reaches it."
+    }
+  ]
+}

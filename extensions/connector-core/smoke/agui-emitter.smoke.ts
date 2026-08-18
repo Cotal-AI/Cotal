@@ -97,7 +97,7 @@
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Part } from "@cotal-ai/core";
+import { eventChannel, principalKey, type Part } from "@cotal-ai/core";
 import {
   aguiFrame,
   AguiEmitter,
@@ -116,6 +116,7 @@ import {
 } from "../src/agui.js";
 import { JsonlFileSource } from "../src/durable-source.js";
 import { EventWal } from "../src/event-wal.js";
+import { memorySubjectFrontier } from "@cotal-ai/smoke-kit";
 
 let ok = 0,
   fail = 0;
@@ -148,6 +149,10 @@ interface Call {
   id: string;
   expectedLastSubjectSeq: number;
   parts: Part[];
+  /** THE SUBJECT THE FRAME WENT TO. Recorded because the claim "nothing caller-supplied can select
+   *  the subject" is a claim about every publish, and a instrument that discards the channel can
+   *  testify to nothing about it. */
+  channel: string;
 }
 
 /**
@@ -158,8 +163,12 @@ interface Call {
  * constant is not a packer.
  */
 class FakeEndpoint {
-  readonly principal = PRINCIPAL;
-  readonly actorIsEphemeral = false;
+  readonly principal: { owner: string; actor: string };
+  readonly actorIsEphemeral: boolean;
+  constructor(o?: { principal?: { owner: string; actor: string }; actorIsEphemeral?: boolean }) {
+    this.principal = o?.principal ?? PRINCIPAL;
+    this.actorIsEphemeral = o?.actorIsEphemeral ?? false;
+  }
   maxPayload = 4096;
   preflightError: Error | undefined;
   preflightCalls = 0;
@@ -185,7 +194,7 @@ class FakeEndpoint {
     id: string;
     expectedLastSubjectSeq: number;
   }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
-    this.publishes.push({ id: o.id, expectedLastSubjectSeq: o.expectedLastSubjectSeq, parts: o.parts });
+    this.publishes.push({ id: o.id, expectedLastSubjectSeq: o.expectedLastSubjectSeq, parts: o.parts, channel: o.channel });
     // THE INSTRUMENT ENFORCES THE CEILING, because the broker does. A fake that accepts any size
     // cannot witness an over-packed frame, and "the packer produced N frames" is not the property —
     // "every frame it produced could actually be sent" is.
@@ -262,7 +271,7 @@ try {
   await block("THE PREFLIGHT RUNS, AND IT RUNS BEFORE ANYTHING PUBLISHES", async () => {
     const { wal, source } = await fresh("preflight-ok");
     const ep = new FakeEndpoint();
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
     c("preflight:start-calls-it-exactly-once", ep.preflightCalls === 1 && !started.err, {
       calls: ep.preflightCalls,
       err: started.err?.message,
@@ -273,7 +282,7 @@ try {
     const { wal, source } = await fresh("preflight-fails");
     const ep = new FakeEndpoint();
     ep.preflightError = new Error('stream "CHAT_main" reports num_replicas=3; serialized appends require 1.');
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
     c(
       "preflight:a-refusing-preflight-refuses-the-EMITTER",
       started.err !== undefined && /num_replicas=3/.test(started.err.message),
@@ -289,6 +298,12 @@ try {
   // OBSERVABLE. With no pending frame, before-recovery and after-recovery are the same program.
   await block("THE ORDERING CELL: RECOVERY'S RE-PUBLISH IS INSIDE THE GUARD, NOT AFTE", async () => {
     const { wal, source } = await fresh("preflight-before-recovery");
+    // The log is driven directly here, so it needs the record bound BEFORE the first transition:
+    // an unbound log has no expectation to publish and says so. The SAME instance goes to the
+    // emitter below, which rebinds it as a no-op; a different one would be two beliefs about
+    // which subject this log publishes to.
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
     await wal.beginSend({
       id: "frozen-id-1",
       E: 0,
@@ -300,7 +315,7 @@ try {
     const ep = new FakeEndpoint();
     ep.preflightError = new Error("cannot verify expectation semantics: stream info unavailable");
     ep.answers = [{ seq: 9, duplicate: false }];
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }));
     c(
       "preflight:runs-before-RECOVERY-republishes-a-frozen-frame",
       started.err !== undefined && ep.publishes.length === 0,
@@ -331,7 +346,7 @@ try {
       subjectMayExist: false,
     });
     const ep = new FakeEndpoint();
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal: other, source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal: other, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
     c(
       "identity:a-WAL-belonging-to-another-principal-is-refused",
       started.err !== undefined && /local\.bbb/.test(started.err.message) && /local\.aaa/.test(started.err.message),
@@ -343,7 +358,7 @@ try {
   await block("THE ORDINARY PATH: read, map, publish, fold", async () => {
     const { wal, source, src, walPath } = await fresh("happy");
     const ep = new FakeEndpoint();
-    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
 
     // A fresh adopt reads nothing — and MUST still persist where it adopted, or the next read
     // adopts a LATER end and silently skips everything appended in between.
@@ -385,7 +400,7 @@ try {
   await block("THE CURSOR-ONLY RULE: A RECORD THAT MAPS TO NOTHING ADVANCES THE CURSOR", async () => {
     const { wal, source, src, walPath } = await fresh("p7");
     const ep = new FakeEndpoint();
-    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
     await em.pump(); // adopt
     const before = wal.frontier;
     append(src, { skip: true }, { skip: true });
@@ -409,7 +424,7 @@ try {
   await block("HALT: A DUPLICATE ACK ON A FIRST ATTEMPT", async () => {
     const { wal, source, src, walPath } = await fresh("dup-first");
     const ep = new FakeEndpoint();
-    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
     await em.pump();
     const before = wal.frontier;
     append(src, { run: "r1", msg: "m1", text: "hello" });
@@ -446,6 +461,12 @@ try {
   await block("HALT: A DUPLICATE ACK ON A RETRY — THE SINGLE-REPLICA RETRY RULE VIOLATED", async () => {
     const { source, walPath } = await fresh("dup-retry");
     const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: false });
+    // The log is driven directly here, so it needs the record bound BEFORE the first transition:
+    // an unbound log has no expectation to publish and says so. The SAME instance goes to the
+    // emitter below, which rebinds it as a no-op; a different one would be two beliefs about
+    // which subject this log publishes to.
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
     await wal.beginSend({
       id: "frozen-retry",
       E: 0,
@@ -456,7 +477,7 @@ try {
     });
     const ep = new FakeEndpoint();
     ep.answers = [{ seq: 88, duplicate: true }];
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }));
     c(
       "halt:a-duplicate-on-a-RETRY-names-the-SINGLE-REPLICA-RETRY-RULE-rather-than-a-foreign-first-publish",
       started.err instanceof AguiEmitterHalted &&
@@ -477,6 +498,12 @@ try {
   await block("CONTROL: THE SAME RECOVERY PATH SUCCEEDS ON A NON-DUPLICATE ACK", async () => {
     const { source, walPath } = await fresh("retry-ok");
     const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: false });
+    // The log is driven directly here, so it needs the record bound BEFORE the first transition:
+    // an unbound log has no expectation to publish and says so. The SAME instance goes to the
+    // emitter below, which rebinds it as a no-op; a different one would be two beliefs about
+    // which subject this log publishes to.
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
     await wal.beginSend({
       id: "frozen-ok",
       E: 0,
@@ -487,7 +514,7 @@ try {
     });
     const ep = new FakeEndpoint();
     ep.answers = [{ seq: 5, duplicate: false }];
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }));
     const disk = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
     c(
       "halt:CONTROL-recovery-with-a-NON-duplicate-ack-folds-and-continues",
@@ -500,7 +527,7 @@ try {
   await block("HALT: A CAS LOSS", async () => {
     const { wal, source, src, walPath } = await fresh("cas");
     const ep = new FakeEndpoint();
-    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
     await em.pump();
     const before = wal.frontier;
     append(src, { run: "r1", msg: "m1", text: "hello" });
@@ -521,7 +548,7 @@ try {
   await block("A NETWORK ERROR IS NOT A HALT: 'we do not know' is a state, and it is ", async () => {
     const { wal, source, src, walPath } = await fresh("netfail");
     const ep = new FakeEndpoint();
-    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
     await em.pump();
     append(src, { run: "r1", msg: "m1", text: "hello" });
     ep.answers = [new Error("connection reset")];
@@ -654,7 +681,7 @@ try {
     {
       const { wal, source, src, walPath } = await fresh("bracket-restart");
       const ep = new FakeEndpoint();
-      const warm = await AguiEmitter.start({ endpoint: ep, wal, source, map: openRunOnly });
+      const warm = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: openRunOnly });
       await warm.pump(); // adopt
       append(src, { run: "r1", msg: "m1", text: "opens a run and leaves it open" });
       ep.answers = [{ seq: 4, duplicate: false }];
@@ -668,7 +695,7 @@ try {
       );
       // A NEW emitter over the SAME WAL is the restart: same durable state, and now the same
       // bracket state too.
-      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, source: new JsonlFileSource<Rec>(src), map: closeRunOnly });
+      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: closeRunOnly });
       append(src, { run: "r1", msg: "m1", text: "mid-run" });
       ep.answers = [{ seq: 5, duplicate: false }];
       const p = await attempt(() => restarted.pump());
@@ -700,7 +727,7 @@ try {
       const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
       c("bracket:the-migrated-document-records-NO-bracket-state", wal.brackets === null, wal.brackets);
       const ep = new FakeEndpoint();
-      const em = await AguiEmitter.start({ endpoint: ep, wal, source: new JsonlFileSource<Rec>(src), map: orphan });
+      const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: orphan });
       append(src, { run: "r1", msg: "m1", text: "mid-run" });
       const p = await attempt(() => em.pump());
       c(
@@ -725,7 +752,7 @@ try {
     {
       const { wal, source, src, walPath } = await fresh("bracket-restored-but-writer-wrong");
       const ep = new FakeEndpoint();
-      const warm = await AguiEmitter.start({ endpoint: ep, wal, source, map: openRunOnly });
+      const warm = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: openRunOnly });
       await warm.pump();
       append(src, { run: "r1", msg: "m1", text: "opens a run" });
       ep.answers = [{ seq: 4, duplicate: false }];
@@ -734,7 +761,7 @@ try {
       const reopened = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
       // The run IS open and IS remembered — so content for a message that was never started is the
       // writer being wrong, not us having forgotten.
-      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, source: new JsonlFileSource<Rec>(src), map: orphan });
+      const restarted = await AguiEmitter.start({ endpoint: ep, wal: reopened, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: orphan });
       append(src, { run: "r1", msg: "NEVER-STARTED", text: "x" });
       const p = await attempt(() => restarted.pump());
       c(
@@ -775,7 +802,7 @@ try {
           : r.run === "r1"
             ? openRunOnly(r)
             : { runId: "rZ", events: [runFinished({ threadId: THREAD, runId: "rZ", timestamp: 9 })] };
-      const em = await AguiEmitter.start({ endpoint: ep, wal, source: new JsonlFileSource<Rec>(src), map: openThenViolate });
+      const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: openThenViolate });
       ep.maxPayload = 80; // smaller than any single unit: validation succeeds, packing refuses
       append(src, { run: "r1", msg: "m1", text: "hello" });
       const packFailed = await attempt(() => em.pump());
@@ -804,7 +831,7 @@ try {
       const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
       c("bracket:SETUP-a-migrated-VIRGIN-document-also-records-no-bracket-state", wal.brackets === null, wal.brackets);
       const ep = new FakeEndpoint();
-      const em = await AguiEmitter.start({ endpoint: ep, wal, source: new JsonlFileSource<Rec>(src), map: orphan });
+      const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: orphan });
       await em.pump(); // adopt
       append(src, { run: "r1", msg: "m1", text: "mid-run" });
       const p = await attempt(() => em.pump());
@@ -820,7 +847,7 @@ try {
     {
       const { wal, source, src } = await fresh("bracket-virgin");
       const ep = new FakeEndpoint();
-      const em = await AguiEmitter.start({ endpoint: ep, wal, source, map: orphan });
+      const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: orphan });
       await em.pump(); // adopt
       append(src, { run: "r1", msg: "m1", text: "mid-run" });
       const p = await attempt(() => em.pump());
@@ -836,9 +863,7 @@ try {
     {
       const { wal, source, src } = await fresh("bracket-midstream");
       const ep = new FakeEndpoint();
-      const em = await AguiEmitter.start({
-        endpoint: ep,
-        wal,
+      const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(),
         source,
         map: (r: Rec) => ("skip" in r ? null : r.text === "bad" ? orphan(r) : mapper(r)),
       });
@@ -863,7 +888,7 @@ try {
   await block("SIZING IS AN UPPER BOUND, NOT AN ESTIMATE", async () => {
     const { wal, source, src } = await fresh("sizing");
     const ep = new FakeEndpoint();
-    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
     await em.pump();
     append(src, { run: "r1", msg: "m1", text: "x".repeat(200) });
     ep.answers = [{ seq: 3, duplicate: false }];
@@ -896,7 +921,7 @@ try {
   await block("THE UPPER BOUND EARNS ITS KEEP AT THE CEILING, WHICH IS THE ONLY PLACE", async () => {
     const { wal, source, src } = await fresh("ceiling");
     const ep = new FakeEndpoint();
-    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
     await em.pump(); // adopt
 
     const bothUnits = aguiFrame({
@@ -931,6 +956,91 @@ try {
       realBytes <= ep.maxPayload + 10,
       { realBytes, ceiling: ep.maxPayload },
     );
+  });
+
+  // ── THE SUBJECT COMES FROM THE ALLOCATED PRINCIPAL AND FROM NOTHING ELSE ─────────────────────
+  //
+  // The plane is defined to carry tool inputs and outputs, so "which subject does a session publish
+  // to" is an authorization question, not a routing detail: the manager mints a publish grant for
+  // exactly one channel, and a session that could be talked into publishing somewhere else would
+  // either be silently unauthorized or, worse, authorized onto a channel a reader trusts to name
+  // its author.
+  //
+  // WHAT IS ASSERTED IS AN ABSENCE, so the instrument records every publish's channel rather than
+  // only its parts. `AguiEmitter.start` takes an endpoint, a WAL, a subject frontier, a source and a
+  // mapper, and NONE of the last four name a subject: the channel is derived once by
+  // `eventChannelForSession(ep)` from `ep.principal`. That the subject frontier is per PRINCIPAL is
+  // the same fact from the other side, and it does not name a channel either. These cells hold that
+  // derivation to it against inputs that try to say otherwise.
+  await block("THE SUBJECT COMES FROM THE ALLOCATED PRINCIPAL AND FROM NOTHING ELSE", async () => {
+    const { wal, source, src } = await fresh("subject-derivation");
+    const ep = new FakeEndpoint();
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }))).value!;
+    await em.pump(); // adopt
+    c("subject:the-emitter-derives-its-channel-from-the-ENDPOINT-principal", em.channel === eventChannel(PRINCIPAL), {
+      channel: em.channel,
+      expected: eventChannel(PRINCIPAL),
+    });
+    // The mapped RECORD carries a channel-shaped string in its own content. A mapper is caller code
+    // reading a file the session's harness wrote, so this is the closest thing to caller-supplied
+    // input the emitter has, and it must not reach the subject.
+    append(src, { run: "r1", msg: "m1", text: "events.local.somebody_else" }, { run: "r2", msg: "m2", text: "channel: events.other.victim" });
+    ep.answers = [
+      { seq: 1, duplicate: false },
+      { seq: 2, duplicate: false },
+    ];
+    const pumped = await attempt(() => em.pump());
+    c("subject:content-that-NAMES-another-channel-does-not-move-the-publish", pumped.err === undefined && ep.publishes.length > 0, {
+      err: pumped.err?.message,
+      publishes: ep.publishes.length,
+    });
+    c(
+      "subject:EVERY-publish-went-to-the-principal-channel-and-to-no-other",
+      ep.publishes.length > 0 && ep.publishes.every((call) => call.channel === eventChannel(PRINCIPAL)),
+      ep.publishes.map((call) => call.channel),
+    );
+  });
+
+  // A DIFFERENT principal, identical WAL/source/mapper inputs: the subject moves with the principal
+  // and with nothing else. Without this the cell above is satisfied by a hard-coded constant.
+  await block("A DIFFERENT PRINCIPAL PUBLISHES SOMEWHERE ELSE, FROM THE SAME INPUTS", async () => {
+    const OTHER = { owner: "local", actor: "bbb" };
+    const d = join(dir, "subject-other");
+    const src = join(d, "session.jsonl");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(src, "");
+    const wal = await EventWal.open(join(d, "wal.json"), {
+      space: SPACE,
+      threadId: THREAD,
+      principal: principalKey(OTHER.owner, OTHER.actor).key,
+      subjectMayExist: false,
+    });
+    const ep = new FakeEndpoint({ principal: OTHER });
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source: new JsonlFileSource<Rec>(src), map: mapper }))).value!;
+    c("subject:CONTROL-the-channel-tracks-the-principal-rather-than-being-a-constant", em.channel === eventChannel(OTHER) && em.channel !== eventChannel(PRINCIPAL), {
+      channel: em.channel,
+    });
+  });
+
+  // The WAL is the one input that carries a principal of its own, and it is the one that could put
+  // a session's frames under another identity. It is cross-checked, and the refusal is the cell.
+  await block("A WAL BELONGING TO ANOTHER PRINCIPAL IS REFUSED, NOT ADOPTED", async () => {
+    const { wal, source } = await fresh("subject-wal-mismatch");
+    const ep = new FakeEndpoint({ principal: { owner: "local", actor: "ccc" } });
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
+    c("subject:a-WAL-from-another-principal-REFUSES-rather-than-publishing-under-two-identities", started.err !== undefined && /refusing to/.test(started.err.message), started.err?.message);
+    c("subject:...and-nothing-was-published-on-the-way-to-that-refusal", ep.publishes.length === 0, ep.publishes.length);
+  });
+
+  // The mode with no stable identity at all. A fallback here would put the fused-name channel back
+  // on the one path that has no credential to grade it against, so the refusal is load-bearing.
+  await block("A SELF-MINTED IDENTITY IS REFUSED RATHER THAN DEFAULTED", async () => {
+    const { wal, source } = await fresh("subject-ephemeral");
+    const ep = new FakeEndpoint({ actorIsEphemeral: true });
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
+    c("subject:an-EPHEMERAL-actor-refuses-events-rather-than-inventing-a-channel", started.err !== undefined && /self-minted identity/.test(started.err.message), started.err?.message);
+    c("subject:...and-that-refusal-publishes-nothing-either", ep.publishes.length === 0, ep.publishes.length);
   });
 } finally {
   rmSync(dir, { recursive: true, force: true });

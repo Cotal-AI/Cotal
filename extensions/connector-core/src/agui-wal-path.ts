@@ -96,6 +96,9 @@ export interface EventWalLocation {
   principalDir: string;
   /** The single-emitter-per-principal lock. One emitter per PRINCIPAL, not per thread. */
   lockPath: string;
+  /** `<principalDir>/subject.json` — the PRINCIPAL-scoped subject frontier, shared by every thread
+   *  of this principal because the subject is. Declared here so the layout has one owner. */
+  subjectPath: string;
   /** `<principalDir>/<h(threadId)>` — the directory holding exactly one `wal.json`. */
   threadDir: string;
   /** The WAL document itself. */
@@ -125,6 +128,7 @@ export function eventWalLocation(opts: {
   return {
     principalDir,
     lockPath: join(principalDir, ".lock"),
+    subjectPath: join(principalDir, "subject.json"),
     threadDir,
     walPath: join(threadDir, "wal.json"),
   };
@@ -291,7 +295,7 @@ export async function acquirePrincipalLock(lockPath: string): Promise<PrincipalL
  * on a platform that simply does not offer the guarantee would trade a durability improvement for
  * an availability regression. Every other error propagates.
  */
-async function fsyncDir(dir: string): Promise<void> {
+export async function fsyncDir(dir: string): Promise<void> {
   let fh;
   try {
     fh = await open(dir, "r");
