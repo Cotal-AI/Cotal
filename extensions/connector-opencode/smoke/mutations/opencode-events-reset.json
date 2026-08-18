@@ -53,8 +53,9 @@
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "          swapChain = swap.catch(() => undefined);",
       "replace": "          swapChain = Promise.resolve();",
-      "expectRed": "race:the session retired by the SECOND create leaves no run open on the wire",
-      "note": "Chaining every swap off an ALREADY-RESOLVED promise removes the serialization while leaving the code compiling, which is the smallest expression of the defect. Under it both invocations capture the same holder to retire, the first replacement is adopted (its write-ahead log opens) and is then overwritten, and the session it held leaves a run open on the subject forever."
+      "expectRed": "race:the holder the FIRST of two racing creates installed is retired, exactly once",
+      "note": "Chaining every swap off an ALREADY-RESOLVED promise removes the serialization while leaving the code compiling, which is the smallest expression of the defect. Under it both invocations capture the same holder to retire, the first replacement is adopted (its write-ahead log opens) and is then overwritten, and the session it held leaves a run open on the subject forever.",
+      "cell": "race:the holder the FIRST of two racing creates installed is retired, exactly once (and the session they both replace is retired ONCE, not drained twice)"
     }
   ]
 }
