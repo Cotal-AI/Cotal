@@ -160,11 +160,14 @@ export class AguiEmitterHolder<T> {
         // it set and never reaches `startEmitter` again, whether that call arrives after the start
         // resolved or while it is still in flight. A call for a DIFFERENT path is refused earlier.
         //
-        // EVERYTHING ELSE ON THIS PATH HANDS BACK AN EMITTER, IT DOES NOT GUARD ONE. The
-        // `this.emitter` shortcut above and the `return this.emitter` at the end of this method are
-        // redundant with each other, and neither is what stops a second start: with the shortcut
-        // gone the trailing return answers the same call with the same object. Anyone editing here
-        // should know that before reading a green run as a verdict on the piece they touched.
+        // EVERYTHING ELSE ON THIS PATH RETURNS WHATEVER `this.emitter` HOLDS, IT DOES NOT GUARD
+        // ONE. The shortcut above and the `return this.emitter` at the end of this method are
+        // interchangeable once a start has resolved, and neither is what stops a second start: with
+        // the shortcut gone, the trailing return answers the same call with the same object. While
+        // a start is still IN FLIGHT that field is unset, so a same-path caller reaching the
+        // trailing return gets `undefined`, which is the honest answer and is still not a second
+        // start. Anyone editing here should know that before reading a green run as a verdict on
+        // the piece they touched.
         //
         // THE CHAIN IS NOT ONE OF THESE MECHANISMS. It serializes hook events so two flushes cannot
         // read the source at one cursor, which is its own job and a real one. An earlier version of
