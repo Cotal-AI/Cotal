@@ -741,6 +741,15 @@ export const cotal: Plugin = async () => {
       // before. Joining the chain is therefore this change's own debt rather than a courtesy.
       // Bounded for the same reason the drain is: a teardown that waits forever on a drain is a
       // worse outcome than one that says it gave up.
+      //
+      // NO CELL GRADES THIS, and that is stated here rather than only in the pull request, because
+      // the next person to change it will be reading the function and not the pull request. Its
+      // correctness rests on the argument above rather than on a test: swaps are serialized, so a
+      // drain queued at teardown is either running or waiting on the chain, and joining the chain
+      // covers both. Nothing would notice if this join were removed. A cell needs a different
+      // harness shape from the event suite, since it has to arrange work in flight at the moment
+      // dispose runs and then assert on what did NOT reach the subject afterwards. Filed as #632
+      // with the assertions it should make.
       await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
       await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
       await safeStatus("offline");
