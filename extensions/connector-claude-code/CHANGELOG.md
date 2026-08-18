@@ -1,5 +1,7 @@
 # @cotal-ai/connector-claude-code
 
+## 0.24.0
+
 ## 0.23.0
 
 ### Minor Changes
