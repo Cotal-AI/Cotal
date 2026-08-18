@@ -685,8 +685,14 @@ async function runAttachLoop(
     // A press DURING the round trip ends the attach now, rather than when the round trip returns.
     // The in-flight establishment is still awaited: it is bounded like every other one, and a
     // session that lands after we have stopped looking is a slot the manager still counts, so it
-    // goes on the abandoned list and `done` hands it back over the link that is by then up. Only
-    // on a reconnect: the first attach owns no reader and throws its refusals as it always has.
+    // goes on the abandoned list and `done` hands it back over the link that is by then up.
+    //
+    // `idle` is also set on the FIRST establishment at a terminal, where what it buys is the same
+    // thing it buys everywhere else: what gets typed at a prompt that has not come up yet is read
+    // and dropped rather than delivered later, which is what cell I grades. It is not a second way
+    // to abort. Raw mode is entered in `attachClient`'s `onReady` (attach-client.ts), so before the
+    // first session this process has not touched the terminal's mode at all, and Ctrl-C at a cooked
+    // tty is how an operator leaves a command that has not attached.
     if (idle) {
       const raced = await Promise.race([
         attempting.then((e) => ({ est: e }) as const, () => ({ est: undefined }) as const),

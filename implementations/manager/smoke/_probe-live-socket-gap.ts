@@ -17,6 +17,10 @@
  * also SLOW, because a flush over loopback is a millisecond and the window has to be wide enough to
  * be typed into on purpose.
  *
+ * Its scaffolding is the gate's, copied rather than imported so the two can drift apart safely: the
+ * link states it does not use are part of that copy and are left in place, because a probe that has
+ * to be re-cut for the next question is a probe nobody re-cuts.
+ *
  * WHAT IT REPORTS, and it asserts nothing: whether the drop produces a reconnect at all, whether
  * the client's socket was still open when it did, and how wide the hand-back window measures.
  */
