@@ -489,6 +489,42 @@ try {
     const after = await settle(withOne, 20_000);
     check("...and the reconnect left ONE live session, not two: the abandoned one was handed back",
       after === withOne, { before, withOne, orphaned, after });
+
+    // Put the seat back the way this cell found it, and assert it: an attach left running here
+    // would be severed by the next cell and would move the counts it reads.
+    a.write(DETACH_BYTE);
+    check("...and detaching afterwards frees that one too", await a.waitExit(30_000) && a.exit()?.code === 0, a.exit());
+    const idle = await settle(before, 20_000);
+    check("...leaving the manager on the count it started with", idle === before, { before, idle });
+
+    // -------------------------------------------------------------------------------------------
+    console.log("\nJ. the detach key during the backoff, on a link that came BACK, hands the session back");
+    // The leak the hand-back exists to close has one more way in, and it is an ordinary operator
+    // action rather than an exotic one: the link dies, the client records the session it could not
+    // hand back, the link comes back, and the operator presses the detach key during the wait
+    // before the next attempt. Exiting there without dialling would leave a slot held that a single
+    // connection would have freed, and would then say so as though nothing could be done. The wait
+    // below is long enough that the detach cannot be raced by the next attempt: after 40s of failed
+    // attempts the backoff is on its 30s rung, so the heal lands mid-wait rather than mid-attempt.
+    const baseJ = live();
+    const b = attachUnderPty(root, [], QUIET); started.push(b);
+    check("the attach comes up", await b.waitFor(new RegExp(`attached to ${QUIET}`), 90_000), b.seen().slice(-400));
+    check("...and the manager counts one more live session", live() === baseJ + 1, { baseJ, now: live() });
+
+    await sever();
+    check("the reconnect is under way", await b.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000), b.seen().slice(-400));
+    await wait(40_000);
+    await heal();
+    b.write(DETACH_BYTE);
+    check("the detach key ends the attach during the backoff", await b.waitExit(30_000), b.seen().slice(-300));
+    check("...exiting clean", b.exit()?.code === 0, b.exit());
+    check("...without ever re-establishing, so this is the backoff path and not a reconnect",
+      !/\[cotal: reconnected\]/.test(b.seen()), b.seen().slice(-600));
+    check("...saying NOTHING about a held session, because it handed the session back on the way out",
+      !/the manager still holds/.test(b.seen()), b.seen().slice(-600));
+    const freed = await settle(baseJ, 20_000);
+    check("...and the manager is back to the count it started with, with no slot left behind",
+      freed === baseJ, { baseJ, freed });
   }
 
   // ---------------------------------------------------------------------------------------------

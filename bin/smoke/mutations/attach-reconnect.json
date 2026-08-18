@@ -162,6 +162,16 @@
       "cell": "...exiting clean, rather than aborting on a wait that could not be bounded",
       "note": "A wait bounded by an unref'd timer is not bounded. With something else holding the event loop open, which is true of every severed-link cell, the deadline fires and the bound looks real. On a HELD link the socket is idle, so an unref'd timer lets node empty its loop and abort the command on a pending await: exit 13, no message, the session dropped silently. Aimed at cell I, which is the only state where nothing else keeps the process alive.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "an exit does not try the hand-back, so a detach on a link that CAME BACK still abandons the session",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    if (v.kind !== \"gone\") await releaseAbandoned();",
+      "replace": "    if (v.kind === \"gone\") await releaseAbandoned();",
+      "expectRed": "...saying NOTHING about a held session, because it handed the session back on the way out",
+      "cell": "...saying NOTHING about a held session, because it handed the session back on the way out",
+      "note": "The loop released before claiming the next session, which covers every exit that stays IN the loop and none that leaves it. An operator who detaches during the backoff is the ordinary case: the link may be back, one dial would free the slot, and returning straight out leaves it held and then reports that as though nothing could be done. Aimed at cell J, which heals the link and detaches during the 30s rung so the exit path, not a reconnect, is what has to do the freeing.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
 }

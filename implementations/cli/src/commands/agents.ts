@@ -341,8 +341,6 @@ const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
  *  around two minutes later. */
 const LINK_DEADLINE_MS = 5_000;
 
-/** A deadline that never holds the process open by itself: the loser of a race must not add five
- *  seconds to an exit. */
 /** Race a link round trip against a deadline, and answer `no` if the deadline wins. The timer is
  *  deliberately NOT unref'd: it is the only thing keeping the process alive while we wait on a
  *  socket that will never answer, and an unref'd one lets node empty its loop and abort the whole
@@ -365,7 +363,10 @@ const flushed = (nc: NatsConnection): Promise<boolean> =>
  *  close it would have done, so a rejection means close it here or leak the socket. */
 const closeLink = async (nc: NatsConnection): Promise<void> => {
   const drained = await withDeadline(nc.drain().then(() => true, () => false), LINK_DEADLINE_MS);
-  if (!drained) await nc.close().catch(() => { /* already gone */ });
+  // The close gets the same deadline as everything else on this path. Tearing a socket down is
+  // local work and should not be able to wait at all, but "should not" is what the drain above was
+  // supposed to be too, and a bound that covers every wait but one is a bound with a footnote.
+  if (!drained) await withDeadline(nc.close().then(() => true, () => true), LINK_DEADLINE_MS);
 };
 
 /** A session that ran at least this long counts as one that WORKED, whether or not the seat spoke.
@@ -585,9 +586,23 @@ async function runAttachLoop(
   // successful establishments are exactly what the manager's own session ceiling counts.
   const abandoned: Abandoned[] = [];
   let saidWhy = ""; // the last transient refusal printed, so a steady reason prints once, not per attempt
+  // Give the manager its slots back. Oldest first, and one failure ends the round rather than
+  // skipping ahead, because the reason is the link and the link is the same for all of them.
+  const releaseAbandoned = async (): Promise<void> => {
+    while (abandoned.length > 0) {
+      try {
+        await releaseAbandonedSession(abandoned[0]);
+        abandoned.shift();
+      } catch { break; }
+    }
+  };
   // Every exit runs through here, so the one thing an operator cannot see for themselves is never
-  // swallowed. What to say, and when to say nothing, is `heldSessionNotice`.
-  const done = (v: AttachVerdict): AttachVerdict => {
+  // swallowed. It TRIES first: an operator who detaches during the backoff may well be doing it
+  // because the link came back, and returning straight out would leave a slot held that one dial
+  // would have freed. The attempt is bounded exactly like every other, and what it could not
+  // deliver is what gets said. What to say, and when to say nothing, is `heldSessionNotice`.
+  const done = async (v: AttachVerdict): Promise<AttachVerdict> => {
+    if (v.kind !== "gone") await releaseAbandoned();
     const notice = heldSessionNotice(abandoned.length, v.kind);
     if (notice) console.error(c.dim(notice));
     return v;
@@ -600,20 +615,13 @@ async function runAttachLoop(
       const watch = watchDetachKey(key.byte);
       const detached = await Promise.race([sleep(wait).then(() => false), watch.pressed.then(() => true)]);
       watch.stop();
-      if (detached) return done({ kind: "ended" });
+      if (detached) return await done({ kind: "ended" });
       attempt++;
     }
     // Give the manager its slots back BEFORE claiming another one. The order is load-bearing at the
-    // ceiling: a client that claims first is refused by the very sessions it abandoned. Oldest
-    // first, and one failure ends the round rather than skipping ahead, because the reason is the
-    // link and the link is the same for all of them. A failure is retried on the next attempt and
-    // accounted for by `done` if it never lands.
-    while (abandoned.length > 0) {
-      try {
-        await releaseAbandonedSession(abandoned[0]);
-        abandoned.shift();
-      } catch { break; }
-    }
+    // ceiling: a client that claims first is refused by the very sessions it abandoned. A failure
+    // is retried on the next attempt and accounted for by `done` if it never lands.
+    await releaseAbandoned();
     let est: Established;
     try {
       est = await establishAttachSession(vv, pin, reconnect, first);
@@ -625,8 +633,8 @@ async function runAttachLoop(
     }
     if (!est.ok) {
       // Nothing changes for the first attach: any refusal is the same loud exit as before.
-      if (first || est.kind === "fatal" || est.kind === "denied") return done({ kind: "failed", message: est.message });
-      if (est.kind === "gone") return done({ kind: "gone" });
+      if (first || est.kind === "fatal" || est.kind === "denied") return await done({ kind: "failed", message: est.message });
+      if (est.kind === "gone") return await done({ kind: "gone" });
       const notice = reconnectNotice(est, saidWhy);
       if (notice) {
         saidWhy = est.message;
@@ -673,15 +681,15 @@ async function runAttachLoop(
     if (!reconnect) {
       // One-shot: a faulted session still throws, so `--no-reconnect` exits the way it does today.
       if (outcome.error) throw outcome.error;
-      return done({ kind: "ended" });
+      return await done({ kind: "ended" });
     }
     if (!isTransportEnd(outcome.reason)) {
       // A faulted end this classification does not recognise is NOT a detach. Printing
       // `detached from` over it would be the silent swallow this whole change exists to remove,
       // so it exits non-zero carrying the fault. Every `fireEnd` site passes a reason today, so
       // this is a guard against a future one that forgets, not a live path.
-      if (outcome.error) return done({ kind: "failed", message: outcome.error.message });
-      return done({ kind: "ended" });
+      if (outcome.error) return await done({ kind: "failed", message: outcome.error.message });
+      return await done({ kind: "ended" });
     }
     console.error(c.dim("[cotal: connection lost, reconnecting]"));
   }
