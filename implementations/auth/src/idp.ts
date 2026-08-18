@@ -218,7 +218,7 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         const need = VIEW_REQUIRED_SCOPE[req.view];
         if (!(grant.scope ?? []).includes(need))
           throw new Error(
-            `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant with "${need}" ADDED to your current scope: ` +
+            `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to RE-GRANT THE WHOLE ROW with "${need}" added to its scope. This is not a scope edit: run exactly the line below, which already carries every other field the row holds today. ` +
               regrantRemedy(owner, req.actor, grant, need),
           );
       }

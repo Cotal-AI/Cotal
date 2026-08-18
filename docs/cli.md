@@ -1008,6 +1008,7 @@ ledger at connect time. `logout` revokes the IdP session and clears the cache. S
 ## actor
 
 ```bash
+# an upsert of the WHOLE row: a flag left off is the WIDE default below, not "unchanged"
 cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
 cotal actor list
