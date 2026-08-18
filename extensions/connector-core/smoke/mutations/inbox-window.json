@@ -253,27 +253,27 @@
       "file": "extensions/connector-core/src/agent.ts",
       "find": "    return item.ts > Date.now();",
       "replace": "    return false;",
-      "cell": "...and the messages after it are still recalled, rather than filtered out for good",
-      "expectRed": "...and the messages after it are still recalled, rather than filtered out for good",
-      "note": "The defect itself, restored: with every item walked by the mark, one message stamped ahead of the local clock moves the mark past everything the session has not read, and ordinary traffic after it is filtered out of recall for the rest of the session under a reply saying there is none. `ts` is stamped by the sending endpoint, so this is one peer suppressing another peer's recall, not only a clock disagreement."
+      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "note": "The defect itself, restored: with every item walked by the mark, one message stamped ahead of the local clock moves the mark past everything the session has not read, and ordinary traffic after it is filtered out of recall for the rest of the session under a reply saying there is none. `ts` is stamped by the sending endpoint, so this is one peer suppressing another peer's recall, not only a clock disagreement. The enumeration is what reddens FIRST now, not the instance cell written after the finding: this defect is reachable from the universe's own inputs, which is the whole point of having enumerated them. The instance cell stays because it is the measured occupant and it says what the numbers were."
     },
     {
       "name": "K23 an item stamped ahead of the clock moves the mark after all",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));",
       "replace": "          const shownClocked = shownRecall;",
-      "cell": "...and the messages after it are still recalled, rather than filtered out for good",
-      "expectRed": "...and the messages after it are still recalled, rather than filtered out for good",
-      "note": "Splitting the lanes is not enough on its own: if the ahead lane still feeds the mark, the mark ends up in the future anyway and the starvation returns unchanged. Two mutations because the repair has two halves, and either half alone leaves the defect."
+      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "note": "Splitting the lanes is not enough on its own: if the ahead lane still feeds the mark, the mark ends up in the future anyway and the starvation returns unchanged. Two mutations because the repair has two halves, and either half alone leaves the defect. The enumeration is what reddens FIRST now, not the instance cell written after the finding: this defect is reachable from the universe's own inputs, which is the whole point of having enumerated them. The instance cell stays because it is the measured occupant and it says what the numbers were."
     },
     {
       "name": "K24 the ahead lane hands over without recording what it handed over",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "          for (const i of shownRecall) if (aheadIds.has(i.id)) agent.noteRecalledAhead(i.id);",
       "replace": "",
-      "cell": "...and it is not handed over a second time, which is how a clamp alone would fail",
-      "expectRed": "...and it is not handed over a second time, which is how a clamp alone would fail",
-      "note": "The ahead lane has no mark, so the record BY ID is the only thing that makes it exactly-once. Without it every call hands the same future-stamped message over again, which is the duplicate failure that any repair clamping the timestamp instead would also produce."
+      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "note": "The ahead lane has no mark, so the record BY ID is the only thing that makes it exactly-once. Without it every call hands the same future-stamped message over again, which is the duplicate failure that any repair clamping the timestamp instead would also produce. The enumeration is what reddens FIRST now, not the instance cell written after the finding: this defect is reachable from the universe's own inputs, which is the whole point of having enumerated them. The instance cell stays because it is the measured occupant and it says what the numbers were."
     },
     {
       "name": "K25 the ahead lane hands over more than it can remember",
@@ -289,9 +289,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "    if (shown.length === 1) {",
       "replace": "    if (false) {",
-      "cell": "a deliverable message is not withheld to make room for a note about an undeliverable one",
-      "expectRed": "a deliverable message is not withheld to make room for a note about an undeliverable one",
-      "note": "The eighth defect exactly: with the loop free to empty the response, a message that renders inside the window on its own is given back to make room for a note NAMING a message that can never be delivered, and the next call rebuilds the same reply forever. The bound on the loop is what makes the last message win."
+      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "note": "The eighth defect exactly: with the loop free to empty the response, a message that renders inside the window on its own is given back to make room for a note NAMING a message that can never be delivered, and the next call rebuilds the same reply forever. The bound on the loop is what makes the last message win. The enumeration is what reddens FIRST now, not the instance cell written after the finding: this defect is reachable from the universe's own inputs, which is the whole point of having enumerated them. The instance cell stays because it is the measured occupant and it says what the numbers were."
     },
     {
       "name": "K27 the note yields the window while other messages are still riding in the response",
@@ -307,9 +307,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "const NOTE_TIERS: readonly NoteTier[] = [\"full\", \"compact\", \"none\"];",
       "replace": "const NOTE_TIERS: readonly NoteTier[] = [\"full\", \"compact\"];",
-      "cell": "a message with no room beside it for even a count is still delivered",
-      "expectRed": "a message with no room beside it for even a count is still delivered",
-      "note": "Shortening the note closes the measured case but not the class: a message can be large enough that not even a count fits beside it, and then counting is still chosen over delivering. Nothing is lost by dropping the note, because the held mail is still buffered, still uncleared, and named by the very next reply, which the same cell asserts."
+      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "note": "Shortening the note closes the measured case but not the class: a message can be large enough that not even a count fits beside it, and then counting is still chosen over delivering. Nothing is lost by dropping the note, because the held mail is still buffered, still uncleared, and named by the very next reply, which the same cell asserts. The enumeration is what reddens FIRST now, not the instance cell written after the finding: this defect is reachable from the universe's own inputs, which is the whole point of having enumerated them. The instance cell stays because it is the measured occupant and it says what the numbers were."
     }
   ]
 }
