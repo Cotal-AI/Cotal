@@ -1,7 +1,15 @@
 /**
- * REQUIRED-ARGUMENT SEAM completeness (Cotal #550): every call site of a seam that THROWS when an
- * argument is missing must actually pass it, checked statically over sources the compiler does not
- * read.
+ * REQUIRED-ARGUMENT SEAM (Cotal #550): every call site of a seam that THROWS when an argument is
+ * missing must actually pass it, checked statically over sources the compiler does not read.
+ *
+ * "EVERY CALL SITE" MEANS EVERY ONE THIS READER CAN SEE, and what it can see is a decision recorded
+ * in this file rather than a property of the repository. It reads the extensions in `EXTS`, plus the
+ * executable part of each container language in `CONTAINERS`; it counts calls made through the
+ * seam's own NAME and REFUSES, rather than follows, the spellings that rebind it. Those refusals are
+ * bounds, not gaps: each one fails the run. Read the paragraph headed THE ALIAS REFUSAL IS NOT A
+ * PROOF OF TOTAL CLOSURE as part of this sentence rather than as a footnote to it. Three review
+ * rounds were spent discovering that the claim, and not only the code, was what needed narrowing,
+ * and the last of them was a source class the walk did not read at all.
  *
  * WHY A RUNTIME THROW IS NOT ENOUGH, in the words of the one seam that has this shape today:
  * `standaloneConnectOpts` refuses to build connect options without an explicit `tls` boolean, and
@@ -132,21 +140,62 @@ const SEAMS: Seam[] = [
 const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".internal", "build", "coverage", ".next", "out"]);
 const EXTS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
 
+/**
+ * CONTAINER LANGUAGES: files that are not TypeScript, but whose EXECUTABLE part is. Review proved
+ * this class is not theoretical. `.astro` frontmatter is TypeScript, `website/` holds five such
+ * components, and `.github/workflows/docs.yml` runs a real `npm ci && npm run build` over them on
+ * any PR touching docs sources. A seam call placed there is executed BY CI while a TypeScript-only
+ * walk reports nothing, which is this whole file's failure mode wearing a different extension.
+ *
+ * Two treatments, because "just parse it" is only honest where the executable part can be isolated:
+ *
+ *  - `frontmatter`: the fenced head IS TypeScript, so it is extracted and parsed like any other
+ *    source, blank-padded so a reported line still points at the real line of the real file. Adding
+ *    the extension to EXTS instead would hand the whole component to the TypeScript parser and trip
+ *    the parse-diagnostic refusal on every one of them.
+ *  - `tripwire`: the executable part cannot be isolated without that language's own compiler. MDX
+ *    frontmatter is YAML, and its body mixes markdown with ESM, so any extraction here would be a
+ *    guess. The file is therefore not parsed at all; instead the seam's NAME appearing anywhere in
+ *    it is itself a failure that says so. Crude, exact, and fail-closed: a tripwire cannot bless a
+ *    call, only refuse to answer for one.
+ */
+const CONTAINERS: Record<string, "frontmatter" | "tripwire"> = { ".astro": "frontmatter", ".mdx": "tripwire" };
+
+/** Container extensions this repo could plausibly grow. A cell asserts every one PRESENT in the tree
+ *  has a decision in CONTAINERS, so a new `.vue` is a red that asks the question rather than a
+ *  silence that answers it. No instrument checks its own boundary unless it is made to. */
+const CONTAINER_WATCHLIST = [".astro", ".vue", ".svelte", ".mdx", ".marko", ".riot"];
+
+const extOf = (f: string): string => { const i = f.lastIndexOf("."); return i < 0 ? "" : f.slice(i); };
+
+/** The fenced TypeScript head of an Astro component, plus where the rest of the file starts. The
+ *  head is blank-padded so every line number in it is the file's own. */
+function frontmatter(text: string): { code: string; restAt: number } | undefined {
+  const open = /^---[ \t]*\r?\n/.exec(text);
+  if (!open) return undefined;
+  const close = text.indexOf("\n---", open[0].length);
+  return close < 0 ? undefined : { code: `\n${text.slice(open[0].length, close)}`, restAt: close };
+}
+
 function sources(dir: string, acc: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
       sources(p, acc);
-    } else if (EXTS.some((x) => e.name.endsWith(x))) acc.push(p);
+    } else if (EXTS.some((x) => e.name.endsWith(x)) || CONTAINERS[extOf(e.name)]) acc.push(p);
   }
   return acc;
 }
 
 /** JSX is a different grammar, so a `.tsx` parsed as `.ts` mis-reads `<T>` and can drop call sites. */
-const parse = (file: string, text: string): ts.SourceFile =>
-  ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
+const parse = (file: string, text: string): ts.SourceFile => {
+  const container = CONTAINERS[extOf(file)];
+  if (container === "frontmatter")
+    return ts.createSourceFile(file, frontmatter(text)?.code ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  return ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
     /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : undefined);
+};
 
 const WRAPPERS = new Set([
   ts.SyntaxKind.ParenthesizedExpression, ts.SyntaxKind.AsExpression,
@@ -451,7 +500,28 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
 }
 
 /** Every call of the seam in one file, classified, plus every escape of its name. */
+/** Every file extension present in the walked tree, so the reach claim can be checked against the
+ *  repository rather than against memory. */
+function extensionsPresent(dir: string, acc: Set<string> = new Set()): Set<string> {
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    if (e.isDirectory()) { if (!SKIP_DIRS.has(e.name)) extensionsPresent(join(dir, e.name), acc); }
+    else acc.add(extOf(e.name));
+  }
+  return acc;
+}
+
 function sitesIn(file: string, text: string, seam: Seam): Site[] {
+  // A tripwire container is never parsed, so it can only ever REFUSE. Naming the seam in a file this
+  // reader cannot read is the one thing it can detect, and it is enough to force the question.
+  const tripwire = (from: number, why: string): Site[] => {
+    const at = text.indexOf(seam.fn, from);
+    return at < 0 ? [] : [{
+      file, line: text.slice(0, at).split("\n").length, verdict: "unverifiable",
+      detail: `\`${seam.fn}\` is named ${why}, which this reader cannot isolate without that language's own compiler; move the call into a source it can read, or teach this check to extract it`,
+    }];
+  };
+  if (CONTAINERS[extOf(file)] === "tripwire")
+    return tripwire(0, `in a ${extOf(file)} file, whose executable part is mixed into its prose`);
   const src = parse(file, text);
   // A file that does not PARSE is refused rather than scanned, because the recovery tree the parser
   // hands back is not the program: it invents nodes that no valid source can produce, and a rule
@@ -484,6 +554,13 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
     ts.forEachChild(n, visit);
   };
   visit(src);
+  // A frontmatter container's TEMPLATE half is executable too: Astro evaluates `{expr}` at build
+  // time, so extracting only the fenced head would leave a second live surface unread. It is not
+  // TypeScript and cannot be parsed as any, so the same tripwire covers it. Extract what is a
+  // program, refuse the rest: the two together are what makes the container claim honest.
+  const fm = CONTAINERS[extOf(file)] === "frontmatter" ? frontmatter(text) : undefined;
+  if (CONTAINERS[extOf(file)] === "frontmatter")
+    found.push(...tripwire(fm ? fm.restAt : 0, `outside the frontmatter of a ${extOf(file)} file, in its template half`));
   return found;
 }
 
@@ -674,6 +751,31 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   check("...while the same node in a LITERAL is a read, and stays flagged",
     one(`const arr = [standaloneConnectOpts];`) === "aliased"
     && one(`const row = { k: standaloneConnectOpts };`) === "aliased");
+
+  console.log(" A5. container languages, whose executable part is not this reader's grammar");
+  // Found by review, executed rather than argued: it built an `.astro` component calling the seam
+  // without the key, ran the real `npm run build` the docs workflow runs, watched the SEAM ITSELF
+  // throw during prerender, and watched this check stay green at 93/66. A TypeScript-only walk over
+  // a repo that builds Astro on CI is not a walk over the executable sources.
+  const astro = (body: string): Site[] => sitesIn("c.astro", body, SEAMS[0]);
+  check("an Astro component's FRONTMATTER is read, so a call there is classified like any other",
+    astro(`---\nconst r = standaloneConnectOpts({ creds: c });\n---\n<div />`)[0]?.verdict === "missing-key");
+  check("...and a WELL-FORMED one is accepted, so the extraction reads rather than merely refusing",
+    astro(`---\nconst r = standaloneConnectOpts({ creds: c, tls: false });\n---\n<div />`)[0]?.verdict === "has-key");
+  check("...at the real line of the real FILE, not the line of the extracted fragment",
+    astro(`---\n// one\n// two\nconst r = standaloneConnectOpts({ creds: c });\n---\n<div />`)[0]?.line === 4);
+  // The template half is executable too (Astro evaluates `{expr}` at build time) and is not
+  // TypeScript, so it is refused rather than read. Extract what is a program, refuse the rest.
+  check("...while the TEMPLATE half is refused rather than read, because it is executable and is not TypeScript",
+    astro(`---\nconst x = 1;\n---\n<div>{standaloneConnectOpts({ creds: c })}</div>`)[0]?.verdict === "unverifiable");
+  check("...and a component that never names the seam is silent, in both halves",
+    astro(`---\nconst x = 1;\n---\n<div>hello</div>`).length === 0
+    && astro(`<div>hello</div>`).length === 0);
+  const mdx = (body: string): Site[] => sitesIn("d.mdx", body, SEAMS[0]);
+  check("a TRIPWIRE container refuses rather than blesses, since it is never parsed at all",
+    mdx(`import { standaloneConnectOpts } from "x";`)[0]?.verdict === "unverifiable");
+  check("...and is silent when it does not name the seam, so it is a tripwire and not a ban",
+    mdx(`# just documentation`).length === 0);
   check("a BARE DEFAULT import binds the scannable name, so it is not a rebinding",
     fx(`import standaloneConnectOpts from "@cotal-ai/core";`).length === 0);
   // The residual both reviews called ordinary rather than exotic, and they were right: this is
@@ -701,6 +803,23 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
 console.log("\nB. the seam, across every source the compiler may or may not read");
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
+
+// NO INSTRUMENT CHECKS ITS OWN BOUNDARY UNLESS IT IS MADE TO. The reach hole review found was not a
+// wrong rule, it was an extension nobody had decided about, and nothing in here would ever have
+// said so. This asserts every container language actually PRESENT in the tree has a decision on the
+// record, so adding a `.vue` is a red that asks the question rather than a silence that answers it.
+// And the reach half of the same point: every container cell above calls the classifier DIRECTLY,
+// so all of them would still pass if the WALK stopped admitting container files. A fixture proves
+// the reader; only the real tree proves it is reached. This floor is tied to the components that
+// exist here today.
+const walkedContainers = files.filter((f) => CONTAINERS[extOf(f)]).length;
+check("the WALK admits container files, not just the classifier that can read them",
+  walkedContainers >= 7, walkedContainers);
+
+const present = extensionsPresent(ROOT);
+const undecided = CONTAINER_WATCHLIST.filter((x) => present.has(x) && !CONTAINERS[x]);
+check("every container language present in this tree has a recorded decision, read or tripwire",
+  undecided.length === 0, undecided);
 
 for (const seam of SEAMS) {
   const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
