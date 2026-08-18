@@ -297,6 +297,100 @@ const out = await fanOut(
   ok("editing what the human saw diverges the resume", div !== null);
   ok("and the error names the exact step", div?.stepKey === "/checkpoint:approve-plan#0", div?.stepKey);
   ok("and offers fork as the repair", div?.message.includes('fork(run, "/checkpoint:approve-plan#0")'));
+
+  // A `catch` never sees the divergence. Measured before the rule: the resume below caught
+  // `{ code: "L4000", kind: "host" }`, logged past it, and performed a NEW effect against the
+  // journal it had just diverged from.
+  const performed: string[] = [];
+  class Counting extends SimHandler {
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      performed.push(req.duration);
+      return await super.sleep(req, ctx);
+    }
+  }
+  const first = await run(`await sleep("1m")`, { runId: "r-div", handler: new SimHandler({}) });
+  const j2 = new Journal({ run: "r-div", entries: first.journal.entries() });
+  let swallowed: unknown;
+  try {
+    await resume(
+      `try { await sleep("2m") } catch (e) { log("caught", e.code) }\nawait sleep("3m", { name: "later" })`,
+      j2,
+      { runId: "r-div", pins: first.pins, handler: new Counting() },
+    );
+  } catch (e) {
+    swallowed = e;
+  }
+  ok("a workflow's catch does not swallow a divergence", swallowed instanceof RunDivergence, `${(swallowed as Error)?.name}`);
+  ok("and no effect was performed past it: the handler was asked for nothing and the journal has no later step",
+    performed.length === 0 && j2.entries().every((e) => e.name !== "later"), { performed, entries: j2.entries().map((e) => e.name) });
+
+  // The inverse control: a `catch` still catches an ordinary program error, and the run goes on
+  // performing effects after it. Without this cell "uncatchable divergence" could widen to "catch
+  // is broken" with nothing red.
+  performed.length = 0;
+  const ordinary = await run(
+    `try { throw { code: "E-mine" } } catch (e) { log("caught", e.code) }\nawait sleep("3m", { name: "later" })`,
+    { runId: "r-ord", handler: new Counting() },
+  );
+  ok("a catch still catches an ordinary program error and the run performs the effect after it",
+    performed.join(",") === "3m" && ordinary.journal.entries().some((e) => e.name === "later" && e.status === "ok"),
+    { performed, entries: ordinary.journal.entries().map((e) => [e.name, e.status]) });
+
+  // AND `finally` IS BOUND BY THE SAME LAW. Measured before the rule: a finalizer performed a NEW
+  // effect after a divergence, and a `finally { throw ... }` REPLACED the divergence, which an
+  // outer catch then swallowed as an ordinary error — the two doors §7 just closed, reopened by
+  // the cleanup clause. An uncatchable fault now unwinds past the finalizer too.
+  performed.length = 0;
+  logged.length = 0;
+  {
+    const j3 = new Journal({ run: "r-div", entries: first.journal.entries() });
+    let out: unknown;
+    try {
+      await resume(
+        `try { await sleep("2m") } finally { log("cleanup"); await sleep("4m", { name: "cleanup" }) }`,
+        j3,
+        { runId: "r-div", pins: first.pins, handler: new Counting(), onLog: sink },
+      );
+    } catch (e) {
+      out = e;
+    }
+    ok("a `finally` does not run past a divergence: no effect, no log, and the divergence survives",
+      out instanceof RunDivergence && performed.length === 0 && logged.length === 0
+        && j3.entries().every((e) => e.name !== "cleanup"),
+      { out: `${(out as Error)?.name}`, performed, logged });
+  }
+  {
+    const j4 = new Journal({ run: "r-div", entries: first.journal.entries() });
+    let out: unknown;
+    try {
+      await resume(
+        `try { await sleep("2m") } finally { throw { code: "mine" } }`,
+        j4,
+        { runId: "r-div", pins: first.pins, handler: new Counting() },
+      );
+    } catch (e) {
+      out = e;
+    }
+    ok("and a `finally { throw }` cannot replace a divergence with a catchable error",
+      out instanceof RunDivergence, `${(out as Error)?.name} ${String((out as { code?: string })?.code)}`);
+  }
+  // The inverse control, JavaScript's own meaning: for ORDINARY completions the finalizer runs,
+  // and its abrupt completion replaces the try's (measured before the fix: `try { return 1 }
+  // finally { return 2 }` returned 1 — the finalizer's completion was discarded).
+  performed.length = 0;
+  logged.length = 0;
+  {
+    const r = await run(
+      `function f() { try { return 1; } finally { log("ran"); return 2; } }
+try { throw { code: "E" } } catch (e) { log("caught") } finally { await sleep("5m", { name: "tidy" }) }
+log("f", f());`,
+      { runId: "r-fin", handler: new Counting(), onLog: sink },
+    );
+    ok("an ordinary path still runs its finalizer, performs its effects, and a finally return wins",
+      performed.join(",") === "5m" && r.journal.entries().some((e) => e.name === "tidy" && e.status === "ok")
+        && JSON.stringify(logged) === '[["caught"],["ran"],["f",2]]',
+      { performed, logged });
+  }
 }
 
 // ---- 8) an edit to an observation-stopping limit DOES diverge -----------------------------------
@@ -924,6 +1018,58 @@ try {
   // still read correctly and would have stopped being about the stop.
   ok("and the catch block performed nothing: no notify was recorded",
     journal.entries().every((e) => e.kind !== "notify"), journal.entries().map((e) => e.kind));
+}
+
+// ---- 18) freeze on share holds at the share, and survives a serialized journal ------------------
+//
+// Both directions of the boundary, measured open before the fix: an effect's INPUT stayed writable
+// after the dispatch (the program mutated the schema it had just shared, no L2031, so the run's
+// value disagreed with its recorded hash), and a REPLAYED result read back from a serialized
+// journal came back as fresh deserialized data, writable again.
+{
+  const spawned = `const a = await spawn("w", { name: "a" });
+const fact = { decision: "ship", outcome: "approved" };
+await notify([a], fact, { name: "n" });
+fact.outcome = "flipped";`;
+  let caught: unknown;
+  try {
+    await run(spawned, { runId: "r-frz", handler: new SimHandler({}) });
+  } catch (e) {
+    caught = e;
+  }
+  ok("an effect's input is frozen AT the share: mutating it afterwards is L2031",
+    String((caught as Error)?.message).startsWith("L2031"), String(caught).slice(0, 60));
+
+  // The notify arm freezes its fact on its own, so the cell above cannot see the BLANKET freeze at
+  // the boundary. The options bag can: no per-primitive arm touches it, so a schema that stays
+  // writable after an `ask` means the share-time freeze is gone (the measured pre-fix defect).
+  const asked = `const a = await spawn("w", { name: "a" });
+const sch = { deep: { x: 1 } };
+await ask(a, { name: "q", schema: sch });
+sch.deep.x = 2;`;
+  let bagCaught: unknown;
+  try {
+    await run(asked, { runId: "r-frz3", handler: new SimHandler({ asks: { q: { okay: true } } }) });
+  } catch (e) {
+    bagCaught = e;
+  }
+  ok("the options bag crosses like any input: an ask's schema is frozen at the share (L2031)",
+    String((bagCaught as Error)?.message).startsWith("L2031"), String(bagCaught).slice(0, 60));
+
+  const SRC = `const a = await spawn("w", { name: "a" });
+a.agent = "changed";`;
+  const first = await run(`const a = await spawn("w", { name: "a" });`, { runId: "r-frz2", handler: new SimHandler({}) });
+  // The round trip is the point: a durable store hands back parsed JSON, not the objects the live
+  // run froze.
+  const thawed = JSON.parse(JSON.stringify(first.journal.entries())) as readonly JournalEntry[];
+  let replayCaught: unknown;
+  try {
+    await resume(SRC, new Journal({ run: "r-frz2", entries: thawed }), { runId: "r-frz2", pins: first.pins, handler: new SimHandler({}) });
+  } catch (e) {
+    replayCaught = e;
+  }
+  ok("a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
+    String((replayCaught as Error)?.message).startsWith("L2031"), String(replayCaught).slice(0, 60));
 }
 
 console.log(`interpret.smoke: ${pass} checks passed`);

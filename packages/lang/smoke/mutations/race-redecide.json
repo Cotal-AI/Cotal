@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "guard": "A cancelled race arm whose in-flight effect lands is re-judged against the frontier: past it the pure tail is cut, before it the arm keeps running and can still win. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-scopes",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-redecide.json",
+  "mutations": [
+    {
+      "name": "the cut is never re-decided after an in-flight effect advances a cancelled arm",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "      frames.forEach((f, j) => {\n        f.clock.onAdvance(() => {\n          if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {\n            f.signal.cancel(\"a sibling branch won the race\", { cutPure: true });\n          }\n        });\n      });",
+      "replace": "",
+      "expectRed": "the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
+      "completionMarker": "ok and the resume takes the SAME path",
+      "cell": "the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
+      "note": "Without the listener the loser's verdict stays what the settle decided from its OLD clock, the infinite tail burns the step budget, and the run dies on L4013 after the race already settled ok. The suite is fail-fast, so the marker is the LAST line printed BEFORE the reddened cell (section 9's final cell): it proves the run reached the cell it is accused of reddening rather than dying earlier."
+    },
+    {
+      "name": "any landing on a cancelled arm cuts it, frontier ignored",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {",
+      "replace": "          if (f.signal.cancelled && !f.signal.cutPure) {",
+      "expectRed": "an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",
+      "completionMarker": "ok the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
+      "cell": "an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",
+      "note": "The guard against over-cutting: an arm landing at 5000 against a frontier of 10000 can still win, and cutting it hands the race to the wrong arm. The cell asserts the early-landing arm WINS."
+    }
+  ]
+}

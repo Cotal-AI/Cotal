@@ -12,6 +12,7 @@
  * miss that quietly re-runs the effect and lets two versions of the truth coexist.
  */
 
+import { deepFreeze } from "./values.js";
 import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 
@@ -259,7 +260,14 @@ export class Journal {
       // The stored `scope` string is authoritative: it is what makes a journal readable back
       // without re-running the program that produced it.
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;
-      this.byKey.set(full, e);
+      // FROZEN ON THE WAY IN, because replay returns `entry.result` to the program as a value that
+      // already crossed an effect boundary. The LIVE path freezes the result before it settles, but
+      // a journal read back from a durable store is fresh deserialized data — measured before this
+      // line: a program mutated a replayed spawn handle, and pushed into a replayed scope result,
+      // with no L2031, on exactly the values whose recorded form is the one thing a resume trusts.
+      // The journal never mutates an entry in place (every transition builds a new record), so
+      // freezing the seed changes nothing else.
+      this.byKey.set(full, deepFreeze(e));
       // FOLD THE LOG. A seed is an APPEND LOG, not a keyed view: the stream carries the pending
       // record and the settled one as two records (`journal-store.smoke`: "settling appends a second
       // record rather than editing the first"), `RunJournalAppender.steps()` replays both, and the
@@ -543,6 +551,7 @@ export class Journal {
  */
 export class RunClock {
   private value: number;
+  private listeners?: ((now: number) => void)[];
 
   constructor(startedAt: number) {
     this.value = startedAt;
@@ -552,9 +561,23 @@ export class RunClock {
     return this.value;
   }
 
+  /**
+   * Observe every forward move of THIS clock. A `race` subscribes to each arm's clock, because an
+   * in-flight effect that lands after the arm was cancelled advances the arm past the frontier,
+   * and the cut has to be re-decided on the fact rather than left where the settle put it. A fork
+   * does not inherit listeners: the subscriber asked about one branch, not its descendants — a
+   * nested branch's history reaches the arm's own clock at the join, which fires this then.
+   */
+  onAdvance(fn: (now: number) => void): void {
+    (this.listeners ??= []).push(fn);
+  }
+
   /** Advance past an effect this branch awaited. Monotone: an out-of-order settle cannot rewind. */
   advance(endedAt: number): void {
-    if (endedAt > this.value) this.value = endedAt;
+    if (endedAt > this.value) {
+      this.value = endedAt;
+      if (this.listeners !== undefined) for (const l of this.listeners) l(this.value);
+    }
   }
 
   /** A branch inherits its parent's clock at the moment it forks. */
