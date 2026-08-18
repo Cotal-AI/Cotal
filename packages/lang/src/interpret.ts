@@ -2107,7 +2107,22 @@ class Interpreter {
           // world with nothing recorded from the refusal onward, so those effects exist only in the
           // world and a resume performs them again. An unrecordable run must stop, and no `catch`
           // may decide otherwise.
-          if (e instanceof Cancelled || e instanceof JournalAppendRejected || e instanceof RunReleased) throw e;
+          //
+          // And a DIVERGENCE, or a migration walk's refusal to enter a scope, is the journal saying
+          // this program is not the one that wrote it. Measured before this line existed: a resume
+          // whose edited `sleep` diverged inside a `try` caught `{ code: "L4000", kind: "host" }`,
+          // logged past it, and performed a NEW effect against the journal it had just diverged
+          // from; a migration's dry walk would have reported the same program clean.
+          if (
+            e instanceof Cancelled ||
+            e instanceof JournalAppendRejected ||
+            e instanceof RunReleased ||
+            e instanceof RunDivergence ||
+            e instanceof ScopeBranchMissing ||
+            e instanceof UnwalkableScope
+          ) {
+            throw e;
+          }
           const handlerNode = node.handler as AnyNode | null;
           if (handlerNode === null || handlerNode === undefined) throw e;
           const catchEnv = new Env(env);

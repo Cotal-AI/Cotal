@@ -297,6 +297,24 @@ const out = await fanOut(
   ok("editing what the human saw diverges the resume", div !== null);
   ok("and the error names the exact step", div?.stepKey === "/checkpoint:approve-plan#0", div?.stepKey);
   ok("and offers fork as the repair", div?.message.includes('fork(run, "/checkpoint:approve-plan#0")'));
+
+  // A `catch` never sees the divergence. Measured before the rule: the resume below caught
+  // `{ code: "L4000", kind: "host" }`, logged past it, and performed a NEW effect against the
+  // journal it had just diverged from.
+  const first = await run(`await sleep("1m")`, { runId: "r-div", handler: new SimHandler({}) });
+  const j2 = new Journal({ run: "r-div", entries: first.journal.entries() });
+  let swallowed: unknown;
+  try {
+    await resume(
+      `try { await sleep("2m") } catch (e) { log("caught", e.code) }\nawait sleep("3m", { name: "later" })`,
+      j2,
+      { runId: "r-div", pins: first.pins, handler: new SimHandler({}) },
+    );
+  } catch (e) {
+    swallowed = e;
+  }
+  ok("a workflow's catch does not swallow a divergence", swallowed instanceof RunDivergence, `${(swallowed as Error)?.name}`);
+  ok("and no effect was performed past it", j2.entries().every((e) => e.name !== "later"), j2.entries().map((e) => e.name));
 }
 
 // ---- 8) an edit to an observation-stopping limit DOES diverge -----------------------------------
