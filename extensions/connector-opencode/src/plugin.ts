@@ -63,8 +63,18 @@ const INTERRUPT_INTENT_TTL_MS = 30_000;
 export const SESSION_RETIRED = "opencode-session-retired";
 /** A bounded wait gave up. Exported so a cell keys on the token rather than on the sentence. */
 export const SETTLE_ABANDONED = "opencode-settle-abandoned";
-/** How long one swap step may hold the chain, or a teardown may hold the process, before it is
- *  abandoned loudly rather than waited on forever. */
+/**
+ * How long one swap step may hold the chain, or a teardown may hold the process, before it is
+ * abandoned out loud rather than waited on forever.
+ *
+ * A GENUINE-HANG BACKSTOP, deliberately far above normal settle latency, because a bound that can
+ * fire on a step that would have finished would turn a slow publish into a dropped drain. The
+ * measure comes from a cell rather than a guess: `reset:the /new drain puts the old session's tail
+ * and its close ON THE WIRE` asserts that a whole drain, flush plus run close plus settle plus the
+ * broker round trip, AND a read-back of the subject both complete inside the 2s the suite waits.
+ * So a healthy settle is comfortably under two seconds and this is five times that. Reaching it
+ * means the step is not slow, it is not coming back.
+ */
 const SWAP_SETTLE_MS = 10_000;
 
 export const cotal: Plugin = async () => {
@@ -318,10 +328,17 @@ export const cotal: Plugin = async () => {
    * of work that hangs rather than fails.
    *
    * Waiting forever and giving up quietly are both worse than this. Giving up is SAID: the caller
-   * learns it did not settle, and the line carries a token a cell can key on, so a plane that
-   * degraded is distinguishable from one that worked. Throwing would be worse rather than stricter,
-   * because the bus does not await this handler, so the rejection would surface as an unhandled one
-   * and take the wedge with it.
+   * learns it did not settle, the line names the consequence rather than the timer, and it carries a
+   * token a cell can key on, so a plane that degraded is distinguishable from one that worked.
+   *
+   * THROWING WAS THE OTHER CANDIDATE AND IT WAS MEASURED, not argued. The chain itself is protected,
+   * `swapChain = swap.catch(...)` absorbs a rejection and the next swap still runs. But the same
+   * promise is awaited again by the invocation that created it, and the bus dispatches this handler
+   * as `void hook.event(...)`, so that second consumer turns the rejection into an UNHANDLED one.
+   * On node 22 an unhandled rejection terminates the process, which here is the editor the plugin
+   * is running inside. Reproduced in isolation with the same four lines: the process died and the
+   * liveness line after it never printed. So a throw does not fail loudly, it takes the host with
+   * it, and the repo's throw-rather-than-degrade rule does not ask for that.
    */
   async function settleWithin(work: Promise<unknown> | undefined, ms: number, what: string): Promise<boolean> {
     if (work === undefined) return true;
@@ -332,7 +349,12 @@ export const cotal: Plugin = async () => {
     });
     try {
       const settled = await Promise.race([work.then(() => true, () => true), expired]);
-      if (!settled) log(`${SETTLE_ABANDONED} ${what} did not settle within ${ms}ms; continuing without it`);
+      if (!settled)
+        log(
+          `${SETTLE_ABANDONED} ${what} did not settle within ${ms}ms, so it is abandoned: whatever it ` +
+            `had left to publish is NOT on the wire, and a run it had open may stay open. The plane ` +
+            `continues rather than wedging every later swap behind this one.`,
+        );
       return settled;
     } finally {
       if (timer !== undefined) clearTimeout(timer);
