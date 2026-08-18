@@ -174,15 +174,22 @@ try {
   const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && narrow.out.includes("read [general]"), narrow.out);
   // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
-  // that names only --scope resets the ACLs this narrow row just set back to the wide default. Two
+  // that names only --scope resets the ACLs a narrow row just set back to the wide default. Two
   // refusals used to print exactly this command as their remedy. Nothing here is a fixture: it is
   // the real CLI writing the real ledger, and the row it leaves behind reads every channel.
-  const scopeOnly = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn", "--label", "smoke human"]);
-  check("a re-grant naming ONLY --scope silently widens the narrow row back to the whole plane",
-    scopeOnly.status === 0 && scopeOnly.out.includes("read [>]") && scopeOnly.out.includes("post [>]"), scopeOnly.out);
-  const renarrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
+  //
+  // On its OWN actor, never on `cli`: a re-grant rotates the row's lifecycle uid, and the elevated
+  // views later in this suite hold bearers minted against `cli`'s. Demonstrating a footgun must not
+  // fire it into the rest of the run.
+  const wNarrow = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
+  check("a probe actor is granted narrow, both ACL flags named", wNarrow.status === 0 && wNarrow.out.includes("read [general]") && wNarrow.out.includes("post [general]"), wNarrow.out);
+  const wWide = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn"]);
+  check("a re-grant naming ONLY --scope silently widens that narrow row back to the whole plane",
+    wWide.status === 0 && wWide.out.includes("read [>]") && wWide.out.includes("post [>]"), wWide.out);
+  const wBack = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
   check("re-narrowing restores it, so the widening above is the omitted flags and nothing else",
-    renarrow.status === 0 && renarrow.out.includes("read [general]"), renarrow.out);
+    wBack.status === 0 && wBack.out.includes("read [general]"), wBack.out);
+  await cotal(["actor", "revoke", "widenprobe", "--sub", sub]);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
   const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);
@@ -231,8 +238,8 @@ try {
     clearNoAdmin.out,
   );
   check(
-    "…and the ADD-to-current re-grant (never static mint repair)",
-    clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint"),
+    "…and the ADD-to-current re-grant (never static mint repair), on the WHOLE row",
+    clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint") && clearNoAdmin.out.includes("WHOLE ROW"),
     clearNoAdmin.out,
   );
   // Every field named, deliberately: this is a re-grant of a row that was narrowed above, and

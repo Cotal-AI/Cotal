@@ -79,8 +79,7 @@ export interface ActorRow {
    *     read set and `[]` for the post set. Narrower, not wider, so not a hazard, but a reader
    *     asking "does anything default these before they land here" must be told both.
    *
-   *  This sentence used to stop at the first line, which was true of the resolver and false of the
-   *  system. The list above is what the honest version costs. */
+   *  Name the flag, or the row gets `>`. */
   allowSubscribe: string[];
   /** Channel post ACL minted at connect. Explicit HERE (empty = cannot post anywhere), with the
    *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant` supplies `>` for an
