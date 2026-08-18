@@ -81,15 +81,42 @@
  * `({ seam: f } = core)` is an ordinary object KEY, which this reader allows everywhere else
  * because a key normally names a slot rather than reading one. Only position tells them apart.
  *
- * THE PLAIN-SOURCE DOOR IS TWO LINES WIDE, and saying so is the point of writing it here. A document
+ * THE PLAIN-SOURCE DOOR HAS A CENSUS, and keeping the census current is the point of writing it here.
+ * A document
  * refuses a computed key it cannot settle; a plain source does not, so `export const KEY = "<seam>"`
  * in one file and `core[KEY]({ ... })` in another is SILENT. Review measured it. The fence was not
  * extended to plain sources because that was measured too: refusing every unsettled computed key
- * across the tree reddens eleven call sites that have nothing to do with this seam, most of them in
+ * across the tree reddens ten call sites that have nothing to do with this seam (four on a clean
+ * checkout, and the gap is a gitignored bundle, see A FOURTH boundary below), most of them in
  * vendored bundles, and a check that cries wolf on ordinary code teaches people to route around it.
  * What IS closed everywhere, because it can be closed for free, is the order-dependent name: a key
  * folding through a name declared more than once, where some declaration spells the seam, is refused
  * in a plain source exactly as in a document.
+ *
+ * THE DOOR'S OTHER SPELLINGS are all ways of writing a table that the fold map declines to ADMIT,
+ * and they are listed because each was MEASURED silent at this tip rather than reasoned about. The
+ * control is a plain `const T = { k: "<seam>" }; core[T.k]({...})`, which IS seen: it moves the
+ * population to 95 and reddens. Each of the following leaves the population at 94 with the suite
+ * fully green, which is what makes them misses rather than opinions:
+ *
+ *   - a NESTED table, `const T = { a: { k: "<seam>" } }; core[T.a.k]`, since the fold reads one
+ *     level of properties rather than a path;
+ *   - a key DESTRUCTURED out of a table, `const { k } = T; core[k]`, since a binding pattern is not
+ *     a name this map collects;
+ *   - a table destructured out of a literal, `const { T } = { T: { k: "<seam>" } }`, the same gap
+ *     one level up;
+ *   - a table wrapped in `Object.freeze`, since the admission test wants a bare object literal and
+ *     freeze's initializer is a CALL. This is the one to flinch at, because freezing a constant
+ *     table is ordinary defensive style rather than a way to hide anything;
+ *   - a GETTER-valued property, `{ get k() { return "<seam>" } }`, where there is no initializer to
+ *     fold at all.
+ *
+ * None of the five is closed, and that is a judgement rather than an oversight. Every closure in
+ * this area has opened a sibling, four times running, and three of those cost a FALSE RED that had
+ * to be found before it could be fixed. All five are MISS-side, the direction where being wrong
+ * spends coverage instead of credibility, and the population counts are the only cover they have.
+ * None gets a cell asserting the miss, deliberately: a cell that pins a hole reads as intent to the
+ * next author, which is precisely how the previous hole survived two reviews.
  *
  * THREE OF ITS BOUNDARIES ARE CURATION, not deduction, and adversarial review measured each one
  * silent. The container WATCHLIST decides which markup languages get a recorded decision, so an
