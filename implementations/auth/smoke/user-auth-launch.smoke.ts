@@ -173,6 +173,16 @@ try {
   // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
   const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && narrow.out.includes("read [general]"), narrow.out);
+  // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
+  // that names only --scope resets the ACLs this narrow row just set back to the wide default. Two
+  // refusals used to print exactly this command as their remedy. Nothing here is a fixture: it is
+  // the real CLI writing the real ledger, and the row it leaves behind reads every channel.
+  const scopeOnly = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn", "--label", "smoke human"]);
+  check("a re-grant naming ONLY --scope silently widens the narrow row back to the whole plane",
+    scopeOnly.status === 0 && scopeOnly.out.includes("read [>]") && scopeOnly.out.includes("post [>]"), scopeOnly.out);
+  const renarrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
+  check("re-narrowing restores it, so the widening above is the omitted flags and nothing else",
+    renarrow.status === 0 && renarrow.out.includes("read [general]"), renarrow.out);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
   const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);
