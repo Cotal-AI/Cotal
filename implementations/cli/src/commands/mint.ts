@@ -65,8 +65,8 @@ export async function mint(args: ParsedArgs): Promise<void> {
     console.error(
       c.red(
         `--allow-subscribe and --allow-publish apply to the agent profile only (got ${offAgent}). ` +
-          `The observer and admin profiles carry a fixed read set over the whole chat plane and would ` +
-          `IGNORE these, so a scoped reader must be minted with --profile agent.`,
+          `The observer and admin profiles carry a fixed read set over the whole chat plane, so these ` +
+          `two flags are refused here rather than narrowing anything: mint a scoped reader with --profile agent.`,
       ),
     );
     process.exit(1);
