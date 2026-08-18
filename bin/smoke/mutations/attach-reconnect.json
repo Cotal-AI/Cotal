@@ -60,7 +60,15 @@
     "Publishing to NATS is a buffer write; the FLUSH is the round trip that says the frame left. Cell B",
     "detaches while the link is still down, so it is the one cell that reaches the exit with a session",
     "genuinely unhandled, and its line was ABSENT on the buggy code. That absence is how the defect was",
-    "found, and mutation 8 is the same absence on demand."
+    "found, and mutation 8 is the same absence on demand.",
+    "",
+    "MUTATION 12 GRADES A DEFECT THIS SUITE SHIPPED WITH, found by measuring the cell it was hiding",
+    "behind. Cell J asserted a clean exit and got one: the detach was honoured immediately, the",
+    "terminal came back, `detached from` printed. What no assertion looked at was WHEN the process",
+    "ended. The backoff `sleep` lost its race and was never cleared, so node held the command open to",
+    "the end of the rung, up to 30 seconds of a shell that had already said it detached. A limit",
+    "measured after the work is no limit, so the assertion is bounded against the next attempt's own",
+    "position, which is the only clock the defect is expressed in."
   ],
   "mutations": [
     {
@@ -171,6 +179,16 @@
       "expectRed": "...saying NOTHING about a held session, because it handed the session back on the way out",
       "cell": "...saying NOTHING about a held session, because it handed the session back on the way out",
       "note": "The loop released before claiming the next session, which covers every exit that stays IN the loop and none that leaves it. An operator who detaches during the backoff is the ordinary case: the link may be back, one dial would free the slot, and returning straight out leaves it held and then reports that as though nothing could be done. Aimed at cell J, which heals the link and detaches during the 30s rung so the exit path, not a reconnect, is what has to do the freeing.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the backoff timer is abandoned rather than cleared, so a detach holds the shell to the end of the rung",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);\n      clearTimeout(timer);",
+      "replace": "      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);",
+      "expectRed": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
+      "cell": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
+      "note": "Losing a Promise.race does not stop a setTimeout. Without the clear, the detach is honoured at once and the terminal comes back, and then node keeps the process alive until the abandoned timer fires: measured at 27.0s with the next attempt 26.9s away and 8.3s with it 8.1s away, tracking the rung rather than any work. Aimed at cell J, which bounds the exit against where the next attempt actually falls rather than against a constant, because a constant loose enough for a slow runner is also loose enough for this.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]

@@ -40,6 +40,10 @@
  *      failure mark, the refusal's own remedy, and no reconnect it was never going to make.
  *   H. a reconnect hands the abandoned session back to the manager. Against a SILENT seat, which
  *      is the one nothing on the serving side reaps, so the count is the client's doing or nobody's.
+ *   I. a link that stays UP and carries nothing ends the attach cleanly and says what it could not
+ *      hand back, rather than aborting the command on a wait that never returns.
+ *   J. a detach pressed in the wait BETWEEN attempts, on a link that came back, hands the session
+ *      back and gives the shell straight back rather than at the end of the rung.
  *   F. the four classifications the loop turns on, as functions.
  *
  * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
@@ -132,13 +136,21 @@ const releaseBroker = teardownOnSignal(srv, dir);
 // --- the faultable link -------------------------------------------------------------------------
 const liveSockets = new Set<Socket>();
 let proxy: Server | undefined;
-// The link has THREE states, not two. Severed is a socket that is gone, which the client's NATS
+// The link has FOUR states, not two. Severed is a socket that is gone, which the client's NATS
 // layer notices at once. HELD is a socket that is still up and carries nothing, which is what a
 // sleeping laptop or a black-holing middlebox actually looks like from the client: the connection
 // is not closed, so anything that asks "is this link alive?" says yes, and only a round trip that
 // fails to come back tells the truth. Data handlers behind a flag, because `pipe` cannot be paused
 // without also pausing the socket the flag is meant to keep looking healthy.
+//
+// The fourth is severed but LOUD: the port keeps listening and destroys what it accepts, so every
+// dial the client makes lands here with a timestamp. To the client that is a link that resets
+// instead of one that refuses, a failed attempt either way. It exists because a cell that has to
+// act BETWEEN two re-establishment attempts cannot get there by waiting: the backoff ladder runs on
+// the client's clock from the moment the link died, and everything this file observes arrives
+// through a pty and a polling reader, offset by however loaded the machine is (issue #582).
 let holding = false;
+const knocks: number[] = [];
 const hold = (): void => { holding = true; };
 const unhold = (): void => { holding = false; };
 const heal = (): Promise<void> =>
@@ -164,6 +176,24 @@ const sever = (): Promise<void> =>
     if (!s) return res();
     s.close(() => res());
   });
+/** Severed, and every dial timestamped. `sever()` first: this takes the same port. */
+const severLoud = (): Promise<void> =>
+  new Promise((res, rej) => {
+    holding = false;
+    knocks.length = 0; // one outage, one measurement: a knock from the last one is not this schedule
+    const s = createServer((sock) => { knocks.push(Date.now()); sock.destroy(); });
+    s.on("error", rej);
+    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
+  });
+/** The time of the first dial of an attempt that was made from the top of a 30s wait, or undefined
+ *  while the ladder is still climbing. Two knocks 25s apart can come from no other rung, so this is
+ *  the client's schedule MEASURED rather than modelled from the ladder and a stopwatch. The whole
+ *  run is scanned, not just the newest pair: an attempt dials several times within a few
+ *  milliseconds, so the pair carrying the rung is buried the moment the rest of its cluster lands. */
+const longRungAt = (): number | undefined => {
+  for (let i = knocks.length - 1; i > 0; i--) if (knocks[i] - knocks[i - 1] >= 25_000) return knocks[i];
+  return undefined;
+};
 
 // The seat ticks FAST. The manager's stall watchdog only arms once the 64-frame send window is
 // full, so at 50ms the window fills in about 3s and the serving side is dead by about 33s: that is
@@ -503,23 +533,65 @@ try {
     // action rather than an exotic one: the link dies, the client records the session it could not
     // hand back, the link comes back, and the operator presses the detach key during the wait
     // before the next attempt. Exiting there without dialling would leave a slot held that a single
-    // connection would have freed, and would then say so as though nothing could be done. The wait
-    // below is long enough that the detach cannot be raced by the next attempt: after 40s of failed
-    // attempts the backoff is on its 30s rung, so the heal lands mid-wait rather than mid-attempt.
+    // connection would have freed, and would then say so as though nothing could be done.
+    //
+    // Getting there is the hard part, and waiting will not do it (#582). `watchDetachKey` exists
+    // only for the duration of a wait, so a press that lands while an ATTEMPT is running is not
+    // read: it sits in the stream, the attempt succeeds on the link this cell just healed, and the
+    // buffered byte then detaches the NEW session perfectly cleanly. Every assertion below still
+    // passes and the premise is gone. So the cell measures where the wait is instead of assuming
+    // it: knock timing puts it on the 30s rung, it lets that attempt finish dialling, heals, and
+    // then CONFIRMS no reconnect announced itself before it presses anything.
     const baseJ = live();
     const b = attachUnderPty(root, [], QUIET); started.push(b);
     check("the attach comes up", await b.waitFor(new RegExp(`attached to ${QUIET}`), 90_000), b.seen().slice(-400));
     check("...and the manager counts one more live session", live() === baseJ + 1, { baseJ, now: live() });
 
     await sever();
+    await severLoud();
     check("the reconnect is under way", await b.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000), b.seen().slice(-400));
-    await wait(40_000);
-    await heal();
+    let landed = false;
+    for (let tries = 1; tries <= 4 && !landed; tries++) {
+      const rungDeadline = Date.now() + 150_000;
+      while (longRungAt() === undefined && Date.now() < rungDeadline) await wait(200);
+      const quietUntil = Date.now() + 20_000;
+      while (Date.now() - (knocks.at(-1) ?? 0) < 1_500 && Date.now() < quietUntil) await wait(200);
+      await sever();
+      await heal();
+      await wait(1_500);
+      landed = !/\[cotal: reconnected\]/.test(b.seen());
+      if (!landed) {
+        // The heal was used by an attempt that was already running. Sever and take the next rung:
+        // the cell reports the miss rather than asserting against the scenario it did not get.
+        console.log(`    (heal ${tries} landed on an attempt rather than in the wait; taking the next rung)`);
+        const losses = (b.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length;
+        await sever();
+        await severLoud();
+        const again = Date.now() + 60_000;
+        while (Date.now() < again && (b.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length === losses) await wait(200);
+      }
+    }
+    check("the link is back with the loop WAITING rather than dialling, which is this cell's premise",
+      landed, { knocks: knocks.length, tail: b.seen().slice(-300) });
+    // The next attempt is a full rung away from the knock that proved the rung, so the margin below
+    // is measured against where the boundary actually is rather than against a stopwatch.
+    const nextAttemptDue = (longRungAt() ?? Date.now()) + 30_000;
+    const tPress = Date.now();
     b.write(DETACH_BYTE);
     check("the detach key ends the attach during the backoff", await b.waitExit(30_000), b.seen().slice(-300));
+    const tExit = Date.now();
     check("...exiting clean", b.exit()?.code === 0, b.exit());
     check("...without ever re-establishing, so this is the backoff path and not a reconnect",
       !/\[cotal: reconnected\]/.test(b.seen()), b.seen().slice(-600));
+    // The shell comes back with the press, not with the rung. Losing a `Promise.race` does not stop
+    // a `setTimeout`, so before this was asserted the loop honoured the detach at once, printed
+    // `detached from`, and then held the process open until the abandoned backoff timer fired: 27.0s
+    // measured with the next attempt 26.9s away, and 8.3s with it 8.1s away. Bounded against the
+    // BOUNDARY rather than against a constant, because the defect is exactly a wait that runs to
+    // the boundary and a constant would have to be chosen loose enough to allow it on a slow runner.
+    check("...and it gives the shell back on the press, not when the rung it was waiting on expires",
+      tExit <= nextAttemptDue - 10_000,
+      { pressToExitMs: tExit - tPress, boundaryInMs: nextAttemptDue - tPress, spareMs: nextAttemptDue - tExit });
     check("...saying NOTHING about a held session, because it handed the session back on the way out",
       !/the manager still holds/.test(b.seen()), b.seen().slice(-600));
     const freed = await settle(baseJ, 20_000);
