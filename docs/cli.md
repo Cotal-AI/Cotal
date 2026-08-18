@@ -490,9 +490,10 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 `--events` turns on the session's **event plane**: a stream of structured events describing what
 the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
 the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
-agents are allowed to share a display name and would then share a stream. The manager grants publish
-rights on exactly that one channel, and a connector that does not publish an event plane refuses the
-flag rather than starting a session whose events have nowhere to go.
+agents are allowed to share a display name and would then share a stream. The launch grants publish
+rights on exactly that one channel, foreground and detached alike, and a connector that does not
+publish an event plane refuses the flag rather than starting a session whose events have nowhere to
+go.
 
 The flag and the grant are separate on purpose. Holding publish rights on a channel is not a request
 to publish to it, so writing an event channel into an agent file's `allowPublish` does not turn the
