@@ -915,6 +915,12 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // on this file knowing what a module is or which script ran first.
   check("...so a LATER script rebinding that name cannot hide the call, whatever the browser would do",
     html(`<script>var N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>\n<script>var N = "other";</script>`)[0]?.verdict === "unverifiable");
+  // The other side of the refusal, and the one that keeps it from being a blanket. A script that
+  // declares the name ITSELF resolves it itself, even when another script declares the same name:
+  // the local declaration is what the call reads, so refusing here would be a false red on ordinary
+  // code, and this file treats crying wolf as its own kind of failure.
+  check("...but a name the script declares ITSELF still folds, even when another script declares it too",
+    html(`<script>var N = "other";</script>\n<script>var N = "standaloneConnectOpts";\ncore[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
   check("...and the same holds when the rebinding is a MODULE, whose scope is not the page's at all",
     html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>\n<script type="module">const N = "other";</script>`)[0]?.verdict === "unverifiable");
   check("...while a module still folds its OWN constants, so the split does not cost it that",
