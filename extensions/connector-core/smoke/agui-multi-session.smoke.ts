@@ -47,7 +47,7 @@
  * Run: pnpm smoke:agui-multi-session   (needs nats-server on PATH; starts its own broker)
  */
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync, appendFileSync, readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -254,6 +254,48 @@ try {
     const after = await session("ses_upgrade_two", { principalDir: upDir, actor: upActor });
     c("upgrade:a-log-from-before-the-shared-record-carries-its-tip-across", after.err === undefined && after.published === 1, after);
     c("upgrade:...and-the-rebuilt-record-is-ahead-of-the-tip-it-was-seeded-from", after.tip > carried.tip, { seeded: carried.tip, now: after.tip });
+  }
+
+  // ------------------------------------------------------------- the upgrade path, MID-ACK
+  //
+  // THE SAME BOUNDARY, MET BY A LOG THAT DIED IN THE ONE WINDOW THE `acked` STATE EXISTS FOR. A
+  // session that took an acknowledgement and died before folding it keeps the assigned sequence in
+  // `pending.ackSeq` and NOT in its frontier. Reading the frontier alone recovers an older number,
+  // persists it, and the next publish is refused by the broker for the rest of the principal's
+  // life. The session that could have folded it never runs again, because upgrading forks the
+  // session id.
+  //
+  // THIS RUNS AGAINST THE REAL BROKER ON PURPOSE, and that is the difference between it and the
+  // unit cells in `smoke:subject-frontier`. Those build a log by hand and prove the scan reads the
+  // right field. Only the broker can say whether the number the scan produced is the number the
+  // SUBJECT actually holds, which is the claim that matters: a recovered tip that is merely
+  // self-consistent still halts.
+  {
+    const mActor = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;
+    const mPrincipal = principalKey(OWNER, mActor).key;
+    const mDir = join(root, "midack-principal");
+    mkdirSync(mDir, { recursive: true });
+    const subjectPath = join(mDir, "subject.json");
+
+    const first = await session("ses_midack", { principalDir: mDir, actor: mActor });
+    c("midack:CONTROL-the-first-session-published-and-the-subject-really-moved", first.published === 1 && first.tip > 0, first);
+    const assigned = first.tip;
+
+    // Rewrite the log into the state a death between the ack and the fold leaves, and remove the
+    // record. After this the assigned sequence exists in exactly ONE place on disk: `pending.ackSeq`.
+    const walPath = join(mDir, "ses_midack", "wal.json");
+    const doc = JSON.parse(readFileSync(walPath, "utf8")) as { frontier: { lastSubjectSeq: number; seq: number; sourceCursor: string }; pending: unknown };
+    doc.pending = { state: "acked", ackSeq: assigned, seq: doc.frontier.seq, sourceCursor: doc.frontier.sourceCursor };
+    doc.frontier = { ...doc.frontier, lastSubjectSeq: 0 };
+    writeFileSync(walPath, JSON.stringify(doc));
+    rmSync(subjectPath, { force: true });
+    c("midack:CONTROL-the-frontier-really-lost-the-number-so-only-the-pending-holds-it",
+      JSON.parse(readFileSync(walPath, "utf8")).frontier.lastSubjectSeq === 0, readFileSync(walPath, "utf8"));
+
+    const after = await session("ses_midack_two", { principalDir: mDir, actor: mActor });
+    c("midack:a-log-that-died-between-the-ACK-and-the-FOLD-still-carries-its-sequence-across",
+      after.err === undefined && after.published === 1, after);
+    c("midack:...and-the-broker-AGREED-with-the-recovered-number", after.tip > assigned, { assigned, now: after.tip });
   }
 
   // ------------------------------------------------------------------ abandonment is TOTAL

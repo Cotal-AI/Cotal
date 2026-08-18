@@ -28,7 +28,13 @@
     "THE MESSAGE IS BEHAVIOUR, NOT DECORATION, so S8 and S9 grade it. A halt that names a guard",
     "without its boundary, or a remedy with no command behind it, costs an operator the hour the",
     "message was written to save. Neither find string anchors on a comment: both are shipped text an",
-    "assertion reads."
+    "assertion reads.",
+    "",
+    "THE ENTRY POINT IS PROVED, NOT ASSUMED. The mid-ack block drives a real emitter over a real",
+    "broker: the first session publishes, its log is rewritten into the state a death between the",
+    "ack and the fold leaves, the record is removed, and the next session must still publish. A",
+    "recovered tip that is merely self-consistent halts here, because only the broker can say",
+    "whether the number is the one the subject actually holds."
   ],
   "mutations": [
     {
@@ -93,6 +99,15 @@
       "expectRed": "control:the-halt-LOCATES-the-state-to-remove",
       "cell": "control:the-halt-LOCATES-the-state-to-remove",
       "note": "abandon() has no shipped caller anywhere in the tree, so the directory is the whole remedy. One dirname short names one session's log, and removing that alone leaves the shared record and the other sessions standing, which is the mixed state the next start refuses."
+    },
+    {
+      "name": "S15 the acked sequence is dropped, proved against the REAL broker rather than a hand-built log",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (pending && pending.state === \"acked\") {\n",
+      "replace": "      if (false && pending && pending.state === \"acked\") {\n",
+      "expectRed": "midack:a-log-that-died-between-the-ACK-and-the-FOLD-still-carries-its-sequence-across",
+      "cell": "midack:a-log-that-died-between-the-ACK-and-the-FOLD-still-carries-its-sequence-across",
+      "note": "The same break as S13, reached through a real emitter against a real nats-server instead of through a log written by the suite. S13 proves the scan reads the right field; this proves the number it produces is the one the SUBJECT holds, which a self-consistent but wrong tip would not be. Mutation-proof's own scope note says a killed mutation shows the suite depends on the code and not that an entry point reaches it, so the entry point is proved here rather than assumed."
     }
   ]
 }
