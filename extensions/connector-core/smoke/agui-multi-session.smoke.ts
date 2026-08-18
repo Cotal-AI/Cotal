@@ -347,10 +347,20 @@ try {
   // halted emitter and a subject nobody may publish to again, and the sessions above share a
   // subject whose tip later cells still depend on.
   //
-  // NO NEW MUTANT IS REGISTERED FOR IT. The mechanism is already graded from two other angles: S1
-  // breaks what `E` is, and the foreign-writer control breaks the assumption that a tip only moves
-  // through us. A third mutant here would be padding, and a kill set is supposed to be a claim
-  // about coverage rather than a count.
+  // THESE CELLS ARE UNMUTATED, AND SAYING SO IS THE POINT. The first version of this comment claimed
+  // the mechanism was already graded from two other angles, S1 and the foreign-writer control, and a
+  // review EXECUTED that claim and refuted it. S1 sets `E` to the log's own `lastSubjectSeq`; the
+  // late session's log is virgin, so `E` is 0, the subject is already past it, and the fence still
+  // halts, leaving every cell here green. The foreign-writer control runs a CURRENT view against a
+  // tip somebody else moved, while this block runs a STALE view against a tip WE moved: a different
+  // assumption, not the same one from another side.
+  //
+  // So the honest label is unmutated rather than already-covered. What would red these cells is an
+  // expectation sourced from the FILE instead of from the bound view, which would let the late
+  // session publish; that is not a one-line break in any shipped file, so it is named here instead
+  // of registered as a mutant nobody can apply. A coverage claim asserted rather than executed is
+  // the same defect this whole change is about, and it survived one round of review by being
+  // repeated back to me before a second one ran it.
   {
     const fActor = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;
     const fPrincipal = principalKey(OWNER, fActor).key;
