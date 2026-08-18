@@ -1149,6 +1149,16 @@ c("real:the-LAST-run-of-the-session-is-still-open-at-EOF", (() => {
   return m.openRun() !== null;
 })());
 
+// A COUNT, but only on the FIXTURE arm. Pointed at an operator's own session (`smoke:agui-map:real`)
+// the `real:` cells vary with what that session contains, so a flat total would be a false gate.
+// Pointed at the committed fixture, every cell is deterministic, and a regression that DELETES one
+// otherwise leaves the run green with a smaller number that nobody compares. The PR body leans on
+// this total, so the suite is what holds it.
+if (SESSION.endsWith("session-shape.jsonl")) {
+  const EXPECTED = 50;
+  c(`fixture:every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
+}
+
 console.log(
   `agui-map smoke: ${pass} passed, ${fail} failed  ` +
     `[session: ${SESSION.split("/").pop()}, ${entries.length} records]\n` +

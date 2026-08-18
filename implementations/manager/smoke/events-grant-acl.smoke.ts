@@ -244,14 +244,18 @@ try {
   // the handler. It asks whether the event channel names the agent being created, which the
   // manager knows because it has just allocated the principal.
   //
-  // ⚠️ THE EXEMPTION HALF IS NOT REACHABLE FROM THIS SUITE, and saying so is the point. In static
-  // mode the allocated actor is a freshly minted nkey (`newIdentity()` inside the accept body), so
-  // no caller can name the child's own channel before it exists and every concrete event channel a
-  // static caller supplies is by construction foreign. The exemption is reachable in USER mode,
-  // where the allocated actor IS the requested name, and it is load-bearing there: without it a
-  // legitimate spawn that carries its child's own channel forward would be refused. That door is
-  // graded in `implementations/auth/smoke/user-spawn.smoke.ts` against a real user-mode mesh. This
-  // suite grades the refusal half and states which half it cannot see rather than implying both.
+  // ⚠️ THE EXEMPTION HALF IS NOT REACHABLE AT THIS DOOR, and saying so precisely is the point. In
+  // static mode the SPAWN seam's allocated actor is a freshly minted nkey (`newIdentity()` inside
+  // the accept body), so no caller can name the child's own channel before it exists and every
+  // concrete event channel a static caller supplies to a SPAWN is by construction foreign. The
+  // exemption is reachable at the RESUME door even here, because a document names the identity it
+  // is re-arming: sections 7 and 8 each carry a clean control that resumes an inventory holding the
+  // armed agent's OWN channel and asserts this rule does not refuse it. It is reachable at the
+  // SPAWN door in USER mode, where the allocated actor IS the requested name, and it is
+  // load-bearing there: without it a legitimate spawn that carries its child's own channel forward
+  // would be refused. That door is graded against a real user-mode mesh in
+  // `implementations/auth/smoke/user-spawn.smoke.ts`, whose event cells are refusals and the
+  // wildcard pass-through; the admitted-own-channel spawn is what this suite cannot see.
   // Section 9 mints with the profile THIS refusal names, so its text and the channel it refused are
   // carried out of this block rather than re-derived from a second, differently-fenced manager.
   {
@@ -528,13 +532,17 @@ try {
     );
     const granted = subAcl(credsPath);
     check(
-      "the profile the refusal names mints a reader of EXACTLY the one event channel",
+      "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
       granted.length === 1 && channelOf(granted[0]!) === remedyChannel,
       { profile, granted, refused: remedyChannel },
     );
+    // ANY wildcard tail, not the one literal shape the observer arm happens to emit. `subAcl` has
+    // already filtered to chat subjects, so a trailing `>` here is a wildcard over some part of the
+    // plane whatever its prefix: `<space>.chat.>` and `<space>.chat.*.*.>` both fail this, and only
+    // the first would fail an `endsWith(".chat.>")` written against today's observer arm.
     check(
       "and hands out no wildcard over the chat plane",
-      granted.every((s) => !s.endsWith(".chat.>")),
+      granted.every((s) => !s.endsWith(">")),
       { profile, granted },
     );
   }

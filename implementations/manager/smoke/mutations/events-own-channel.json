@@ -96,8 +96,8 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "    : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
       "replace": "    : `\\`cotal mint <reader> --profile observer --allow-subscribe ${channel}\\`, where there ` +",
-      "expectRed": "the profile the refusal names mints a reader of EXACTLY the one event channel",
-      "cell": "the profile the refusal names mints a reader of EXACTLY the one event channel",
+      "expectRed": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
+      "cell": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
       "note": "This is the shipped state of the text until a live mint decoded what it produced. `mint` reads --allow-subscribe only for the agent profile and the observer arm of permissionsFor hardcodes chat.>, so the printed command handed an operator a reader of the whole chat plane while the sentence around it promised one channel. Section 9 parses the profile out of the refusal rather than hardcoding one, so this mutant is the drift it exists to catch."
     },
     {

@@ -55,6 +55,22 @@ export async function mint(args: ParsedArgs): Promise<void> {
     console.error(c.red(`--role and --provision apply to the agent profile only (got ${offAgent})`));
     process.exit(1);
   }
+  // AND SO DO THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED. They are read
+  // below only inside the `profile === "agent"` branch, while `permissionsFor`'s observer/admin arm
+  // emits a FIXED read set over the whole chat plane. So `--profile observer --allow-subscribe
+  // <one channel>` exited 0, printed a success line, and handed out a credential that reads every
+  // channel in the space: an operator asking to narrow got the opposite, and nothing said so. The
+  // paragraph above already states the principle this violated, one flag pair over.
+  if ((values["allow-subscribe"] !== undefined || values["allow-publish"] !== undefined) && offAgent) {
+    console.error(
+      c.red(
+        `--allow-subscribe and --allow-publish apply to the agent profile only (got ${offAgent}). ` +
+          `The observer and admin profiles carry a fixed read set over the whole chat plane and would ` +
+          `IGNORE these, so a scoped reader must be minted with --profile agent.`,
+      ),
+    );
+    process.exit(1);
+  }
 
   // `--signer`: no identity, no name — strip this space's auth.json to its account signing material.
   if (values.signer) {
@@ -77,7 +93,7 @@ export async function mint(args: ParsedArgs): Promise<void> {
 
   const name = positionals[0];
   if (!name) {
-    console.error(c.red("usage: cotal mint <name> --profile <agent|observer|admin> [--allow-subscribe a,b] [--allow-publish a,b] [--role <role>] [--provision] [--out <path>]"));
+    console.error(c.red("usage: cotal mint <name> [--profile <agent|observer|admin>] [--out <path>]  (agent profile also: [--allow-subscribe a,b] [--allow-publish a,b] [--role <role>] [--provision])"));
     process.exit(1);
   }
   const splitList = (v?: string) => (v ? v.split(",").map((s) => s.trim()).filter(Boolean) : undefined);

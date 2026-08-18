@@ -60,5 +60,9 @@ actor ledger for `actor grant` to write to, so mint the reader instead:
 not the observer one, since `mint` reads `--allow-subscribe` only for that profile and an observer
 mint hands out a reader of the whole chat plane.
 
-`cotal mint`'s `--allow-subscribe` / `--allow-publish` rows in `cli.md` and the sentence in
-`build-a-client.md` now say the same thing: those flags apply to the agent profile only.
+`cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+ignoring them. The observer and admin profiles carry a fixed read set over the whole chat plane, so
+`--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+out a credential that reads every channel in the space: an operator asking to narrow got the
+opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.

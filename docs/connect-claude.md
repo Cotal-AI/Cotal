@@ -266,14 +266,16 @@ profile: an observer mint ignores the flag and hands out a reader of the whole c
 the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
 reader needs, since an authed consuming endpoint refuses to start without one.
 
-Two things a reader has to do that are not obvious. It must pass the event channel as its channel
-set, or the endpoint joins `general` by default and is refused there. And it reads history through
-`readHistory`, the delivery daemon's mediated read, not `channelHistory`: a scoped credential is
-denied the ad-hoc consumer that the direct read creates, by design.
+Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event
+channel in `channels`, or the endpoint joins `general` by default and a scoped credential is refused
+there. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not
+`channelHistory(channel)`: a scoped credential is denied the ad-hoc consumer the direct read
+creates, by design. `cotal console` and the web console already do both.
 
 The `<owner>.<actor>` pair is the session's principal, not its display name. On a user-auth mesh
 the actor half **is** the agent's name, so the channel is `events.<your-owner>.<agent-name>`. On a
-static mesh the actor is a key the manager allocated, and the spawn reply carries it as `id`. Note
+static mesh the owner half is the literal `local` and the actor is a key the manager allocated, so
+the channel is `events.local.<key>`; the spawn reply carries that key as `id`. Note
 that `cotal console` and the web console keep event channels out of their channel lists on purpose,
 since a plane is a machine feed rather than a conversation; they draw the frames when you open the
 channel by name.

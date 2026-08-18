@@ -414,10 +414,6 @@ export const cotal: Plugin = async () => {
           // Cotal-aware context reset: same mesh identity, new OpenCode context/session id.
           if (!event.properties.info.parentID) adoptSession(event.properties.info.id, "top-level session create");
           break;
-        case "message.updated":
-          break;
-        case "message.part.updated":
-          break;
         case "session.idle": {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;

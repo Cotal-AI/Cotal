@@ -151,5 +151,11 @@ const mapAll = (entries: ClaudeEntry[]) => {
     wire.includes(TOOL_SECRET));
 }
 
+// A COUNT, because several cells above build their own inputs and a regression that DELETES one
+// leaves the run green with fewer cells rather than red. The PR body leans on this number, so the
+// suite is what holds it rather than a sentence.
+const EXPECTED = 12;
+c(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
+
 console.log(`agui-authorship smoke: ${pass} passed, ${fail} failed`);
 process.exit(fail ? 1 : 0);

@@ -2,7 +2,6 @@
   "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
   "guard": "the out-of-band remedy a user-mesh refusal prints is a NARROW grant, spelled out field by field, rather than a bare verb whose omitted flags mean the wide default",
   "command": "pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
-  "afterRestore": "pnpm --filter @cotal-ai/manager build",
   "completionMarker": "USER-SPAWN",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/events-remedy-user.json",
   "why": [
@@ -29,7 +28,8 @@
       "replace": "    ? `\\`cotal actor grant <reader> --owner ${owner}` +",
       "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
-      "note": "This is the shipped state of the text until a security lens read it against `runActor`'s defaults. The second cell reddens too, because the parsed flags fall back to `>` and the row that lands is the wide one an operator would have written."
+      "note": "This is the shipped state of the text until a security lens read it against `runActor`'s defaults. The second cell reddens too, because the parsed flags fall back to `>` and the row that lands is the wide one an operator would have written.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
 }
