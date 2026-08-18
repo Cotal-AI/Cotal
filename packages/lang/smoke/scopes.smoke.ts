@@ -162,6 +162,45 @@ let racePins: import("../src/index.js").RunPins;
   );
 }
 
+// ---- 3b) a fanOut branch that rejects fails the scope and cancels its siblings ----------------
+//
+// The same law as `parallel`. Measured before it: a rejecting branch threw out of the scope alone,
+// and its siblings went on performing effects against a scope whose entry had already settled
+// failed. The handler below wakes `c`'s first sleep AFTER `b` has thrown, so `c` is the branch that
+// would begin a new effect past the failure; the cell holds that it never does.
+{
+  const performed: string[] = [];
+  class Staggered extends SimHandler {
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      const name = String((ctx as { key?: { name?: string } }).key?.name ?? "");
+      performed.push(name);
+      await new Promise((r) => setTimeout(r, name === "first-c" ? 30 : 1));
+      return await super.sleep(req, ctx);
+    }
+  }
+  logged.length = 0;
+  const r = await run(
+    `try {
+  await fanOut(["a", "b", "c"], async (x) => {
+    await sleep("1m", { name: "first-" + x });
+    if (x === "b") { throw { code: "mine", x }; }
+    await sleep("1m", { name: "second-" + x });
+    return x;
+  }, { name: "f", key: (x) => x });
+} catch (e) { log("caught", e.code, e.x); }
+await sleep("1m", { name: "after" });`,
+    { runId: "r-3b", handler: new Staggered(), onLog: sink },
+  );
+  const scope = scopeOf(r.journal, "fanOut");
+  ok("a rejecting fanOut branch fails the scope with the branch's own thrown value, which the program can catch",
+    JSON.stringify(logged) === '[["caught","mine","b"]]', logged);
+  ok("and the siblings are cancelled: a branch whose effect completes after the failure begins no new effect",
+    !performed.includes("second-c") && performed.includes("after"), performed);
+  ok("and the failed scope entry records the losers as intent, like a failed parallel",
+    scope?.status === "failed" && JSON.stringify(scope?.cancel?.losers) === '["a","c"]' && scope?.cancel?.issued === false,
+    { status: scope?.status, cancel: scope?.cancel });
+}
+
 // ---- 4) THE ONE THAT MATTERS: a replayed race cannot re-decide -------------------------------
 
 {

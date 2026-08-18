@@ -1929,9 +1929,28 @@ class Interpreter {
       const walk = items
         .map((item, i) => [item, i] as const)
         .filter(([, i]) => only === undefined || only.has(branchKeys[i] as string));
-      const results = await Promise.all(walk.map(([item, i]) => fn(frames[i] as Frame, [item, i])));
-      frame.clock.join(frames.map((f) => f.clock));
-      return { branches: branchKeys, value: results };
+      // The same failure law as `parallel`: the first rejection cancels the siblings and the scope
+      // fails with it, carrying the losers. Measured before this block: a rejecting branch threw out
+      // of `Promise.all` alone, and every sibling went on performing effects against a scope whose
+      // entry had already settled failed.
+      let failed: string | null = null;
+      const launched = walk.map(([item, i]) =>
+        fn(frames[i] as Frame, [item, i]).catch((e: unknown) => {
+          if (failed === null) failed = branchKeys[i] as string;
+          throw e;
+        }),
+      );
+      try {
+        const results = await Promise.all(launched);
+        frame.clock.join(frames.map((f) => f.clock));
+        return { branches: branchKeys, value: results };
+      } catch (e) {
+        for (const f of frames) f.signal.cancel("a sibling branch failed");
+        await Promise.allSettled(launched);
+        frame.clock.join(frames.map((f) => f.clock));
+        const losers = branchKeys.filter((k) => k !== failed);
+        throw new ScopeFailed(e, { branches: branchKeys, cancel: { losers, issued: false } });
+      }
     }
 
     if (name === "conclave") {
