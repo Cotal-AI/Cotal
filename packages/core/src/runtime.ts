@@ -42,6 +42,17 @@ export interface AgentHandle {
    * Optional during the preservation rollout; a manager maintenance cut must fail closed when absent. */
   waitForExit?(): Promise<void>;
   interrupt(): void;
+  /** Type `data` into the agent as if it came from the keyboard: the one-shot sibling of
+   *  {@link interrupt} (which already writes `\x03`). A caller that wants to deliver a line of
+   *  text, not to watch a terminal, uses this instead of standing up an {@link AttachSession} for
+   *  it: a session carries a backlog, a subscriber set and a lifetime, and none of that is wanted
+   *  for one write.
+   *
+   *  OPTIONAL, and absent means REFUSE, never degrade: a backend that does not own the child's
+   *  input stream (tmux/cmux/orca/herdr attach to an externally-owned process) leaves it off, and
+   *  the manager answers `input is not supported by runtime <kind>`. A silent no-op here would be
+   *  a dropped keystroke, which is worse than an error. */
+  write?(data: string): void;
   /** Open a live attach. Throws on backends that can't stream (e.g. tmux/cmux, which
    *  you attach to natively). */
   attach(): AttachSession;
