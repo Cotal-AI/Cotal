@@ -53,6 +53,27 @@ export class SubjectFrontierCorruptError extends Error {
 }
 
 /**
+ * The record on disk is not the one this view was opened from, so this writer's number is not the
+ * one to write.
+ *
+ * DISTINCT FROM CORRUPTION: the file is perfectly well formed, it just belongs to a later state
+ * than this object remembers. Both are refusals rather than repairs, and telling them apart is what
+ * lets an operator know whether to look at the filesystem or at a second writer.
+ */
+export class SubjectFrontierMovedError extends Error {
+  constructor(readonly path: string, readonly viewTip: number, readonly diskTip: number | undefined) {
+    super(
+      `subject frontier ${path}: the record moved under this writer (this view holds ${viewTip}, ` +
+        `the file holds ${diskTip === undefined ? "no record at all" : diskTip}). The tip is shared by ` +
+        `every thread of the principal, so writing this view's number would take the record backwards ` +
+        `to a sequence the broker has already passed, and every later publish would expect a tip the ` +
+        `subject no longer has.`,
+    );
+    this.name = "SubjectFrontierMovedError";
+  }
+}
+
+/**
  * What the emitter needs from a subject frontier.
  *
  * An INTERFACE rather than only a class, so a suite whose subject is something else can pass a
@@ -106,6 +127,18 @@ export class FileSubjectFrontier implements SubjectFrontier {
       return fresh;
     }
 
+    return new FileSubjectFrontier(path, FileSubjectFrontier.parse(path, bytes, opts));
+  }
+
+  /**
+   * Bytes to a validated document, or a refusal.
+   *
+   * SHARED BY `open` AND BY THE RE-READ IN {@link advance} on purpose. A record that went corrupt
+   * underneath a live writer has to meet the same wall as one that was corrupt at boot; validating
+   * only on the way in would let a writer that opened a good file overwrite a bad one, which
+   * destroys the evidence of whatever produced it.
+   */
+  private static parse(path: string, bytes: Buffer, opts: { space: string; principal: string }): SubjectDoc {
     let raw: string;
     try {
       // FATAL decode, never `readFile(path, "utf8")`: Node's default substitutes U+FFFD for invalid
@@ -134,17 +167,74 @@ export class FileSubjectFrontier implements SubjectFrontier {
     if (d.principal !== opts.principal)
       throw new SubjectFrontierCorruptError(path, "principal matches", `file=${String(d.principal)} caller=${opts.principal}`);
     if (!isSafeNonNegInt(d.tip)) throw new SubjectFrontierCorruptError(path, "tip is a safe non-negative integer", String(d.tip));
-    return new FileSubjectFrontier(path, { v: d.v, space: d.space, principal: d.principal, tip: d.tip });
+    return { v: d.v, space: d.space, principal: d.principal, tip: d.tip };
   }
 
   async advance(seq: number): Promise<void> {
-    if (!isSafeNonNegInt(seq)) throw new Error(`subject frontier ${this.path}: seq must be a safe non-negative integer, got ${String(seq)}`);
-    // VALIDATE BEFORE THE DURABLE WRITE. A bad value written first bricks the record permanently
-    // while the call that wrote it reports success, and the next open refuses a file nothing can
-    // repair. Fail-closed has to happen before the write, not on the boot after it.
-    if (seq <= this.doc.tip)
-      throw new Error(`subject frontier ${this.path}: seq=${seq} does not advance the tip ${this.doc.tip}`);
-    await this.write({ ...this.doc, tip: seq });
+    return this.serialize(async () => {
+      if (!isSafeNonNegInt(seq)) throw new Error(`subject frontier ${this.path}: seq must be a safe non-negative integer, got ${String(seq)}`);
+      // VALIDATE BEFORE THE DURABLE WRITE. A bad value written first bricks the record permanently
+      // while the call that wrote it reports success, and the next open refuses a file nothing can
+      // repair. Fail-closed has to happen before the write, not on the boot after it.
+      if (seq <= this.doc.tip)
+        throw new Error(`subject frontier ${this.path}: seq=${seq} does not advance the tip ${this.doc.tip}`);
+      // THE FILE IS THE FRONTIER; THIS OBJECT IS ONLY A VIEW OF IT, AND THE CHECK ABOVE GRADES THE
+      // VIEW. The header of this file says a decrease is refused because it is lower than the one
+      // ON DISK, and until this line the comparison was against memory, so two views of one record
+      // took it backwards with no error at all: `A.advance(10)` then `B.advance(6)` left 6 on disk.
+      //
+      // NOT REACHABLE THROUGH A PUBLISH TODAY, AND THAT IS EXACTLY WHY IT IS GUARDED. A view that
+      // has gone stale publishes a stale `E`, and the broker's compare-and-set refuses it before
+      // any ack exists to record, so JetStream is what holds this file monotone right now.
+      // Measured, not assumed: two emitters on one principal, the second opened early, halted on
+      // `wrong last sequence` with the record still holding the first one's number. That is the
+      // same shape the released defect shipped on, two correct components with an assumption
+      // standing where a guard belongs, so the assumption becomes a guard here too.
+      const disk = await this.readDiskTip();
+      // ABSENT IS NOT ZERO, and this is the third place in this plane where conflating them is the
+      // bug. A missing record is legal only for a view that has not written one either; a view
+      // holding a tip whose file has gone is a record something removed underneath a live writer,
+      // and re-creating it would resurrect a frontier that was deliberately or accidentally cleared.
+      if (disk === undefined ? this.doc.tip !== 0 : disk !== this.doc.tip)
+        throw new SubjectFrontierMovedError(this.path, this.doc.tip, disk);
+      await this.write({ ...this.doc, tip: seq });
+    });
+  }
+
+  /**
+   * The tip the FILE holds, or `undefined` when no record exists yet.
+   *
+   * Fully validated, not a bare `JSON.parse().tip`: the disagreement this feeds is decided on a
+   * number, and a number taken from a document that failed its own shape checks is not evidence.
+   */
+  private async readDiskTip(): Promise<number | undefined> {
+    let bytes: Buffer;
+    try {
+      bytes = await readFile(this.path);
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+      throw e;
+    }
+    return FileSubjectFrontier.parse(this.path, bytes, { space: this.doc.space, principal: this.doc.principal }).tip;
+  }
+
+  /**
+   * One mutation at a time on THIS instance.
+   *
+   * The re-read above is a read-modify-write, so two callers that interleave between the read and
+   * the rename would both pass a check neither still satisfies. One frontier is legitimately bound
+   * to SEVERAL logs (the pinning runs the other way: a log may not change which record it
+   * publishes onto), so concurrent callers on one instance are an ordinary state, not a misuse.
+   *
+   * It serializes this instance and nothing else. Two instances have two chains, which is the case
+   * the re-read exists for.
+   */
+  private chain: Promise<unknown> = Promise.resolve();
+  private serialize<T>(op: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(op, op);
+    // Keep the chain alive after a rejection so one refused write cannot wedge every later one.
+    this.chain = next.catch(() => undefined);
+    return next;
   }
 
   /**
@@ -276,7 +366,12 @@ export class FileSubjectFrontier implements SubjectFrontier {
   // exists to prevent, with no shipped caller to justify it.
 
   async reset(): Promise<void> {
-    await this.write({ ...this.doc, tip: 0 });
+    // UNCONDITIONAL, and deliberately not re-read. Abandonment is the one thing that legitimately
+    // takes the tip backwards, so a record that moved under this writer is not an obstacle to it:
+    // clearing is correct whatever the file currently holds.
+    return this.serialize(async () => {
+      await this.write({ ...this.doc, tip: 0 });
+    });
   }
 
   /** Atomic replace: sibling temp, fsync, rename, fsync the directory. */

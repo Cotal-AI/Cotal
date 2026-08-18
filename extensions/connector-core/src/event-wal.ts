@@ -603,8 +603,12 @@ export class EventWal {
    * expectation and this document's own number is history.
    *
    * Called once, by {@link AguiEmitter.start}, which is the only thing that drives a WAL toward a
-   * publish. A WAL that is never bound behaves exactly as it did before, which is what a caller
-   * that is not publishing at all means.
+   * publish. An UNBOUND log still opens, replays and reports its own frontier, so a caller that
+   * only READS one needs no record; but every step toward a publish reads the subject's tip, so
+   * `expectedTip`, `beginSend`, `recordAck` and `abandon` all throw until this has been called.
+   * An earlier version of this sentence said an unbound WAL behaved exactly as it did before,
+   * which was true when it was written and stopped being true in the same change that made the
+   * unbound expectation throw.
    */
   async bindSubjectFrontier(frontier: SubjectFrontier): Promise<void> {
     // Binding the SAME record twice is not a change, and refusing it would only push a caller that
@@ -691,18 +695,26 @@ export class EventWal {
       throw new Error(`event WAL ${this.path}: ackSeq must be a safe non-negative integer, got ${String(ackSeq)}`);
     if (ackSeq <= this.expectedTip)
       throw new Error(`event WAL ${this.path}: ackSeq=${ackSeq} is not ahead of the subject's tip ${this.expectedTip}`);
-    // A STALE WRITER MAY NOT TOUCH THE SHARED RECORD AT ALL, and this line is here because making
-    // the unbound expectation throw surfaced that it could. The generation guard used to run inside
-    // `write`, which is AFTER the record moves, so a handle whose file had been rewritten underneath
-    // it advanced the principal's tip and only then learned it was not allowed to write. The record
-    // is shared by every thread of the principal; a refusal that arrives after the mutation is a
-    // refusal of the wrong thing.
+    // TWO RULES ABOUT THE NEXT TWO LINES, AND THEY ARE KEPT TOGETHER SO NO PROSE SITS BETWEEN THEM.
+    //
+    // A STALE WRITER MAY NOT TOUCH THE SHARED RECORD AT ALL, and the refusal is here rather than
+    // inside `write` because making the unbound expectation throw surfaced that it could. The
+    // generation guard used to run in `write`, which is AFTER the record moves, so a handle whose
+    // file had been rewritten underneath it advanced the principal's tip and only then learned it
+    // was not allowed to write. The record is shared by every thread of the principal; a refusal
+    // that arrives after the mutation refuses the wrong thing.
+    //
+    // THEN THE SHARED RECORD ADVANCES FIRST, and that order is deliberate too. A crash between the
+    // two leaves the shared tip AHEAD of this log, so the next start expects a sequence the subject
+    // has not reached and the broker refuses it: loud, and diagnosable. The other order leaves the
+    // shared tip BEHIND, so the next thread expects a sequence already taken, which is the same
+    // permanent halt by a longer road. Both fail closed; this one fails closed on the easier value
+    // to explain.
+    //
+    // `?.` here is not a degradation: `this.expectedTip` two lines up throws when nothing is bound,
+    // so an unbound log never reaches this statement. `abandon` had no such guard above it, which
+    // is why the same shape there was a real hole and is now an explicit refusal.
     await this.assertNotClobbering();
-    // THE SHARED RECORD ADVANCES FIRST, and the order is deliberate. A crash between the two leaves
-    // the shared tip AHEAD of this log, so the next start expects a sequence the subject has not
-    // reached and the broker refuses it: loud, and diagnosable. The other order leaves the shared
-    // tip BEHIND, so the next thread expects a sequence already taken, which is the same permanent
-    // halt by a longer road. Both fail closed; this one fails closed on the easier value to explain.
     await this.subject?.advance(ackSeq);
     await this.write({ ...this.doc, pending: { ...p, state: "acked", ackSeq } });
     });
@@ -747,14 +759,29 @@ export class EventWal {
    */
   async abandon(): Promise<void> {
     return this.serialize(async () => {
+    // ALL OF THE PROSE FOR THIS BLOCK SITS ABOVE IT, so the statements below stay adjacent.
+    //
     // Stale-writer check first, for the same reason as in `recordAck`: an abandonment resets the
     // record for EVERY thread of the principal, so a handle that is no longer entitled to write its
     // own log is the last one that should be clearing theirs.
-    await this.assertNotClobbering();
+    //
     // A purge returns the subject tip to 0 for EVERY thread on the channel, so the shared record
     // goes with it. Leaving it standing would make the next thread expect a tip the subject no
     // longer has, which is this defect's mirror image: the same permanent halt from the other side.
-    await this.subject?.reset();
+    //
+    // REQUIRED, NEVER `this.subject?.reset()`. That optional call was the last silent degradation
+    // in this file: with no record bound it cleared the log's half and reported a completed
+    // abandonment, leaving the shared half standing. This method's own contract above is that
+    // partial abandonment is not a state, and an optional call is how a partial one gets reported
+    // as whole.
+    await this.assertNotClobbering();
+    if (!this.subject)
+      throw new Error(
+        `event WAL ${this.path}: no subject frontier is bound, so an abandonment here would clear ` +
+          `this log and leave the principal's shared tip standing, which is the partial abandonment ` +
+          `this method refuses to produce; bind the principal's record with bindSubjectFrontier first.`,
+      );
+    await this.subject.reset();
     await this.write({
       ...this.doc,
       epoch: randomUUID(),

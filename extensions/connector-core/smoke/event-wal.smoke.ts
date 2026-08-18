@@ -845,6 +845,47 @@ try {
   c("[H] ...and the PRINCIPAL's shared tip never moved for it", shared.tip === before, { before, after: shared.tip });
 }
 
+// ------------------------------------------------------------------ abandonment is not optional
+//
+// `abandon` used to clear the shared record through `this.subject?.reset()`. With nothing bound
+// that optional call did nothing and the method returned as if it had abandoned, leaving the log
+// cleared and the principal's tip standing: a PARTIAL abandonment, which this method's own
+// contract says is not a state. It is the last silent degradation in the file.
+{
+  const path = p();
+  const wal = await EventWal.open(path, T); // deliberately NOT via `openWal`: nothing is bound
+  let err: Error | undefined;
+  try { await wal.abandon(); } catch (e) { err = e as Error; }
+  c("[H] abandon REFUSES an unbound log rather than clearing half of it",
+    err !== undefined && /partial abandonment/.test(err.message), err?.message ?? "did NOT throw");
+  c("[H] ...and it did NOT clear this log's own half on the way out",
+    wal.frontier.seq === 0 && wal.epoch !== undefined, { seq: wal.frontier.seq });
+}
+{
+  // THE ABANDON SIDE OF THE STALE-WRITER ORDERING, and it is here because the cell above it graded
+  // only `recordAck`. Two copies of one check are two claims; a suite that grades one of them and
+  // reports the invariant is the missing-arm shape this campaign is named for. An abandonment
+  // resets the record for EVERY thread of the principal, so a handle that is no longer entitled to
+  // write its own log is the last one that should be clearing theirs.
+  const shared = memorySubjectFrontier(0);
+  const path = p();
+  const stale = await EventWal.open(path, T);
+  await stale.bindSubjectFrontier(shared);
+  await stale.advanceCursorOnly("c0"); // the file exists from here on
+
+  const other = await openWal(path, EXISTS); // rewrites the file, so `stale`'s generation is behind
+  await other.advanceCursorOnly("moved-on");
+  await shared.advance(4);
+
+  const before = shared.tip;
+  let staleErr: Error | undefined;
+  try { await stale.abandon(); } catch (e) { staleErr = e as Error; }
+  c("[H] a STALE handle may not ABANDON either, and is refused as stale",
+    staleErr instanceof WalStaleWriterError, staleErr ? `${staleErr.name}: ${staleErr.message}` : "did NOT throw");
+  c("[H] ...and the PRINCIPAL's shared record was never reset for it",
+    shared.tip === before && before === 4, { before, after: shared.tip });
+}
+
 } finally {
   rmSync(root, { recursive: true, force: true });
 }

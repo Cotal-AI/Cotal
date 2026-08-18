@@ -25,8 +25,8 @@
     {
       "name": "W4 the clobber refusal is dropped and the write path passes through again, so a stale handle rewrites a folded frontier to a tip the broker never assigned",
       "file": "extensions/connector-core/src/event-wal.ts",
-      "find": "    await this.assertNotClobbering();\n",
-      "replace": "",
+      "find": "    await this.assertNotClobbering();\n    const stamped: WalDoc = { ...next, gen: this.doc.gen + 1 };\n",
+      "replace": "    const stamped: WalDoc = { ...next, gen: this.doc.gen + 1 };\n",
       "expectRed": "[G] THE STALE HANDLE'S TRANSITION FAILS, and by name"
     },
     {

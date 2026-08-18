@@ -67,7 +67,7 @@
     {
       "name": "S4 abandonment clears the log and leaves the shared record standing",
       "file": "extensions/connector-core/src/event-wal.ts",
-      "find": "    await this.subject?.reset();\n",
+      "find": "    await this.subject.reset();\n",
       "replace": "",
       "expectRed": "abandon:resets-the-shared-record-with-the-log",
       "cell": "abandon:resets-the-shared-record-with-the-log",

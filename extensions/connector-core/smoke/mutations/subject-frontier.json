@@ -1,6 +1,6 @@
 {
   "suite": "extensions/connector-core/smoke/subject-frontier.smoke.ts",
-  "guard": "the per-principal subject record refuses every state its own writer cannot produce, and never conflates a record that is MISSING with one that reads zero",
+  "guard": "the per-principal subject record refuses every state its own writer cannot produce, and never conflates a record that is MISSING with one that reads zero; and the record on disk is the frontier, so a view that has gone stale under a second writer is refused rather than writing its own number over a later one",
   "command": "pnpm smoke:subject-frontier",
   "completionMarker": "subject-frontier smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/subject-frontier.json",
@@ -27,14 +27,23 @@
     "THE ACKED PENDING IS THE SECOND HALF OF THE UPGRADE PATH AND IT WAS MISSING FROM THE FIRST",
     "VERSION. A reviewer executed it: absent record plus a sibling holding frontier 5 and an acked",
     "pending at 12 recovered 5 and persisted it. The frontier alone is not where the assigned",
-    "sequence lives when a log took an ack and died before folding."
+    "sequence lives when a log took an ack and died before folding.",
+    "",
+    "THE RECORD IS THE FILE, NOT A VIEW OF IT. `advance` compared the new sequence against this",
+    "object's in-memory document while the implementation's own header said it compared against the",
+    "value on disk, so two views of one record took the tip BACKWARDS and both calls returned",
+    "normally: A.advance(10) then B.advance(6) left 6. Measured before the guard, and measured again",
+    "through a real broker afterwards: a stale view publishes a stale expectation and JetStream's",
+    "compare-and-set refuses it before any ack exists to record, so nothing shipped reaches the",
+    "regression today. That is the argument the released defect shipped on, so it is guarded here",
+    "rather than written down."
   ],
   "mutations": [
     {
       "name": "S5 recover a tip into a record that READS zero, not only into an absent one",
       "file": "extensions/connector-core/src/subject-frontier.ts",
-      "find": "    return new FileSubjectFrontier(path, { v: d.v, space: d.space, principal: d.principal, tip: d.tip });",
-      "replace": "    return new FileSubjectFrontier(path, { v: d.v, space: d.space, principal: d.principal, tip: d.tip || (await FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal)) });",
+      "find": "    return new FileSubjectFrontier(path, FileSubjectFrontier.parse(path, bytes, opts));\n",
+      "replace": "    const parsedDoc = FileSubjectFrontier.parse(path, bytes, opts);\n    return new FileSubjectFrontier(path, { ...parsedDoc, tip: parsedDoc.tip || (await FileSubjectFrontier.recoverTipFromThreadLogs(dirname(path), opts.principal)) });\n",
       "expectRed": "reset:a-record-that-READS-zero-is-not-re-seeded-from-a-thread-log",
       "cell": "reset:a-record-that-READS-zero-is-not-re-seeded-from-a-thread-log",
       "note": "The tempting simplification: treat a zero tip as 'nothing yet' wherever it appears. It reads as a tidy-up and it undoes an abandonment."
@@ -92,6 +101,42 @@
       "expectRed": "recover:an-acked-pending-BEHIND-its-own-frontier-is-refused-not-ignored",
       "cell": "recover:an-acked-pending-BEHIND-its-own-frontier-is-refused-not-ignored",
       "note": "EventWal enforces ackSeq > frontier.lastSubjectSeq when it writes an acked pending, so a document that violates it has halves from different vintages. This scan refuses what its own writer cannot produce rather than picking whichever number is larger."
+    },
+    {
+      "name": "S20 `advance` grades the caller's view instead of the record on disk",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (disk === undefined ? this.doc.tip !== 0 : disk !== this.doc.tip)\n        throw new SubjectFrontierMovedError(this.path, this.doc.tip, disk);\n",
+      "replace": "",
+      "expectRed": "moved:a-SECOND-view-of-one-record-is-REFUSED-rather-than-taking-the-tip-backwards",
+      "cell": "moved:a-SECOND-view-of-one-record-is-REFUSED-rather-than-taking-the-tip-backwards",
+      "note": "The released comparison. The header of this implementation always claimed a decrease was refused because it was lower than the value ON DISK; until this guard the comparison was against memory, so two views of one record took the tip backwards and both calls returned normally. Not reachable through a publish today (a stale view publishes a stale expectation and the broker refuses it first, measured), which is why it needs a guard rather than a paragraph."
+    },
+    {
+      "name": "S21 an ABSENT record on the re-read is read as zero rather than as its own state",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "disk === undefined ? this.doc.tip !== 0 : disk !== this.doc.tip",
+      "replace": "disk !== undefined && disk !== this.doc.tip",
+      "expectRed": "moved:a-view-whose-record-was-DELETED-underneath-it-is-refused-too",
+      "cell": "moved:a-view-whose-record-was-DELETED-underneath-it-is-refused-too",
+      "note": "Missing is not zero, for the third time in this plane. The VIRGIN cell must SURVIVE this mutant: a guard that refused an absent record outright would refuse every principal's first publish, and the pair of cells is what separates the two absences."
+    },
+    {
+      "name": "S22 the re-read takes a number out of a document that failed its own shape checks",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    return FileSubjectFrontier.parse(this.path, bytes, { space: this.doc.space, principal: this.doc.principal }).tip;\n",
+      "replace": "    return JSON.parse(bytes.toString(\"utf8\")).tip;\n",
+      "expectRed": "moved:a-record-that-went-CORRUPT-under-a-live-writer-is-refused-BEFORE-the-write",
+      "cell": "moved:a-record-that-went-CORRUPT-under-a-live-writer-is-refused-BEFORE-the-write",
+      "note": "Validating only on the way in lets a writer that opened a good file overwrite a bad one, which destroys the evidence of whatever produced it. The sibling cell asserting the corrupt bytes are still on disk is what makes the refusal mean `refused before the write` rather than merely `threw`."
+    },
+    {
+      "name": "S23 `advance` is not ordered against itself on one instance",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    const next = this.chain.then(op, op);\n",
+      "replace": "    const next = op();\n",
+      "expectRed": "moved:concurrent-advances-on-ONE-view-cannot-both-pass-a-check-neither-still-satisfies",
+      "cell": "moved:concurrent-advances-on-ONE-view-cannot-both-pass-a-check-neither-still-satisfies",
+      "note": "The re-read is a read-modify-write, so unordered callers all read the same tip before any of them renames and all of them pass. The cell uses three calls carrying the SAME number: ordered exactly one can succeed, unordered all three do, so the count discriminates. An increasing trio would succeed three times either way and grade nothing."
     }
   ]
 }
