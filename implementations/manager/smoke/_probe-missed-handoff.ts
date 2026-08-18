@@ -33,6 +33,13 @@ const freePort = (): Promise<number> =>
   });
 
 for (const k of ["COTAL_SERVERS", "COTAL_SERVER", "COTAL_CREDS", "COTAL_SPACE"]) delete process.env[k];
+// The same live-space guard its siblings carry, and the reason is that clearing the four names a
+// mesh is addressed by is not the same as proving no OTHER variable does. Review found this probe
+// short of the suite it sits beside; the gap was defence in depth rather than a live route, since
+// everything here listens on 127.0.0.1 and the child is handed those four as empty strings.
+const LIVE_HOST = "broker.cotal.ai";
+for (const [k, v] of Object.entries(process.env))
+  if (typeof v === "string" && v.includes(LIVE_HOST)) throw new Error(`refusing to run: ${k} points at the live broker (${v})`);
 
 const BROKER_PORT = await freePort();
 const PROXY_PORT = await freePort();
