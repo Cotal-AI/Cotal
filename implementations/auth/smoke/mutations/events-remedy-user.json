@@ -18,7 +18,12 @@
     "",
     "SPECIFIER BOUNDARY. The suite loads the manager from `implementations/manager/dist/index.js`, so",
     "the command builds the manager before running and `afterRestore` rebuilds it, or a restored source",
-    "would sit behind a mutated dist and every later run would grade the wrong tree."
+    "would sit behind a mutated dist and every later run would grade the wrong tree.",
+    "",
+    "R2 is R1's sibling on the mesh-mode field rather than the text: it pins the selector to the",
+    "STATIC branch while this suite runs a USER mesh, so the refusal hands a user-mesh operator a",
+    "`cotal mint` at a mesh whose authority lives in the ledger. It is the same one-field-over class",
+    "as the manager config's E8, and it is the half a cell that only reads the printed text cannot see."
   ],
   "mutations": [
     {
@@ -29,6 +34,16 @@
       "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
       "note": "This is the shipped state of the text until a security lens read it against `runActor`'s defaults. The second cell reddens too, because the parsed flags fall back to `>` and the row that lands is the wide one an operator would have written.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "R2 the helper prints the route for the OTHER mesh than the one it is running on",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            `spawn: ${readerRemedy(this.userMode, agentTriple.owner, foreign[0]!)}`,",
+      "replace": "            `spawn: ${readerRemedy(false, agentTriple.owner, foreign[0]!)}`,",
+      "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+      "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+      "note": "Only ONE route is printed, so the selector is load-bearing: printed for the wrong mesh, a fully spelled-out command is still the wrong command, and an operator on a user mesh who runs `cotal mint` gets a credential no ledger row backs. The cell greps the refusal for an `actor grant` and finds a `mint`.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]

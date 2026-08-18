@@ -34,7 +34,12 @@
     "operator pays for and the half no cell watched before.",
     "E8 is E7 one field over: the printed CHANNEL rather than the printed profile. It exists because",
     "the first version of section 9 graded the profile and then minted the suite's own channel, so a",
-    "refusal pointing an operator at a different plane would have kept every cell green."
+    "refusal pointing an operator at a different plane would have kept every cell green.",
+    "E9 is the mesh-mode field: the helper picks ONE of the two routes off the mesh the manager is",
+    "actually running, and until now no cell watched that selector. E9 pins the selector open on the",
+    "user branch while the suite runs a STATIC mesh, so the refusal hands a static operator a",
+    "`cotal actor grant` against a ledger that does not exist. Every other cell stays green: it still",
+    "refuses, still names the channel, still releases the name."
   ],
   "mutations": [
     {
@@ -108,6 +113,15 @@
       "expectRed": "the channel it prints is the channel it refused",
       "cell": "the channel it prints is the channel it refused",
       "note": "E7's sibling, one field over, and an engineering lens is why it exists: a section that grades the PROFILE the refusal names while minting the suite's own channel leaves the channel field ungraded, and a refusal pointing an operator at the wrong plane is the same defect class as one naming the wrong profile. Section 9 now mints on the channel the refusal printed and compares the result against the channel the manager refused, so this mutant reddens twice."
+    },
+    {
+      "name": "E9 the helper prints the route for the OTHER mesh than the one it is running on",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            `spawn: ${readerRemedy(this.userMode, agentTriple.owner, foreign[0]!)}`,",
+      "replace": "            `spawn: ${readerRemedy(true, agentTriple.owner, foreign[0]!)}`,",
+      "expectRed": "the refusal prints a mint command, naming a profile and a channel",
+      "cell": "the refusal prints a mint command, naming a profile and a channel",
+      "note": "The mesh-mode selector is a field like the profile (E7) and the channel (E8), and it was the one field section 9 read past: the section parsed a mint command out of a static-mesh refusal without ever asserting that a static mesh is what selected it. Pinned to the user branch, this static suite is handed an `actor grant` against a mesh with no actor ledger, and the parse finds nothing to grade."
     }
   ]
 }
