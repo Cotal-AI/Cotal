@@ -3,20 +3,20 @@
  *
  * The defect is a COMPOSITION, and no one of its three parts is wrong on its own:
  *
- *   1. `cotal_inbox` clears what it returns — fine in steady state;
+ *   1. `cotal_inbox` clears what it returns, which is fine in steady state;
  *   2. recovery is when the payload is LARGEST, because reconnecting brings a channel-history
  *      replay with it;
- *   3. a payload can exceed what the caller can receive — the host caps a tool result.
+ *   3. a payload can exceed what the caller can receive, because the host caps a tool result.
  *
  * Composed, the recovery read consumes a real direct message inside a response the caller never
  * gets. Measured on this box before the fix, with the occupant below: one call returned 463,788
- * chars, marked all 200 messages read, and left the inbox at 0 — including a live DM whose sender
+ * chars, marked all 200 messages read, and left the inbox at 0, including a live DM whose sender
  * had to resend it first-party.
  *
  * THE OCCUPANT IS THE MEASURED ONE, not a convenient one: 199 replayed channel messages at ~2.3 KB
  * each (451 KB / 200, the real reconnect's shape) with one live DM among them.
  *
- * WHAT WOULD MAKE THIS THE WRONG EXPERIMENT — stated so a later reader can check it rather than
+ * WHAT WOULD MAKE THIS THE WRONG EXPERIMENT, stated so a later reader can check it rather than
  * trust it:
  *
  *   • If the cells asserted only "the response is small", a fix that TRUNCATED the text would pass
@@ -30,7 +30,7 @@
  *   • These cells drive the tool spec's own `run` against a real MeshAgent, not a copy of the
  *     selection logic. A suite that re-implemented `windowInbox` would grade its own arithmetic.
  *
- * Run: pnpm smoke:inbox-window   (pure in-process — no nats-server needed)
+ * Run: pnpm smoke:inbox-window   (pure in-process, no nats-server needed)
  */
 import { strict as assert } from "node:assert";
 import type { CotalMessage, Delivery, MessageMeta } from "@cotal-ai/core";
@@ -40,7 +40,7 @@ import { cotalToolSpecs, INBOX_WINDOW_CHARS, type ToolResult } from "../src/tool
 
 let pass = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
+  assert.ok(cond, `${name}${extra !== undefined ? ` :: ${JSON.stringify(extra)}` : ""}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -49,7 +49,7 @@ const cfg: AgentConfig = {
   space: "inboxwindow",
   name: "Otto",
   role: "generalist",
-  servers: "nats://127.0.0.1:1", // never connected — we drive the "message" event directly
+  servers: "nats://127.0.0.1:1", // never connected: we drive the "message" event directly
   subscribe: ["general"],
   allowSubscribe: ["general"],
   allowPublish: ["general"],
@@ -85,7 +85,7 @@ const dmMsg = (id: string, text: string): CotalMessage => ({
 
 const inboxSpec = () => {
   const spec = cotalToolSpecs(cfg).find((s) => s.name === "cotal_inbox");
-  assert.ok(spec, "cotal_inbox spec not found — the suite is grading nothing");
+  assert.ok(spec, "cotal_inbox spec not found, so the suite is grading nothing");
   return spec;
 };
 
@@ -138,7 +138,7 @@ try {
       if (text.includes(DM_MARK)) dmSeen++;
       for (const id of held) if (!agent.peekInbox().some((p) => p.id === id)) assert.ok(!seen.has(id), `${id} was surfaced twice`), seen.add(id);
       calls++;
-      assert.ok(calls < 50, "the buffer is not draining — the window never advances");
+      assert.ok(calls < 50, "the buffer is not draining, so the window never advances");
     }
     check("walking the buffer to empty delivers all 200 messages exactly once", seen.size === 200, { seen: seen.size, calls });
     check("...and the DM was delivered on exactly one of those calls", dmSeen === 1, dmSeen);
@@ -164,20 +164,20 @@ try {
       });
   }
 
-  // ── 4) INVERSE CONTROL: below the window, nothing changes — one call takes it all ──────────────
+  // ── 4) INVERSE CONTROL: below the window, nothing changes and one call takes it all ────────────
   {
     const agent = new MeshAgent(cfg);
     agent.on("error", () => {});
     for (let n = 0; n < 3; n++) agent.ep.emit("message", replayMsg(n), noop(), replayMeta);
     agent.ep.emit("message", dmMsg("small-dm", `small ${DM_MARK}`), noop(), dmMeta);
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
-    check("a small inbox is returned in full and cleared in full — the window is not a throttle",
+    check("a small inbox is returned in full and cleared in full, so the window is not a throttle",
       agent.inboxCount() === 0 && text.includes(DM_MARK) && (text.match(/\[#general/g) ?? []).length === 3,
       { remaining: agent.inboxCount() });
     check("...and it carries no held-messages note, because nothing was held", !text.includes("held ("), text.slice(-120));
   }
 
-  // ── 5) peek still clears nothing — and is now receivable, which is why it was the workaround ───
+  // ── 5) peek still clears nothing, and is now receivable, which is why it was the workaround ────
   {
     const agent = new MeshAgent(cfg);
     agent.on("error", () => {});
@@ -195,12 +195,12 @@ try {
   // In focus mode the reply mixes the live buffer (DMs/anycast, clearable) with read-only channel
   // recall pulled back from the stream. Passing a recall id to drainInboxIds would not merely be
   // untidy: ids are marked HANDLED there, so a later live copy of that message would be dropped as
-  // a duplicate — mail lost by a read that never owned it.
+  // a duplicate: mail lost by a read that never owned it.
   //
   // WHAT THIS CELL DOES AND DOES NOT GRADE, so it is not read as more than it is: it stubs the
   // agent's attention and `recallAmbient`, because both need a live broker, and grades the TOOL's
-  // handling of whatever recall returns. The agent's own focus machinery — the frontier, the
-  // exclusion list, what recall is allowed to replay — is graded in attention.smoke.ts against a
+  // handling of whatever recall returns. The agent's own focus machinery (the frontier, the
+  // exclusion list, what recall is allowed to replay) is graded in attention.smoke.ts against a
   // real broker; nothing here stands in for that.
   {
     const agent = new MeshAgent(cfg);
@@ -229,8 +229,38 @@ try {
 
     // The sharp one: a recall id must not have been marked handled by a read that only displayed it.
     agent.ep.emit("message", { ...replayMsg(0), id: "recall-1" }, noop(), { historical: false, kind: "channel" });
-    check("focus: a recall id was NOT marked handled — a later live copy of it still buffers",
+    check("focus: a recall id was NOT marked handled, so a later live copy of it still buffers",
       agent.peekInbox().some((i) => i.id === "recall-1"), agent.peekInbox().map((i) => i.id));
+  }
+
+  // ── 7) FOCUS + PEEK: the workaround has to hold on the two-lane path too ──────────────────────
+  //
+  // Cell 5 grades peek on the ordinary path and cell 6 grades the focus lanes without peek, so the
+  // intersection was covered by neither: a focus reply that cleared the buffered lane while peeking
+  // would break the peek contract with both other cells still green.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: [{
+        id: "recall-p",
+        ts: 700,
+        fromId: "peer",
+        fromName: "Peer",
+        kind: "channel" as const,
+        channel: "general",
+        mentionsMe: false,
+        historical: false,
+        text: "recalled chatter while peeking",
+      }],
+      droppedChannels: [],
+    });
+    for (let n = 0; n < 4; n++) agent.ep.emit("message", dmMsg(`pdm-${n}`, `peeked dm ${n}`), noop(), dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    check("focus + peek: the reply still carries both lanes", text.includes("peeked dm 0") && text.includes("recalled chatter while peeking"));
+    check("focus + peek: the buffered lane is NOT cleared", agent.inboxCount() === 4, agent.inboxCount());
   }
 
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);

@@ -139,7 +139,7 @@ export function fmtFrom(i: InboxItem): string {
  *
  * A read is destructive, and the payload is largest exactly where recovery happens: reconnecting
  * brings a channel-history replay with it. Measured on a real reconnect: 200 messages, 3,490 lines,
- * 451 KB — an order of magnitude past what a host will hand to a model, so the call both CONSUMED
+ * 451 KB, an order of magnitude past what a host will hand to a model, so the call both CONSUMED
  * its contents and failed to deliver them. Whatever the host's own cap is, a response above this
  * bound is a response the caller may never see, so it is never a response we may clear.
  *
@@ -162,7 +162,7 @@ export interface InboxWindow {
  *  1. **Mail before replay.** Direct messages and anycast requests are first-party traffic with a
  *     sender waiting on them; replayed channel history is a backfill the channel still holds. When
  *     only part of the buffer fits, the part that fits is the part nobody else can re-serve.
- *  2. **A window, not a truncation.** What does not fit is not cut off the end of the text — it
+ *  2. **A window, not a truncation.** What does not fit is not cut off the end of the text; it
  *     stays in the buffer, unacked, and the caller is told it is there. Only what this function
  *     returns as `shown` may be cleared.
  *
@@ -190,7 +190,7 @@ export function windowInbox(items: readonly InboxItem[], budget = INBOX_WINDOW_C
 function heldNote(held: readonly InboxItem[]): string {
   if (!held.length) return "";
   const dms = held.filter((i) => i.kind !== "channel").length;
-  return `\n\n… ${held.length} more message${held.length === 1 ? "" : "s"} held (${dms} direct) — this response was capped at the receivable window. Nothing held was cleared; call cotal_inbox again for the next batch.`;
+  return `\n\n… ${held.length} more message${held.length === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. Call cotal_inbox again for the next batch.`;
 }
 
 function fmtItem(i: InboxItem): string {
@@ -354,7 +354,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply — call again for the next batch. In focus mode it also pulls back the channel chatter held since you entered focus.",
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. In focus mode it also pulls back the channel chatter held since you entered focus.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },
@@ -362,8 +362,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const inboxScope = scope ?? "all";
         // SELECT, RENDER, THEN CLEAR EXACTLY WHAT WENT OUT (#603). The old order drained the whole
         // scope up front, so a payload too large for the host to deliver had already been marked
-        // read — and a reconnect replay is both the largest payload and the one most likely to have
-        // a real DM inside it. Nothing outside the returned window is acked, on any path.
+        // read, and a reconnect replay is both the largest payload and the one most likely to have
+        // a real DM inside it. This READ acks nothing outside the window it returned, on any path.
+        // It is not the only acker: the inbox's own overflow valve acks what it evicts, so an item
+        // that arrives while this call is awaiting recall can still be evicted and lost. That is the
+        // buffer's documented bounded local loss (see MeshAgent.buffer), unchanged by this path.
         const buffered = agent.peekInbox(inboxScope);
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {

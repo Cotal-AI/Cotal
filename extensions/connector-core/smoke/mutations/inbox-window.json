@@ -10,7 +10,7 @@
     "the old drain-the-whole-scope order (destructive read), K3 removes mail-before-replay (the",
     "reason a DM survives the first window at all), K4 lets peek clear, K5 silences the note that",
     "tells a caller the rest is still there, and K6 collapses the two lanes of the focus reply into",
-    "one, acking read-only recall the read never owned.",
+    "one, acking read-only recall the read never owned, and K7 drops peek on that same focus path.",
     "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent and the tool specs",
     "by RELATIVE SOURCE PATH (../src/agent.js, ../src/tool-specs.js), so the bytes mutated are the",
@@ -25,7 +25,7 @@
   ],
   "mutations": [
     {
-      "name": "K1 the window selects everything — the response is capped by nothing",
+      "name": "K1 the window selects everything - the response is capped by nothing",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "    if (shown.length && used + cost > budget) held.push(i);",
       "replace": "    if (false && shown.length && used + cost > budget) held.push(i);",
@@ -43,7 +43,7 @@
       "note": "The plausible authoring error rather than a contrived one: draining the scope is what the tool did before, and with a window in place it reads as a harmless simplification."
     },
     {
-      "name": "K3 rank every item the same — receive order alone decides the window",
+      "name": "K3 rank every item the same - receive order alone decides the window",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  const rank = (i: InboxItem): number => (i.kind !== \"channel\" ? 0 : i.historical ? 2 : 1);",
       "replace": "  const rank = (_i: InboxItem): number => 0;",
@@ -67,7 +67,7 @@
       "replace": "  if (held.length >= 0) return \"\";",
       "expectRed": "...and it says what it is holding back",
       "cell": "...and it says what it is holding back",
-      "note": "Held mail nobody is told about is mail nobody calls back for — the loss becomes a silent delay instead."
+      "note": "Held mail nobody is told about is mail nobody calls back for - the loss becomes a silent delay instead."
     },
     {
       "name": "K6 the focus drain acks every id in the reply, recall included",
@@ -75,8 +75,17 @@
       "find": "        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
       "replace": "        if (!peek) agent.drainInboxIds(all.map((i) => i.id));",
       "expectRed": "focus: a recall id was NOT marked handled",
-      "cell": "focus: a recall id was NOT marked handled — a later live copy of it still buffers",
-      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not — drainInboxIds marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned."
+      "cell": "focus: a recall id was NOT marked handled, so a later live copy of it still buffers",
+      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxIds marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned."
+    },
+    {
+      "name": "K7 the focus drain stops honouring peek",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "replace": "        agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "cell": "focus + peek: the buffered lane is NOT cleared",
+      "expectRed": "focus + peek: the buffered lane is NOT cleared",
+      "note": "K4 covers the same slip on the ordinary path only. Without this one a focus reply could clear while peeking, and peek is the workaround this whole change exists to retire, so it has to hold on both paths."
     }
   ]
 }
