@@ -720,6 +720,32 @@ try {
   const adminInput = await epTargeted(auditor, "input", "alpha");
   check("cross-owner seat input with ledger admin passes, and reports the bytes it wrote",
     adminInput.ok === true && (adminInput.data as { bytes?: number })?.bytes === 8, adminInput);
+  // ---------- D1. an ADMIN-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610, the admin fold) ----------
+  // `permissionsFor` folds the per-goal progress row on TWO branches, `spawn` and `admin`, and B1f
+  // covers only the first. Every other cell that follows a goal is minted with `spawn`, which
+  // supplies the same row, so reverting the admin branch alone left the whole suite green. This is
+  // the assertion that branch is missing: an admin-scope caller with NO `spawn` in its ledger row
+  // submits a goal-bearing command and hears its terminal, rather than being refused the follow.
+  console.log("D1) an admin-scope caller follows its own goal to a terminal (#610)");
+  {
+    const adminFollower = await ctlCaller("adminfollower", OWNER_B, ["admin"]);
+    const followErrors: string[] = [];
+    adminFollower.on("error", (e: unknown) => followErrors.push((e as Error)?.message ?? String(e)));
+    const t0 = Date.now();
+    const r = await adminFollower.invokeService("manager", "spawn", { name: "beta", agent: "e2e" }, { deadlineMs: 20_000, follow: true });
+    const elapsed = Date.now() - t0;
+    const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
+    console.log(`   [D1 observed] code=${code} elapsed=${elapsed} msg=${(r.reply.error?.message ?? "").slice(0, 140)} errs=${JSON.stringify(followErrors)}`);
+    check("an admin-scope caller HEARS its own goal's terminal (the admin mint branch folds the progress row too)",
+      code === "ok" || code === "failed", { code, elapsed, message: r.reply.error?.message?.slice(0, 160), followErrors });
+    check(`...on the goal's own timing, not at the caller's budget (${elapsed}ms of 20000ms)`, elapsed < 15_000, elapsed);
+    check("...with no broker refusal on the admin follower's connection", followErrors.length === 0, followErrors);
+    if (r.reply.ok === true) {
+      const spawned = (r.reply.data as { name?: string })?.name ?? "beta";
+      await adminFollower.invokeService("manager", "despawn", { name: spawned, owner: OWNER_B }).catch(() => undefined);
+    }
+  }
+
   // Narrow the auditor back to [spawn] (upsert) — its NEXT exchange mints owner-mode-only rows, so a
   // cross-owner op loses the any-mode reach (the callout re-reads the ledger per exchange).
   await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });

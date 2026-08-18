@@ -25,7 +25,12 @@
     "",
     "THE COMPLETION MARKER IS A LINE PRINTED BEFORE THE ASSERTION, not the suite summary: both suites",
     "throw on their first failed assertion, so a mutant run can never reach a final line, and keying",
-    "the gate there reports a real kill as INCONCLUSIVE (measured on this lane's previous config)."
+    "the gate there reports a real kill as INCONCLUSIVE (measured on this lane's previous config).",
+    "",
+    "BOTH FOLD BRANCHES ARE GRADED, because only one of them used to be. `permissionsFor` folds the",
+    "row on `spawn` AND on `admin`, and every cell that followed a goal was minted with `spawn`, so a",
+    "revert of the admin branch alone was invisible. Mutation 3 is aimed at cell D1, which mints an",
+    "admin-scope caller carrying no `spawn` at all."
   ],
   "mutations": [
     {
@@ -48,6 +53,18 @@
       "note": "The shipped shape: `.pub` taken, `.sub` discarded, one property access short of the credential. Aimed END TO END at a real authed spawn, which is what shows a production door reaches this. Under the mutation the caller is refused its follow and now reports the DISTINCT refusal rather than a timeout, because mutation 1's fix is still in place: the two halves are visible separately, which is the point of grading them separately.",
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:user-spawn:live",
       "completionMarker": "B1f) a spawn-scope caller follows its own goal to a terminal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the admin mint branch drops the `sub` half, so an admin-capable credential may submit a goal it cannot hear",
+      "file": "packages/core/src/provision.ts",
+      "find": "      const rows = epCallerGrantRows(space, operatorInstrumentCapabilities(\"admin\", pr.owner), epCaller);\n      pubAllow.push(...rows.pub);\n      for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);",
+      "replace": "      pubAllow.push(...epCallerGrantRows(space, operatorInstrumentCapabilities(\"admin\", pr.owner), epCaller).pub);",
+      "expectRed": "an admin-scope caller HEARS its own goal's terminal",
+      "cell": "an admin-scope caller HEARS its own goal's terminal (the admin mint branch folds the progress row too)",
+      "note": "The SECOND branch that folds the row. Until cell D1 existed this mutation SURVIVED: every cell that followed a goal was minted with `spawn`, which supplies the same row, so reverting the admin branch alone reddened nothing. D1 mints an admin-scope caller with no `spawn` in its ledger row, which is a real ledger shape, and follows a goal-bearing command to its terminal. Measured on the unmutated tree: the terminal arrives at 3915ms of a 20000ms budget with no broker refusal on the connection.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:user-spawn:live",
+      "completionMarker": "D1) an admin-scope caller follows its own goal to a terminal",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
