@@ -13,7 +13,7 @@ JetStream.
 | **Evaluating**: what is this? | [What is Cotal](what-is-cotal.md) |
 | **Running it**: agents on a mesh, on my machine | [Quickstart](getting-started.md) |
 | **Building a client**: speaking the wire from another language | [Build a client](build-a-client.md) |
-| **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), and the [change log](../SPEC.md#appendix-d-change-log) |
+| **Implementing the contract**: conformance, shapes, versioning | [Spec](../SPEC.md), with [conformance](../SPEC.md#12-conformance), the [schema](../spec/cotal.schema.json), the [workflow language](../spec/cotal-lang.md), and the [change log](../SPEC.md#appendix-d-change-log) |
 
 ## For agents
 
@@ -35,7 +35,8 @@ Task dispatch:
 | Mint credentials (static mesh) | [Identity & auth](identity-and-auth.md) | `cotal mint <name> --profile agent` |
 | Sign in / grant a user's agents (user-auth mesh) | [Identity & auth](identity-and-auth.md) | `cotal login --idp <url>` · `cotal actor grant` |
 | Implement the wire in another language | [Build a client](build-a-client.md) | validate against [`cotal.schema.json`](../spec/cotal.schema.json) |
-| Check a normative rule | [Spec](../SPEC.md) | — |
+| Write or host a durable workflow | [Workflow runs](workflows.md) | `validate` / `dryRun` / `run` from `@cotal-ai/lang` |
+| Check a normative rule | [Spec](../SPEC.md), [Cotal Lang](../spec/cotal-lang.md) | — |
 
 ## Start here
 
@@ -82,6 +83,7 @@ For protocol implementers:
 |---|---|
 | [Architecture](architecture.md) | How is it built (the thin waist, the pieces), and why? |
 | [Control surface](control-surface.md) | How are the manager and other daemons driven (endpoints, describe/invoke, actions, sessions)? |
+| [Workflow runs](workflows.md) | How does a durable multi-agent workflow run, resume, migrate and fork (Cotal Lang, the step journal)? |
 | [Spaces & channels](spaces.md) | What is a space, how does it differ from a channel? |
 | [Transport vs protocol](transport.md) | What is protocol vs transport, and what must a binding provide? |
 | [Presence & delivery](presence-and-delivery.md) | How do presence, the three delivery modes, and durable delivery work? |
@@ -107,6 +109,7 @@ For protocol implementers:
 | Doc | Answers |
 |---|---|
 | [SPEC.md](../SPEC.md) | The **normative** wire contract (RFC-2119). Where a client disagrees with the spec, the spec wins. |
+| [cotal-lang.md](../spec/cotal-lang.md) | The **normative** workflow-language reference (SPEC §14): syntax, values, effects, the step journal, resume/migrate/fork, every error code. |
 | [cotal.schema.json](../spec/cotal.schema.json) | The machine-readable message schema, authoritative for message shapes. |
 
 ## Project

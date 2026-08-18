@@ -33,7 +33,8 @@ concepts leak into `@cotal-ai/core` or the shared layers.
 [docs/architecture.md](docs/architecture.md) (*how*) →
 [docs/connect-claude.md](docs/connect-claude.md) (the connector).
 - [SPEC.md](SPEC.md): the **normative** wire contract. Where a client disagrees with the spec,
-the spec wins.
+the spec wins. [spec/cotal-lang.md](spec/cotal-lang.md) is the normative reference for the
+workflow language (SPEC §14); every `js` block in it is validated by `pnpm smoke:lang-surface`.
 - `.internal/` (private submodule): working build-plans, research, and guidelines. Make sure it
 is current before changing behavior.
 
@@ -88,10 +89,11 @@ suites — currently the broker ownership that kills a spawned `nats-server` whe
 *signalled* rather than only when it returns. Never published and never imported by shipped code
 (enforced by `pnpm smoke:core-boundary`); it has no `dist`, so there is no build step and no
 compiled second copy that can disagree with the source.
-- `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language: its grammar, the
-interpreter's sequential core and concurrency scopes, the step journal, the effect interface a
-host implements, and the simulator and dry run that exercise a program with no broker. Depends
-on nothing else in the repo; it knows about effects, not about NATS.
+- `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language, as
+[spec/cotal-lang.md](spec/cotal-lang.md) defines it: its grammar (one syntax table drives the
+validator and the interpreter), the interpreter's sequential core and concurrency scopes, the step
+journal, the effect interface a host implements, and the simulator and dry run that exercise a
+program with no broker. Depends on nothing else in the repo; it knows about effects, not about NATS.
 - `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
 the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
 journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.
