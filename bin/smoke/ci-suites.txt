@@ -328,3 +328,10 @@ smoke:runtime-migrate
 smoke:runtime-fork
 smoke:lang-semantics
 smoke:lang-surface
+
+# The OpenCode connector's AG-UI event plane: the durable read, the mapper, the launch that
+# arms it, and the per-session emitter swap that keeps `/new` from going dark.
+smoke:agui-opencode-map
+smoke:agui-opencode-source
+smoke:opencode-events-arm
+smoke:opencode-events-reset
