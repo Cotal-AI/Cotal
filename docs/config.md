@@ -138,10 +138,16 @@ The session reads the file once at startup. This is the same shape `cotal agent-
 for its spawn-time secret: the material rides a file, never argv (which is visible in a process
 listing) and never the ambient environment (which is inherited).
 
-Connectors whose session runs **in** the seat process (pi, OpenCode, codex) drop the path from their
-own environment once they have read it, so the shells and tools those seats run inherit no reference
-at all. The Claude connector keeps it: its readers are short-lived child processes (the MCP server,
-one per lifecycle hook) that start after the session is already running and would find it gone.
+Three connectors drop the path once they have read it, so the shells and tools those seats run
+inherit no reference at all: **pi** and **codex**, whose sessions run in the seat process, and
+**OpenCode**, whose seat process is a shim that starts `opencode serve` (the plugin runs in that
+server, which is also what executes the session's tool calls).
+
+Two keep it, and for the same reason in both cases: a process that starts LATER has to read it.
+**Claude**'s readers are short-lived children, the MCP server and one process per lifecycle hook,
+which begin after the session is already running. **Hermes**' launcher starts a gateway child that
+needs the control token. For those two, a shell the seat runs still inherits a path to the material
+file, though not the material itself.
 
 What this does: the values are out of every descendant's environment, so an `env` dump, a CI log, a
 suite that defaults its broker from the environment, or a tool handed a credential it never asked
