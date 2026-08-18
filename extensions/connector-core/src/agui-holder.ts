@@ -155,31 +155,28 @@ export class AguiEmitterHolder<T> {
     if (this.boundPath === undefined) {
       this.boundPath = path;
       try {
-        // Started INSIDE the chain, which is the only thing keeping this to one emitter, and there
-        // is deliberately no second guard here. What a second emitter on one principal's channel
-        // would break used to be one sentence; it is now two different things and only one of them
-        // is still open, so they are named separately rather than left under a single claim.
+        // Started INSIDE the chain, which is the only thing keeping this to one emitter, and
+        // there is deliberately no second guard here. A belt-and-braces memo would not add one. It
+        // would mean a cell asserting "started once" passed whether or not the chain worked, and a
+        // second copy of a real guard answers for the original, so the mutation that breaks the
+        // original goes on passing and the cell that reads as proof stops being proof without any
+        // change to its own text.
         //
-        // The FRONTIER half is guarded, and not here, and not in one place either. Saying it in one
-        // clause is what an earlier draft of this comment did, and it was wrong in the direction
-        // that flatters the code. The record refuses a stale writer on `advance`, by re-reading the
-        // file and rejecting a view that moved underneath it (`SubjectFrontierMovedError`, graded by
-        // mutation S20). It does NOT refuse one on `reset`, which is unconditional by design,
-        // because abandonment is the one operation that legitimately takes the tip backwards and a
-        // record that moved is not an obstacle to clearing it. That route is fenced one level up
-        // instead: `EventWal.abandon` runs its own stale-handle check before it reaches the record
-        // (graded by mutation S25). So both shipped routes are covered, by two different mechanisms
-        // in two different files, and a caller holding the record directly has the second one only
-        // if it takes it. THAT IS NOT AN ARGUMENT FOR
-        // REPEATING THE CHECK HERE. A second copy of a guard answers for the first, so the mutation
-        // that breaks the real one goes on passing, and the cell that reads as proof stops being
-        // proof without changing a line of its own text.
+        // WHAT A SECOND EMITTER WOULD BREAK IS NO LONGER DESCRIBED HERE, AND THE REASON IS THE
+        // POINT. Two earlier versions of this comment restated protections that live in other
+        // files, and both were wrong inside an hour: the first credited one mechanism with a second
+        // one's work, and the second named the wrong mechanism for the path it was discussing. A
+        // comment that restates a guarantee it does not own drifts away from it, and nothing in the
+        // edit that moves the guarantee tells the author this sentence exists. The refusals belong
+        // next to the code that performs them: the record's are in `subject-frontier.ts`, the log's
+        // stale-handle check is in `event-wal.ts`, and the expectation carried on a publish is the
+        // broker's to enforce.
         //
-        // The BRACKET half is still open and is the stated writer-cardinality limit: two emitters
-        // would each keep their own bracket machine, and nothing detects the interleave. A
-        // belt-and-braces memo here would not close that either, it would only mean a cell
-        // asserting "started once" passed whether or not the chain worked. One mechanism per claim,
-        // one cell that can actually fail.
+        // What this file does own is the bracket interleave, and it is OPEN: two emitters would
+        // each keep their own bracket machine and nothing detects the interleave. That is the
+        // stated writer-cardinality limit, and this chain is the only thing between the process and
+        // it, which is why the chain is the mechanism and there is exactly one cell that can fail
+        // if it breaks.
         this.emitter = await this.startEmitter(path);
         return this.emitter;
       } catch (e) {
