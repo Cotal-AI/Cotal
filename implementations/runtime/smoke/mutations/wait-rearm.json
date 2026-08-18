@@ -1,0 +1,68 @@
+{
+  "suite": "implementations/runtime/smoke/mesh-checkpoint.smoke.ts",
+  "guard": "a pending `wait` is an outstanding pause, so a takeover re-arms both of its deadlines",
+  "command": "pnpm smoke:runtime-mesh-checkpoint",
+  "completionMarker": "mesh-checkpoint.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/runtime/smoke/mutations/wait-rearm.json",
+  "why": [
+    "Found by review, and it is the shape a kind-list always fails in: `wait` MINTS no pause of its",
+    "own, so it does not look like one, but it ARMS mediated deadlines exactly as `sleep` does. The",
+    "re-arm list enumerated the kinds that mint rather than the kinds that arm, and a `wait` adopted",
+    "at a new epoch sat on a deadline no live epoch would ever fire -- the run waits forever, and",
+    "nothing anywhere is red. Reproduced first as a pending `wait` entry that yielded NO tokens.",
+    "",
+    "An idle wait with a timeout arms TWO deadlines and the second is DERIVED, not recorded, so the",
+    "repair re-derives it. That is graded separately from the first: a fix that recovered only the",
+    "token on the entry would satisfy the headline cell and still leave every idle wait's outer",
+    "timeout unarmed, which is the same defect one layer down.",
+    "",
+    "The third mutation is PARANOID and narrow to `wait` on purpose. A repair that re-armed SETTLED",
+    "waits would pass both cells above and re-arm timers for pauses that are already over, and the",
+    "wider version of that mutation is not usable here: dropping the pending test for every kind",
+    "reddens an older cell first, so it would be graded on the guard it did not name.",
+    "",
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
+  ],
+  "mutations": [
+    {
+      "name": "the `wait` arm is removed: the list is back to the kinds that MINT a pause",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    else if (e.kind === \"wait\") tokens.push(e.requestId, derivedToken(e.requestId, \"wait-timeout\"));",
+      "replace": "",
+      "expectRed": "REPAIRED: a pending `wait` is an outstanding pause, so a takeover re-arms its deadline",
+      "cell": "REPAIRED: a pending `wait` is an outstanding pause, so a takeover re-arms its deadline"
+    },
+    {
+      "name": "only the token ON the entry is recovered, not the idle wait's derived outer deadline",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "tokens.push(e.requestId, derivedToken(e.requestId, \"wait-timeout\"));",
+      "replace": "tokens.push(e.requestId);",
+      "expectRed": "...including the outer timeout an idle wait arms, re-derived rather than remembered",
+      "cell": "...including the outer timeout an idle wait arms, re-derived rather than remembered",
+      "note": "The fix that looks complete and is not. An idle wait's outer timeout is the deadline that ends the wait when the channel never goes quiet, so leaving it unarmed is the original defect with a smaller blast radius."
+    },
+    {
+      "name": "PARANOID: a SETTLED wait is re-armed too, narrow to `wait` so it grades on its own cell",
+      "file": "implementations/runtime/src/mesh-handler.ts",
+      "find": "    if (e.state !== \"pending\" || e.requestId === undefined) continue;",
+      "replace": "    if (e.requestId === undefined || (e.state !== \"pending\" && e.kind !== \"wait\")) continue;",
+      "expectRed": "while a SETTLED wait contributes nothing: a pause that is over is not re-armed",
+      "cell": "while a SETTLED wait contributes nothing: a pause that is over is not re-armed",
+      "note": "Adding a kind to a list is the edit that most easily over-fires, and a takeover that re-arms finished pauses is a timer leak rather than a hang -- quieter than the bug it replaces, and therefore worse to find later."
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "the cell asserting the OTHER kinds are unchanged by the addition",
+      "why": "It is a regression guard on this edit rather than a claim of its own, and every mutation that would break it -- dropping `sleep` or `checkpoint` from the list -- reddens the older cell 7 assertion (`the outstanding pauses are the PENDING ones`) first, because that cell is built on a checkpoint token. Graded there, not here. Listed rather than given a mutation that would be scored on a guard it did not name."
+    }
+  ]
+}

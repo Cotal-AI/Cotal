@@ -24,6 +24,7 @@ import {
   STEP_NAME_RE,
   primitiveDoc,
 } from "./primitives.js";
+import { KEY_RESERVED_RE } from "./keys.js";
 
 /** Acorn nodes are loosely typed; this is the shape we actually read. */
 type AnyNode = Node & Record<string, unknown>;
@@ -46,6 +47,16 @@ export interface ValidateResult {
 class Validator {
   readonly errors: LangError[] = [];
   readonly warnings: LangError[] = [];
+  /**
+   * Named functions, by name, for L2032's reach.
+   *
+   * A branch does not have to be written at the combinator call — `parallel({ a, b })` names two
+   * functions declared elsewhere, and an inline branch can call a helper that writes the outer
+   * binding on its behalf. Both are the same defect and neither is visible from the call site
+   * alone, so the names are resolved here. A name bound to two different functions maps to `null`:
+   * it cannot be resolved, and guessing which one a branch meant is worse than saying so.
+   */
+  readonly functions = new Map<string, AnyNode | null>();
 
   constructor(
     readonly source: string,
@@ -459,16 +470,37 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNod
 
 class Scope {
   readonly names = new Map<string, "const" | "let" | "param">();
+  /** The function node a name is bound to HERE, when it is bound to one at all. */
+  private readonly fns = new Map<string, AnyNode>();
   constructor(readonly parent: Scope | null) {}
 
-  declare(name: string, kind: "const" | "let" | "param"): void {
+  declare(name: string, kind: "const" | "let" | "param", fn?: AnyNode): void {
     this.names.set(name, kind);
+    if (fn !== undefined) this.fns.set(name, fn);
+    else this.fns.delete(name);
   }
 
   lookup(name: string): "const" | "let" | "param" | undefined {
     for (let s: Scope | null = this; s !== null; s = s.parent) {
       const k = s.names.get(name);
       if (k !== undefined) return k;
+    }
+    return undefined;
+  }
+
+  /**
+   * The function this name is bound to AT THIS POINT IN THE PROGRAM, or nothing.
+   *
+   * The nearest binding decides, and a binding that is not a function answers `undefined` rather
+   * than deferring outward — that is the difference between resolving a name and resolving a
+   * BINDING. A program-wide name map cannot tell `parallel({ branch })` inside
+   * `function use(branch)` from the top-level `function branch()` of the same name, and blaming a
+   * clean program for what an unrelated declaration elsewhere happens to write is worse than
+   * leaving one branch unproven: an unproven branch is still refused at runtime by the depth check.
+   */
+  lookupFn(name: string): AnyNode | undefined {
+    for (let s: Scope | null = this; s !== null; s = s.parent) {
+      if (s.names.has(name)) return s.fns.get(name);
     }
     return undefined;
   }
@@ -707,7 +739,7 @@ function checkAsyncCallPosition(node: AnyNode, parent: AnyNode | null, v: Valida
   );
 }
 
-function checkCall(node: AnyNode, v: Validator): void {
+function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
   const name = callee.name as string;
@@ -767,28 +799,47 @@ function checkCall(node: AnyNode, v: Validator): void {
     }
   }
 
-  // Required step names.
-  if (spec.nameRequired && name !== "checkpoint") {
+  // Step names: REQUIRED-ness and VALIDITY are separate questions and must not share one gate.
+  //
+  // Required-ness is a statement about the caller's obligation; validity is a statement about the
+  // sink. `nameRequired` is false for 7 of the 13 primitives, so behind one gate a name supplied on
+  // any of those reaches `stepKeyString` unchecked: the optional path, which is the one nobody
+  // writes tests for, feeds the same durable journal key as the required one. A name containing the
+  // characters the key grammar reserves forges structure: two different programs then print one
+  // identical key, and with matching inputs the collision is entirely silent.
+  if (name !== "checkpoint") {
     const prop = given.get("name");
     if (prop === undefined) {
-      v.fail(
-        "L3012",
-        node,
-        `Every \`${name}\` needs a name, because its journal entry is keyed by that name rather than by its position. Without one, a resumed run cannot tell this step from any other.`,
-        `Add a kebab-case name literal: ${name}(..., { name: "..." })`,
-        name,
-      );
-    } else {
-      const value = prop.value as AnyNode;
-      if (value.type !== "Literal" || typeof value.value !== "string") {
+      if (spec.nameRequired) {
         v.fail(
-          "L3013",
-          value,
-          "A step name must be a string literal, because the flowchart, the linter, and the migration report all read it without running the program.",
-          'Use a literal: { name: "build" }',
+          "L3012",
+          node,
+          `Every \`${name}\` needs a name, because its journal entry is keyed by that name rather than by its position. Without one, a resumed run cannot tell this step from any other.`,
+          `Add a kebab-case name literal: ${name}(..., { name: "..." })`,
           name,
         );
-      } else if (!STEP_NAME_RE.test(value.value)) {
+      }
+    } else {
+      const value = prop.value as AnyNode;
+      const isLiteral = value.type === "Literal" && typeof value.value === "string";
+      // L3013 stays gated on `nameRequired`. Widening it to every present name refused
+      // `fanOut([...], async (lens) => sleep("1m", { name: lens }))` — naming a branch's step after
+      // its item, which is idiomatic and is how a fan-out gets distinct keys at all. That is the
+      // cost this restriction would have had, and it is too high for what it buys: the SHAPE check
+      // below is what closes the forgery, and it does not need the name to be static.
+      if (!isLiteral) {
+        if (spec.nameRequired) {
+          v.fail(
+            "L3013",
+            value,
+            "A step name must be a string literal, because the flowchart, the linter, and the migration report all read it without running the program.",
+            'Use a literal: { name: "build" }',
+            name,
+          );
+        }
+        // A COMPUTED name cannot be checked here at all, and it reaches the same journal key. The
+        // refusal for that one lives at key construction, where the value exists — see keys.ts.
+      } else if (!STEP_NAME_RE.test(value.value as string)) {
         v.fail(
           "L3014",
           value,
@@ -833,6 +884,249 @@ function checkCall(node: AnyNode, v: Validator): void {
       );
     }
   }
+
+  // A record-form branch KEY becomes a path segment verbatim: `frameString` builds
+  // `/kind:name#occ/b:${branch}` by concatenation and escapes nothing. So a key containing one of
+  // the three characters the key grammar reserves forges structure — a single branch named
+  // `a/parallel:inner#0/b:b` prints the identical key to a genuinely nested `a` → `inner` → `b`,
+  // and the journal cannot tell the two locations apart. With different inputs that surfaces as a
+  // spurious L5001 divergence for a program that never diverged; with matching inputs it is
+  // SILENT, one durable row serving both, and a replay hands the second location the first's
+  // recorded effect.
+  //
+  // Only the reserved characters are rejected, NOT the full step-name pattern: branch keys are
+  // ordinary object keys and `{ runTests: ... }` is legitimate, so requiring kebab-case here would
+  // refuse correct programs to fix a forgery that needs `/`, `#` or `:`. The restriction is the
+  // narrowest one that closes it.
+  if (name === "parallel" || name === "race" || name === "fanOut") {
+    const branches = args[0];
+    if (branches !== undefined && branches.type === "ObjectExpression") {
+      for (const prop of (branches.properties as AnyNode[]) ?? []) {
+        const key = prop.key as AnyNode | undefined;
+        if (key === undefined) continue;
+        const text =
+          key.type === "Identifier" ? (key.name as string)
+          : key.type === "Literal" && typeof key.value === "string" ? key.value
+          : undefined;
+        if (text === undefined || !KEY_RESERVED_RE.test(text)) continue;
+        v.fail(
+          "L3025",
+          key,
+          `The branch key "${text}" contains a character the step-key grammar reserves (\`/\`, \`#\` or \`:\`). Branch keys are written into the journal key verbatim, so this one can spell a path that a genuinely nested scope also produces — and two different locations that share a key share a durable row, silently when their inputs match.`,
+          "Use a branch key without `/`, `#` or `:`.",
+          name,
+        );
+      }
+    }
+  }
+
+  // L2032: a branch that WRITES a binding declared outside it.
+  //
+  // Freeze-on-share does not see this one, because nothing crosses an effect boundary: the branches
+  // set a scalar in the enclosing scope. And the damage is silent. Live, the branches write in
+  // COMPLETION order; on resume the journalled effects return instantly, so they write in LAUNCH
+  // order, the binding ends up holding a different value, and the resumed run takes a path it never
+  // recorded — with no divergence raised, because no effect's inputs changed.
+  //
+  // `conclave` is deliberately not here. Its body is a single thunk with nothing to race, so a
+  // write from inside it is as ordered as a write anywhere else in the program.
+  if (name === "parallel" || name === "race" || name === "fanOut") {
+    // One `seen` set per combinator call: two branches calling the same helper is one defect in
+    // that helper, not two, and reporting it twice tells an author to fix one line twice.
+    const seen = new Set<AnyNode>();
+    const thunks = name === "fanOut" ? branchThunks(args[1], v, scope) : branchThunks(args[0], v, scope);
+    for (const thunk of thunks) checkCapturedWrites(thunk, name, v, seen);
+  }
+}
+
+function isFunctionNode(node: AnyNode): boolean {
+  return (
+    node.type === "ArrowFunctionExpression" ||
+    node.type === "FunctionExpression" ||
+    node.type === "FunctionDeclaration"
+  );
+}
+
+/**
+ * Index every function the program names, so L2032 can follow a branch that is not written at the
+ * combinator call. Ambiguous names (two functions, one name) index as `null` and resolve to
+ * nothing — an unproven branch is left to the interpreter's runtime check rather than guessed at.
+ */
+function indexFunctions(node: AnyNode, v: Validator): void {
+  const put = (name: string, fn: AnyNode): void => {
+    const prior = v.functions.get(name);
+    v.functions.set(name, prior === undefined || prior === fn ? fn : null);
+  };
+  if (node.type === "FunctionDeclaration" && isNode(node.id)) {
+    put((node.id as AnyNode).name as string, node);
+  }
+  if (node.type === "VariableDeclarator" && isNode(node.id) && (node.id as AnyNode).type === "Identifier") {
+    const init = node.init;
+    if (isNode(init) && isFunctionNode(init as AnyNode)) put((node.id as AnyNode).name as string, init as AnyNode);
+  }
+  for (const c of children(node)) indexFunctions(c, v);
+}
+
+/**
+ * Resolve a branch to the function it names, or to nothing.
+ *
+ * A NAMED branch resolves through its lexical binding at the combinator call, never through the
+ * program-wide name map: `async function use(branch) { await parallel({ branch }) }` passes its own
+ * parameter, and resolving that name to a same-named top-level declaration made a clean program
+ * unwriteable — L2032 blamed a write in a function the program never even called. A name bound to
+ * something that is not a function is UNPROVEN, and unproven is the interpreter's depth check to
+ * refuse at runtime, not the validator's to guess at.
+ */
+function resolveFunction(node: AnyNode, v: Validator, scope: Scope): AnyNode | undefined {
+  if (isFunctionNode(node)) return node;
+  if (node.type !== "Identifier") return undefined;
+  const name = node.name as string;
+  // Bound here: the binding answers, whatever it is bound to. Unbound: walk 2 has already raised
+  // L2001 for it, so the module index is the fallback.
+  if (scope.lookup(name) !== undefined) return scope.lookupFn(name);
+  return v.functions.get(name) ?? undefined;
+}
+
+/**
+ * The thunks a combinator owns, in every form the language accepts.
+ *
+ * `parallel({ a: () => …, b })` mixes an inline branch and a NAMED one, and a first version of this
+ * dropped the named half — so a captured-write program written with two named
+ * `async function`s instead of two arrows, was accepted. A branch is a branch however it is
+ * spelled.
+ */
+function branchThunks(node: AnyNode | undefined, v: Validator, scope: Scope): AnyNode[] {
+  if (node === undefined) return [];
+  const one = resolveFunction(node, v, scope);
+  if (one !== undefined) return [one];
+  const out: AnyNode[] = [];
+  if (node.type === "ObjectExpression") {
+    for (const p of (node.properties as AnyNode[]) ?? []) {
+      if (p.type !== "Property" || !isNode(p.value)) continue;
+      const fn = resolveFunction(p.value as AnyNode, v, scope);
+      if (fn !== undefined) out.push(fn);
+    }
+  }
+  if (node.type === "ArrayExpression") {
+    for (const el of (node.elements as (AnyNode | null)[]) ?? []) {
+      if (el === null || !isNode(el)) continue;
+      const fn = resolveFunction(el, v, scope);
+      if (fn !== undefined) out.push(fn);
+    }
+  }
+  return out;
+}
+
+/** Walk one branch thunk with its OWN scope chain: anything it did not declare, it captured. */
+function checkCapturedWrites(fn: AnyNode, combinator: string, v: Validator, seen: Set<AnyNode>): void {
+  if (seen.has(fn)) return;
+  seen.add(fn);
+  const local = new Scope(null);
+  for (const p of (fn.params as AnyNode[]) ?? []) {
+    const names: string[] = [];
+    patternNames(p, names);
+    for (const n of names) local.declare(n, "param");
+  }
+  if (isNode(fn.body)) walkCaptured(fn.body as AnyNode, local, combinator, v, seen);
+}
+
+function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Validator, seen: Set<AnyNode>): void {
+  switch (node.type) {
+    case "VariableDeclaration": {
+      const kind = node.kind === "const" ? "const" : "let";
+      for (const d of (node.declarations as AnyNode[]) ?? []) {
+        if (isNode(d.init)) walkCaptured(d.init as AnyNode, scope, combinator, v, seen);
+        const names: string[] = [];
+        patternNames(d.id as AnyNode, names);
+        for (const n of names) scope.declare(n, kind);
+      }
+      return;
+    }
+
+    case "AssignmentExpression":
+    case "UpdateExpression": {
+      // `x = 1` and `x += 1` and `x++` are the same defect. A write through a member expression is
+      // NOT this rule: that is a value, and freeze-on-share covers values (L2031).
+      const target = (node.type === "AssignmentExpression" ? node.left : node.argument) as AnyNode;
+      if (isNode(target) && target.type === "Identifier" && scope.lookup(target.name as string) === undefined) {
+        const n = target.name as string;
+        v.fail(
+          "L2032",
+          target,
+          `\`${n}\` is declared outside this branch and written inside it. Two branches racing to set one variable is nondeterministic, and freezing does not cover it because nothing crosses an effect boundary. It is also silent: live, the branches write in completion order, but on resume the recorded effects return instantly and they write in launch order, so \`${n}\` holds a different value and the run takes a path it never recorded — with no divergence raised, because no effect's inputs changed.`,
+          `Return the value from the branch and read it out of \`${combinator}\`'s result, or use \`race\`, which yields its winner.`,
+          combinator,
+        );
+      }
+      for (const c of children(node)) walkCaptured(c, scope, combinator, v, seen);
+      return;
+    }
+
+    case "CallExpression": {
+      // FOLLOW THE CALL. A branch that writes nothing itself and calls a helper that writes the
+      // outer binding is the same defect one level down, and it is invisible at the combinator call.
+      // The helper is checked as a branch in its own right, with its own scope, so the blame lands
+      // on the line that actually writes — and a helper that only touches its own locals is clean,
+      // which is what keeps ordinary shared procedures usable.
+      const callee = node.callee;
+      if (isNode(callee) && (callee as AnyNode).type === "Identifier") {
+        const nm = (callee as AnyNode).name as string;
+        // A locally-declared name is a local binding, not the program-level function of that name.
+        if (scope.lookup(nm) === undefined) {
+          const target = v.functions.get(nm);
+          if (target !== undefined && target !== null) checkCapturedWrites(target, combinator, v, seen);
+        }
+      }
+      for (const c of children(node)) walkCaptured(c, scope, combinator, v, seen);
+      return;
+    }
+
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ArrowFunctionExpression": {
+      if (node.type === "FunctionDeclaration" && isNode(node.id)) {
+        scope.declare((node.id as AnyNode).name as string, "const");
+      }
+      const inner = new Scope(scope);
+      for (const p of (node.params as AnyNode[]) ?? []) {
+        const names: string[] = [];
+        patternNames(p, names);
+        for (const n of names) inner.declare(n, "param");
+      }
+      if (isNode(node.body)) walkCaptured(node.body as AnyNode, inner, combinator, v, seen);
+      return;
+    }
+
+    case "BlockStatement": {
+      const inner = new Scope(scope);
+      hoistFunctions(node, inner);
+      for (const s of (node.body as AnyNode[]) ?? []) walkCaptured(s, inner, combinator, v, seen);
+      return;
+    }
+
+    case "CatchClause": {
+      const inner = new Scope(scope);
+      if (isNode(node.param)) {
+        const names: string[] = [];
+        patternNames(node.param as AnyNode, names);
+        for (const n of names) inner.declare(n, "const");
+      }
+      if (isNode(node.body)) walkCaptured(node.body as AnyNode, inner, combinator, v, seen);
+      return;
+    }
+
+    case "ForStatement":
+    case "ForOfStatement": {
+      const inner = new Scope(scope);
+      for (const c of children(node)) walkCaptured(c, inner, combinator, v, seen);
+      return;
+    }
+
+    default: {
+      for (const c of children(node)) walkCaptured(c, scope, combinator, v, seen);
+      return;
+    }
+  }
 }
 
 function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
@@ -875,6 +1169,13 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
         if (isNode(init)) walkResolve(init, v, scope);
         const names: string[] = [];
         patternNames(d.id as AnyNode, names);
+        // `const b = async () => {...}` binds a FUNCTION, and a branch named `b` must resolve to
+        // it. Only the plain `id = function` form does: a destructured name holds whatever the
+        // pattern pulled out, which is not statically a function.
+        const bound =
+          isNode(d.id) && (d.id as AnyNode).type === "Identifier" && isNode(init) && isFunctionNode(init as AnyNode)
+            ? (init as AnyNode)
+            : undefined;
         for (const n of names) {
           if (RESERVED_NAMES.has(n)) {
             v.fail(
@@ -884,7 +1185,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
               `Rename the binding, for example \`${n}Result\`.`,
             );
           }
-          scope.declare(n, kind);
+          scope.declare(n, kind, bound);
         }
       }
       return;
@@ -932,7 +1233,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
             "Rename the function.",
           );
         }
-        scope.declare(fname, "const");
+        scope.declare(fname, "const", node);
       }
       const inner = new Scope(scope);
       for (const p of (node.params as AnyNode[]) ?? []) {
@@ -982,7 +1283,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
     }
 
     case "CallExpression": {
-      checkCall(node, v);
+      checkCall(node, v, scope);
       for (const c of children(node)) walkResolve(c, v, scope);
       return;
     }
@@ -998,7 +1299,7 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
 function hoistFunctions(block: AnyNode, scope: Scope): void {
   for (const s of (block.body as AnyNode[]) ?? []) {
     if (s.type === "FunctionDeclaration" && isNode(s.id)) {
-      scope.declare((s.id as AnyNode).name as string, "const");
+      scope.declare((s.id as AnyNode).name as string, "const", s);
     }
   }
 }
@@ -1044,6 +1345,8 @@ export function validate(source: string, file = "program.cotal.js"): ValidateRes
 
   // The module body is an async context: a program's top level is where the workflow lives.
   walkShape(ast, v, true);
+
+  indexFunctions(ast, v);
 
   const top = new Scope(null);
   hoistFunctions(ast, top);

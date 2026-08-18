@@ -304,3 +304,25 @@ smoke:agui-map
 smoke:attach-reconnect
 smoke:agui-multi-session
 smoke:subject-frontier
+
+# The cotal-lang runtime: the language package, the durable step journal and run driver, and the
+# mesh handler that binds the effect interface onto the real planes.
+smoke:mutation-proof
+smoke:doc-binding
+smoke:run-journal
+smoke:run-notice
+smoke:run-migration
+smoke:run-journal-auth
+smoke:lang-pins
+smoke:lang-scopes
+smoke:lang-notify-fact
+smoke:lang-migrate
+smoke:runtime-journal-store
+smoke:runtime-run-driver
+smoke:runtime-mesh-sleep
+smoke:runtime-mesh-checkpoint
+smoke:runtime-mesh-wait
+smoke:runtime-mesh-notify
+smoke:runtime-mesh-seam
+smoke:runtime-migrate
+smoke:runtime-fork

@@ -41,6 +41,8 @@ export { validate, type ValidateResult } from "./grammar.js";
 export {
   RunDivergence,
   RuntimeFault,
+  ScopeBranchMissing,
+  UnwalkableScope,
   resume,
   run,
   type RunOptions,
@@ -50,12 +52,24 @@ export {
 export { Prng, assertCrossable, deepFreeze } from "./values.js";
 
 export {
+  LANGUAGE_VERSION,
+  PIN_DEFAULTS,
+  PinMismatch,
+  bindPins,
+  resolvePins,
+  type PinnableOptions,
+  type RunPins,
+} from "./pins.js";
+
+export {
   Cancelled,
+  RunReleased,
   EffectError,
   type AgentHandleValue,
   type AskRequest,
   type CancelSignal,
   type ChannelHandleValue,
+  type CheckpointRaw,
   type CheckpointRequest,
   type CheckpointResultValue,
   type ConclaveRequest,
@@ -98,15 +112,20 @@ export {
   type SimScript,
 } from "./sim.js";
 
+export { notifyFactViolation } from "./notify-fact.js";
+
 export {
   Journal,
+  JournalAppendRejected,
   JournalReadOnlyError,
   RunClock,
+  journalEntryKeyString,
   type EntryError,
   type EntryState,
   type EntryStatus,
   type JournalEntry,
   type JournalInit,
+  type JournalStore,
   type LookupVerdict,
 } from "./journal.js";
 
@@ -115,6 +134,7 @@ export {
   KeyScope,
   branchKeys,
   digest,
+  programHashOf,
   scopePathString,
   stepKeyEquals,
   stepKeyString,
