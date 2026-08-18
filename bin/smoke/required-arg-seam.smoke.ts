@@ -260,6 +260,16 @@ function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
   // same name: the exact twin of `const { seam } = core`, which is allowed three lines below. Left
   // unsplit, identical code got opposite verdicts depending on where the variable was declared.
   if (ts.isShorthandPropertyAssignment(p) && p.name === id && inAssignmentPattern(p)) return true;
+  // The same split for a bare identifier in TARGET position: `[seam] = pair`, `for ([seam] of pairs)`
+  // and `({ k: seam } = row)` all ASSIGN INTO a variable of the seam's own name, so the name stays
+  // the one this reader scans and any call through it is counted. In a LITERAL the identical node is
+  // a READ (`const arr = [seam]`, `{ k: seam }`) and stays flagged. Unlike shorthand there is no
+  // ambiguity to weigh: a bare identifier in a pattern can only be a target. Review found the array
+  // half of this unwired after the object half landed, which is the shape of the whole rule: the
+  // helper was already array-aware and only the identifier branch failed to ask it.
+  if (inAssignmentPattern(id)
+    && (ts.isArrayLiteralExpression(p) || (ts.isPropertyAssignment(p) && p.initializer === id)))
+    return true;
   if ((p as { name?: ts.Node }).name === id
     && (ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p) || ts.isVariableDeclaration(p)
       || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p)
@@ -653,6 +663,17 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`for ({ standaloneConnectOpts: connectOpts } of [core]) { connectOpts({ creds: c }); }`) === "aliased");
   check("...while an assignment destructure that binds the SAME name is not a rebinding",
     fx(`({ standaloneConnectOpts } = core);`).length === 0);
+  // `noAlias` rather than `length === 0`, because the `for...of` form below carries a real call that
+  // is correctly COUNTED: the point of the rule is that the name stays scannable, so the call site
+  // showing up is the evidence, not a failure.
+  const noAlias = (body: string): boolean => fx(body).every((s) => s.verdict !== "aliased");
+  check("...and the ARRAY side of the same split, where a bare identifier can only be a target",
+    noAlias(`[standaloneConnectOpts] = pair;`)
+    && noAlias(`for ([standaloneConnectOpts] of pairs) { standaloneConnectOpts({ tls: false }); }`)
+    && noAlias(`({ k: standaloneConnectOpts } = row);`));
+  check("...while the same node in a LITERAL is a read, and stays flagged",
+    one(`const arr = [standaloneConnectOpts];`) === "aliased"
+    && one(`const row = { k: standaloneConnectOpts };`) === "aliased");
   check("a BARE DEFAULT import binds the scannable name, so it is not a rebinding",
     fx(`import standaloneConnectOpts from "@cotal-ai/core";`).length === 0);
   // The residual both reviews called ordinary rather than exotic, and they were right: this is
