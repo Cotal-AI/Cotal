@@ -45,7 +45,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { cotal, SESSION_RETIRED } from "../src/plugin.js";
+import { cotal, SESSION_RETIRED, SETTLE_ABANDONED } from "../src/plugin.js";
 
 async function freePort(): Promise<number> {
   const s = createNetServer();
@@ -236,6 +236,15 @@ try {
   const beforeNew = await onSubject();
   await fire({ type: "session.created", properties: { info: { id: B } } });
   await sleep(2_000);
+
+  // THE BACKSTOP MUST NOT FIRE ON A STEP THAT COMPLETES. A bound nobody has shown can tell a wedge
+  // from a completion is not a backstop, it is a token. This grades the healthy direction: a drain
+  // that finishes normally abandons nothing. The other direction is graded by hanging a step on
+  // purpose, which must fire the token AND leave the rest of the suite running, so a clean named red
+  // here is itself the evidence that the chain kept moving instead of wedging behind the hung step.
+  check("bound:a healthy drain abandons no step, so the backstop is not firing on completions",
+    !logs.some((l) => l.includes(SETTLE_ABANDONED)), logs.filter((l) => l.includes(SETTLE_ABANDONED)));
+
   const afterDrain = await onSubject();
   check("reset:the /new drain puts the old session's tail and its close ON THE WIRE",
     afterDrain > beforeNew, { beforeNew, afterDrain });
@@ -281,16 +290,22 @@ try {
   // delivered while both swaps are still queued. If the current session id flips outside the swap,
   // this event is routed by the NEW id to the OLD holder, which is bound to another thread and
   // refuses terminally, and the whole event plane dies. Found by review, reproduced here first.
-  const createC = fire({ type: "session.created", properties: { info: { id: C } } });
-  const createD = fire({ type: "session.created", properties: { info: { id: D } } });
+  // DISPATCHED THE WAY THE BUS DISPATCHES. The plugin bus runs `void hook.event(...)`, so nothing
+  // upstream holds these handles. Collecting them and awaiting them together reached the same
+  // window, but it is the harness's shape rather than the runtime's, and a window reached only by a
+  // route production cannot take is a window the cell can hold open for itself. The interleaving is
+  // unchanged: two creates, one microtask, then the part that lands in the gap.
+  void fire({ type: "session.created", properties: { info: { id: C } } });
+  void fire({ type: "session.created", properties: { info: { id: D } } });
   // THE PART MUST LAND IN THE ADOPT-TO-DRAIN WINDOW, not before the callbacks start. Firing it
   // synchronously here would grade a SAFE placement: the ambient id is still the old session, so the
   // event is ignored and nothing is proven. One microtask lets C's queued swap run its adopt and
   // suspend on the drain, which is the window where the id used to lead the holder.
   await Promise.resolve();
-  const partInGap = fire({ type: "message.part.updated", properties: { part: { sessionID: C } } });
-  await Promise.all([createC, createD, partInGap]);
-  await sleep(2_000);
+  void fire({ type: "message.part.updated", properties: { part: { sessionID: C } } });
+  // No handle to await, exactly as the bus leaves none. The wait is wall-clock, and it is longer
+  // than the awaited version needed because nothing here can observe completion.
+  await sleep(4_000);
   for (const id of [C, D]) {
     await part(id);            // park the cursor, as a live session's first pump does
     await sleep(1_200);
@@ -360,6 +375,15 @@ try {
   const retiredCount = (id: string): number => logs.filter((l) => l.includes(`${SESSION_RETIRED} ${id} `)).length;
   const retiredC = retiredCount(C);
   const retiredB = retiredCount(B);
+  // STRUCTURAL, NOT THE TOKEN. A retirement line survives refactors that still leave the replaced
+  // session's run open, so the token says the path was entered while this says the observer was not
+  // left holding an unfinished run. The token cells below stay, because retired-once versus
+  // retired-twice is a thing the wire cannot show; they are simply not what proves the product
+  // closed what it opened.
+  const openedB = seen.filter((e) => e.type === "RUN_STARTED" && e.thread === B).length;
+  const closedB = seen.filter((e) => e.type === "RUN_FINISHED" && e.thread === B).length;
+  check("race:every run the REPLACED session opened was closed ON THE WIRE, not merely logged",
+    openedB > 0 && openedB === closedB, { openedB, closedB });
   check("race:the holder the FIRST of two racing creates installed is retired, exactly once",
     retiredC === 1, { retiredC, retires: logs.filter((l) => l.includes(SESSION_RETIRED)) });
   check("race:and the session they both replace is retired ONCE, not drained twice",
@@ -371,7 +395,7 @@ try {
     !seen.some((e) => e.thread === CHILD), seen.filter((e) => e.thread === CHILD).length);
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 18;
+  const EXPECTED = 20;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
