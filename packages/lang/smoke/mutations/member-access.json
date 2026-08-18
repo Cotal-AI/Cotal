@@ -25,14 +25,14 @@
       "note": "The static L2032 walk cannot see a write through an alias (`const local = acc; local.a = 1`), so the runtime half is the only door on that path."
     },
     {
-      "name": "the interpreter's ObjectExpression case is renamed, so a node the table admits has no case",
+      "name": "the interpreter's SwitchStatement case is renamed, so a node the table admits has no case",
       "file": "packages/lang/src/interpret.ts",
-      "find": "      case \"ObjectExpression\": {\n        const out: Record<string, unknown> = {};",
-      "replace": "      case \"ObjectLiteralExpression\": {\n        const out: Record<string, unknown> = {};",
+      "find": "      case \"SwitchStatement\": {\n        const disc = await this.evaluate(node.discriminant as AnyNode, env, frame);",
+      "replace": "      case \"SwitchStmt\": {\n        const disc = await this.evaluate(node.discriminant as AnyNode, env, frame);",
       "expectRed": "every admitted node type has a case in the interpreter",
       "completionMarker": "ok the table's sets are disjoint",
       "cell": "every admitted node type has a case in the interpreter",
-      "note": "The parity check reads the interpreter's source: an admitted node type without a `case` is exactly the drift this table exists to end (`x++`, `?.`, `**` were admitted by the validator and refused at run time)."
+      "note": "The parity check reads the interpreter's source: an admitted node type without a `case` is exactly the drift this table exists to end (`x++`, `?.`, `**` were admitted by the validator and refused at run time). `switch` is chosen because no cell upstream of the parity check executes one; renaming a case an earlier cell exercises would redden that cell first and grade WRONG-RED in this fail-fast suite."
     }
   ]
 }
