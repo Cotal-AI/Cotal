@@ -182,6 +182,7 @@ smoke:down-lease-tombstone
 smoke:spawn-from-anywhere
 smoke:spawn-from-anywhere:live
 smoke:cross-path-dedup
+smoke:inbox-window
 smoke:backup-cli
 smoke:registry-staging
 smoke:materialize-concurrency
@@ -335,6 +336,7 @@ smoke:agui-opencode-map
 smoke:agui-opencode-source
 smoke:opencode-events-arm
 smoke:opencode-events-reset
+smoke:goal-follow
 
 # The Codex connector's AG-UI event plane: the mapper against a real app-server
 # thread, the launch arm, and the per-agent rollout resolution.
