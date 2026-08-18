@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -108,6 +108,17 @@ export const opencodeConnector: Connector = {
   requires: ["opencode"],
   supportsModelVariant: true,
   listModels: listOpenCodeModels,
+  // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
+  // launch whose connector does not implement it, before anything is provisioned, rather than mint a
+  // grant nothing will ever publish to. A connector that emits and does not say so here is refused
+  // at the door with its emitter complete and untouched.
+  //
+  // It is core's own derivation and is not re-derived here, so the channel the manager mints the
+  // grant for and the subject the session publishes to come from ONE function. A second derivation
+  // would be a second place the subject is decided, and the two would drift the first time either
+  // changed. It takes the PRINCIPAL: a display name is not an identity on this mesh, and a
+  // name-keyed channel would fuse two principals' streams onto one subject.
+  eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     // Resuming an existing session isn't wired for opencode: the connector runs `opencode serve` +
     // a plugin that CREATES its own session then attaches a TUI, so a fork must plumb into

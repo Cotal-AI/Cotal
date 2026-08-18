@@ -20,6 +20,11 @@ changed. And no step events or usage numbers: OpenCode's step records carry no s
 shared between start and finish, and what the finish carries is cost and tokens, so emitting a step
 boundary would tell a reader that a phase ended when what happened is that counts arrived.
 
+One OpenCode process can hold several sessions, and `/new` is a context reset that keeps the mesh
+identity. Each session publishes under its own thread id on the one channel. The session being left
+is flushed and its open run is closed before the switch, so a reader is never left holding a run
+that never ends.
+
 The reader is the same on every connector, so the channel, the grant and how to subscribe are
 documented once in the Claude Code page and linked from the OpenCode one.
 

@@ -105,9 +105,26 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
     unarmed.COTAL_OPENCODE_HOME === process.cwd() && unarmed.COTAL_WORKSPACE_ROOT === undefined,
     { home: unarmed.COTAL_OPENCODE_HOME, root: unarmed.COTAL_WORKSPACE_ROOT });
 }
+{
+  // THE GATE ABOVE `buildLaunch`, and the one a live spawn hits FIRST. Both the CLI and the manager
+  // refuse an armed launch whose connector does not implement `eventChannel`, before anything is
+  // provisioned. A connector can hold a complete emitter, arm it correctly, and still exit 1 at the
+  // door because it never said it emits, which is what this connector did until it declared one.
+  check("the connector DECLARES an event plane, which is what gets --events past the launch gate",
+    typeof opencodeConnector.eventChannel === "function", typeof opencodeConnector.eventChannel);
+  // BY VALUE, not by existence. A method that exists is another predicate proved against itself: it
+  // says nothing about whether the channel the manager mints the grant for and the subject the
+  // session publishes to are the same string. Compared against core's own derivation, on the
+  // PRINCIPAL, because a display name is not an identity here and a name-keyed channel would fuse
+  // two principals' streams onto one subject.
+  const principal = { owner: "local", actor: "ollie" };
+  check("and the declared channel IS core's derivation on the principal, so the grant and the subject cannot drift",
+    opencodeConnector.eventChannel?.(principal) === eventChannel(principal),
+    { declared: opencodeConnector.eventChannel?.(principal), core: eventChannel(principal) });
+}
 
 // ---- Cell count, because a buildLaunch that threw on every input would DELETE cells, not fail them
-const EXPECTED = 12;
+const EXPECTED = 14;
 check(`every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
