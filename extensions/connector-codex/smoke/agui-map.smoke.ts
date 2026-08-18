@@ -21,16 +21,26 @@
  *
  * Run: `pnpm smoke:agui-codex-map`
  */
-import { strict as assert } from "node:assert";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { AguiBrackets, type AguiEvent } from "@cotal-ai/connector-core";
 import { createCodexMapper, type CodexRecord } from "../src/agui-map.js";
 
 let pass = 0;
+let fail = 0;
+/** A cell COUNTS and continues. It does not throw.
+ *
+ *  An asserting helper names only the FIRST fact a change breaks: the file dies on it and every
+ *  later cell, including the one a reader is looking for, never runs. That turns a run into a red
+ *  prefix, and a red prefix cannot say which facts held and which did not. Cells print only when
+ *  they fail, so a cell name in this log always means that cell failed. */
 const c = (name: string, cond: boolean, extra?: unknown): void => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
-  pass++;
+  if (cond) {
+    pass++;
+    return;
+  }
+  fail++;
+  console.log(`  x FAIL: ${name}`, extra !== undefined ? JSON.stringify(extra) : "");
 };
 
 const FIXTURE = fileURLToPath(new URL("./fixtures/thread-shape.jsonl", import.meta.url));
@@ -327,12 +337,18 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
 // The census is printed, not just asserted: a reader who sees "28 passed" learns nothing about
 // whether the fixture had anything in it, and a cell count is not a coverage claim.
 {
-  const R = replay(records);
-  const k = kinds(R.events);
-  const emitted = R.perRecord.filter((x) => x !== null).length;
-  console.log(
-    `agui-codex-map smoke: ${pass} passed, 0 failed  ` +
+  let census = "[fixture: census unavailable, the replay threw]";
+  try {
+    const R = replay(records);
+    const k = kinds(R.events);
+    const emitted = R.perRecord.filter((x) => x !== null).length;
+    census =
       `[fixture: ${records.length} records from one real app-server thread, ${emitted} mapped, ` +
-      `${records.length - emitted} dropped, runs ${R.runs.length}, events ${JSON.stringify(k)}]`,
-  );
+      `${records.length - emitted} dropped, runs ${R.runs.length}, events ${JSON.stringify(k)}]`;
+  } catch (e) {
+    c("census:the real thread replays without throwing", false, { thrown: (e as Error).message });
+  }
+  console.log(`agui-codex-map smoke: ${pass} passed, ${fail} failed  ${census}`);
 }
+
+if (fail > 0) process.exit(1);
