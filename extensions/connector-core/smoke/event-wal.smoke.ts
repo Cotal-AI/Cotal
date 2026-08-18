@@ -728,6 +728,41 @@ try {
     bErr2?.message ?? "did NOT throw");
 }
 
+// ── [G2] THE COPY OF THE REFUSAL THAT LIVES INSIDE THE WRITE ──────────────────────────────────
+//
+// EVERY CELL IN [G] DRIVES THE STALE HANDLE THROUGH `recordAck`, AND THAT STOPPED BEING ENOUGH.
+// The ordering fix gave `recordAck` and `abandon` an EARLIER copy of the refusal so they cannot
+// touch the principal's shared record on their way to failing. Those two copies then answered for
+// every cell above, and deleting the guard inside `write` left the whole section green. Measured,
+// not predicted: the pre-registered mutation that drops the write-path refusal SURVIVED, with
+// another mutation in the same file killed in the same run, so the survivor was a coverage gap
+// rather than an unreached file.
+//
+// `advanceCursorOnly` is the transition that still depends on it: no early check of its own, and
+// its only precondition is that no frame is pending. A stale handle that can move the cursor moves
+// the source position the next start resumes from, which is how a restart silently skips records.
+{
+  const walPath = p();
+  const A = await openWal(walPath, T);
+  await A.advanceCursorOnly("cur-1"); // the file exists from here, and A is generation 1
+  const B = await openWal(walPath, EXISTS); // B's view is that state
+  await A.advanceCursorOnly("cur-2"); // A moves on; B is stale from here
+
+  let staleErr: Error | undefined;
+  try { await B.advanceCursorOnly("cur-stale"); } catch (e) { staleErr = e as Error; }
+  c("[G2] a stale handle is refused on a transition whose ONLY refusal is inside the write",
+    staleErr instanceof WalStaleWriterError, staleErr ? `${staleErr.name}: ${staleErr.message}` : "did NOT throw");
+  c("[G2] ...and the cursor on disk is still the CURRENT handle's, not the stale one's",
+    (JSON.parse(readFileSync(walPath, "utf8")) as { frontier: { sourceCursor: string } }).frontier.sourceCursor === "cur-2",
+    readFileSync(walPath, "utf8"));
+  // CONTROL, for the same reason [G] has one: without it these two cells are satisfied by a write
+  // path that refuses everybody.
+  await A.advanceCursorOnly("cur-3");
+  c("[G2] CONTROL: the current handle still moves the cursor through the same write",
+    (JSON.parse(readFileSync(walPath, "utf8")) as { frontier: { sourceCursor: string } }).frontier.sourceCursor === "cur-3",
+    readFileSync(walPath, "utf8"));
+}
+
 // ── [G] THE GENERATION IS REQUIRED FROM v3, AND A VANISHED FILE IS NOT A FRESH ONE ────────────
 {
   // A document whose `gen` was stripped would silently disable the guard for every later write, so

@@ -27,7 +27,8 @@
       "file": "extensions/connector-core/src/event-wal.ts",
       "find": "    await this.assertNotClobbering();\n    const stamped: WalDoc = { ...next, gen: this.doc.gen + 1 };\n",
       "replace": "    const stamped: WalDoc = { ...next, gen: this.doc.gen + 1 };\n",
-      "expectRed": "[G] THE STALE HANDLE'S TRANSITION FAILS, and by name"
+      "expectRed": "[G2] a stale handle is refused on a transition whose ONLY refusal is inside the write",
+      "note": "Re-pointed. Every [G] cell drives the stale handle through `recordAck`, which now carries an EARLIER copy of this refusal so it cannot move the principal's shared record on its way to failing. That copy answered for the whole section, and this mutation SURVIVED with another mutation in the same file killed in the same run: a coverage gap, not an unreached file. [G2] drives `advanceCursorOnly`, which has no early check of its own, so the refusal it grades is the one inside `write`."
     },
     {
       "name": "W5 an absent generation is read as zero instead of refused, so a document with the guard stripped out of it loads and every later write compares against a value nobody wrote",
