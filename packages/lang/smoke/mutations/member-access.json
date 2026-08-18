@@ -27,8 +27,8 @@
     {
       "name": "the interpreter's SwitchStatement case is renamed, so a node the table admits has no case",
       "file": "packages/lang/src/interpret.ts",
-      "find": "      case \"SwitchStatement\": {\n        const disc = await this.evaluate(node.discriminant as AnyNode, env, frame);",
-      "replace": "      case \"SwitchStmt\": {\n        const disc = await this.evaluate(node.discriminant as AnyNode, env, frame);",
+      "find": "      case \"SwitchStatement\": {",
+      "replace": "      case \"SwitchStmt\": {",
       "expectRed": "every admitted node type has a case in the interpreter",
       "completionMarker": "ok the table's sets are disjoint",
       "cell": "every admitted node type has a case in the interpreter",

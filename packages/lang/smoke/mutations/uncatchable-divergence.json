@@ -7,8 +7,8 @@
     {
       "name": "the divergence class is dropped from the rethrow list, so `catch` swallows it as a host error",
       "file": "packages/lang/src/interpret.ts",
-      "find": "            e instanceof RunDivergence ||\n            e instanceof ScopeBranchMissing ||",
-      "replace": "            e instanceof ScopeBranchMissing ||",
+      "find": "          e instanceof RunDivergence ||\n          e instanceof ScopeBranchMissing ||",
+      "replace": "          e instanceof ScopeBranchMissing ||",
       "expectRed": "a workflow's catch does not swallow a divergence",
       "completionMarker": "ok and offers fork as the repair",
       "cell": "a workflow's catch does not swallow a divergence",

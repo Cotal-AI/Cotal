@@ -10,9 +10,9 @@
       "find": "      frames.forEach((f, j) => {\n        f.clock.onAdvance(() => {\n          if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {\n            f.signal.cancel(\"a sibling branch won the race\", { cutPure: true });\n          }\n        });\n      });",
       "replace": "",
       "expectRed": "the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
-      "completionMarker": "ok an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",
+      "completionMarker": "ok and the resume takes the SAME path",
       "cell": "the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
-      "note": "Without the listener the loser's verdict stays what the settle decided from its OLD clock, the infinite tail burns the step budget, and the run dies on L4013 after the race already settled ok. The completionMarker is DOWNSTREAM here (section 10 second cell), so it doubles as proof the suite reached past the reddened cell's section header; mutation-proof only requires the named cell red."
+      "note": "Without the listener the loser's verdict stays what the settle decided from its OLD clock, the infinite tail burns the step budget, and the run dies on L4013 after the race already settled ok. The suite is fail-fast, so the marker is the LAST line printed BEFORE the reddened cell (section 9's final cell): it proves the run reached the cell it is accused of reddening rather than dying earlier."
     },
     {
       "name": "any landing on a cancelled arm cuts it, frontier ignored",

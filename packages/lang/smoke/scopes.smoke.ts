@@ -923,13 +923,22 @@ const r = await race({
 log("win", r.index, r.value);
 `;
   logged.length = 0;
-  const r = await run(INFLIGHT, { runId: "r-10", handler: new InFlight({}), onLog: sink, startedAt: 1000, seed: "r-10", yieldEvery: 64, stepBudget: 25_000 });
+  // The failure mode this cell guards is run() REJECTING (the tail burns the step budget, L4013):
+  // caught here so the regression reds on this cell's name instead of crashing the suite unnamed.
+  let r: Awaited<ReturnType<typeof run>> | null = null;
+  let died: unknown = null;
+  try {
+    r = await run(INFLIGHT, { runId: "r-10", handler: new InFlight({}), onLog: sink, startedAt: 1000, seed: "r-10", yieldEvery: 64, stepBudget: 25_000 });
+  } catch (e) {
+    died = e;
+  }
   ok("the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
-    logged.some((l) => l[0] === "win" && l[1] === "a" && l[2] === "A"), logged);
-  const scope = scopeOf(r.journal, "race");
+    died === null && logged.some((l) => l[0] === "win" && l[1] === "a" && l[2] === "A"),
+    died === null ? logged : String(died));
+  const scope = r === null ? undefined : scopeOf(r.journal, "race");
   ok("with the race settled ok and the in-flight landing recorded",
-    scope?.status === "ok" && r.journal.entries().some((e) => e.name === "sb" && e.status === "ok" && e.endedAt === 15000),
-    r.journal.entries().map((e) => `${e.name}:${e.status ?? e.state}`));
+    r !== null && scope?.status === "ok" && r.journal.entries().some((e) => e.name === "sb" && e.status === "ok" && e.endedAt === 15000),
+    r === null ? "no journal" : r.journal.entries().map((e) => `${e.name}:${e.status ?? e.state}`));
 }
 
 {
