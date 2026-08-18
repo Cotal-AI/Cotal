@@ -155,12 +155,24 @@ export class AguiEmitterHolder<T> {
     if (this.boundPath === undefined) {
       this.boundPath = path;
       try {
-        // Started INSIDE the chain, which is the only thing keeping this to one emitter. There is
-        // deliberately no second guard: two emitters on one principal's channel would each hold
-        // their own bracket machine and their own view of the frontier — the writer-cardinality
-        // failure the design names as a stated limit — but a belt-and-braces memo here would mean a
-        // cell asserting "started once" passed whether or not either mechanism worked. One
-        // mechanism, one cell that can actually fail.
+        // Started INSIDE the chain, which is the only thing keeping this to one emitter, and there
+        // is deliberately no second guard here. What a second emitter on one principal's channel
+        // would break used to be one sentence; it is now two different things and only one of them
+        // is still open, so they are named separately rather than left under a single claim.
+        //
+        // The FRONTIER half is guarded, and not here. The per-principal record is re-read on every
+        // advance and a view that moved underneath it is refused (`SubjectFrontierMovedError`,
+        // graded by mutation S20), so a second emitter cannot quietly carry its own idea of the
+        // tip: whichever one is stale is told so before it writes. THAT IS NOT AN ARGUMENT FOR
+        // REPEATING THE CHECK HERE. A second copy of a guard answers for the first, so the mutation
+        // that breaks the real one goes on passing, and the cell that reads as proof stops being
+        // proof without changing a line of its own text.
+        //
+        // The BRACKET half is still open and is the stated writer-cardinality limit: two emitters
+        // would each keep their own bracket machine, and nothing detects the interleave. A
+        // belt-and-braces memo here would not close that either, it would only mean a cell
+        // asserting "started once" passed whether or not the chain worked. One mechanism per claim,
+        // one cell that can actually fail.
         this.emitter = await this.startEmitter(path);
         return this.emitter;
       } catch (e) {
