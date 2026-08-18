@@ -683,6 +683,9 @@ try {
   // A budget-skipped TAIL is not a stall: when nothing was shown behind the skip the mark does not
   // move that call, and the next call leads with the skipped item. The assertion is eventual.
   {
+    // Every failure inside this loop reports under the cell's own name, so a mutation killed here is
+    // killed on a named assertion rather than on an anonymous throw from inside a fixture.
+    const UNIVERSE = "every scenario in the cursor's input universe makes total progress with no duplicates";
     const SIZES = { small: 500, half: 23_000, giant: 60_000 } as const;
     type Size = keyof typeof SIZES;
     const shapes: Size[][] = [];
@@ -721,7 +724,7 @@ try {
           const text = textOf(await inboxSpec().run(agent, cfg, {}));
           assert.ok(
             text.length <= INBOX_WINDOW_CHARS,
-            `[${shape.join(",")}${tied ? ",tied" : ""}] call ${calls} returned ${text.length} chars`,
+            `${UNIVERSE} :: [${shape.join(",")}${tied ? ",tied" : ""}] call ${calls} returned ${text.length} chars`,
           );
           for (let n = 0; n < items.length; n++) {
             const hits = (text.match(new RegExp(` MARK_${n}(?![0-9])`, "g")) ?? []).length;
@@ -737,15 +740,14 @@ try {
           const count = seen.get(`MARK_${n}`) ?? 0;
           assert.ok(
             deliverable ? count === 1 : count === 0,
-            `${label} MARK_${n} (${shape[n]}) was delivered ${count} times after ${calls} calls`,
+            `${UNIVERSE} :: ${label} MARK_${n} (${shape[n]}) was delivered ${count} times after ${calls} calls`,
           );
           deliveries += count;
         }
         scenarios++;
       }
     }
-    check("every scenario in the cursor's input universe makes total progress with no duplicates",
-      scenarios === shapes.length * 2, { scenarios, deliveries });
+    check(UNIVERSE, scenarios === shapes.length * 2, { scenarios, deliveries });
   }
 
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
