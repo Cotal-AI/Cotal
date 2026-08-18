@@ -160,10 +160,17 @@ export class AguiEmitterHolder<T> {
         // would break used to be one sentence; it is now two different things and only one of them
         // is still open, so they are named separately rather than left under a single claim.
         //
-        // The FRONTIER half is guarded, and not here. The per-principal record is re-read on every
-        // advance and a view that moved underneath it is refused (`SubjectFrontierMovedError`,
-        // graded by mutation S20), so a second emitter cannot quietly carry its own idea of the
-        // tip: whichever one is stale is told so before it writes. THAT IS NOT AN ARGUMENT FOR
+        // The FRONTIER half is guarded, and not here, and not in one place either. Saying it in one
+        // clause is what an earlier draft of this comment did, and it was wrong in the direction
+        // that flatters the code. The record refuses a stale writer on `advance`, by re-reading the
+        // file and rejecting a view that moved underneath it (`SubjectFrontierMovedError`, graded by
+        // mutation S20). It does NOT refuse one on `reset`, which is unconditional by design,
+        // because abandonment is the one operation that legitimately takes the tip backwards and a
+        // record that moved is not an obstacle to clearing it. That route is fenced one level up
+        // instead: `EventWal.abandon` runs its own stale-handle check before it reaches the record
+        // (graded by mutation S25). So both shipped routes are covered, by two different mechanisms
+        // in two different files, and a caller holding the record directly has the second one only
+        // if it takes it. THAT IS NOT AN ARGUMENT FOR
         // REPEATING THE CHECK HERE. A second copy of a guard answers for the first, so the mutation
         // that breaks the real one goes on passing, and the cell that reads as proof stops being
         // proof without changing a line of its own text.
