@@ -1276,6 +1276,11 @@ class Interpreter {
         throw e;
       }
     });
+    // FREEZE ON SHARE, at the share. What crossed is what was hashed and recorded, so the program
+    // mutating it afterwards — or the HANDLER mutating it on its side — would make the run's own
+    // value disagree with its recorded form (measured before this line: `schema.deep.x = 2` after
+    // an `ask` succeeded, no L2031, and a handler's write to `req.schema` reached the program).
+    for (const arg of args) deepFreeze(arg);
     const bag = args[spec.optionsAt];
     const stepName = (name === "checkpoint" ? args[0] : this.option(bag, "name")) as string | undefined;
     const handler = this.options.handler;

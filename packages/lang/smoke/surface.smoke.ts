@@ -27,7 +27,7 @@ import { SimHandler } from "../src/sim.js";
 import { BUILTINS } from "../src/primitives.js";
 import { ADMITTED_NODES, FORBIDDEN_CHILDREN, FORBIDDEN_NODES, KNOWN_NODES, STRUCTURAL_NODES } from "../src/syntax.js";
 import { arrayMethods, builtins, numberMethods, stringMethods } from "../src/library.js";
-import { Prng } from "../src/values.js";
+import { NotCrossable, Prng, assertCrossable } from "../src/values.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -305,6 +305,30 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
   // The order is TOTAL: NaN sorts after every number, undefined and null rank below everything,
   // and both directions of the same input agree (measured before the rule: NaN compared "equal"
   // to every number and `[undefined, null]` kept its arrival order).
+  // The boundary itself, held directly: the three shapes a PROGRAM can no longer build (L4019,
+  // L1028, L4016 close the in-language routes) but a HANDLER result or host caller still can.
+  // Measured before the checks: a sparse array crossed with its holes canonicalized to silent
+  // nulls, a cycle "failed" by overflowing the host stack, and an own __proto__ field crossed.
+  {
+    const refuses = (v: unknown, needle: string): boolean => {
+      try {
+        assertCrossable(v, "probe");
+        return false;
+      } catch (e) {
+        return e instanceof NotCrossable && e.message.includes(needle);
+      }
+    };
+    const sparse: unknown[] = [];
+    sparse[2] = 1;
+    const cyclic: Record<string, unknown> = { a: 1 };
+    cyclic.self = cyclic;
+    const withProto = JSON.parse('{"__proto__": {"x": 1}}') as Record<string, unknown>;
+    const shared = { k: 1 };
+    ok("the crossing boundary refuses a sparse array, a cycle, and an own __proto__ field by name",
+      refuses(sparse, "hole") && refuses(cyclic, "cycle") && refuses(withProto, "__proto__"));
+    ok("but a diamond — one sub-record referenced twice — still crosses",
+      (() => { try { assertCrossable({ a: shared, b: shared }, "probe"); return true; } catch { return false; } })());
+  }
   ok("`sort` is total: NaN after every number, undefined below null, both directions agreeing",
     JSON.stringify(await logsOf("log(sort([1, 0 / 0, 0]), sort([0 / 0, 0, 1]));")) === '[[[0,1,null],[0,1,null]]]'
       && JSON.stringify(await logsOf("log(sort([null, undefined])[0] === undefined, sort([undefined, null])[0] === undefined, sort([\"b\", 2, null, true])[0] === null);")) === '[[true,true,true]]');

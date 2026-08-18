@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "Freeze on share holds AT the share for inputs, and a journal seeded from serialized entries freezes its replayed results. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/freeze-boundary.json",
+  "mutations": [
+    {
+      "name": "effect inputs stay writable after the dispatch, the shipped defect",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    for (const arg of args) deepFreeze(arg);",
+      "replace": "",
+      "expectRed": "an effect's input is frozen AT the share: mutating it afterwards is L2031",
+      "completionMarker": "ok a workflow's catch does not swallow a divergence",
+      "cell": "an effect's input is frozen AT the share: mutating it afterwards is L2031",
+      "note": "Without the freeze the program mutates the fact it just shared and the run's value disagrees with its recorded hash — the measured pre-fix behavior."
+    },
+    {
+      "name": "a seeded journal hands back thawed deserialized results, the shipped defect",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      this.byKey.set(full, deepFreeze(e));",
+      "replace": "      this.byKey.set(full, e);",
+      "expectRed": "a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
+      "completionMarker": "ok an effect's input is frozen AT the share: mutating it afterwards is L2031",
+      "cell": "a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
+      "note": "The live path freezes before settle, so only the JSON round trip exposes this: parsed entries are fresh writable objects, and replay returned them as-is."
+    }
+  ]
+}

@@ -81,7 +81,7 @@ export class NotCrossable extends TypeError {
  * cannot be replayed. Catching it at the boundary is strictly better than discovering it at
  * digest time, because here we still know which argument it was.
  */
-export function assertCrossable(value: unknown, path = "value"): void {
+export function assertCrossable(value: unknown, path = "value", seen?: Set<object>): void {
   if (value === null) return;
   switch (typeof value) {
     case "boolean":
@@ -106,17 +106,44 @@ export function assertCrossable(value: unknown, path = "value"): void {
         `${path} is undefined, which is not a value here. Use null when you mean "no value"`,
       );
     case "object": {
+      // A CYCLE has no canonical form either, and before this set existed it was "checked" by the
+      // host's stack overflowing — a raw RangeError in place of the refusal, measured. The set
+      // tracks the path down, not everything visited, so a diamond (one sub-record referenced
+      // twice) still crosses.
+      const s = seen ?? new Set<object>();
+      if (s.has(value)) {
+        throw new NotCrossable("opaque", `${path} closes a cycle: the value contains itself, and a cycle has no canonical form`);
+      }
+      s.add(value);
       if (Array.isArray(value)) {
-        value.forEach((v, i) => assertCrossable(v, `${path}[${i}]`));
+        // By index, not forEach: forEach SKIPS holes, which is how a sparse array crossed and
+        // canonicalized its holes into silent nulls (measured).
+        for (let i = 0; i < value.length; i += 1) {
+          if (!(i in value)) {
+            throw new NotCrossable(
+              "opaque",
+              `${path}[${i}] is a hole: this array is sparse, and a hole has no canonical form (canonicalizing would silently turn it into null)`,
+            );
+          }
+          assertCrossable(value[i], `${path}[${i}]`, s);
+        }
+        s.delete(value);
         return;
       }
       const proto = Object.getPrototypeOf(value) as unknown;
       if (proto !== Object.prototype && proto !== null) {
         throw new NotCrossable("opaque", `${path} is not plain data, so it has no canonical form`);
       }
-      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-        assertCrossable(v, `${path}.${k}`);
+      if (Object.prototype.hasOwnProperty.call(value, "__proto__")) {
+        throw new NotCrossable(
+          "opaque",
+          `${path} carries an own "__proto__" field, which names an object's prototype and cannot be a field here`,
+        );
       }
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+        assertCrossable(v, `${path}.${k}`, s);
+      }
+      s.delete(value);
       return;
     }
     default:

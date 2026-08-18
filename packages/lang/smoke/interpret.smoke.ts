@@ -1020,4 +1020,40 @@ try {
     journal.entries().every((e) => e.kind !== "notify"), journal.entries().map((e) => e.kind));
 }
 
+// ---- 18) freeze on share holds at the share, and survives a serialized journal ------------------
+//
+// Both directions of the boundary, measured open before the fix: an effect's INPUT stayed writable
+// after the dispatch (the program mutated the schema it had just shared, no L2031, so the run's
+// value disagreed with its recorded hash), and a REPLAYED result read back from a serialized
+// journal came back as fresh deserialized data, writable again.
+{
+  const spawned = `const a = await spawn("w", { name: "a" });
+const fact = { decision: "ship", outcome: "approved" };
+await notify([a], fact, { name: "n" });
+fact.outcome = "flipped";`;
+  let caught: unknown;
+  try {
+    await run(spawned, { runId: "r-frz", handler: new SimHandler({}) });
+  } catch (e) {
+    caught = e;
+  }
+  ok("an effect's input is frozen AT the share: mutating it afterwards is L2031",
+    String((caught as Error)?.message).startsWith("L2031"), String(caught).slice(0, 60));
+
+  const SRC = `const a = await spawn("w", { name: "a" });
+a.agent = "changed";`;
+  const first = await run(`const a = await spawn("w", { name: "a" });`, { runId: "r-frz2", handler: new SimHandler({}) });
+  // The round trip is the point: a durable store hands back parsed JSON, not the objects the live
+  // run froze.
+  const thawed = JSON.parse(JSON.stringify(first.journal.entries())) as readonly JournalEntry[];
+  let replayCaught: unknown;
+  try {
+    await resume(SRC, new Journal({ run: "r-frz2", entries: thawed }), { runId: "r-frz2", pins: first.pins, handler: new SimHandler({}) });
+  } catch (e) {
+    replayCaught = e;
+  }
+  ok("a replayed result out of a SERIALIZED journal is frozen again: writing it is L2031",
+    String((replayCaught as Error)?.message).startsWith("L2031"), String(replayCaught).slice(0, 60));
+}
+
 console.log(`interpret.smoke: ${pass} checks passed`);
