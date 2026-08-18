@@ -65,11 +65,11 @@
       "expectRed": "degenerate:a null JSONL line is DROPPED, not thrown on"
     },
     {
-      "name": "M10 the stated gap is filled by analogy, publishing the built-in family under a correlation nothing joins",
+      "name": "M10 the stated gap is filled by analogy: a built-in tool's END record is published as a result for a call nothing ever started",
       "file": "extensions/connector-codex/src/agui-map.ts",
-      "find": "    if (envelope === \"response_item\" && (inner === \"function_call\" || inner === \"custom_tool_call\")) {",
-      "replace": "    if (envelope === \"response_item\" && (inner === \"function_call\" || inner === \"custom_tool_call\" || inner === \"web_search_call\")) {",
-      "expectRed": "gap:a web_search_call is dropped, deliberately"
+      "find": "    if (envelope === \"response_item\" && (inner === \"function_call_output\" || inner === \"custom_tool_call_output\")) {",
+      "replace": "    if ((envelope === \"response_item\" && (inner === \"function_call_output\" || inner === \"custom_tool_call_output\")) || inner === \"web_search_end\") {",
+      "expectRed": "gap:no tool event is published for the built-in family"
     }
   ]
 }

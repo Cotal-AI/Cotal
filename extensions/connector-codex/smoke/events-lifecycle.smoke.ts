@@ -102,6 +102,21 @@ function openRuns(): string[] {
 }
 const threadsSeen = (): string[] => [...new Set(frames.map((f) => f.threadId))];
 
+/** Wait for a condition, and return WHETHER it happened rather than throwing.
+ *
+ *  This is not a style choice. A mutation that stops the plane makes the suite hang and then die at
+ *  whichever wait came first, and a run that dies has a RED PREFIX rather than a failed cell: the
+ *  cell that would have named the defect never ran, so the log cannot say which fact broke. Every
+ *  load-bearing wait here therefore settles into a boolean and is asserted by name. */
+async function settle(pred: () => boolean, timeoutMs = 30_000): Promise<boolean> {
+  const deadline = Date.now() + timeoutMs;
+  for (;;) {
+    if (pred()) return true;
+    if (Date.now() > deadline) return false;
+    await sleep(100);
+  }
+}
+
 async function waitFor<T>(name: string, get: () => T | undefined, timeoutMs = 30_000): Promise<T> {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
@@ -206,8 +221,8 @@ try {
   await joinEventsOf(A);
 
   await dm(A, "first turn");
-  await waitFor("first frames", () => (evTypes().includes("RUN_FINISHED") ? true : undefined));
-  check("an armed seat PUBLISHES its thread's activity", frames.length > 0, { frames: frames.length });
+  const published = await settle(() => evTypes().includes("RUN_FINISHED"));
+  check("an armed seat PUBLISHES its thread's activity", published && frames.length > 0, { frames: frames.length });
   check("and the run it published opened and closed", evTypes().includes("RUN_STARTED") && evTypes().includes("RUN_FINISHED"), evTypes());
   check("and the assistant's text reached the wire", evTypes().includes("TEXT_MESSAGE_CONTENT"), evTypes());
   const threadA = threadsSeen()[0];
@@ -221,10 +236,10 @@ try {
   await dm(A, "DIE now");
   await sleep(1500);
   await dm(A, "after the restart");
-  await waitFor("post-restart frames", () => (frames.length > framesBefore && threadsSeen().length > 1 ? true : undefined));
+  const survived = await settle(() => frames.length > framesBefore && threadsSeen().length > 1);
   const threadB = threadsSeen().find((t) => t !== threadA);
   check("the restarted app-server really is a NEW thread", threadB !== undefined && threadB !== threadA, threadsSeen());
-  check("the plane KEEPS PUBLISHING after the restart", frames.some((f) => f.threadId === threadB), { threadB });
+  check("the plane KEEPS PUBLISHING after the restart", survived && frames.some((f) => f.threadId === threadB), { threadB, survived });
   // The drain is not decoration: an observer left holding a run that never ends cannot tell a busy
   // agent from a dead one, and nothing later in this process will ever close it.
   check("and no run the dead thread opened was left open", openRuns().every((r) => !frames.some((f) => f.runId === r && f.threadId === threadA)), {
@@ -242,11 +257,14 @@ try {
   // never reach the file: `interrupt()` returns when the RPC is acknowledged, not when codex has
   // written anything. The backstop is what closes the run.
   await dm(A, "SLOW hold this turn open");
-  await waitFor("slow turn opened", () => (openRuns().length > 0 ? true : undefined));
+  const opened = await settle(() => openRuns().length > 0);
   const openAtExit = openRuns();
   hostA.kill("SIGTERM");
-  await waitFor("shutdown drain", () => (openRuns().length === 0 ? true : undefined), 20_000);
-  check("a mid-turn exit CLOSES the run it left open", openRuns().length === 0, { wasOpen: openAtExit, stillOpen: openRuns() });
+  const drained = await settle(() => openRuns().length === 0, 20_000);
+  check("a mid-turn exit CLOSES the run it left open", opened && drained && openRuns().length === 0, {
+    wasOpen: openAtExit,
+    stillOpen: openRuns(),
+  });
   check("and there was a run to close, so the cell is not vacuous", openAtExit.length > 0, { openAtExit });
 
   // ---- (4) the file that was not there yet ----------------------------------------------------
@@ -262,7 +280,7 @@ try {
   // bounded; the cell needs the file to appear AFTER that budget is spent, and the only honest way
   // to know it is spent is the host saying so. Sleeping toward the number would be measuring the
   // clock under test, and would silently stop testing the retry the day the budget changes.
-  await waitFor("the launch gave up looking", () => (errB.includes("will look again at the next turn") ? true : undefined), 40_000);
+  await settle(() => errB.includes("will look again at the next turn"), 40_000);
   const before = frames.length;
   await dm(B, "turn one, before the file exists");
   await sleep(1500);
@@ -270,8 +288,8 @@ try {
   check("and the give-up was REPORTED rather than silent", errB.includes("no rollout file yet"), { tail: errB.slice(-200) });
   // The fake materializes the file on its second turn, exactly as a slow primer would.
   await dm(B, "turn two, which creates the file");
-  await waitFor("late bind", () => (errB.includes("the stream starts here") ? true : undefined));
-  check("a rollout that appeared AFTER the launch gave up still binds", errB.includes("the stream starts here"), {
+  const bound = await settle(() => errB.includes("the stream starts here"));
+  check("a rollout that appeared AFTER the launch gave up still binds", bound, {
     tail: errB.slice(-200),
   });
   // THE LIMIT, ASSERTED RATHER THAN ASSUMED. A fresh adopt starts at the file's last complete
@@ -286,7 +304,7 @@ try {
     tail: errB.slice(-200),
   });
   await dm(B, "turn three, after the bind");
-  await waitFor("late seat publishes", () => (frames.length > before ? true : undefined));
+  await settle(() => frames.length > before);
   const lateFrames = frames.slice(before);
   check("and from the bind onward the seat publishes normally", lateFrames.some((f) => f.events.some((e) => e.type === "RUN_FINISHED")), {
     added: lateFrames.length,
