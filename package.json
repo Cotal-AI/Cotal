@@ -380,6 +380,7 @@
     "smoke:hermes-tool-closed": "tsx extensions/connector-hermes/smoke/tool-input-closed.smoke.ts",
     "smoke:codex-tool-closed": "tsx extensions/connector-codex/smoke/tool-input-closed.smoke.ts",
     "smoke:cli-on-instance": "tsx implementations/manager/smoke/cli-on-instance-live.smoke.ts",
+    "smoke:seat-input": "tsx implementations/manager/smoke/seat-input-live.smoke.ts",
     "smoke:ep-rail-failure": "tsx implementations/cli/smoke/ep-rail-failure.smoke.ts",
     "smoke:bind-fence:live": "tsx implementations/cli/smoke/bind-fence-live.smoke.ts"
   },

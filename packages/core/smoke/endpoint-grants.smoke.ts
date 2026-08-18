@@ -161,9 +161,9 @@ c("no-capability mint carries the baseline reply-rail read (and only that ep sub
 c("no-capability mint carries NO journal rows and NO owner/child/ledger-mode rows",
   ![...without.pub.allow].some((r) => r.includes(".epj.") || r.includes(".owner.") || r.includes(".child.") || r.includes(".ledger.")));
 const withSpawn = decode(await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: UID, capabilities: ["spawn"] }));
-c("the spawn capability adds UNTARGETED manager.spawn + owner-mode despawn/attach to the minted JWT (no owner-stop synonym)",
+c("the spawn capability adds UNTARGETED manager.spawn + owner-mode despawn/attach/input to the minted JWT (no owner-stop synonym)",
   withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.spawn.u_abc.cli.${UID}.*`)
-  && ["despawn", "attach"].every((cmd) => withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.${cmd}.owner.u_abc.u_abc.cli.${UID}.*`))
+  && ["despawn", "attach", "input"].every((cmd) => withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.${cmd}.owner.u_abc.u_abc.cli.${UID}.*`))
   && !withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.stop.owner.u_abc.u_abc.cli.${UID}.*`));
 c("without the spawn capability none of the owner-mode lifecycle rows appear",
   !without.pub.allow.some((r) => r.includes(".owner.")));

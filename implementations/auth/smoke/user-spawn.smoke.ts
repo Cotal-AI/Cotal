@@ -406,7 +406,7 @@ try {
     try {
       const svc = await resolveService(epNc, SPACE, "manager", epCaller, { deadlineMs: 10_000 });
       check("user bearer resolves the manager generically (describe + store fetch + digest-verified recompile, all over the bearer)",
-        svc.commands.size === 17 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+        svc.commands.size === 18 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
       const ri = await invokeCommand(epNc, SPACE, svc, "inspect", { name: "alpha" }, {});
       check("user bearer invokes `inspect` over ep (a spawn-set row; describe-bound currency, no epoch stub)",
         ri.reply.ok === true && (ri.reply.data as { name: string }).name === "alpha", ri.reply);

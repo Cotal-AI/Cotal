@@ -2,7 +2,7 @@
  * MANAGER SERVICE OPS smoke (control-surface P2 item 1, slice 1b) — the FULL typed-command
  * fan-out over a REAL Manager + JWT broker + REAL agent processes (e2e-stub.mjs), proving:
  *
- *  1. The rev-2 cluster document serves ALL 17 commands (describe lists them; targeted commands
+ *  1. The cluster document serves ALL 18 commands (describe lists them; targeted commands
  *     declare their modes).
  *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 16-field request into
  *     StartAgentOpts (field-for-field, captured at the single `startAgent` chokepoint), with the
@@ -168,15 +168,17 @@ try {
     for (let i = 0; i < 60 && replies.length === 0; i++) await wait(100);
     const d = replies[0] as { ok?: boolean; data?: { descriptor?: { clusters?: Array<{ commands?: string[]; document?: { revision?: number; commands?: Array<{ name: string; targeted: boolean; modes?: string[] }> } }> } } } | undefined;
     const cmds = d?.data?.descriptor?.clusters?.[0]?.commands ?? [];
-    check("describe lists all 17 commands", cmds.length === 17 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "stop", "define-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
+    check("describe lists all 18 commands", cmds.length === 18 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "input", "stop", "define-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
     clusterDigest = (d?.data?.descriptor?.clusters?.[0] as { digest?: string } | undefined)?.digest;
     const doc = d?.data?.descriptor?.clusters?.[0]?.document;
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
     launchInputDigest = (doc?.commands?.find((c) => c.name === "launch") as { inputDigest?: string } | undefined)?.inputDigest;
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
-    check("the document is revision 6 (launch admits a remote manifest deploy's inline spec); despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 6 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+    const inputDecl = doc?.commands?.find((c) => c.name === "input");
+    check("the document is revision 7 (the C3 `input` command); despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === 7 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+      && inputDecl?.targeted === true && JSON.stringify(inputDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
     sub.unsubscribe();
@@ -443,7 +445,7 @@ try {
     check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
     check("the instrument resolves the full surface generically (describe + store fetch + recompile)",
-      svc.commands.size === 17 && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+      svc.commands.size === 18 && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
       rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === accW3.name), rPs.reply);
