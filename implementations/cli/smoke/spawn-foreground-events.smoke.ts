@@ -123,6 +123,11 @@ try {
     const r = await run(["--agent", "fg-probe-emitter"]);
     check("CONTROL: an ordinary foreground launch reaches the connector", r.opts !== undefined, r.stderr.slice(0, 300));
     check("CONTROL: and it is not armed", r.opts?.events !== true, r.opts?.events);
+    // The root is passed on EVERY foreground launch, not only an armed one, and two connectors read
+    // it whether or not events are on: Codex and OpenCode root their per-agent home at it. Without
+    // this cell an edit that passed it only under `--events` would leave the suite green and move
+    // both of those homes back to whatever directory the operator happened to be standing in.
+    check("an UNARMED foreground launch carries the mesh root too", r.opts?.workspaceRoot === root, { got: r.opts?.workspaceRoot, expected: root });
   }
 
   {
@@ -159,7 +164,7 @@ try {
   rmSync(store, { recursive: true, force: true });
 }
 
-const EXPECTED = 6;
+const EXPECTED = 7;
 check(`every cell ran - ${EXPECTED} expected`, pass + fail === EXPECTED, `${pass + fail} cells reported`);
 console.log(`SUITE COMPLETE: ${pass} passed, ${fail} failed`);
 process.exit(fail === 0 ? 0 : 1);

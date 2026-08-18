@@ -44,11 +44,13 @@ working system with an empty panel. Both halves are now carried and both are ass
 
 **One behaviour change to state plainly.** The foreground launch now passes the mesh's root as the
 launch's workspace root, on every foreground spawn rather than only on an armed one, which is what the
-manager has always done. One connector already reads that field: the Codex connector roots its
-per-agent home at it, and previously fell back to the directory the operator happened to run the
-command in. A foreground Codex session therefore moves its home from that directory to the mesh root,
-which is where its detached counterpart has always put it. Operators who ran `cotal spawn` from
-somewhere other than the mesh root will find that session's local state under the mesh root instead.
+manager has always done. Two connectors already read that field and root their per-agent home at it:
+Codex, which puts its per-agent home under it, and OpenCode, which puts its database and its serve
+pidfile there. Both previously fell back to the directory the operator happened to run the command
+in. So a foreground Codex or OpenCode session moves its local state from that directory to the mesh
+root, which is where its detached counterpart has always put it. Operators who ran `cotal spawn` from
+somewhere other than the mesh root will find that session's state under the mesh root instead. The
+Claude connector reads the field only on an armed launch, and Hermes and pi do not read it at all.
 
 **Supporting pieces in the shared connector runtime.** The event vocabulary is exported from
 `@cotal-ai/connector-core` for the first time, so a connector can reach it by package name instead of
