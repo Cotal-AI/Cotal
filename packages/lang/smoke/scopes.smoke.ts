@@ -582,8 +582,10 @@ await conclave([a], async (ch) => { await turn(a, { name: "t" }); return 1; }, {
   // it took. The entry settles `cancelled`, which is the record recovery reads — and which the
   // migrate table treats as "did not close" and rejects.
   //
-  // `fast` awaits nothing and so settles in the first microtask, while `slow` is parked in the
-  // watched handler's macrotask sleep. The loser is decided by the test, not by the event loop.
+  // `fast` is gated on the conclave's body having DISPATCHED its first sleep, so the cancellation
+  // arrives while the room is open and the body is mid-flight — after the boundary's begin-gap
+  // re-check, a cancel that arrives before the open means the room is never opened at all, which
+  // is its own cell. The loser is decided by the test, not by the event loop.
   const CANCELLED_SRC = `
 const a = await spawn("a", { name: "a" });
 await race({
@@ -592,10 +594,29 @@ await race({
     await sleep("1m", { name: "s2" });
     return 1;
   }, { name: "huddle" }),
-  fast: async () => "fast",
+  fast: async () => { await sleep("1m", { name: "f" }); return "fast"; },
 }, { name: "r" });
 `;
-  const { handler, calls } = watching(new SimHandler({}), true);
+  let bodyEntered!: () => void;
+  const bodyGate = new Promise<void>((r) => { bodyEntered = r; });
+  let landS1!: () => void;
+  const s1Gate = new Promise<void>((r) => { landS1 = r; });
+  const { handler, calls } = watching(new SimHandler({}));
+  const sleepThrough = handler.sleep.bind(handler);
+  handler.sleep = async (r, c) => {
+    const name = String((c as { key?: { name?: string } }).key?.name ?? "");
+    if (name === "s1") {
+      bodyEntered();
+      await s1Gate;
+      return null;
+    }
+    if (name === "f") {
+      await bodyGate;
+      setTimeout(landS1, 5);
+      return null;
+    }
+    return await sleepThrough(r, c);
+  };
   const j = new Journal({ run: "c-4" });
   await run(CANCELLED_SRC, { runId: "c-4", journal: j, handler });
   ok("the conclave really was opened, or this cell proves nothing about closing", calls.includes("open"));
@@ -787,6 +808,205 @@ log(notes);
   ok("a conclave body may write an outer binding at runtime too, not just past the validator",
     caught === undefined && typeof logged[0]?.[0] === "string" && (logged[0][0] as string).length > 0,
     caught === undefined ? logged : String(caught).slice(0, 80));
+}
+
+// ---- 9) `now()` after a scope is the same value live and on resume ----------------------------
+//
+// The scope's entry is stamped with the JOINED branch clock at settle, not the host's clock at
+// append time. Live, the parent clock joins every branch that ran; replay advances the parent from
+// the entry's stamp and enters no branch. The two must be the same number, or a program that
+// branches on `now()` after a scope takes a path on resume that the live run never took. The
+// handlers below make the two sources DISAGREE on purpose: the last effect to land is not the
+// effect with the greatest recorded clock, so a stamp taken from the handler's clock at append
+// time is wrong and the cell goes red.
+{
+  // parallel: `sa` records 9000 but lands first; `sb` records 4000 and lands LAST, so the
+  // handler's clock at the scope's settle is 4000 while the joined branch clock is 9000.
+  class LastLandsLow extends SimHandler {
+    private stamp = 0;
+    override now(): number { return this.stamp; }
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      const name = String((ctx as { key?: { name?: string } }).key?.name ?? "");
+      await new Promise((r) => setTimeout(r, name === "sb" ? 25 : 1));
+      this.stamp = name === "sb" ? 4000 : 9000;
+      return null;
+    }
+  }
+  const PAR = `
+await parallel({
+  a: async () => { await sleep("1m", { name: "sa" }); return 1; },
+  b: async () => { await sleep("1m", { name: "sb" }); return 2; },
+}, { name: "both" });
+log("t", now());
+`;
+  logged.length = 0;
+  const r = await run(PAR, { runId: "r-9", handler: new LastLandsLow({}), onLog: sink, startedAt: 1000, seed: "r-9" });
+  const scope = scopeOf(r.journal, "parallel");
+  const liveT = logged.find((l) => l[0] === "t")?.[1];
+  ok("live, now() after a parallel is the join of the branch clocks", liveT === 9000, logged);
+  ok("and the scope entry is stamped with that joined clock, not the handler's clock at append time",
+    scope?.endedAt === 9000, scope?.endedAt);
+  logged.length = 0;
+  await resume(PAR, new Journal({ run: "r-9", entries: r.journal.entries() }), {
+    runId: "r-9",
+    pins: { seed: "r-9", startedAt: 1000, yieldEvery: 1024, stepBudget: 1_000_000, effectCeiling: 10_000, languageVersion: "1" },
+    handler: new SimHandler({}),
+    onLog: sink,
+  });
+  ok("and a resume answers the same now() the live run saw", logged.find((l) => l[0] === "t")?.[1] === 9000, logged);
+}
+
+{
+  // race: the LOSER lands first with the greater clock (300000), the winner lands last with the
+  // lesser one (60000). Joined clock 300000; handler clock at append time 60000. A program that
+  // branches on now() after the race must take the same path live and on resume.
+  class LoserLandsFirst extends SimHandler {
+    private stamp = 0;
+    override now(): number { return this.stamp; }
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], _ctx: Parameters<SimHandler["sleep"]>[1]) {
+      const late = req.duration === "5m";
+      await new Promise((r) => setTimeout(r, late ? 1 : 25));
+      this.stamp = late ? 300000 : 60000;
+      return null;
+    }
+  }
+  const PICK = `
+const r = await race({
+  early: async () => { await sleep("1m", { name: "se" }); return "E"; },
+  late: async () => { await sleep("5m", { name: "sl" }); return "L"; },
+}, { name: "pick" });
+log("win", r.index);
+if (now() > 200000) { log("path", "late"); } else { log("path", "early"); }
+`;
+  logged.length = 0;
+  const r = await run(PICK, { runId: "r-9b", handler: new LoserLandsFirst({}), onLog: sink, startedAt: 1000, seed: "r-9b" });
+  const livePath = logged.find((l) => l[0] === "path")?.[1];
+  ok("the winner is the least recorded clock even when the loser landed first",
+    logged.some((l) => l[0] === "win" && l[1] === "early"), logged);
+  ok("live, now() after the race saw the loser's landing (the scope awaited it)", livePath === "late", logged);
+  logged.length = 0;
+  await resume(PICK, new Journal({ run: "r-9b", entries: r.journal.entries() }), {
+    runId: "r-9b",
+    pins: { seed: "r-9b", startedAt: 1000, yieldEvery: 1024, stepBudget: 1_000_000, effectCeiling: 10_000, languageVersion: "1" },
+    handler: new SimHandler({}),
+    onLog: sink,
+  });
+  ok("and the resume takes the SAME path", logged.find((l) => l[0] === "path")?.[1] === livePath, logged);
+}
+
+// ---- 10) an in-flight effect that lands past the frontier re-decides the cut ------------------
+//
+// A cancelled arm may see an effect it already issued land; landing advances its clock, and an arm
+// that lands PAST the settled frontier has proven it cannot win. Before the re-decision existed,
+// the verdict from the settle (reached with the arm's OLD clock) stood, the loser's pure tail ran
+// on, and an infinite tail burned the whole step budget: the live run died on L4013 while a resume
+// of its journal returned the winner. The cell holds that the live run completes.
+{
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  class InFlight extends SimHandler {
+    private stamp = 0;
+    override now(): number { return this.stamp; }
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      const name = String((ctx as { key?: { name?: string } }).key?.name ?? "");
+      if (name === "sb") { await gate; this.stamp = 15000; return null; }
+      this.stamp = 10000;
+      setTimeout(release, 5);
+      return null;
+    }
+  }
+  const INFLIGHT = `
+const r = await race({
+  a: async () => { await sleep("1s", { name: "sa" }); return "A"; },
+  b: async () => { await sleep("1s", { name: "sb" }); let n = 0; while (true) { n = n + 1; } },
+}, { name: "inflight" });
+log("win", r.index, r.value);
+`;
+  logged.length = 0;
+  const r = await run(INFLIGHT, { runId: "r-10", handler: new InFlight({}), onLog: sink, startedAt: 1000, seed: "r-10", yieldEvery: 64, stepBudget: 25_000 });
+  ok("the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
+    logged.some((l) => l[0] === "win" && l[1] === "a" && l[2] === "A"), logged);
+  const scope = scopeOf(r.journal, "race");
+  ok("with the race settled ok and the in-flight landing recorded",
+    scope?.status === "ok" && r.journal.entries().some((e) => e.name === "sb" && e.status === "ok" && e.endedAt === 15000),
+    r.journal.entries().map((e) => `${e.name}:${e.status ?? e.state}`));
+}
+
+{
+  // And the other half of the same rule: an arm whose in-flight effect lands BEFORE the frontier
+  // can still win, so it is NOT cut — its pure tail runs to a settle and it takes the race. This
+  // is the cell that guards against over-cutting every cancelled arm on any landing.
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  class LandsEarly extends SimHandler {
+    private stamp = 0;
+    override now(): number { return this.stamp; }
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      const name = String((ctx as { key?: { name?: string } }).key?.name ?? "");
+      if (name === "sb") { await gate; this.stamp = 5000; return null; }
+      this.stamp = 10000;
+      setTimeout(release, 5);
+      return null;
+    }
+  }
+  const STILL = `
+const r = await race({
+  a: async () => { await sleep("1s", { name: "sa" }); return "A"; },
+  b: async () => { await sleep("1s", { name: "sb" }); let n = 0; while (n < 400) { n = n + 1; } return "B"; },
+}, { name: "still" });
+log("win", r.index, r.value);
+`;
+  logged.length = 0;
+  await run(STILL, { runId: "r-10b", handler: new LandsEarly({}), onLog: sink, startedAt: 1000, seed: "r-10b", yieldEvery: 64, stepBudget: 25_000 });
+  ok("an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",
+    logged.some((l) => l[0] === "win" && l[1] === "b" && l[2] === "B"), logged);
+}
+
+// ---- 11) a cancellation that arrives during `begin` still stops the dispatch -------------------
+//
+// `begin` is awaited so the request id is durable before the work is issued, and that await is a
+// gap: a sibling can settle the race and cancel this branch while the append is in flight. The
+// boundary re-checks on the far side of the append, so the handler is never asked for work the
+// branch already lost — measured before the re-check: the loser's effect was dispatched anyway,
+// performed against the world, and recorded `ok` under a scope that had already picked its winner.
+{
+  let release!: () => void;
+  const gate = new Promise<void>((r) => { release = r; });
+  class SlowAppend extends Journal {
+    override async begin(...args: Parameters<Journal["begin"]>): ReturnType<Journal["begin"]> {
+      const entry = await super.begin(...args);
+      if (args[0].name === "sb") await gate;
+      return entry;
+    }
+  }
+  const asked: string[] = [];
+  class Asked extends SimHandler {
+    private stamp = 0;
+    override now(): number { return this.stamp; }
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      asked.push(String((ctx as { key?: { name?: string } }).key?.name ?? ""));
+      this.stamp = 10000;
+      setTimeout(release, 5);
+      return null;
+    }
+  }
+  const GAP = `
+const r = await race({
+  a: async () => { await sleep("1s", { name: "sa" }); return "A"; },
+  b: async () => { await sleep("1s", { name: "sb" }); return "B"; },
+}, { name: "gap" });
+log("win", r.index, r.value);
+`;
+  logged.length = 0;
+  const journal = new SlowAppend({ run: "r-11" });
+  await run(GAP, { runId: "r-11", journal, handler: new Asked({}), onLog: sink, startedAt: 1000, seed: "r-11" });
+  ok("the handler is never asked for the effect a cancellation overtook inside `begin`",
+    !asked.includes("sb") && asked.includes("sa"), asked);
+  ok("and the pending entry settles as what the branch now is: cancelled, not ok",
+    journal.entries().some((e) => e.name === "sb" && e.state === "settled" && e.status === "cancelled"),
+    journal.entries().map((e) => `${e.name}:${e.status ?? e.state}`));
+  ok("and the race records the winner that overtook it",
+    logged.some((l) => l[0] === "win" && l[1] === "a"), logged);
 }
 
 console.log(`scopes.smoke: ${pass} checks passed`);

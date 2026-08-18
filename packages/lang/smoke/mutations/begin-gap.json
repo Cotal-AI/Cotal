@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "guard": "A cancellation that arrives while `begin` is in flight still stops the dispatch: the handler is never asked, and the pending entry settles cancelled. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-scopes",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/begin-gap.json",
+  "mutations": [
+    {
+      "name": "the boundary never re-checks cancellation on the far side of the begin append",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "      if (frame.signal.cancelled) {\n        await this.journal.settle(key, { status: \"cancelled\" }, this.options.handler.now());\n        throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n      }\n    }\n\n    const ctx: EffectContext = {",
+      "replace": "    }\n\n    const ctx: EffectContext = {",
+      "expectRed": "the handler is never asked for the effect a cancellation overtook inside `begin`",
+      "completionMarker": "ok and the race records the winner that overtook it",
+      "cell": "the handler is never asked for the effect a cancellation overtook inside `begin`",
+      "note": "With the re-check gone the loser's effect is dispatched against the world after the race already picked its winner, and the journal records the loser `ok` — the section 11 cell holds the handler call list and the entry status."
+    }
+  ]
+}

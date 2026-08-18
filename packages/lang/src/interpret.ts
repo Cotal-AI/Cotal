@@ -796,6 +796,16 @@ class Interpreter {
       // has to be durable BEFORE the work is issued, or a crash in the gap leaves real work that
       // nothing in the journal names.
       await this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
+      // THE AWAIT ABOVE IS A GAP, and the cancellation law has to hold on both sides of it. The
+      // check before `begin` sees the world as it was when this step started; while the append was
+      // in flight a sibling can settle the race and cancel this branch. Measured before this line:
+      // the loser's effect was still dispatched, performed against the world, and recorded `ok` —
+      // a NEW effect by a cancelled branch, which is the one thing the law forbids. The pending
+      // entry is real (the append happened), so it settles as what this branch now is: cancelled.
+      if (frame.signal.cancelled) {
+        await this.journal.settle(key, { status: "cancelled" }, this.options.handler.now());
+        throw new Cancelled(frame.signal.reason ?? "cancelled");
+      }
     }
 
     const ctx: EffectContext = {
@@ -1661,6 +1671,14 @@ class Interpreter {
     const reqId = recorded?.requestId ?? requestId(this.options.runId, scopeKey, inputHash);
     if (verdict.verdict === "miss") {
       await this.journal.begin(scopeKey, inputHash, this.options.handler.now(), dispatches ? reqId : undefined);
+      // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a
+      // conclave cancelled while its begin was in flight must not open a channel and join members.
+      // The non-dispatching scopes launch no work of their own — each branch effect re-checks its
+      // own signal — so only the dispatching path re-checks here.
+      if (dispatches && frame.signal.cancelled) {
+        await this.journal.settle(scopeKey, { status: "cancelled" }, frame.clock.now());
+        throw new Cancelled(frame.signal.reason ?? "cancelled");
+      }
     }
     const ctx: EffectContext = {
       key: scopeKey,
@@ -1681,7 +1699,14 @@ class Interpreter {
       // The interpreter's facts come out of the envelope; the program's thrown value comes out
       // whole, and is what the caller sees. A value the program threw is never written on.
       const { reason, facts } = unwrapScope(raw);
-      const endedAt = this.options.handler.now();
+      // THE SCOPE'S CLOCK AT SETTLE, not the host's clock at append. `runScope` joins the branch
+      // clocks before the outcome leaves it, so `frame.clock.now()` here is the greatest `endedAt`
+      // the scope's branches awaited — which is what `now()` answers after the scope, live. Replay
+      // advances the parent clock from this stamp and enters no branch, so stamping anything else
+      // (measured: the handler's clock at append time) makes live and replay disagree on `now()`
+      // after every scope whose last-to-land effect was not the handler's last stamp, and a program
+      // that branches on `now()` takes a path on resume that the live run never took.
+      const endedAt = frame.clock.now();
       if (reason instanceof JournalAppendRejected) throw reason;
       // A close that did not acknowledge settles NOTHING. The entry stays pending, which is exactly
       // what "a close is still owed" looks like in a journal, and the underlying handler error is
@@ -1712,7 +1737,9 @@ class Interpreter {
     await this.journal.settle(
       scopeKey,
       { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
-      this.options.handler.now(),
+      // The joined branch clock, for the same reason as the failure path above: this is the value
+      // `now()` answers after the scope, and the stamp replay hands back must be that value.
+      frame.clock.now(),
       {
         ...(outcome.cancel !== undefined ? { cancel: outcome.cancel } : {}),
         ...(outcome.closed !== undefined ? { closed: outcome.closed } : {}),
@@ -1827,14 +1854,25 @@ class Interpreter {
       // the scope. What is NOT a candidate is a branch that rejected with `Cancelled`, because that
       // is not an outcome the branch reached, it is what losing did to it. Counting those would let
       // a loser cut short at an early step outrank the winner that ran longer.
+      // The FRONTIER: the least clock among the arms that have settled as candidates, ties to the
+      // earlier declaration. The cut compares against it in both places below, because it is the
+      // bar an unsettled arm actually has to beat.
+      let bestAt = -1;
+      let bestIndex = -1;
+      const behindFrontier = (j: number): boolean => {
+        const other = (frames[j] as Frame).clock.now();
+        return !(other < bestAt || (other === bestAt && j < bestIndex));
+      };
       const onSettle = (i: number, wasCancelled: boolean): void => {
         if (wasCancelled) return;
         const at = (frames[i] as Frame).clock.now();
+        if (bestIndex === -1 || at < bestAt || (at === bestAt && i < bestIndex)) {
+          bestAt = at;
+          bestIndex = i;
+        }
         for (let j = 0; j < frames.length; j += 1) {
           if (j === i) continue;
-          const other = (frames[j] as Frame).clock.now();
-          const couldStillWin = other < at || (other === at && j < i);
-          (frames[j] as Frame).signal.cancel("a sibling branch won the race", { cutPure: !couldStillWin });
+          (frames[j] as Frame).signal.cancel("a sibling branch won the race", { cutPure: behindFrontier(j) });
         }
       };
       running.forEach((p, i) => {
@@ -1842,6 +1880,21 @@ class Interpreter {
           () => onSettle(i, false),
           (e: unknown) => onSettle(i, e instanceof Cancelled),
         );
+      });
+      // AND THE CUT IS RE-DECIDED WHEN AN ARM'S OWN CLOCK MOVES. A cancelled arm with an effect
+      // already in flight is allowed to see it land — the work was issued before the cancellation
+      // — but landing advances the arm's clock, and an arm that lands PAST the frontier has just
+      // proven it cannot win. Deciding only at settles left that arm running its pure tail on a
+      // verdict reached from its old clock: measured, an infinite pure tail burned the whole step
+      // budget and killed a run whose race had already settled `ok`, while a resume of the same
+      // journal returned the winner — live and replay disagreeing on the run's outcome. An arm
+      // that lands BEFORE the frontier keeps running, because it can still win (its own cell).
+      frames.forEach((f, j) => {
+        f.clock.onAdvance(() => {
+          if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {
+            f.signal.cancel("a sibling branch won the race", { cutPure: true });
+          }
+        });
       });
       // BOTH HANDLERS, and the rejection handler is the whole point. `p.then(() => undefined)`
       // propagates a rejection, so the first arm to FAIL threw straight out of this await: past the

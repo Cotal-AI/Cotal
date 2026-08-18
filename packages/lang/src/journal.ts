@@ -543,6 +543,7 @@ export class Journal {
  */
 export class RunClock {
   private value: number;
+  private listeners?: ((now: number) => void)[];
 
   constructor(startedAt: number) {
     this.value = startedAt;
@@ -552,9 +553,23 @@ export class RunClock {
     return this.value;
   }
 
+  /**
+   * Observe every forward move of THIS clock. A `race` subscribes to each arm's clock, because an
+   * in-flight effect that lands after the arm was cancelled advances the arm past the frontier,
+   * and the cut has to be re-decided on the fact rather than left where the settle put it. A fork
+   * does not inherit listeners: the subscriber asked about one branch, not its descendants — a
+   * nested branch's history reaches the arm's own clock at the join, which fires this then.
+   */
+  onAdvance(fn: (now: number) => void): void {
+    (this.listeners ??= []).push(fn);
+  }
+
   /** Advance past an effect this branch awaited. Monotone: an out-of-order settle cannot rewind. */
   advance(endedAt: number): void {
-    if (endedAt > this.value) this.value = endedAt;
+    if (endedAt > this.value) {
+      this.value = endedAt;
+      if (this.listeners !== undefined) for (const l of this.listeners) l(this.value);
+    }
   }
 
   /** A branch inherits its parent's clock at the moment it forks. */
