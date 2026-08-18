@@ -1040,6 +1040,22 @@ fact.outcome = "flipped";`;
   ok("an effect's input is frozen AT the share: mutating it afterwards is L2031",
     String((caught as Error)?.message).startsWith("L2031"), String(caught).slice(0, 60));
 
+  // The notify arm freezes its fact on its own, so the cell above cannot see the BLANKET freeze at
+  // the boundary. The options bag can: no per-primitive arm touches it, so a schema that stays
+  // writable after an `ask` means the share-time freeze is gone (the measured pre-fix defect).
+  const asked = `const a = await spawn("w", { name: "a" });
+const sch = { deep: { x: 1 } };
+await ask(a, { name: "q", schema: sch });
+sch.deep.x = 2;`;
+  let bagCaught: unknown;
+  try {
+    await run(asked, { runId: "r-frz3", handler: new SimHandler({ asks: { q: { okay: true } } }) });
+  } catch (e) {
+    bagCaught = e;
+  }
+  ok("the options bag crosses like any input: an ask's schema is frozen at the share (L2031)",
+    String((bagCaught as Error)?.message).startsWith("L2031"), String(bagCaught).slice(0, 60));
+
   const SRC = `const a = await spawn("w", { name: "a" });
 a.agent = "changed";`;
   const first = await run(`const a = await spawn("w", { name: "a" });`, { runId: "r-frz2", handler: new SimHandler({}) });

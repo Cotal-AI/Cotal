@@ -9,10 +9,10 @@
       "file": "packages/lang/src/interpret.ts",
       "find": "    for (const arg of args) deepFreeze(arg);",
       "replace": "",
-      "expectRed": "an effect's input is frozen AT the share: mutating it afterwards is L2031",
+      "expectRed": "the options bag crosses like any input: an ask's schema is frozen at the share (L2031)",
       "completionMarker": "ok a workflow's catch does not swallow a divergence",
       "cell": "an effect's input is frozen AT the share: mutating it afterwards is L2031",
-      "note": "Without the freeze the program mutates the fact it just shared and the run's value disagrees with its recorded hash — the measured pre-fix behavior."
+      "note": "The notify cell is blind to this line: the notify arm deep-freezes its fact on its own, so deleting the blanket share-freeze leaves that cell green. The options bag is the surface only the blanket freeze covers, and mutating an ask's schema after the call is the defect that was measured before the line existed."
     },
     {
       "name": "a seeded journal hands back thawed deserialized results, the shipped defect",
