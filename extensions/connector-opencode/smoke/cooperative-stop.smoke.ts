@@ -33,6 +33,7 @@ import {
   newIdentity,
   setupSpaceStreams,
 } from "@cotal-ai/core";
+import { controlFromEnv } from "@cotal-ai/connector-core";
 import { opencodeConnector } from "../src/extension.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -162,16 +163,29 @@ try {
     allowPublish: ["general"],
   });
   check(
-    "buildLaunch attaches the control endpoint to the LaunchSpec + child env",
-    !!spec.control && spec.env?.COTAL_CONTROL_SOCKET === spec.control.path && spec.env?.COTAL_CONTROL_TOKEN === spec.control.token,
+    "buildLaunch attaches the control endpoint: socket path in the child env, token in the launch material",
+    !!spec.control &&
+      spec.env?.COTAL_CONTROL_SOCKET === spec.control.path &&
+      spec.env?.COTAL_CONTROL_TOKEN === undefined &&
+      controlFromEnv(spec.env)?.token === spec.control.token,
     spec.control,
   );
   const ep = spec.control!;
 
   // Boot the REAL plugin in a subprocess with the connector-built env (Otto's identity + control).
+  //
+  // THE AMBIENT `COTAL_*` IS STRIPPED FIRST, and that is not tidiness. Whatever runs this suite may
+  // itself be a managed agent session, whose environment carries a LIVE credential and a LIVE broker
+  // URL. Spreading it here hands the child an identity nothing in this file asked for, and the
+  // connector env layered on top used to overwrite exactly the variables that would have made it
+  // visible — so the inheritance was real and silent. Measured: on a box where the suite ran inside
+  // an agent session, this spread produced a child carrying both the launch material and an
+  // inherited creds path, and the config parser refused it. Strip, then build.
+  const clean = { ...process.env };
+  for (const key of Object.keys(clean)) if (key.startsWith("COTAL_")) delete clean[key];
   const PROBE = fileURLToPath(new URL("./cooperative-stop-probe.ts", import.meta.url));
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
-    env: { ...process.env, ...spec.env },
+    env: { ...clean, ...spec.env },
     stdio: ["ignore", "inherit", "inherit"],
   });
   let probeExit: number | null = null;
