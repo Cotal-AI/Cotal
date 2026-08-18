@@ -29,8 +29,9 @@ request to publish to it. An agent file or a manifest can hand-write anything in
 if a grant could arm the plane, any author who could write an agent file could turn on a full
 transcript of another seat's tool inputs and outputs without ever touching the launch grammar. Only
 the launch arms the session; the grant is what makes the arming useful. `cotal_spawn`, the peer-facing
-tool, does not expose the option at all, because arming another agent's plane needs an admin precheck
-ahead of connector resolution and that precheck does not exist yet.
+tool, does not expose the option at all. That is the shape of the tool and not a control-plane refusal:
+the manager's spawn service op is a second door onto the same handler and still accepts the field,
+which is a pre-existing property of that door and is fenced separately.
 
 **The flag rides the whole launch path, including the record a restart reads.** It is on the
 foreground launch, the detached spawn payload, the manager service contract, and the resume document,
