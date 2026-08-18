@@ -43,7 +43,16 @@
     "lost quietly to material precedence. M6 restores the half-pair `undefined`, which left the policy",
     "to five callers that did not agree and let a session run believing it had a control plane it did",
     "not have. M7 restores a scrub that drops the pointer without unlinking, which is the difference",
-    "between material that is unreferenced and material that is gone."
+    "between material that is unreferenced and material that is gone.",
+    "",
+    "M9 AND M10 GUARD A CLEANUP THAT WAS DANGEROUS IN ITS FIRST FORM, and they are here because a",
+    "reviewer caught it rather than a test. The first version removed the material's parent RECURSIVELY",
+    "whenever its basename began with the writer's prefix, under a comment claiming that proved the",
+    "directory came from the writer. It proved a string starts with another string. M9 restores exactly",
+    "that and must redden an assertion about a BYSTANDER file, not about the directory: the directory",
+    "disappearing is the correct outcome in the ordinary case, so an assertion watching the directory",
+    "alone would stay green. M10 removes the location check and leaves the name check, which is the",
+    "version that looks careful and is not."
   ],
   "mutations": [
     {
@@ -111,11 +120,29 @@
     },
     {
       "name": "M8 the scrub unlinks the file but leaves its private directory",
-      "file": "extensions/connector-core/src/config.ts",
-      "find": "      if (basename(dir).startsWith(\"cotal-launch-\")) rmSync(dir, { recursive: true, force: true });",
-      "replace": "      void dir;",
+      "file": "packages/core/src/launch-material.ts",
+      "find": "    rmdirSync(dir); // non-recursive on purpose: anything else inside means this is not ours to delete",
+      "replace": "    void dir;",
       "expectRed": "A5: the material's private directory was left behind",
       "note": "Found on a live sandbox spawn, not here: the file was gone and an empty 0700 directory per launch stayed in the OS temp tree. Litter this change would have introduced rather than found, which is a different and worse kind of defect than one it inherited.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M9 the discard removes the directory recursively again",
+      "file": "packages/core/src/launch-material.ts",
+      "find": "    rmdirSync(dir); // non-recursive on purpose: anything else inside means this is not ours to delete",
+      "replace": "    rmSync(dir, { recursive: true, force: true });",
+      "expectRed": "A9: the discard deleted a file it did not write",
+      "note": "The dangerous first version, restored exactly. A cleanup added to a security change must not be the most destructive thing in it, and the assertion that catches this watches a bystander file rather than the directory, because the directory going away is the intended outcome in the ordinary case.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M10 the discard stops requiring the OS temp root",
+      "file": "packages/core/src/launch-material.ts",
+      "find": "    if (realpathSync(dirname(dir)) !== realpathSync(tmpdir())) return;",
+      "replace": "    if (false) return;",
+      "expectRed": "A9: the discard removed a directory that was not directly under the OS temp root",
+      "note": "Leaves the prefix test in place, which is the point: the prefix is a hint anyone can satisfy by naming a directory, and the location is what makes the claim structural. Without this check a hand-set pointer at <anywhere>/cotal-launch-project/material.json takes its directory with it.",
       "afterRestore": "pnpm build > /dev/null"
     }
   ]

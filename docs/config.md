@@ -142,8 +142,11 @@ Three connectors drop the path once they have read it, so the shells and tools t
 inherit no reference at all: **pi** and **codex**, whose sessions run in the seat process, and
 **OpenCode**, whose seat process is a shim that starts `opencode serve` (the plugin runs in that
 server, which is also what executes the session's tool calls). Those three also **delete the file**
-at the same moment. Nothing reads it again, so leaving it on disk would only extend how long a copy
-of the material exists.
+at the same moment, along with the private directory that held it. Nothing reads it again, so leaving
+it on disk would only extend how long a copy of the material exists. The directory is only removed
+when it is provably the one the launcher wrote: the right filename inside, the launcher's prefix on
+the directory, the directory sitting directly in the OS temp root, and a non-recursive removal that
+fails rather than deletes if anything else is in there.
 
 Two keep it, and for the same reason in both cases: a process that starts LATER has to read it.
 **Claude**'s readers are short-lived children, the MCP server and one process per lifecycle hook,
@@ -167,8 +170,9 @@ and the space in a single string.
 The control endpoint is a pair, and **half a pair is refused**. A launch with a control socket path
 and no resolvable token, or a token and no socket path, does not fall back to running without a
 control plane: it fails with a sentence naming which half is missing. The one exception is the
-lifecycle hook relay, which catches that refusal and does nothing, because a hook that throws is a
-hook that blocked the session.
+lifecycle hook relay, which catches that refusal, writes a single warning to stderr naming no values,
+and then does nothing, because a hook that throws is a hook that blocked the session. Failing open is
+deliberate; failing open silently is not.
 
 ## On-disk layout
 

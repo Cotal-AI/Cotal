@@ -23,6 +23,8 @@
  *   A6  a material file that says nothing is refused on READ, and a valid one still reads
  *   A7  a material file plus a direct carrier (COTAL_LINK here) is refused, never ranked silently
  *   A8  half a control pair throws in both directions, from the one place the pair is resolved
+ *   A9  the discard removes its own file always, and its own directory only when it can prove it
+ *       wrote it: never recursively, never outside the OS temp root
  *
  * A2 is the one that could not have been faked by reading the same object the assertion was written
  * against: the seat is a real `node` process started with the connector's env, and the observer is a
@@ -43,10 +45,10 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
@@ -280,5 +282,46 @@ console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refus
   );
 }
 console.log("✓ A5: the pointer is dropped, the file is unlinked, and what is left refuses instead of half-working");
+
+
+// A9 - the discard removes its own directory and NOTHING else.
+//
+// This leg exists because the first version of that cleanup was the most destructive thing in a
+// change about reducing harm. It removed the parent RECURSIVELY whenever the parent's basename began
+// with the writer's prefix, under a comment claiming that proved the directory came from the writer.
+// It proved a string starts with another string. A hand-set pointer at any path whose parent was
+// named cotal-launch-something took that parent and every sibling with it. A reviewer caught it
+// before it shipped; these assertions are what stop it coming back.
+{
+  // A directory that holds anything besides the material file is not this module's to delete, and
+  // the non-recursive removal is what makes that true rather than intended.
+  const busy = mkdtempSync(join(tmpdir(), "cotal-launch-"));
+  const busyFile = join(busy, "material.json");
+  writeFileSync(busyFile, JSON.stringify({ servers: SERVERS }), { mode: 0o600 });
+  const bystander = join(busy, "someone-elses-file");
+  writeFileSync(bystander, "not ours", { mode: 0o600 });
+  discardLaunchMaterial(busyFile);
+  assert.equal(existsSync(busyFile), false, "A9: the material file survived a discard");
+  assert.equal(existsSync(bystander), true, "A9: the discard deleted a file it did not write");
+  assert.equal(existsSync(busy), true, "A9: the discard removed a directory that still held another file");
+  rmSync(busy, { recursive: true, force: true });
+
+  // A material somewhere other than directly under the OS temp root keeps its directory, however the
+  // directory is named. The prefix is a hint; the location is the proof.
+  const outerRoot = mkdtempSync(join(tmpdir(), "cotal-seatenv-outer-"));
+  const lookalike = join(outerRoot, "cotal-launch-project");
+  mkdirSync(lookalike, { mode: 0o700 });
+  const lookalikeFile = join(lookalike, "material.json");
+  writeFileSync(lookalikeFile, JSON.stringify({ servers: SERVERS }), { mode: 0o600 });
+  discardLaunchMaterial(lookalikeFile);
+  assert.equal(existsSync(lookalikeFile), false, "A9: the material file outside the temp root survived a discard");
+  assert.equal(
+    existsSync(lookalike),
+    true,
+    "A9: the discard removed a directory that was not directly under the OS temp root",
+  );
+  rmSync(outerRoot, { recursive: true, force: true });
+}
+console.log("\u2713 A9: the discard takes its own file always, and its own directory only when it can prove it wrote it");
 
 console.log("\nseat-env-scope: PASS");

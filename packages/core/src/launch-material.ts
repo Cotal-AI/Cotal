@@ -27,14 +27,26 @@
  * process close the remaining hop by dropping the reference once it has been read (see
  * `scrubLaunchMaterial` in the connector runtime).
  *
- * The file is left for the OS to reap: it must outlive this call, because the readers are the
- * session's own long-lived process and, on some connectors, short-lived hook processes that start
- * later.
+ * HOW LONG THE FILE LIVES, split by connector, because there is no single answer and writing one
+ * would be the overclaim this file is otherwise careful to avoid. Where the session runs in the
+ * process that executes the tool calls (pi, codex, and OpenCode inside the server its shim starts)
+ * there is no later reader, so that session calls {@link discardLaunchMaterial} at startup and the
+ * file and its private directory cease to exist. Where readers start LATER (the Claude connector's
+ * MCP server and its one-process-per-hook relays, the Hermes launcher's gateway child) the file has
+ * to outlive startup, so it lives as long as the seat and the OS temp reaper is what removes it. A
+ * launch that dies before its session starts leaves its file to that same reaper.
  */
-import { mkdtempSync, readFileSync, statSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
+
+/** The prefix {@link writeLaunchMaterial} gives its private directory, and the single filename it
+ *  puts inside. Named constants because {@link discardLaunchMaterial} has to recognise this module's
+ *  own work, and a cleanup that recognises it by a string typed out twice is a cleanup that will one
+ *  day delete something else. */
+const DIR_PREFIX = "cotal-launch-";
+const MATERIAL_FILE = "material.json";
 
 /** The env var naming the launch-material file. It carries a PATH, never a secret. */
 export const LAUNCH_MATERIAL_ENV = "COTAL_LAUNCH_MATERIAL";
@@ -74,9 +86,9 @@ export function writeLaunchMaterial(material: LaunchMaterial): string {
     throw new Error(
       "launch material: refusing to write an empty material file - a launch with nothing to hand the session must not reference one at all",
     );
-  const dir = mkdtempSync(join(tmpdir(), "cotal-launch-"));
+  const dir = mkdtempSync(join(tmpdir(), DIR_PREFIX));
   hardenPrivate(dir, "dir"); // win32: mkdtemp's 0700 is a no-op, harden the ACL before the file lands
-  const path = join(dir, "material.json");
+  const path = join(dir, MATERIAL_FILE);
   writeSecretFile(path, JSON.stringify(material));
   return path;
 }
@@ -167,4 +179,50 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
       `launch material: ${path} carries nothing this reader recognises. A launch that references material and supplies none is a broken launcher, not an open-mode launch, so it is refused rather than defaulted.`,
     );
   return material;
+}
+
+/**
+ * Discard one launch's material: unlink the file, and remove the private directory ONLY when this
+ * module can tell it wrote that directory itself.
+ *
+ * THIS FUNCTION EXISTS BECAUSE ITS FIRST VERSION WAS DANGEROUS, and the shape of that mistake is
+ * worth keeping in front of whoever edits it next. The first version removed the parent RECURSIVELY
+ * whenever its basename began with the writer's prefix, under a comment claiming that proved the
+ * directory came from here. It proved that a string starts with another string. A pointer set by
+ * hand at any path whose parent happened to be named `cotal-launch-anything` took that parent and
+ * every sibling file with it, and the gap between the unlink and the removal turned a concurrent
+ * create into collateral deletion. A cleanup added to a security change must not be the most
+ * destructive thing in it.
+ *
+ * So the directory removal is structural rather than a name test, and all four conditions hold or
+ * the directory simply stays:
+ *
+ *  - the file is named exactly what {@link writeLaunchMaterial} names it;
+ *  - its parent carries the writer's prefix;
+ *  - that parent sits DIRECTLY in the OS temp root, resolved through symlinks on both sides so
+ *    `/tmp` and a `/private/tmp` style real path compare equal;
+ *  - and the removal is `rmdir`, never recursive, so a directory holding anything else fails to go
+ *    and is left exactly as it was found. That is also what closes the race: a file created in the
+ *    window makes the removal fail rather than making it destroy more.
+ *
+ * The FILE is unlinked unconditionally, because the file is the secret and removing it is the whole
+ * point. Only the directory is conditional. Both are best effort: a discard that throws would turn
+ * tidy-up into a failed session, and the state it would fail into is the state every launch had
+ * before this function existed.
+ */
+export function discardLaunchMaterial(path: string): void {
+  const file = resolve(path);
+  try {
+    unlinkSync(file);
+  } catch {
+    /* already gone, or not ours to remove; the directory check below still refuses to guess */
+  }
+  const dir = dirname(file);
+  if (basename(file) !== MATERIAL_FILE || !basename(dir).startsWith(DIR_PREFIX)) return;
+  try {
+    if (realpathSync(dirname(dir)) !== realpathSync(tmpdir())) return;
+    rmdirSync(dir); // non-recursive on purpose: anything else inside means this is not ours to delete
+  } catch {
+    /* not empty, not there, or not resolvable: leaving it is always the safe answer */
+  }
 }

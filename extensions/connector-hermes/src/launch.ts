@@ -18,7 +18,7 @@ import { mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { LAUNCH_MATERIAL_ENV, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, discardLaunchMaterial, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER } from "@cotal-ai/connector-core";
 import { startSidecar } from "./sidecar.js";
 
@@ -141,13 +141,10 @@ async function main(): Promise<void> {
   // credential for the life of the seat, which is a second copy nobody asked for and a longer
   // exposure than the carrier's own contract describes. Best-effort: the merged file is already in
   // place, so a failure to unlink is untidy rather than unsafe.
-  if (inherited) {
-    try {
-      rmSync(inherited, { force: true });
-    } catch {
-      /* the merged file is what the session reads; an un-reaped copy is the pre-existing behaviour */
-    }
-  }
+  // Same discard the sessions use, so the superseded copy's private directory goes with it instead
+  // of being left behind empty, and so this connector cannot grow its own idea of what is safe to
+  // delete.
+  if (inherited) discardLaunchMaterial(inherited);
   process.env.COTAL_CONTROL_SOCKET = control.path;
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;

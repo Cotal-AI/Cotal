@@ -1,7 +1,6 @@
+import { readFileSync } from "node:fs";
 import { userInfo } from "node:os";
-import { readFileSync, rmSync, unlinkSync } from "node:fs";
-import { basename, dirname } from "node:path";
-import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, assertValidChannel, channelInAllow, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
+import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, discardLaunchMaterial, assertValidChannel, channelInAllow, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -197,20 +196,11 @@ export function scrubLaunchMaterial(env: NodeJS.ProcessEnv = process.env): void 
   // succeeded by the time this runs: throwing here would turn a tidy-up failure (a read-only tmpdir,
   // a file already reaped) into a failed session, and the state it would fail into is exactly the
   // state every launch had before this line existed.
-  if (path) {
-    try {
-      unlinkSync(path);
-      // The private directory exists only to hold that one file, so it goes too. Measured on a live
-      // sandbox spawn: unlinking the file alone left an empty 0700 directory per launch in the OS
-      // temp tree, which is litter this change would have introduced rather than found. Guarded on
-      // the writer's own prefix so a hand-set pointer at some other path can never take its parent
-      // directory with it.
-      const dir = dirname(path);
-      if (basename(dir).startsWith("cotal-launch-")) rmSync(dir, { recursive: true, force: true });
-    } catch {
-      /* the pointer is already gone; the file outliving it is the pre-existing behaviour */
-    }
-  }
+  // The removal itself lives beside the writer, in core, because deciding what is safe to delete
+  // needs the rules the writer used, and a second copy of those rules here is how a cleanup ends up
+  // deleting something it did not create. See discardLaunchMaterial: the file always goes, the
+  // private directory only when it is provably this module's own, and never recursively.
+  if (path) discardLaunchMaterial(path);
 }
 
 /** True iff the env carries a Cotal identity — i.e. this is a launcher-spawned
