@@ -96,10 +96,25 @@
  * arrival it does not list (a `.php` naming the seam was the probe) is read by nothing and reddens
  * nothing. SKIP_DIRS is the same bet on directories: adding `examples` to it drops six container
  * files from the walk with every cell still green, because the census that guards the walk shares
- * the same skip list and simply sees a smaller tree. And the FLOORS measure population, not
+ * the same skip list and simply sees a smaller tree. And the COUNTS measure population, not
  * identity, so moving sites between files is indistinguishable from losing them; the split into a
  * total and an untypechecked half catches a move ACROSS the halves, and nothing catches a move
- * within one. Each would need a different instrument (a site manifest, a census that does not share
+ * within one.
+ *
+ * A FOURTH boundary is the TREE ITSELF, and it matters more now that the counts are matched exactly
+ * rather than as floors. This walk reads the FILESYSTEM, not the commit, so a working copy that has
+ * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
+ * skipped, but a generated bundle landing outside those names is not: the Hermes sidecar at
+ * `extensions/connector-hermes/plugin/cotal/_sidecar/` is gitignored build output and IS walked.
+ * Today it costs nothing, measured both ways: 94/67 with the bundle present and 94/67 with it moved
+ * aside. It is on the record because an EXACT count turns any future divergence into a red that
+ * depends on whether someone ran `pnpm bundle`, which is a property of a disk rather than of a
+ * revision. Reading it is deliberate rather than an oversight, since that bundle SHIPS in the
+ * connector package: a seam call inside it would be real, and skipping it would be a hole in shipped
+ * code rather than a tidier number. Review found this by measuring the same fence on two trees and
+ * getting ten refusals against four, which is the same lesson one level up.
+ *
+ * Each would need a different instrument (a site manifest, a census that does not share
  * the walk's exclusions), and each is written here so the next author inherits the bet rather than
  * the impression that it was checked.
  *
