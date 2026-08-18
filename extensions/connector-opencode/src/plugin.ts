@@ -497,7 +497,7 @@ export const cotal: Plugin = async () => {
    *  filter to it; later top-level `session.created` events adopt explicitly as reset-in-place.
    *
    *  LOAD-BEARING FOR THE EVENT PLANE, not merely tidy. The flush sites are fed the AMBIENT id, so
-   *  an event that gets past this filter does not address its own session — it pumps whichever one
+   *  an event that gets past this filter does not address its own session at all: it pumps whichever
    *  this process drives, publishing that session's staged turn early. R7 in
    *  `smoke/mutations/opencode-events-reset.json` opens this filter and requires a cell to notice. */
   const ours = (id?: string): boolean => {
