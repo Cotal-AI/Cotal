@@ -62,16 +62,23 @@
  *
  * THE ALIAS REFUSAL IS NOT A PROOF OF TOTAL CLOSURE, and it should not be read as one. It refuses
  * every spelling that names the seam statically, as an identifier or as a string, in the positions
- * that can obtain it: a property read off a namespace or a table, a computed rename in a
- * destructure, a quoted import or re-export rename, a shorthand capture, and the name handed to a
- * call as data. The key it reads may be assembled, because `"standalone" + "ConnectOpts"` and a
- * same-file `const` holding it are arithmetic a reader does by eye; review showed both are ordinary
- * code rather than exotica, and documenting an escape is not closing it.
+ * that can obtain it: a property read off a namespace or a table, a rename in a destructure whether
+ * that destructure DECLARES or ASSIGNS, a quoted import or re-export rename, a shorthand capture,
+ * and the name handed to a call as data. The key it reads may be assembled, because `"standalone" +
+ * "ConnectOpts"` and a template whose spans all fold are arithmetic a reader does by eye; review
+ * showed each of these is ordinary code rather than exotica, and documenting an escape is not
+ * closing it.
+ *
+ * The declaration/assignment pair is worth naming because the two look identical in source and are
+ * not identical to the parser: `const { seam: f } = core` is a BindingElement, while
+ * `({ seam: f } = core)` is an ordinary object KEY, which this reader allows everywhere else
+ * because a key normally names a slot rather than reading one. Only position tells them apart.
  *
  * What it still cannot refuse is a key this file cannot evaluate: one computed from a runtime value,
- * a function's return, or an import it would have to resolve. Closing those means executing the
- * program or running a type checker, which is a different instrument rather than a better rule, and
- * the floors are the only cover they have.
+ * a function's return (`["standalone", "ConnectOpts"].join("")` reaches the same binding), or an
+ * import it would have to resolve. Closing those means executing the program or running a type
+ * checker, which is a different instrument rather than a better rule, and the floors are the only
+ * cover they have.
  *
  * It also has NO SCOPE. Any local that happens to share the seam's name is read as the seam, so a
  * parameter or variable of that name used as a value is flagged, and a call to it is classified.
@@ -173,8 +180,19 @@ function foldString(e: ts.Expression, consts: Map<string, string>): string | und
     const l = foldString(x.left, consts), r = foldString(x.right, consts);
     return l !== undefined && r !== undefined ? l + r : undefined;
   }
-  if (ts.isTemplateExpression(x) || ts.isNoSubstitutionTemplateLiteral(x))
-    return ts.isNoSubstitutionTemplateLiteral(x) ? x.text : undefined;
+  // A template whose spans ALL fold is the same arithmetic as `+`, done with different punctuation:
+  // `` `standalone${"ConnectOpts"}` `` is as static as `"standalone" + "ConnectOpts"`. Declining it
+  // while folding `+` would be a promise this file does not keep. A span that does not fold (a call,
+  // a runtime value) makes the whole template unfoldable, which is the documented residual.
+  if (ts.isTemplateExpression(x)) {
+    let out = x.head.text;
+    for (const span of x.templateSpans) {
+      const v = foldString(span.expression, consts);
+      if (v === undefined) return undefined;
+      out += v + span.literal.text;
+    }
+    return out;
+  }
   return undefined;
 }
 
@@ -221,6 +239,16 @@ function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
   // object key (`{ seam: mock }`, `{ seam }`), which is how a test table is written: the READ of
   // such a table is caught below, and a call through it is counted by `callsSeam`, so flagging the
   // key would be a false red whose message says something untrue.
+  // ...but only in a literal that CONSTRUCTS one. Inside an assignment pattern the very same node
+  // is a READ of the seam, so it takes the binding rule below instead of the slot-name allowance.
+  if (ts.isPropertyAssignment(p) && p.name === id && inAssignmentPattern(p))
+    return ts.isIdentifier(p.initializer) && p.initializer.text === fn;
+  // Shorthand splits the same way, and the two halves point OPPOSITE ways. In a literal `{ seam }`
+  // captures the value into a table that can be read back without ever spelling the key, which is
+  // why it is flagged. In an assignment pattern it assigns the property back into a variable of the
+  // same name: the exact twin of `const { seam } = core`, which is allowed three lines below. Left
+  // unsplit, identical code got opposite verdicts depending on where the variable was declared.
+  if (ts.isShorthandPropertyAssignment(p) && p.name === id && inAssignmentPattern(p)) return true;
   if ((p as { name?: ts.Node }).name === id
     && (ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p) || ts.isVariableDeclaration(p)
       || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p)
@@ -261,6 +289,28 @@ function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
  * "ConnectOpts"]`) is not constant-folded here and stays invisible. Closing it means evaluating
  * expressions, which is a different instrument; the floors are the only cover it has.
  */
+/**
+ * Is this node inside an object/array pattern that is the TARGET of an assignment, rather than
+ * inside a literal that CONSTRUCTS a value? The distinction is invisible in the source and decisive
+ * here: `({ seam: f } = core)` reads the seam exactly as `const { seam: f } = core` does, but the
+ * parser gives the destructuring DECLARATION a `BindingElement` and the destructuring ASSIGNMENT an
+ * ordinary `PropertyAssignment`, which this file allows because a key normally names a slot. That
+ * spelling is ordinary JavaScript whenever the variable is declared before the assignment or filled
+ * inside a loop, so the two must be answered the same way.
+ */
+function inAssignmentPattern(n: ts.Node): boolean {
+  let cur: ts.Node = n;
+  while (cur.parent) {
+    const p: ts.Node = cur.parent;
+    if (ts.isBinaryExpression(p) && p.operatorToken.kind === ts.SyntaxKind.EqualsToken && p.left === cur) return true;
+    if ((ts.isForOfStatement(p) || ts.isForInStatement(p)) && p.initializer === cur) return true;
+    if (ts.isObjectLiteralExpression(p) || ts.isArrayLiteralExpression(p) || ts.isPropertyAssignment(p)
+      || ts.isSpreadAssignment(p) || ts.isSpreadElement(p) || ts.isParenthesizedExpression(p)) { cur = p; continue; }
+    return false;
+  }
+  return false;
+}
+
 function escapesAt(n: ts.Node, fn: string, folds: Folds): boolean {
   const bindsTheName = (name: ts.Node): boolean => ts.isIdentifier(name) && name.text === fn;
   // Reading the property off a namespace, a module object, or any table: `core["seam"]`. When the
@@ -269,6 +319,10 @@ function escapesAt(n: ts.Node, fn: string, folds: Folds): boolean {
   // `const { ["seam"]: f } = core`, unless it binds the name back.
   if (ts.isBindingElement(n) && n.propertyName && ts.isComputedPropertyName(n.propertyName))
     return folds(n.propertyName.expression) && !bindsTheName(n.name);
+  // `({ ["seam"]: f } = core)`: the assignment-pattern twin of the computed rename above, which the
+  // parser spells as a PropertyAssignment with a ComputedPropertyName rather than a BindingElement.
+  if (ts.isPropertyAssignment(n) && ts.isComputedPropertyName(n.name) && inAssignmentPattern(n))
+    return folds(n.name.expression) && !bindsTheName(n.initializer);
   // `import { "seam" as f }` / `export { "seam" as f }`: ordinary syntax whose propertyName is a
   // string rather than an identifier, so no rule about identifiers can see the rename.
   if ((ts.isImportSpecifier(n) || ts.isExportSpecifier(n)) && n.propertyName
@@ -555,12 +609,28 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const tbl = { standaloneConnectOpts };`) === "aliased");
   check("...and reading a table back by name IS caught too",
     one(`const f = tbl.standaloneConnectOpts;`) === "aliased");
+  // A destructuring ASSIGNMENT reads the seam exactly as a destructuring DECLARATION does, but the
+  // parser spells it as an ordinary object key, which the rule above deliberately allows. Review
+  // proved the gap on a real throwing call site, green at the unchanged count; it is ordinary code
+  // whenever the variable is declared before the assignment or filled in a loop.
+  check("a destructuring ASSIGNMENT that renames is a rebinding, like its `const` twin",
+    one(`({ standaloneConnectOpts: connectOpts } = core);`) === "aliased");
+  check("...including the computed spelling, which states no identifier at all",
+    one(`({ ["standaloneConnectOpts"]: connectOpts } = core);`) === "aliased");
+  check("...and the `for...of` assignment target, where there is no `=` to key on",
+    one(`for ({ standaloneConnectOpts: connectOpts } of [core]) { connectOpts({ creds: c }); }`) === "aliased");
+  check("...while an assignment destructure that binds the SAME name is not a rebinding",
+    fx(`({ standaloneConnectOpts } = core);`).length === 0);
   check("a BARE DEFAULT import binds the scannable name, so it is not a rebinding",
     fx(`import standaloneConnectOpts from "@cotal-ai/core";`).length === 0);
   // The residual both reviews called ordinary rather than exotic, and they were right: this is
   // arithmetic a reader does by eye, so the reader does it too.
   check("a key ASSEMBLED from literals is the same spelling, and is folded",
     one(`const f = core["standalone" + "ConnectOpts"];`) === "aliased");
+  // A template whose spans all fold is the same arithmetic with different punctuation. Folding `+`
+  // while declining this would be a promise this file does not keep.
+  check("...and a TEMPLATE whose spans all fold is the same arithmetic",
+    one('const f = core[`standalone${"ConnectOpts"}`];') === "aliased");
   check("...including through a same-file `const`",
     one(`const k = "standalone" + "ConnectOpts";\nconst f = core[k];`) === "aliased"
     && one(`const k = "standaloneConnectOpts";\nconst { [k]: f } = core;`) === "aliased");
