@@ -56,6 +56,12 @@ const ERROR_RETRY_INITIAL_MS = 1_000;
 const ERROR_RETRY_MAX_MS = 30_000;
 const INTERRUPT_INTENT_TTL_MS = 30_000;
 
+/** The machine-stable half of the retirement line. The suite asserts on THIS, never on the sentence
+ *  around it: a guard keyed on human prose dies the first time someone rewords a log message, and it
+ *  dies silently, which is the failure mode a guard exists to prevent. Reword the sentence freely;
+ *  do not change this token without updating the cells that import it. */
+export const SESSION_RETIRED = "opencode-session-retired";
+
 export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
   if (!hasIdentity()) {
@@ -519,7 +525,7 @@ export const cotal: Plugin = async () => {
             // Symmetric with the adoption line above, and load-bearing rather than decorative: a
             // retirement that never happens is otherwise invisible, because a dropped holder has no
             // frames left to publish and its open handle looks identical to a cleanly retired one.
-            log(`retiring opencode session ${previous.path} for ${created}; draining it first`);
+            log(`${SESSION_RETIRED} ${previous.path} superseded by ${created}; drained before release`);
             previous.flush(previous.path);
             previous.closeRun(Date.now());
             await previous.settled();
