@@ -79,7 +79,15 @@
     "K29 is the seventh defect's other side, and it is worth naming why it needed a different kind of",
     "cell. The two lanes swap membership when the local clock passes a stamp, which no fixture can",
     "arrange by choosing timestamps: the cell has to wait. It waits 150ms. That is the whole of the",
-    "time-dependence in this mechanism, and it is graded rather than reasoned about."
+    "time-dependence in this mechanism, and it is graded rather than reasoned about.",
+    "",
+    "K30 and K31 are a different axis from every kill above them: not what the walk DOES, but what it",
+    "READS. Nine rounds attacked the arithmetic of the window and the mark with well-formed messages,",
+    "and one field, the timestamp, turned out to be attacker-controlled. It is not the only one. The",
+    "reply is assembled from `text`, `fromName` and `fromRole`, all written by a peer, and rendered into",
+    "a structure the caller reads as the tool's own words. The rule these two defend is positional and",
+    "checkable by anyone: a line beginning at column zero was written by this tool, and a rendered name",
+    "carries neither a closing bracket nor a newline."
   ],
   "mutations": [
     {
@@ -324,6 +332,24 @@
       "cell": "...and crossing into the clocked lane does not hand it over a second time",
       "expectRed": "...and crossing into the clocked lane does not hand it over a second time",
       "note": "Found by the first lens attacking the seventh fix from the other side. The mark never moves for an item handed over while it was ahead of the clock, so when the clock passes that stamp the item arrives in the clocked lane above the mark and is offered again. The lanes are kept honest with each other by the same record that makes the ahead lane exactly-once. Its cell is the only one in this suite that WAITS for real time, because the crossing cannot be staged by stamping the clock."
+    },
+    {
+      "name": "K30 a peer's newlines are rendered as the reply's own lines again",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  return text.replace(/\\r\\n?|\\n/g, \"\\n  \");",
+      "replace": "  return text;",
+      "cell": "a peer's newlines cannot add a line the reply appears to have written itself",
+      "expectRed": "a peer's newlines cannot add a line the reply appears to have written itself",
+      "note": "The reply is structured and assembled entirely from peer-controlled text, so without the continuation indent a single message writes that structure itself: measured, one message forged a second message line attributed to another named peer, the held-note with its call-again promise, and the recall warning. Indentation is the only thing separating what the tool said from what a peer said it said."
+    },
+    {
+      "name": "K31 a peer may close the bracket it is named inside",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  return s.replace(/[\\r\\n\\]]+/g, \" \");",
+      "replace": "  return s;",
+      "cell": "...and a peer cannot close the bracket it is named inside",
+      "expectRed": "...and a peer cannot close the bracket it is named inside",
+      "note": "Attribution is rendered inside brackets on every surface that carries it, this tool's reply and the connectors' wake hints alike, so a name holding a closing bracket or a newline ends the attribution early and starts writing the surface's own syntax. `fmtFrom` is the shared primitive, which is why the neutralization lives there rather than at one call site."
     }
   ]
 }
