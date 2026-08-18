@@ -30,8 +30,10 @@ MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. 
 longer mirrors its prose there under any flag or environment variable, and a spawn that passes
 `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
 channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
-the principal the manager allocated rather than on the display name. On a static mesh `<owner>` is
-the literal `local`. `cotal console` and the web console render event frames directly. Unlike
+the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+`events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+gives both forms. `cotal console` and the web console render event frames directly. Unlike
 `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
 it is under "To let something read a plane" below.
 

@@ -226,9 +226,12 @@ its end, and its result. Not prose about the work, the work itself, in a vocabul
 read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
 with the plugin installed publishes nothing.
 
-The channel is **`events.<owner>.<actor>`**, named after the principal the manager allocated for
-the session and never after its display name, because two live agents may share a display name and
-would then share a stream. The launch grants publish rights on exactly that one channel. A spawn
+The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
+half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh
+it is a key the manager allocated, never the display name, so two live agents sharing a display name
+do not share a stream; on a user-auth mesh it is the agent's own name, because that is what the
+ledger row is keyed on. Spelled out again with both halves below. The launch grants publish rights
+on exactly that one channel. A spawn
 that asks for a *different* agent's event channel is refused at the door rather than granted, since
 that channel carries the session's tool inputs and outputs. The same rule runs on restart: a manager
 resume document that names another agent's event channel is refused rather than adopted, because the

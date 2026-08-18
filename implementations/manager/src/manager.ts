@@ -838,8 +838,10 @@ export class Manager {
    * hardcodes `chat.>`: an operator narrowing a reader to one event plane was handed a reader of every
    * channel in the space. The user half named a bare `cotal actor grant`, and an omitted flag there is
    * not "leave it alone" but the WIDE default (`>` read, `>` post, `spawn` scope), so the same
-   * sentence handed out a full-mesh reader-writer with spawn. Both were found by running the printed
-   * command and decoding what it produced, which is the only way this class of defect surfaces.
+   * sentence handed out a full-mesh reader-writer with spawn. The static half was found by RUNNING
+   * the printed command and decoding what it produced; the user half was found by READING it against
+   * `runActor`'s defaults. Neither is the only way in, and a remedy string is not proved by either
+   * one alone.
    *
    * So the command is spelled out in full and only ONE is printed: the one for the mesh this manager
    * is actually running, because a sentence carrying both routes is a sentence an operator picks the

@@ -131,7 +131,9 @@ export async function mint(args: ParsedArgs): Promise<void> {
   }
   // For agents, derive the read/post ACLs AND role from the agent file if one exists (flags
   // override): allowSubscribe (read; defaults to subscribe) and allowPublish (post; default-deny);
-  // role scopes the TASK-queue consumer to svc_<role>. observers/managers ignore all three.
+  // role scopes the TASK-queue consumer to svc_<role>. Only the agent profile reaches this: all
+  // three are REFUSED above off that profile, so there is no arm here that reads them and discards
+  // them.
   // NOTE: this mints CREDS only — the bind-only chat/DM/TASK durables are pre-created separately by
   // a privileged provisioner (`cotal up` / manager / `cotal spawn`), as for DM/TASK already.
   let allowSubscribe: string[] | undefined;
