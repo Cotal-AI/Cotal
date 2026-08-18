@@ -831,6 +831,45 @@ try {
   // cli's scope is still [spawn] here — every admin-gated view must refuse naming the gate.
   const deniedView = await humanViewEx("admin");
   check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
+  // ...and the re-grant it prints is a WHOLE-row upsert, not a scope edit. `runActor` fills every
+  // omitted flag from `csv(v, dflt)` with the WIDE default, so a scope-only paste silently resets
+  // this row's read/post to `>`/`>`: adding a view would widen the operator to the whole chat
+  // plane.
+  //
+  // Naming the flags is NOT enough, and a security lens is why this cell says more than that: a
+  // command that names `--allow-subscribe '<its current read set>'` reads as paste-ready, fails on
+  // an invalid channel, and the operator's shortest route to a command that succeeds is to delete
+  // the flag or write `>`. So the values are graded against the ROW, not the sentence: whatever the
+  // refusal prints must be what the row actually holds right now.
+  const viewErr = deniedView.body.error ?? "";
+  const viewRegrant = /cotal actor grant [^(]+/.exec(viewErr)?.[0] ?? "";
+  const flagOf = (name: string): string | undefined =>
+    new RegExp(`--${name} '([^']*)'`).exec(viewRegrant)?.[1];
+  const liveRow = JSON.parse(readFileSync(rowFile("interactive", OWNER, "cli"), "utf8")) as {
+    allowSubscribe: string[]; allowPublish: string[]; scope: string[]; label?: string;
+  };
+  check(
+    "the view refusal's re-grant names read AND post, not scope alone, and says the upsert replaces the WHOLE row",
+    /--scope '/.test(viewRegrant) &&
+      /--allow-subscribe '/.test(viewRegrant) &&
+      /--allow-publish '/.test(viewRegrant) &&
+      /WHOLE row/.test(viewErr),
+    { viewRegrant, error: viewErr },
+  );
+  check(
+    "the ACL values it prints are the row's REAL current sets, not a placeholder and not the wide default",
+    flagOf("allow-subscribe") === liveRow.allowSubscribe.join(",") &&
+      flagOf("allow-publish") === liveRow.allowPublish.join(",") &&
+      !/[<>]/.test(`${flagOf("allow-subscribe")}${flagOf("allow-publish")}`),
+    { printed: { sub: flagOf("allow-subscribe"), pub: flagOf("allow-publish") }, row: liveRow },
+  );
+  check(
+    "and it carries the scope ADDED to the row's own, plus the label the upsert would otherwise drop",
+    (flagOf("scope") ?? "").split(",").includes("admin") &&
+      liveRow.scope.every((sc) => (flagOf("scope") ?? "").split(",").includes(sc)) &&
+      flagOf("label") === liveRow.label,
+    { printedScope: flagOf("scope"), printedLabel: flagOf("label"), row: liveRow },
+  );
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
   const vg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {

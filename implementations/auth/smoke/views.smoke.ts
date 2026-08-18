@@ -281,6 +281,24 @@ await rejects(
   async () => bridge.exchange(await idpToken("u1"), { actor: "cli", view: "admin" }),
   'needs scope "admin"',
 );
+{
+  // This bridge's authorizeActor supplies scope and a uid and NO ACLs, which is the shape a custom
+  // IdP integration can legitimately have. The refusal has no row to render, so it must not promise
+  // one: "run exactly the line below" is only true on the branch that was handed the real read and
+  // post sets. Naming a remedy that is not at the render site is the same defect as printing a
+  // command with values it invented.
+  let noAcl = "";
+  try {
+    await bridge.exchange(await idpToken("u1"), { actor: "cli", view: "admin" });
+  } catch (e) {
+    noAcl = (e as Error).message;
+  }
+  check(
+    "the no-ACL view refusal promises no line to run, and prints no grant command at all",
+    /no ready-to-run line/.test(noAcl) && !/line below/.test(noAcl) && !/cotal actor grant/.test(noAcl),
+    noAcl,
+  );
+}
 await rejects(
   "an unknown view refuses at the bridge",
   async () => bridge.exchange(await idpToken("u1"), { actor: "cli", view: "root" as UserTokenView }),

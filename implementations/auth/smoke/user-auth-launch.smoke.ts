@@ -173,6 +173,23 @@ try {
   // pin brings its own role-less probe — the refusal must be purely the read over-ask.)
   const narrow = await cotal(["actor", "grant", "cli", "--sub", sub, "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("explicit narrow re-grant (upsert) succeeds", narrow.status === 0 && narrow.out.includes("read [general]"), narrow.out);
+  // The MECHANISM, executed rather than described: the upsert replaces the WHOLE row, so a re-grant
+  // that names only --scope resets the ACLs a narrow row just set back to the wide default. Two
+  // refusals used to print exactly this command as their remedy. Nothing here is a fixture: it is
+  // the real CLI writing the real ledger, and the row it leaves behind reads every channel.
+  //
+  // On its OWN actor, never on `cli`: a re-grant rotates the row's lifecycle uid, and the elevated
+  // views later in this suite hold bearers minted against `cli`'s. Demonstrating a footgun must not
+  // fire it into the rest of the run.
+  const wNarrow = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
+  check("a probe actor is granted narrow, both ACL flags named", wNarrow.status === 0 && wNarrow.out.includes("read [general]") && wNarrow.out.includes("post [general]"), wNarrow.out);
+  const wWide = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn"]);
+  check("a re-grant naming ONLY --scope silently widens that narrow row back to the whole plane",
+    wWide.status === 0 && wWide.out.includes("read [>]") && wWide.out.includes("post [>]"), wWide.out);
+  const wBack = await cotal(["actor", "grant", "widenprobe", "--sub", sub, "--scope", "spawn", "--allow-subscribe", "general", "--allow-publish", "general"]);
+  check("re-narrowing restores it, so the widening above is the omitted flags and nothing else",
+    wBack.status === 0 && wBack.out.includes("read [general]"), wBack.out);
+  await cotal(["actor", "revoke", "widenprobe", "--sub", sub]);
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   writeFileSync(join(root, ".cotal", "agents", "probe.md"), "---\nname: probe\nsubscribe: [general]\nallowPublish: [general]\n---\nprobe persona.\n");
   const overSpawn = await cotal(["spawn", "probe", "--allow-subscribe", "ops.wide", "--space", SPACE]);
@@ -221,11 +238,14 @@ try {
     clearNoAdmin.out,
   );
   check(
-    "…and the ADD-to-current re-grant (never static mint repair)",
-    clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint"),
+    "…and the ADD-to-current re-grant (never static mint repair), on the WHOLE row",
+    clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint") && clearNoAdmin.out.includes("WHOLE ROW"),
     clearNoAdmin.out,
   );
-  const adminGrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
+  // Every field named, deliberately: this is a re-grant of a row that was narrowed above, and
+  // omitting the ACL flags here would widen it back to `>`/`>` as a side effect of adding a scope.
+  // The suite used to do exactly that, which is the operator mistake this PR is about.
+  const adminGrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("re-grant with admin ADDED to the current scope succeeds (upsert)", adminGrant.status === 0 && adminGrant.out.includes("admin"), adminGrant.out);
   const cleared = await cotal(["history", "clear", "--force", "--space", SPACE]);
   check("`history clear --force` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("cleared"), cleared.out);

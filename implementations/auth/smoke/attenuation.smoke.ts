@@ -113,13 +113,35 @@ try {
     }),
     "cross-owner",
   );
-  rejects(
+  const ghostMsg = rejects(
     "an unknown spawner principal is refused (no grant = no delegation authority)",
     () => grantManagedActor(dir, {
       owner: OWNER, actor: "ghostkid", scope: [], parent: `${OWNER}.ghost`,
       allowSubscribe: ["general"], allowPublish: [], tokenHash: newActorToken().tokenHash,
     }),
     "has no grant in this space",
+  );
+  // A spawner's own ACL is the CEILING for everything spawned under it, so the repair for a missing
+  // spawner decides that ceiling - and this is the arm with NO ROW to copy that ceiling from. Every
+  // line it could print is wrong in one of two ways: one carrying real-looking channel values invents
+  // them, and one short of all three flags widens the spawner on paste, because `runActor` fills an
+  // omitted flag with `>`. Both were shipped here in turn and both were caught by pasting them. So
+  // the property is not "print a better command", it is PRINT NO COMMAND: the refusal names the verb,
+  // the flags and the default in prose, and leaves nothing an operator can select and run.
+  const ghostPasteable = /cotal actor grant\s+\S/.exec(ghostMsg)?.[0] ?? "";
+  check(
+    "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
+    /--allow-subscribe/.test(ghostMsg) && /--allow-publish/.test(ghostMsg) && /WIDE default/.test(ghostMsg),
+    ghostMsg,
+  );
+  // `\s+\S` and not `` [^`\s] ``: the first version required exactly one ASCII space, so
+  // `cotal actor grant  ghost --owner ...` with two spaces, or a tab, or a newline, satisfied the cell
+  // and still pasted wide. A security lens found that by running those shapes against it. The
+  // property is "followed by an operand", and any run of whitespace then a non-space is one.
+  check(
+    "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+    /cotal actor grant/.test(ghostMsg) && ghostPasteable === "",
+    ghostPasteable || ghostMsg,
   );
   rejects(
     "a malformed ACL entry is refused at the row WRITE (non-terminal '>' never enters an envelope)",
@@ -188,10 +210,18 @@ try {
   check("a grandchild within every link exchanges (cli → spawner2 → grandkid)",
     ledgerAuthorizeAgentExchange(dir, OWNER, "grandkid", gk.actorToken).parent === `${OWNER}.spawner2`);
   revokeActor(dir, OWNER, "cli");
-  rejects(
+  const revokedMsg = rejects(
     "revoking the ROOT refuses the grandchild's exchange (transitive, not single-hop)",
     () => ledgerAuthorizeAgentExchange(dir, OWNER, "grandkid", gk.actorToken),
     "no longer granted",
+  );
+  // The widest re-grant in the codebase lives on this branch: the revoke DELETED the row, so
+  // `cotal actor list` can no longer show what it held, and an operator re-granting from memory
+  // omits a flag and gets `>`. It said only "re-grant it, then respawn" until this cell.
+  check(
+    "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
+    /--allow-subscribe/.test(revokedMsg) && /--allow-publish/.test(revokedMsg) && /WIDE default/.test(revokedMsg),
+    revokedMsg,
   );
   rejects(
     "…and the surviving child cannot mint NEW grandchildren under the revoked root",
