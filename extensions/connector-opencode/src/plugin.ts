@@ -80,6 +80,12 @@ export const cotal: Plugin = async () => {
    * a managed session.
    */
   let events: AguiEmitterHolder<OpenCodeRecord> | undefined;
+  /** Swaps run ONE AT A TIME (#600). The drain below suspends and the plugin bus does not await this
+   *  handler (it dispatches `void hook.event(...)`), so without this a second top-level create lands
+   *  mid-drain, reads the same holder to retire, and its replacement overwrites the first one. A
+   *  rejected swap is absorbed here rather than propagated, so one failed drain cannot wedge every
+   *  later swap and take the event plane down permanently. */
+  let swapChain: Promise<void> = Promise.resolve();
   /**
    * ONE HOLDER PER SESSION, built on demand rather than once per process.
    *
@@ -491,6 +497,15 @@ export const cotal: Plugin = async () => {
           if (event.properties.info.parentID) break;
           const created = event.properties.info.id;
           adoptSession(created, "top-level session create");
+          // SERIALIZED, AND NOT BY THE OBVIOUS SWAP (#600). Taking the holder out before the await
+          // and installing the replacement there looks smaller and is unsafe: a fresh holder has no
+          // `path` until something adopts it, and adopt happens after the await, so a second
+          // invocation reads the replacement as "nothing to retire", skips the drain and adopts it,
+          // then the first invocation adopts the same holder and the one-thread-per-holder refusal
+          // fires. Measured: that turns a silent leak into a dead event plane. Serializing the whole
+          // swap is what actually closes the window, because each swap then reads a holder that is
+          // already settled rather than one mid-retirement.
+          const swap = swapChain.then(async () => {
           const previous = events;
           if (previous && previous.path !== undefined && previous.path !== created) {
             // DRAIN, THEN SWAP. Flush first so the session being left publishes what it settled,
@@ -509,6 +524,11 @@ export const cotal: Plugin = async () => {
           // Adopt READS FROM HERE. A resumed session must not republish its history, and the
           // source's fresh adopt returns the position of the end for exactly that reason.
           events?.adopt(created);
+          });
+          // The chain carries the SUCCESSFUL tail only: a rejected swap is absorbed so the next one
+          // still runs, while this invocation still sees its own failure.
+          swapChain = swap.catch(() => undefined);
+          await swap;
           break;
         }
         case "session.idle": {

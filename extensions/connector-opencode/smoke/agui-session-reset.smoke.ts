@@ -65,6 +65,8 @@ const CHANNEL = "events.local.otto";
 const A = "ses_00000000000000000000000001";
 const B = "ses_00000000000000000000000002";
 const CHILD = "ses_00000000000000000000000003";
+const C = "ses_00000000000000000000000004";
+const D = "ses_00000000000000000000000005";
 
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 mkdirSync(join(dir, "ws"), { recursive: true });
@@ -231,6 +233,32 @@ try {
   check("reset:and neither of them killed the emitter either",
     !logs.some((l) => l.includes("emitter stopped")), logs.filter((l) => l.includes("emitter stopped")));
 
+  // ---- TWO top-level creates inside ONE drain window (#600). The plugin bus does not await this
+  // handler, so the real runtime can deliver a second `session.created` while the first is parked on
+  // its drain. Every other create in this file is awaited, which serializes the handler and cannot
+  // reach the window; these two are fired the way the bus fires them.
+  //
+  // WHAT GOES WRONG WITHOUT THE FIX, measured: both invocations capture the SAME holder to retire,
+  // both drain it, and the first replacement is adopted (which is where its write-ahead log opens)
+  // and then overwritten by the second. The dropped holder is never drained, so the session it had
+  // adopted keeps a run OPEN on the wire forever and its stream goes dark, with no error anywhere.
+  content.set(C, []);
+  content.set(D, []);
+  await Promise.all([
+    fire({ type: "session.created", properties: { info: { id: C } } }),
+    fire({ type: "session.created", properties: { info: { id: D } } }),
+  ]);
+  await sleep(2_000);
+  for (const id of [C, D]) {
+    await part(id);            // park the cursor, as a live session's first pump does
+    await sleep(1_200);
+    content.set(id, turn(id, 1));
+    await part(id);            // publish the turn
+    await sleep(2_200);
+  }
+  check("race:neither of two creates inside one drain window killed the emitter",
+    !logs.some((l) => l.includes("emitter stopped")), logs.filter((l) => l.includes("emitter stopped")));
+
   // ---- Read the whole stream back from the broker and grade it as an ORDER.
   const reader = new CotalEndpoint({
     space: SPACE, servers, card: { name: "Reader", kind: "agent", id: "reader" }, channels: [CHANNEL],
@@ -273,11 +301,22 @@ try {
     seen.some((e) => e.thread === A) && seen.some((e) => e.thread === B), {
       a: seen.filter((e) => e.thread === A).length, b: seen.filter((e) => e.thread === B).length,
     });
+  // THE ASSERTION THE FIX EXISTS FOR. A holder that is dropped mid-swap is never drained, so the
+  // session it had adopted leaves a run OPEN on the subject. This is the defect, not the
+  // interleaving: concurrency still happens on fixed code, and a cell that graded the interleave
+  // would pass on the fix and prove nothing.
+  const openedC = seen.filter((e) => e.type === "RUN_STARTED" && e.thread === C).length;
+  const closedC = seen.filter((e) => e.type === "RUN_FINISHED" && e.thread === C).length;
+  check("race:the session retired by the SECOND create leaves no run open on the wire",
+    openedC === closedC, { openedC, closedC });
+  check("race:and the session that survived the window publishes",
+    seen.some((e) => e.thread === D), { d: seen.filter((e) => e.thread === D).length });
+
   check("thread:and no frame carries the child session, which is not a top-level session",
     !seen.some((e) => e.thread === CHILD), seen.filter((e) => e.thread === CHILD).length);
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 12;
+  const EXPECTED = 15;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

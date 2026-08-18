@@ -18,7 +18,13 @@
     "",
     "The ordering barrier between the two chains is NOT registered as a mutation. Removing it is a",
     "race rather than a defect that reproduces on demand, and a mutation whose kill depends on",
-    "scheduling would report SURVIVED on a slow machine and read as a hole in the suite."
+    "scheduling would report SURVIVED on a slow machine and read as a hole in the suite.",
+    "",
+    "R4 REGISTERS THE ORDERING RACE, which the note above declined to register. What changed is that the",
+    "interleave was measured rather than assumed: the plugin bus dispatches with `void hook.event(...)`,",
+    "so a second create lands mid-drain deterministically here rather than by luck, and the mutant was",
+    "observed to redden on the named assertion across repeated runs. If it ever reports SURVIVED, the",
+    "honest reading is that this harness stopped reaching the window, not that the guard is optional."
   ],
   "mutations": [
     {
@@ -41,6 +47,14 @@
       "find": "            previous.closeRun(Date.now());\n",
       "replace": "",
       "expectRed": "order:every run the first session OPENED was closed"
+    },
+    {
+      "name": "R4 the swap is no longer serialized, so two creates inside one drain window both retire the same holder",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          swapChain = swap.catch(() => undefined);",
+      "replace": "          swapChain = Promise.resolve();",
+      "expectRed": "race:the session retired by the SECOND create leaves no run open on the wire",
+      "note": "Chaining every swap off an ALREADY-RESOLVED promise removes the serialization while leaving the code compiling, which is the smallest expression of the defect. Under it both invocations capture the same holder to retire, the first replacement is adopted (its write-ahead log opens) and is then overwritten, and the session it held leaves a run open on the subject forever."
     }
   ]
 }
