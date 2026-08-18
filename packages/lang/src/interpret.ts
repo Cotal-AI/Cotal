@@ -2096,8 +2096,8 @@ class Interpreter {
           const c = await this.execute(node.block as AnyNode, env, frame);
           if (c.type !== "normal") return c;
         } catch (e) {
-          // Two things a `catch` may not have, because neither is a program error and neither is
-          // this program's to handle.
+          // What a `catch` may not have: none of these is a program error, and none is this
+          // program's to handle. Three kinds, six classes.
           //
           // A cancellation is the scope being unwound, and swallowing it would keep a branch
           // working after it lost a race.

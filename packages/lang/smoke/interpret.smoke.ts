@@ -301,6 +301,13 @@ const out = await fanOut(
   // A `catch` never sees the divergence. Measured before the rule: the resume below caught
   // `{ code: "L4000", kind: "host" }`, logged past it, and performed a NEW effect against the
   // journal it had just diverged from.
+  const performed: string[] = [];
+  class Counting extends SimHandler {
+    override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
+      performed.push(req.duration);
+      return await super.sleep(req, ctx);
+    }
+  }
   const first = await run(`await sleep("1m")`, { runId: "r-div", handler: new SimHandler({}) });
   const j2 = new Journal({ run: "r-div", entries: first.journal.entries() });
   let swallowed: unknown;
@@ -308,13 +315,26 @@ const out = await fanOut(
     await resume(
       `try { await sleep("2m") } catch (e) { log("caught", e.code) }\nawait sleep("3m", { name: "later" })`,
       j2,
-      { runId: "r-div", pins: first.pins, handler: new SimHandler({}) },
+      { runId: "r-div", pins: first.pins, handler: new Counting() },
     );
   } catch (e) {
     swallowed = e;
   }
   ok("a workflow's catch does not swallow a divergence", swallowed instanceof RunDivergence, `${(swallowed as Error)?.name}`);
-  ok("and no effect was performed past it", j2.entries().every((e) => e.name !== "later"), j2.entries().map((e) => e.name));
+  ok("and no effect was performed past it: the handler was asked for nothing and the journal has no later step",
+    performed.length === 0 && j2.entries().every((e) => e.name !== "later"), { performed, entries: j2.entries().map((e) => e.name) });
+
+  // The inverse control: a `catch` still catches an ordinary program error, and the run goes on
+  // performing effects after it. Without this cell "uncatchable divergence" could widen to "catch
+  // is broken" with nothing red.
+  performed.length = 0;
+  const ordinary = await run(
+    `try { throw { code: "E-mine" } } catch (e) { log("caught", e.code) }\nawait sleep("3m", { name: "later" })`,
+    { runId: "r-ord", handler: new Counting() },
+  );
+  ok("a catch still catches an ordinary program error and the run performs the effect after it",
+    performed.join(",") === "3m" && ordinary.journal.entries().some((e) => e.name === "later" && e.status === "ok"),
+    { performed, entries: ordinary.journal.entries().map((e) => [e.name, e.status]) });
 }
 
 // ---- 8) an edit to an observation-stopping limit DOES diverge -----------------------------------
