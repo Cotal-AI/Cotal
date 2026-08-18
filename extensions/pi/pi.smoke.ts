@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -531,7 +532,7 @@ for (const assistant of [
     registerMessageRenderer(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
-  await assert.rejects(() => cotalMesh(compatibleApi), /must be provided together/);
+  await assert.rejects(() => cotalMesh(compatibleApi), /without a matching control token in the launch material/);
   checks++;
   for (const key of keys) {
     const value = saved[key];
@@ -559,7 +560,17 @@ for (const assistant of [
     });
     ok(launch.args.includes("flag/model") && !launch.args.includes("file/model"), "spawn model overrides the agent file model");
     ok(launch.args.includes("--append-system-prompt"), "the frontmatter-stripped persona is forwarded by file");
-    ok(launch.env.COTAL_OWNER === "owner" && launch.env.COTAL_ACTOR === "actor", "user-mode identity is forwarded");
+    // The user-mode identity is forwarded through the launch material, not the environment: the
+    // sentinel creds path and the bearer command are this mode's credential, and a shell the seat
+    // runs has no more business holding them than it has holding a creds file.
+    ok(
+      launch.env.COTAL_OWNER === undefined && launch.env.COTAL_ACTOR === undefined,
+      "user-mode identity is NOT in the seat environment",
+    );
+    ok(
+      readLaunchMaterial(launch.env[LAUNCH_MATERIAL_ENV]).userAuth?.owner === "owner",
+      "user-mode identity is forwarded through the launch material",
+    );
     ok(launch.env.GROQ_API_KEY === "groq-test" && !("UNRELATED_SECRET" in launch.env), "only Pi provider keys are forwarded");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
     ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");

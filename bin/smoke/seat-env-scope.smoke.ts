@@ -32,7 +32,7 @@ import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
-import { configFromEnv, controlFromEnv } from "@cotal-ai/connector-core";
+import { configFromEnv, controlFromEnv, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
 import "@cotal-ai/connector-codex";
@@ -136,6 +136,22 @@ for (const name of CONNECTORS) {
   }
   console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file`);
 }
+
+// A5 — dropping the pointer makes the control token unreachable, so every reader has to run first.
+//
+// This is here because the ordering it describes was got WRONG, and the suite did not catch it: the
+// pi extension scrubbed the pointer immediately after parsing its config and then asked for the
+// control token, which was by then gone. Every pi launch refused, loudly and correctly, and it took
+// a live spawn to see it. The property is pinned here so the hazard is a named, tested fact rather
+// than a comment somebody has to remember, and the contract keeps failing loud when it is violated.
+{
+  const env = { ...piSpec.env } as NodeJS.ProcessEnv;
+  assert.ok(controlFromEnv(env)?.token, "A5: the control token is reachable before the pointer is dropped");
+  scrubLaunchMaterial(env);
+  assert.equal(controlFromEnv(env), undefined, "A5: the control token is unreachable after the pointer is dropped");
+  assert.equal(env[LAUNCH_MATERIAL_ENV], undefined, "A5: the pointer itself is gone");
+}
+console.log("✓ A5: the launch material is unreachable once the pointer is dropped, so readers must run first");
 
 // A4 — a material file other local users can read is refused, not read. Without this the carrier
 // could be quietly weaker than the environment it replaced, and nothing would say so.
