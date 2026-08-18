@@ -83,11 +83,22 @@
  * It also has NO SCOPE. Any local that happens to share the seam's name is read as the seam, so a
  * parameter or variable of that name used as a value is flagged, and a call to it is classified.
  * Both directions are conservative, neither has an occupant here, and resolving them is the same
- * type checker as above.
+ * type checker as above. The folding map INHERITS that blindness: it is file-wide and the last
+ * declaration in source order wins, so two same-named bindings in different scopes fold to whichever
+ * is written later. It also reads `let` as well as `const`, which the wording above should not be
+ * taken to deny; a reassigned `let` therefore folds to its first value, which can invent an escape
+ * that the program does not contain. Both are the conservative direction, which is the one to be on.
  *
- * A file that does not parse loses the sites in whatever the recovery produces, which is bounded by
- * the fact that a file which cannot parse cannot execute either: its own suite is red at import,
- * before any cell, which is the loud failure this check exists so as not to depend on.
+ * The name handed to a call AS DATA is an escape, and that rule has a cost worth stating so the
+ * author who pays it knows it is the rule working: an ordinary assertion about the name, such as
+ * `expect(fn.name).toBe("standaloneConnectOpts")`, is flagged. Measured across 906 files, the seam
+ * name appears as an exact string literal in exactly ONE of them, this file's own seam table, so the
+ * cost today is zero and the fail-closed direction is the right default for a reflective read.
+ *
+ * A file that does not PARSE is refused rather than scanned; see `sitesIn`. That is a change of
+ * position rather than a limit: an unparseable file cannot execute, so declining to report a count
+ * for it loses nothing, while scanning its error-recovery tree reports a number that looks like
+ * coverage and answers about nodes no valid source can produce.
  *
  * Run: pnpm smoke:required-arg-seam
  */
@@ -167,7 +178,7 @@ const isCalleeOf = (n: ts.Node): boolean => {
 /**
  * The string an expression provably evaluates to, or undefined when this file cannot say.
  *
- * Literals fold, `+` of foldable parts folds, and a same-file `const` bound to a foldable value
+ * Literals fold, `+` of foldable parts folds, and a same-file binding held to a foldable value
  * folds. That is deliberately not a symbol table: it is the arithmetic a reader does by eye, and it
  * exists because review showed `core["standalone" + "ConnectOpts"]` and `const k = "..."; core[k]`
  * are ordinary code rather than exotica. Documenting an escape is not closing it.
@@ -432,6 +443,19 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
 /** Every call of the seam in one file, classified, plus every escape of its name. */
 function sitesIn(file: string, text: string, seam: Seam): Site[] {
   const src = parse(file, text);
+  // A file that does not PARSE is refused rather than scanned, because the recovery tree the parser
+  // hands back is not the program: it invents nodes that no valid source can produce, and a rule
+  // asked about one of them answers about nothing. Review hit this exactly once, reporting a false
+  // red on `const { ["seam"] } = core` (a SyntaxError in both Node and tsc, whose recovery is a
+  // binding whose name is an identifier with EMPTY text) and reading it as a defect in the rule.
+  // Refusing here is also fail-closed in the direction that matters: an unparseable file cannot run,
+  // so nothing is lost by declining to report a count for it, while scanning it silently reports a
+  // number that looks like coverage.
+  const diags = (src as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
+  if (diags.length) return [{
+    file, line: 1, verdict: "unverifiable",
+    detail: `this file does not parse (${ts.flattenDiagnosticMessageText(diags[0].messageText, " ")}), so the tree here is error recovery rather than the program`,
+  }];
   const found: Site[] = [];
   const consts = constStrings(src);
   const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
@@ -582,6 +606,14 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const connectOpts = core["standaloneConnectOpts"];`) === "aliased");
   check("...including a computed rename in a destructure",
     one(`const { ["standaloneConnectOpts"]: f } = core;`) === "aliased");
+  // The false-red guard for the line above. Review reported the same-name computed form as a
+  // regression, having probed `const { ["seam"] } = core`, which is a SyntaxError in Node and in tsc
+  // alike; its empty-text recovery node is what made the rule look broken. The form that a program
+  // can actually contain is the one below, and it binds the scannable name.
+  check("...while the same-name computed destructure binds the name, so it is not a rebinding",
+    fx(`const { ["standaloneConnectOpts"]: standaloneConnectOpts } = core;`).length === 0);
+  check("...and a file that does not PARSE is refused rather than scanned through its recovery tree",
+    one(`const { ["standaloneConnectOpts"] } = core;`) === "unverifiable");
   check("...and a QUOTED import or re-export rename, which is ordinary syntax and states no identifier",
     one(`import { "standaloneConnectOpts" as connectOpts } from "x";`) === "aliased"
     && one(`export { "standaloneConnectOpts" as connectOpts } from "x";`) === "aliased");
