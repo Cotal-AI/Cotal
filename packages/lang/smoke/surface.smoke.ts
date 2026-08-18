@@ -365,6 +365,24 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && JSON.stringify(await logsOf('const key = { toString: () => "x" }; const o = { x: 1 }; try { log(o[key]); } catch (e) { log(e.code); }')) === '["L4018"]');
   ok("a primitive computed key spells as JavaScript spells it, and no host field is minted",
     JSON.stringify(await logsOf('const o = {}; o[1] = "a"; o[true] = "b"; log(o["1"], o["true"], keys(o));')) === '[["a","b",["1","true"]]]');
+  // "memberKey is the single choke point" is an exhaustiveness claim, so it is measured rather than
+  // assumed: the syntax table's computed-access forms are a closed universe, and each one must hit
+  // the same refusal. A route added later that constructs its own key skips the guard and reds here
+  // on arrival, not after a reviewer finds it.
+  ok("every computed-access form the grammar admits funnels through the key guard",
+    (await Promise.all([
+      "const k = {}; const o = { a: 1 }; log(o[k]);",
+      "const k = {}; const o = { a: 1 }; log(o?.[k]);",
+      "const k = {}; const o = {}; o[k] = 1;",
+      "const k = {}; const o = { a: 1 }; o[k] += 1;",
+      "const k = {}; const o = { a: 1 }; o[k]++;",
+      "const k = {}; const o = { a: 1 }; --o[k];",
+      "const k = {}; const o = { a: () => 1 }; log(o[k]());",
+      "const k = {}; const o = { a: () => 1 }; log(o?.[k]());",
+      "const k = {}; const o = {}; [o[k]] = [1];",
+      "const k = {}; const o = {}; for (o[k] of [1]) { log(1); }",
+      "const k = {}; const o = {}; o[k] ??= 1;",
+    ].map((s) => logsOf(s).then(() => "ran", (e: Error) => (e.message.startsWith("L4018") ? "L4018" : "other"))))).every((r) => r === "L4018"));
   // A method is not a value: it is looked up at the call and exists nowhere else (measured before
   // the rule: `xs.map === xs.map` was false where JavaScript says true, and an extracted `push`
   // wrote to its receiver where strict JavaScript throws).
