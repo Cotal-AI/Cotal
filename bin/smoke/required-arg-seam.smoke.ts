@@ -93,11 +93,15 @@
  * the walk's exclusions), and each is written here so the next author inherits the bet rather than
  * the impression that it was checked.
  *
- * What it still cannot refuse is a key this file cannot evaluate: one computed from a runtime value,
- * a function's return (`["standalone", "ConnectOpts"].join("")` reaches the same binding), or an
- * import it would have to resolve. Closing those means executing the program or running a type
- * checker, which is a different instrument rather than a better rule, and the floors are the only
- * cover they have.
+ * What it still cannot EVALUATE is a key computed from a runtime value, a function's return
+ * (`["standalone", "ConnectOpts"].join("")` reaches the same binding), or an import it would have to
+ * resolve. Closing those means executing the program or running a type checker, which is a different
+ * instrument rather than a better rule. In a PLAIN source that stays a residual with the floors as
+ * its only cover. In a multi-program DOCUMENT it does not: there, a computed key that does not
+ * settle within its own script is refused outright, because a document's scripts can hand each other
+ * state and three successive attempts to say which of them mattered were each defeated by an
+ * ordinary page. The difference is not that a document is more dangerous, it is that a document is
+ * where this reader was caught being silent, and silence is the failure it exists to prevent.
  *
  * It also has NO SCOPE. Any local that happens to share the seam's name is read as the seam, so a
  * parameter or variable of that name used as a value is flagged, and a call to it is classified.
@@ -323,41 +327,6 @@ function constStrings(src: ts.SourceFile): Map<string, string> {
     ts.forEachChild(n, visit);
   };
   visit(src);
-  return out;
-}
-
-/** Every name this program BINDS, in any of the ways a program can bind one. The question asked of
- *  it is "is this name resolvable HERE", never "where else does it come from": proving a name is
- *  foreign needs a complete model of every other program, including the ones behind a `<script src>`
- *  this reader never sees, while proving it is LOCAL needs only the program in hand. Missing a
- *  binding kind therefore over-refuses, which is loud, instead of under-refusing, which is silent. */
-function localNames(src: ts.SourceFile): Set<string> {
-  const out = new Set<string>();
-  const add = (n: ts.BindingName): void => {
-    if (ts.isIdentifier(n)) { out.add(n.text); return; }
-    for (const el of n.elements) if (!ts.isOmittedExpression(el)) add(el.name);
-  };
-  const visit = (n: ts.Node): void => {
-    if (ts.isVariableDeclaration(n) || ts.isParameter(n) || ts.isBindingElement(n)) add(n.name);
-    else if ((ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)) && n.name) out.add(n.name.text);
-    else if (ts.isImportClause(n) && n.name) out.add(n.name.text);
-    else if (ts.isImportSpecifier(n) || ts.isNamespaceImport(n)) out.add(n.name.text);
-    else if (ts.isCatchClause(n) && n.variableDeclaration) add(n.variableDeclaration.name);
-    ts.forEachChild(n, visit);
-  };
-  visit(src);
-  return out;
-}
-
-/** The names a key expression READS. A property name after a dot is not one of them. */
-function freeNames(e: ts.Expression): string[] {
-  const out: string[] = [];
-  const visit = (n: ts.Node): void => {
-    if (ts.isPropertyAccessExpression(n)) { visit(n.expression); return; }
-    if (ts.isIdentifier(n)) out.push(n.text);
-    ts.forEachChild(n, visit);
-  };
-  visit(e);
   return out;
 }
 
@@ -659,7 +628,6 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   const multiProgram = CONTAINERS[extOf(file)] === "script";
   programs.forEach((src) => {
     const consts = constStrings(src);
-    const local = localNames(src);
     const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
     const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
     const visit = (n: ts.Node): void => {
@@ -667,11 +635,16 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
         const { verdict, detail } = classify(n.arguments[0], seam.key, src);
         found.push({ file, line: lineOf(n), verdict, detail });
       } else if (multiProgram && ts.isCallExpression(n) && ts.isElementAccessExpression(n.expression)
-        && foldString(n.expression.argumentExpression, consts) === undefined
-        && freeNames(n.expression.argumentExpression).some((x) => !local.has(x))) {
+        && foldString(n.expression.argumentExpression, consts) === undefined) {
+        // No question is asked about WHERE the key comes from, because every version of that
+        // question was answerable only by running the page. Asking whether the name was declared
+        // elsewhere missed a helper function, then missed an external script's global, then missed a
+        // key holding no identifier at all (`core["".seamKey()]`, resolved through a prototype another
+        // script installed). Cross-program dependency is not always an identifier read, so the only
+        // sound local question is whether this script's own text settles the key.
         found.push({
           file, line: lineOf(n), verdict: "unverifiable",
-          detail: `this call is spelled through a name this script does not declare, so resolving it would mean running the page in order, or reading a script this check never sees; call the seam by its own name, or spell the key from names declared here`,
+          detail: `this call's key does not settle within its own script, so answering it would mean running the page; call the seam by its own name, or spell the key from literals this script holds`,
         });
       } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
         || escapesAt(n, seam.fn, folds)) {
@@ -970,8 +943,10 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     html(`<script>function k() { return "standaloneConnectOpts"; }</script>\n<script>core[k()]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
   check("...as is a name declared NOWHERE in the document, which is what a `<script src>` leaves behind",
     html(`<script src="v.js"></script>\n<script>core[vendorKey]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
-  check("...while a key built from names this script DECLARES is not refused, even when it cannot fold",
-    html(`<script>const a = 1;</script>\n<script>function k() { return "x"; }\ncore[k()]({ creds: c });</script>`).length === 0);
+  check("...and a LOCAL helper is refused too, since a local function is still runtime code",
+    html(`<script>const a = 1;</script>\n<script>function k() { return "x"; }\ncore[k()]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
+  check("...as is a key holding NO identifier at all, which is where asking about names ran out",
+    html(`<script>String.prototype.k = function () { return "standaloneConnectOpts"; };</script>\n<script>core["".k()]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
   // The fence is the DOCUMENT's programs, not every computed call in the repository. A plain source
   // is one program, so an unfoldable key there is the residual this file already documents and the
   // floors already cover; refusing it would redden ordinary code across the tree.
