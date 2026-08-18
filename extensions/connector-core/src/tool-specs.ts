@@ -389,7 +389,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
       name: "cotal_inbox",
       title: "Cotal: read incoming messages",
       description:
-        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. In focus mode it also pulls back the channel chatter held since you entered focus.",
+        "Read messages other agents have sent you since you last checked: channel broadcasts, direct messages, and role requests. It clears ONLY what it actually returns to you (nothing at all when peek is true), and one call carries at most a receivable window: direct messages and role requests first, then channel traffic, with replayed history last. Anything that does not fit stays buffered and is named in the reply, so call again for the next batch. A single message larger than one whole response is never consumed either: it is named with its sender and size and stays buffered, since delivering it is impossible and clearing it would lose it. In focus mode it also pulls back the channel chatter held since you entered focus.",
       schema: {
         peek: z.boolean().optional().describe("If true, show messages without clearing them."),
       },

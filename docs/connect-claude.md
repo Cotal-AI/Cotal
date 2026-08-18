@@ -182,6 +182,8 @@ connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-
 A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
 receivable window (direct messages and role requests first, then channel traffic, replayed history
 last); whatever does not fit stays buffered, is named in the reply, and comes back on the next call.
+A message too large for one whole response is never consumed at all: it is named with its sender and
+size and left buffered, because clearing what cannot be delivered is the loss this bound exists to stop.
 That matters most on the path where it is easiest to lose mail: reconnecting brings a channel-history
 replay with it, so the largest payload and the least expendable message arrive in the same read.
 
