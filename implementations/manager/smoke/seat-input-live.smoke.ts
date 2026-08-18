@@ -256,9 +256,12 @@ try {
   recordMesh({ space, server: SERVERS, root: workspaceRoot, mode: "auth", ts: new Date().toISOString() });
   await mgr.start();
 
-  // A holds the owner-mode `input` row (the spawn capability's standing set). B holds it too, and
-  // spawns nothing: it is the non-spawner in cell 4, so its refusal is the POLICY refusing, never a
-  // missing grant refusing (which would prove nothing about the handler).
+  // Both A and B are HAND-MINTED with the owner-mode `input` row, and neither shape occurs in
+  // production: seat input is operator-only, so no standing capability set hands it out this way.
+  // The row is hand-granted here so the cells below grade the HANDLER, not the broker. B in
+  // particular spawns nothing and is the non-spawner in cell 4, so its refusal is the policy
+  // refusing rather than a missing grant refusing, which would prove nothing about the handler.
+  // Where the row really comes from is graded separately, and adversarially, in cell 9.
   const A = await instrument([
     { command: "status" }, { command: "ps" }, { command: "inspect" }, { command: "spawn" },
     { command: "despawn", owner: true }, { command: "input", owner: true },
