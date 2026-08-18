@@ -382,8 +382,14 @@ function constObjects(src: ts.SourceFile, consts: Map<string, string>): Objects 
       if (ts.isObjectLiteralExpression(init)) {
         const props = new Map<string, string>();
         for (const prop of init.properties) {
+          // A SPREAD, or a computed name this file cannot read, can carry any key at all, so every
+          // property written BEFORE it stops being settled. Properties after it still win outright.
+          if (ts.isSpreadAssignment(prop)
+            || (ts.isPropertyAssignment(prop) && ts.isComputedPropertyName(prop.name)
+              && foldString(prop.name.expression, consts) === undefined)) { props.clear(); continue; }
           if (!ts.isPropertyAssignment(prop)) continue;
-          const k = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : undefined;
+          const k = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text
+            : ts.isComputedPropertyName(prop.name) ? foldString(prop.name.expression, consts) : undefined;
           const v = foldString(prop.initializer, consts);
           if (k !== undefined && v !== undefined) props.set(k, v);
         }
@@ -393,6 +399,27 @@ function constObjects(src: ts.SourceFile, consts: Map<string, string>): Objects 
     ts.forEachChild(n, visit);
   };
   visit(src);
+
+  // A property the program ASSIGNS after construction is not settled by its initializer, and folding
+  // it anyway is a FALSE RED rather than a miss: the reader would name a call the seam while the
+  // program calls something else entirely. Review executed exactly that, twice. This is the same
+  // surgery as the multiply-bound rule one level down, and for the same reason: read only what the
+  // program settles, and refuse the rest rather than guessing which write wins.
+  const drop = (obj: string, key: string | undefined): void => {
+    if (key === undefined) out.delete(obj);
+    else out.get(obj)?.delete(key);
+  };
+  const assigns = (n: ts.Node): void => {
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const target = unwrap(n.left);
+      if (ts.isPropertyAccessExpression(target) && ts.isIdentifier(target.expression))
+        drop(target.expression.text, target.name.text);
+      else if (ts.isElementAccessExpression(target) && ts.isIdentifier(target.expression))
+        drop(target.expression.text, foldString(target.argumentExpression, consts));
+    }
+    ts.forEachChild(n, assigns);
+  };
+  assigns(src);
   return out;
 }
 
@@ -1144,6 +1171,26 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     fx(`const API = { connect: "standaloneConnectOpts" };\ncore[API.connect]({ creds: c, tls: false });`)[0]?.verdict === "has-key");
   check("...while a table whose values are never the seam yields no site at all (not a false red)",
     fx(`const API = { connect: "otherConnect" };\ncore[API.connect]({ creds: c });`).length === 0);
+
+  // The fold reads only what the program SETTLES, which is the same surgery as the multiply-bound
+  // rule one level down. A property the program reassigns, or one a later spread can overwrite, is
+  // not settled by its initializer, and folding it anyway is a FALSE RED rather than a miss: the
+  // reader names a call the seam while the program calls something else. Review executed both.
+  check("a table property REASSIGNED afterwards is not settled, so the call is not claimed (false red guard)",
+    fx(`const T = { k: "standaloneConnectOpts" };\nT.k = "other";\ncore[T.k]({ creds: c });`).length === 0);
+  check("...including through a quoted index assignment, which writes the same property",
+    fx(`const T = { k: "standaloneConnectOpts" };\nT["k"] = "other";\ncore[T.k]({ creds: c });`).length === 0);
+  check("...and an index assignment this file cannot read unsettles the WHOLE table, since it may hit any key",
+    fx(`const T = { k: "standaloneConnectOpts" };\nT[pick()] = "other";\ncore[T.k]({ creds: c });`).length === 0);
+  check("...and a SPREAD after the property can overwrite it, so that property is not settled either",
+    fx(`const T = { k: "standaloneConnectOpts", ...rest };\ncore[T.k]({ creds: c });`).length === 0);
+  check("...and a computed name this file cannot read has the same reach as a spread",
+    fx(`const T = { k: "standaloneConnectOpts", [pick()]: "other" };\ncore[T.k]({ creds: c });`).length === 0);
+  // The other direction, so the settlement rule cannot quietly become a blanket that folds nothing.
+  check("...while a spread BEFORE the property leaves it settled, because the literal key wins",
+    fx(`const T = { ...rest, k: "standaloneConnectOpts" };\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
+  check("...and an assignment to a DIFFERENT property leaves this one settled",
+    fx(`const T = { k: "standaloneConnectOpts", other: "x" };\nT.other = "y";\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
 
   // The seam throws on `undefined`, and a `const` bound to it is exactly that value spelled in two
   // steps. Review passed this through as a COUNTED, GREEN site while it threw at runtime.
