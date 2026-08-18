@@ -64,6 +64,11 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const home = join(dir, "home");
 mkdirSync(home, { recursive: true });
 process.env.COTAL_HOME = home;
+// The connector seed store is NOT under COTAL_HOME (it is under `globalConfigDir()`), and
+// every `cotal` command reconciles it, refusing when its generation is newer than this
+// binary. Isolate it or a probe run from an older tip dies on the operator's store.
+process.env.XDG_CONFIG_HOME = join(dir, "xdg");
+mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
 const space = `attachrc-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 
@@ -142,7 +147,7 @@ try {
   // The attach client, under a real pty, pointed at the PROXY.
   child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
-    env: { ...process.env, COTAL_HOME: home, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
   });
   let exited: { exitCode: number; signal?: number } | undefined;
   child.onData((d) => stamp(d));

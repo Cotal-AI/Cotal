@@ -100,6 +100,15 @@ const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
 const home = join(dir, "home");
 mkdirSync(home, { recursive: true });
 process.env.COTAL_HOME = home; // the CLI's mesh registry lives here, never the operator's real one
+// And the CONNECTOR SEED STORE, which does NOT live under COTAL_HOME: it sits under
+// `globalConfigDir()`, so it is the operator's real `~/.config/cotal` unless XDG_CONFIG_HOME
+// says otherwise. Every `cotal` command except help runs `reconcileSeededConnectors()`, and
+// that refuses outright when the store's generation is NEWER than the binary being run. So a
+// worktree pinned to an older tip than the laptop's last release fails every cell here with
+// "this cotal X is older than the seed store's generation Y", which looks exactly like a
+// behaviour red and is not one. Isolated, the suite grades the code and nothing else.
+process.env.XDG_CONFIG_HOME = join(dir, "xdg");
+mkdirSync(process.env.XDG_CONFIG_HOME, { recursive: true });
 const space = `attachrc-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 
@@ -164,7 +173,7 @@ type Attached = {
 function attachUnderPty(root: string, extra: string[] = []): Attached {
   const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
-    env: { ...process.env, COTAL_HOME: home, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
   });
   let buf = "";
   let exited: { code: number; signal: number } | undefined;
@@ -193,7 +202,7 @@ function attachUnderPty(root: string, extra: string[] = []): Attached {
 const cotal = (args: string[], cwd: string, timeoutMs = 90_000): Promise<{ status: number | null; out: string }> =>
   new Promise((res) => {
     const child = spawn("npx", ["tsx", BIN, ...args], {
-      cwd, env: { ...process.env, COTAL_HOME: home, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+      cwd, env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
       stdio: ["ignore", "pipe", "pipe"],
     });
     let out = "";
