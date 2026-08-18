@@ -102,6 +102,17 @@ const slowCon: Connector = {
 };
 registry.register(slowCon);
 
+// The GHOST connector: a real child that stays alive and NEVER registers presence. This is the
+// shape a connector whose boot outruns the readiness window presents to the manager (#605), and it
+// is the only way to drive the `uncertain` backstop rather than the join or the exit.
+const ghostCon: Connector = {
+  kind: "connector",
+  name: "ghost-e2e",
+  requires: ["node"],
+  buildLaunch: () => ({ command: "node", args: ["-e", "setInterval(()=>{},1000)"], env: { PATH: process.env.PATH ?? "" } }),
+};
+registry.register(ghostCon);
+
 let mgr: InstanceType<typeof Manager> | undefined;
 let driver: InstanceType<typeof MeshAgent> | undefined;
 let ep: InstanceType<typeof CotalEndpoint> | undefined;
@@ -162,9 +173,61 @@ try {
     ok("...and reports the spawned identity", (reply.data as { name?: string })?.name === "slowlaunch", reply.data);
   }
 
+  // C. the UNCERTAIN backstop carries the MANAGER's guidance, not core's generic line (#605).
+  //
+  // WHY THIS CELL EXISTS. The backstop's operational value is entirely in its WORDS: it names the
+  // agent and says INSPECT RATHER THAN RE-ISSUE. Before the fix the manager built exactly that
+  // string and then dropped it: `onOutcome({kind:"uncertain"})` carried no payload and
+  // `settleGoalUncertain` had no parameter to carry one, so the terminal committed core's generic
+  // "the success signal did not arrive within the readiness deadline". That reads as a plain
+  // failure, which is what teaches an operator to retry, and a retry after a launch that actually
+  // SUCCEEDED mints a duplicate agent (#605 records one, driving a shared working tree).
+  //
+  // WHAT IT WOULD HAVE CAUGHT, AND WHAT IT WOULD NOT. The verdict was always DELIVERED and always
+  // on time, measured here, and it is why the assertion below on elapsed time is a real check and
+  // not decoration. The defect was never a lost message; it was a lost SENTENCE. A cell that only
+  // asserted "a non-ok reply arrives" passes on the broken code, which is precisely why this one
+  // asserts the guidance text.
+  {
+    const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
+    const SHORT_MS = 2_000;      // the window under test, shortened so the suite is not 30s long
+    const CLIENT_MS = 12_000;    // the caller's own budget, deliberately well ABOVE the window, so
+                                 // "returned near the window" cannot be satisfied by a client timeout
+    (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = SHORT_MS;
+    try {
+      const ghostRun = "readiness02";
+      writeFileSync(
+        join(workspaceRoot, ".cotal", "run", `${ghostRun}.json`),
+        JSON.stringify({
+          apiVersion: "cotal-launch/v1",
+          space: SPACE,
+          runId: ghostRun,
+          agents: [{ name: "ghost", agent: "ghost-e2e", subscribe: [], allowSubscribe: [], allowPublish: [], hash: "abc123" }],
+        }),
+      );
+      const t0 = Date.now();
+      const r = await ep.invokeService("manager", "launch", { runId: ghostRun, name: "ghost" }, { deadlineMs: CLIENT_MS, follow: true });
+      const elapsed = Date.now() - t0;
+      const msg = r.reply.error?.message ?? "";
+      ok("a child that never joins settles the goal `uncertain`", r.reply.ok === false && r.reply.error?.code === "uncertain", r.reply);
+      // The delivery half: the verdict rides the terminal at the WINDOW, not at the caller's bound.
+      // If this ever fails at ~CLIENT_MS the defect is delivery, which is a different bug from the
+      // wording one below; keep them separable.
+      ok(`...delivered at the window, not the caller's deadline (${elapsed}ms, window ${SHORT_MS}ms, caller ${CLIENT_MS}ms)`, elapsed < SHORT_MS + 6_000, elapsed);
+      // The wording half: THE ASSERTION THE FIX EXISTS FOR. Both halves of the guidance are named
+      // explicitly: the diagnosis ("launch status uncertain") and the instruction ("Inspect with"),
+      // which is the half that stops the duplicate.
+      ok("...carrying the MANAGER's diagnosis, not core's generic line", msg.includes("launch status uncertain"), msg);
+      ok("...and the instruction that prevents a duplicate re-issue", msg.includes("Inspect with"), msg);
+      ok("...naming the agent it is about", msg.includes("ghost"), msg);
+    } finally {
+      (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = restore;
+    }
+  }
+
   // Tear the spawned keepalives down through the manager (they don't exit on broker loss):
   // inspect resolves the wire target, then the targeted ep despawn (the CLI's stop shape).
-  for (const name of ["slowpoke", "slowlaunch"]) {
+  for (const name of ["slowpoke", "slowlaunch", "ghost"]) {
     const info = await ep.invokeService("manager", "inspect", { name });
     ok(`inspect resolves ${name}`, info.reply.ok === true, info.reply);
     const row = info.reply.data as { id: string; lifecycleUid: string };
