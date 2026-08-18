@@ -22,7 +22,7 @@
       "expectRed": "a nested function may reference a binding declared later: it runs later",
       "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
       "cell": "a nested function may reference a binding declared later: it runs later",
-      "note": "The exemption is load-bearing in the other direction: without it every closure over a later binding — the mutual-recursion shape — is refused. Note the marker here is the L2004 cell itself (upstream), proving the refusal side still held while the acceptance side broke."
+      "note": "The exemption is load-bearing in the other direction: without it every closure over a later binding \u2014 the mutual-recursion shape \u2014 is refused. Note the marker here is the L2004 cell itself (upstream), proving the refusal side still held while the acceptance side broke."
     },
     {
       "name": "parameters bind all-at-once instead of left to right",
@@ -32,13 +32,13 @@
       "expectRed": "a parameter default may not read a LATER parameter",
       "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
       "cell": "a parameter default may not read a LATER parameter",
-      "note": "Without the pending marks a default sees every parameter, and `f(a = b, b = 1)` resolves — the measured pre-fix behavior, where the interpreter then read the OUTER `b` and returned 9."
+      "note": "Without the pending marks a default sees every parameter, and `f(a = b, b = 1)` resolves \u2014 the measured pre-fix behavior, where the interpreter then read the OUTER `b` and returned 9."
     },
     {
       "name": "a named function expression does not bind its own name",
       "file": "packages/lang/src/grammar.ts",
-      "find": "        inner.declare(fname, \"const\", node);\n      }\n      // Parameters bind LEFT TO RIGHT",
-      "replace": "      }\n      // Parameters bind LEFT TO RIGHT",
+      "find": "        inner.declare(fname, \"const\", node);\n      }",
+      "replace": "      }",
       "expectRed": "a named function expression recurses through its own name",
       "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
       "cell": "a named function expression recurses through its own name",
@@ -52,7 +52,7 @@
       "expectRed": "a bigint literal is not a value here",
       "completionMarker": "ok a block reference above a shadowing `let` is the dead zone, not the outer binding",
       "cell": "a bigint literal is not a value here",
-      "note": "With the refusal gone `1n` validates and runs, producing a value whose typeof no admitted kind names — the measured pre-fix behavior."
+      "note": "With the refusal gone `1n` validates and runs, producing a value whose typeof no admitted kind names \u2014 the measured pre-fix behavior."
     }
   ]
 }

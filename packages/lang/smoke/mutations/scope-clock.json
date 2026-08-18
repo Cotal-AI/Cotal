@@ -7,8 +7,8 @@
     {
       "name": "the ok-path scope settle is stamped with the handler's clock at append time",
       "file": "packages/lang/src/interpret.ts",
-      "find": "      // The joined branch clock, for the same reason as the failure path above: this is the value\n      // `now()` answers after the scope, and the stamp replay hands back must be that value.\n      frame.clock.now(),",
-      "replace": "      this.options.handler.now(),",
+      "find": "      frame.clock.now(),\n      {",
+      "replace": "      this.options.handler.now(),\n      {",
       "expectRed": "and the scope entry is stamped with that joined clock, not the handler's clock at append time",
       "completionMarker": "ok live, now() after a parallel is the join of the branch clocks",
       "cell": "and the scope entry is stamped with that joined clock, not the handler's clock at append time",
