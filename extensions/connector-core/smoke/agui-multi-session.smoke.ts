@@ -116,7 +116,10 @@ try {
   };
 
   /** One whole session: its own thread id, its own log, the SHARED subject record. */
-  const session = async (threadId: string, opts?: { principalDir?: string; actor?: string }) => {
+  const session = async (
+    threadId: string,
+    opts?: { principalDir?: string; actor?: string; frontier?: FileSubjectFrontier },
+  ) => {
     const actor = opts?.actor ?? ACTOR;
     const principal = principalKey(OWNER, actor).key;
     // THE SHIPPED LAYOUT, not a convenient one: `subject.json` sits in the principal directory
@@ -132,7 +135,10 @@ try {
     await ep.start();
     try {
       const wal = await EventWal.open(walPath, { space: SPACE, threadId, principal, subjectMayExist: false });
-      const frontier = await FileSubjectFrontier.open(join(principalDir, "subject.json"), { space: SPACE, principal });
+      // Opened here unless the caller supplies one. A caller that supplies a record it opened
+      // EARLIER is handing this session a view that may have gone stale, which is the only way to
+      // drive the fence below from inside a real emitter.
+      const frontier = opts?.frontier ?? (await FileSubjectFrontier.open(join(principalDir, "subject.json"), { space: SPACE, principal }));
       const em = await AguiEmitter.start<{ t?: string }>({
         endpoint: ep as never,
         wal,
@@ -325,6 +331,59 @@ try {
     c("abandon:resets-the-shared-record-with-the-log", frontier.tip === 0, frontier.tip);
     const onDisk = await FileSubjectFrontier.open(join(abDir, "subject.json"), { space: SPACE, principal: abPrincipal });
     c("abandon:...and-the-reset-is-DURABLE-not-only-in-memory", onDisk.tip === 0, onDisk.tip);
+  }
+
+  // ------------------------------------------------------------------ THE FENCE, EXECUTED
+  //
+  // A CLAIM THIS BRANCH MAKES IN PROSE, MOVED INTO THE TREE. `FileSubjectFrontier.advance` refuses
+  // a record that moved under the view, and the natural question is whether a shipped path could
+  // ever reach the regression that refusal prevents. The answer is no, and the reason is that `E`
+  // IS the view's own tip: a view that has gone stale publishes a stale expectation, so the
+  // broker's compare-and-set refuses it before any ack exists to record and `advance` is never
+  // called at all. That was measured on a real broker and written into the pull request as a
+  // transcript, and a review pointed out that a transcript is not a cell. So it is a cell.
+  //
+  // ITS OWN PRINCIPAL, for the same reason the abandonment block has one: it deliberately leaves a
+  // halted emitter and a subject nobody may publish to again, and the sessions above share a
+  // subject whose tip later cells still depend on.
+  //
+  // NO NEW MUTANT IS REGISTERED FOR IT. The mechanism is already graded from two other angles: S1
+  // breaks what `E` is, and the foreign-writer control breaks the assumption that a tip only moves
+  // through us. A third mutant here would be padding, and a kill set is supposed to be a claim
+  // about coverage rather than a count.
+  {
+    const fActor = `A${randomUUID().replace(/-/g, "").toUpperCase().slice(0, 40)}`;
+    const fPrincipal = principalKey(OWNER, fActor).key;
+    const fDir = join(root, "fence-principal");
+    mkdirSync(fDir, { recursive: true });
+    const subjectPath = join(fDir, "subject.json");
+    const openRecord = () => FileSubjectFrontier.open(subjectPath, { space: SPACE, principal: fPrincipal });
+
+    const first = await session("ses_fence_one", { principalDir: fDir, actor: fActor });
+    c("fence:CONTROL-the-first-session-published-and-the-record-moved", first.published === 1 && first.tip > 0, first);
+
+    // OPENED HERE, one session too early. From the next line on this view is behind the file, which
+    // is exactly the state `advance` refuses and the state an emitter must never get to use.
+    const stale = await openRecord();
+    const staleView = stale.tip;
+
+    const mid = await session("ses_fence_mid", { principalDir: fDir, actor: fActor });
+    c("fence:CONTROL-a-session-with-a-CURRENT-view-publishes-and-moves-the-record-past-it",
+      mid.published === 1 && mid.tip > staleView, { staleView, mid: mid.tip });
+
+    const late = await session("ses_fence_late", { principalDir: fDir, actor: fActor, frontier: stale });
+    c("fence:a-session-carrying-a-STALE-view-HALTS-at-the-broker-rather-than-publishing",
+      late.published === 0 && /subject tip is no longer/.test(late.err ?? ""), late);
+    c("fence:...and-the-broker-names-the-sequence-the-subject-actually-holds",
+      new RegExp(`wrong last sequence: ${mid.tip}`).test(late.err ?? ""), late.err);
+
+    // THE POINT OF THE BLOCK. The stale view never took an ack, so it never advanced the shared
+    // record, so the durable tip cannot be walked backwards by this route.
+    const onDisk = await openRecord();
+    c("fence:...and-the-DURABLE-record-still-holds-the-number-the-CURRENT-session-wrote",
+      onDisk.tip === mid.tip && onDisk.tip > staleView, { onDisk: onDisk.tip, mid: mid.tip, staleView });
+    c("fence:...and-the-stale-view-itself-never-moved-either",
+      stale.tip === staleView, { was: staleView, now: stale.tip });
   }
 
   // ------------------------------------------------------------------ the runtime requirement
