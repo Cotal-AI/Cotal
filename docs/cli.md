@@ -680,12 +680,17 @@ Nothing comes back but a delivery receipt (`✓ sent 9 bytes to reviewer`, count
 carriage return). Whatever the agent does next shows up where its output already goes: the mesh, its
 transcript, or an `attach`.
 
-Reach is exactly [`attach`](#ps-stop-attach)'s, and for the same reason: typing into a terminal is
-what an attach session already lets its holder do. Seat locality is resolved for you, on a static
-mesh it is a cross-agent admin operation, and on a user-auth mesh your own agents need `spawn` while
-another owner's needs `admin` on your ledger row. Only the `pty` runtime can be typed into. The
-external terminal runtimes (`tmux`, `cmux`, `orca`, `herdr`) attach to a process they do not own, so
-they have no input stream for it and the command refuses by name rather than dropping the keystroke.
+**This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
+anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
+not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
+needs the `admin` scope, the same scope [`ps`](#ps-stop-attach) already needs there. The reason is
+that a write into a terminal is control of whatever is running in it, and on a user-auth mesh the
+own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
+could otherwise type into a sibling it never started. Seat locality is still resolved for you.
+
+Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
+`herdr`) attach to a process they do not own, so they have no input stream for it and the command
+refuses by name rather than dropping the keystroke.
 
 ## personas
 

@@ -23,6 +23,9 @@
  *      the same row shape `attach`/`despawn` carry), over the GENERIC describe/store invoke path.
  *   6. A spawn-capable agent publishing the ANY-mode subject is broker-dropped: the tier boundary
  *      is the grant, not a handler branch.
+ *   9. THE PLACEMENT GUARD: a credential holding only the `spawn` capability is dropped on BOTH
+ *      the owner-mode and the any-mode input subject, while its `inspect` still answers. `input`
+ *      is operator-only on purpose; see the cell for what the one-word edit would cost.
  *   7. A seat that is not running refuses (see the cell for exactly what is forced and why).
  *   8. THE CLI PATH, end to end: the real binary as a subprocess runs
  *      `cotal input --name <seat> --text "/compact"`, exits 0, prints the byte count, and the child
@@ -438,6 +441,43 @@ try {
     const run4 = await cotal(["input", "--name", `no-such-seat-${randomUUID().slice(0, 6)}`, "--text", "/compact", "--space", space]);
     mustHaveRun(run4, "`cotal input` at an absent seat");
     check("an absent seat exits NON-ZERO and says so", run4.status !== 0 && /no managed agent|could not resolve/.test(strip(run4.out)), { status: run4.status, tail: strip(run4.out).slice(-400) });
+  }
+
+  console.log("\n9. the PLACEMENT guard: the `spawn` capability alone grants no seat input, in either mode");
+  {
+    // WHY THIS CELL EXISTS. `input` is deliberately NOT in SPAWN_OWNER_LIFECYCLE_COMMANDS, and the
+    // edit that would put it there is one word beside its two obvious siblings. Security review
+    // measured what that would cost: a spawn-capability credential holds the owner-mode `attach`
+    // request row and ZERO `eps.` session rails, so it cannot complete an attach write today, and
+    // on a USER mesh authorizeNamedControl's owner-domain arm admits any seat under the caller's
+    // owner, not just its own children. The edit would therefore hand every spawn-scoped agent
+    // blind WRITE into a sibling's harness: control of a peer, where despawn only gave it denial.
+    //
+    // The core suite pins the row set; this pins the CONSEQUENCE, on a live broker, which is the
+    // half a row-shape assertion cannot show: the publish does not reach the handler.
+    const S = await instrument([{ command: "inspect" }]); // capabilities: ["spawn"], NO input row
+    for (const mode of ["owner", "any"] as const) {
+      let refused: string | undefined;
+      try {
+        const r = await epCall(S.nc, space, { mode: "one" }, {
+          endpoint: MANAGER_ENDPOINT, command: "input", contract: MANAGER_CONTRACTS.input, caller: S.caller,
+          args: { text: "sibling-takeover" },
+          target: { mode, owner: DEV_OWNER, actor: typist.id, lifecycleUid: typist.lifecycleUid },
+        }, { deadlineMs: 3_000, currentEpoch: async () => 0 });
+        refused = r.reply.ok === false ? r.reply.error?.code : "SERVED-OK";
+      } catch (e) {
+        refused = e instanceof EpEnvelopeError ? e.code : (e as Error).message;
+      }
+      check(`a credential holding ONLY the spawn capability is broker-dropped on the ${mode}-mode input subject`,
+        refused === "unavailable" || refused === "deadline-exceeded", { mode, refused });
+    }
+    // The control that stops the cell above passing vacuously: the SAME credential class reaches
+    // the manager fine on a row it does hold, so the refusals are about the missing input row and
+    // not about a broken instrument, a wrong subject, or a dead responder.
+    const rOk = await S.call("inspect", { name: typist.name });
+    check("...while the same credential's `inspect` is served, so the refusals above are the missing row and not a dead caller",
+      rOk.reply.ok === true, rOk.reply);
+    await S.nc.drain().catch(() => S.nc.close());
   }
 
   await A.nc.drain().catch(() => A.nc.close());

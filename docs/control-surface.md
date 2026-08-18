@@ -178,11 +178,20 @@ way in. An external control surface that can already read a seat's turns and tal
 cannot drive it without this.
 
 The op is targeted, rides the `manager.lifecycle` capability, and declares authz modes `owner`
-and `any`, which is the row `attach` and `despawn` already carry, checked by the same
-authorization: writing into a seat's terminal is precisely what holding an attach session lets
-you do, so `input` is that authority with the session removed rather than a new one. Enter is
-appended unless the caller suppresses it, and nothing is echoed back, since the resulting turns
-already have somewhere to go.
+and `any`, the row shape `attach` and `despawn` already carry, checked by the same authorization.
+Enter is appended unless the caller suppresses it, and nothing is echoed back, since the resulting
+turns already have somewhere to go.
+
+**Who may call it is narrower than either of those**, and the reasoning is worth stating because
+the natural assumption is wrong. `despawn` and `attach` are granted to anything holding `spawn`;
+`input` is granted only to operator credentials. The tempting argument for treating them alike is
+that an attach session's `write` already reaches the same terminal, so `input` adds nothing. It
+does not reach it: an attach yields a signed session offer, and redeeming one needs a per-session
+credential minted from the space signing seed, which no agent holds. So `input` would be new
+authority, and the own-owner rule that bounds `despawn` covers every seat under an owner rather
+than only the ones a caller launched. Killing a peer is denial; typing into a peer is control of
+it. The write therefore sits with the credential that is already the administrative authority for
+the domain.
 
 Only a runtime that owns the child's input stream can serve it. The `pty` runtime does; the
 external terminal runtimes attach to a process they do not own, and there the command refuses

@@ -85,24 +85,42 @@ c("baseline: the reply rail is ALWAYS granted (no capability required)",
   baseline.sub.length === 1 && baseline.sub[0] === epCallerReplyGrantRow("demo", caller));
 c("baseline: no journal rows (the baseline is ephemeral request forms only)",
   baseline.pub.every((r) => !r.includes(".epj.")));
-c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach/input ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect ride untargeted (the 1c table's connector reads)",
-  spawnCallerCapabilities("u_abc").length === 6
+c("the spawn set: spawn is UNTARGETED (virgin child); despawn/attach ride owner-mode (no owner-stop synonym of despawn); define-persona + inspect ride untargeted (the 1c table's connector reads)",
+  spawnCallerCapabilities("u_abc").length === 5
   && epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.join("|")
-  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.input.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*`);
+  === `cotal.demo.ep.one.manager.spawn.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.despawn.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.attach.owner.u_abc.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.define-persona.u_abc.cli.${UID}.*|cotal.demo.ep.one.manager.inspect.u_abc.cli.${UID}.*`);
+// THE REGRESSION GUARD FOR THE `input` PLACEMENT, and it is a cell rather than a comment because
+// the mistake it stops is a ONE-WORD edit that reads as tidying: adding "input" to
+// SPAWN_OWNER_LIFECYCLE_COMMANDS beside its two obvious siblings. That edit hands every
+// spawn-capable agent blind WRITE into any seat under its owner (the owner-domain arm of
+// authorizeNamedControl admits siblings it never spawned), which is control of a peer rather than
+// the denial it already had through despawn. Measured, not assumed: a spawn-capability credential
+// holds the owner-mode `attach` REQUEST row and zero `eps.` session rails, so it cannot complete an
+// attach write today and this really would be new authority.
+c("the spawn capability grants NO `input` row in either mode: seat input is operator-only",
+  !epCallerGrantRows("demo", spawnCallerCapabilities("u_abc"), caller).pub.some((r) => r.includes(".manager.input.")));
 // The operator INSTRUMENT rollups (the 1c grant-migration table's admin row): the privileged
 // instrument is read + create + persona only (structurally barred from cross-agent reach, like its
-// ctl row); the admin instrument adds ANY-mode despawn/attach/input (tOwner "*": operator-policy-mintable
-// only, §13.2 - the broker grant IS the tier boundary) and the untargeted `manager.admin` family.
+// ctl row); the admin instrument adds ANY-mode despawn/attach (tOwner "*": operator-policy-mintable
+// only, §13.2 - the broker grant IS the tier boundary), BOTH modes of `input` (granted nowhere
+// else), and the untargeted `manager.admin` family.
 c("the privileged instrument set: reads + spawn + define-persona, NOTHING targeted",
   operatorInstrumentCapabilities("privileged").length === 6
   && operatorInstrumentCapabilities("privileged").every((cap) => cap.target === undefined)
   && operatorInstrumentCapabilities("privileged").map((cap) => cap.command).join(",") === "status,ps,inspect,models,spawn,define-persona");
-const adminCaps = operatorInstrumentCapabilities("admin");
-c("the admin instrument set adds any-mode despawn/attach/input + the manager.admin family",
-  adminCaps.length === 17
+const adminCaps = operatorInstrumentCapabilities("admin", "u_abc");
+c("the admin instrument set adds any-mode despawn/attach + BOTH modes of input + the manager.admin family",
+  adminCaps.length === 18
   && adminCaps.filter((cap) => cap.target?.mode === "any").map((cap) => cap.command).join(",") === "despawn,attach,input"
+  && adminCaps.filter((cap) => cap.target?.mode === "owner").map((cap) => cap.command).join(",") === "input"
+  && adminCaps.filter((cap) => cap.target?.mode === "owner").every((cap) => (cap.target as { tOwner?: string }).tOwner === "u_abc")
   && adminCaps.filter((cap) => cap.target?.mode === "any").every((cap) => (cap.target as { tOwner?: string }).tOwner === "*")
   && ["purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((cmd) => adminCaps.some((cap) => cap.command === cmd && cap.target === undefined)));
+// The owner-mode `input` row is minted ONLY where the mint site can name the caller's own owner.
+// Without it the capability is omitted rather than emitted with a wildcard owner, because §13.2
+// forbids an owner-mode standing mint naming a foreign owner and a `*` there would be exactly that.
+c("with no caller owner supplied, the admin set omits the owner-mode input row rather than wildcarding it",
+  operatorInstrumentCapabilities("admin").filter((cap) => cap.target?.mode === "owner").length === 0);
 c("an any-mode instrument row spans the target owner (grant `*`), pinned to the caller triple",
   epCallerGrantRows("demo", adminCaps.filter((cap) => cap.target?.mode === "any" && cap.command === "despawn"), caller).pub.join("|")
   === `cotal.demo.ep.one.manager.despawn.any.*.u_abc.cli.${UID}.*`);
@@ -161,10 +179,13 @@ c("no-capability mint carries the baseline reply-rail read (and only that ep sub
 c("no-capability mint carries NO journal rows and NO owner/child/ledger-mode rows",
   ![...without.pub.allow].some((r) => r.includes(".epj.") || r.includes(".owner.") || r.includes(".child.") || r.includes(".ledger.")));
 const withSpawn = decode(await mintCreds(auth, newIdentity(), "agent", { principal: { owner: "u_abc", actor: "cli" }, lifecycleUid: UID, capabilities: ["spawn"] }));
-c("the spawn capability adds UNTARGETED manager.spawn + owner-mode despawn/attach/input to the minted JWT (no owner-stop synonym)",
+c("the spawn capability adds UNTARGETED manager.spawn + owner-mode despawn/attach to the minted JWT (no owner-stop synonym, and NO input in either mode)",
   withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.spawn.u_abc.cli.${UID}.*`)
-  && ["despawn", "attach", "input"].every((cmd) => withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.${cmd}.owner.u_abc.u_abc.cli.${UID}.*`))
-  && !withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.stop.owner.u_abc.u_abc.cli.${UID}.*`));
+  && ["despawn", "attach"].every((cmd) => withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.${cmd}.owner.u_abc.u_abc.cli.${UID}.*`))
+  && !withSpawn.pub.allow.includes(`cotal.epg.ep.one.manager.stop.owner.u_abc.u_abc.cli.${UID}.*`)
+  // The MINTED-JWT half of the placement guard: the capability-list cell above proves the builder
+  // omits it, this proves the credential a real agent actually connects with carries no such row.
+  && !withSpawn.pub.allow.some((r: string) => r.includes(".manager.input.")));
 c("without the spawn capability none of the owner-mode lifecycle rows appear",
   !without.pub.allow.some((r) => r.includes(".owner.")));
 // C7 (critic/distsys/engineer-5): one credential names ONE incarnation on the caller rail. Through

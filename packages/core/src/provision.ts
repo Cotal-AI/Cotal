@@ -1173,7 +1173,7 @@ export function permissionsFor(
     // set on the ep rails — any-mode despawn/attach + the `manager.admin` family + the reads. In
     // user mode this is the ledger `admin` scope arriving via the callout, the broker-enforced
     // half of the tier; the manager's ledger-derived per-op admin flag stays on top of it.
-    pubAllow.push(...epCallerGrantRows(space, operatorInstrumentCapabilities("admin"), epCaller).pub);
+    pubAllow.push(...epCallerGrantRows(space, operatorInstrumentCapabilities("admin", pr.owner), epCaller).pub);
   if (opts.endpointCapabilities?.length) {
     if (opts.lifecycleUid !== undefined && assertLifecycleToken(opts.lifecycleUid) !== uid)
       throw new Error(`permissionsFor: opts.lifecycleUid "${opts.lifecycleUid}" disagrees with the principal's lifecycleUid "${uid}" - one credential names ONE incarnation on the caller rail (SPEC 13.1/13.2)`);
@@ -1506,7 +1506,7 @@ function instrumentEpRows(
   if (!pr.lifecycleUid)
     throw new Error(`permissionsFor: an operator instrument's ep caller rows are lifecycle-keyed (SPEC 13.1/13.2) - mint with opts.lifecycleUid (mintLifecycleUid()) so the reply rail pins the instrument's own incarnation`);
   const epCaller = { owner: pr.owner, actor: pr.actor, uid: pr.lifecycleUid };
-  const rows = epCallerGrantRows(space, [...operatorInstrumentCapabilities(tier), ...extra], epCaller);
+  const rows = epCallerGrantRows(space, [...operatorInstrumentCapabilities(tier, pr.owner), ...extra], epCaller);
   return {
     pub: [
       epDescribeAllGrantRow(space, epCaller),
