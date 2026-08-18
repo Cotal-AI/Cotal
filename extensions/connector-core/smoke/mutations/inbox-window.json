@@ -31,8 +31,8 @@
     {
       "name": "K1 the window selects everything - the response is capped by nothing",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (shown.length && used + cost > budget) held.push(i);",
-      "replace": "    if (false && shown.length && used + cost > budget) held.push(i);",
+      "find": "    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
+      "replace": "    if (false && used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
       "expectRed": "the response is inside the receivable window, not 463,788 chars",
       "cell": "the response is inside the receivable window, not 463,788 chars",
       "note": "This is the pre-fix behaviour exactly: everything selected, one response, 463,788 chars on the measured occupant."
@@ -114,9 +114,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "              held.length\n                ? `Nothing could be delivered in this response.${heldNote(held)}`\n                : scope",
       "replace": "              false\n                ? `Nothing could be delivered in this response.${heldNote(held)}`\n                : scope",
-      "cell": "a buffer holding only undeliverable mail does not report an empty inbox",
-      "expectRed": "a buffer holding only undeliverable mail does not report an empty inbox",
-      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there."
+      "cell": "...and the reply names it rather than leaving it silently stuck",
+      "expectRed": "...and the reply names it rather than leaving it silently stuck",
+      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
     }
   ]
 }
