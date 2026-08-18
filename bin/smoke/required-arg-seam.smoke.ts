@@ -5,11 +5,10 @@
  * "EVERY CALL SITE" MEANS EVERY ONE THIS READER CAN SEE, and what it can see is a decision recorded
  * in this file rather than a property of the repository. It reads the extensions in `EXTS`, plus the
  * executable part of each container language in `CONTAINERS`; it counts calls made through the
- * seam's own NAME and REFUSES, rather than follows, the spellings that rebind it. Those refusals are
- * bounds, not gaps: each one fails the run. Read the paragraph headed THE ALIAS REFUSAL IS NOT A
- * PROOF OF TOTAL CLOSURE as part of this sentence rather than as a footnote to it. Three review
- * rounds were spent discovering that the claim, and not only the code, was what needed narrowing,
- * and the last of them was a source class the walk did not read at all.
+ * seam's own NAME, and turns every spelling that rebinds that name RED rather than following it, so
+ * the bound fails loud instead of narrowing in silence. The floors watch the seeing itself for decay.
+ * Read the paragraph headed THE ALIAS REFUSAL IS NOT A PROOF OF TOTAL CLOSURE as part of this
+ * sentence rather than as a footnote to it.
  *
  * WHY A RUNTIME THROW IS NOT ENOUGH, in the words of the one seam that has this shape today:
  * `standaloneConnectOpts` refuses to build connect options without an explicit `tls` boolean, and
