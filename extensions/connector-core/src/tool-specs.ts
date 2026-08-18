@@ -148,76 +148,96 @@ export function fmtFrom(i: InboxItem): string {
  */
 export const INBOX_WINDOW_CHARS = 48_000;
 
-/** What one response carries, and what it must leave buffered. */
-export interface InboxWindow {
+/** What one response carries, what it leaves buffered, and the exact text that says so. */
+export interface InboxResponse {
+  /** The reply, already assembled and already inside the budget. Nothing may be appended to it. */
+  text: string;
+  /** What that text actually carries. Only these may be cleared. */
   shown: InboxItem[];
+  /** Everything it does not carry. */
   held: InboxItem[];
 }
 
 /**
- * Choose the items a single response can actually deliver.
+ * Build one inbox response, and make it impossible for the response to outgrow its own budget.
  *
- * Two rules, and the composition in #603 needs both:
+ * THE HISTORY THIS SHAPE COMES FROM, because it explains why it assembles rather than estimates.
+ * Three separate escapes were found here, each the same class one level further out: the items were
+ * budgeted but an oversized one was shown alone anyway; the items were budgeted but the head line
+ * and the held-note were not; the head and note were budgeted but the focus branch's recall warning
+ * was appended afterwards. Every one of them was a writer to the response body that the arithmetic
+ * did not know about. So the arithmetic is gone: this function ASSEMBLES the whole reply, measures
+ * what it actually built, and drops trailing items until the real string fits. A future writer is
+ * inside the bound by construction, because the bound is checked on the finished text.
  *
- *  1. **Mail before replay.** Direct messages and anycast requests are first-party traffic with a
- *     sender waiting on them; replayed channel history is a backfill the channel still holds. When
- *     only part of the buffer fits, the part that fits is the part nobody else can re-serve.
- *  2. **A window, not a truncation.** What does not fit is not cut off the end of the text; it
- *     stays in the buffer, unacked, and the caller is told it is there. Only what this function
- *     returns as `shown` may be cleared.
+ * The order it drops in is the second rule: **mail before replay.** Direct messages and anycast
+ * requests are first-party traffic with a sender waiting; replayed channel history is a backfill the
+ * channel still holds. What gets dropped first is what someone else can still re-serve.
  *
- *  3. **The budget is the whole response, not the items.** The head line and the held-note are part
- *     of what the host has to carry, so the item budget is the window minus room for both. Budgeting
- *     the items alone let a reply that was 47,971 characters of messages ship at 48,135.
- *
- * AN ITEM TOO LARGE FOR AN EMPTY WINDOW IS HELD, NOT SHOWN ALONE. Showing it alone was the escape
- * this file first shipped, on the reasoning that refusing it would wedge the inbox behind a message
- * that can never fit. Measured, that escape reproduced #603 in miniature: a 60,000-character message
- * came back as a 60,026-character response, over the bound this function advertises, and was ACKED,
- * so a payload the host may refuse to deliver was already marked read. Holding it wedges nothing,
- * because everything else in the buffer flows past it, and {@link heldNote} names it rather than
- * leaving it silently stuck. What it costs is stated where the caller can see it: through this tool
- * such a message is not deliverable at all until something else consumes or evicts it.
+ * And the third: **what does not fit is not cut off the end of the text.** It stays in the buffer,
+ * unacked, named in {@link heldNote}. Only `shown` may be cleared, which is #603 itself.
  */
-export function windowInbox(items: readonly InboxItem[], budget = INBOX_WINDOW_CHARS): InboxWindow {
+export function renderInbox(opts: {
+  items: readonly InboxItem[];
+  /** The line above the messages, given whatever ends up being shown. */
+  head: (shown: readonly InboxItem[]) => string;
+  peek?: boolean;
+  /** A rider the response must carry, such as the focus branch's recall warning. */
+  warning?: string;
+  budget?: number;
+}): InboxResponse {
+  const budget = opts.budget ?? INBOX_WINDOW_CHARS;
+  const peek = opts.peek ?? false;
+  const warning = opts.warning ?? "";
   const rank = (i: InboxItem): number => (i.kind !== "channel" ? 0 : i.historical ? 2 : 1);
-  const ordered = [...items].sort((a, b) => rank(a) - rank(b)); // stable: receive order within a rank
+  const ordered = [...opts.items].sort((a, b) => rank(a) - rank(b)); // stable: receive order within a rank
+
+  // Stuck means "no response could carry this", so it is measured against the friendliest response
+  // there is: this item alone, its head, and any rider, with no held-note at all.
+  const stuck = new Set(
+    ordered
+      .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)
+      .map((i) => i.id),
+  );
+
+  const assemble = (shown: InboxItem[], held: InboxItem[]): string => {
+    const parts: string[] = [];
+    if (shown.length) parts.push(`${opts.head(shown)}\n${shown.map(fmtItem).join("\n")}${heldNote(held, peek, stuck)}`);
+    else if (held.length) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);
+    if (warning) parts.push(warning);
+    return parts.join("\n\n");
+  };
+
+  // Fill from a cheap estimate first, SKIPPING what will not fit rather than stopping at it: one
+  // message too large for any response must not block the mail behind it. Then assemble for real
+  // and give back trailing items until the finished string fits, which is the part no future writer
+  // to the response body can slip past.
   const shown: InboxItem[] = [];
-  const held: InboxItem[] = [];
   let used = 0;
   for (const i of ordered) {
     const cost = itemCost(i);
-    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);
-    else {
-      shown.push(i);
-      used += cost;
-    }
+    if (used + cost > budget) continue;
+    shown.push(i);
+    used += cost;
   }
-  return { shown, held };
+  const heldOf = (): InboxItem[] => {
+    const ids = new Set(shown.map((i) => i.id));
+    return ordered.filter((i) => !ids.has(i.id));
+  };
+  let held = heldOf();
+  let text = assemble(shown, held);
+  while (text.length > budget && shown.length) {
+    shown.pop();
+    held = heldOf();
+    text = assemble(shown, held);
+  }
+  return { text, shown, held };
 }
 
 /** What one rendered item costs a response: its own text plus the newline that joins it. */
 function itemCost(i: InboxItem): number {
   return fmtItem(i).length + 1;
 }
-
-/** Whether this item can never ride a response of its own, however empty the window is. */
-function undeliverableAlone(i: InboxItem, budget = INBOX_WINDOW_CHARS): boolean {
-  return itemCost(i) > budget - RESPONSE_OVERHEAD;
-}
-
-/**
- * Room the window keeps back for every part of a response that is not a message: the head line, the
- * held-note, and the focus branch's recall warning.
- *
- * Each of those is bounded in code, which is what makes one number honest here rather than a guess.
- * Worst case, measured against the longest form of each: a head of about 200 characters, a held-note
- * carrying both of its kinds with {@link NAMED_STUCK} senders truncated at 40 characters, about 500,
- * and a recall warning naming {@link NAMED_DROPPED} channels truncated at 40, about 300. This sits
- * above their sum, so the whole response stays inside {@link INBOX_WINDOW_CHARS} rather than inside
- * it plus the framing. Set this to zero and the framing is what pushes an acking reply past the cap.
- */
-const RESPONSE_OVERHEAD = 1024;
 
 /**
  * The tail that keeps a windowed response honest: what is still there, and that it was not lost.
@@ -231,13 +251,13 @@ const RESPONSE_OVERHEAD = 1024;
  * rest, and it truncates a sender's name, because a steady stream of oversized mail would otherwise
  * fill every reply with metadata about mail it cannot carry, which is the same overflow one layer up.
  */
-function heldNote(held: readonly InboxItem[], peek = false): string {
+function heldNote(held: readonly InboxItem[], peek = false, stuckIds: ReadonlySet<string> = new Set()): string {
   if (!held.length) return "";
-  const stuck = held.filter((i) => undeliverableAlone(i));
+  const stuck = held.filter((i) => stuckIds.has(i.id));
   const waiting = held.length - stuck.length;
   const parts: string[] = [];
   if (waiting) {
-    const dms = held.filter((i) => i.kind !== "channel" && !undeliverableAlone(i)).length;
+    const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.id)).length;
     // Under peek nothing is cleared, so the next call returns THIS window again. Telling a peeking
     // caller to call again for the next batch is a promise the read cannot keep, and an obedient
     // caller loops on it forever.
@@ -459,57 +479,63 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const buffered = agent.peekInbox(inboxScope);
         const automaticPending = scope ? agent.inboxCount("automatic") : 0;
         if (agent.attention !== "focus") {
-          const { shown, held } = windowInbox(buffered);
-          // Held-but-nothing-shown is not an empty inbox, and saying so would hide exactly the case
-          // that needs saying: everything waiting is too large for a response of its own.
-          if (!shown.length)
+          const { text, shown, held } = renderInbox({
+            items: buffered,
+            peek,
+            head: (s) =>
+              scope
+                ? `${s.length} pull-only message${s.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
+                : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`,
+          });
+          if (!buffered.length)
             return ok(
-              held.length
-                ? `Nothing could be delivered in this response.${heldNote(held, peek)}`
-                : scope
-                  ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                  : "Inbox empty, no new messages.",
+              scope
+                ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+                : "Inbox empty, no new messages.",
             );
-          const head = scope
-            ? `${shown.length} pull-only message${shown.length === 1 ? "" : "s"} (cleared; automatic traffic remains connector-managed):`
-            : `${shown.length} message${shown.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`;
           // The response exists before anything is acked: an ack is a claim that these messages were
-          // handed over, so nothing may be cleared while the handing-over is still hypothetical.
-          const body = `${head}\n${shown.map(fmtItem).join("\n")}${heldNote(held, peek)}`;
+          // handed over, so nothing may be cleared while the handing-over is still hypothetical. And
+          // it is the ASSEMBLED response that decides, so what is acked is what a caller was handed.
           if (!peek) agent.drainInboxIds(shown.map((i) => i.id));
-          return ok(body);
+          void held;
+          return ok(text);
         }
         // Focus: the live buffer holds only DMs/anycast; the channel ambient + @mentions were
         // acked-and-dropped at ingest, so pull them back from the channel stream here (replay-gated,
-        // "since you entered focus"). Recall is read-only — peek only affects the live buffer drain.
+        // "since you entered focus"). Recall is read-only, so peek only affects the live buffer.
         const recall = await agent.recallAmbient();
-        // The window spans both lanes, because the response carries both; but only the buffered
-        // lane is destructive, so only ids from it are ever cleared. Recall stays re-readable.
-        // The warning is part of the response, so it is part of the budget: it is bounded by
-        // droppedNote and paid for out of RESPONSE_OVERHEAD, not appended after the window was
-        // filled, which is how its length used to ride outside the bound this tool advertises.
+        // RECALL HAS TO ADVANCE, or windowing it starves it. Recall is re-derived from an unchanged
+        // frontier on every call, so showing its first window and stopping there returned the same
+        // prefix forever while the reply promised a next batch: measured as three identical replies
+        // where fifteen of thirty messages never appeared. The cursor is this session's own mark of
+        // how far it has read, and it moves only when a call actually delivered them.
+        const fresh = recall.items
+          .filter((i) => i.ts > agent.recallCursor)
+          .sort((a, b) => a.ts - b.ts);
         const warning = droppedNote(recall.droppedChannels);
-        const { shown: all, held } = windowInbox([...buffered, ...recall.items]);
         const bufferedIds = new Set(buffered.map((i) => i.id));
-        if (!all.length && !recall.droppedChannels.length)
+        const { text, shown: all } = renderInbox({
+          items: [...buffered, ...fresh],
+          peek,
+          warning,
+          head: (s) =>
+            scope
+              ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
+              : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`,
+        });
+        if (!buffered.length && !fresh.length && !recall.droppedChannels.length)
           return ok(
-            held.length
-              ? `Nothing could be delivered in this response.${heldNote(held, peek)}`
-              : scope
-                ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
-                : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
+            scope
+              ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
+              : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
           );
-        const parts: string[] = [];
-        if (all.length) {
-          const head = scope
-            ? `${all.length} message${all.length === 1 ? "" : "s"} — buffered pull-only items were cleared; normal focus channel items are read-only recall and may appear again:`
-            : `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`;
-          parts.push(`${head}\n${all.map(fmtItem).join("\n")}${heldNote(held, peek)}`);
+        // Render first, ack second, and only ever ids from the buffered lane: acking a recall id
+        // would mark it handled, so a later live copy of that channel message would be dropped.
+        if (!peek) {
+          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
+          for (const i of all) if (!bufferedIds.has(i.id)) agent.noteRecalled(i.ts);
         }
-        // Same order as above: render first, ack second, and only ever ids from the buffered lane.
-        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
-        if (warning) parts.push(warning);
-        return ok(parts.join("\n\n"));
+        return ok(text);
       },
     },
     {

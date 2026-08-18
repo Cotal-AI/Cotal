@@ -5,20 +5,18 @@
   "completionMarker": "INBOX WINDOW SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/inbox-window.json",
   "why": [
-    "The defect this guards is a composition, so the kills are split along the three parts of it",
-    "rather than aimed at one line. K1 removes the window (payload-exceeds-receivable), K2 restores",
-    "the old drain-the-whole-scope order (destructive read), K3 removes mail-before-replay (the",
-    "reason a DM survives the first window at all), K4 lets peek clear, K5 silences the note that",
-    "tells a caller the rest is still there, and K6 collapses the two lanes of the focus reply into",
-    "one, acking read-only recall the read never owned, and K7 drops peek on that same focus path.",
+    "The defect this guards is a composition, so the kills are split along its parts rather than aimed",
+    "at one line. K2 restores the drain-the-whole-scope order, K3 removes mail-before-replay, K4 and K7",
+    "let peek clear on each path, K5 silences the held-note, K6 acks read-only recall, K11 unbounds the",
+    "note, K12 gives stuck mail the waiting mail's promise, K14 unbounds the recall warning, K15 gives a",
+    "peeking caller a promise peek cannot keep, and K16 re-serves recall from the same frontier forever.",
     "",
-    "K8, K9 and K10 come from the second review lens's working repro, not from the author: the window",
-    "budgeted the items and not the framing, and an item too large for an empty window was shown alone",
-    "AND acked, which reproduced the original defect in miniature at 60,026 characters.",
-    "",
-    "K13, K14 and K15 came from the first lens's re-pointed pass. Its first pass graded the wedging",
-    "question and read a 100,038-character acked response as evidence of health; re-aimed at the bound",
-    "the code advertises, the same seat found the warning riding outside the budget.",
+    "K1, K8, K9 and K10 are the class guard and its edges. Three escapes were found here in sequence,",
+    "each the same defect one level further out: an oversized item shown alone, then the head and note",
+    "riding outside the budget, then the focus warning appended after the window was filled. Every one",
+    "was a writer to the response body the arithmetic did not know about, so the arithmetic was replaced",
+    "by assembling the reply and measuring it. K1 disables that measurement, K8 makes an undeliverable",
+    "item block the queue, K9 empties the stuck class, and K10 hides a buffer that could deliver nothing.",
     "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent and the tool specs",
     "by RELATIVE SOURCE PATH (../src/agent.js, ../src/tool-specs.js), so the bytes mutated are the",
@@ -26,20 +24,20 @@
     "`type` from @cotal-ai/core, erased at compile time and carrying no behaviour.",
     "",
     "NOT PROVED HERE, named rather than implied. The 48,000-character budget is a judgement, not a",
-    "measurement of any one host's cap: no mutation can show it is the RIGHT number, only that a",
-    "bound is enforced and that what falls outside it is kept. And the oversized-single-item escape",
-    "(one message larger than the whole budget is shown alone) is asserted by no cell, because the",
-    "measured occupant has no such message; it is stated in the source instead."
+    "measurement of any one host's cap: no mutation can show it is the RIGHT number, only that a bound",
+    "is enforced and that what falls outside it is kept. An earlier mutation that subtracted the recall",
+    "warning from the budget a second time SURVIVED and the code it targeted was deleted rather than",
+    "kept: with the reply assembled and measured, no input could tell the two versions apart."
   ],
   "mutations": [
     {
-      "name": "K1 the window selects everything - the response is capped by nothing",
+      "name": "K1 the finished response is never measured, only estimated",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
-      "replace": "    if (false && used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
+      "find": "  while (text.length > budget && shown.length) {",
+      "replace": "  while (false && text.length > budget && shown.length) {",
       "expectRed": "the response is inside the receivable window, not 463,788 chars",
       "cell": "the response is inside the receivable window, not 463,788 chars",
-      "note": "This is the pre-fix behaviour exactly: everything selected, one response, 463,788 chars on the measured occupant."
+      "note": "THE CLASS GUARD. Three escapes were found here, each a writer to the response body that the arithmetic did not know about. This loop is what replaced the arithmetic: it measures the finished string and gives back trailing items until the real text fits. Disable it and the estimate alone decides again, which is where every one of those escapes lived."
     },
     {
       "name": "K2 clear the whole scope up front, the order the defect was written in",
@@ -89,37 +87,37 @@
     {
       "name": "K7 the focus drain stops honouring peek",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
-      "replace": "        agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "find": "        if (!peek) {\n          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "replace": "        if (true) {\n          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
       "cell": "focus + peek: the buffered lane is NOT cleared",
       "expectRed": "focus + peek: the buffered lane is NOT cleared",
       "note": "K4 covers the same slip on the ordinary path only. Without this one a focus reply could clear while peeking, and peek is the workaround this whole change exists to retire, so it has to hold on both paths."
     },
     {
-      "name": "K8 the window budgets the items and forgets the framing",
+      "name": "K8 one message too large for any response blocks the queue behind it",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
-      "replace": "    if (used + cost > budget) held.push(i);",
-      "cell": "the head line and the held-note are inside the budget, not outside it",
-      "expectRed": "the head line and the held-note are inside the budget, not outside it",
-      "note": "The original arithmetic, and the reason it looked right: the items are what the caller reads, so budgeting them feels like budgeting the response. The head and the note are carried by the host too, measured at 48,135 characters for 47,971 of messages."
+      "find": "    if (used + cost > budget) continue;",
+      "replace": "    if (used + cost > budget) break;",
+      "cell": "ordinary mail is delivered past an item that can never fit",
+      "expectRed": "ordinary mail is delivered past an item that can never fit",
+      "note": "The fill stops at the first item too large instead of stepping over it, so one message nobody can deliver blocks every message behind it. That is the wedge the show-alone escape was invented to avoid, arriving through the other door."
     },
     {
-      "name": "K9 an item too large for an empty window is shown alone again",
+      "name": "K9 nothing is ever classified as too large to deliver",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
-      "replace": "    if (shown.length && used + cost > budget - RESPONSE_OVERHEAD) held.push(i);",
-      "cell": "an oversized message does not blow the window it advertises",
-      "expectRed": "an oversized message does not blow the window it advertises",
-      "note": "This is exactly the escape this file first shipped, defended in its own comment as better than wedging. It reproduced the defect the file exists to close: a 60,000-character message came back as a 60,026-character response and was acked."
+      "find": "      .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget)",
+      "replace": "      .filter((i) => opts.head([i]).length + 1 + itemCost(i) + (warning ? warning.length + 2 : 0) > budget * 10)",
+      "cell": "...and the reply names it rather than leaving it silently stuck",
+      "expectRed": "...and the reply names it rather than leaving it silently stuck",
+      "note": "Stuck means no response could carry this message. Measure it against a budget nothing can exceed and the class becomes empty: the message is still held, correctly, but the reply calls it ordinary backlog and tells the caller to call again for it forever."
     },
     {
       "name": "K10 nothing shown is reported as an empty inbox, whatever is held",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "              held.length\n                ? `Nothing could be delivered in this response.${heldNote(held, peek)}`\n                : scope",
-      "replace": "              false\n                ? `Nothing could be delivered in this response.${heldNote(held, peek)}`\n                : scope",
-      "cell": "...and the reply names it rather than leaving it silently stuck",
-      "expectRed": "...and the reply names it rather than leaving it silently stuck",
+      "find": "    else if (held.length) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);",
+      "replace": "    else if (false) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);",
+      "cell": "a buffer holding only undeliverable mail does not report an empty inbox",
+      "expectRed": "a buffer holding only undeliverable mail does not report an empty inbox",
       "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
     },
     {
@@ -141,15 +139,6 @@
       "note": "A queue that looks like it is moving when it is not. The caller keeps calling, the same messages keep not arriving, and nothing in the reply says why."
     },
     {
-      "name": "K13 the window keeps back no room for the framing",
-      "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "const RESPONSE_OVERHEAD = 1024;",
-      "replace": "const RESPONSE_OVERHEAD = 0;",
-      "cell": "the head line and the held-note are inside the budget, not outside it",
-      "expectRed": "the head line and the held-note are inside the budget, not outside it",
-      "note": "The first lens found the warning riding outside the budget; the repair pays for it, the head and the note out of one reserve. That is only honest if the reserve is above their combined worst case, which is what this mutation tests: with no reserve the framing is what pushes an acking reply past the cap. An earlier form of this mutation, subtracting the warning length a second time inside the focus branch, SURVIVED and was removed rather than kept: with the warning already bounded and paid for here, no input could tell the two versions apart. The cell that notices first is the near-boundary one, which is the cheapest case where the framing is what tips a reply over; the worst-framing cell later asserts the same reserve against all three parts at once."
-    },
-    {
       "name": "K14 the recall warning names every dropped channel",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(\", \");",
@@ -166,6 +155,15 @@
       "cell": "a peek that holds mail does not promise a next batch it cannot deliver",
       "expectRed": "a peek that holds mail does not promise a next batch it cannot deliver",
       "note": "Peek clears nothing, so the next call returns the same window. An obedient caller told to call again loops on it forever, which the first lens measured as three byte-identical replies."
+    },
+    {
+      "name": "K16 focus recall is re-served from the same frontier every call",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          .filter((i) => i.ts > agent.recallCursor)",
+      "replace": "          .filter((i) => i.ts > -1)",
+      "cell": "successive calls walk the whole of focus recall instead of repeating its first window",
+      "expectRed": "successive calls walk the whole of focus recall instead of repeating its first window",
+      "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one."
     }
   ]
 }

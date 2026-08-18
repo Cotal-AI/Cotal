@@ -350,7 +350,9 @@ try {
     const agent = new MeshAgent(cfg);
     agent.on("error", () => {});
     Object.defineProperty(agent, "attention", { get: () => "focus" });
-    const dropped = Array.from({ length: 60 }, (_, n) => `silenced-channel-number-${n}`);
+    // The second lens's fixture, not a friendly one: eighty channels whose names are near the
+    // longest a chat subject can carry, which is what made the unbounded warning a 118,484-char reply.
+    const dropped = Array.from({ length: 80 }, (_, n) => `${"s".repeat(880)}-${n}`);
     (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
       items: [],
       droppedChannels: dropped,
@@ -360,9 +362,8 @@ try {
     const text = textOf(await inboxSpec().run(agent, cfg, {}));
     check("a long recall warning cannot push an acking response past the window",
       text.length <= INBOX_WINDOW_CHARS, { chars: text.length, window: INBOX_WINDOW_CHARS });
-    check("...and the warning is bounded rather than naming all sixty channels",
-      (text.match(/#silenced-channel-number-/g) ?? []).length <= 5 && text.includes("more channels"),
-      text.slice(-260));
+    check("...and the warning is bounded rather than naming all eighty channels",
+      (text.match(/#s{10}/g) ?? []).length <= 5 && text.includes("more channels"), text.slice(-300));
   }
 
   // ── 14) THE HELD NOTE TELLS A PEEKING CALLER THE TRUTH ────────────────────────────────────────
@@ -446,6 +447,83 @@ try {
     check("...and that case really did exercise all three: it cleared mail, held mail, and warned",
       agent.inboxCount() < before && text.includes("stays buffered and uncleared") && text.includes("could not be recalled"),
       { before, after: agent.inboxCount() });
+  }
+
+  // ── 17) FOCUS RECALL HAS TO ADVANCE, or windowing it starves it ───────────────────────────────
+  //
+  // The second lens reproduced this on a live broker after the window landed: recall is re-derived
+  // from an unchanged frontier every call, so showing its first window and stopping there returned
+  // the same fifteen of thirty messages three times, the rest never appeared, and every reply said
+  // "next batch". The window created this starvation, so it is this change's to fix.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const all = Array.from({ length: 30 }, (_, n) => ({
+      id: `REC-${n}`,
+      ts: 1_000 + n,
+      fromId: "peer",
+      fromName: "Peer",
+      kind: "channel" as const,
+      channel: "general",
+      mentionsMe: false,
+      historical: false,
+      text: `${"r".repeat(3_000)} REC_${n}`,
+    }));
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: all,
+      droppedChannels: [],
+    });
+
+    const seen = new Set<string>();
+    let calls = 0;
+    let text = "";
+    do {
+      text = textOf(await inboxSpec().run(agent, cfg, {}));
+      assert.ok(text.length <= INBOX_WINDOW_CHARS, `recall call ${calls} returned ${text.length} chars`);
+      for (let n = 0; n < 30; n++) if (text.includes(` REC_${n}\n`) || text.endsWith(` REC_${n}`)) seen.add(`REC_${n}`);
+      calls++;
+    } while (calls < 10 && seen.size < 30);
+    check("successive calls walk the whole of focus recall instead of repeating its first window",
+      seen.size === 30, { seen: seen.size, calls });
+
+    const after = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("...and once it is walked, the reply stops offering recall rather than looping",
+      !after.includes("REC_0\n") && !after.includes("next batch"), after.slice(0, 200));
+  }
+
+  // ── 18) ...but a peek must not consume the caller's place in that walk ────────────────────────
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: Array.from({ length: 30 }, (_, n) => ({
+        id: `PK-${n}`, ts: 2_000 + n, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+        channel: "general", mentionsMe: false, historical: false, text: `${"p".repeat(3_000)} PK_${n}`,
+      })),
+      droppedChannels: [],
+    });
+    const t1 = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    const t2 = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    check("a peek leaves the recall cursor where it found it", t1 === t2 && t1.includes("PK_0"), { identical: t1 === t2 });
+  }
+
+  // ── 19) A MESSAGE THAT ACTUALLY FITS IS NOT DECLARED IMPOSSIBLE ───────────────────────────────
+  //
+  // Both lenses flagged the band: while the code ESTIMATED the framing with a fixed reserve, a body
+  // of about 47,500 characters rendered at 47,538 total, inside the window, and was still declared
+  // permanently undeliverable. Measuring the assembled response rather than estimating it is what
+  // closes the band, so this cell is the band's floor.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    agent.ep.emit("message", dmMsg("band", "q".repeat(47_500)), noop(), dmMeta);
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a message that fits when rendered is delivered, not called impossible",
+      text.includes("qqqq") && !text.includes("cannot be delivered by this tool at all"), text.slice(0, 160));
+    check("...and it went out inside the window, and was cleared because it went out",
+      text.length <= INBOX_WINDOW_CHARS && agent.inboxCount() === 0, { chars: text.length, left: agent.inboxCount() });
   }
 
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);

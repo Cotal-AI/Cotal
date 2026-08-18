@@ -163,6 +163,7 @@ export class MeshAgent extends EventEmitter {
   private _connected = false;
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
+  private _recallCursor = 0;
   /** Per-channel attention overrides — the AUTHORITATIVE runtime state (read by {@link ingest} on
    *  every message). Seeded from the agent-file default; mutated by {@link setChannelMode}; mirrored
    *  to presence for peers. An absent key ⇒ that channel follows the global {@link _attention}. Reset
@@ -559,6 +560,23 @@ export class MeshAgent extends EventEmitter {
 
   inboxCount(scope: InboxScope = "all"): number {
     return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
+  }
+
+  /**
+   * How far this session has read the focus-mode channel recall.
+   *
+   * {@link recallAmbient} re-derives the same items from an unchanged frontier on every call, so a
+   * reader that shows only what fits in one response would show the same prefix forever. This mark
+   * moves when a response actually delivered recall items, and it is session-local by design: it
+   * says how far THIS incarnation has read, not what the stream still holds.
+   */
+  get recallCursor(): number {
+    return this._recallCursor;
+  }
+
+  /** Record that recall up to this timestamp was actually handed to the caller. */
+  noteRecalled(ts: number): void {
+    if (ts > this._recallCursor) this._recallCursor = ts;
   }
 
   /** Buffered receive-time lane for one id. Undefined means it is no longer pending. */
