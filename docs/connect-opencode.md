@@ -90,6 +90,35 @@ in-process plugin does everything.
 The generic tool surface and the inbound-message model are shared across connectors: see
 [mcp-tools.md](mcp-tools.md) and [connect-claude.md](connect-claude.md).
 
+## Event plane
+
+A session launched with `cotal spawn --events` publishes a structured account of what it did: run
+boundaries per turn, assistant text, and each tool call with its arguments, its end, and its result.
+The channel is `events.<owner>.<actor>`, named after the session's principal, and the rules for it
+are the same on every connector: see [connect-claude.md](connect-claude.md#event-plane) for the
+channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
+`--events` spawns; a personal `opencode` with the plugin installed publishes nothing.
+
+Three things are specific to OpenCode and worth knowing before you read a stream:
+
+- **No user-authored text is published, ever.** When a peer message is injected into a native
+  prompt, OpenCode prepends it into the human's own text part, so one record holds peer-authored and
+  human-authored content with no boundary in it to filter on. Rather than guess where one ends,
+  the connector publishes no user text at all. Assistant text, reasoning and tool activity are
+  unaffected.
+- **No step events and no usage.** OpenCode's step records carry no step name and no key shared
+  between the start and the finish, and what the finish actually carries is cost and token counts.
+  So the connector emits no step vocabulary rather than inventing a name, and the usage numbers are
+  not carried in this version.
+
+- **`/new` starts a new thread on the same channel.** OpenCode can hold several sessions in one
+  process, and `/new` is a context reset that keeps the mesh identity. Each session publishes under
+  its own thread id on the one `events.<owner>.<actor>` channel. Before the switch, the session you
+  are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
+
+Reasoning is off by default. A turn that fails ends with a run-finished event carrying no outcome,
+which says the turn ended and does not claim it succeeded.
+
 ## Limits
 
 - **No session resume.** `cotal spawn --resume <id>` is Claude-only; OpenCode throws, because

@@ -1,0 +1,68 @@
+{
+  "suite": "extensions/connector-opencode/smoke/agui-source.smoke.ts",
+  "guard": "the source orders a session by the id PAIR, stops at the first part that is not settled, settles a part its turn has ended, never lets a user part gate the stream, and reports a vanished cursor once",
+  "command": "pnpm smoke:agui-opencode-source",
+  "completionMarker": "agui-opencode-source smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/agui-opencode-source.json",
+  "why": [
+    "EVERY CELL NAMED HERE WAS WRITTEN DOWN BEFORE THE MUTATION RAN, not chosen afterwards from",
+    "whatever went red. The four properties below are the ones the design turns on, and three of them",
+    "were reached by measuring a real store rather than by reading the plan:",
+    "",
+    "1. AUTHORSHIP GATES BEFORE PART TYPE. A user message carries no completion mark, the field does",
+    "   not exist on its type, and 659 of 668 user text parts carry no clock at all, so under a",
+    "   type-first rule neither settle signal can ever arrive and the stream wedges at the first",
+    "   prompt of every session. This is the defect the suite exists to keep dead.",
+    "2. THE READ STOPS AT THE FIRST UNSETTLED PART. 1657 of 11298 parts that have a successor are",
+    "   updated AFTER that successor exists, so emitting around one would publish out of bracket order",
+    "   and advancing past it would drop it for good.",
+    "3. THE CURSOR IS THE PAIR. Part ids invert across a message boundary 16 times in 14759 ordered",
+    "   pairs, so a bare part-id comparison silently skips.",
+    "4. A VANISHED CURSOR IS REPORTED ONCE. A revert leaves it absent on every later read, so a",
+    "   per-read report would bury the next, different divergence in its own noise.",
+    "",
+    "BLAST RADIUS IS STATED PER MUTATION rather than discovered by a later reader. A mutant that reds",
+    "more than the cell expectRed names is neither a clean kill nor a failure, and the count belongs",
+    "here.",
+    "",
+    "EVERY ANCHOR IS PURE CODE. None spans a comment, so rewording the prose around one cannot turn a",
+    "mutant into a no-op that reports the same green a holding guard reports."
+  ],
+  "mutations": [
+    {
+      "name": "S1 the authorship gate is removed from isSettled, so a user part must produce its own settle signal and cannot",
+      "file": "extensions/connector-opencode/src/agui-source.ts",
+      "find": "  if (message.role !== \"assistant\") return true;\n",
+      "replace": "  if (false) return true;\n",
+      "expectRed": "settle:a user prompt part does NOT wedge the stream"
+    },
+    {
+      "name": "S2 the read no longer stops at the first unsettled part and emits around it instead",
+      "file": "extensions/connector-opencode/src/agui-source.ts",
+      "find": "      if (!isSettled(r)) break;",
+      "replace": "      if (!isSettled(r)) continue;",
+      "expectRed": "settle:the read STOPS at the first unsettled part"
+    },
+    {
+      "name": "S3 the cursor compares the part id alone, dropping the message half of the pair",
+      "file": "extensions/connector-opencode/src/agui-source.ts",
+      "find": "  if (record.message.id !== at.messageId) return record.message.id > at.messageId;",
+      "replace": "  if (false) return false;",
+      "expectRed": "cursor:resuming after the first message yields the LOWER-id part in the next message"
+    },
+    {
+      "name": "S4 the turn-level backstop is removed, so a part whose turn ended without per-part marks never settles",
+      "file": "extensions/connector-opencode/src/agui-source.ts",
+      "find": "  if (message.time?.completed !== undefined) return true;",
+      "replace": "  if (false) return true;",
+      "expectRed": "settle:message.time.completed settles it"
+    },
+    {
+      "name": "S5 the vanished-cursor report loses its dedupe and fires on every read",
+      "file": "extensions/connector-opencode/src/agui-source.ts",
+      "find": "    if (this.onVanished && this.reportedVanished !== cursor",
+      "replace": "    if (this.onVanished",
+      "expectRed": "removal:and reported ONCE, not once per read, so it cannot bury the next one"
+    }
+  ]
+}

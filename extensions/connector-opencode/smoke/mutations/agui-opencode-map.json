@@ -1,0 +1,48 @@
+{
+  "suite": "extensions/connector-opencode/smoke/agui-map.smoke.ts",
+  "guard": "the mapper emits no user-authored text, spends the native callID as the tool identity, and reads a tool part's clock from where a tool part actually keeps it",
+  "command": "pnpm smoke:agui-opencode-map",
+  "completionMarker": "agui-opencode-map smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/agui-opencode-map.json",
+  "why": [
+    "CELLS NAMED BEFORE THE RUN, not selected from the wreckage afterwards.",
+    "",
+    "M1 is the safety property of this connector and the reason the mapping has an authorship arm at",
+    "all: OpenCode injects a peer batch by prepending it into the human's own text part, so one record",
+    "holds both authors with no boundary in it. Withholding user text is not merely sufficient here as",
+    "it is on another connector, it is NECESSARY, because there is no granularity at which the store",
+    "could be filtered instead.",
+    "",
+    "M2 is identity. The native callID correlates with the harness, the provider and anything else",
+    "reading the same session; a synthesized key correlates only with our own emission. The cell",
+    "asserts the native one is spent, and the mutant spends the part id, which is a plausible-looking",
+    "identifier that is unique and wrong.",
+    "",
+    "M3 is the bug this build actually had. A tool part keeps its clock on state.time, not part.time,",
+    "so reading only part.time arrival-stamps every tool call in a session while a real source stamp",
+    "sits one field away. It was caught by measurement, and the cell keeps it caught."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the mapper stops withholding user-authored records",
+      "file": "extensions/connector-opencode/src/agui-map.ts",
+      "find": "    if (message.role !== \"assistant\") return close(ts);",
+      "replace": "    if (false) return close(ts);",
+      "expectRed": "authorship:NO event carries a user part id as its messageId"
+    },
+    {
+      "name": "M2 the tool identity becomes a synthesized key instead of the native callID",
+      "file": "extensions/connector-opencode/src/agui-map.ts",
+      "find": "            toolCallId: part.callID,\n            toolCallName: part.tool ?? \"\",",
+      "replace": "            toolCallId: part.id,\n            toolCallName: part.tool ?? \"\",",
+      "expectRed": "tool:toolCallId is the NATIVE callID, not a synthesized key"
+    },
+    {
+      "name": "M3 a tool part's own clock is no longer read, so it falls back to the message's",
+      "file": "extensions/connector-opencode/src/agui-map.ts",
+      "find": "    record.part.state?.time?.start ??\n",
+      "replace": "",
+      "expectRed": "tool:the source timestamp comes from state.time, where a tool part actually keeps it"
+    }
+  ]
+}
