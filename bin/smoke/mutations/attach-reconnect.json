@@ -68,7 +68,17 @@
     "ended. The backoff `sleep` lost its race and was never cleared, so node held the command open to",
     "the end of the rung, up to 30 seconds of a shell that had already said it detached. A limit",
     "measured after the work is no limit, so the assertion is bounded against the next attempt's own",
-    "position, which is the only clock the defect is expressed in."
+    "position, which is the only clock the defect is expressed in.",
+    "",
+    "MUTATION 13 CAME FROM ANOTHER SUITE'S SET, and where a mutation is graded is a fact about which",
+    "cell enters the window, not about which change introduced the line. The `takeStdin?.()` handoff",
+    "belongs to the stdin-ownership change and its own config recorded the deletion as a survivor,",
+    "excused as unreachable. It is reachable: with the handoff gone both readers stay installed, the",
+    "loop's watcher is never stopped, `ownStdin` therefore neither reinstalls nor resumes, and the",
+    "session's `cleanup` pauses a stream the operator is still typing at. The sibling suite never",
+    "presses detach in that window and so cannot tell. Cell B here does exactly that, mid-reconnect,",
+    "and reddens on it. A survivor in one set is not evidence of an ungraded line until the suites",
+    "that reach the line have been asked."
   ],
   "mutations": [
     {
@@ -189,6 +199,16 @@
       "expectRed": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
       "cell": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
       "note": "Losing a Promise.race does not stop a setTimeout. Without the clear, the detach is honoured at once and the terminal comes back, and then node keeps the process alive until the abandoned timer fires: measured at 27.0s with the next attempt 26.9s away and 8.3s with it 8.1s away, tracking the rung rather than any work. Aimed at cell J, which bounds the exit against where the next attempt actually falls rather than against a constant, because a constant loose enough for a slow runner is also loose enough for this.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the session's own reader is never handed the stream, so the loop's reader is left over a stream the session paused",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "      if (takeStdin?.()) {\n        transport.close();\n        return;\n      }\n",
+      "replace": "",
+      "expectRed": "the detach key ends the attach mid-reconnect",
+      "cell": "the detach key ends the attach mid-reconnect",
+      "note": "Deleting the handoff leaves BOTH readers installed for the whole session, which is why the sibling suite `smoke:attach-stdin` cannot see it: with both live a lone detach byte still ends the attach, and a chunk carrying the byte alongside other input is still refused by the same exact-match test on either side. What it loses is the release. `ownStdin` is `idle ??= watchDetachKey(...)`, so with the loop's watcher never stopped it neither reinstalls nor RESUMES, while `cleanup` pauses the stream the session did take: the operator's next press lands on a paused stream and is read by nobody. Measured on this suite at f345809a against a green baseline of 72: 67 passed, 5 failed, first red here, then `...exiting clean` and the held-session line, then cell J's two, `reconnectsAtPress 0` against `now 1` and `pressToExitMs 27172` against a boundary 26826ms away, spare -346ms. Registered on the FIRST of those reds. Found by review as a survivor of the sibling suite's set and recorded there as unreachable prose; it is reachable, it is graded here, and the sibling config now says so.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
