@@ -255,9 +255,9 @@ Only strict equality exists (`===`, `!==`; §2.2 refuses `==`). On **primitives*
 bitwise, comparison and logical operator has its ECMAScript meaning, including coercion (`"a" + 1`
 is `"a1"`, `+"3"` is `3`); a program that wants a number from text uses `parseNumber`. An array, a
 record or a function never coerces: the arithmetic, bitwise and ordering operators, unary `-`, `+`
-and `~`, template interpolation, and a computed member key (`o[k]`, read or written) refuse such an
-operand (L4018), because ECMAScript's answer would pass through a `toString` this language does not
-give its values. `===`/`!==` (identity),
+and `~`, template interpolation, a computed member key (`o[k]`, read or written), and a builtin or
+method parameter that takes a primitive (§5.4) refuse such an operand (L4018), because ECMAScript's
+answer would pass through a `toString` this language does not give its values. `===`/`!==` (identity),
 `!`, `typeof` and the logical operators take every value. `??` is the recovery operator: `wait`
 resolves `null` on timeout (§6.5), so `await wait(...) ?? fallback` reads as Orc's `otherwise`.
 
@@ -327,6 +327,12 @@ result of `sort` is a function of its input alone.
 A builtin or method given inputs the host refuses (`"a".repeat(-1)`, `json.parse("{")`, `[].reduce(f)`)
 raises L4016 naming the builtin; the host's own error class and stack never reach the program.
 `assert` raises L4012 with the message.
+
+Where a parameter takes a **primitive**, an array, record or function in that position is refused
+(L4018) before any host conversion — the operators' rule (§4.5) at the library boundary — and this
+includes each element `join` and `sum` would stringify or add, and `assert`'s message. The positions
+that take a container or a function by contract (a callback, a list or record argument, a search
+value compared by identity, `log`'s values, `json.stringify`'s value) take exactly those.
 
 ## 6. Effects
 
@@ -958,4 +964,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | --- | --- |
 | 2026-08-18 | First normative reference, language version `1`, alongside SPEC.md v0.5 §14. |
 | 2026-08-18 | Review folds, same revision: the PRNG separator is U+0000 (§8.2, the earlier text said a space and was wrong; the code never changed); `any`/`all` are no longer reserved (§3); `xs.length = n` truncates only, L4017 (§4.3); the L2013 rule states where the validator can see (§2.3); `fanOut` fails like `parallel` (§7.4); L5022 is a walk refusal, not a resume stop (§11.1); no lineage on a fork's child (§11.3); `schema` is opaque and concurrent turns on one handle are the handler's (§6.5); the checkpoint entry's `attempts` chain (§6.5). |
-| 2026-08-18 | Language-lane folds, same revision: operators and computed member keys coerce primitives only, an array, record or function operand is refused (L4018, §4.5); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
+| 2026-08-18 | Language-lane folds, same revision: operators, computed member keys and the library's primitive parameters coerce primitives only, an array, record or function operand is refused (L4018, §4.5, §5.4); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
