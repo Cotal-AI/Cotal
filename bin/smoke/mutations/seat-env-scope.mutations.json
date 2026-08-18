@@ -2,7 +2,6 @@
   "suite": "bin/smoke/seat-env-scope.smoke.ts",
   "guard": "a manager-spawned seat hands no connection material to the processes it spawns, and still resolves its own identity and control token from the launch-material file",
   "command": "pnpm build > /dev/null && pnpm smoke:seat-env-scope",
-  "afterRestore": "pnpm build > /dev/null",
   "completionMarker": "seat-env-scope: PASS",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-env-scope.mutations.json",
   "why": [
@@ -34,7 +33,8 @@
       "find": "    if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;",
       "replace": "    if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;\n    if (opts.servers) env.COTAL_SERVERS = opts.servers;",
       "expectRed": "A2: a real grandchild of a seat inherited COTAL_SERVERS",
-      "note": "Also reds A1 for pi, later in the run. A2 is named because it is the assertion that observed a real descendant process rather than the launch spec."
+      "note": "Also reds A1 for pi, later in the run. A2 is named because it is the assertion that observed a real descendant process rather than the launch spec.",
+      "afterRestore": "pnpm build > /dev/null"
     },
     {
       "name": "M2 the claude connector puts the control token back into the seat environment",
@@ -42,7 +42,8 @@
       "find": "      COTAL_CONTROL_SOCKET: control.path,\n    };",
       "replace": "      COTAL_CONTROL_SOCKET: control.path,\n      COTAL_CONTROL_TOKEN: control.token,\n    };",
       "expectRed": "A1: the claude connector exports COTAL_CONTROL_TOKEN into the seat environment",
-      "note": "The control token is the half a build script has least business holding. Claude is the connector that cannot drop the material reference after startup, so its env is the one worth pinning explicitly."
+      "note": "The control token is the half a build script has least business holding. Claude is the connector that cannot drop the material reference after startup, so its env is the one worth pinning explicitly.",
+      "afterRestore": "pnpm build > /dev/null"
     },
     {
       "name": "M3 the launch material silently loses the broker URL",
@@ -50,7 +51,8 @@
       "find": "  if (opts.servers) material.servers = opts.servers;",
       "replace": "  if (opts.servers) material.servers = undefined;",
       "expectRed": "A3: claude lost the broker URL",
-      "note": "The failure the absence assertions cannot see: material removed from the environment and not delivered anywhere else. Without this kill, a connector that exported nothing would read as fixed."
+      "note": "The failure the absence assertions cannot see: material removed from the environment and not delivered anywhere else. Without this kill, a connector that exported nothing would read as fixed.",
+      "afterRestore": "pnpm build > /dev/null"
     }
   ]
 }
