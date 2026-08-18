@@ -178,7 +178,7 @@ try {
   // itself be a managed agent session, whose environment carries a LIVE credential and a LIVE broker
   // URL. Spreading it here hands the child an identity nothing in this file asked for, and the
   // connector env layered on top used to overwrite exactly the variables that would have made it
-  // visible — so the inheritance was real and silent. Measured: on a box where the suite ran inside
+  // visible - so the inheritance was real and silent. Measured: on a box where the suite ran inside
   // an agent session, this spread produced a child carrying both the launch material and an
   // inherited creds path, and the config parser refused it. Strip, then build.
   const clean = { ...process.env };

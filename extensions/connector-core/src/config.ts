@@ -123,7 +123,7 @@ const DIRECT_MATERIAL_VARS = [
 /** Resolve the launch-material file, if this launch uses one. Refuses the two-carrier case: a
  *  material file AND direct material vars means two answers to "who is this session", and picking
  *  one silently is how a seat ends up connected as something nobody chose. An unreadable or
- *  permissive file throws from {@link readLaunchMaterial} — never a fall back to the env, which
+ *  permissive file throws from {@link readLaunchMaterial} - never a fall back to the env, which
  *  would turn a broken launch into a quietly different one. */
 function readMaterial(env: NodeJS.ProcessEnv): LaunchMaterial | undefined {
   const path = env[LAUNCH_MATERIAL_ENV]?.trim();

@@ -50,7 +50,7 @@ export function startSidecar(): Sidecar {
   // into. Absent means the launcher did not mint a control endpoint, which is a broken launch here.
   const control = controlFromEnv();
   if (!control)
-    throw new Error("COTAL_CONTROL_SOCKET / the launch material's control token not set — the sidecar must be spawned with bridge/control/tools paths");
+    throw new Error("COTAL_CONTROL_SOCKET / the launch material's control token not set - the sidecar must be spawned with bridge/control/tools paths");
   const controlSock = control.path;
   const controlToken = control.token;
   const bridgeSock = need("COTAL_BRIDGE_SOCKET");

@@ -1,5 +1,5 @@
 /**
- * The launch-material file — how a launcher hands a spawned session its connection material and
+ * The launch-material file - how a launcher hands a spawned session its connection material and
  * control token WITHOUT putting either into an environment every descendant process inherits.
  *
  * THE FAILURE THIS EXISTS TO CLOSE. A process environment is inherited transitively and invisibly.
@@ -21,7 +21,7 @@
  * values from every descendant's environment: an `env` dump, a CI log capture, a suite that reads
  * `COTAL_SERVERS`, a tool handed the credential it never asked for. It does NOT hide the material
  * from a process running as the same user that deliberately opens the referenced file, and no
- * environment-level control can — that is the filesystem boundary the spawned-agent env allow-list
+ * environment-level control can - that is the filesystem boundary the spawned-agent env allow-list
  * already documents as out of its scope. What changes is that reaching the material becomes a
  * deliberate act instead of an inheritance nobody chose. Connectors whose session runs IN the seat
  * process close the remaining hop by dropping the reference once it has been read (see
@@ -41,7 +41,7 @@ export const LAUNCH_MATERIAL_ENV = "COTAL_LAUNCH_MATERIAL";
 
 /** What a launcher hands one spawned session. Every field is optional because the modes differ
  *  (open mesh has no creds; a static-auth launch has no user-mode identity; a launch with no
- *  control endpoint has no token), but an empty material file is refused at write time — an empty
+ *  control endpoint has no token), but an empty material file is refused at write time - an empty
  *  file would be a launcher bug that reads downstream as "open mode". */
 export type LaunchMaterial = {
   /** Broker URL(s) the session dials. */
@@ -66,7 +66,7 @@ export type LaunchMaterial = {
  *
  * REFUSES AN EMPTY MATERIAL rather than writing a file that says nothing. A launcher that computed
  * no material has a bug, and the downstream reader cannot tell that apart from a deliberate open
- * launch — which is precisely the silent-degradation this contract is not allowed to have.
+ * launch - which is precisely the silent-degradation this contract is not allowed to have.
  */
 export function writeLaunchMaterial(material: LaunchMaterial): string {
   const present = Object.values(material).some((v) => v !== undefined);
@@ -122,7 +122,7 @@ export function readLaunchMaterial(path: string): LaunchMaterial {
  * check. It is the wrong place for it to be alone: the reader is handed a path by an environment
  * variable, and a file that is empty, truncated, half-written or shaped wrong reaches it without
  * ever passing through the writer. `{}` parsed cleanly, produced a material with every field
- * undefined, and `configFromEnv` then filled in its defaults — so a launch that REFERENCED material
+ * undefined, and `configFromEnv` then filled in its defaults - so a launch that REFERENCED material
  * and got nothing usable resolved to the default broker with no credential. Open mode, silently,
  * on a launch that asked for the opposite. That is the exact silent degradation this carrier is
  * supposed to make impossible, arriving through the one door the write-side rule does not cover.

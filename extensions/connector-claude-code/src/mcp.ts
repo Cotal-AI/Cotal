@@ -129,7 +129,7 @@ async function main(): Promise<void> {
   const control = controlFromEnv();
   if (!control) {
     process.stderr.write(
-      "[cotal-connector] managed session missing its control socket path or its control token — cannot serve the control plane\n",
+      "[cotal-connector] managed session missing its control socket path or its control token - cannot serve the control plane\n",
     );
     process.exit(1);
   }

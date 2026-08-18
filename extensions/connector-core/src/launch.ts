@@ -8,8 +8,8 @@
  * inherited."
  *
  * That covers bleed in one direction: the OPERATOR's environment into the child. Bleed in the other
- * direction — Cotal's OWN connection material out of the seat and into every process the seat ever
- * spawns — is closed by {@link materialEnv}, which hands it over as a private file instead of as
+ * direction - Cotal's OWN connection material out of the seat and into every process the seat ever
+ * spawns - is closed by {@link materialEnv}, which hands it over as a private file instead of as
  * inherited environment.
  *
  * Scope this is HONEST about (P6): it closes ENV-VAR bleed. It does NOT close (i) model-key
@@ -199,11 +199,11 @@ export function connectorLaunchOptions(
  * moment where a human sees a credential being handed over, so there is no natural moment to object.
  *
  * Now they ride a 0600 file (see `writeLaunchMaterial`) and only its PATH is exported. The identity
- * that is not secret — space, name, role, id, lifecycle uid, the ACLs, the control SOCKET path —
+ * that is not secret - space, name, role, id, lifecycle uid, the ACLs, the control SOCKET path -
  * stays in the environment where the launcher's contract has always put it, because a descendant
  * learning the seat's name is not the failure.
  *
- * Refuses a creds+userAuth combination here (one launch, one identity plane — U10), which is where
+ * Refuses a creds+userAuth combination here (one launch, one identity plane - U10), which is where
  * `userAuthEnv` refused it.
  */
 export function materialEnv(opts: {

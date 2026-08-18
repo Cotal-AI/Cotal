@@ -1,5 +1,5 @@
 /**
- * Ambient-environment census over the SUITES themselves — the cell for a class this repo's runtime
+ * Ambient-environment census over the SUITES themselves - the cell for a class this repo's runtime
  * cells structurally cannot see.
  *
  * WHAT KEEPS HAPPENING. A suite builds a child process env as `{ ...process.env, ...somethingOurs }`.
@@ -167,8 +167,8 @@ console.log(
   `• census: ${stripped.length + exempted.length + frozen.length + offenders.length} suite file(s) spread the ambient environment ` +
     `(${stripped.length} strip, ${exempted.length} reviewed-safe, ${frozen.length} frozen and UNAUDITED)`,
 );
-for (const f of stripped) console.log(`  ✓ ${f} — strips COTAL_ before the spread`);
-for (const f of exempted) console.log(`  · ${f} — reviewed safe: ${REVIEWED[f]}`);
+for (const f of stripped) console.log(`  ✓ ${f} - strips COTAL_ before the spread`);
+for (const f of exempted) console.log(`  · ${f} - reviewed safe: ${REVIEWED[f]}`);
 
 // A census that found nothing is not a pass. The spread is a normal thing for a suite to do, so a
 // zero here means the scan stopped seeing files, not that the tree got clean.
@@ -181,7 +181,7 @@ assert.ok(
 for (const path of Object.keys(REVIEWED))
   assert.ok(
     exempted.includes(path),
-    `REVIEWED lists ${path}, but the census did not find an ambient spread there — remove the stale entry rather than leaving a waiver in place`,
+    `REVIEWED lists ${path}, but the census did not find an ambient spread there - remove the stale entry rather than leaving a waiver in place`,
   );
 // The ratchet tightens: a frozen entry that stopped spreading (or was stripped) must leave the list,
 // or the baseline becomes a permanent waiver that outlives the thing it waived.

@@ -1,5 +1,5 @@
 /**
- * Hermes lifecycle-hook control relay, across the language boundary — the cell for a defect the
+ * Hermes lifecycle-hook control relay, across the language boundary - the cell for a defect the
  * TypeScript cells structurally could not see.
  *
  * WHAT WENT WRONG, and why nothing caught it. When the control token moved out of the seat
@@ -19,7 +19,7 @@
  *
  *   H1  a managed launch (socket path in the env, token in the launch material only) relays, and
  *       the frame carries the token the manager holds
- *   H2  standalone mode (token exported directly, no material) still relays — the fallback is a
+ *   H2  standalone mode (token exported directly, no material) still relays - the fallback is a
  *       supported path, not a deprecated one
  *   H3  a socket with NO resolvable token relays NOTHING and says so on stderr, rather than
  *       returning silently the way the defect did
@@ -101,7 +101,7 @@ const check = (name: string, ok: boolean, detail?: unknown): void => {
 
 const TOKEN = "material-side-token-0123456789";
 
-// H1 — managed launch: socket path in the env, token ONLY in the launch material.
+// H1 - managed launch: socket path in the env, token ONLY in the launch material.
 {
   const sock = join(work, "h1.sock");
   const material = join(work, "h1.json");
@@ -120,7 +120,7 @@ const TOKEN = "material-side-token-0123456789";
   );
 }
 
-// H2 — standalone: token exported directly, no material file. Still a supported path.
+// H2 - standalone: token exported directly, no material file. Still a supported path.
 {
   const sock = join(work, "h2.sock");
   const l = listener(sock);
@@ -130,7 +130,7 @@ const TOKEN = "material-side-token-0123456789";
   check("H2: standalone mode still relays with a directly exported token", run.status === 0 && l.frames.length === 1 && JSON.parse(l.frames[0] ?? "{}").token === "standalone-token-abc", l.frames.length);
 }
 
-// H3 — the defect: a control socket with no resolvable token anywhere.
+// H3 - the defect: a control socket with no resolvable token anywhere.
 {
   const sock = join(work, "h3.sock");
   const l = listener(sock);
@@ -145,7 +145,7 @@ const TOKEN = "material-side-token-0123456789";
   );
 }
 
-// H4 — a material file other local users can read is not a source of a control token.
+// H4 - a material file other local users can read is not a source of a control token.
 {
   const sock = join(work, "h4.sock");
   const material = join(work, "h4.json");

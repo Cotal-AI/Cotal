@@ -1,5 +1,5 @@
 /**
- * Seat-environment scope smoke — the cell for Cotal #396 / #424.
+ * Seat-environment scope smoke - the cell for Cotal #396 / #424.
  *
  * WHAT WENT WRONG. Every connector used to build the seat's environment with `COTAL_CREDS`,
  * `COTAL_SERVERS` and `COTAL_CONTROL_TOKEN` in it. A process environment is inherited transitively,
@@ -94,7 +94,7 @@ const CONNECTORS = ["claude", "opencode", "codex", "hermes", "pi"] as const;
 
 console.log(`• broker: ${SERVERS} (suite constant; this suite opens no connection to it)`);
 
-// A2 — a REAL grandchild of a REAL seat process inherits none of it.
+// A2 - a REAL grandchild of a REAL seat process inherits none of it.
 //
 // The seat is started with the pi connector's env (any of them would do; pi is the one whose whole
 // session runs in the seat process, so it is the tightest case). The seat spawns a child with no env
@@ -111,7 +111,7 @@ const inherited = JSON.parse(line.slice("GRANDCHILD ".length)) as string[];
 assert.deepEqual(
   inherited,
   [],
-  `A2: a real grandchild of a seat inherited ${inherited.join(", ")} — the material is still ambient`,
+  `A2: a real grandchild of a seat inherited ${inherited.join(", ")} - the material is still ambient`,
 );
 console.log("✓ A2: a real grandchild of a real seat process inherited none of the connection material");
 
@@ -121,7 +121,7 @@ for (const name of CONNECTORS) {
   const spec = connector.buildLaunch(opts);
   const env = spec.env ?? {};
 
-  // A1 — no production connector puts connection material in the seat environment.
+  // A1 - no production connector puts connection material in the seat environment.
   for (const key of FORBIDDEN)
     assert.equal(
       env[key],
@@ -129,7 +129,7 @@ for (const name of CONNECTORS) {
       `A1: the ${name} connector exports ${key} into the seat environment, which every descendant of the seat inherits`,
     );
 
-  // A3 — and it still hands the session everything it needs, through the material file.
+  // A3 - and it still hands the session everything it needs, through the material file.
   const materialPath = env[LAUNCH_MATERIAL_ENV];
   assert.ok(materialPath, `A3: the ${name} connector wrote no launch material, so the session has no way to reach the broker`);
   const material = readLaunchMaterial(materialPath);
@@ -152,7 +152,7 @@ for (const name of CONNECTORS) {
   console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file`);
 }
 
-// A4 — a material file other local users can read is refused, not read. Without this the carrier
+// A4 - a material file other local users can read is refused, not read. Without this the carrier
 // could be quietly weaker than the environment it replaced, and nothing would say so.
 if (process.platform !== "win32") {
   const loose = piSpec.env?.[LAUNCH_MATERIAL_ENV] as string;
@@ -168,7 +168,7 @@ if (process.platform !== "win32") {
   console.log("• A4 skipped: POSIX mode bits only (win32 privacy is the ACL hardenPrivate sets at write)");
 }
 
-// A6 — a material file that says nothing is refused on READ, not just on write.
+// A6 - a material file that says nothing is refused on READ, not just on write.
 //
 // The write-side refusal was the only one for a while, and it is in the wrong place to stand alone:
 // the reader is handed a path by an environment variable, and a file that is empty, truncated or
@@ -211,7 +211,7 @@ if (process.platform !== "win32") {
 }
 console.log("✓ A6: a material file that says nothing is refused on read, and a valid one still reads");
 
-// A5 — dropping the pointer makes the control token unreachable, so every reader has to run first,
+// A5 - dropping the pointer makes the control token unreachable, so every reader has to run first,
 // and the file it pointed at is GONE rather than merely unreferenced.
 //
 // This is here because the ordering it describes was got WRONG, and the suite did not catch it: the
@@ -240,7 +240,7 @@ console.log("✓ A6: a material file that says nothing is refused on read, and a
 }
 console.log("✓ A5: the pointer is dropped, the file is unlinked, and what is left refuses instead of half-working");
 
-// A7 — the two-carrier refusal covers every direct carrier, COTAL_LINK included.
+// A7 - the two-carrier refusal covers every direct carrier, COTAL_LINK included.
 //
 // A join link is connection material in one string: server, auth and space. Left off the refusal
 // list it did not conflict loudly, it lost quietly to material precedence, which is the same silent
@@ -255,7 +255,7 @@ console.log("✓ A5: the pointer is dropped, the file is unlinked, and what is l
 }
 console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refused, not silently ranked");
 
-// A8 — half a control pair throws in BOTH directions, from the one place the pair is resolved.
+// A8 - half a control pair throws in BOTH directions, from the one place the pair is resolved.
 //
 // It used to return undefined and leave the policy to each caller, and the callers did not agree.
 // A session that believes it configured a control plane and silently has none is the shape of defect
