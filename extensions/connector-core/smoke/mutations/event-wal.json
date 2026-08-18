@@ -1,0 +1,47 @@
+{
+  "suite": "extensions/connector-core/smoke/event-wal.smoke.ts",
+  "guard": "a log has no publish expectation until the principal's shared record is bound to it, and a handle that is no longer entitled to write its own log cannot move that shared record",
+  "command": "pnpm smoke:event-wal",
+  "completionMarker": "event-wal smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/event-wal.json",
+  "why": [
+    "THE UNBOUND EXPECTATION IS THE DEFECT'S OWN SHAPE. A log is keyed per session; the subject it",
+    "publishes to is keyed per principal. Returning this log's own last ack when nothing is bound is",
+    "returning the exact number that took every agent's second session dark, and the argument for",
+    "allowing it was that no shipped path reaches it. That argument was true, and it is the same",
+    "argument the released seam shipped on: two correct components with an assumption standing where",
+    "a guard belongs. So the assumption is a guard.",
+    "",
+    "THE ORDERING FINDING CAME OUT OF MAKING THAT GUARD REAL, WHICH IS WHY IT IS GRADED HERE. With",
+    "the fallback gone, a suite cell that had always passed went red and showed that the generation",
+    "guard ran inside `write`, AFTER the shared record moved. A handle whose file had been rewritten",
+    "underneath it advanced the PRINCIPAL's tip and only then learned it was not allowed to write.",
+    "The record belongs to every thread of that principal, so a refusal that arrives after the",
+    "mutation refuses the wrong thing.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports `../src/event-wal.js` by relative source path, so the",
+    "bytes mutated are the bytes graded; no dist, no build in the command. Its only package import",
+    "for this behaviour is the in-memory double from @cotal-ai/smoke-kit, which is test-only and",
+    "carries none of the behaviour under test."
+  ],
+  "mutations": [
+    {
+      "name": "S16 an unbound log offers its own last ack instead of refusing",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    if (!this.subject)\n      throw new Error(\n",
+      "replace": "    if (false)\n      throw new Error(\n",
+      "expectRed": "[H] an UNBOUND log has no expectation and says so, rather than offering its own last ack",
+      "cell": "[H] an UNBOUND log has no expectation and says so, rather than offering its own last ack",
+      "note": "The released behaviour restored as a default. It is not reachable from any shipped path today, which is exactly why it needs a guard rather than a comment: the next caller is the one that reaches it."
+    },
+    {
+      "name": "S17 the stale-writer check runs after the shared record has already moved",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    await this.assertNotClobbering();\n    // THE SHARED RECORD ADVANCES FIRST, and the order is deliberate.",
+      "replace": "    // THE SHARED RECORD ADVANCES FIRST, and the order is deliberate.",
+      "expectRed": "[H] ...and the PRINCIPAL's shared tip never moved for it",
+      "cell": "[H] ...and the PRINCIPAL's shared tip never moved for it",
+      "note": "Removing the early check puts the generation guard back inside `write`, where it still refuses the write but only after the principal's shared tip has taken this handle's number. The sibling cell that asserts the refusal is a STALE-WRITER refusal is what makes this one legible: without it the mutant merely changes which error comes out."
+    }
+  ]
+}

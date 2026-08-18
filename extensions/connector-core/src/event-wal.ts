@@ -619,19 +619,23 @@ export class EventWal {
   /**
    * The sequence a publish must expect, which is the SUBJECT's tip and not this thread's.
    *
-   * Unbound it returns this document's own last ack, which is what a WAL driven directly by a suite
-   * means and what every caller meant before the shared record existed.
-   *
-   * **THAT UNBOUND VALUE IS THE DEFECT'S OWN SHAPE, SO WHERE IT CANNOT BE REACHED IS PART OF THE
-   * CONTRACT AND IS WRITTEN DOWN RATHER THAN ASSUMED.** Nothing that publishes reaches it:
-   * {@link AguiEmitter.start} is the only shipped path from a WAL to a publish, it requires a
-   * frontier at runtime as well as in the type, and it binds before the emitter exists. So an
-   * unbound WAL is one nobody is publishing from. A future caller that drives a WAL to a publish
-   * without going through the emitter would reintroduce this defect silently, and the requirement
-   * on `start` is the guard for that, not a comment here.
+   * **UNBOUND IT THROWS, AND AN EARLIER VERSION OF THIS RETURNED THIS DOCUMENT'S OWN LAST ACK.**
+   * That number is the defect's own shape: per session, while the subject is per principal. The
+   * argument for returning it was that no shipped path can reach it, because
+   * {@link AguiEmitter.start} is the only route from a log to a publish and it binds before the
+   * emitter exists. The argument was true, and it is the same argument the released seam shipped
+   * on: two correct components with an assumption standing where a guard belongs, recorded in
+   * prose. So the assumption is a guard now. A caller that drives a log toward a publish without a
+   * frontier fails here rather than republishing an expectation that was never the subject's.
    */
   get expectedTip(): number {
-    return this.subject ? this.subject.tip : this.doc.frontier.lastSubjectSeq;
+    if (!this.subject)
+      throw new Error(
+        `event WAL ${this.path}: no subject frontier is bound, so there is no expectation to publish. ` +
+          `The subject is shared by every thread of this principal, so this document's own last ack is ` +
+          `not it; bind the principal's record with bindSubjectFrontier first.`,
+      );
+    return this.subject.tip;
   }
 
   /** Transition 1 — record the frame, with `id` and `E` frozen, BEFORE any publish. */
@@ -681,6 +685,13 @@ export class EventWal {
       throw new Error(`event WAL ${this.path}: ackSeq must be a safe non-negative integer, got ${String(ackSeq)}`);
     if (ackSeq <= this.expectedTip)
       throw new Error(`event WAL ${this.path}: ackSeq=${ackSeq} is not ahead of the subject's tip ${this.expectedTip}`);
+    // A STALE WRITER MAY NOT TOUCH THE SHARED RECORD AT ALL, and this line is here because making
+    // the unbound expectation throw surfaced that it could. The generation guard used to run inside
+    // `write`, which is AFTER the record moves, so a handle whose file had been rewritten underneath
+    // it advanced the principal's tip and only then learned it was not allowed to write. The record
+    // is shared by every thread of the principal; a refusal that arrives after the mutation is a
+    // refusal of the wrong thing.
+    await this.assertNotClobbering();
     // THE SHARED RECORD ADVANCES FIRST, and the order is deliberate. A crash between the two leaves
     // the shared tip AHEAD of this log, so the next start expects a sequence the subject has not
     // reached and the broker refuses it: loud, and diagnosable. The other order leaves the shared
@@ -730,6 +741,10 @@ export class EventWal {
    */
   async abandon(): Promise<void> {
     return this.serialize(async () => {
+    // Stale-writer check first, for the same reason as in `recordAck`: an abandonment resets the
+    // record for EVERY thread of the principal, so a handle that is no longer entitled to write its
+    // own log is the last one that should be clearing theirs.
+    await this.assertNotClobbering();
     // A purge returns the subject tip to 0 for EVERY thread on the channel, so the shared record
     // goes with it. Leaving it standing would make the next thread expect a tip the subject no
     // longer has, which is this defect's mirror image: the same permanent halt from the other side.
