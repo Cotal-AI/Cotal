@@ -197,6 +197,12 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   const ktool = kinds(withTool.events);
   c("shape:a tool call becomes START/ARGS/END plus RESULT", ktool.TOOL_CALL_START === 1 && ktool.TOOL_CALL_ARGS === 1 && ktool.TOOL_CALL_END === 1 && ktool.TOOL_CALL_RESULT === 1, ktool);
   const res = withTool.events.find((e) => (e as { type: string }).type === "TOOL_CALL_RESULT") as { toolCallId: string; messageId: string; content: string };
+  // BOTH ends of the call are asserted, and separately. A mutation that synthesized the START's id
+  // survived a cell that only read the RESULT's: the counts were unchanged and the blast radius
+  // showed up in a differently-named bracket cell, which is a red that is not evidence for the
+  // claim the cell makes.
+  const startEvt = withTool.events.find((e) => (e as { type: string }).type === "TOOL_CALL_START") as { toolCallId: string };
+  c("shape:TOOL_CALL_START carries the NATIVE call_id, not a synthesized key", startEvt.toolCallId === "call-9", { toolCallId: startEvt.toolCallId });
   c("shape:toolCallId is the NATIVE call_id, not a synthesized key", res.toolCallId === "call-9", { toolCallId: res.toolCallId });
   c("shape:TOOL_CALL_RESULT carries the messageId section 3.1 owes, derived from the call id", res.messageId === "res:call-9", { messageId: res.messageId });
 
@@ -210,6 +216,11 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   ]);
   const kl = kinds(listOutput.events);
   c("shape:a LIST-shaped tool output still produces exactly one RESULT", kl.TOOL_CALL_RESULT === 1, kl);
+  // Existence is not delivery. A mapper that quietly serialized a list to nothing would satisfy the
+  // cell above and put an empty result on the wire, which reads to an observer as a tool that
+  // returned nothing rather than as a mapper that dropped it.
+  const listRes = listOutput.events.find((e) => (e as { type: string }).type === "TOOL_CALL_RESULT") as { content: string };
+  c("shape:and the LIST output's content actually reaches the event", listRes.content.includes("listy"), { len: listRes.content.length });
   c("shape:and the run still closed cleanly", kl.RUN_FINISHED === 1 && listOutput.bracketError === null, { kl, err: listOutput.bracketError });
 
   // A record for a turn other than the open one must not close it: codex retries a failed turn
@@ -220,7 +231,11 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
     done,
   ]);
   const kf = kinds(foreign.events);
-  c("shape:a task_complete for a DIFFERENT turn does not close the open run", kf.RUN_FINISHED === 1, kf);
+  // THE COUNT IS 1 IN BOTH WORLDS, so it is not the assertion. Unfenced, the foreign record closes
+  // the run and the real one maps to null; fenced, the foreign one maps to null and the real one
+  // closes it. What separates them is WHICH record emitted, so that is what is asserted.
+  c("shape:a task_complete for a DIFFERENT turn emits NOTHING", foreign.perRecord[1] === null, { got: foreign.perRecord[1] });
+  c("shape:and the run is closed by its OWN turn's record", foreign.perRecord[2] !== null && kf.RUN_FINISHED === 1, kf);
   c("shape:and exactly one run existed throughout", foreign.runs.length === 1, { runs: foreign.runs.length });
 
   // turn_id is NOT required on turn_aborted: one corpus reading has it on 61 of 61 and another on

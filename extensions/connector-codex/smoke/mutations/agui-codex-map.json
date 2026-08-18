@@ -20,14 +20,14 @@
       "file": "extensions/connector-codex/src/agui-map.ts",
       "find": "          toolCallStart({ toolCallId, toolCallName, timestamp: ts }),",
       "replace": "          toolCallStart({ toolCallId: `synth-${ts}`, toolCallName, timestamp: ts }),",
-      "expectRed": "shape:toolCallId is the NATIVE call_id, not a synthesized key"
+      "expectRed": "shape:TOOL_CALL_START carries the NATIVE call_id, not a synthesized key"
     },
     {
-      "name": "M4 a list-shaped tool output is no longer serialized, so one of the two real shapes is dropped",
+      "name": "M4 a list-shaped tool output silently serializes to nothing, so one of the two real shapes is dropped",
       "file": "extensions/connector-codex/src/agui-map.ts",
       "find": "  if (typeof o === \"string\") return o;",
-      "replace": "  if (typeof o === \"string\") return o;\n  if (Array.isArray(o)) throw new Error(\"unexpected list output\");",
-      "expectRed": "shape:a LIST-shaped tool output still produces exactly one RESULT"
+      "replace": "  if (typeof o === \"string\") return o;\n  if (Array.isArray(o)) return \"\";",
+      "expectRed": "shape:and the LIST output's content actually reaches the event"
     },
     {
       "name": "M5 turn_aborted requires a turn id, turning a rare heterogeneity into a dead stream",
@@ -41,7 +41,7 @@
       "file": "extensions/connector-codex/src/agui-map.ts",
       "find": "      if (turn !== undefined && openTurn !== undefined && turn !== openTurn) return null;\n      const runId = open;\n      const err = asRecord(payload.error);",
       "replace": "      const runId = open;\n      const err = asRecord(payload.error);",
-      "expectRed": "shape:a task_complete for a DIFFERENT turn does not close the open run"
+      "expectRed": "shape:a task_complete for a DIFFERENT turn emits NOTHING"
     },
     {
       "name": "M7 the opaque reasoning blob is published alongside the summary",
