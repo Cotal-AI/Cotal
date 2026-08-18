@@ -56,9 +56,12 @@
     "Measured on the lingering process rather than argued: an unref'd-timer preload printing",
     "`getActiveResourcesInfo()` reported three PipeWraps, no timers and no sockets. A pause alone was",
     "tried first and measured as insufficient, so that line was removed rather than kept with a",
-    "comment claiming a fix it did not deliver. Mutation 12 grades the replacement, and doubles as",
-    "the attribution: on the one-shot piped route nothing else in this change executes, so deleting",
-    "that line is the older behaviour there.",
+    "comment claiming a fix it did not deliver. Mutation 12 grades the replacement. It is NOT the",
+    "attribution: no mutation of this tree can say what another build does, and \"pre-existing\" is a",
+    "claim about the build that ships. That half has its own instrument, `pnpm probe:pipe-oneshot`,",
+    "which is the same trigger with the assertions stripped and the worktree as the arm: at",
+    "origin/main (a8589c11) it reports exit=HANG ms=>30000 with the detach honoured and `detached",
+    "from` printed; at this tip, exit=0 ms=102. Two sentences, two instruments.",
     "",
     "RUN, NOT PREDICTED: all ten below KILLED, each on the assertion registered for it in advance, in",
     "one run in a detached copy at 04ea5315 with the CLI rebuilt before every mutation, against a",
@@ -226,7 +229,7 @@
       "expectRed": "M: the piped one-shot exits clean",
       "cell": "M. a piped one-shot attach still gives the process back when it detaches",
       "completionMarker": "M: the manager is back on the session count it started with",
-      "note": "This mutation is also the ATTRIBUTION. `--no-reconnect` at a pipe is the one route where nothing installs the loop's reader, on this code or on the code before it, because both `ownStdin` call sites sit behind `if (reconnect)` and the backoff never runs; so on that route the two builds differ in exactly one thing that executes, this line. Deleting it therefore IS the older behaviour there, which makes the hang pre-existing on the one-shot piped route rather than introduced here. What honouring the population gate did was make the same hang reachable on the RECONNECTING piped route as well, where the pause inside the watcher's `stop` had been giving the stream back as a side effect. Measured on the lingering process itself with an unref'd-timer preload: `getActiveResourcesInfo()` reported three PipeWraps and nothing else, no timers and no sockets, after `detached from` had already printed. A pause alone was measured and was not enough.",
+      "note": "This mutation proves the line is LOAD-BEARING in this build on that route: delete it and the piped one-shot never gives the shell back. It is deliberately not the attribution, because \"pre-existing\" is a claim about the build that ships and no mutation of this tree can measure another artifact. That half is measured directly instead: `pnpm probe:pipe-oneshot` in a worktree at origin/main (a8589c11) reports exit=HANG ms=>30000 with the detach honoured and `detached from` printed, and the same probe at this tip reports exit=0 ms=102. Honouring the population gate made the same hang reachable on the RECONNECTING piped route as well, where the pause inside the watcher's `stop` had been giving the stream back as a side effect. Measured on the lingering process itself with an unref'd-timer preload: `getActiveResourcesInfo()` reported three PipeWraps and nothing else, no timers and no sockets, after `detached from` had already printed. A pause alone was measured and was not enough.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]

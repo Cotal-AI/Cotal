@@ -145,6 +145,7 @@
     "probe:session-leak": "tsx implementations/manager/smoke/_probe-session-leak.ts",
     "probe:cellj-timing": "tsx implementations/manager/smoke/_probe-cellj-timing.ts",
     "probe:stdin-window": "tsx implementations/manager/smoke/_probe-stdin-window.ts",
+    "probe:pipe-oneshot": "tsx implementations/manager/smoke/_probe-pipe-oneshot-exit.ts",
     "probe:live-socket-gap": "tsx implementations/manager/smoke/_probe-live-socket-gap.ts",
     "smoke:manager-console": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/console-assets.smoke.ts",
     "smoke:windows": "tsx implementations/manager/smoke/windows-launch.smoke.ts",

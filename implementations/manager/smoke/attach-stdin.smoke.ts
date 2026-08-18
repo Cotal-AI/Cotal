@@ -786,6 +786,11 @@ try {
   // shape as a gate written at one call site of three. Measured here rather than inferred: this cell
   // is what the `process.stdin.unref()` on the exit path answers to, and it grades the one-shot
   // exit that a script's `$?` depends on.
+  //
+  // AND THE ROUTE IS BROKEN ON THE BUILD THAT SHIPS, measured rather than reasoned: `pnpm
+  // probe:pipe-oneshot` run in a worktree at origin/main (a8589c11) takes the detach, prints
+  // `detached from`, and then holds the process past 30s. The same probe at this tip exits 0 in
+  // 102ms. This cell is the same trigger with the assertions attached.
   {
     const base = live();
     const mark = sink().length;
