@@ -251,7 +251,12 @@ try {
   // refuses terminally, and the whole event plane dies. Found by review, reproduced here first.
   const createC = fire({ type: "session.created", properties: { info: { id: C } } });
   const createD = fire({ type: "session.created", properties: { info: { id: D } } });
-  const partInGap = fire({ type: "message.part.updated", properties: { part: { sessionID: D } } });
+  // THE PART MUST LAND IN THE ADOPT-TO-DRAIN WINDOW, not before the callbacks start. Firing it
+  // synchronously here would grade a SAFE placement: the ambient id is still the old session, so the
+  // event is ignored and nothing is proven. One microtask lets C's queued swap run its adopt and
+  // suspend on the drain, which is the window where the id used to lead the holder.
+  await Promise.resolve();
+  const partInGap = fire({ type: "message.part.updated", properties: { part: { sessionID: C } } });
   await Promise.all([createC, createD, partInGap]);
   await sleep(2_000);
   for (const id of [C, D]) {
