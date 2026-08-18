@@ -274,26 +274,42 @@ const NORMAL: Completion = { type: "normal" };
 
 // ---- per-branch execution state ---------------------------------------------------------------------
 
+/**
+ * A branch's cancellation, in two degrees.
+ *
+ * `cancelled` is the cancellation LAW: a cancelled branch performs no new effect, and every effect
+ * boundary refuses it. `cutPure` is the stronger cut a scope applies to an arm that CANNOT WIN any
+ * more: its pure work is also abandoned, at the next yield. An arm that could still win keeps
+ * running its pure work to a settle, because cutting it there would let the scheduler, and through
+ * it the `yieldEvery` pin, decide a race the recorded clocks should decide (see `runScope`).
+ * Both degrees flow to child signals, and a signal already cancelled softly can be escalated.
+ */
 class Signal implements CancelSignal {
   cancelled = false;
+  cutPure = false;
   reason?: string;
-  private readonly listeners: ((reason: string) => void)[] = [];
+  private readonly listeners: ((reason: string, cutPure: boolean) => void)[] = [];
 
-  onCancel(fn: (reason: string) => void): void {
+  onCancel(fn: (reason: string, cutPure: boolean) => void): void {
     this.listeners.push(fn);
   }
 
-  cancel(reason: string): void {
-    if (this.cancelled) return;
-    this.cancelled = true;
-    this.reason = reason;
-    for (const l of this.listeners) l(reason);
+  cancel(reason: string, opts?: { readonly cutPure: boolean }): void {
+    const cut = opts?.cutPure ?? true;
+    const first = !this.cancelled;
+    if (first) {
+      this.cancelled = true;
+      this.reason = reason;
+    }
+    const escalated = cut && !this.cutPure;
+    if (escalated) this.cutPure = true;
+    if (first || escalated) for (const l of this.listeners) l(reason, this.cutPure);
   }
 
   child(): Signal {
     const s = new Signal();
-    if (this.cancelled) s.cancel(this.reason ?? "parent cancelled");
-    else this.onCancel((r) => s.cancel(r));
+    if (this.cancelled) s.cancel(this.reason ?? "parent cancelled", { cutPure: this.cutPure });
+    this.onCancel((r, cut) => s.cancel(r, { cutPure: cut }));
     return s;
   }
 }
@@ -659,25 +675,29 @@ class Interpreter {
     return this.breathe(frame);
   }
 
-  /**
-   * Hand the macrotask queue back, then notice if this branch was cancelled while we were away.
-   *
-   * The cancellation check is deliberately HERE and not on every dispatch. Cancellation is
-   * otherwise observed only at effect boundaries (see {@link Interpreter.performEffect}), so a race
-   * loser that spins without performing an effect never learns it lost and spins forever. Checking
-   * at the yield boundary reaches exactly that case and no other: a branch that runs fewer than
-   * `yieldEvery` dispatches between two effects never crosses this line, so the cancellation law
-   * for ordinary programs is unchanged.
-   */
   get stepCount(): number {
     return this.steps;
   }
 
+  /**
+   * Hand the macrotask queue back, then abandon this branch's pure work IF IT CAN NO LONGER MATTER.
+   *
+   * Cancellation is otherwise observed only at effect boundaries (see {@link Interpreter.performEffect}).
+   * This line used to cut every cancelled branch, so a `race` loser in a pure tail was abandoned at
+   * its next yield, and whether an arm that had already performed its last effect got to settle
+   * depended on how many dispatches its tail took against `yieldEvery`: the winner of a live race
+   * was a function of a host tuning knob (design §3.4, measured). The cut is now the scope's call
+   * (`Signal.cutPure`): an arm that cannot win any more is abandoned here, and an arm that could
+   * still win runs its pure work to a settle, so the winner is the recorded clocks and declaration
+   * order and nothing else (see `runScope`). An arm that could still win and spins forever is a
+   * pure infinite loop, and it ends the way every pure infinite loop ends: on the step budget
+   * (L4013), loudly, which is the run's answer rather than the scheduler's.
+   */
   private async breathe(frame: Frame): Promise<void> {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 0);
     });
-    if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? "cancelled");
+    if (frame.signal.cutPure) throw new Cancelled(frame.signal.reason ?? "cancelled");
   }
 
   // ---- the effect seam ------------------------------------------------------------------------
@@ -1758,31 +1778,55 @@ class Interpreter {
         }
       }
 
-      // race: first to settle wins, and the losers are cancelled BY SEMANTICS, not by an API the
-      // program calls. A cancelled branch performs no new effects; an agent reply already in
+      // race: the earliest to settle wins, and the losers are cancelled BY SEMANTICS, not by an API
+      // the program calls. A cancelled branch performs no new effects; an agent reply already in
       // flight completes and is ignored, which is the documented answer rather than an accident.
-      // BOTH HANDLERS, and the rejection handler is the whole point. `p.then(() => undefined)`
-      // propagates a rejection, so the first arm to FAIL threw straight out of this await: past the
-      // cancellation below, past `allSettled`, and into a scope entry recorded as failed with no
-      // losers on it. The run terminated while a sibling was still performing effects, which is the
-      // exact defect the scope entry exists to prevent. A rejection is a settle.
-      await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
-      for (const f of frames) f.signal.cancel("a sibling branch won the race");
-      const settled = await Promise.allSettled(running);
-      frame.clock.join(frames.map((f) => f.clock));
-
       // THE WINNER IS THE EARLIEST BRANCH, NOT THE FIRST ONE SCHEDULING HAPPENED TO WAKE.
       //
-      // On a live run those are the same thing and this reads as ceremony. On a RE-ENTERED scope
-      // they are not: a crash can leave two branches already settled in the journal, both replay
-      // instantly, and whichever the event loop resumes first would otherwise win — so the same
-      // journal could resolve a different arm on every attempt. The branch clock is the max endedAt
-      // of the effects that branch awaited, which is recorded, so this tie-break is a function of
-      // the journal. Equal clocks fall back to declaration order, which is also recorded.
+      // An arm's logical settlement time is its branch clock: the max endedAt of the effects it
+      // awaited (the scope's entry clock if it awaited none), which is recorded. The winner is the
+      // least clock among the arms that settled; equal clocks fall to declaration order, which is
+      // recorded too. So the same journal resolves the same arm on every re-entry.
+      //
+      // AND LIVE, NO SCHEDULER AND NO `yieldEvery` VALUE CAN CHOOSE. When an arm settles, every
+      // sibling is cancelled (no new effects, the cancellation law), and each sibling is CUT, pure
+      // work included, only if it can no longer win: its clock is later, or equal and it is declared
+      // later. A sibling that could still win runs its pure work to a settle, and a sibling that
+      // reaches a new effect is cut there, having proven it would end after the settled arm's clock.
+      // Which arms settle is therefore a function of their effects and the declaration order, and
+      // so is the winner. A later settle with an earlier clock re-decides the cut for the rest.
       // A FAILURE IS A SETTLE, so a rejecting arm is a candidate to win — it just wins by failing
       // the scope. What is NOT a candidate is a branch that rejected with `Cancelled`, because that
       // is not an outcome the branch reached, it is what losing did to it. Counting those would let
       // a loser cut short at an early step outrank the winner that ran longer.
+      const onSettle = (i: number, wasCancelled: boolean): void => {
+        if (wasCancelled) return;
+        const at = (frames[i] as Frame).clock.now();
+        for (let j = 0; j < frames.length; j += 1) {
+          if (j === i) continue;
+          const other = (frames[j] as Frame).clock.now();
+          const couldStillWin = other < at || (other === at && j < i);
+          (frames[j] as Frame).signal.cancel("a sibling branch won the race", { cutPure: !couldStillWin });
+        }
+      };
+      running.forEach((p, i) => {
+        p.then(
+          () => onSettle(i, false),
+          (e: unknown) => onSettle(i, e instanceof Cancelled),
+        );
+      });
+      // BOTH HANDLERS, and the rejection handler is the whole point. `p.then(() => undefined)`
+      // propagates a rejection, so the first arm to FAIL threw straight out of this await: past the
+      // cancellation, past `allSettled`, and into a scope entry recorded as failed with no losers on
+      // it. The run terminated while a sibling was still performing effects, which is the exact
+      // defect the scope entry exists to prevent. A rejection is a settle.
+      await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
+      const settled = await Promise.allSettled(running);
+      // Every arm has settled, so whatever cut it did not get earlier no longer matters; the
+      // signal still says cancelled, which is what a nested branch that outlives this line reads.
+      for (const f of frames) f.signal.cancel("a sibling branch won the race");
+      frame.clock.join(frames.map((f) => f.clock));
+
       let winnerAt = -1;
       let winnerIndex = -1;
       for (let i = 0; i < settled.length; i += 1) {

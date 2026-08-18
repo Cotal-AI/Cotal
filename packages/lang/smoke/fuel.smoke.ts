@@ -115,52 +115,98 @@ const watchdogFiredDuring = async (yieldEvery: number): Promise<boolean> => {
   ok("so the timer is measuring the yield, not the runtime", yielding !== starved, { yielding, starved });
 }
 
-// ---- 3) a race loser that spins is actually unwound ---------------------------------------------
+// ---- 3) a race arm that spins: cut when it cannot win, budgeted when it could ------------------
 
 /**
- * The reachable case, with no new API: cancellation is otherwise observed only at effect
- * boundaries, so a race loser that spins without performing an effect never learns it lost.
+ * Cancellation is otherwise observed only at effect boundaries, so an arm that spins without
+ * performing an effect never reaches one. What happens to it is the race rule, not the scheduler:
  *
- * `race` cancels the losers and then awaits them (`allSettled`), so without a cancellation check at
- * the yield boundary this program does not resolve at all. The timeout below is what distinguishes
- * "unwound" from "hung", and it is real: this test hangs rather than fails if the check is removed,
- * which is why it is written with an explicit loser rather than left to the suite runner.
+ * - an arm that CAN NO LONGER WIN (its clock is later than a settled sibling's, or equal and it is
+ *   declared later) is cut at its next yield, and the run returns with the sibling as the winner;
+ * - an arm that COULD STILL WIN (its clock is earlier, or equal and it is declared earlier) keeps
+ *   its pure work, because cutting it there would let `yieldEvery` decide the race; if that work is
+ *   a pure infinite loop it ends on the step budget, L4013, which is the run's answer.
+ *
+ * Three programs, one variable each. The watchdog is what distinguishes "returned" from "hung", and
+ * it is real: with the cut removed the second program does not resolve inside its budget window.
  */
 {
-  const SPIN_LOSER = `
+  const raceUntil = async (source: string, runId: string): Promise<{ verdict: string; logs: unknown[] }> => {
+    const logs: unknown[] = [];
+    const raced = run(source, {
+      runId,
+      handler: new SimHandler({ turns: { quick: { status: "done", at: 0 } } }),
+      yieldEvery: 64,
+      stepBudget: 40_000,
+      onLog: (l) => logs.push(l.values[0]),
+    });
+    const verdict = await Promise.race([
+      raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
+      new Promise<string>((r) => {
+        setTimeout(() => r("HUNG"), 8_000);
+      }),
+    ]);
+    return { verdict, logs };
+  };
+
+  // (b) the spinner CANNOT win: equal clocks (neither arm awaits an effect), and it is declared second.
+  {
+    const { verdict, logs } = await raceUntil(
+      `
+const out = await race({
+  quick: async () => "done",
+  spin: async () => { let n = 0; while (true) { n = n + 1; } },
+}, { name: "who" });
+log(out.index);
+`,
+      "f-4b",
+    );
+    ok("a spinning arm that cannot win is cut at its next yield and the run returns", verdict === "returned", verdict);
+    ok("and the arm declared first wins the tie", logs[0] === "quick", logs);
+  }
+
+  // (c) the same two arms, the spinner declared FIRST: it could still win the tie, so its pure work
+  // is not cut, and the pure infinite loop ends on the step budget.
+  {
+    const { verdict } = await raceUntil(
+      `
+const out = await race({
+  spin: async () => { let n = 0; while (true) { n = n + 1; } },
+  quick: async () => "done",
+}, { name: "who" });
+log(out.index);
+`,
+      "f-4c",
+    );
+    ok("a spinning arm that could still win is not cut: the step budget ends it (L4013)", verdict.startsWith("threw L4013"), verdict);
+  }
+
+  // (a) the spinner has the EARLIER clock: the sibling awaited a turn (the simulator advances its
+  // clock by 5m), the spinner awaited nothing, so its logical time is the scope's entry. Declared
+  // second, it could still win on the clock alone, and the budget ends it.
+  {
+    const { verdict } = await raceUntil(
+      `
 const a = await spawn("a");
 const out = await race({
   fast: async () => await turn(a, { name: "quick" }),
   spin: async () => { let n = 0; while (true) { n = n + 1; } },
 }, { name: "who" });
 log(out.index);
-`;
-  const logs: unknown[] = [];
-  const raced = run(SPIN_LOSER, {
-    runId: "f-4",
-    handler: new SimHandler({ turns: { quick: { status: "done", at: 0 } } }),
-    yieldEvery: 64,
-    stepBudget: 2_000_000,
-    onLog: (l) => logs.push(l.values[0]),
-  });
-  const verdict = await Promise.race([
-    raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
-    new Promise<string>((r) => {
-      setTimeout(() => r("HUNG"), 4_000);
-    }),
-  ]);
-
-  ok("a race whose loser spins forever still returns", verdict === "returned", verdict);
-  ok("and the effect-performing branch is the winner", logs[0] === "fast", logs);
+`,
+      "f-4a",
+    );
+    ok("a spinning arm with the earlier logical time is not cut either, whatever it is declared after (L4013)", verdict.startsWith("threw L4013"), verdict);
+  }
 }
 
 // ---- 4) the ceiling is invisible to ordinary programs -------------------------------------------
 
 /**
- * The cancellation check sits at the yield boundary rather than on every dispatch, so that ordinary
- * programs keep the documented law unchanged: cancellation is observed at effect boundaries. That
- * claim is only true if ordinary programs do not cross a yield boundary between effects, which is a
- * fact about step counts rather than an intention. So measure it.
+ * The pure cut sits at the yield boundary rather than on every dispatch, so an ordinary program
+ * never meets it: cancellation is observed at effect boundaries. That claim rests on ordinary
+ * programs not crossing a yield boundary between effects, which is a fact about step counts rather
+ * than an intention. So measure it.
  */
 {
   const ORDINARY = `
@@ -191,9 +237,9 @@ log(votes.a.status);
 
   ok("a realistic program completes under the default budget", logs[0] === "done", logs);
   ok("and reports what it cost", typeof r.steps === "number" && r.steps > 0, r.steps);
-  // The number that backs the comment in breathe(): five effects and a parallel scope cost far less
-  // than one yield interval, so no ordinary program reaches the boundary where cancellation is
-  // checked. If this ever fails, the comment is wrong before the code is.
+  // Five effects and a parallel scope cost far less than one yield interval, so no ordinary program
+  // reaches the boundary where a pure cut is applied. If this ever fails, the comment is wrong
+  // before the code is.
   ok("and stays well inside one yield interval (1024)", r.steps < 1_024, r.steps);
 }
 
