@@ -84,6 +84,13 @@
       "find": "    return holder.path === undefined || holder.path === id ? holder : undefined;\n",
       "replace": "    return holder.path === id ? holder : undefined;\n",
       "expectRed": "boot:the first event of the process reaches a holder nothing has bound yet"
+    },
+    {
+      "name": "R7 the identity gate stops filtering, so a SECOND unseen id in the same synchronous block also reaches the free holder and one of the two is refused terminally",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    return id === sessionID;\n",
+      "replace": "    return true;\n",
+      "expectRed": "boot:and a second unseen id in that same block did not kill the emitter"
     }
   ]
 }
