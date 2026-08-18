@@ -9,7 +9,7 @@
 
 Give a session's structured event plane a way to be turned on, and a channel that names who is publishing.
 
-An agent can now be launched with `cotal spawn --events` (or `cotal start --events`), which publishes
+An agent can now be launched with `cotal spawn --events`, foreground or detached, which publishes
 that session's structured event stream, what it did rather than the prose it wrote, on a channel of
 its own so an external observer or UI can read it. Off by default. Nothing about an existing launch
 changes.
@@ -32,9 +32,12 @@ the launch arms the session; the grant is what makes the arming useful. `cotal_s
 tool, does not expose the option at all, because arming another agent's plane needs an admin precheck
 ahead of connector resolution and that precheck does not exist yet.
 
-**The flag rides the whole launch path, including the record a restart reads.** It is on the detached
-spawn payload, the manager service contract, and the resume document, so a manager restart brings an
-armed session back armed. A resume adopts the credential the spawn wrote rather than minting a new
+**The flag rides the whole launch path, including the record a restart reads.** It is on the
+foreground launch, the detached spawn payload, the manager service contract, and the resume document,
+so a manager restart brings an armed session back armed. The foreground path mints its own grant, from
+the principal it allocated, and passes the workspace root the emitter's write-ahead log needs: a
+session armed by one launch surface and not the other would be a flag that means two different
+things. A resume adopts the credential the spawn wrote rather than minting a new
 one, so what a restart can lose is the record: either the channel leaves `allowPublish`, or the
 arming flag does and the session returns holding publish rights it will never use, which reads as a
 working system with an empty panel. Both halves are now carried and both are asserted.
