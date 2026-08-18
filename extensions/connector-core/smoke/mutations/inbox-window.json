@@ -55,7 +55,16 @@
     "the mark that only this session's own traffic may move), the record that makes the ahead lane",
     "exactly-once, and the bound on that record. Where the bound's cost lands is the security question,",
     "and cell 24 answers it by measurement: honest traffic never enters the bounded set, so a peer that",
-    "spends the whole bound spends it on its own messages and cannot cost another peer its recall."
+    "spends the whole bound spends it on its own messages and cannot cost another peer its recall.",
+    "",
+    "K26 through K28 are the eighth defect, which is the seventh's mirror image: the seventh withheld",
+    "mail by ORDERING it out of reach, and this one withholds mail by spending the window DESCRIBING",
+    "what it is not delivering. A note naming an undeliverable message crowded out a message that fits,",
+    "the trim gave back the message rather than the description, and three calls came back identical",
+    "while every one of them promised a next batch. The rule the kills defend is that the note yields",
+    "before the last message does, in order (names, counts, nothing), and only when it is the last:",
+    "while another message still rides along, the full note is worth an item and K26 proves the suite",
+    "notices if that boundary moves either way."
   ],
   "mutations": [
     {
@@ -97,7 +106,7 @@
     {
       "name": "K5 the response stops saying what it is holding back",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  if (!held.length) return \"\";",
+      "find": "  if (!held.length || tier === \"none\") return \"\";",
       "replace": "  if (held.length >= 0) return \"\";",
       "expectRed": "...and it says what it is holding back",
       "cell": "...and it says what it is holding back",
@@ -124,8 +133,8 @@
     {
       "name": "K8 one message too large for any response blocks the queue behind it",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    if (used + cost > budget) {\n      // A message nothing could ever carry is not a gap: it will never become deliverable, so the\n      // walk steps over it and the note says so. Anything else IS a gap, and the ordered lane waits.\n      if (strict && !stuck.has(i.id)) strictGap = true;\n      continue;\n    }",
-      "replace": "    if (used + cost > budget) {\n      // A message nothing could ever carry is not a gap: it will never become deliverable, so the\n      // walk steps over it and the note says so. Anything else IS a gap, and the ordered lane waits.\n      if (strict && !stuck.has(i.id)) strictGap = true;\n      break;\n    }",
+      "find": "      if (strict && !stuck.has(i.id)) strictGap = true;\n      continue;",
+      "replace": "      if (strict && !stuck.has(i.id)) strictGap = true;\n      break;",
       "cell": "ordinary mail is delivered past an item that can never fit",
       "expectRed": "ordinary mail is delivered past an item that can never fit",
       "note": "The fill stops at the first item too large instead of stepping over it, so one message nobody can deliver blocks every message behind it, on both lanes. That is the wedge the show-alone escape was invented to avoid, arriving through the other door."
@@ -142,8 +151,8 @@
     {
       "name": "K10 nothing shown is reported as an empty inbox, whatever is held",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "    else if (held.length) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);",
-      "replace": "    else if (false) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);",
+      "find": "    else if (held.length) parts.push(`Nothing could be delivered in this response.${note}`);",
+      "replace": "    else if (false) parts.push(`Nothing could be delivered in this response.${note}`);",
       "cell": "...and the reply names it rather than leaving it silently stuck",
       "expectRed": "...and the reply names it rather than leaving it silently stuck",
       "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side. The cell that notices first is the oversized-item one, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
@@ -187,8 +196,8 @@
     {
       "name": "K16 focus recall is re-served from the same frontier every call",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          .filter((i) => afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor))",
-      "replace": "          .filter(() => true)",
+      "find": "            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);",
+      "replace": "            clocked.push(i);",
       "cell": "successive calls walk the whole of focus recall instead of repeating its first window",
       "expectRed": "successive calls walk the whole of focus recall instead of repeating its first window",
       "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one."
@@ -264,6 +273,33 @@
       "cell": "...and what it will not take responsibility for, it names instead of dropping quietly",
       "expectRed": "...and what it will not take responsibility for, it names instead of dropping quietly",
       "note": "The memory that makes the ahead lane exact is bounded, because it is exactly what a flood of forged stamps would grow. Past the bound the reply must SAY the messages are not being handed over: show them without a place to record them and they come back on every call forever, silently, which is the failure the bound exists to avoid."
+    },
+    {
+      "name": "K26 the trim gives back the last message rather than shortening the note",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (shown.length === 1) {",
+      "replace": "    if (false) {",
+      "cell": "a deliverable message is not withheld to make room for a note about an undeliverable one",
+      "expectRed": "a deliverable message is not withheld to make room for a note about an undeliverable one",
+      "note": "The eighth defect exactly: with the loop free to empty the response, a message that renders inside the window on its own is given back to make room for a note NAMING a message that can never be delivered, and the next call rebuilds the same reply forever. The bound on the loop is what makes the last message win."
+    },
+    {
+      "name": "K27 the note yields the window while other messages are still riding in the response",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    if (shown.length === 1) {\n      const yielded = fit(shown, held);",
+      "replace": "    if (shown.length >= 1) {\n      const yielded = fit(shown, held);",
+      "cell": "...and that case really did exercise all three: it cleared mail, held mail, and warned",
+      "expectRed": "...and that case really did exercise all three: it cleared mail, held mail, and warned",
+      "note": "The boundary is a trade, not a preference, so it is graded in both directions. Yield too early and a packed response stops NAMING the mail it cannot deliver even though giving back one small item would have paid for those names; yield too late, which K26 covers, and the last message is given back and nothing is delivered at all."
+    },
+    {
+      "name": "K28 the note gives up its names but never gives up existing",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "const NOTE_TIERS: readonly NoteTier[] = [\"full\", \"compact\", \"none\"];",
+      "replace": "const NOTE_TIERS: readonly NoteTier[] = [\"full\", \"compact\"];",
+      "cell": "a message with no room beside it for even a count is still delivered",
+      "expectRed": "a message with no room beside it for even a count is still delivered",
+      "note": "Shortening the note closes the measured case but not the class: a message can be large enough that not even a count fits beside it, and then counting is still chosen over delivering. Nothing is lost by dropping the note, because the held mail is still buffered, still uncleared, and named by the very next reply, which the same cell asserts."
     }
   ]
 }

@@ -829,6 +829,61 @@ try {
       text.slice(-260));
   }
 
+  // ── 25) A NOTE ABOUT MAIL THAT CANNOT BE DELIVERED MUST NOT COST MAIL THAT CAN ───────────────
+  //
+  // Found by the third lens, reproduced here on its occupant. A 47,775-character direct message
+  // renders alone at 47,823, inside the window, and was delivered and cleared when it was alone.
+  // Put a 60,000-character message behind it and it was never delivered at all: the note NAMING the
+  // undeliverable one pushed the pair past the window, and the trim gave back the message rather
+  // than the description of the other message. Three calls, byte-identical at 396 characters, both
+  // ids still buffered, nothing acked, and every reply saying to call again for the next batch.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    const acked = new Set<string>();
+    const track = (id: string): Delivery => ({ ack: () => acked.add(id), nak: () => {}, durable: true });
+    agent.ep.emit("message", dmMsg("stuck", "z".repeat(60_000)), track("stuck"), dmMeta);
+    agent.ep.emit("message", dmMsg("waiting", `${"q".repeat(47_775)} RIDER_MARK`), track("waiting"), dmMeta);
+
+    const first = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a deliverable message is not withheld to make room for a note about an undeliverable one",
+      first.includes("RIDER_MARK"), { chars: first.length });
+    check("...inside the window, cleared because it went out, and the stuck one still held and unacked",
+      first.length <= INBOX_WINDOW_CHARS && acked.has("waiting") && !acked.has("stuck") &&
+        agent.peekInbox().map((i) => i.id).join() === "stuck",
+      { chars: first.length, acked: [...acked], left: agent.peekInbox().map((i) => i.id) });
+    check("...and the reply still says what it is holding, in fewer words rather than none",
+      first.includes("held") && first.includes("too large for any response to carry"), first.slice(-200));
+
+    // The walk really moved, which is what the defect denied: the next call is not the same reply.
+    const second = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("...and the next call is a different reply, rather than the same one forever",
+      second !== first && !second.includes("RIDER_MARK"), second.slice(0, 160));
+  }
+
+  // ── 26) THE SAME RULE AT ITS LIMIT, where even counting what is held costs too much ──────────
+  //
+  // Shortening the note closes the measured case but not the class: a message can be large enough
+  // that no note fits beside it at all. The rule is the same either way, so the last thing the note
+  // gives up is existing. Nothing is lost by that: the held mail is still buffered, still uncleared,
+  // and still described by the very next reply.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    const acked = new Set<string>();
+    const track = (id: string): Delivery => ({ ack: () => acked.add(id), nak: () => {}, durable: true });
+    agent.ep.emit("message", dmMsg("stuck2", "z".repeat(60_000)), track("stuck2"), dmMeta);
+    agent.ep.emit("message", dmMsg("band", `${"q".repeat(47_930)} BAND_MARK`), track("band"), dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a message with no room beside it for even a count is still delivered",
+      text.includes("BAND_MARK") && text.length <= INBOX_WINDOW_CHARS, { chars: text.length });
+    check("...and the mail it displaced is held, uncleared, and named by the next reply",
+      acked.has("band") && !acked.has("stuck2") &&
+        textOf(await inboxSpec().run(agent, cfg, {})).includes("cannot be delivered by this tool at all"),
+      { acked: [...acked] });
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {

@@ -210,12 +210,27 @@ export function renderInbox(opts: {
       .map((i) => i.id),
   );
 
-  const assemble = (shown: InboxItem[], held: InboxItem[]): string => {
+  const assemble = (shown: InboxItem[], held: InboxItem[], tier: NoteTier): string => {
+    const note = heldNote(held, peek, stuck, tier);
     const parts: string[] = [];
-    if (shown.length) parts.push(`${opts.head(shown)}\n${shown.map(fmtItem).join("\n")}${heldNote(held, peek, stuck)}`);
-    else if (held.length) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);
+    if (shown.length) parts.push(`${opts.head(shown)}\n${shown.map(fmtItem).join("\n")}${note}`);
+    else if (held.length) parts.push(`Nothing could be delivered in this response.${note}`);
     if (warning) parts.push(warning);
     return parts.join("\n\n");
+  };
+
+  // THE NOTE YIELDS BEFORE THE LAST MESSAGE DOES, in this order: names, then counts, then nothing.
+  // Measured before this rule: a 47,775-character direct message that renders alone at 47,823 was
+  // never delivered at all while a 60,000-character message sat behind it, because the note NAMING
+  // the undeliverable one pushed the pair over the window and the trim gave back the deliverable
+  // message rather than the description of the other. Three calls, byte-identical at 396 characters,
+  // nothing acked, every one of them saying to call again for the next batch.
+  const fit = (shown: InboxItem[], held: InboxItem[]): string => {
+    for (const tier of NOTE_TIERS) {
+      const text = assemble(shown, held, tier);
+      if (text.length <= budget) return text;
+    }
+    return assemble(shown, held, NOTE_TIERS[NOTE_TIERS.length - 1]);
   };
 
   // Fill from a cheap estimate first, SKIPPING what will not fit rather than stopping at it: one
@@ -244,14 +259,30 @@ export function renderInbox(opts: {
     return ordered.filter((i) => !ids.has(i.id));
   };
   let held = heldOf();
-  let text = assemble(shown, held);
+  let text = assemble(shown, held, "full");
   while (text.length > budget && shown.length) {
+    // While another message still rides in the response, the full note is worth an item: the caller
+    // learns WHICH mail is undeliverable, and the item given back arrives on the next call. Down to
+    // the last message that trade reverses, because giving THAT one back delivers nothing at all and
+    // the next call rebuilds the same reply forever, so the note yields instead.
+    if (shown.length === 1) {
+      const yielded = fit(shown, held);
+      if (yielded.length <= budget) {
+        text = yielded;
+        break;
+      }
+    }
     shown.pop();
     held = heldOf();
-    text = assemble(shown, held);
+    text = assemble(shown, held, "full");
   }
   return { text, shown, held, stuck };
 }
+
+/** How much the held-note is allowed to say, in the order it gives ground when the window is tight:
+ *  who is held, then how many, then nothing. Delivery outranks describing what was not delivered. */
+type NoteTier = "full" | "compact" | "none";
+const NOTE_TIERS: readonly NoteTier[] = ["full", "compact", "none"];
 
 /** What one rendered item costs a response: its own text plus the newline that joins it. */
 function itemCost(i: InboxItem): number {
@@ -270,10 +301,26 @@ function itemCost(i: InboxItem): number {
  * rest, and it truncates a sender's name, because a steady stream of oversized mail would otherwise
  * fill every reply with metadata about mail it cannot carry, which is the same overflow one layer up.
  */
-function heldNote(held: readonly InboxItem[], peek = false, stuckIds: ReadonlySet<string> = new Set()): string {
-  if (!held.length) return "";
+function heldNote(
+  held: readonly InboxItem[],
+  peek = false,
+  stuckIds: ReadonlySet<string> = new Set(),
+  tier: NoteTier = "full",
+): string {
+  if (!held.length || tier === "none") return "";
   const stuck = held.filter((i) => stuckIds.has(i.id));
   const waiting = held.length - stuck.length;
+  if (tier === "compact") {
+    const bits: string[] = [];
+    if (waiting) bits.push(`${waiting} more message${waiting === 1 ? "" : "s"} held`);
+    if (stuck.length) bits.push(`${stuck.length} too large for any response to carry`);
+    const next = waiting
+      ? peek
+        ? " A peek clears nothing, so read without peek to take this window."
+        : " Call cotal_inbox again for the next batch."
+      : "";
+    return `\n\n… ${bits.join(", ")}. Nothing held was cleared.${next}`;
+  }
   const parts: string[] = [];
   if (waiting) {
     const dms = held.filter((i) => i.kind !== "channel" && !stuckIds.has(i.id)).length;
