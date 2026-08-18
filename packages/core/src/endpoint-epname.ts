@@ -8,9 +8,22 @@
  *
  * TWO RULES THAT COST MORE THAN THEY LOOK.
  *
- * `runtimeOwner` IS MOVED, NOT DERIVED. It is written at `launching → live` from the executor that
- * made the spawn call — recorded at the moment it becomes true rather than reconstructed later —
- * and every subsequent edge CARRIES it. It is deliberately never re-derived from a slot row,
+ * `runtimeOwner` IS MOVED, NOT DERIVED. It is written from the executor that made the spawn call,
+ * recorded at the moment it becomes true rather than reconstructed later. It MOVES on the FOUR
+ * edges that resolve a launch — `launching → live`, `relaunching → live`, `launching → draining`,
+ * `relaunching → draining` — taking the full incarnation and clearing `launchAttemptId`; and it is
+ * CARRIED unchanged on the THREE edges that do not: `live → preserved`, `live → draining`,
+ * `preserved → draining`. The one creation edge into `live` is the cutover backfill, which
+ * INSTALLS it from the incumbent's own live gate row and records a CASUALTY when it cannot read
+ * one, there being no previous row to carry from.
+ *
+ * ⚠️ THIS PARAGRAPH SAID "written at `launching → live` … and every subsequent edge CARRIES it",
+ * which was true of a simpler machine than the one below it. It named ONE move edge where four
+ * ship, and "every subsequent edge" over-includes the creation edge, which has no previous row to
+ * carry from. A reader who implemented from it would move the owner once and carry it through a
+ * relaunch, which is a different machine. Rebound to the edge table rather than argued with.
+ *
+ * It is deliberately never re-derived from a slot row,
  * because user mode has no slot row at all, so a derivation is unevaluable on a supported path,
  * and an unevaluable predicate is one that either refuses forever or falls back to absence.
  * `instanceId` alone will not do: an identity is not an incarnation, and a restarted process with
@@ -284,7 +297,7 @@ export function assertEpNameEdge(
       && prev.lifecycleUid !== next.lifecycleUid)
     fail(`\`lifecycleUid\` is immutable while a claim is held: ${prev.lifecycleUid} → ${next.lifecycleUid}`);
 
-  // ---- runtimeOwner: MOVED on the launch-completing edges, CARRIED everywhere else ------------
+  // ---- runtimeOwner: MOVED on the four launch-resolving edges, CARRIED on the three others ----
   const completesLaunch = (from === "launching" || from === "relaunching") && to === "live";
   const drainsFromLaunch = (from === "launching" || from === "relaunching") && to === "draining";
   if (completesLaunch || drainsFromLaunch) {
