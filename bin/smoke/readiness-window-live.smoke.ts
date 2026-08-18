@@ -173,24 +173,24 @@ try {
     ok("...and reports the spawned identity", (reply.data as { name?: string })?.name === "slowlaunch", reply.data);
   }
 
-  // C — the UNCERTAIN backstop carries the MANAGER's guidance, not core's generic line (#605).
+  // C. the UNCERTAIN backstop carries the MANAGER's guidance, not core's generic line (#605).
   //
   // WHY THIS CELL EXISTS. The backstop's operational value is entirely in its WORDS: it names the
   // agent and says INSPECT RATHER THAN RE-ISSUE. Before the fix the manager built exactly that
-  // string and then dropped it — `onOutcome({kind:"uncertain"})` carried no payload and
-  // `settleGoalUncertain` had no parameter to carry one — so the terminal committed core's generic
+  // string and then dropped it: `onOutcome({kind:"uncertain"})` carried no payload and
+  // `settleGoalUncertain` had no parameter to carry one, so the terminal committed core's generic
   // "the success signal did not arrive within the readiness deadline". That reads as a plain
   // failure, which is what teaches an operator to retry, and a retry after a launch that actually
   // SUCCEEDED mints a duplicate agent (#605 records one, driving a shared working tree).
   //
   // WHAT IT WOULD HAVE CAUGHT, AND WHAT IT WOULD NOT. The verdict was always DELIVERED and always
-  // on time — measured here, and it is why the assertion below on elapsed time is a real check and
+  // on time, measured here, and it is why the assertion below on elapsed time is a real check and
   // not decoration. The defect was never a lost message; it was a lost SENTENCE. A cell that only
   // asserted "a non-ok reply arrives" passes on the broken code, which is precisely why this one
   // asserts the guidance text.
   {
     const restore = (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs;
-    const SHORT_MS = 2_000;      // the window under test — shortened so the suite is not 30s long
+    const SHORT_MS = 2_000;      // the window under test, shortened so the suite is not 30s long
     const CLIENT_MS = 12_000;    // the caller's own budget, deliberately well ABOVE the window, so
                                  // "returned near the window" cannot be satisfied by a client timeout
     (mgr as unknown as { readinessTimeoutMs: number }).readinessTimeoutMs = SHORT_MS;
@@ -212,10 +212,10 @@ try {
       ok("a child that never joins settles the goal `uncertain`", r.reply.ok === false && r.reply.error?.code === "uncertain", r.reply);
       // The delivery half: the verdict rides the terminal at the WINDOW, not at the caller's bound.
       // If this ever fails at ~CLIENT_MS the defect is delivery, which is a different bug from the
-      // wording one below — keep them separable.
+      // wording one below; keep them separable.
       ok(`...delivered at the window, not the caller's deadline (${elapsed}ms, window ${SHORT_MS}ms, caller ${CLIENT_MS}ms)`, elapsed < SHORT_MS + 6_000, elapsed);
       // The wording half: THE ASSERTION THE FIX EXISTS FOR. Both halves of the guidance are named
-      // explicitly — the diagnosis ("launch status uncertain") and the instruction ("Inspect with"),
+      // explicitly: the diagnosis ("launch status uncertain") and the instruction ("Inspect with"),
       // which is the half that stops the duplicate.
       ok("...carrying the MANAGER's diagnosis, not core's generic line", msg.includes("launch status uncertain"), msg);
       ok("...and the instruction that prevents a duplicate re-issue", msg.includes("Inspect with"), msg);

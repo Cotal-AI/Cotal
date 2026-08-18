@@ -1162,7 +1162,7 @@ export async function commitGoalResult(
   // The COMMITTER's reason wins when it supplied one. Core knows the deadline elapsed; only the
   // owner of that deadline knows what it means and what the operator should do about it, and that
   // guidance is the whole operational value of an `uncertain` terminal (#605): the generic line
-  // below reads as a plain failure, which is exactly what teaches an operator to re-issue — and a
+  // below reads as a plain failure, which is exactly what teaches an operator to re-issue, and a
   // re-issue after a launch that actually succeeded mints a duplicate.
   const suppliedReason = (data as { reason?: unknown } | undefined)?.reason;
   return finish(await commitTerminalFact(ctx, snap, spec.value, "uncertain", {

@@ -3496,7 +3496,7 @@ export class Manager {
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
-      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } }); return { ok: false, error: readiness.detail }; } // uncertain — non-success, but kept, and the detail rides the terminal (#605)
+      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } }); return { ok: false, error: readiness.detail }; } // uncertain: non-success, but kept, and the detail rides the terminal (#605)
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
       // would never match and down -f would treat the agent as foreign).
