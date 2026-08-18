@@ -380,9 +380,66 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       "const k = {}; const o = { a: () => 1 }; log(o[k]());",
       "const k = {}; const o = { a: () => 1 }; log(o?.[k]());",
       "const k = {}; const o = {}; [o[k]] = [1];",
+      "const k = {}; const o = {}; ({ a: o[k] } = { a: 1 });",
+      "const k = {}; const o = {}; [...o[k]] = [1];",
+      "const k = {}; const o = {}; [o[k] = 5] = [];",
       "const k = {}; const o = {}; for (o[k] of [1]) { log(1); }",
       "const k = {}; const o = {}; o[k] ??= 1;",
     ].map((s) => logsOf(s).then(() => "ran", (e: Error) => (e.message.startsWith("L4018") ? "L4018" : "other"))))).every((r) => r === "L4018"));
+  // And the fourteen forms above are DERIVED from the table, not hand-copied beside it: the
+  // validator admits exactly ADMITTED_NODES and STRUCTURAL_NODES and refuses every other node type
+  // with its row's code or L1029 (section 2 holds acorn's whole emission to that partition), so the
+  // table is the universe of syntax that can exist at run time. Every type in it is classified
+  // here: KEY-COERCING (the interpreter hands a computed member's key to the guard on a route of
+  // its own — each one exercised by a form above) or KEY-INERT (it can only CONTAIN a member
+  // expression, and the member's own route evaluates it). A type added to the table lands in
+  // neither set and reds this cell until it is classified with a reason.
+  {
+    const coercing = new Set([
+      "MemberExpression", "ChainExpression", "AssignmentExpression", "UpdateExpression",
+      "CallExpression", "ForOfStatement", "ArrayPattern", "ObjectPattern", "RestElement",
+      "AssignmentPattern",
+    ]);
+    const inert = new Set([
+      "Program", "ExpressionStatement", "VariableDeclaration", "FunctionDeclaration",
+      "BlockStatement", "IfStatement", "WhileStatement", "ForStatement", "ReturnStatement",
+      "BreakStatement", "ContinueStatement", "ThrowStatement", "TryStatement", "SwitchStatement",
+      "EmptyStatement", "Literal", "Identifier", "TemplateLiteral", "ArrayExpression",
+      "ObjectExpression", "UnaryExpression", "BinaryExpression", "LogicalExpression",
+      "ConditionalExpression", "AwaitExpression", "ArrowFunctionExpression", "FunctionExpression",
+      "VariableDeclarator", "Property", "SpreadElement", "TemplateElement", "SwitchCase",
+      "CatchClause",
+    ]);
+    const table = [...ADMITTED_NODES, ...STRUCTURAL_NODES];
+    const unclassified = table.filter((t) => !coercing.has(t) && !inert.has(t));
+    const doubly = table.filter((t) => coercing.has(t) && inert.has(t));
+    const phantom = [...coercing, ...inert].filter((t) => !table.includes(t));
+    ok("every admitted node type is classified against the key guard: coercing (exercised above) or inert, no type unclassified",
+      unclassified.length === 0 && doubly.length === 0 && phantom.length === 0,
+      { unclassified, doubly, phantom });
+  }
+  // The same law at the library boundary: where a builtin or method parameter expects a primitive,
+  // a container or function is refused (L4018) before the host can coerce it (measured before the
+  // gate: `parseNumber({ valueOf: () => 99 })` logged null with the run settling OK — a journal
+  // could have recorded the wrong value — and the process dying AFTER the run returned; `abs({})`
+  // was a silent NaN; `sum([{ valueOf: () => 9 }])` answered the string "0[object Object]";
+  // `assert(false, spy)` and `join([spy], ",")` died the same way). Non-closure shapes lead the
+  // conjunction so a regression reds cleanly before any closure can detach a rejection.
+  ok("a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
+    await logsOf("log(abs({}));").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("log(sum([{ a: 1 }]));").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf('log(join([{ a: 1 }], ","));').then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("const xs = [1]; log(xs.join({ sep: 1 }));").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && JSON.stringify(await logsOf('const spy = { valueOf: () => 99 }; try { log(parseNumber(spy)); } catch (e) { log(e.code); }')) === '["L4018"]'
+      && await logsOf('const spy = { toString: () => "x" }; assert(false, spy);').then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf('const spy = { toString: () => "x" }; log("a".repeat(spy));').then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("const spy = { valueOf: () => 2 }; log([1, 2, 3].at(spy));").then(() => false, (e: Error) => e.message.startsWith("L4018"))
+      && await logsOf("const spy = { valueOf: () => 2 }; log((1.5).toFixed(spy));").then(() => false, (e: Error) => e.message.startsWith("L4018")));
+  ok("and the declared container positions still take containers: no over-fence",
+    JSON.stringify(await logsOf("const r = { a: 1 }; const xs = [r]; log(len(xs), xs.includes(r), merge(r, { b: 2 }).b);")) === "[[1,true,2]]"
+      && JSON.stringify(await logsOf("log(map([1], (x) => x + 1));")) === "[[2]]"
+      && JSON.stringify(await logsOf("log(sort([[2], [1]])[0]);")) === "[[1]]"
+      && JSON.stringify(await logsOf("log(json.stringify({ a: 1 }));")) === '["{\\"a\\":1}"]');
   // A method is not a value: it is looked up at the call and exists nowhere else (measured before
   // the rule: `xs.map === xs.map` was false where JavaScript says true, and an extracted `push`
   // wrote to its receiver where strict JavaScript throws).

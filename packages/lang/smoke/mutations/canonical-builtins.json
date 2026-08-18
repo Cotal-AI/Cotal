@@ -7,12 +7,12 @@
     {
       "name": "json.stringify silently canonicalizes again",
       "file": "packages/lang/src/library.ts",
-      "find": "    stringify: fn(\"json.stringify\", (_f, a) => {\n      try {\n        assertCrossable(a[0], \"json.stringify: the value\");\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n      return canonicalize(a[0]);\n    }),",
-      "replace": "    stringify: fn(\"json.stringify\", (_f, a) => canonicalize(a[0])),",
+      "find": "    stringify: fn(\"json.stringify\", (_f, a) => {\n      try {\n        assertCrossable(a[0], \"json.stringify: the value\");\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n      return canonicalize(a[0]);\n    }, { any: [0] }),",
+      "replace": "    stringify: fn(\"json.stringify\", (_f, a) => canonicalize(a[0]), { any: [0] }),",
       "expectRed": "`json.stringify` refuses a value with no canonical form (L4016), naming the path",
       "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
       "cell": "`json.stringify` refuses a value with no canonical form (L4016), naming the path",
-      "note": "The unchecked call drops undefined members and turns NaN into null — the measured pre-fix information loss."
+      "note": "The unchecked call drops undefined members and turns NaN into null \u2014 the measured pre-fix information loss."
     },
     {
       "name": "json.parse mints an own __proto__ field again",
@@ -42,7 +42,7 @@
       "expectRed": "`sort` is total: NaN after every number, undefined below null, both directions agreeing",
       "completionMarker": "ok `sort` orders numbers by value and strings by code unit",
       "cell": "`sort` is total: NaN after every number, undefined below null, both directions agreeing",
-      "note": "Without the rank comparison, undefined falls through to a canonical form that is not a string and compares equal to everything — the measured arrival-order behavior. (The unused rank locals are accepted by tsx; the suite reddens on the cell, not on a compile error.)"
+      "note": "Without the rank comparison, undefined falls through to a canonical form that is not a string and compares equal to everything \u2014 the measured arrival-order behavior. (The unused rank locals are accepted by tsx; the suite reddens on the cell, not on a compile error.)"
     }
   ]
 }

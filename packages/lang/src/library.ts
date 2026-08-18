@@ -75,6 +75,53 @@ const asCallable = (v: unknown, where: string): Callable => {
   return v as Callable;
 };
 
+/**
+ * The operators' no-implicit-conversion law (L4018, reference §4.5) applied at the library
+ * boundary: where a primitive is expected, a record, array or function is refused BEFORE the host
+ * can coerce it. Host coercion reads `valueOf`/`toString` off the value, and a program closure
+ * stored there runs without a Frame (measured before the gate: `parseNumber({ valueOf: () => 99 })`
+ * logged null, the run settled ok — a journal could have recorded the wrong value — and the
+ * closure's Frame-less rejection killed the process AFTER the run returned; `Math.abs({})` was a
+ * silent NaN; `sum([{ valueOf: () => 9 }])` answered the string "0[object Object]").
+ */
+const noCoerce = (name: string, v: unknown): void => {
+  if (v !== null && (typeof v === "object" || typeof v === "function")) {
+    const kind = typeof v === "function" ? "a function" : Array.isArray(v) ? "an array" : "a record";
+    throw new RuntimeFault(
+      "L4018",
+      `${name} cannot take ${kind} in this argument: there is no implicit conversion here, because converting would read \`valueOf\`/\`toString\` off the value — host machinery this language does not have. Convert explicitly: \`json.stringify(value)\` for text, or pass the primitive you mean.`,
+    );
+  }
+};
+
+/**
+ * Which argument positions of a callable legitimately take a container or a function. STRICT BY
+ * DEFAULT: a position not named here refuses a container or function with L4018, so a callable
+ * added without a declaration fails safe and loud in its own cell — the hazard class (silent host
+ * coercion) cannot re-enter through a forgotten entry.
+ */
+type Takes = "all" | { readonly any?: readonly number[]; readonly restFrom?: number } | undefined;
+
+const gateArgs = (name: string, args: readonly unknown[], takes: Takes): void => {
+  if (takes === "all") return;
+  const any = takes?.any ?? [];
+  const restFrom = takes?.restFrom ?? Number.POSITIVE_INFINITY;
+  args.forEach((v, i) => {
+    if (i < restFrom && !any.includes(i)) noCoerce(name, v);
+  });
+};
+
+/** Wrap a method-shaped impl with the argument gate. */
+const gate = <R,>(
+  k: string,
+  impl: (frame: LibFrame, r: R, args: unknown[]) => unknown,
+  takes?: Takes,
+): ((frame: LibFrame, r: R, args: unknown[]) => unknown) =>
+  (frame, r, args) => {
+    gateArgs(k, args, takes);
+    return impl(frame, r, args);
+  };
+
 // ---- the total order `sort` uses ----------------------------------------------------------------
 
 /**
@@ -225,7 +272,10 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
     lastIndexOf: (_f, xs, a) => (a.length >= 2 ? xs.lastIndexOf(a[0], a[1] as number) : xs.lastIndexOf(a[0])),
     slice: (frame, xs, a) => born(xs.slice(a[0] as number | undefined, a[1] as number | undefined), frame.depth),
     concat: (frame, xs, a) => born(xs.concat(...a), frame.depth),
-    join: (_f, xs, a) => xs.join(a[0] as string | undefined),
+    join: (_f, xs, a) => {
+      for (const el of xs) noCoerce("join", el);
+      return xs.join(a[0] as string | undefined);
+    },
     flat: (frame, xs, a) => born(xs.flat(a[0] as number | undefined), frame.depth),
     at: (_f, xs, a) => xs.at(a[0] as number),
     toReversed: (frame, xs) => born([...xs].reverse(), frame.depth),
@@ -252,8 +302,17 @@ export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Metho
       return born(removed, frame.depth);
     },
   };
+  const TAKES: Record<string, Takes> = {
+    map: { any: [0] }, filter: { any: [0] }, find: { any: [0] }, findIndex: { any: [0] },
+    findLast: { any: [0] }, findLastIndex: { any: [0] }, some: { any: [0] }, every: { any: [0] },
+    forEach: { any: [0] }, flatMap: { any: [0] },
+    reduce: { any: [0, 1] },
+    includes: { any: [0] }, indexOf: { any: [0] }, lastIndexOf: { any: [0] },
+    concat: "all", push: "all", unshift: "all",
+    splice: { restFrom: 2 },
+  };
   return Object.freeze(
-    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),
+    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, gate(k, impl, TAKES[k])) as unknown as Method])),
   );
 }
 
@@ -290,7 +349,7 @@ export function stringMethods(): Readonly<Record<string, Method>> {
     concat: (_f, s, a) => s.concat(...a.map(String)),
   };
   return Object.freeze(
-    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),
+    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, gate(k, impl)) as unknown as Method])),
   );
 }
 
@@ -302,7 +361,7 @@ export function numberMethods(): Readonly<Record<string, Method>> {
     toPrecision: (_f, n, a) => n.toPrecision(a[0] as number | undefined),
   };
   return Object.freeze(
-    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),
+    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, gate(k, impl)) as unknown as Method])),
   );
 }
 
@@ -314,7 +373,11 @@ export function numberMethods(): Readonly<Record<string, Method>> {
  * `primitives.ts` so a name the validator resolves is always a name the interpreter defines.
  */
 export function builtins(ctx: LibraryContext): readonly (readonly [string, unknown])[] {
-  const fn = (name: string, impl: (frame: LibFrame, args: unknown[]) => unknown): Callable => guarded(name, impl);
+  const fn = (name: string, impl: (frame: LibFrame, args: unknown[]) => unknown, takes?: Takes): Callable =>
+    guarded(name, (frame: LibFrame, args: unknown[]) => {
+      gateArgs(name, args, takes);
+      return impl(frame, args);
+    });
   const higher =
     (name: string, impl: (frame: LibFrame, list: unknown[], f: Callable) => Promise<unknown>): Callable =>
     guarded(name, async (frame: LibFrame, args: unknown[]) => await impl(frame, args[0] as unknown[], asCallable(args[1], name)));
@@ -352,18 +415,18 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
         throw e;
       }
       return canonicalize(a[0]);
-    }),
+    }, { any: [0] }),
   });
 
   return [
     // records
-    ["keys", fn("keys", (frame, a) => born(Object.keys(a[0] as object), frame.depth))],
-    ["values", fn("values", (frame, a) => born(Object.values(a[0] as object), frame.depth))],
-    ["entries", fn("entries", (frame, a) => born(Object.entries(a[0] as object).map((e) => born(e, frame.depth)), frame.depth))],
-    ["has", fn("has", (_f, a) => Object.prototype.hasOwnProperty.call(a[0] as object, a[1] as string))],
-    ["merge", fn("merge", (frame, a) => born({ ...(a[0] as object), ...(a[1] as object) }, frame.depth))],
+    ["keys", fn("keys", (frame, a) => born(Object.keys(a[0] as object), frame.depth), { any: [0] })],
+    ["values", fn("values", (frame, a) => born(Object.values(a[0] as object), frame.depth), { any: [0] })],
+    ["entries", fn("entries", (frame, a) => born(Object.entries(a[0] as object).map((e) => born(e, frame.depth)), frame.depth), { any: [0] })],
+    ["has", fn("has", (_f, a) => Object.prototype.hasOwnProperty.call(a[0] as object, a[1] as string), { any: [0] })],
+    ["merge", fn("merge", (frame, a) => born({ ...(a[0] as object), ...(a[1] as object) }, frame.depth), { any: [0, 1] })],
     // arrays
-    ["len", fn("len", (_f, a) => (a[0] as { length: number }).length)],
+    ["len", fn("len", (_f, a) => (a[0] as { length: number }).length, { any: [0] })],
     [
       "map",
       higher("map", async (frame, list, f) => {
@@ -415,15 +478,21 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
           keyed.map((k) => k.value),
           frame.depth,
         );
-      }),
+      }, { any: [0, 1] }),
     ],
-    ["slice", fn("slice", (frame, a) => born((a[0] as unknown[]).slice(a[1] as number, a[2] as number | undefined), frame.depth))],
-    ["concat", fn("concat", (frame, a) => born((a[0] as unknown[]).concat(a[1] as unknown[]), frame.depth))],
-    ["join", fn("join", (_f, a) => (a[0] as unknown[]).join(a[1] as string))],
-    ["reverse", fn("reverse", (frame, a) => born([...(a[0] as unknown[])].reverse(), frame.depth))],
-    ["unique", fn("unique", (frame, a) => born([...new Set(a[0] as unknown[])], frame.depth))],
+    ["slice", fn("slice", (frame, a) => born((a[0] as unknown[]).slice(a[1] as number, a[2] as number | undefined), frame.depth), { any: [0] })],
+    ["concat", fn("concat", (frame, a) => born((a[0] as unknown[]).concat(a[1] as unknown[]), frame.depth), { any: [0, 1] })],
+    ["join", fn("join", (_f, a) => {
+      for (const el of a[0] as unknown[]) noCoerce("join", el);
+      return (a[0] as unknown[]).join(a[1] as string);
+    }, { any: [0] })],
+    ["reverse", fn("reverse", (frame, a) => born([...(a[0] as unknown[])].reverse(), frame.depth), { any: [0] })],
+    ["unique", fn("unique", (frame, a) => born([...new Set(a[0] as unknown[])], frame.depth), { any: [0] })],
     ["range", fn("range", (frame, a) => born(Array.from({ length: a[0] as number }, (_, i) => i), frame.depth))],
-    ["sum", fn("sum", (_f, a) => (a[0] as number[]).reduce((x, y) => x + y, 0))],
+    ["sum", fn("sum", (_f, a) => {
+      for (const el of a[0] as unknown[]) noCoerce("sum", el);
+      return (a[0] as number[]).reduce((x, y) => x + y, 0);
+    }, { any: [0] })],
     // strings
     ["split", fn("split", (frame, a) => born((a[0] as string).split(a[1] as string), frame.depth))],
     ["trim", fn("trim", (_f, a) => (a[0] as string).trim())],
@@ -448,14 +517,14 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       fn("assert", (_f, a) => {
         if (!a[0]) throw new RuntimeFault("L4012", String(a[1] ?? "assertion failed"));
         return null;
-      }),
+      }, { any: [0] }),
     ],
     [
       "log",
       fn("log", (frame, a) => {
         ctx.onLog?.({ scope: scopePathString(frame.keys.path), values: a });
         return null;
-      }),
+      }, "all"),
     ],
     // tamed nondeterminism. `now()` reads the branch's own run clock, which is the maximum endedAt
     // over the effects this point actually awaited: time advances at effect boundaries as a
@@ -467,7 +536,7 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
       fn("pick", (frame, a) => {
         const list = a[0] as unknown[];
         return list[Math.floor(ctx.prng.next(frame.keys.path) * list.length)];
-      }),
+      }, { any: [0] }),
     ],
     ["now", fn("now", (frame) => frame.clock.now())],
     ["duration", fn("duration", (_f, a) => parseDuration(a[0] as string))],
