@@ -145,18 +145,18 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "const RESPONSE_OVERHEAD = 1024;",
       "replace": "const RESPONSE_OVERHEAD = 0;",
-      "cell": "the worst framing this tool can emit still fits inside the window",
-      "expectRed": "the worst framing this tool can emit still fits inside the window",
-      "note": "The first lens found the warning riding outside the budget; the repair pays for it, the head and the note out of one reserve. That is only honest if the reserve is above their combined worst case, which is what this mutation tests: with no reserve the framing is what pushes an acking reply past the cap. An earlier form of this mutation, subtracting the warning length a second time inside the focus branch, SURVIVED and was removed rather than kept: with the warning already bounded and paid for here, no input could tell the two versions apart."
+      "cell": "the head line and the held-note are inside the budget, not outside it",
+      "expectRed": "the head line and the held-note are inside the budget, not outside it",
+      "note": "The first lens found the warning riding outside the budget; the repair pays for it, the head and the note out of one reserve. That is only honest if the reserve is above their combined worst case, which is what this mutation tests: with no reserve the framing is what pushes an acking reply past the cap. An earlier form of this mutation, subtracting the warning length a second time inside the focus branch, SURVIVED and was removed rather than kept: with the warning already bounded and paid for here, no input could tell the two versions apart. The cell that notices first is the near-boundary one, which is the cheapest case where the framing is what tips a reply over; the worst-framing cell later asserts the same reserve against all three parts at once."
     },
     {
       "name": "K14 the recall warning names every dropped channel",
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(\", \");",
       "replace": "  const named = channels.map((c) => `#${c.slice(0, 40)}`).join(\", \");",
-      "cell": "...and the warning is bounded rather than naming all sixty channels",
-      "expectRed": "...and the warning is bounded rather than naming all sixty channels",
-      "note": "A caller with many silenced or expired channels is exactly the caller who gets a long list, so an unbounded list is not a rare case: it is the case."
+      "cell": "a long recall warning cannot push an acking response past the window",
+      "expectRed": "a long recall warning cannot push an acking response past the window",
+      "note": "A caller with many silenced or expired channels is exactly the caller who gets a long list, so an unbounded list is not a rare case: it is the case. It reddens on the size assertion before the boundedness one, which is the right order: an unbounded warning is a defect because of what it does to the response, not because of how it reads."
     },
     {
       "name": "K15 the held note gives a peeking caller the destructive read's promise",
