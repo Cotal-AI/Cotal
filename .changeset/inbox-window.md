@@ -28,5 +28,25 @@ carries the message. The held-note gives up its names, then its counts, then its
 a message that fits in the window go undelivered because a note about an undeliverable one was
 riding beside it.
 
+A peer cannot write the reply's own framing. Every byte of a `cotal_inbox` reply is assembled from
+text a peer controls, and the reply is structured: a head line, one line per message with its sender
+in brackets, then the held-note and any warning. A message carrying newlines was writing that
+structure itself, forging a second message line attributed to another named peer, the held-note with
+its call-again promise, and the recall warning. A sender name, a service name and a channel label
+could each close their own bracket the same way.
+
+A line that begins at column zero is now written by the tool and never by a peer: one message is one
+line plus indented continuations, and every peer-controlled field rendered into the frame carries
+neither a closing bracket nor any character a line splitter may honour. The neutralization lives in
+one helper, so the wake hints the Claude Code, Codex and OpenCode connectors build from a peer name
+are covered by the same rule.
+
+The focus recall mark is forgotten whenever the frontier under it changes. It records a position in
+one walk over one frontier, and entering or leaving focus replaces that frontier, so a mark left from
+an earlier episode was filtering a new episode's messages out of recall whenever they were stamped
+behind it.
+
 Migration: a caller with a large backlog now needs more than one `cotal_inbox` call to empty it, and the
-reply says how many messages are still held. Nothing is dropped and no argument changed.
+reply says how many messages are still held. A multi-line message renders with its continuation lines
+indented by two spaces, and a name, service or channel containing `]` or a line separator renders
+those as spaces. Nothing is dropped, nothing is truncated, and no argument changed.

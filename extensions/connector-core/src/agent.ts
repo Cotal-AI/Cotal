@@ -585,8 +585,9 @@ export class MeshAgent extends EventEmitter {
    *
    * {@link recallAmbient} re-derives the same items from an unchanged frontier on every call, so a
    * reader that shows only what fits in one response would show the same prefix forever. This mark
-   * moves when a response actually delivered recall items, and it is session-local by design: it
-   * says how far THIS incarnation has read, not what the stream still holds.
+   * moves when a response actually delivered recall items, and it belongs to ONE walk over ONE
+   * frontier: it says how far this focus episode has read, not what the stream still holds, and
+   * {@link setAttention} forgets it whenever the frontier under it changes.
    *
    * WHAT THIS MARK DOES NOT OWN, said here so nothing above it claims otherwise. It orders what
    * {@link recallAmbient} hands over; it does not decide what becomes recallable. A message that only
@@ -662,6 +663,21 @@ export class MeshAgent extends EventEmitter {
   /** Record that a future-stamped recall item was actually handed to the caller. */
   noteRecalledAhead(id: string): void {
     if (this.aheadDelivered.size < MAX_AHEAD) this.aheadDelivered.add(id);
+  }
+
+  /**
+   * Forget how far a recall walk had read, because the thing it was walking is gone.
+   *
+   * The mark is session-local, which is a longer life than it can honestly carry: it describes a
+   * position in ONE walk over ONE frontier, and {@link setAttention} both drops the frontier on the
+   * way out of focus and captures a new one on the way in. Measured before this reset, a mark left
+   * over from an earlier focus episode filtered a new episode's messages out of recall whenever they
+   * were stamped behind it, which a lagging or a chosen clock produces. The focus watermark was
+   * already cleared here; the mark that walks it was not.
+   */
+  private resetRecallWalk(): void {
+    this._recallCursor = { ts: 0, id: "" };
+    this.aheadDelivered.clear();
   }
 
   /** Buffered receive-time lane for one id. Undefined means it is no longer pending. */
@@ -761,11 +777,13 @@ export class MeshAgent extends EventEmitter {
         throw error;
       }
       this.enteringFocus = false;
+      this.resetRecallWalk();
     } else {
       this.enteringFocus = false;
       this.focusSince = undefined;
       this.focusExcludedIds.clear();
       this.focusRecallUnsafeChannels.clear();
+      this.resetRecallWalk();
     }
     this._attention = mode;
     // Mirror to presence (advisory observability — peers can see "they're in focus"). Best-effort:

@@ -87,7 +87,15 @@
     "reply is assembled from `text`, `fromName` and `fromRole`, all written by a peer, and rendered into",
     "a structure the caller reads as the tool's own words. The rule these two defend is positional and",
     "checkable by anyone: a line beginning at column zero was written by this tool, and a rendered name",
-    "carries neither a closing bracket nor a newline."
+    "carries neither a closing bracket nor a newline.",
+    "",
+    "K32 through K37 came from the first adversarial round on the two axes this review had never",
+    "attacked, and they say something about the shape of the earlier rounds. Nine of them attacked what",
+    "the walk DOES with well-formed messages. When someone finally attacked what it READS, the framing",
+    "rule that had just landed for the sender turned out not to hold for the service, the channel, or",
+    "either of the two notes, and the mark that had been graded exhaustively within one focus episode",
+    "turned out to outlive the episode it belonged to. None of that was hidden by a hard input; it was",
+    "hidden by everyone attacking the same axis."
   ],
   "mutations": [
     {
@@ -201,8 +209,8 @@
     {
       "name": "K14 the recall warning names every dropped channel",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(\", \");",
-      "replace": "  const named = channels.map((c) => `#${c.slice(0, 40)}`).join(\", \");",
+      "find": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${attributionSafe(c).slice(0, 40)}`).join(\", \");",
+      "replace": "  const named = channels.map((c) => `#${attributionSafe(c).slice(0, 40)}`).join(\", \");",
       "cell": "...and the warning is bounded rather than naming all eighty channels",
       "expectRed": "...and the warning is bounded rather than naming all eighty channels",
       "note": "A caller with many silenced or expired channels is exactly the caller who gets a long list, so an unbounded list is not a rare case: it is the case. With the reply now assembled and measured, an unbounded warning no longer breaks the bound; it eats the window instead, giving back real messages to make room for channel names, which is why the boundedness assertion is the one that catches it."
@@ -336,7 +344,7 @@
     {
       "name": "K30 a peer's newlines are rendered as the reply's own lines again",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  return text.replace(/\\r\\n?|\\n/g, \"\\n  \");",
+      "find": "  return text.replace(LINE_BREAK, \"\\n  \");",
       "replace": "  return text;",
       "cell": "a peer's newlines cannot add a line the reply appears to have written itself",
       "expectRed": "a peer's newlines cannot add a line the reply appears to have written itself",
@@ -345,11 +353,65 @@
     {
       "name": "K31 a peer may close the bracket it is named inside",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "  return s.replace(/[\\r\\n\\]]+/g, \" \");",
+      "find": "  return s.replace(/[\\r\\n\\v\\f\\u0085\\u2028\\u2029\\]]+/g, \" \");",
       "replace": "  return s;",
       "cell": "...and a peer cannot close the bracket it is named inside",
       "expectRed": "...and a peer cannot close the bracket it is named inside",
       "note": "Attribution is rendered inside brackets on every surface that carries it, this tool's reply and the connectors' wake hints alike, so a name holding a closing bracket or a newline ends the attribution early and starts writing the surface's own syntax. `fmtFrom` is the shared primitive, which is why the neutralization lives there rather than at one call site."
+    },
+    {
+      "name": "K32 a service name is rendered as the publisher wrote it",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  if (i.kind === \"anycast\") return `[@${attributionSafe(i.service ?? \"\")} from ${fmtFrom(i)}] ${body}`;",
+      "replace": "  if (i.kind === \"anycast\") return `[@${i.service ?? \"\"} from ${fmtFrom(i)}] ${body}`;",
+      "cell": "a service name cannot close its own bracket or start a line",
+      "expectRed": "a service name cannot close its own bracket or start a line",
+      "note": "`toService` is written by the publisher and is not checked against the subject the message arrived on, so a raw publisher on the real role subject sets it freely, and it is rendered inside the same brackets as the sender. Found by the third lens after the framing rule had already landed for the sender: the rule was stated absolutely and this field did not obey it."
+    },
+    {
+      "name": "K33 a channel label is rendered as it arrived",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  return `[#${attributionSafe(i.channel ?? \"\")}${i.mentionsMe ? \" @you\" : \"\"} ${fmtFrom(i)}] ${body}`;",
+      "replace": "  return `[#${i.channel ?? \"\"}${i.mentionsMe ? \" @you\" : \"\"} ${fmtFrom(i)}] ${body}`;",
+      "cell": "...and neither can a channel label, whatever validated it upstream",
+      "expectRed": "...and neither can a channel label, whatever validated it upstream",
+      "note": "The official receive paths rewrite a channel label from the subject token, so this one is defence in depth rather than a measured live hole. It is here because the rule is positional and absolute: a renderer that holds only while every upstream path validates correctly is a renderer whose guarantee is somebody else's."
+    },
+    {
+      "name": "K34 the future-stamp note names senders as they name themselves",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const senders = [...new Set(items.map((i) => attributionSafe(i.fromName).slice(0, 40)))];",
+      "replace": "  const senders = [...new Set(items.map((i) => i.fromName.slice(0, 40)))];",
+      "cell": "the note naming withheld senders cannot be split into a forged line by one of them",
+      "expectRed": "the note naming withheld senders cannot be split into a forged line by one of them",
+      "note": "Measured by the third lens: a withheld sender calling itself `Ada]` plus a newline split the warning in two and put a forged attribution at column zero. A note is not a lesser surface than a message line; it is the part of the reply a caller most reads as the tool speaking."
+    },
+    {
+      "name": "K35 the recall warning names channels as they arrived",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${attributionSafe(c).slice(0, 40)}`).join(\", \");",
+      "replace": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(\", \");",
+      "cell": "...and neither can the recall warning, by a channel it names",
+      "expectRed": "...and neither can the recall warning, by a channel it names",
+      "note": "The second note, and the same rule. Joined channel names are validated upstream, so like K33 this is defence in depth at the render boundary rather than a measured live hole."
+    },
+    {
+      "name": "K36 only the line breaks JavaScript splits on are treated as line breaks",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "const LINE_BREAK = /\\r\\n?|[\\n\\v\\f\\u0085\\u2028\\u2029]/g;",
+      "replace": "const LINE_BREAK = /\\r\\n?|\\n/g;",
+      "cell": "a U+2028 separator cannot put an attribution at column zero either",
+      "expectRed": "a U+2028 separator cannot put an attribution at column zero either",
+      "note": "Measured by the third lens through the host frame a model is handed, an MCP text part stringified and parsed back: U+2028, U+2029 and U+0085 survive transport intact and sit directly before an unindented attribution. A JavaScript split does not see a line there and neither does `wc -l`; a Unicode-aware splitter does. NOT PROVED HERE, and the lens said so first: no model transcript was opened, so this is not a measurement that a model rendered a break. The class was widened because the rule is stated absolutely, not because a reader was watched."
+    },
+    {
+      "name": "K37 the recall mark outlives the frontier it was walking",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  private resetRecallWalk(): void {\n    this._recallCursor = { ts: 0, id: \"\" };\n    this.aheadDelivered.clear();",
+      "replace": "  private resetRecallWalk(): void {\n    if (this._recallCursor.ts < 0) this.aheadDelivered.clear();",
+      "cell": "...and leaving focus forgets where that walk had read",
+      "expectRed": "...and leaving focus forgets where that walk had read",
+      "note": "The mark describes a position in ONE walk over ONE frontier, and focus drops the frontier on the way out and captures a new one on the way in. Measured by the third lens on a single incarnation: a mark left from an earlier episode filtered a new episode's messages out of recall whenever they were stamped behind it, which a lagging or a chosen clock produces. The focus watermark was already cleared here; the mark that walks it was not."
     }
   ]
 }

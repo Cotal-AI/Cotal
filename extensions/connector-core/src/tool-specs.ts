@@ -145,7 +145,7 @@ export function fmtFrom(i: InboxItem): string {
  * Boss. Neither character survives into a rendered name.
  */
 function attributionSafe(s: string): string {
-  return s.replace(/[\r\n\]]+/g, " ");
+  return s.replace(/[\r\n\v\f\u0085\u2028\u2029\]]+/g, " ");
 }
 
 /**
@@ -216,6 +216,13 @@ export function renderInbox(opts: {
   const rank = (i: InboxItem): number => (i.kind !== "channel" ? 0 : i.historical ? 2 : 1);
   const ordered = [...opts.items].sort((a, b) => rank(a) - rank(b)); // stable: receive order within a rank
 
+  // WHY THIS AGREES WITH THE ASSEMBLED REPLY, and what would break the agreement. Deliverability is
+  // decided here and delivery is decided by `assemble`, and the two can only agree because both
+  // measure the item through the SAME `fmtItem`. That is what makes the agreement invariant to how an
+  // item renders: the continuation indent that keeps a peer from forging a line raised both sides by
+  // the same characters, so nothing here had to change for it. Fork the rendering, and this
+  // classification starts calling a message deliverable that the reply cannot carry.
+  //
   // Stuck means "no response could carry this", so it is measured against the friendliest response
   // there is: this item alone, its head, and any rider, with no held-note at all.
   const stuck = new Set(
@@ -371,13 +378,17 @@ function heldNote(
  */
 function droppedNote(channels: readonly string[]): string {
   if (!channels.length) return "";
-  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(", ");
+  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${attributionSafe(c).slice(0, 40)}`).join(", ");
   const rest = channels.length - Math.min(NAMED_DROPPED, channels.length);
   return `⚠ Some earlier chatter could not be recalled completely on ${named}${rest ? `, and ${rest} more channel${rest === 1 ? "" : "s"}` : ""} (retention or local safety bounds were reached).`;
 }
 
 /** How many channels the recall warning names before it starts counting them instead. */
 const NAMED_DROPPED = 5;
+
+/** Every note in a reply starts at column zero, so any peer-controlled text it names goes through
+ *  {@link attributionSafe} first. A warning is not a lesser surface than a message line: it is the
+ *  part of the reply a caller is most likely to read as the tool speaking. */
 
 /** How many senders the future-stamp note names before it starts counting them instead. */
 const NAMED_AHEAD = 3;
@@ -387,7 +398,7 @@ const NAMED_AHEAD = 3;
  *  silent. Not a drop: nothing was cleared and the stream still holds them. */
 function aheadNote(items: readonly InboxItem[]): string {
   if (!items.length) return "";
-  const senders = [...new Set(items.map((i) => i.fromName.slice(0, 40)))];
+  const senders = [...new Set(items.map((i) => attributionSafe(i.fromName).slice(0, 40)))];
   const named = senders.slice(0, NAMED_AHEAD).join(", ");
   const rest = senders.length - Math.min(NAMED_AHEAD, senders.length);
   const one = items.length === 1;
@@ -401,8 +412,13 @@ function fmtItem(i: InboxItem): string {
   const h = i.historical ? "(history) " : ""; // backfilled on join — pre-dates you, not live
   const body = `${h}${fmtBody(i.text)}`;
   if (i.kind === "dm") return `[DM from ${fmtFrom(i)}] ${body}`;
-  if (i.kind === "anycast") return `[@${i.service} from ${fmtFrom(i)}] ${body}`;
-  return `[#${i.channel}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;
+  // The sender is not the only peer-controlled field inside these brackets. `toService` is written
+  // by the publisher and is not checked against the subject it arrived on, and a channel label is
+  // rewritten by the subject token on the official paths but not on every path that can reach this
+  // renderer. Both are neutralized HERE so the rule holds without depending on which upstream path
+  // validated what.
+  if (i.kind === "anycast") return `[@${attributionSafe(i.service ?? "")} from ${fmtFrom(i)}] ${body}`;
+  return `[#${attributionSafe(i.channel ?? "")}${i.mentionsMe ? " @you" : ""} ${fmtFrom(i)}] ${body}`;
 }
 
 /**
@@ -418,8 +434,21 @@ function fmtItem(i: InboxItem): string {
  * only thing that separates what the tool said from what a peer said it said.
  */
 function fmtBody(text: string): string {
-  return text.replace(/\r\n?|\n/g, "\n  ");
+  return text.replace(LINE_BREAK, "\n  ");
 }
+
+/**
+ * What counts as a line break, which is more than what JavaScript splits on.
+ *
+ * Measured through the host frame a model is handed (an MCP text content part, stringified and
+ * parsed back): U+2028, U+2029 and U+0085 survive JSON transport intact, so a message carrying one
+ * of them put an unindented attribution line into the bytes the model receives. A JavaScript split
+ * on a newline does not see a line there and neither does `wc -l`, but a Unicode-aware splitter
+ * does, and the rule this serves is stated absolutely: a line at column zero is written by this
+ * tool. A rule whose truth depends on which splitter the consumer happens to use is not that rule,
+ * so the class is every code point a line splitter may honour, not the two this file used to know.
+ */
+const LINE_BREAK = /\r\n?|[\n\v\f\u0085\u2028\u2029]/g;
 
 /** Render a channel's registry text as ATTRIBUTED, ADVISORY data — never as instructions to
  *  obey. The registry is privileged-write but still untrusted from the model's seat (a write
