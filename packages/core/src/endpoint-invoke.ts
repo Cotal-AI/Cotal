@@ -437,9 +437,25 @@ export async function submitAndFollowGoal(
 ): Promise<EpAttributedReply> {
   const terminals = new Map<string, { state: string; data?: unknown }>();
   const waiters = new Map<string, () => void>();
-  const sub = nc.subscribe(epGoalProgressGrantRow(space, endpoint, caller), {
+  const progressSubject = epGoalProgressGrantRow(space, endpoint, caller);
+  // A SUBSCRIPTION ERROR IS NOT ABSENCE OF NEWS, AND IT MUST NOT BE DISCARDED. If the broker
+  // refuses this subscription the caller can never hear ANY terminal for this goal - success as
+  // readily as failure - so waiting out the deadline reports "no terminal arrived" about a goal
+  // whose terminal may have been committed on time. Measured (#610): the manager bound the goal,
+  // earned ownership, committed the terminal and emitted it, while the caller sat denied and then
+  // printed a timeout. The broker's own wording for this is "a denied peer looks absent", which is
+  // exactly the confusion, and the operator response to the two is opposite: a timeout invites a
+  // retry (which duplicates the effect), a denial requires a grant.
+  let subError: Error | undefined;
+  const sub = nc.subscribe(progressSubject, {
     callback: (err, m) => {
-      if (err) return;
+      if (err) {
+        // Keep the FIRST error (later ones are consequences) and wake every waiter: once this
+        // subscription is refused, no further waiting can change the answer.
+        subError ??= err instanceof Error ? err : new Error(String(err));
+        for (const wake of waiters.values()) wake();
+        return;
+      }
       let ev: { goalId?: unknown; phase?: unknown; state?: unknown; data?: unknown };
       try { ev = JSON.parse(dec.decode(m.data)); } catch { return; }
       if (ev && ev.phase === "terminal" && typeof ev.goalId === "string") {
@@ -453,10 +469,18 @@ export async function submitAndFollowGoal(
     if (attributed.reply.ok !== true) return attributed; // refuse at accept — surface as-is
     const goalId = (attributed.reply.data as { goalId?: unknown } | undefined)?.goalId;
     if (typeof goalId !== "string") return attributed; // not an action reply — pass through
-    const terminal = terminals.get(goalId) ?? await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {
+    // A denial that has ALREADY arrived must not be waited out: it is knowable now, and holding the
+    // caller to its deadline is what turns a grant problem into a retry (the cell that caught this
+    // measured 20004ms of a 20000ms budget with the right message attached to it).
+    const terminal = terminals.get(goalId) ?? (subError !== undefined ? undefined : await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {
       const t = setTimeout(() => resolve(terminals.get(goalId)), deadlineMs);
       waiters.set(goalId, () => { clearTimeout(t); resolve(terminals.get(goalId)); });
-    });
+    }));
+    if (terminal === undefined && subError !== undefined)
+      // THE DISTINCT, ACTIONABLE FAILURE (#610). Deliberately NOT the deadline message below: this
+      // caller was never listening, so "no terminal arrived" would be a statement about the goal
+      // when the true statement is about this credential. The remedy is a grant, never a retry.
+      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "permission-denied", message: `the goal "${goalId}" was accepted, but this caller is NOT PERMITTED to hear its outcome: the broker refused the per-goal progress subscription "${progressSubject}" (${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this credential's ability to observe it. Do NOT retry: a retry submits a second goal and duplicates the effect, and it will be just as unobservable. Read the outcome with 'ps'/'inspect', and grant this caller the per-goal progress read row so a following call can hear its own goal (SPEC 13.6)` } } };
     if (terminal === undefined)
       // WHAT THIS PROVED: nothing about the goal. The goal was ACCEPTED (the submit above returned
       // ok); only its terminal did not arrive here in time, which a slow runtime or a dropped

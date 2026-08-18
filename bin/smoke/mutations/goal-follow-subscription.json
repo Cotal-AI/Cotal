@@ -1,0 +1,54 @@
+{
+  "suite": "bin/smoke/goal-follow.smoke.ts + implementations/auth/smoke/user-spawn.smoke.ts (cell B1f)",
+  "guard": "a caller can hear its own goal's terminal, and when it genuinely cannot it is told so distinctly instead of being handed a timeout",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:goal-follow",
+  "completionMarker": "A. a REFUSED progress subscription is reported as a refusal, not as a timeout",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/goal-follow-subscription.json",
+  "why": [
+    "TWO HALVES OF ONE DEFECT, AND EITHER ALONE LEAVES IT HALF ALIVE. The fold is the repair for",
+    "this illegitimate absence; the surfacing fix is the safety net for every FUTURE legitimately",
+    "absent grant. A mutation per half, each aimed at the assertion its half exists for.",
+    "",
+    "THE LIVE OCCUPANT, so neither is hypothetical. Measured on an authed mesh: the manager bound",
+    "the goal, earned ownership, committed a terminal and emitted it, while the caller sat with a",
+    "broker-refused subscription and then printed a timeout. #605 records a duplicate agent created",
+    "by an operator who read exactly that timeout as failure and re-issued.",
+    "",
+    "WHY MUTATION 1 IS AIMED AT A HAND-BUILT CELL, and what that does and does not prove. Since the",
+    "fold landed, a spawn-capable credential CARRIES the progress row, so a real credential can no",
+    "longer produce the denial this branch handles. The cell therefore builds the refusal by hand and",
+    "proves the BRANCH. Mutation 2 is the pair: it is aimed end to end at a real authed spawn over a",
+    "real broker, which is what shows a production door reaches the follow path at all.",
+    "",
+    "BUILD FIRST, REBUILD ON RESTORE: both suites read `@cotal-ai/core` through `dist/`, so a mutation",
+    "on `src` is invisible without a build, and `dist/` is gitignored so git cannot be the recovery.",
+    "",
+    "THE COMPLETION MARKER IS A LINE PRINTED BEFORE THE ASSERTION, not the suite summary: both suites",
+    "throw on their first failed assertion, so a mutant run can never reach a final line, and keying",
+    "the gate there reports a real kill as INCONCLUSIVE (measured on this lane's previous config)."
+  ],
+  "mutations": [
+    {
+      "name": "the subscription error is discarded again, so a denied caller is handed a timeout",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      if (err) {\n        // Keep the FIRST error (later ones are consequences) and wake every waiter: once this\n        // subscription is refused, no further waiting can change the answer.\n        subError ??= err instanceof Error ? err : new Error(String(err));\n        for (const wake of waiters.values()) wake();\n        return;\n      }",
+      "replace": "      if (err) return;",
+      "expectRed": "the reply is a refusal, not a deadline",
+      "cell": "the reply is a refusal, not a deadline",
+      "note": "The defect exactly as shipped, in one line. A denied subscription becomes indistinguishable from an empty one, and the caller blames the goal for a terminal that was committed on time. The broker's own wording for this is that a denied peer looks absent; this line is what made the client believe it.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the spawn mint branch drops the `sub` half again, so a spawn-capable credential may submit a goal it cannot hear",
+      "file": "packages/core/src/provision.ts",
+      "find": "  if (opts.capabilities?.includes(\"spawn\")) {\n    const rows = epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller);\n    pubAllow.push(...rows.pub);\n    for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);\n  }",
+      "replace": "  if (opts.capabilities?.includes(\"spawn\"))\n    pubAllow.push(...epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller).pub);",
+      "expectRed": "a spawn-scope caller HEARS its own goal's terminal",
+      "cell": "a spawn-scope caller HEARS its own goal's terminal (not a deadline, not a denied subscription)",
+      "note": "The shipped shape: `.pub` taken, `.sub` discarded, one property access short of the credential. Aimed END TO END at a real authed spawn, which is what shows a production door reaches this. Under the mutation the caller is refused its follow and now reports the DISTINCT refusal rather than a timeout, because mutation 1's fix is still in place: the two halves are visible separately, which is the point of grading them separately.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:user-spawn:live",
+      "completionMarker": "B1f) a spawn-scope caller follows its own goal to a terminal",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    }
+  ]
+}
