@@ -278,6 +278,24 @@ export const cotal: Plugin = async () => {
     errorRetryTimer.unref?.();
   }
 
+  /**
+   * EVENT-PLANE WORK IS ROUTED BY THE HOLDER'S OWN BINDING, NEVER BY THE AMBIENT SESSION ID (#600).
+   *
+   * The ambient id and the holder that serves it are two variables, and every attempt to ORDER them
+   * left a nearer window: the id was assigned outside the swap, then inside it but before the drain,
+   * and each time an event arriving in the remaining gap was routed by the NEW id into a holder
+   * still bound to the OLD thread, whose re-adopt refusal is terminal and takes the plane down.
+   * Ordering a two-variable race only moves its boundary, so this removes the second variable from
+   * the decision: an event reaches the holder only if that holder is ALREADY bound to its thread, or
+   * is not bound to anything yet and is free to take it. A holder bound elsewhere is not the route
+   * for this event, whatever the ambient id currently says.
+   */
+  function eventsFor(id: string | undefined): AguiEmitterHolder<OpenCodeRecord> | undefined {
+    const holder = events;
+    if (holder === undefined || id === undefined) return undefined;
+    return holder.path === undefined || holder.path === id ? holder : undefined;
+  }
+
   function adoptSession(id: string, reason: string): void {
     if (sessionID === id) return;
     const previous = sessionID;
@@ -555,8 +573,8 @@ export const cotal: Plugin = async () => {
           // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.
           // Both land on the holder's chain in the order they were enqueued, so closing first would
           // terminate a run the records that follow still belong to.
-          events?.flush(sessionID);
-          events?.closeRun(Date.now());
+          eventsFor(sessionID)?.flush(sessionID);
+          eventsFor(sessionID)?.closeRun(Date.now());
           await safeStatus("idle");
           completeTurn(); // the sole turn-end site: ack-on-surface + drive the next batch
           break;
@@ -584,8 +602,8 @@ export const cotal: Plugin = async () => {
           // A failed turn still ENDED, so the run is closed rather than left open for the next one
           // to be refused against. It closes with no outcome, which says the run ended and does not
           // claim it succeeded; `RUN_ERROR` is unreachable from any emitter on this plane today.
-          events?.flush(sessionID);
-          events?.closeRun(Date.now());
+          eventsFor(sessionID)?.flush(sessionID);
+          eventsFor(sessionID)?.closeRun(Date.now());
           const interrupted = consumeInterruptIntent(event.properties.sessionID) || isMessageAbortedError(event.properties.error);
           busy = false;
           if (awaitingTurnEnd) {
@@ -602,7 +620,7 @@ export const cotal: Plugin = async () => {
           // the source then reads the durable store and decides what is settled enough to publish.
           const partSession = (event.properties as { part?: { sessionID?: string } }).part?.sessionID;
           if (!ours(partSession)) return;
-          events?.flush(sessionID);
+          eventsFor(sessionID)?.flush(sessionID);
           break;
         }
         case "tui.command.execute": {
