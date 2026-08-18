@@ -1,0 +1,151 @@
+{
+  "suite": "implementations/manager/smoke/events-grant-acl.smoke.ts",
+  "guard": "a spawn or a resume may arm the event plane of the agent it names and no other, over both ACL fields and at every seam, and the wildcard form is deliberately left to ordinary ACL authority, and the remedy the refusal prints is the one that actually narrows",
+  "command": "pnpm smoke:events-grant",
+  "completionMarker": "EVENTS-GRANT/ACL SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/events-own-channel.json",
+  "why": [
+    "An event channel carries a session's tool inputs and outputs verbatim. On a static mesh there is",
+    "no ledger, so a caller-supplied allowSubscribe/allowPublish is attenuated by nothing at all, and a",
+    "resume document is admin-supplied JSON that re-arms a managed row which `renewManagedStaticCred`",
+    "then re-mints a credential out of at half TTL.",
+    "",
+    "E1 removes the rule's predicate. E2 leaves the rule but narrows its INPUT to one of the two ACL",
+    "fields, which is the shape a refactor produces and which E1 cannot distinguish. E3 goes the other",
+    "way and makes the rule catch MORE than it claims to, which is the only way to show the",
+    "stated-limit cell is an assertion rather than a sentence. E4 removes the rule from the RESUME door",
+    "E5 swaps the resume door's actor half from the principal to the display name. A resume document",
+    "supplies both independently, so that mutant re-arms the victim's plane for a different principal while",
+    "E4's cell and every spawn cell stay green.",
+    "E6 is E2 on the OTHER door: the resume seam reads the read-set only and forgets the post-set.",
+    "E4 zeroes the whole list at once and so cannot see it, which is how the gap survived a review that",
+    "had already asked for the half-fence on the spawn side.",
+    "while leaving it on the spawn door, which is the state this PR was in when a security review found",
+    "it: every spawn cell stayed green and a foreign concrete channel was mintable through an inventory.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the manager by relative source path (../src/manager.js), so",
+    "the mutated file is the file that runs and there is no build in the command. Its package-name",
+    "imports are core's eventChannel/eventChannelPrincipal, which the cells compare the manager",
+    "AGAINST; no mutation below replaces them, so a kill cannot come from moving both sides.",
+    "",
+    "E7 rewords the refusal's own remedy back to the profile that ignores --allow-subscribe. Every",
+    "other cell stays green: the refusal still refuses, still names the channel, still releases the",
+    "name. Only the credential the printed command actually mints changes, which is the half an",
+    "operator pays for and the half no cell watched before.",
+    "E8 is E7 one field over: the printed CHANNEL rather than the printed profile. It exists because",
+    "the first version of section 9 graded the profile and then minted the suite's own channel, so a",
+    "refusal pointing an operator at a different plane would have kept every cell green.",
+    "E9 is the mesh-mode field: the helper picks ONE of the two routes off the mesh the manager is",
+    "actually running, and until now no cell watched that selector. E9 pins the selector open on the",
+    "user branch while the suite runs a STATIC mesh, so the refusal hands a static operator a",
+    "`cotal actor grant` against a ledger that does not exist. Every other cell stays green: it still",
+    "refuses, still names the channel, still releases the name.",
+    "E10 is E9's twin at the OTHER door, and it is a real defect rather than only an ungraded field.",
+    "The resume door selected the remedy off the resumed DOCUMENT's identity mode rather than off the",
+    "manager's. Those agree on an honest inventory and disagree on exactly the shape section 8 already",
+    "builds, a user-mode record under a static manager, where the refusal handed a static operator a",
+    "`cotal actor grant` for a mesh with no actor ledger to write it to. An engineering lens found it by",
+    "asking what E9 and R2 did NOT cover, which is the question a pair of mutants invites."
+  ],
+  "mutations": [
+    {
+      "name": "E1 the rule finds nothing foreign, ever",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    return p !== null && !(p.owner === owner && p.actor === actor);",
+      "replace": "    return false;",
+      "expectRed": "a spawn asking for ANOTHER agent's event channel to READ is refused",
+      "cell": "a spawn asking for ANOTHER agent's event channel to READ is refused",
+      "note": "The rule deleted at its predicate rather than at a call site, so every surrounding throw and message survives and cannot pass a cell by itself."
+    },
+    {
+      "name": "E2 the spawn seam reads the read-set only, and forgets the post-set",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "const foreign = foreignEventChannels([...allowSubscribe, ...(allowPublish ?? [])], agentTriple.owner, agentTriple.actor);",
+      "replace": "const foreign = foreignEventChannels([...allowSubscribe], agentTriple.owner, agentTriple.actor);",
+      "expectRed": "a spawn asking to POST to another agent's event channel is refused too",
+      "cell": "a spawn asking to POST to another agent's event channel is refused too",
+      "note": "The half-fence. It reads as the obvious one, because read amplification is the risk people name first, and it leaves a caller able to mint publish rights onto another agent's plane, which is forgery rather than eavesdropping. E1 cannot tell this mutant from a healthy tree."
+    },
+    {
+      "name": "E3 the rule catches the wildcard form too, which it does not claim to",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const p = eventChannelPrincipal(ch);",
+      "replace": "    const p = eventChannelPrincipal(ch) ?? (ch.startsWith(\"events.\") ? { owner: \"\", actor: \"\" } : null);",
+      "expectRed": "a WILDCARD event pattern is NOT refused by this rule",
+      "cell": "a WILDCARD event pattern is NOT refused by this rule",
+      "note": "The limit asserted from the other side. Without it, the cell recording the gap is satisfied by any tree including one that had quietly closed it, and the comment describing the limit is a sentence nobody tests."
+    },
+    {
+      "name": "E4 the rule covers the spawn door but not the resume door",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const foreign = foreignEventChannels(\n        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
+      "replace": "      const foreign = foreignEventChannels(\n        [],",
+      "expectRed": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
+      "cell": "an inventory naming ANOTHER agent's event channel is refused at the resume door",
+      "note": "Not an invented mutant: this is exactly the state the change was in when a security review reproduced a foreign concrete event channel being minted through an admin inventory plus one credential renewal. Every spawn cell stays green under it, which is why it needed its own cell rather than trust in the existing ones."
+    },
+    {
+      "name": "E5 the resume door judges the channel against the display name, not the principal",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      const actor = entry.identity.mode === \"user\" ? entry.identity.actor : entry.identity.id;",
+      "replace": "      const actor = entry.identity.mode === \"user\" ? entry.name : entry.identity.id;",
+      "expectRed": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
+      "cell": "a user-mode record whose NAME is the victim and whose PRINCIPAL is not is refused",
+      "note": "The two halves agree in every honest inventory, which is why this survives E4 and every spawn cell. They are supplied independently by admin JSON, and the row the document re-arms is keyed by the principal, so the name is the half that does not own the plane."
+    },
+    {
+      "name": "E6 the resume door reads the read-set only, and forgets the post-set",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],",
+      "replace": "        [...(entry.launch.allowSubscribe ?? [])],",
+      "expectRed": "an inventory naming another agent's event channel to POST to is refused at the resume door too",
+      "cell": "an inventory naming another agent's event channel to POST to is refused at the resume door too",
+      "note": "The half-fence, on the door E2 does not touch. Every other cell in sections 7 and 8 smuggles through allowSubscribe and stays green under it."
+    },
+    {
+      "name": "E7 the refusal names a mint profile that ignores the channel it prints",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "      : `\\`cotal mint <reader> --profile observer --allow-subscribe ${channel}\\`, where there ` +",
+      "expectRed": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
+      "cell": "the profile the refusal names mints a reader of EXACTLY that one channel on the chat plane",
+      "note": "This is the shipped state of the text until a live mint decoded what it produced. `mint` reads --allow-subscribe only for the agent profile and the observer arm of permissionsFor hardcodes chat.>, so the printed command handed an operator a reader of the whole chat plane while the sentence around it promised one channel. Section 9 parses the profile out of the refusal rather than hardcoding one, so this mutant is the drift it exists to catch."
+    },
+    {
+      "name": "E8 the refusal prints a channel other than the one it refused",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "      : `\\`cotal mint <reader> --profile agent --allow-subscribe events.local.UNOTTHEONEREFUSED --provision\\`, where there ` +",
+      "expectRed": "the channel it prints is the channel it refused",
+      "cell": "the channel it prints is the channel it refused",
+      "note": "E7's sibling, one field over, and an engineering lens is why it exists: a section that grades the PROFILE the refusal names while minting the suite's own channel leaves the channel field ungraded, and a refusal pointing an operator at the wrong plane is the same defect class as one naming the wrong profile. Section 9 now mints on the channel the refusal printed and compares the result against the channel the manager refused, so this mutant reddens twice."
+    },
+    {
+      "name": "E9 the spawn door prints the route for the OTHER mesh than the one it is running on",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,",
+      "replace": "            `spawn: \\`cotal actor grant <reader> --owner ${agentTriple.owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
+      "expectRed": "the refusal prints a mint command, naming a profile and a channel",
+      "cell": "the refusal prints a mint command, naming a profile and a channel",
+      "note": "The helper no longer takes a mode, so this mutant can no longer be written as a wrong argument: it inlines the USER route at the static door instead, which is the same defect with the parameter removed. Under it the spawn refusal on a static mesh hands the operator `actor grant` for a mesh with no actor ledger to write it to."
+    },
+    {
+      "name": "E10 the resume door prints the route for the OTHER mesh, the defect that shipped there",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            `${this.readerRemedy(owner, foreign[0]!)}`,",
+      "replace": "            `\\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${foreign[0]!}' --allow-publish ''\\`, with every field spelled out.`,",
+      "expectRed": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
+      "cell": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
+      "note": "The resume door shipped `entry.identity.mode === \"user\"`, the resumed DOCUMENT's mode rather than the manager's, which on the shape section 8 builds selects the user route under a static manager. That expression is now unwritable, since the method takes no mode, so the mutant inlines the route it used to select. E9 and E10 are separate because they are separate doors: one graded door would leave the other free."
+    },
+    {
+      "name": "E11 the single selector, inverted",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    return this.userMode\n",
+      "replace": "    return !this.userMode\n",
+      "expectRed": "the refusal prints a mint command, naming a profile and a channel",
+      "cell": "the refusal prints a mint command, naming a profile and a channel",
+      "note": "After the fold there is exactly ONE mode expression for both doors, and this is it. The mutant reddens the spawn cell AND the resume cell in this suite, which is the point: a single selector cannot be wrong at one door and right at the other. The named cell is the spawn one. On the user mesh the opposite polarity is graded by R2 in the auth config. It exists because an engineering lens asked for the selector to be closed by construction rather than by assertion, and the fold is what made a single-selector mutant writable at all."
+    }
+  ]
+}

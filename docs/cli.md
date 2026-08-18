@@ -475,7 +475,6 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--cwd <dir>` | this cwd | Working directory to root the agent at |
 | `--prompt <text>` | — | Initial prompt auto-submitted at start |
 | `--resume <id>` | — | Fork an existing session id into the mesh (claude only) |
-| `--transcript` / `--no-transcript` | off | Mirror the session transcript to `tr-<name>` |
 | `--events` / `--no-events` | off | Publish the session's structured event plane to its own event channel |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
@@ -969,8 +968,8 @@ cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
 | `--out <path>` | `.cotal/auth/creds/<name>.creds` | Output path |
 | `--signer` | off | Emit a stripped account-signing file instead |
 | `--force` | off | With `--signer`: overwrite an existing file |
-| `--allow-subscribe <a,b>` | profile default | Read-ACL override |
-| `--allow-publish <a,b>` | profile default | Post-ACL override |
+| `--allow-subscribe <a,b>` | the agent file's, else subscribe | Read-ACL override, **agent profile only**: `observer` and `admin` carry a fixed read set, and `mint` refuses this flag there rather than narrowing nothing |
+| `--allow-publish <a,b>` | the agent file's, else deny | Post-ACL override, **agent profile only** |
 | `--role <role>` | the agent file's | Agent profile: the anycast task queue the identity pulls (`svc_<role>`) |
 | `--provision` | off | Agent profile: also pre-create the identity's bind-only DM/deliver durables (and its role's task queue) on the live mesh, so the credential can consume |
 | `--space <s>`, `--server <url>` | the resolved mesh | With `--provision`: which mesh to provision on |

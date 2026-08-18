@@ -147,7 +147,6 @@ smoke:membership-feed-confinement:auth
 smoke:wildcard-backfill
 smoke:opencode
 smoke:opencode-coop
-smoke:opencode-transcript
 smoke:codex-args
 smoke:codex-host
 smoke:codex-dist
@@ -155,7 +154,6 @@ smoke:codex-installed
 smoke:web-harness
 smoke:web-parts
 smoke:web-channel-authority
-smoke:transcript-grant
 smoke:persona-acl
 smoke:cli-kernel
 smoke:join-creds
@@ -301,6 +299,8 @@ smoke:events-grant
 smoke:spawn-foreground-events
 smoke:seat-input
 smoke:user-spawn:live
+smoke:agui-authorship
+smoke:agui-map
 
 # The cotal-lang runtime: the language package, the durable step journal and run driver, and the
 # mesh handler that binds the effect interface onto the real planes.
