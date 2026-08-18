@@ -90,7 +90,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid,
+  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
   resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds,
 } = await import("@cotal-ai/core");
@@ -340,6 +340,11 @@ try {
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   for (const n of ["alpha", "beta", "delta"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
+  // `epsilon` and `zeta` carry NO role on purpose: section E asks what a peer may delegate on the EVENT
+  // PLANE, and a role is itself a delegated capability, so a `role: worker` persona would be
+  // refused for the role before the channel was ever weighed and the cell would read as a pass.
+  for (const n of ["epsilon", "zeta"])
+    writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
 
   authChild = spawnAuthService();
   await waitAuthReady();
@@ -560,11 +565,11 @@ try {
   // PRIVILEGED ctl subject, admitted by the callout-minted scope grants and decided by the
   // manager's owner-domain authorization.
   console.log("O) own-agent control: owner-domain attach/stop on the spawn tier");
-  const ctlCaller = async (actor: string, owner: string, scope: string[]) => {
+  const ctlCaller = async (actor: string, owner: string, scope: string[], acl?: { allowSubscribe?: string[]; allowPublish?: string[] }) => {
     // The row's lifecycleUid ALSO rides the endpoint options: invokeService's caller triple is
     // (owner, actor, uid) and refuses without it (SPEC 13.1 — no alias-keyed fallback).
     const uid = mintLifecycleUid();
-    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [], lifecycleUid: uid });
+    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: acl?.allowSubscribe ?? [], allowPublish: acl?.allowPublish ?? [], lifecycleUid: uid });
     const ex = await agentExchange(actor, g.actorToken, owner);
     if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
     const ep = new CotalEndpoint({
@@ -634,6 +639,64 @@ try {
   await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
+
+  // ---------- E. the event plane rides the SAME delegation envelope, at the real door ----------
+  // The question this answers: can a peer that merely holds `spawn` hand its own child a READ grant
+  // on ANOTHER principal's event channel, where that plane is defined to carry tool inputs and
+  // outputs? Not through a unit call into the ledger: through the real ep `spawn` command, over a
+  // real bearer, at a live broker.
+  //
+  // WHAT IS ASSERTED AND WHY IT IS NOT THE REPLY TEXT. `spawn` is an ACTION: the door replies the
+  // instant the identity is minted, BEFORE provisioning, so the acceptance says the request was
+  // admitted and says nothing about the outcome. The verdict rides the goal terminal, and a
+  // spawn-scoped bearer following its own goal times out here (recorded as a finding, not worked
+  // around). So the cells assert the two facts that cannot be produced any other way: the door
+  // ACCEPTED the request, and the ledger then refused it, leaving no managed row and no live agent.
+  // A refusal at the schema or at the door would fail the first; a refusal that leaked would fail
+  // the second.
+  console.log("E) a peer cannot delegate a foreign event channel to its own child");
+  const VICTIM = eventChannel({ owner: OWNER_B, actor: "auditor" });
+  type Accepted = { ok: boolean; name?: string; error?: string };
+  const epSpawnAccept = async (ep: CotalEndpoint, args: Record<string, unknown>): Promise<Accepted> => {
+    try {
+      const r = await ep.invokeService("manager", "spawn", args, { deadlineMs: 15_000 });
+      if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+      return { ok: true, name: (r.reply.data as { name?: string }).name };
+    } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
+  };
+  const settle = async (ms: number) => { await new Promise((r) => setTimeout(r, ms)); };
+  const evtpeer = await ctlCaller("evtpeer", OWNER, ["spawn"], { allowSubscribe: ["general"], allowPublish: ["general"] });
+  const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is ACCEPTED at the door (the contract admits the field)",
+    readOverAsk.ok === true, readOverAsk);
+  await settle(1500);
+  check("...and the ledger then refuses it: no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  check("...and no live agent by that name", !manager.list().some((a) => a.name === "epsilon"), manager.list().map((a) => a.name));
+  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
+  check("the same over-ask on the child's WRITE set is accepted at the door too", writeOverAsk.ok === true, writeOverAsk);
+  await settle(1500);
+  check("...and refused the same way: publishing INTO another agent's plane leaves no row",
+    !existsSync(rowFile("managed", OWNER, "epsilon")));
+  // The other half, and the reason this is containment rather than a ban: an OPERATOR widening the
+  // peer's own grant admits the very same request. The authority is the ledger, not a special case
+  // for `events.`, so the plane inherits the delegation rule every other channel already has.
+  const widened = await ctlCaller("evtpeer2", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("with the peer's OWN grant widened by the operator, the identical spawn is accepted", admitted.ok === true, admitted);
+  await settle(2500);
+  const epsilonRow = existsSync(rowFile("managed", OWNER, "epsilon"))
+    ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "epsilon"), "utf8")) as { allowSubscribe?: string[]; parent?: string })
+    : undefined;
+  check("...and THIS time a row is written, carrying exactly the channel it asked for",
+    epsilonRow?.allowSubscribe?.includes(VICTIM) === true, epsilonRow);
+  check("...recording the peer that delegated it as parent", epsilonRow?.parent === `${OWNER}.evtpeer2`, epsilonRow);
+  // The same over-ask, run through the op core directly with the SAME spawner principal, so the
+  // refusal TEXT is on the record next to the door cells above. The route is proved by them; this
+  // names what the ledger said.
+  const overText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("the refusal is the delegation envelope, and it names the event channel it would have granted",
+    overText.ok === false && /delegation only narrows/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
 
   // ---------- V. elevated views (exchange-gated per-connection profiles), live ----------
   // The live half of the views design (unit layers: smoke:views). Real wire: refused under-scoped
