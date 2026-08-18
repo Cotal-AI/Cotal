@@ -140,7 +140,7 @@ refuses("the operator edge CLEARS the lifecycle fields",
   () => assertEpNameEdge(P(draining), { ...P(released), lifecycleUid: UID }, OPERATOR, G),
   /CLEARS `lifecycleUid`/);
 
-console.log("\n── runtimeOwner is MOVED on the launch-completing edges ──");
+console.log("\n── runtimeOwner is MOVED on the four launch-resolving edges ──");
 allows("launching → live moves the FULL executor into runtimeOwner",
   () => assertEpNameEdge(P(launching), P(live), CLAIM, G));
 allows("relaunching → live OVERWRITES the previous owner with the resuming one",
@@ -155,7 +155,7 @@ refuses("launching → draining also moves the full executor",
   () => assertEpNameEdge(P(launching), P({ ...draining, runtimeOwner: OWNER2 }), SWEEPER, G),
   /MOVES the full `executor`/);
 
-console.log("\n── runtimeOwner is CARRIED everywhere else, never re-derived ──");
+console.log("\n── runtimeOwner is CARRIED on the three others, never re-derived ──");
 allows("live → draining carries the owner unchanged",
   () => assertEpNameEdge(P(live), P(draining), SWEEPER, G));
 refuses("live → draining may NOT re-derive the owner",

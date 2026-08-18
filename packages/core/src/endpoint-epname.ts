@@ -19,9 +19,17 @@
  *
  * ⚠️ THIS PARAGRAPH SAID "written at `launching → live` … and every subsequent edge CARRIES it",
  * which was true of a simpler machine than the one below it. It named ONE move edge where four
- * ship, and "every subsequent edge" over-includes the creation edge, which has no previous row to
- * carry from. A reader who implemented from it would move the owner once and carry it through a
- * relaunch, which is a different machine. Rebound to the edge table rather than argued with.
+ * ship, and said CARRIES of edges that MOVE: `relaunching → live`, `launching → draining` and
+ * `relaunching → draining` all resolve a launch and take a new owner. A reader who implemented
+ * from it would move the owner once and carry it through a relaunch, which is a different machine.
+ * Rebound to the edge table rather than argued with.
+ *
+ * ⚠️ AND THE FIRST VERSION OF THIS VERY PARAGRAPH GOT ITS OWN DIAGNOSIS WRONG, which is worth
+ * leaving visible. It said the old wording "over-includes the creation edge". It does not:
+ * `— → live` is not SUBSEQUENT to `launching → live`, it is an alternative path to the same state.
+ * The sentence that over-included the creation edge was a later one, corrected separately. I had
+ * taken a true diagnosis of a neighbouring sentence and applied it to this one because they were
+ * about the same field. A reviewer caught it.
  *
  * It is deliberately never re-derived from a slot row,
  * because user mode has no slot row at all, so a derivation is unevaluable on a supported path,
@@ -315,7 +323,7 @@ export function assertEpNameEdge(
     // path, which is the same failure as a predicate whose actor cannot exist.
     if (!sameInc(prev.runtimeOwner, next.runtimeOwner))
       fail(`${from} → ${to} CARRIES \`runtimeOwner\` unchanged (${JSON.stringify(prev.runtimeOwner)} → `
-         + `${JSON.stringify(next.runtimeOwner)}) — it is installed once, when the spawn call returns, and never re-derived`);
+         + `${JSON.stringify(next.runtimeOwner)}) — it is INSTALLED when a launch resolves and CARRIED on this edge, never re-derived`);
   }
   if (to === "draining" && next.enteredAt === undefined) fail("`draining` SETS `enteredAt`");
   if (from === "draining" && to === "released") {
