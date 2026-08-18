@@ -1,0 +1,61 @@
+{
+  "suite": "bin/smoke/readiness-window-live.smoke.ts",
+  "guard": "an `uncertain` launch verdict reaches the operator carrying the MANAGER's diagnosis and its inspect-rather-than-re-issue instruction, not core's generic deadline line",
+  "command": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build && pnpm smoke:readiness:live",
+  "completionMarker": "a child that never joins settles the goal `uncertain`",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/readiness-uncertain-reason.json",
+  "why": [
+    "THE LIVE OCCUPANT OF THE CLASS, so this is not a hypothetical guard. Issue #605 measured the",
+    "backstop firing on 12 of 12 launches across two operators, two releases and both surfaces, and",
+    "records the cost: one operator re-issued after an apparent failure that had actually succeeded,",
+    "minting a duplicate agent that then drove a shared working tree. The sentence these mutations",
+    "delete is the one that tells an operator to inspect instead.",
+    "",
+    "BUILD FIRST, AND REBUILD ON RESTORE. This suite imports `@cotal-ai/core` and `@cotal-ai/manager`",
+    "through `dist/`, so a mutation on `src` is invisible to it without a build and the run would come",
+    "back green about a mutant it never loaded. `dist/` is gitignored, so git cannot be the recovery",
+    "for it either -- hence `afterRestore` rebuilds both packages.",
+    "",
+    "TWO SITES, ONE CELL, DELIBERATELY. The fix spans a boundary: the manager supplies the words and",
+    "core carries them. Mutation 1 is the defect exactly as it shipped (the manager drops its own",
+    "detail); mutation 2 makes core ignore a reason that WAS supplied. Either alone leaves the other",
+    "half unproven, and both must redden the same assertion because the operator's outcome is the same",
+    "either way -- the guidance does not arrive.",
+    "",
+    "WHAT THIS DOES NOT GRADE, stated rather than left to a kill count. The DELIVERY of the verdict is",
+    "asserted by a sibling cell (`delivered at the window, not the caller's deadline`) and is NOT what",
+    "these mutations attack -- it was never broken. Measured before the fix: 2270ms against a 2000ms",
+    "window with a 12000ms caller budget. The handed-down diagnosis held that the reply was lost in",
+    "transit; it is not, and a mutation aimed at delivery would have been aimed at a class with no",
+    "occupant. The defect is a lost SENTENCE, not a lost message, and these mutations say so.",
+    "",
+    "THE COMPLETION MARKER IS THE SIBLING CELL, NOT THE SUITE'S LAST LINE, and that is deliberate.",
+    "This suite throws on its first failed assertion, so a mutant run CANNOT reach the final summary --",
+    "keying the marker there reported both kills as INCONCLUSIVE (measured, first attempt). Keying it",
+    "on the cell that must stay GREEN under these mutations makes the gate do real work: the run is",
+    "only counted if it got as far as settling the goal `uncertain`, which is the proof that the",
+    "backstop was reached and that the mutation took away the WORDS and not the verdict."
+  ],
+  "mutations": [
+    {
+      "name": "the manager drops the readiness detail it just built, so the terminal carries nothing to say",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "await hooks?.onOutcome?.({ kind: \"uncertain\", data: { reason: readiness.detail } });",
+      "replace": "await hooks?.onOutcome?.({ kind: \"uncertain\" });",
+      "expectRed": "carrying the MANAGER's diagnosis",
+      "cell": "...carrying the MANAGER's diagnosis, not core's generic line",
+      "note": "The defect exactly as shipped. The manager still CONSTRUCTS the detail (it rides the local return value, so `ps` and the logs keep it) and still settles the goal `uncertain` on time -- which is why the two sibling cells stay green under this mutation and only the wording cell reddens. That asymmetry is the whole finding: every signal an operator could check looked right except the one they were actually shown.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "core ignores the reason its committer supplied and commits its own generic line anyway",
+      "file": "packages/core/src/endpoint-action.ts",
+      "find": "    reason: typeof suppliedReason === \"string\" && suppliedReason.length > 0\n      ? suppliedReason\n      : \"the success signal did not arrive within the readiness deadline\",",
+      "replace": "    reason: \"the success signal did not arrive within the readiness deadline\",",
+      "expectRed": "carrying the MANAGER's diagnosis",
+      "cell": "...carrying the MANAGER's diagnosis, not core's generic line",
+      "note": "The far half of the same path. A caller-supplied reason that core silently discards is worse than no parameter at all, because the manager's call site then reads as correct and the loss moves somewhere nobody is looking. Aimed at the same cell on purpose: the operator cannot tell which side dropped the sentence, so the guard is written in terms of what they receive.",
+      "afterRestore": "pnpm --filter @cotal-ai/core build && pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

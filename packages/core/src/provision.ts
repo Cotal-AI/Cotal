@@ -1165,15 +1165,32 @@ export function permissionsFor(
   const baseline = epBaselineGrantRows(space, epCaller);
   pubAllow.push(...baseline.pub);
   const epSub: string[] = [...baseline.sub];
-  if (opts.capabilities?.includes("spawn"))
-    pubAllow.push(...epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller).pub);
+  // BOTH HALVES OF THE ROLLUP, NOT JUST `pub`. `epCallerGrantRows` returns `{pub, sub}` and its
+  // `sub` is the per-goal progress row its own docblock promises: "a goal-bearing capability
+  // (spawn/launch) adds ONE per-endpoint epGoalProgressGrantRow - the caller may follow its OWN
+  // goal to terminal". Taking `.pub` alone minted a credential that may SUBMIT a goal and may not
+  // HEAR it, so the broker refused the follow and the caller reported a timeout about a goal whose
+  // terminal had already been committed (#610). `spawn` is goal-bearing, so this `sub` is never
+  // empty here - the row was computed correctly and discarded one property access short of the
+  // credential.
+  if (opts.capabilities?.includes("spawn")) {
+    const rows = epCallerGrantRows(space, spawnCallerCapabilities(pr.owner), epCaller);
+    pubAllow.push(...rows.pub);
+    for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
+  }
   if (opts.capabilities?.includes("admin"))
     // The admin capability's ep mirror (the 1c grant-migration table): the v0.3 `ctl.<admin>`
     // subject above grants the FULL admin-tier op reach, so its holder gets the admin instrument
     // set on the ep rails — any-mode despawn/attach + the `manager.admin` family + the reads. In
     // user mode this is the ledger `admin` scope arriving via the callout, the broker-enforced
     // half of the tier; the manager's ledger-derived per-op admin flag stays on top of it.
-    pubAllow.push(...epCallerGrantRows(space, operatorInstrumentCapabilities("admin", pr.owner), epCaller).pub);
+    {
+      // Same `{pub, sub}` contract as the spawn branch above: an admin instrument's set carries the
+      // goal-bearing lifecycle commands, so it earns the same follow row.
+      const rows = epCallerGrantRows(space, operatorInstrumentCapabilities("admin", pr.owner), epCaller);
+      pubAllow.push(...rows.pub);
+      for (const s of rows.sub) if (!epSub.includes(s)) epSub.push(s);
+    }
   if (opts.endpointCapabilities?.length) {
     if (opts.lifecycleUid !== undefined && assertLifecycleToken(opts.lifecycleUid) !== uid)
       throw new Error(`permissionsFor: opts.lifecycleUid "${opts.lifecycleUid}" disagrees with the principal's lifecycleUid "${uid}" - one credential names ONE incarnation on the caller rail (SPEC 13.1/13.2)`);
