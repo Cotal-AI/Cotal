@@ -851,12 +851,18 @@ function scopeOf(n: ts.Node): ts.Node | undefined {
  *  of it turned up as false reds, `const { tls } = cfg` and `catch (tls)`. The catch clause was the
  *  worse of the two: it parses as a declaration with NO INITIALIZER, which is the one shape this
  *  reader had just learned to call undefined, so it did not merely walk past the binding, it read
- *  the wrong answer off it. */
+ *  the wrong answer off it.
+ *
+ *  An IMPORT was in this list and has been removed, because mutation said nothing tested it and the
+ *  reason turned out to be structural rather than a missing cell: this rule only matters where a
+ *  binding SHADOWS an outer one, and an import lives at file scope, where a second binding of its
+ *  name is a duplicate declaration and not a program. A name this file never binds is already
+ *  answered by the walk running out of scopes. Writing a cell to cover the branch would have
+ *  produced a green that proved the branch reachable by fixture and never by any real file. */
 function opaqueBinding(n: ts.Node, name: string): boolean {
   const named = (x: ts.Node | undefined): boolean => !!x && ts.isIdentifier(x) && x.text === name;
   if (ts.isBindingElement(n)) return named(n.name);
   if (ts.isParameter(n)) return named(n.name);
-  if (ts.isImportSpecifier(n) || ts.isNamespaceImport(n) || ts.isImportClause(n)) return named(n.name);
   if (ts.isFunctionDeclaration(n) || ts.isClassDeclaration(n)) return named(n.name);
   return false;
 }
@@ -866,14 +872,17 @@ function nameFact(id: ts.Identifier): NameFact {
     const decls: ts.VariableDeclaration[] = [];
     let writes = 0, opaque = 0;
     const visit = (n: ts.Node): void => {
+      // A nested function DECLARATION is both a binding here and a scope of its own, and the binding
+      // has to be seen first: skipping it as a scope hid the name it binds, and the walk carried on
+      // outward to an unrelated binding that then answered for it.
+      if (opaqueBinding(n, id.text)) { opaque += 1; return; }
       if (n !== scope && ts.isFunctionLike(n)) return; // another scope answers for its own names
       if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) {
         // A catch variable is bound by the throw, not by this text, and it has no initializer to
         // read. Counting it as a readable declaration made `catch (tls)` claim undefined.
         if (ts.isCatchClause(n.parent)) opaque += 1;
         else decls.push(n);
-      } else if (opaqueBinding(n, id.text)) opaque += 1;
-      else if (rebinds(n, id.text)) writes += 1;
+      } else if (rebinds(n, id.text)) writes += 1;
       ts.forEachChild(n, visit);
     };
     visit(scope);
@@ -1553,8 +1562,12 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const tls = undefined;\nfunction f(cfg: any) { const { tls } = cfg; return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
   check("...and a CATCH variable likewise, which parses as a declaration with no initializer and is not one",
     one(`const tls = undefined;\nfunction f() { try { g(); } catch (tls) { return standaloneConnectOpts({ creds: c, tls }); } }`) === "has-key");
-  check("...and an IMPORTED name is bound by another file, so this one claims nothing about it",
+  check("...and a name this file never binds at all, an import say, is not claimed in either direction",
     one(`import { tls } from "./x";\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a nested FUNCTION of the name shadows an outer undefined binding, since it binds it too",
+    one(`const tls = undefined;\nfunction f() { function tls() { return 1; } return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  check("...as does a nested CLASS of the name, which binds it by the same rule",
+    one(`const tls = undefined;\nfunction f() { class tls {} return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
   check("...and a parameter SHADOWING an outer undefined binding stays green, since it is not that name",
     one(`const tls = undefined;\nfunction f({ tls }: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
 
