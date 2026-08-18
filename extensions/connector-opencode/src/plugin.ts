@@ -502,7 +502,6 @@ export const cotal: Plugin = async () => {
           // Cotal-aware context reset: same mesh identity, new OpenCode context/session id.
           if (event.properties.info.parentID) break;
           const created = event.properties.info.id;
-          adoptSession(created, "top-level session create");
           // SERIALIZED, AND NOT BY THE OBVIOUS SWAP (#600). Taking the holder out before the await
           // and installing the replacement there looks smaller and is unsafe: a fresh holder has no
           // `path` until something adopts it, and adopt happens after the await, so a second
@@ -512,6 +511,13 @@ export const cotal: Plugin = async () => {
           // swap is what actually closes the window, because each swap then reads a holder that is
           // already settled rather than one mid-retirement.
           const swap = swapChain.then(async () => {
+          // IDENTITY AND HOLDER FLIP TOGETHER, and this is the whole reason the adopt is in here.
+          // Setting the current session id outside the swap made them flip at different times, and
+          // any ordinary event arriving in that gap was routed BY THE NEW ID to the OLD holder,
+          // which is bound to a different thread and refuses terminally. Measured: a
+          // `message.part.updated` for the new session, delivered while the swap was still queued,
+          // killed the emitter and took the plane down.
+          adoptSession(created, "top-level session create");
           const previous = events;
           if (previous && previous.path !== undefined && previous.path !== created) {
             // DRAIN, THEN SWAP. Flush first so the session being left publishes what it settled,
@@ -525,10 +531,12 @@ export const cotal: Plugin = async () => {
             // Symmetric with the adoption line above, and load-bearing rather than decorative: a
             // retirement that never happens is otherwise invisible, because a dropped holder has no
             // frames left to publish and its open handle looks identical to a cleanly retired one.
-            log(`${SESSION_RETIRED} ${previous.path} superseded by ${created}; drained before release`);
             previous.flush(previous.path);
             previous.closeRun(Date.now());
             await previous.settled();
+            // AFTER the settle, never before it. Logged before, this line reports that the retire
+            // path was ENTERED, and a cell keyed on it stays green even if the drain never finishes.
+            log(`${SESSION_RETIRED} ${previous.path} superseded by ${created}; drained before release`);
             events = newEventHolder();
           }
           // Adopt READS FROM HERE. A resumed session must not republish its history, and the

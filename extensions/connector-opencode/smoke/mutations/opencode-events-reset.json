@@ -33,14 +33,19 @@
     "kills on the named assertion. Twelve at a box load around 2, and ten more under deliberate CPU",
     "pressure with the load between 16 and 26 on a 20-core box, since a slow machine is the exact",
     "variable the worry names. If this ever does report SURVIVED, the honest reading is that the harness",
-    "stopped reaching the window, not that the guard became optional."
+    "stopped reaching the window, not that the guard became optional.",
+    "",
+    "R5 GRADES THE PAIRING, not the serialization. The two are different invariants and the suite lost",
+    "nothing by learning that the hard way: the swap was serialized and the session identity still",
+    "changed outside it, so an ordinary event arriving in the gap was routed by the new id to the old",
+    "holder. Identity and holder have to change together, and R5 is what keeps them together."
   ],
   "mutations": [
     {
       "name": "R1 the second top-level session is adopted into the bound holder, which is the state this connector shipped in",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            await previous.settled();\n            events = newEventHolder();\n",
-      "replace": "            await previous.settled();\n",
+      "find": "            events = newEventHolder();\n",
+      "replace": "",
       "expectRed": "reset:the session created by /new PUBLISHES"
     },
     {
@@ -65,6 +70,15 @@
       "expectRed": "race:the holder the FIRST of two racing creates installed is retired, exactly once",
       "note": "Chaining every swap off an ALREADY-RESOLVED promise removes the serialization while leaving the code compiling, which is the smallest expression of the defect. Under it both invocations capture the same holder to retire, the first replacement is adopted (its write-ahead log opens) and is then overwritten, and the session it held leaves a run open on the subject forever.",
       "cell": "race:the holder the FIRST of two racing creates installed is retired, exactly once (and the session they both replace is retired ONCE, not drained twice)"
+    },
+    {
+      "name": "R5 the session identity flips OUTSIDE the swap, so an ordinary event in the gap is routed by the new id to the old holder",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "          const swap = swapChain.then(async () => {",
+      "replace": "          adoptSession(created, \"top-level session create\");\n          const swap = swapChain.then(async () => {",
+      "expectRed": "race:neither of two creates inside one drain window killed the emitter",
+      "cell": "race:neither of two creates inside one drain window killed the emitter",
+      "note": "Adding the early adopt back is the shipped defect exactly: the in-chain adopt then early-returns because the id already matches, so the identity flips before the holder does. Serializing the swap is necessary and NOT sufficient, which is the part this mutation exists to keep true. Found by review rather than by the author: a `message.part.updated` for the just-created session, delivered while both swaps were queued, passed the ownership check on the new id and landed a flush on a holder bound to the old thread, which refuses terminally and kills the plane."
     }
   ]
 }

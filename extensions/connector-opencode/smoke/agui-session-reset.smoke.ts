@@ -244,10 +244,15 @@ try {
   // adopted keeps a run OPEN on the wire forever and its stream goes dark, with no error anywhere.
   content.set(C, []);
   content.set(D, []);
-  await Promise.all([
-    fire({ type: "session.created", properties: { info: { id: C } } }),
-    fire({ type: "session.created", properties: { info: { id: D } } }),
-  ]);
+  // AND AN ORDINARY EVENT FOR THE NEW SESSION ARRIVES IN THE GAP. This is not decoration: the bus
+  // discards handler promises, so a `message.part.updated` for the session just created can be
+  // delivered while both swaps are still queued. If the current session id flips outside the swap,
+  // this event is routed by the NEW id to the OLD holder, which is bound to another thread and
+  // refuses terminally, and the whole event plane dies. Found by review, reproduced here first.
+  const createC = fire({ type: "session.created", properties: { info: { id: C } } });
+  const createD = fire({ type: "session.created", properties: { info: { id: D } } });
+  const partInGap = fire({ type: "message.part.updated", properties: { part: { sessionID: D } } });
+  await Promise.all([createC, createD, partInGap]);
   await sleep(2_000);
   for (const id of [C, D]) {
     await part(id);            // park the cursor, as a live session's first pump does
