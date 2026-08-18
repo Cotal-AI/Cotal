@@ -165,6 +165,31 @@ snapshot. Close, expiry, target despawn, and a manager restart are distinct, sur
 states: a restarted manager's successor refuses the old epoch's sessions and the client
 shows "manager restarted; re-attach".
 
+## Seat input
+
+`attach` is a stream, so it is the wrong shape for a program that wants to send one line: it
+holds a session open and expects a terminal at the caller's end. The `input` command is the
+other half. One authorized call writes text into a running seat's terminal as if it had been
+typed there, and answers with the seat and the number of bytes delivered.
+
+It exists for **harness commands**. A line beginning with `/` (`/compact`, `/clear`, `/model`)
+is neither chat nor an event: the agent's own harness handles it, and the keyboard is the only
+way in. An external control surface that can already read a seat's turns and talk to it still
+cannot drive it without this.
+
+The op is targeted, rides the `manager.lifecycle` capability, and declares authz modes `owner`
+and `any`, which is the row `attach` and `despawn` already carry, checked by the same
+authorization: writing into a seat's terminal is precisely what holding an attach session lets
+you do, so `input` is that authority with the session removed rather than a new one. Enter is
+appended unless the caller suppresses it, and nothing is echoed back, since the resulting turns
+already have somewhere to go.
+
+Only a runtime that owns the child's input stream can serve it. The `pty` runtime does; the
+external terminal runtimes attach to a process they do not own, and there the command refuses
+and names the runtime rather than dropping the keystroke. A seat that is not running refuses for
+its own reason, and the two are distinguishable, so a caller can tell "this will never work"
+from "not right now". See [cli.md](cli.md#input).
+
 ## Grants
 
 There is no broad control credential. A caller holds one capability row per command it is
@@ -180,5 +205,5 @@ process. See [SPEC §13.9](../SPEC.md#139-authority-boundary) and
 ## See also
 
 - [Architecture](architecture.md), where the manager and the wire fit in the whole system.
-- [CLI](cli.md), for `describe`, `invoke`, `spawn`, `ps`, `status`, and `attach`.
+- [CLI](cli.md), for `describe`, `invoke`, `spawn`, `ps`, `status`, `attach`, and `input`.
 - [SPEC §13](../SPEC.md#13-endpoint-control-surface-v04), the normative contract.

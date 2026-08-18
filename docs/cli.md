@@ -45,6 +45,7 @@ runtimes ship this way.
 | Agents & personas | [`ps`](#ps-stop-attach) | List managed agents and their mesh status |
 | Agents & personas | [`stop`](#ps-stop-attach) | Ask the manager to stop a managed agent |
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
+| Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
@@ -634,6 +635,57 @@ single-use and short-lived, so one authorized attach can never be re-pointed at 
 agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
 manager's output. The roster, the live feed, and the PTY stream all answer `401` without one; the
 static console shell is served openly, since it describes no agent.
+
+## input
+
+```bash
+cotal input --name <n> --text <text> [--no-enter] [--on <instance>] [--space <s>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--name <n>` | | Managed agent to type into (required) |
+| `--text <text>` | | The text to type, taken verbatim (required) |
+| `--no-enter` | off | Type the text and stop there, without pressing Enter |
+| `--on <instance>` | class anycast | Pin to one manager instance id, exactly as [`attach`](#ps-stop-attach) |
+
+Types one line into a running agent's terminal, as if you had typed it there, and returns. This is
+the half of [`attach`](#ps-stop-attach) that a program wants: `attach` is a live stream that holds a
+session open and expects a terminal on your side, so a script, a cron job or a web UI cannot use it
+to send a single line. `input` is one authorized call.
+
+What it is for is **harness commands**. A line beginning with `/` is not chat and not a message: it
+is something the agent's own harness handles, and the only way in is the keyboard.
+
+```bash
+cotal input --name reviewer --text "/compact"          # ask the harness to compact its context
+cotal input --name reviewer --text "/model opus"       # switch its model
+cotal input --name reviewer --text "hold on that PR"   # ordinary typing works too
+```
+
+**Quoting.** `--text` takes a value, so a payload starting with `/` survives as written. A payload
+starting with a dash needs the `=` form, because the shell-style `--text --foo` is ambiguous and is
+refused rather than guessed:
+
+```bash
+cotal input --name reviewer --text=--verbose          # dash-leading text: use --text=<value>
+```
+
+Enter is pressed by default, since a command typed but never submitted has not been delivered.
+`--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
+send it later.
+
+Nothing comes back but a delivery receipt (`✓ sent 9 bytes to reviewer`, counting the trailing
+carriage return). Whatever the agent does next shows up where its output already goes: the mesh, its
+transcript, or an `attach`.
+
+Reach is exactly [`attach`](#ps-stop-attach)'s, and for the same reason: typing into a terminal is
+what an attach session already lets its holder do. Seat locality is resolved for you, on a static
+mesh it is a cross-agent admin operation, and on a user-auth mesh your own agents need `spawn` while
+another owner's needs `admin` on your ledger row. Only the `pty` runtime can be typed into. The
+external terminal runtimes (`tmux`, `cmux`, `orca`, `herdr`) attach to a process they do not own, so
+they have no input stream for it and the command refuses by name rather than dropping the keystroke.
 
 ## personas
 
