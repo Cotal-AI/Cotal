@@ -559,7 +559,7 @@ export const cotal: Plugin = async () => {
             }
             // Adopt READS FROM HERE. A resumed session must not republish its history, and the
             // source's fresh adopt returns the position of the end for exactly that reason.
-            events?.adopt(created);
+            eventsFor(created)?.adopt(created);
           });
           // The chain carries the SUCCESSFUL tail only: a rejected swap is absorbed so the next one
           // still runs, while this invocation still sees its own failure.

@@ -65,6 +65,7 @@ const CHANNEL = "events.local.otto";
 const A = "ses_00000000000000000000000001";
 const B = "ses_00000000000000000000000002";
 const CHILD = "ses_00000000000000000000000003";
+const G = "ses_00000000000000000000000003"; // never admitted: a second unseen id, see the boot phase
 const C = "ses_00000000000000000000000004";
 const D = "ses_00000000000000000000000005";
 
@@ -192,15 +193,35 @@ try {
   // reaches a holder nothing has bound yet, and the route has to hand it over rather than read
   // "unbound" as "not mine". Booting this suite on a create left that arm ungraded: breaking it on
   // purpose changed no cell anywhere, which is how the gap was found.
+  //
+  // AND TWO UNSEEN IDS ARRIVE IN ONE SYNCHRONOUS BLOCK, which is the case the route does NOT decide.
+  // `flush` enqueues and the binding is set on the holder's own chain, so both calls can observe an
+  // unbound holder; nothing in the route stops the second. What stops it is one layer above: `ours`
+  // adopts the first unseen id SYNCHRONOUSLY, so the second fails `id === sessionID` and never
+  // reaches a holder at all. The routing change depends on that, so it is graded here rather than
+  // asserted in a comment.
+  //
+  // BOTH ARE ADMITTED WHILE EMPTY AND POPULATED AFTERWARDS, and neither half is optional. A source
+  // that adopts non-empty content parks at its END and publishes nothing, so populating first would
+  // make the FIRST id silent too; leaving both empty would make the second id's silence a zero
+  // against an empty source, which grades nothing. Empty first, then content on both, is what makes
+  // the outcome nonzero against zero.
   content.set(A, []);
-  await part(A); // parks the cursor on the near-empty session, as a live one does
+  content.set(G, []);
+  const admitted = part(A);
+  const refused = part(G);
+  await Promise.all([admitted, refused]);
   await sleep(1_500);
   content.set(A, turn(A, 1));
+  content.set(G, turn(G, 1));
   await part(A);
+  await part(G);
   await sleep(2_500);
   const afterBoot = await onSubject();
   check("boot:the first event of the process reaches a holder nothing has bound yet",
     afterBoot > 0, { afterBoot });
+  check("boot:and a second unseen id in that same block did not kill the emitter",
+    !logs.some((l) => l.includes("emitter stopped")), logs.filter((l) => l.includes("emitter stopped")));
 
   // A create for the session already adopted is a no-op, not a second binding.
   await fire({ type: "session.created", properties: { info: { id: A } } });
@@ -319,6 +340,9 @@ try {
     tailA >= 0 && lastFinishedA >= 0 && tailA < lastFinishedA, { tailA, lastFinishedA });
   check("order:every run the first session OPENED was closed, so the observer holds none dangling",
     openedA > 0 && openedA === closedA, { openedA, closedA });
+  check("boot:the second unseen id published NOTHING, though its source had a turn to publish",
+    seen.filter((e) => e.thread === G).length === 0 && seen.filter((e) => e.thread === A).length > 0,
+    { g: seen.filter((e) => e.thread === G).length, a: seen.filter((e) => e.thread === A).length });
   check("thread:the two sessions publish under DIFFERENT thread ids on the one subject",
     seen.some((e) => e.thread === A) && seen.some((e) => e.thread === B), {
       a: seen.filter((e) => e.thread === A).length, b: seen.filter((e) => e.thread === B).length,
@@ -351,7 +375,7 @@ try {
     !seen.some((e) => e.thread === CHILD), seen.filter((e) => e.thread === CHILD).length);
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 17;
+  const EXPECTED = 19;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
