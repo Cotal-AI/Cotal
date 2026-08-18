@@ -158,14 +158,24 @@ const EXTS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
  *    it is itself a failure that says so. Crude, exact, and fail-closed: a tripwire cannot bless a
  *    call, only refuse to answer for one.
  */
-const CONTAINERS: Record<string, "frontmatter" | "tripwire"> = { ".astro": "frontmatter", ".mdx": "tripwire" };
+const CONTAINERS: Record<string, "frontmatter" | "tripwire" | "excluded"> = {
+  ".astro": "frontmatter", ".mdx": "tripwire",
+  // EXCLUDED, which is a decision and not an oversight, and that difference is the whole point of
+  // the table. Both can carry an inline `<script>`, so they belong on the watchlist; both are
+  // markup DELIVERED TO A BROWSER, and a browser has no NATS client and therefore no path to this
+  // seam. They are named here so the exclusion is on the record and is revisited if either ever
+  // becomes a build-time surface, which is exactly what `.astro` turned out to be.
+  ".html": "excluded", ".svg": "excluded",
+};
 
 /** Container extensions this repo could plausibly grow. A cell asserts every one PRESENT in the tree
  *  has a decision in CONTAINERS, so a new `.vue` is a red that asks the question rather than a
  *  silence that answers it. No instrument checks its own boundary unless it is made to. */
-const CONTAINER_WATCHLIST = [".astro", ".vue", ".svelte", ".mdx", ".marko", ".riot"];
+const CONTAINER_WATCHLIST = [".astro", ".vue", ".svelte", ".mdx", ".marko", ".riot", ".html", ".svg"];
 
 const extOf = (f: string): string => { const i = f.lastIndexOf("."); return i < 0 ? "" : f.slice(i); };
+/** Decided AND read. An `excluded` container is decided and deliberately not walked. */
+const scanned = (ext: string): boolean => CONTAINERS[ext] === "frontmatter" || CONTAINERS[ext] === "tripwire";
 
 /** The fenced TypeScript head of an Astro component, plus where the rest of the file starts. The
  *  head is blank-padded so every line number in it is the file's own. */
@@ -182,7 +192,7 @@ function sources(dir: string, acc: string[] = []): string[] {
     if (e.isDirectory()) {
       if (SKIP_DIRS.has(e.name)) continue;
       sources(p, acc);
-    } else if (EXTS.some((x) => e.name.endsWith(x)) || CONTAINERS[extOf(e.name)]) acc.push(p);
+    } else if (EXTS.some((x) => e.name.endsWith(x)) || scanned(extOf(e.name))) acc.push(p);
   }
   return acc;
 }
@@ -819,6 +829,13 @@ const present = extensionsPresent(ROOT);
 const undecided = CONTAINER_WATCHLIST.filter((x) => present.has(x) && !CONTAINERS[x]);
 check("every container language present in this tree has a recorded decision, read or tripwire",
   undecided.length === 0, undecided);
+
+// ...and the other half of "decided": an EXCLUDED extension is one the walk deliberately does not
+// enter, which is only a decision if something proves the exclusion is real rather than a typo.
+const excluded = CONTAINER_WATCHLIST.filter((x) => CONTAINERS[x] === "excluded");
+check("an EXCLUDED container is decided but not walked, so exclusion is on the record rather than an omission",
+  excluded.length > 0 && files.every((f) => CONTAINERS[extOf(f)] !== "excluded"),
+  { excluded, walkedAnyway: files.filter((f) => CONTAINERS[extOf(f)] === "excluded").length });
 
 for (const seam of SEAMS) {
   const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
