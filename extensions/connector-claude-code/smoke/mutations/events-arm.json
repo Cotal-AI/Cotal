@@ -1,0 +1,53 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/events-arm.smoke.ts",
+  "guard": "the connector arms its event plane from the launch flag alone, never from a grant it happens to hold, and refuses an armed launch that gives the write-ahead log nowhere to live",
+  "command": "pnpm smoke:claude-events-arm",
+  "completionMarker": "SUITE COMPLETE:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/events-arm.json",
+  "why": [
+    "Arming and authorization are two facts about one session, and the whole risk is that they get",
+    "treated as one. An agent file or a manifest can hand-write anything into allowPublish, so a",
+    "connector that read the grant as an instruction would let any author who can write an agent file",
+    "turn on a full transcript of another seat's tool inputs and outputs, without ever touching the",
+    "launch grammar or passing a manager refusal.",
+    "",
+    "The write-ahead log's home is the same shape of failure one layer down. A log under the launch",
+    "working directory is invisible to the next start, so the next start reads an already-published",
+    "thread as virgin and republishes sequence numbers the stream has seen. That is not a degraded",
+    "mode, it is a corrupted one, so the launch refuses rather than defaults.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the connector by relative source path (../src/extension.js)",
+    "and calls buildLaunch directly: no dist in the path, no build in the command, no child process.",
+    "Its one package-name import is core's eventChannel, which two cells deliberately compare the",
+    "connector against and no mutation below replaces."
+  ],
+  "mutations": [
+    {
+      "name": "A1 read the grant as an instruction, the confusion the suite is named for",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "if (opts.events === true) {",
+      "replace": "if (opts.events === true || (opts.allowPublish ?? []).some((c) => c.startsWith(\"events.\"))) {",
+      "expectRed": "a hand-written event-channel grant does NOT arm the emitter",
+      "cell": "a hand-written event-channel grant does NOT arm the emitter",
+      "note": "Written the way it would plausibly be written: it looks like the connector helpfully noticing what it is allowed to do."
+    },
+    {
+      "name": "A2 default the write-ahead log to the working directory instead of refusing",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "      if (!opts.workspaceRoot)\n        throw new Error(",
+      "replace": "      if (false)\n        throw new Error(",
+      "expectRed": "an armed launch with no workspace root refuses",
+      "cell": "an armed launch with no workspace root refuses",
+      "note": "The fallback that looks harmless at the first start and republishes the thread at the second."
+    },
+    {
+      "name": "A3 re-derive the channel locally with a display-name sanitizer",
+      "file": "extensions/connector-claude-code/src/extension.ts",
+      "find": "  eventChannel,",
+      "replace": "  eventChannel: (p: { owner: string; actor: string }) => `events.${p.owner}.${p.actor.toLowerCase()}`,",
+      "expectRed": "the connector's channel IS core's derivation, character for character",
+      "cell": "the connector's channel IS core's derivation, character for character",
+      "note": "A second derivation agrees with core's for most inputs and disagrees for exactly the ones a sanitizer touches, so the failure surfaces as an auth rejection at publish time rather than at launch."
+    }
+  ]
+}

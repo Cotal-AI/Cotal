@@ -694,6 +694,10 @@ try {
   // asserts on; a space-wide tap would be a silent sub violation and see nothing.
   godEye.tap((subject: string) => { tapped.push(subject); }, { subject: `cotal.${SPACE}.inst.>` });
   await wait(300); // let the tap subscription settle
+  // A written `<owner>.<actor>` literal, so it is a valid recipient by construction rather than
+  // by anything checking it here. Any future change to the principal grammar has to visit this
+  // line: it builds a recipient instead of borrowing one from a card, and this suite is not in
+  // the CI chain, so nothing would fail if it stopped being well formed.
   await opsmate.unicast(`${OWNER}.alpha`, "psst — a DM between two other principals");
   let sawDm = false;
   for (let i = 0; i < 20 && !sawDm; i++) { await wait(100); sawDm = tapped.some((s) => s.includes(".inst.")); }

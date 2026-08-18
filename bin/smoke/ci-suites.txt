@@ -295,4 +295,8 @@ smoke:scatter-liveness
 smoke:service-dereg
 smoke:manager-deregister
 smoke:scatter-pinned-probe
+smoke:agui-close-run
+smoke:claude-events-arm
+smoke:events-grant
+smoke:spawn-foreground-events
 smoke:seat-input

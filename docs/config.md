@@ -88,6 +88,7 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | auto-detect |
 | `COTAL_TRANSCRIPT` | connector session | Mirror this session's transcript to `tr-<name>` (`1`) | off |
 | `COTAL_TRANSCRIPT_DEFAULT` | manager | Default transcript-mirror for managed spawns (`1`) | off |
+| `COTAL_EVENTS_DEFAULT` | manager | Default AG-UI event plane for managed spawns (`1`) | off |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
 | `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works | off |

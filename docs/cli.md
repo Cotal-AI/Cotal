@@ -476,6 +476,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--prompt <text>` | — | Initial prompt auto-submitted at start |
 | `--resume <id>` | — | Fork an existing session id into the mesh (claude only) |
 | `--transcript` / `--no-transcript` | off | Mirror the session transcript to `tr-<name>` |
+| `--events` / `--no-events` | off | Publish the session's structured event plane to its own event channel |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
@@ -486,6 +487,18 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
+
+`--events` turns on the session's **event plane**: a stream of structured events describing what
+the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
+the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
+agents are allowed to share a display name and would then share a stream. The launch grants publish
+rights on exactly that one channel, foreground and detached alike, and a connector that does not
+publish an event plane refuses the flag rather than starting a session whose events have nowhere to
+go.
+
+The flag and the grant are separate on purpose. Holding publish rights on a channel is not a request
+to publish to it, so writing an event channel into an agent file's `allowPublish` does not turn the
+plane on: only the launch does.
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
