@@ -1,0 +1,406 @@
+/**
+ * The library: the free builtins (design doc §4) and the curated methods on arrays, strings and
+ * numbers, as one table each.
+ *
+ * Nothing here is reached by name resolution on a host object. A member access on a string, an
+ * array or a number resolves against these tables and nowhere else, so `xs.map` is the entry in
+ * {@link ARRAY_METHODS} and never `Array.prototype.map`, and a name that is not in the table is a
+ * refusal (L4014) rather than a host function called with the wrong calling convention. Every
+ * method here has the meaning JavaScript gives it; the language adds nothing and takes nothing away
+ * inside this table, which is what lets `semantics.smoke` run the same programs on node and here.
+ *
+ * Callbacks are AWAITED. A method that takes a function (`map`, `filter`, `find`, ...) calls it one
+ * element at a time and awaits each call, because a function here may perform an effect. For a pure
+ * callback that is exactly JavaScript; for one that performs effects it is the sequential order the
+ * source reads in, and a program that wants concurrency says so with `parallel` or `fanOut`.
+ *
+ * Mutators are in the table too ({@link MUTATING_METHODS}), because a fresh local array is a value
+ * the program owns until it shares it: `out.push(x)` inside a loop is the shape every author writes.
+ * Each mutator asks the interpreter whether the receiver may be written (frozen values and values
+ * born outside a concurrent branch may not), so freeze-on-share holds for method writes exactly as
+ * for member writes.
+ */
+
+import { canonicalize } from "json-canonicalize";
+import { RuntimeFault } from "./errors.js";
+import { parseDuration } from "./duration.js";
+import type { ScopeFrame } from "./keys.js";
+import { scopePathString } from "./keys.js";
+import { Prng, born, deepFreeze } from "./values.js";
+
+/** What the library needs of the interpreter's frame. `Frame` in interpret.ts satisfies it. */
+export interface LibFrame {
+  readonly depth: number;
+  readonly keys: { readonly path: readonly ScopeFrame[] };
+  readonly clock: { now(): number };
+}
+
+/** A function value as the interpreter calls it: user closures and builtins share this shape. */
+export type Callable = (frame: LibFrame, args: unknown[]) => Promise<unknown>;
+
+/** What the builtins read from the run. */
+export interface LibraryContext {
+  readonly runId: string;
+  readonly programHash: string;
+  readonly startedAt: number;
+  readonly prng: Prng;
+  readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
+  /** Refuse a write to `target` from `frame`, or return normally. Owned by the interpreter. */
+  assertWritable(target: object, frame: LibFrame): void;
+}
+
+// ---- host errors --------------------------------------------------------------------------------
+
+/**
+ * A builtin or a method given inputs the host refuses (`"a".repeat(-1)`, `json.parse("{")`) raises
+ * a host error. It leaves as a language fault that names the builtin, never as the host's own
+ * class: a program can `catch` a record with a code, and an interpreter fault carrying a host stack
+ * would put a frame from this file in front of the author.
+ */
+function guarded<T extends unknown[]>(name: string, impl: (...args: T) => unknown): (...args: T) => Promise<unknown> {
+  return async (...args: T): Promise<unknown> => {
+    try {
+      return await impl(...args);
+    } catch (e) {
+      if (e instanceof TypeError || e instanceof RangeError || e instanceof SyntaxError) {
+        throw new RuntimeFault("L4016", `${name}: ${e.message}`);
+      }
+      throw e;
+    }
+  };
+}
+
+const asCallable = (v: unknown, where: string): Callable => {
+  if (typeof v !== "function") throw new RuntimeFault("L4011", `${where} needs a function, and this value is not one`);
+  return v as Callable;
+};
+
+// ---- the total order `sort` uses ----------------------------------------------------------------
+
+/**
+ * A comparison that never answers "equal" for two distinct values (design §3.4.3): numbers by value,
+ * strings by code unit, anything else by canonical form, and a tie on the key by the canonical form
+ * of the elements themselves. What is left equal is identical, and a stable sort keeps its order.
+ */
+function compareTotal(a: unknown, b: unknown): number {
+  if (typeof a === "number" && typeof b === "number") return a < b ? -1 : a > b ? 1 : 0;
+  if (typeof a === "string" && typeof b === "string") return a < b ? -1 : a > b ? 1 : 0;
+  const ca = canonicalize(a);
+  const cb = canonicalize(b);
+  return ca < cb ? -1 : ca > cb ? 1 : 0;
+}
+
+// ---- methods ---------------------------------------------------------------------------------------
+
+export type Method = (frame: LibFrame, receiver: never, args: unknown[]) => unknown;
+
+/** Methods that write to their receiver. The static L2032 walk and the runtime write check read this. */
+export const MUTATING_METHODS: ReadonlySet<string> = new Set(["push", "pop", "shift", "unshift", "splice"]);
+
+/** The array methods, JavaScript's meaning, callbacks awaited. */
+export function arrayMethods(ctx: LibraryContext): Readonly<Record<string, Method>> {
+  const write = (xs: unknown[], frame: LibFrame): void => ctx.assertWritable(xs, frame);
+  const table: Record<string, (frame: LibFrame, xs: unknown[], args: unknown[]) => unknown> = {
+    // pure, callback-taking (each callback awaited in order)
+    map: async (frame, xs, a) => {
+      const f = asCallable(a[0], "map");
+      const out: unknown[] = [];
+      for (let i = 0; i < xs.length; i += 1) out.push(await f(frame, [xs[i], i, xs]));
+      return born(out, frame.depth);
+    },
+    filter: async (frame, xs, a) => {
+      const f = asCallable(a[0], "filter");
+      const out: unknown[] = [];
+      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) out.push(xs[i]);
+      return born(out, frame.depth);
+    },
+    find: async (frame, xs, a) => {
+      const f = asCallable(a[0], "find");
+      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
+      return undefined;
+    },
+    findIndex: async (frame, xs, a) => {
+      const f = asCallable(a[0], "findIndex");
+      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) return i;
+      return -1;
+    },
+    findLast: async (frame, xs, a) => {
+      const f = asCallable(a[0], "findLast");
+      for (let i = xs.length - 1; i >= 0; i -= 1) if (await f(frame, [xs[i], i, xs])) return xs[i];
+      return undefined;
+    },
+    findLastIndex: async (frame, xs, a) => {
+      const f = asCallable(a[0], "findLastIndex");
+      for (let i = xs.length - 1; i >= 0; i -= 1) if (await f(frame, [xs[i], i, xs])) return i;
+      return -1;
+    },
+    some: async (frame, xs, a) => {
+      const f = asCallable(a[0], "some");
+      for (let i = 0; i < xs.length; i += 1) if (await f(frame, [xs[i], i, xs])) return true;
+      return false;
+    },
+    every: async (frame, xs, a) => {
+      const f = asCallable(a[0], "every");
+      for (let i = 0; i < xs.length; i += 1) if (!(await f(frame, [xs[i], i, xs]))) return false;
+      return true;
+    },
+    forEach: async (frame, xs, a) => {
+      const f = asCallable(a[0], "forEach");
+      for (let i = 0; i < xs.length; i += 1) await f(frame, [xs[i], i, xs]);
+      return undefined;
+    },
+    reduce: async (frame, xs, a) => {
+      const f = asCallable(a[0], "reduce");
+      let i = 0;
+      let acc: unknown;
+      if (a.length >= 2) acc = a[1];
+      else {
+        if (xs.length === 0) throw new RuntimeFault("L4016", "reduce: Reduce of empty array with no initial value");
+        acc = xs[0];
+        i = 1;
+      }
+      for (; i < xs.length; i += 1) acc = await f(frame, [acc, xs[i], i, xs]);
+      return acc;
+    },
+    flatMap: async (frame, xs, a) => {
+      const f = asCallable(a[0], "flatMap");
+      const out: unknown[] = [];
+      for (let i = 0; i < xs.length; i += 1) {
+        const r = await f(frame, [xs[i], i, xs]);
+        if (Array.isArray(r)) out.push(...r);
+        else out.push(r);
+      }
+      return born(out, frame.depth);
+    },
+    // pure, no callback
+    includes: (_f, xs, a) => xs.includes(a[0]),
+    indexOf: (_f, xs, a) => xs.indexOf(a[0], a[1] as number | undefined),
+    lastIndexOf: (_f, xs, a) => (a.length >= 2 ? xs.lastIndexOf(a[0], a[1] as number) : xs.lastIndexOf(a[0])),
+    slice: (frame, xs, a) => born(xs.slice(a[0] as number | undefined, a[1] as number | undefined), frame.depth),
+    concat: (frame, xs, a) => born(xs.concat(...a), frame.depth),
+    join: (_f, xs, a) => xs.join(a[0] as string | undefined),
+    flat: (frame, xs, a) => born(xs.flat(a[0] as number | undefined), frame.depth),
+    at: (_f, xs, a) => xs.at(a[0] as number),
+    toReversed: (frame, xs) => born([...xs].reverse(), frame.depth),
+    // mutators
+    push: (frame, xs, a) => {
+      write(xs, frame);
+      return xs.push(...a);
+    },
+    pop: (frame, xs) => {
+      write(xs, frame);
+      return xs.pop();
+    },
+    shift: (frame, xs) => {
+      write(xs, frame);
+      return xs.shift();
+    },
+    unshift: (frame, xs, a) => {
+      write(xs, frame);
+      return xs.unshift(...a);
+    },
+    splice: (frame, xs, a) => {
+      write(xs, frame);
+      const removed = a.length >= 2 ? xs.splice(a[0] as number, a[1] as number, ...a.slice(2)) : xs.splice(a[0] as number);
+      return born(removed, frame.depth);
+    },
+  };
+  return Object.freeze(
+    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),
+  );
+}
+
+/** The string methods, JavaScript's meaning. Patterns are strings: there are no regular expressions. */
+export function stringMethods(): Readonly<Record<string, Method>> {
+  const str = (name: string, v: unknown): string => {
+    if (typeof v !== "string") throw new RuntimeFault("L4016", `${name}: the pattern must be a string (there are no regular expressions here)`);
+    return v;
+  };
+  const table: Record<string, (frame: LibFrame, s: string, args: unknown[]) => unknown> = {
+    trim: (_f, s) => s.trim(),
+    trimStart: (_f, s) => s.trimStart(),
+    trimEnd: (_f, s) => s.trimEnd(),
+    toLowerCase: (_f, s) => s.toLowerCase(),
+    toUpperCase: (_f, s) => s.toUpperCase(),
+    startsWith: (_f, s, a) => s.startsWith(str("startsWith", a[0]), a[1] as number | undefined),
+    endsWith: (_f, s, a) => s.endsWith(str("endsWith", a[0]), a[1] as number | undefined),
+    includes: (_f, s, a) => s.includes(str("includes", a[0]), a[1] as number | undefined),
+    indexOf: (_f, s, a) => s.indexOf(str("indexOf", a[0]), a[1] as number | undefined),
+    lastIndexOf: (_f, s, a) => (a.length >= 2 ? s.lastIndexOf(str("lastIndexOf", a[0]), a[1] as number) : s.lastIndexOf(str("lastIndexOf", a[0]))),
+    slice: (_f, s, a) => s.slice(a[0] as number | undefined, a[1] as number | undefined),
+    substring: (_f, s, a) => s.substring(a[0] as number, a[1] as number | undefined),
+    split: (frame, s, a) => born(a.length === 0 ? [s] : s.split(str("split", a[0]), a[1] as number | undefined), frame.depth),
+    replace: (_f, s, a) => s.replace(str("replace", a[0]), () => String(a[1])),
+    replaceAll: (_f, s, a) => s.replaceAll(str("replaceAll", a[0]), () => String(a[1])),
+    repeat: (_f, s, a) => s.repeat(a[0] as number),
+    padStart: (_f, s, a) => s.padStart(a[0] as number, a[1] as string | undefined),
+    padEnd: (_f, s, a) => s.padEnd(a[0] as number, a[1] as string | undefined),
+    at: (_f, s, a) => s.at(a[0] as number),
+    charAt: (_f, s, a) => s.charAt(a[0] as number),
+    concat: (_f, s, a) => s.concat(...a.map(String)),
+  };
+  return Object.freeze(
+    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),
+  );
+}
+
+/** The number methods, JavaScript's meaning. */
+export function numberMethods(): Readonly<Record<string, Method>> {
+  const table: Record<string, (frame: LibFrame, n: number, args: unknown[]) => unknown> = {
+    toFixed: (_f, n, a) => n.toFixed(a[0] as number | undefined),
+    toString: (_f: LibFrame, n: number, a: unknown[]) => n.toString(a[0] as number | undefined),
+    toPrecision: (_f, n, a) => n.toPrecision(a[0] as number | undefined),
+  };
+  return Object.freeze(
+    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),
+  );
+}
+
+// ---- builtins ------------------------------------------------------------------------------------------
+
+/**
+ * The free builtins, as `[name, callable]` pairs in the order design §4 lists them. The interpreter
+ * declares each as an immutable binding; `surface.smoke` holds this list to `BUILTINS` in
+ * `primitives.ts` so a name the validator resolves is always a name the interpreter defines.
+ */
+export function builtins(ctx: LibraryContext): readonly (readonly [string, unknown])[] {
+  const fn = (name: string, impl: (frame: LibFrame, args: unknown[]) => unknown): Callable => guarded(name, impl);
+  const higher =
+    (name: string, impl: (frame: LibFrame, list: unknown[], f: Callable) => Promise<unknown>): Callable =>
+    guarded(name, async (frame: LibFrame, args: unknown[]) => await impl(frame, args[0] as unknown[], asCallable(args[1], name)));
+
+  const json = deepFreeze({
+    parse: fn("json.parse", (frame, a) => {
+      // Every container the text describes is born here, in this frame.
+      const stamp = (v: unknown): unknown => {
+        if (v !== null && typeof v === "object") {
+          for (const inner of Object.values(v as Record<string, unknown>)) stamp(inner);
+          born(v, frame.depth);
+        }
+        return v;
+      };
+      return stamp(JSON.parse(a[0] as string));
+    }),
+    // Canonical form (RFC 8785): the same text the journal hashes, so a program that stringifies a
+    // value writes what the run record would.
+    stringify: fn("json.stringify", (_f, a) => canonicalize(a[0])),
+  });
+
+  return [
+    // records
+    ["keys", fn("keys", (frame, a) => born(Object.keys(a[0] as object), frame.depth))],
+    ["values", fn("values", (frame, a) => born(Object.values(a[0] as object), frame.depth))],
+    ["entries", fn("entries", (frame, a) => born(Object.entries(a[0] as object).map((e) => born(e, frame.depth)), frame.depth))],
+    ["has", fn("has", (_f, a) => Object.prototype.hasOwnProperty.call(a[0] as object, a[1] as string))],
+    ["merge", fn("merge", (frame, a) => born({ ...(a[0] as object), ...(a[1] as object) }, frame.depth))],
+    // arrays
+    ["len", fn("len", (_f, a) => (a[0] as { length: number }).length)],
+    [
+      "map",
+      higher("map", async (frame, list, f) => {
+        const out: unknown[] = [];
+        for (let i = 0; i < list.length; i += 1) out.push(await f(frame, [list[i], i]));
+        return born(out, frame.depth);
+      }),
+    ],
+    [
+      "filter",
+      higher("filter", async (frame, list, f) => {
+        const out: unknown[] = [];
+        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) out.push(list[i]);
+        return born(out, frame.depth);
+      }),
+    ],
+    [
+      "find",
+      higher("find", async (frame, list, f) => {
+        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return list[i];
+        return null;
+      }),
+    ],
+    [
+      "some",
+      higher("some", async (frame, list, f) => {
+        for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return true;
+        return false;
+      }),
+    ],
+    [
+      "every",
+      higher("every", async (frame, list, f) => {
+        for (let i = 0; i < list.length; i += 1) if (!(await f(frame, [list[i], i]))) return false;
+        return true;
+      }),
+    ],
+    [
+      "sort",
+      fn("sort", async (frame, a) => {
+        const list = a[0] as unknown[];
+        const keyFn = a[1] === undefined ? undefined : asCallable(a[1], "sort");
+        const keyed: { key: unknown; value: unknown; at: number }[] = [];
+        for (let i = 0; i < list.length; i += 1) {
+          keyed.push({ key: keyFn === undefined ? list[i] : await keyFn(frame, [list[i], i]), value: list[i], at: i });
+        }
+        keyed.sort((x, y) => compareTotal(x.key, y.key) || compareTotal(x.value, y.value) || x.at - y.at);
+        return born(
+          keyed.map((k) => k.value),
+          frame.depth,
+        );
+      }),
+    ],
+    ["slice", fn("slice", (frame, a) => born((a[0] as unknown[]).slice(a[1] as number, a[2] as number | undefined), frame.depth))],
+    ["concat", fn("concat", (frame, a) => born((a[0] as unknown[]).concat(a[1] as unknown[]), frame.depth))],
+    ["join", fn("join", (_f, a) => (a[0] as unknown[]).join(a[1] as string))],
+    ["reverse", fn("reverse", (frame, a) => born([...(a[0] as unknown[])].reverse(), frame.depth))],
+    ["unique", fn("unique", (frame, a) => born([...new Set(a[0] as unknown[])], frame.depth))],
+    ["range", fn("range", (frame, a) => born(Array.from({ length: a[0] as number }, (_, i) => i), frame.depth))],
+    ["sum", fn("sum", (_f, a) => (a[0] as number[]).reduce((x, y) => x + y, 0))],
+    // strings
+    ["split", fn("split", (frame, a) => born((a[0] as string).split(a[1] as string), frame.depth))],
+    ["trim", fn("trim", (_f, a) => (a[0] as string).trim())],
+    ["lower", fn("lower", (_f, a) => (a[0] as string).toLowerCase())],
+    ["upper", fn("upper", (_f, a) => (a[0] as string).toUpperCase())],
+    ["startsWith", fn("startsWith", (_f, a) => (a[0] as string).startsWith(a[1] as string))],
+    ["endsWith", fn("endsWith", (_f, a) => (a[0] as string).endsWith(a[1] as string))],
+    ["contains", fn("contains", (_f, a) => (a[0] as string).includes(a[1] as string))],
+    ["replace", fn("replace", (_f, a) => (a[0] as string).split(a[1] as string).join(a[2] as string))],
+    // numbers
+    ["min", fn("min", (_f, a) => Math.min(...(a as number[])))],
+    ["max", fn("max", (_f, a) => Math.max(...(a as number[])))],
+    ["abs", fn("abs", (_f, a) => Math.abs(a[0] as number))],
+    ["floor", fn("floor", (_f, a) => Math.floor(a[0] as number))],
+    ["ceil", fn("ceil", (_f, a) => Math.ceil(a[0] as number))],
+    ["round", fn("round", (_f, a) => Math.round(a[0] as number))],
+    ["parseNumber", fn("parseNumber", (_f, a) => Number(a[0] as string))],
+    // data and control
+    ["json", json],
+    [
+      "assert",
+      fn("assert", (_f, a) => {
+        if (!a[0]) throw new RuntimeFault("L4012", String(a[1] ?? "assertion failed"));
+        return null;
+      }),
+    ],
+    [
+      "log",
+      fn("log", (frame, a) => {
+        ctx.onLog?.({ scope: scopePathString(frame.keys.path), values: a });
+        return null;
+      }),
+    ],
+    // tamed nondeterminism. `now()` reads the branch's own run clock, which is the maximum endedAt
+    // over the effects this point actually awaited: time advances at effect boundaries as a
+    // property of the design rather than a rule anyone has to follow.
+    ["random", fn("random", (frame) => ctx.prng.next(frame.keys.path))],
+    ["randomInt", fn("randomInt", (frame, a) => Math.floor(ctx.prng.next(frame.keys.path) * (a[0] as number)))],
+    [
+      "pick",
+      fn("pick", (frame, a) => {
+        const list = a[0] as unknown[];
+        return list[Math.floor(ctx.prng.next(frame.keys.path) * list.length)];
+      }),
+    ],
+    ["now", fn("now", (frame) => frame.clock.now())],
+    ["duration", fn("duration", (_f, a) => parseDuration(a[0] as string))],
+  ];
+}

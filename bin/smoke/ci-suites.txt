@@ -323,3 +323,5 @@ smoke:runtime-mesh-notify
 smoke:runtime-mesh-seam
 smoke:runtime-migrate
 smoke:runtime-fork
+smoke:lang-semantics
+smoke:lang-surface

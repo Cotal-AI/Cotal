@@ -20,9 +20,10 @@ import { LangError, LangErrors, RuntimeFault,} from "./errors.js";
 export { RuntimeFault } from "./errors.js";
 import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
-import { Prng, assertCrossable, deepFreeze } from "./values.js";
+import { Prng, assertCrossable, birthDepth, born, deepFreeze, setOwn } from "./values.js";
 import { parseDuration } from "./duration.js";
-import { PRIMITIVES, type EffectKind } from "./primitives.js";
+import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
+import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
 import { notifyFactViolation } from "./notify-fact.js";
 import { bindPins, resolvePins, type RunPins } from "./pins.js";
 import {
@@ -101,6 +102,20 @@ class Env {
 
   declare(name: string, value: unknown, mutable: boolean): void {
     this.names.set(name, new Binding(value, mutable));
+  }
+
+  /**
+   * A fresh environment holding copies of `names` at their current values: JavaScript's
+   * per-iteration bindings for a `for (let ...)` loop, so a closure made in one iteration keeps
+   * that iteration's value rather than watching the counter move.
+   */
+  perIteration(names: readonly string[]): Env {
+    const next = new Env(this.parent, this.depth);
+    for (const n of names) {
+      const b = this.names.get(n);
+      if (b !== undefined) next.declare(n, b.value, b.mutable);
+    }
+    return next;
   }
 
   private find(name: string): Binding | undefined {
@@ -469,6 +484,12 @@ class Interpreter {
   private nextYield: number;
   private readonly stepBudget: number;
   private readonly yieldEvery: number;
+  /** The curated method tables (library.ts). Built once: they close over this interpreter's write check. */
+  private readonly methods: {
+    readonly array: Readonly<Record<string, Method>>;
+    readonly string: Readonly<Record<string, Method>>;
+    readonly number: Readonly<Record<string, Method>>;
+  };
 
   constructor(
     readonly ast: AnyNode,
@@ -500,6 +521,120 @@ class Interpreter {
     this.stepBudget = pins.stepBudget;
     this.yieldEvery = pins.yieldEvery;
     this.nextYield = this.yieldEvery;
+    this.methods = {
+      array: arrayMethods(this.libraryContext()),
+      string: stringMethods(),
+      number: numberMethods(),
+    };
+  }
+
+  /** What the library sees of this interpreter. */
+  libraryContext(): Parameters<typeof builtins>[0] {
+    return {
+      runId: this.options.runId,
+      programHash: this.programHash,
+      startedAt: this.pins.startedAt,
+      prng: this.prng,
+      ...(this.options.onLog !== undefined ? { onLog: this.options.onLog } : {}),
+      assertWritable: (target, frame) => this.assertWritable(target, frame),
+    };
+  }
+
+  // ---- values: reads and writes ---------------------------------------------------------------
+
+  /**
+   * May this frame write into this container? Two refusals, and they are the whole of the value
+   * half of freeze-on-share (design D4, §3.4 rule 4):
+   *
+   * - a FROZEN value crossed an effect boundary, and what crossed is what was recorded (L2031);
+   * - a value born OUTSIDE this concurrent branch and written inside it is L2032's defect reached
+   *   through a value instead of a binding, and just as silent on resume.
+   */
+  assertWritable(target: object, frame: { readonly depth: number }): void {
+    if (Object.isFrozen(target)) {
+      throw new RuntimeFault(
+        "L2031",
+        "this value crossed an effect boundary and is frozen: what crossed is what the journal recorded, so it cannot change afterwards. Build a new value instead: `{ ...record, field: value }` or `[...list, item]`.",
+      );
+    }
+    if (birthDepth(target) < frame.depth) {
+      throw new RuntimeFault(
+        "L2032",
+        "this value was built outside this concurrent branch and is written inside it. Two branches writing one value is nondeterministic, and it is silent: live they write in completion order, on resume the recorded effects return instantly and they write in launch order, so the value differs and the run takes a path it never recorded. Build the value inside the branch and return it, and read it out of the combinator's result.",
+      );
+    }
+  }
+
+  /** The property key a member expression names, as JavaScript would spell it. */
+  private async memberKey(node: AnyNode, env: Env, frame: Frame): Promise<string> {
+    if (node.computed !== true) return (node.property as AnyNode).name as string;
+    const k = await this.evaluate(node.property as AnyNode, env, frame);
+    return typeof k === "string" ? k : String(k);
+  }
+
+  /**
+   * Read a member. Records answer their own fields and `undefined` for anything else, so a host
+   * prototype is never reached (`o.constructor`, `o.toString` are `undefined`); strings, arrays and
+   * numbers answer `length`, an index, or an entry of their method table, and refuse anything else
+   * (L4014). Functions and booleans have no members.
+   */
+  memberOf(obj: unknown, prop: string): unknown {
+    switch (typeof obj) {
+      case "string": {
+        if (prop === "length") return obj.length;
+        const i = arrayIndex(prop);
+        if (i !== undefined) return obj[i];
+        return this.method(this.methods.string, obj, prop, "a string");
+      }
+      case "number":
+        return this.method(this.methods.number, obj, prop, "a number");
+      case "object": {
+        if (obj === null) throw new RuntimeFault("L4010", `cannot read \`${prop}\` of null`);
+        if (Array.isArray(obj)) {
+          if (prop === "length") return obj.length;
+          const i = arrayIndex(prop);
+          if (i !== undefined) return obj[i];
+          return this.method(this.methods.array, obj, prop, "an array");
+        }
+        return Object.prototype.hasOwnProperty.call(obj, prop) ? (obj as Record<string, unknown>)[prop] : undefined;
+      }
+      case "undefined":
+        throw new RuntimeFault("L4010", `cannot read \`${prop}\` of undefined`);
+      default:
+        throw new RuntimeFault("L4014", `\`${prop}\` is not a member: a ${typeof obj} has no members`);
+    }
+  }
+
+  private method(
+    table: Readonly<Record<string, Method>>,
+    receiver: unknown,
+    prop: string,
+    kind: string,
+  ): Callable {
+    const m = table[prop];
+    if (m === undefined) {
+      throw new RuntimeFault(
+        "L4014",
+        `\`${prop}\` is not a member of ${kind}. The members are: length, an index, ${Object.keys(table).join(", ")}.`,
+      );
+    }
+    return async (frame, args) => await m(frame, receiver as never, args);
+  }
+
+  /** Write a member: `o.a = v`, `xs[i] = v`. Records take any own field; arrays take an index or `length`. */
+  writeMember(obj: unknown, prop: string, value: unknown, frame: Frame): void {
+    if (obj === null || obj === undefined || typeof obj !== "object") {
+      throw new RuntimeFault("L4010", `cannot write \`${prop}\` of ${obj === null ? "null" : typeof obj === "undefined" ? "undefined" : `a ${typeof obj}`}`);
+    }
+    this.assertWritable(obj, frame);
+    if (Array.isArray(obj)) {
+      if (prop !== "length" && arrayIndex(prop) === undefined) {
+        throw new RuntimeFault("L4014", `\`${prop}\` is not a member of an array: an array takes an index or \`length\``);
+      }
+    } else if (prop === "__proto__") {
+      throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
+    }
+    setOwn(obj, prop, value);
   }
 
   // ---- the fuel ceiling -----------------------------------------------------------------------
@@ -710,38 +845,43 @@ class Interpreter {
       case "ArrayExpression": {
         const out: unknown[] = [];
         for (const el of (node.elements as AnyNode[]) ?? []) {
-          if (el.type === "SpreadElement") {
-            const spread = await this.evaluate(el.argument as AnyNode, env, frame);
-            out.push(...(spread as unknown[]));
-          } else {
-            out.push(await this.evaluate(el, env, frame));
-          }
+          if (el.type === "SpreadElement") out.push(...this.spreadable(await this.evaluate(el.argument as AnyNode, env, frame)));
+          else out.push(await this.evaluate(el, env, frame));
         }
-        return out;
+        return born(out, frame.depth);
       }
       case "ObjectExpression": {
         const out: Record<string, unknown> = {};
         for (const p of (node.properties as AnyNode[]) ?? []) {
           if (p.type === "SpreadElement") {
-            Object.assign(out, await this.evaluate(p.argument as AnyNode, env, frame));
+            const src = await this.evaluate(p.argument as AnyNode, env, frame);
+            if (src !== null && src !== undefined) {
+              for (const [k, v] of Object.entries(src as Record<string, unknown>)) setOwn(out, k, v);
+            }
             continue;
           }
           const key = p.key as AnyNode;
           const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
-          out[name] = await this.evaluate(p.value as AnyNode, env, frame);
+          setOwn(out, name, await this.evaluate(p.value as AnyNode, env, frame));
         }
-        return out;
+        return born(out, frame.depth);
       }
       case "MemberExpression": {
         const obj = await this.evaluate(node.object as AnyNode, env, frame);
-        if (obj === null || obj === undefined) {
-          if (node.optional === true) return undefined;
-          throw new RuntimeFault("L4010", `cannot read a field of ${String(obj)}`);
+        if ((obj === null || obj === undefined) && node.optional === true) throw SHORT_CIRCUIT;
+        return this.memberOf(obj, await this.memberKey(node, env, frame));
+      }
+      case "ChainExpression": {
+        // `a?.b.c(d)`: a nullish `a` ends the WHOLE chain with `undefined`, and nothing after the
+        // `?.` is evaluated. The short-circuit travels as a private sentinel that only this case
+        // catches; a program's `try` cannot see it, because a chain is an expression and a `try`
+        // wraps statements.
+        try {
+          return await this.evaluate(node.expression as AnyNode, env, frame);
+        } catch (e) {
+          if (e === SHORT_CIRCUIT) return undefined;
+          throw e;
         }
-        const prop = node.computed === true
-          ? String(await this.evaluate(node.property as AnyNode, env, frame))
-          : ((node.property as AnyNode).name as string);
-        return (obj as Record<string, unknown>)[prop];
       }
       case "UnaryExpression": {
         const v = await this.evaluate(node.argument as AnyNode, env, frame);
@@ -752,11 +892,33 @@ class Interpreter {
             return -(v as number);
           case "+":
             return +(v as number);
+          case "~":
+            return ~(v as number);
           case "typeof":
             return typeof v;
           default:
             throw new RuntimeFault("L1000", `unsupported unary operator ${String(node.operator)}`);
         }
+      }
+      case "UpdateExpression": {
+        // `x++`, `--o.count`: JavaScript's meaning, with the write going through the same two doors
+        // as an assignment (a binding's depth, a value's writability).
+        const delta = node.operator === "++" ? 1 : -1;
+        const prefix = node.prefix === true;
+        const arg = node.argument as AnyNode;
+        if (arg.type === "Identifier") {
+          const name = arg.name as string;
+          const old = Number(env.get(name));
+          const next = old + delta;
+          env.set(name, next, frame.depth);
+          return prefix ? next : old;
+        }
+        const obj = await this.evaluate(arg.object as AnyNode, env, frame);
+        const key = await this.memberKey(arg, env, frame);
+        const old = Number(this.memberOf(obj, key));
+        const next = old + delta;
+        this.writeMember(obj, key, next, frame);
+        return prefix ? next : old;
       }
       case "BinaryExpression": {
         const l = await this.evaluate(node.left as AnyNode, env, frame);
@@ -784,15 +946,8 @@ class Interpreter {
         return (await this.evaluate(node.test as AnyNode, env, frame))
           ? await this.evaluate(node.consequent as AnyNode, env, frame)
           : await this.evaluate(node.alternate as AnyNode, env, frame);
-      case "AssignmentExpression": {
-        const value = await this.evaluate(node.right as AnyNode, env, frame);
-        const left = node.left as AnyNode;
-        if (left.type !== "Identifier") {
-          throw new RuntimeFault("L2031", "only a plain binding can be assigned to");
-        }
-        env.set(left.name as string, value, frame.depth);
-        return value;
-      }
+      case "AssignmentExpression":
+        return await this.assign(node, env, frame);
       case "AwaitExpression":
         return await this.evaluate(node.argument as AnyNode, env, frame);
       case "ArrowFunctionExpression":
@@ -805,6 +960,60 @@ class Interpreter {
     }
   }
 
+  /**
+   * Every assignment operator, on a binding or a member: `x = v`, `x += v`, `o.a ??= v`,
+   * `[a, b] = [b, a]`. The operator's meaning is JavaScript's; the write goes through the binding's
+   * depth check ({@link Env.set}) or the value's writability check ({@link Interpreter.writeMember}).
+   */
+  private async assign(node: AnyNode, env: Env, frame: Frame): Promise<unknown> {
+    const op = node.operator as string;
+    const left = node.left as AnyNode;
+
+    if (left.type === "ObjectPattern" || left.type === "ArrayPattern") {
+      const value = await this.evaluate(node.right as AnyNode, env, frame);
+      await this.bindPattern(left, value, env, frame, "assign");
+      return value;
+    }
+
+    const read =
+      left.type === "Identifier"
+        ? { get: (): unknown => env.get(left.name as string), set: (v: unknown): void => env.set(left.name as string, v, frame.depth) }
+        : await (async () => {
+            const obj = await this.evaluate(left.object as AnyNode, env, frame);
+            const key = await this.memberKey(left, env, frame);
+            return { get: (): unknown => this.memberOf(obj, key), set: (v: unknown): void => this.writeMember(obj, key, v, frame) };
+          })();
+
+    if (op === "=") {
+      const v = await this.evaluate(node.right as AnyNode, env, frame);
+      read.set(v);
+      return v;
+    }
+    if (op === "&&=" || op === "||=" || op === "??=") {
+      const cur = read.get();
+      const proceed = op === "&&=" ? Boolean(cur) : op === "||=" ? !cur : cur === null || cur === undefined;
+      if (!proceed) return cur;
+      const v = await this.evaluate(node.right as AnyNode, env, frame);
+      read.set(v);
+      return v;
+    }
+    const cur = read.get();
+    const r = await this.evaluate(node.right as AnyNode, env, frame);
+    const v = applyBinary(op.slice(0, -1), cur, r);
+    read.set(v);
+    return v;
+  }
+
+  /** What `...x` and `for (const v of x)` may iterate: an array or a string, and nothing else (L4015). */
+  private spreadable(v: unknown): unknown[] {
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") return [...v];
+    throw new RuntimeFault(
+      "L4015",
+      `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,
+    );
+  }
+
   makeFunction(node: AnyNode, closure: Env): (frame: Frame, args: unknown[]) => Promise<unknown> {
     const params = (node.params as AnyNode[]) ?? [];
     const body = node.body as AnyNode;
@@ -814,7 +1023,12 @@ class Interpreter {
       // and called from inside a branch is executing concurrently, whatever scope it was written in.
       const env = new Env(closure, frame.depth);
       for (let i = 0; i < params.length; i += 1) {
-        await this.bindPattern(params[i] as AnyNode, args[i], env, frame, true);
+        const param = params[i] as AnyNode;
+        if (param.type === "RestElement") {
+          await this.bindPattern(param.argument as AnyNode, born(args.slice(i), frame.depth), env, frame, "let");
+          break;
+        }
+        await this.bindPattern(param, args[i], env, frame, "let");
       }
       if (isExpressionBody) return await this.evaluate(body, env, frame);
       const c = await this.executeBlock(body, env, frame);
@@ -822,54 +1036,71 @@ class Interpreter {
     };
   }
 
+  /**
+   * Bind a pattern: declare its names (`const`/`let`, including parameters, which are `let`) or
+   * assign to bindings that already exist (`assign`, for `[a, b] = [b, a]`).
+   */
   async bindPattern(
     pattern: AnyNode,
     value: unknown,
     env: Env,
     frame: Frame,
-    mutable: boolean,
+    mode: "const" | "let" | "assign",
   ): Promise<void> {
     switch (pattern.type) {
       case "Identifier":
-        env.declare(pattern.name as string, value, mutable);
+        if (mode === "assign") env.set(pattern.name as string, value, frame.depth);
+        else env.declare(pattern.name as string, value, mode === "let");
         return;
+      case "MemberExpression": {
+        // Only reachable in `assign` mode: `[o.a, o.b] = pair`.
+        const obj = await this.evaluate(pattern.object as AnyNode, env, frame);
+        this.writeMember(obj, await this.memberKey(pattern, env, frame), value, frame);
+        return;
+      }
       case "AssignmentPattern":
         await this.bindPattern(
           pattern.left as AnyNode,
           value === undefined ? await this.evaluate(pattern.right as AnyNode, env, frame) : value,
           env,
           frame,
-          mutable,
+          mode,
         );
         return;
       case "ObjectPattern": {
-        const src = (value ?? {}) as Record<string, unknown>;
+        if (value === null || value === undefined) {
+          throw new RuntimeFault("L4010", `cannot destructure ${String(value)}: there are no fields to take`);
+        }
+        const src = value as Record<string, unknown>;
         const taken: string[] = [];
         for (const p of pattern.properties as AnyNode[]) {
           if (p.type === "RestElement") {
             const rest: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) rest[k] = v;
-            await this.bindPattern(p.argument as AnyNode, rest, env, frame, mutable);
+            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) setOwn(rest, k, v);
+            await this.bindPattern(p.argument as AnyNode, born(rest, frame.depth), env, frame, mode);
             continue;
           }
           const key = p.key as AnyNode;
           const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
           taken.push(name);
-          await this.bindPattern(p.value as AnyNode, src[name], env, frame, mutable);
+          await this.bindPattern(p.value as AnyNode, this.memberOf(src, name), env, frame, mode);
         }
         return;
       }
       case "ArrayPattern": {
-        const src = (value ?? []) as unknown[];
+        if (value === null || value === undefined) {
+          throw new RuntimeFault("L4010", `cannot destructure ${String(value)}: there are no elements to take`);
+        }
+        const src = this.spreadable(value);
         const els = pattern.elements as (AnyNode | null)[];
         for (let i = 0; i < els.length; i += 1) {
           const el = els[i];
           if (el === null || el === undefined) continue;
           if (el.type === "RestElement") {
-            await this.bindPattern(el.argument as AnyNode, src.slice(i), env, frame, mutable);
+            await this.bindPattern(el.argument as AnyNode, born(src.slice(i), frame.depth), env, frame, mode);
             break;
           }
-          await this.bindPattern(el, src[i], env, frame, mutable);
+          await this.bindPattern(el, src[i], env, frame, mode);
         }
         return;
       }
@@ -892,9 +1123,10 @@ class Interpreter {
     }
 
     const fn = await this.evaluate(callee, env, frame);
+    if ((fn === null || fn === undefined) && node.optional === true) throw SHORT_CIRCUIT;
     const args: unknown[] = [];
     for (const a of argNodes) {
-      if (a.type === "SpreadElement") args.push(...((await this.evaluate(a.argument as AnyNode, env, frame)) as unknown[]));
+      if (a.type === "SpreadElement") args.push(...this.spreadable(await this.evaluate(a.argument as AnyNode, env, frame)));
       else args.push(await this.evaluate(a, env, frame));
     }
     if (typeof fn !== "function") {
@@ -1724,10 +1956,10 @@ class Interpreter {
         await this.evaluate(node.expression as AnyNode, env, frame);
         return NORMAL;
       case "VariableDeclaration": {
-        const mutable = node.kind === "let";
+        const mode = node.kind === "let" ? "let" : "const";
         for (const d of node.declarations as AnyNode[]) {
           const init = d.init === null || d.init === undefined ? undefined : await this.evaluate(d.init as AnyNode, env, frame);
-          await this.bindPattern(d.id as AnyNode, init, env, frame, mutable);
+          await this.bindPattern(d.id as AnyNode, init, env, frame, mode);
         }
         return NORMAL;
       }
@@ -1750,8 +1982,19 @@ class Interpreter {
           if (c.type === "return") return c;
         }
       case "ForStatement": {
-        const loopEnv = new Env(env);
-        if (node.init !== null && node.init !== undefined) await this.execute(node.init as AnyNode, loopEnv, frame);
+        let loopEnv = new Env(env);
+        const init = node.init as AnyNode | null | undefined;
+        if (init !== null && init !== undefined) {
+          if (init.type === "VariableDeclaration") await this.execute(init, loopEnv, frame);
+          else await this.evaluate(init, loopEnv, frame);
+        }
+        // `for (let i ...)` gives EACH ITERATION its own `i`, as JavaScript does: a closure made in
+        // one iteration keeps that iteration's value. The copy happens after the body and before the
+        // update, which is where the specification puts it.
+        const perIteration: string[] = [];
+        if (init?.type === "VariableDeclaration" && init.kind === "let") {
+          for (const d of init.declarations as AnyNode[]) collectNames(d.id as AnyNode, perIteration);
+        }
         for (;;) {
           if (node.test !== null && node.test !== undefined && !(await this.evaluate(node.test as AnyNode, loopEnv, frame))) {
             return NORMAL;
@@ -1759,16 +2002,21 @@ class Interpreter {
           const c = await this.execute(node.body as AnyNode, loopEnv, frame);
           if (c.type === "break") return NORMAL;
           if (c.type === "return") return c;
+          if (perIteration.length > 0) loopEnv = loopEnv.perIteration(perIteration);
           if (node.update !== null && node.update !== undefined) await this.evaluate(node.update as AnyNode, loopEnv, frame);
         }
       }
       case "ForOfStatement": {
-        const iterable = (await this.evaluate(node.right as AnyNode, env, frame)) as unknown[];
+        const iterable = this.spreadable(await this.evaluate(node.right as AnyNode, env, frame));
+        const decl = node.left as AnyNode;
         for (const item of iterable) {
           const loopEnv = new Env(env);
-          const decl = node.left as AnyNode;
-          const target = decl.type === "VariableDeclaration" ? ((decl.declarations as AnyNode[])[0] as AnyNode).id as AnyNode : decl;
-          await this.bindPattern(target, item, loopEnv, frame, decl.kind === "let");
+          if (decl.type === "VariableDeclaration") {
+            const target = ((decl.declarations as AnyNode[])[0] as AnyNode).id as AnyNode;
+            await this.bindPattern(target, item, loopEnv, frame, decl.kind === "let" ? "let" : "const");
+          } else {
+            await this.bindPattern(decl, item, loopEnv, frame, "assign");
+          }
           const c = await this.execute(node.body as AnyNode, loopEnv, frame);
           if (c.type === "break") return NORMAL;
           if (c.type === "return") return c;
@@ -1807,7 +2055,7 @@ class Interpreter {
           if (handlerNode === null || handlerNode === undefined) throw e;
           const catchEnv = new Env(env);
           if (handlerNode.param !== null && handlerNode.param !== undefined) {
-            await this.bindPattern(handlerNode.param as AnyNode, toProgramError(e), catchEnv, frame, false);
+            await this.bindPattern(handlerNode.param as AnyNode, toProgramError(e), catchEnv, frame, "const");
           }
           const c = await this.executeBlock(handlerNode.body as AnyNode, catchEnv, frame);
           if (c.type !== "normal") return c;
@@ -1826,7 +2074,7 @@ class Interpreter {
         for (const c of cases) {
           if (!matched) {
             if (c.test === null || c.test === undefined) matched = true;
-            else if (Object.is(await this.evaluate(c.test as AnyNode, switchEnv, frame), disc)) matched = true;
+            else if ((await this.evaluate(c.test as AnyNode, switchEnv, frame)) === disc) matched = true;
           }
           if (!matched) continue;
           for (const s of (c.consequent as AnyNode[]) ?? []) {
@@ -1847,45 +2095,103 @@ class Interpreter {
 
 // ---- helpers -------------------------------------------------------------------------------------
 
+/**
+ * The binary operators, with JavaScript's meaning. The casts are for the type checker: at run time
+ * each line applies the host operator to whatever the operands are, so `"a" + 1`, `true + 1` and
+ * `[1] + 1` mean here exactly what they mean in JavaScript. `==` and `!=` never reach this
+ * function: the validator refuses them (L1025).
+ */
 function applyBinary(op: string, l: unknown, r: unknown): unknown {
+  const a = l as number;
+  const b = r as number;
   switch (op) {
     case "===":
-      return Object.is(l, r) || l === r;
+      return l === r;
     case "!==":
-      return !(l === r);
+      return l !== r;
     case "<":
-      return (l as number) < (r as number);
+      return a < b;
     case "<=":
-      return (l as number) <= (r as number);
+      return a <= b;
     case ">":
-      return (l as number) > (r as number);
+      return a > b;
     case ">=":
-      return (l as number) >= (r as number);
+      return a >= b;
     case "+":
-      return typeof l === "string" || typeof r === "string"
-        ? String(l) + String(r)
-        : (l as number) + (r as number);
+      return a + b;
     case "-":
-      return (l as number) - (r as number);
+      return a - b;
     case "*":
-      return (l as number) * (r as number);
+      return a * b;
     case "/":
-      return (l as number) / (r as number);
+      return a / b;
     case "%":
-      return (l as number) % (r as number);
+      return a % b;
+    case "**":
+      return a ** b;
+    case "&":
+      return a & b;
+    case "|":
+      return a | b;
+    case "^":
+      return a ^ b;
+    case "<<":
+      return a << b;
+    case ">>":
+      return a >> b;
+    case ">>>":
+      return a >>> b;
     default:
       throw new RuntimeFault("L1000", `unsupported operator ${op}`);
   }
 }
 
-/** What a `catch` block sees: a plain record, because programs branch on data, not on classes. */
-function toProgramError(e: unknown): Record<string, unknown> {
+/** A canonical array index (`"0"`, `"12"`), as a number, or nothing. */
+function arrayIndex(prop: string): number | undefined {
+  if (!/^(0|[1-9][0-9]*)$/.test(prop)) return undefined;
+  const n = Number(prop);
+  return n <= 4294967294 ? n : undefined;
+}
+
+/** The names a binding pattern introduces. */
+function collectNames(pattern: AnyNode, out: string[]): void {
+  switch (pattern.type) {
+    case "Identifier":
+      out.push(pattern.name as string);
+      return;
+    case "AssignmentPattern":
+      collectNames(pattern.left as AnyNode, out);
+      return;
+    case "RestElement":
+      collectNames(pattern.argument as AnyNode, out);
+      return;
+    case "ObjectPattern":
+      for (const p of pattern.properties as AnyNode[]) collectNames((p.type === "RestElement" ? p.argument : p.value) as AnyNode, out);
+      return;
+    case "ArrayPattern":
+      for (const el of pattern.elements as (AnyNode | null)[]) if (el !== null && el !== undefined) collectNames(el, out);
+      return;
+    default:
+      return;
+  }
+}
+
+/** The optional-chain short-circuit. Private to `evaluate`; see the `ChainExpression` case. */
+const SHORT_CIRCUIT: unique symbol = Symbol("cotal-lang short circuit");
+
+/**
+ * What a `catch` block sees. A failure the RUNTIME raised (an effect's error, an interpreter fault)
+ * arrives as a plain record carrying its code, because programs branch on data, not on classes; a
+ * value the PROGRAM threw arrives as itself, whatever it is, exactly as JavaScript delivers it. A
+ * program cannot construct an `Error`, so anything that is one came from the runtime or the host.
+ */
+function toProgramError(e: unknown): unknown {
   if (e instanceof EffectError) {
     return deepFreeze({ code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) });
   }
   if (e instanceof RuntimeFault) return deepFreeze({ code: e.code, kind: "runtime", message: e.message });
-  if (e !== null && typeof e === "object") return e as Record<string, unknown>;
-  return deepFreeze({ code: "L4000", kind: "thrown", message: String(e) });
+  if (e instanceof Error) return deepFreeze({ code: "L4000", kind: "host", message: e.message });
+  return e;
 }
 
 // ---- the public entry point -------------------------------------------------------------------------
@@ -1929,7 +2235,7 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
   // wrote the journal, or the branch it takes is a property of when it was resumed.
   const frame = new Frame(new KeyScope(), new RunClock(pins.startedAt), new Signal());
   const env = new Env(null);
-  installGlobals(env, interp, frame);
+  installGlobals(env, interp);
 
   const completion = await interp.executeBlock(ast as AnyNode, env, frame);
   return {
@@ -1951,155 +2257,49 @@ export async function resume(
   return await run(source, { ...options, journal });
 }
 
-function installGlobals(env: Env, interp: Interpreter, rootFrame: Frame): void {
+function installGlobals(env: Env, interp: Interpreter): void {
   const fn =
     (impl: (frame: Frame, args: unknown[]) => unknown) =>
     async (frame: Frame, args: unknown[]): Promise<unknown> =>
       impl(frame, args);
 
+  // The value names. `undefined` is a value the runtime produces, so a program can name it.
+  for (const name of VALUE_NAMES) env.declare(name, undefined, false);
+
   // Pure primitives: a channel name is a name, so naming one costs nothing and journals nothing.
-  env.declare("channel", fn((_f, a) => ({ channel: a[0] as string })), false);
+  // Handles are opaque frozen records the runtime mints (design §4).
+  env.declare("channel", fn((_f, a) => deepFreeze({ channel: a[0] as string })), false);
   env.declare(
     "run",
-    fn(() => ({ id: interp.options.runId, programHash: interp.programHash, startedAt: interp.pins.startedAt })),
+    fn(() => deepFreeze({ id: interp.options.runId, programHash: interp.programHash, startedAt: interp.pins.startedAt })),
     false,
   );
 
   // Event constructors are pure descriptors; awaiting them is `wait`.
-  env.declare("replied", fn((_f, a) => ({ event: "replied", agent: (a[0] as AgentHandleValue).agent })), false);
+  env.declare("replied", fn((_f, a) => deepFreeze({ event: "replied", agent: (a[0] as AgentHandleValue).agent })), false);
   env.declare(
     "message",
     fn((_f, a) => {
       const ch = (a[0] as ChannelHandleValue).channel;
       const opts = (a[1] ?? {}) as Record<string, unknown>;
-      return {
+      return deepFreeze({
         event: "message",
         channel: ch,
         ...(opts.from !== undefined ? { from: (opts.from as AgentHandleValue).agent } : {}),
         ...(opts.matches !== undefined ? { matches: opts.matches as string } : {}),
-      };
+      });
     }),
     false,
   );
-  env.declare("idle", fn((_f, a) => ({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })), false);
-  env.declare("down", fn((_f, a) => ({ event: "down", agent: (a[0] as AgentHandleValue).agent })), false);
+  env.declare(
+    "idle",
+    fn((_f, a) => deepFreeze({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })),
+    false,
+  );
+  env.declare("down", fn((_f, a) => deepFreeze({ event: "down", agent: (a[0] as AgentHandleValue).agent })), false);
 
-  // Time and randomness, tamed. `now()` reads the branch's own run clock, which is the maximum
-  // endedAt over the effects this point actually awaited: time advances at effect boundaries as a
-  // property of the design rather than a rule anyone has to follow.
-  env.declare("now", fn((frame) => frame.clock.now()), false);
-  env.declare("random", fn((frame) => interp.prng.next(frame.keys.path)), false);
-  env.declare("randomInt", fn((frame, a) => Math.floor(interp.prng.next(frame.keys.path) * (a[0] as number))), false);
-  env.declare(
-    "pick",
-    fn((frame, a) => {
-      const list = a[0] as unknown[];
-      return list[Math.floor(interp.prng.next(frame.keys.path) * list.length)];
-    }),
-    false,
-  );
-  env.declare("duration", fn((_f, a) => parseDuration(a[0] as string)), false);
-
-  // Records and arrays. Iteration order is insertion order, which is deterministic; sorting for
-  // a hash is a separate concern and happens in canonicalization, not here.
-  env.declare("keys", fn((_f, a) => Object.keys(a[0] as object)), false);
-  env.declare("values", fn((_f, a) => Object.values(a[0] as object)), false);
-  env.declare("entries", fn((_f, a) => Object.entries(a[0] as object)), false);
-  env.declare("has", fn((_f, a) => Object.prototype.hasOwnProperty.call(a[0] as object, a[1] as string)), false);
-  env.declare("merge", fn((_f, a) => ({ ...(a[0] as object), ...(a[1] as object) })), false);
-  env.declare("len", fn((_f, a) => (a[0] as { length: number }).length), false);
-  env.declare("range", fn((_f, a) => Array.from({ length: a[0] as number }, (_, i) => i)), false);
-  env.declare("sum", fn((_f, a) => (a[0] as number[]).reduce((x, y) => x + y, 0)), false);
-  env.declare("concat", fn((_f, a) => (a[0] as unknown[]).concat(a[1] as unknown[])), false);
-  env.declare("slice", fn((_f, a) => (a[0] as unknown[]).slice(a[1] as number, a[2] as number | undefined)), false);
-  env.declare("reverse", fn((_f, a) => [...(a[0] as unknown[])].reverse()), false);
-  env.declare("unique", fn((_f, a) => [...new Set(a[0] as unknown[])]), false);
-  env.declare("join", fn((_f, a) => (a[0] as unknown[]).join(a[1] as string)), false);
-
-  // Higher-order builtins take an interpreter function, so they have to await it.
-  const higher =
-    (impl: (frame: Frame, list: unknown[], f: (frame: Frame, args: unknown[]) => Promise<unknown>) => Promise<unknown>) =>
-    async (frame: Frame, args: unknown[]): Promise<unknown> =>
-      await impl(frame, args[0] as unknown[], args[1] as (frame: Frame, args: unknown[]) => Promise<unknown>);
-
-  env.declare(
-    "map",
-    higher(async (frame, list, f) => {
-      const out: unknown[] = [];
-      for (let i = 0; i < list.length; i += 1) out.push(await f(frame, [list[i], i]));
-      return out;
-    }),
-    false,
-  );
-  env.declare(
-    "filter",
-    higher(async (frame, list, f) => {
-      const out: unknown[] = [];
-      for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) out.push(list[i]);
-      return out;
-    }),
-    false,
-  );
-  env.declare(
-    "find",
-    higher(async (frame, list, f) => {
-      for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return list[i];
-      return null;
-    }),
-    false,
-  );
-  env.declare(
-    "some",
-    higher(async (frame, list, f) => {
-      for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return true;
-      return false;
-    }),
-    false,
-  );
-  env.declare(
-    "every",
-    higher(async (frame, list, f) => {
-      for (let i = 0; i < list.length; i += 1) if (!(await f(frame, [list[i], i]))) return false;
-      return true;
-    }),
-    false,
-  );
-
-  // Strings and numbers.
-  env.declare("split", fn((_f, a) => (a[0] as string).split(a[1] as string)), false);
-  env.declare("trim", fn((_f, a) => (a[0] as string).trim()), false);
-  env.declare("lower", fn((_f, a) => (a[0] as string).toLowerCase()), false);
-  env.declare("upper", fn((_f, a) => (a[0] as string).toUpperCase()), false);
-  env.declare("startsWith", fn((_f, a) => (a[0] as string).startsWith(a[1] as string)), false);
-  env.declare("endsWith", fn((_f, a) => (a[0] as string).endsWith(a[1] as string)), false);
-  env.declare("contains", fn((_f, a) => (a[0] as string).includes(a[1] as string)), false);
-  env.declare("replace", fn((_f, a) => (a[0] as string).split(a[1] as string).join(a[2] as string)), false);
-  env.declare("min", fn((_f, a) => Math.min(...(a as number[]))), false);
-  env.declare("max", fn((_f, a) => Math.max(...(a as number[]))), false);
-  env.declare("abs", fn((_f, a) => Math.abs(a[0] as number)), false);
-  env.declare("floor", fn((_f, a) => Math.floor(a[0] as number)), false);
-  env.declare("ceil", fn((_f, a) => Math.ceil(a[0] as number)), false);
-  env.declare("round", fn((_f, a) => Math.round(a[0] as number)), false);
-  env.declare("parseNumber", fn((_f, a) => Number(a[0] as string)), false);
-
-  env.declare(
-    "assert",
-    fn((_f, a) => {
-      if (!a[0]) throw new RuntimeFault("L4012", String(a[1] ?? "assertion failed"));
-      return null;
-    }),
-    false,
-  );
-  env.declare(
-    "log",
-    fn((frame, a) => {
-      interp.options.onLog?.({ scope: scopePathString(frame.keys.path), values: a });
-      return null;
-    }),
-    false,
-  );
-
-  void rootFrame;
+  // The builtin library (design §4), one table in library.ts.
+  for (const [name, value] of builtins(interp.libraryContext())) env.declare(name, value, false);
 }
 
 export { LangError, LangErrors };

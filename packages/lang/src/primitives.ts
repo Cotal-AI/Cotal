@@ -283,22 +283,66 @@ export const BUILTINS: readonly string[] = Object.freeze([
   "random", "randomInt", "pick", "now", "duration",
 ]);
 
+/**
+ * Value names: identifiers that name a value rather than a function, and may not be shadowed.
+ *
+ * `undefined` is what a missing field, an out-of-range index, and a function without a `return`
+ * produce, so a program has to be able to name it to test for it. It stays a value that cannot
+ * cross an effect boundary (L3041): the journal records `null` for "no value", never `undefined`.
+ */
+export const VALUE_NAMES: readonly string[] = Object.freeze(["undefined"]);
+
 /** Every name the program may reference without defining it, and may never shadow. */
 export const RESERVED_NAMES: ReadonlySet<string> = new Set([
   ...Object.keys(PRIMITIVES),
   ...Object.keys(EVENT_CONSTRUCTORS),
   ...Object.keys(PURE_PRIMITIVES),
   ...BUILTINS,
+  ...VALUE_NAMES,
   "any",
   "all",
 ]);
 
+/**
+ * Host globals a program might reach for out of habit, each rejected by name (L2012) with the
+ * replacement this language offers, when it offers one. A name with no replacement carries the
+ * generic fix.
+ */
+export const HOST_GLOBAL_HINTS: Readonly<Record<string, string>> = Object.freeze({
+  Math: "Use `min`, `max`, `abs`, `floor`, `ceil`, `round`, `random()` and `randomInt(n)`.",
+  JSON: "Use `json.parse(text)` and `json.stringify(value)`.",
+  Object: "Use `keys`, `values`, `entries`, `has` and `merge`.",
+  Array: "Write an array literal, or `range(n)`; `xs.length` and the array methods are available.",
+  Number: "Use `parseNumber(text)`; arithmetic needs no conversion.",
+  String: "Use a template literal: `${value}`.",
+  Boolean: "Use `!!value`, or compare explicitly.",
+  parseInt: "Use `floor(parseNumber(text))`.",
+  parseFloat: "Use `parseNumber(text)`.",
+  isNaN: "Use `parseNumber(text) !== parseNumber(text)`; a NaN cannot cross an effect boundary anyway.",
+  isFinite: "Check the input before parsing it; an infinite number cannot cross an effect boundary.",
+  Infinity: "There is no infinity here: it has no canonical form and cannot cross an effect boundary.",
+  NaN: "There is no NaN value to name here: it has no canonical form and cannot cross an effect boundary.",
+  Date: "Use `now()`, which reads the run clock, and `duration(text)` for spans.",
+  Map: "Use a record: `{}` with `has`, `keys` and `entries`.",
+  Set: "Use an array with `unique`, `contains` and `filter`.",
+  Error: "Throw a record: `throw { code: \"my-error\", message: \"...\" }`.",
+  console: "Use `log(...values)`.",
+  setTimeout: "Use `sleep(duration)`.",
+  setInterval: "Use a loop with `sleep(duration)` inside it.",
+});
+
 /** Host globals a program might reach for out of habit, each rejected by name (L2012). */
 export const FORBIDDEN_GLOBALS: ReadonlySet<string> = new Set([
-  "globalThis", "global", "window", "self", "process", "console", "fetch", "Date", "Math",
-  "RegExp", "Object", "Reflect", "Proxy", "Symbol", "WeakMap", "WeakSet", "Function",
-  "setTimeout", "setInterval", "setImmediate", "queueMicrotask", "require", "module",
+  ...Object.keys(HOST_GLOBAL_HINTS),
+  "globalThis", "global", "window", "self", "process", "fetch",
+  "RegExp", "Reflect", "Proxy", "Symbol", "WeakMap", "WeakSet", "WeakRef", "Function",
+  "setImmediate", "queueMicrotask", "require", "module",
   "exports", "__dirname", "__filename", "Buffer", "crypto", "performance", "structuredClone",
+  "eval", "arguments", "BigInt", "Intl", "Atomics", "SharedArrayBuffer", "ArrayBuffer",
+  "DataView", "TextEncoder", "TextDecoder", "URL", "URLSearchParams", "AbortController",
+  "encodeURIComponent", "decodeURIComponent", "encodeURI", "decodeURI", "escape", "unescape",
+  "Int8Array", "Uint8Array", "Uint8ClampedArray", "Int16Array", "Uint16Array", "Int32Array",
+  "Uint32Array", "Float32Array", "Float64Array", "BigInt64Array", "BigUint64Array",
 ]);
 
 /** The Promise API, rejected separately so its error can point at the right replacement (L2011). */

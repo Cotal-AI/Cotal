@@ -17,6 +17,7 @@ import { LangError, LangErrors, type LangErrorCode, type SourceSpan } from "./er
 import {
   BUILTINS,
   FORBIDDEN_GLOBALS,
+  HOST_GLOBAL_HINTS,
   NOTIFY_BOUND,
   PRIMITIVES,
   PROMISE_NAMES,
@@ -25,6 +26,8 @@ import {
   primitiveDoc,
 } from "./primitives.js";
 import { KEY_RESERVED_RE } from "./keys.js";
+import { ADMITTED_NODES, FORBIDDEN_NODES, STRUCTURAL_NODES } from "./syntax.js";
+import { MUTATING_METHODS } from "./library.js";
 
 /** Acorn nodes are loosely typed; this is the shape we actually read. */
 type AnyNode = Node & Record<string, unknown>;
@@ -57,6 +60,14 @@ class Validator {
    * it cannot be resolved, and guessing which one a branch meant is worse than saying so.
    */
   readonly functions = new Map<string, AnyNode | null>();
+  /**
+   * The parent of every call, recorded by the shape walk for the resolution walk.
+   *
+   * L2013 is a rule about POSITION (awaited, returned, or a combinator's thunk) and, for a user
+   * function, about the callee's declaration (async or not). The shape walk sees the position and
+   * the resolution walk sees the declaration, so the position is carried across.
+   */
+  readonly parents = new WeakMap<AnyNode, AnyNode | null>();
 
   constructor(
     readonly source: string,
@@ -99,90 +110,16 @@ class Validator {
 
 // ---- walk 1: shape ------------------------------------------------------------------------
 
-/** Node types rejected outright, with the code and the repair to suggest. */
-const FORBIDDEN_NODES: Readonly<
-  Record<string, { code: LangErrorCode; cause: string; fix: string }>
-> = Object.freeze({
-  ClassDeclaration: {
-    code: "L1001",
-    cause: "There are no classes in this language. State lives in records and behaviour lives in functions.",
-    fix: "Replace the class with a function that returns a record.",
-  },
-  ClassExpression: {
-    code: "L1001",
-    cause: "There are no classes in this language. State lives in records and behaviour lives in functions.",
-    fix: "Replace the class with a function that returns a record.",
-  },
-  ThisExpression: {
-    code: "L1002",
-    cause: "`this` does not exist, so nothing can capture a calling context by accident.",
-    fix: "Pass what the function needs as an argument.",
-  },
-  ForInStatement: {
-    code: "L1004",
-    cause: "`for...in` walks an unspecified order and reaches inherited names, so it cannot be deterministic.",
-    fix: "Iterate explicitly: `for (const k of keys(record)) { ... }`.",
-  },
-  WithStatement: {
-    code: "L1013",
-    cause: "`with` makes name resolution dynamic, and every name here resolves at parse time.",
-    fix: "Reference the record's fields directly.",
-  },
-  TaggedTemplateExpression: {
-    code: "L1018",
-    cause: "A tagged template runs user code during evaluation of a literal, which hides an effect inside what looks like data.",
-    fix: "Use a plain template literal, or call the function explicitly.",
-  },
-  NewExpression: {
-    code: "L1019",
-    cause: "There are no constructors, so `new` has nothing to construct.",
-    fix: "Build a record literal, or call a function that returns one.",
-  },
-  ImportDeclaration: {
-    code: "L1020",
-    cause: "A program is exactly one module, because a run pins to the content hash of its source.",
-    fix: "Define the function in this file. Shared procedures are ordinary functions.",
-  },
-  ExportNamedDeclaration: {
-    code: "L1020",
-    cause: "A program is exactly one module and has nothing to export to.",
-    fix: "Remove the `export`.",
-  },
-  ExportDefaultDeclaration: {
-    code: "L1020",
-    cause: "A program is exactly one module and has nothing to export to.",
-    fix: "Remove the `export`.",
-  },
-  ExportAllDeclaration: {
-    code: "L1020",
-    cause: "A program is exactly one module and has nothing to export to.",
-    fix: "Remove the `export`.",
-  },
-  DoWhileStatement: {
-    code: "L1022",
-    cause: "`do...while` is not in the language.",
-    fix: "Use `while` with the condition checked first, or a `for` loop.",
-  },
-  LabeledStatement: {
-    code: "L1017",
-    cause: "Labels turn the derived flowchart's back-edges into arbitrary jumps.",
-    fix: "Restructure with a helper function or a boolean flag.",
-  },
-  BreakStatement: {
-    code: "L1017",
-    cause: "A labelled break is an arbitrary jump.",
-    fix: "Restructure with a helper function or a boolean flag.",
-  },
-  ContinueStatement: {
-    code: "L1017",
-    cause: "A labelled continue is an arbitrary jump.",
-    fix: "Restructure with a helper function or a boolean flag.",
-  },
-  AwaitExpression: {
-    code: "L1023",
-    cause: "This `await` sits inside a function that is not `async`. Every effect is awaited, so a function that performs one is async.",
-    fix: "Mark the enclosing function `async`: `async function name(...) { ... }`.",
-  },
+/** The two conditional refusals the table cannot carry: a LABELLED jump and an `await` outside async. */
+const LABELLED_JUMP = Object.freeze({
+  code: "L1017" as LangErrorCode,
+  cause: "A labelled break or continue is an arbitrary jump.",
+  fix: "Restructure with a helper function or a boolean flag.",
+});
+const AWAIT_OUTSIDE_ASYNC = Object.freeze({
+  code: "L1023" as LangErrorCode,
+  cause: "This `await` sits inside a function that is not `async`. Every effect is awaited, so a function that performs one is async.",
+  fix: "Mark the enclosing function `async`: `async function name(...) { ... }`.",
 });
 
 /**
@@ -258,6 +195,13 @@ const PARSE_ERROR_MAP: readonly {
     fix: "Publish the result onto the run record, or use `log(...)` if you only wanted it in the trace.",
   },
   {
+    // A program is a module, so it is strict, and acorn refuses `with` before any walk sees it.
+    test: /'with' in strict mode/i,
+    code: "L1013",
+    cause: "`with` makes name resolution dynamic, and every name here resolves at parse time.",
+    fix: "Reference the record's fields directly.",
+  },
+  {
     test: /keyword 'await' outside an async function|await is only valid in async/i,
     code: "L1023",
     cause:
@@ -287,34 +231,94 @@ function isNode(v: unknown): v is AnyNode {
   return v !== null && typeof v === "object" && typeof (v as { type?: unknown }).type === "string";
 }
 
-function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNode | null = null): void {
+/** True when a statement always leaves its `switch` case: a terminator, or a block/if made of them. */
+function terminates(stmt: AnyNode): boolean {
+  switch (stmt.type) {
+    case "ReturnStatement":
+    case "BreakStatement":
+    case "ContinueStatement":
+    case "ThrowStatement":
+      return true;
+    case "BlockStatement": {
+      const body = (stmt.body as AnyNode[]) ?? [];
+      const last = body[body.length - 1];
+      return last !== undefined && terminates(last);
+    }
+    case "IfStatement":
+      return (
+        isNode(stmt.consequent) &&
+        terminates(stmt.consequent as AnyNode) &&
+        isNode(stmt.alternate) &&
+        terminates(stmt.alternate as AnyNode)
+      );
+    default:
+      return false;
+  }
+}
+
+/** The static name of a member access: `x.a` and `x["a"]` both name `a`; `x[k]` names nothing. */
+function memberName(member: AnyNode): string | null {
+  const property = member.property as AnyNode | undefined;
+  if (property === undefined) return null;
+  if (member.computed !== true) return property.type === "Identifier" ? (property.name as string) : null;
+  return property.type === "Literal" && typeof property.value === "string" ? property.value : null;
+}
+
+/** The name of a non-computed property key, or null when it is computed. */
+function propertyKeyName(node: AnyNode): string | null {
+  if (node.computed === true) return null;
+  const key = node.key as AnyNode | undefined;
+  if (key === undefined) return null;
+  if (key.type === "Identifier") return key.name as string;
+  if (key.type === "Literal") return String(key.value);
+  return null;
+}
+
+function walkShape(
+  node: AnyNode,
+  v: Validator,
+  inAsync: boolean,
+  parent: AnyNode | null = null,
+  /** An ancestor already carried a forbidden row, so this node's own presence needs no second error. */
+  underForbidden = false,
+): void {
   const type = node.type;
 
   // Labels and labelled jumps: a bare break/continue is fine, a labelled one is not.
-  if (type === "BreakStatement" || type === "ContinueStatement") {
-    if (node.label !== null && node.label !== undefined) {
-      const r = FORBIDDEN_NODES[type];
-      if (r !== undefined) v.fail(r.code, node, r.cause, r.fix);
-    }
+  if ((type === "BreakStatement" || type === "ContinueStatement") && node.label !== null && node.label !== undefined) {
+    v.fail(LABELLED_JUMP.code, node, LABELLED_JUMP.cause, LABELLED_JUMP.fix);
     return;
   }
 
   // `await` is legal only inside an async function.
   if (type === "AwaitExpression" && !inAsync) {
-    const r = FORBIDDEN_NODES.AwaitExpression;
-    if (r !== undefined) v.fail(r.code, node, r.cause, r.fix);
+    v.fail(AWAIT_OUTSIDE_ASYNC.code, node, AWAIT_OUTSIDE_ASYNC.cause, AWAIT_OUTSIDE_ASYNC.fix);
   }
 
-  const rule = type === "AwaitExpression" ? undefined : FORBIDDEN_NODES[type];
+  // THE TABLE. A node is admitted, structural, on a forbidden row, or outside the language.
+  const rule = FORBIDDEN_NODES[type];
+  let forbidden = underForbidden;
   if (rule !== undefined) {
     v.fail(rule.code, node, rule.cause, rule.fix);
+    forbidden = true;
+  } else if (!ADMITTED_NODES.has(type) && !STRUCTURAL_NODES.has(type) && !underForbidden) {
+    v.fail(
+      "L1029",
+      node,
+      `\`${type}\` is valid JavaScript but is not in this language, which is a fixed subset of it.`,
+      "Rewrite with the constructs the language has: functions, records, arrays, loops, conditionals, try/catch, and the effect primitives.",
+    );
+    forbidden = true;
   }
 
   if (type === "Program" || type === "BlockStatement") checkAsiHazards(node, v);
   if (type === "CallExpression" || (type === "MemberExpression" && node.computed === true)) {
     checkContinuationHazard(node, v);
   }
-  if (type === "CallExpression") checkAsyncCallPosition(node, parent, v);
+  if (type === "CallExpression") {
+    v.parents.set(node, parent);
+    checkAsyncCallPosition(node, parent, v);
+  }
 
   switch (type) {
     case "VariableDeclaration":
@@ -381,8 +385,10 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNod
       const consequent = node.consequent;
       if (Array.isArray(consequent) && consequent.length > 0) {
         const last = consequent[consequent.length - 1];
-        const terminators = ["ReturnStatement", "BreakStatement", "ContinueStatement", "ThrowStatement"];
-        if (isNode(last) && !terminators.includes(last.type)) {
+        // The check looks THROUGH a braced case body: the language asks for blocks everywhere
+        // else, so `case 1: { ...; break; }` is the shape it invites, and refusing it read as a
+        // rule against the block rather than against the fall-through.
+        if (isNode(last) && !terminates(last)) {
           v.fail(
             "L1010",
             node,
@@ -400,7 +406,15 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNod
           "L1011",
           node,
           "A computed key means the record's shape is not visible in the source, so neither the validator nor the flowchart can read it.",
-          "Use a literal key, or build the record with `merge`.",
+          "Use a literal key, or build the record with `merge`, or write it as `record[key] = value`.",
+        );
+      }
+      if (parent?.type === "ObjectExpression" && propertyKeyName(node) === "__proto__") {
+        v.fail(
+          "L1028",
+          node,
+          "`__proto__` names an object's prototype, and there are no prototypes here: a record has exactly the fields written on it.",
+          "Choose another field name.",
         );
       }
       if (node.kind === "get" || node.kind === "set") {
@@ -425,6 +439,14 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNod
       break;
 
     case "BinaryExpression":
+      if (node.operator === "==" || node.operator === "!=") {
+        v.fail(
+          "L1025",
+          node,
+          `\`${node.operator as string}\` coerces its operands before comparing them, so \`0 == ""\` and \`null == undefined\` are true and a comparison's answer depends on rules nobody wrote down here.`,
+          `Use \`${node.operator === "==" ? "===" : "!=="}\`, and \`?? \` or \`=== null\` when the question is about a missing value.`,
+        );
+      }
       if (node.operator === "instanceof") {
         v.fail(
           "L1016",
@@ -444,6 +466,14 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNod
       break;
 
     case "UnaryExpression":
+      if (node.operator === "void") {
+        v.fail(
+          "L1027",
+          node,
+          "`void` evaluates an expression and discards it, which is only ever used to hide a value or to spell `undefined` obscurely.",
+          "Write `undefined` when you mean it, or drop the expression.",
+        );
+      }
       if (node.operator === "delete") {
         v.fail(
           "L1021",
@@ -463,7 +493,7 @@ function walkShape(node: AnyNode, v: Validator, inAsync: boolean, parent: AnyNod
       ? node.async === true
       : inAsync;
 
-  for (const child of children(node)) walkShape(child, v, nowAsync, node);
+  for (const child of children(node)) walkShape(child, v, nowAsync, node, forbidden);
 }
 
 // ---- walk 2: resolution and effect call shape --------------------------------------------
@@ -717,34 +747,48 @@ function checkAsyncCallPosition(node: AnyNode, parent: AnyNode | null, v: Valida
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
   const name = callee.name as string;
-  // Primitives are always effects; a user function is only interesting if it was declared async,
-  // which the resolution walk cannot know here, so both are treated the same way: the POSITION
-  // is what is checked, not the callee's nature.
-  const isEffect = PRIMITIVES[name] !== undefined;
-  if (!isEffect) return;
-  if (parent === null) return;
-  // Only two positions are legal: awaited, or the concise body of an arrow that a combinator
-  // owns as a thunk. Everything else, including a bare statement, starts work nothing waits for.
-  const ok =
+  // Primitives are always effects and are checked here, where the position is known. A user
+  // function is an effect only if it was declared async, which only the resolution walk can see:
+  // {@link checkCall} applies the same rule to those, reading the position back from `v.parents`.
+  if (PRIMITIVES[name] === undefined) return;
+  if (parent === null || asyncCallPositionOk(parent)) return;
+  v.fail("L2013", node, unawaitedCause(name), unawaitedFix(name), name);
+}
+
+/**
+ * Only two positions are legal for a call that starts an effect: awaited, or the concise body of
+ * an arrow that a combinator owns as a thunk (a `return` is the braced spelling of the same thing).
+ * Everything else, including a bare statement, starts work nothing waits for.
+ */
+function asyncCallPositionOk(parent: AnyNode): boolean {
+  return (
     parent.type === "AwaitExpression" ||
     parent.type === "ArrowFunctionExpression" ||
-    parent.type === "ReturnStatement";
-  if (ok) return;
-  v.fail(
-    "L2013",
-    node,
-    `This \`${name}\` is not awaited, so it starts work whose result nothing waits for. Read literally the program says one thing and the runtime does another: calls outside a combinator run in sequence, not concurrently.`,
-    `Await it (\`await ${name}(...)\`), return it, or make it a branch of \`parallel\`, \`race\` or \`fanOut\`.`,
-    name,
+    parent.type === "ReturnStatement"
   );
 }
+
+const unawaitedCause = (name: string): string =>
+  `This \`${name}\` is not awaited, so it starts work whose result nothing waits for. Read literally the program says one thing and the runtime does another: calls outside a combinator run in sequence, not concurrently.`;
+const unawaitedFix = (name: string): string =>
+  `Await it (\`await ${name}(...)\`), return it, or make it a branch of \`parallel\`, \`race\` or \`fanOut\`.`;
 
 function checkCall(node: AnyNode, v: Validator, scope: Scope): void {
   const callee = node.callee;
   if (!isNode(callee) || callee.type !== "Identifier") return;
   const name = callee.name as string;
   const spec = PRIMITIVES[name];
-  if (spec === undefined) return;
+  if (spec === undefined) {
+    // L2013's other half: a USER function declared `async` (or a const bound to an async function
+    // expression) is an effect the moment it is called, and holding its call in a binding is the
+    // rule's own motivating example: `const pa = work(a); const pb = work(b);`.
+    const fn = scope.lookupFn(name);
+    const parent = v.parents.get(node) ?? null;
+    if (fn !== undefined && fn.async === true && parent !== null && !asyncCallPositionOk(parent)) {
+      v.fail("L2013", node, unawaitedCause(name), unawaitedFix(name));
+    }
+    return;
+  }
 
   const args = (node.arguments as AnyNode[]) ?? [];
 
@@ -1017,6 +1061,25 @@ function branchThunks(node: AnyNode | undefined, v: Validator, scope: Scope): An
   return out;
 }
 
+/** The identifier a write lands on: `x` for `x`, `x.a`, `x[i].b` and `x?.a`. */
+function rootIdentifier(node: AnyNode | undefined): AnyNode | undefined {
+  if (node === undefined || !isNode(node)) return undefined;
+  if (node.type === "Identifier") return node;
+  if (node.type === "MemberExpression") return rootIdentifier(node.object as AnyNode);
+  if (node.type === "ChainExpression") return rootIdentifier(node.expression as AnyNode);
+  return undefined;
+}
+
+function capturedWrite(at: AnyNode, name: string, combinator: string, v: Validator): void {
+  v.fail(
+    "L2032",
+    at,
+    `\`${name}\` is declared outside this branch and written inside it. Two branches racing to write one place is nondeterministic, and freezing does not cover it because nothing crosses an effect boundary. It is also silent: live, the branches write in completion order, but on resume the recorded effects return instantly and they write in launch order, so \`${name}\` holds a different value and the run takes a path it never recorded — with no divergence raised, because no effect's inputs changed.`,
+    `Return the value from the branch and read it out of \`${combinator}\`'s result, or use \`race\`, which yields its winner.`,
+    combinator,
+  );
+}
+
 /** Walk one branch thunk with its OWN scope chain: anything it did not declare, it captured. */
 function checkCapturedWrites(fn: AnyNode, combinator: string, v: Validator, seen: Set<AnyNode>): void {
   if (seen.has(fn)) return;
@@ -1045,18 +1108,15 @@ function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Valida
 
     case "AssignmentExpression":
     case "UpdateExpression": {
-      // `x = 1` and `x += 1` and `x++` are the same defect. A write through a member expression is
-      // NOT this rule: that is a value, and freeze-on-share covers values (L2031).
+      // `x = 1`, `x += 1`, `x++`, `x.a = 1` and `x[i] += 1` are the same defect: something declared
+      // outside the branch is written inside it. A write through a member expression reaches the
+      // VALUE the outer binding holds, which is no more ordered across branches than the binding
+      // itself; the runtime half (values carry the depth they were born at) covers what a value
+      // reached through an alias hides from this walk.
       const target = (node.type === "AssignmentExpression" ? node.left : node.argument) as AnyNode;
-      if (isNode(target) && target.type === "Identifier" && scope.lookup(target.name as string) === undefined) {
-        const n = target.name as string;
-        v.fail(
-          "L2032",
-          target,
-          `\`${n}\` is declared outside this branch and written inside it. Two branches racing to set one variable is nondeterministic, and freezing does not cover it because nothing crosses an effect boundary. It is also silent: live, the branches write in completion order, but on resume the recorded effects return instantly and they write in launch order, so \`${n}\` holds a different value and the run takes a path it never recorded — with no divergence raised, because no effect's inputs changed.`,
-          `Return the value from the branch and read it out of \`${combinator}\`'s result, or use \`race\`, which yields its winner.`,
-          combinator,
-        );
+      const root = rootIdentifier(target);
+      if (root !== undefined && scope.lookup(root.name as string) === undefined) {
+        capturedWrite(root, root.name as string, combinator, v);
       }
       for (const c of children(node)) walkCaptured(c, scope, combinator, v, seen);
       return;
@@ -1075,6 +1135,20 @@ function walkCaptured(node: AnyNode, scope: Scope, combinator: string, v: Valida
         if (scope.lookup(nm) === undefined) {
           const target = v.functions.get(nm);
           if (target !== undefined && target !== null) checkCapturedWrites(target, combinator, v, seen);
+        }
+      }
+      // `outer.push(x)` from a branch is `outer[len(outer)] = x` spelled as a method.
+      if (isNode(callee) && (callee as AnyNode).type === "MemberExpression") {
+        const member = callee as AnyNode;
+        const method = memberName(member);
+        const root = rootIdentifier(member.object as AnyNode);
+        if (
+          method !== null &&
+          MUTATING_METHODS.has(method) &&
+          root !== undefined &&
+          scope.lookup(root.name as string) === undefined
+        ) {
+          capturedWrite(root, root.name as string, combinator, v);
         }
       }
       for (const c of children(node)) walkCaptured(c, scope, combinator, v, seen);
@@ -1149,7 +1223,8 @@ function walkResolve(node: AnyNode, v: Validator, scope: Scope): void {
           "L2012",
           node,
           `\`${name}\` is a host global. There is no ambient IO, clock, or randomness here: the interpreter has nothing nondeterministic to offer.`,
-          "Use `now()` for time, `random()` for randomness, `sleep()` to wait, and `log()` for output.",
+          HOST_GLOBAL_HINTS[name] ??
+            "Use `now()` for time, `random()` for randomness, `sleep()` to wait, and `log()` for output.",
         );
         return;
       }

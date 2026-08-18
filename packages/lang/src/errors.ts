@@ -38,6 +38,14 @@ export const CATALOG = {
   L1022: "Forbidden syntax: `do...while`",
   L1023: "Forbidden syntax: `await` outside an async function",
   L1024: "`return` outside a function",
+  L1025: "Forbidden syntax: loose equality",
+  L1026: "Forbidden syntax: comma operator",
+  L1027: "Forbidden syntax: `void`",
+  L1028: "Forbidden property name",
+  // The catch-all behind the admitted-node table: syntax that is valid JavaScript, is on no
+  // forbidden row of its own, and is not in the language either. Naming it here is what lets the
+  // interpreter's own "unsupported" fault stay unreachable from a validated program.
+  L1029: "Syntax outside the language",
 
   // ---- L2xxx: name resolution and static rules ----------------------------------------------
   L2001: "Unknown identifier",
@@ -47,7 +55,7 @@ export const CATALOG = {
   L2013: "An async call is not awaited",
   L2012: "Host global is not available",
   L2031: "Mutation of a frozen value",
-  L2032: "Write to a binding captured by a concurrent thunk",
+  L2032: "Write from a concurrent branch to something declared outside it",
 
   // ---- L3xxx: effect call shape --------------------------------------------------------------
   L3011: "Unknown option key",
@@ -74,7 +82,13 @@ export const CATALOG = {
   L4007: "Checkpoint expired",
   L4008: "Concurrent worktree write",
   L4009: "Run effect ceiling reached",
+  L4010: "Field access on `null` or `undefined`",
+  L4011: "Call of a value that is not a function",
+  L4012: "Assertion failed",
   L4013: "Step budget exhausted",
+  L4014: "Unknown member",
+  L4015: "Not iterable",
+  L4016: "Builtin failed",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

@@ -27,14 +27,26 @@ export {
   EFFECT_KINDS,
   EVENT_CONSTRUCTORS,
   FORBIDDEN_GLOBALS,
+  HOST_GLOBAL_HINTS,
   PRIMITIVES,
   PURE_PRIMITIVES,
   RESERVED_NAMES,
   STEP_NAME_RE,
+  VALUE_NAMES,
   primitiveDoc,
   type EffectKind,
   type PrimitiveSpec,
 } from "./primitives.js";
+
+export {
+  ADMITTED_NODES,
+  FORBIDDEN_CHILDREN,
+  FORBIDDEN_NODES,
+  KNOWN_NODES,
+  STRUCTURAL_NODES,
+} from "./syntax.js";
+
+export { MUTATING_METHODS } from "./library.js";
 
 export { validate, type ValidateResult } from "./grammar.js";
 
