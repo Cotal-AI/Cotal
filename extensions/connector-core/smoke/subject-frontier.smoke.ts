@@ -311,8 +311,17 @@ try {
     const td = join(d, "t-sent");
     mkdirSync(td, { recursive: true });
     writeFileSync(join(td, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 7 }, pending: { state: "sent_unacked", seq: 3 } }));
-    const f = await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P });
-    c("recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence", f.tip === 7, f.tip);
+    // THE OPEN IS CAUGHT SO THE CELL CAN FAIL BY NAME. A scan that treated this pending as acked
+    // would reach for an `ackSeq` the state may not carry and THROW, which aborts the file before
+    // this cell prints anything, and a mutant that aborts the suite is red without naming a cell.
+    // The two wrong answers, folding it and refusing it, both have to land on this line.
+    let tip: number | string;
+    try {
+      tip = (await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P })).tip;
+    } catch (e) {
+      tip = `threw: ${(e as Error).message}`;
+    }
+    c("recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence", tip === 7, tip);
   }
   {
     // An acked pending that is NOT ahead of its own frontier contradicts the invariant `EventWal`

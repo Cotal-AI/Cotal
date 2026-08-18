@@ -94,11 +94,11 @@
     {
       "name": "S9 the halt points at this session's own log instead of the principal directory",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "            `${dirname(dirname(this.wal.path))} whole, and removing less than that leaves a mixed ` +\n",
-      "replace": "            `${this.wal.path} whole, and removing less than that leaves a mixed ` +\n",
+      "find": "dirname(dirname(this.wal.path))",
+      "replace": "this.wal.path",
       "expectRed": "control:the-halt-LOCATES-the-state-to-remove",
       "cell": "control:the-halt-LOCATES-the-state-to-remove",
-      "note": "abandon() has no shipped caller anywhere in the tree, so the directory is the whole remedy. One dirname short names one session's log, and removing that alone leaves the shared record and the other sessions standing, which is the mixed state the next start refuses."
+      "note": "abandon() has no shipped caller anywhere in the tree, so the directory is the whole remedy. One dirname short names one session's log, and removing that alone leaves the shared record and the other sessions standing, which is the mixed state the next start refuses. RE-ANCHORED ON THE EXPRESSION, not on the sentence around it. The previous anchor carried the surrounding words of the message, and the commit that stated the remedy's precondition reworded them, so the anchor matched nothing and the mutant silently became a no-op. A find that matches zero times reports the same green as a guard that holds. The whole-tree anchor gate is what caught it, and the expression is the part of this line that a future edit to the message cannot move."
     },
     {
       "name": "S15 the acked sequence is dropped, proved against the REAL broker rather than a hand-built log",
