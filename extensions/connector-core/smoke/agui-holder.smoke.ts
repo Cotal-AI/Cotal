@@ -31,11 +31,18 @@
  *   the `this.emitter =` assignment dropped  -> KILLED both `CONTROL:` cells
  *
  * So start-once is held by the `boundPath` gate, and the shortcut and the trailing
- * `return this.emitter` answer for each other on every sequential call this surface can make. No
- * SINGLE-site mutation of that machinery can be killed here, and `scripts/mutation-proof.mjs` takes
- * one find/replace per mutation, so there is nothing honest to register: this table is the record
- * instead. It is the same masking the M5/M7 pair below documents, found a second time in the same
- * file, which is the argument for measuring a claim like this one rather than carrying it forward.
+ * `return this.emitter` answer for each other on every sequential call this surface can make. It is
+ * the same masking the M5/M7 pair below documents, found a second time in the same file, which is
+ * the argument for measuring a claim like this one rather than carrying it forward.
+ *
+ * AND THE FIRST CONCLUSION DRAWN FROM THAT TABLE WAS ALSO WRONG, WHICH IS WORTH LEAVING IN. It said
+ * no mutation could be registered, because `scripts/mutation-proof.mjs` takes one find and one
+ * replace per mutation. That treated "one find/replace" as "one site", and the two sites here are
+ * ADJACENT: a single contiguous span covers the shortcut and the gate together, which is a legal
+ * mutation and kills. A reviewer proved it with the shipped tool instead of arguing it. It is
+ * registered as H1 in `mutations/agui-holder.json`, reds this file's two `lazy:` cells, and
+ * `expectRed` names the first while the config states the second. Claiming a property cannot be
+ * graded is a claim like any other, and this one was false.
  *
  * KILL SET — predicted as NAMES before the run, with what actually happened recorded rather than
  * the prediction restated. Each mutation was verified present in the file that RUNS (the suite
