@@ -81,6 +81,18 @@
  * `({ seam: f } = core)` is an ordinary object KEY, which this reader allows everywhere else
  * because a key normally names a slot rather than reading one. Only position tells them apart.
  *
+ * THREE OF ITS BOUNDARIES ARE CURATION, not deduction, and adversarial review measured each one
+ * silent. The container WATCHLIST decides which markup languages get a recorded decision, so an
+ * arrival it does not list (a `.php` naming the seam was the probe) is read by nothing and reddens
+ * nothing. SKIP_DIRS is the same bet on directories: adding `examples` to it drops six container
+ * files from the walk with every cell still green, because the census that guards the walk shares
+ * the same skip list and simply sees a smaller tree. And the FLOORS measure population, not
+ * identity, so moving sites between files is indistinguishable from losing them; the split into a
+ * total and an untypechecked half catches a move ACROSS the halves, and nothing catches a move
+ * within one. Each would need a different instrument (a site manifest, a census that does not share
+ * the walk's exclusions), and each is written here so the next author inherits the bet rather than
+ * the impression that it was checked.
+ *
  * What it still cannot refuse is a key this file cannot evaluate: one computed from a runtime value,
  * a function's return (`["standalone", "ConnectOpts"].join("")` reaches the same binding), or an
  * import it would have to resolve. Closing those means executing the program or running a type
@@ -361,6 +373,22 @@ function callsSeam(call: ts.CallExpression, fn: string, folds: Folds): boolean {
 }
 
 type Verdict = "has-key" | "missing-key" | "unverifiable" | "aliased";
+
+/** The aggregation the tree-wide checks run on, factored out for ONE reason: review showed it was
+ *  the load-bearing part with no evidence behind it. Every fixture cell calls the classifier
+ *  directly, so a one-token change here (dropping `unverifiable` from the counted set) silenced the
+ *  entire refusal regime while the suite stayed green at the right count. A refusal is only red
+ *  because these two predicates say so, and nothing asserted that. Now a cell drives this same
+ *  function, so the predicates are covered by the thing that depends on them. */
+function summarize(all: Site[]): { sites: Site[]; aliased: Site[]; bad: Site[]; untypechecked: Site[] } {
+  const sites = all.filter((s) => s.verdict !== "aliased");
+  return {
+    sites,
+    aliased: all.filter((s) => s.verdict === "aliased"),
+    bad: sites.filter((s) => s.verdict !== "has-key"),
+    untypechecked: sites.filter((s) => s.file.includes(`${sep}smoke${sep}`) || s.file.includes("/smoke/")),
+  };
+}
 type Site = { file: string; line: number; verdict: Verdict; detail: string };
 
 /**
@@ -984,6 +1012,23 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     fx(`type F = typeof standaloneConnectOpts;`).length === 0);
 }
 
+// The two predicates every tree-wide verdict rests on, driven DIRECTLY rather than trusted. Review
+// changed one token here (dropping `unverifiable` from the counted set), dropped a real refusal file
+// into the tree, and the suite stayed GREEN at the right count: every fixture cell above calls the
+// classifier, and nothing asked whether a refusal still reaches the completeness check. A refusal is
+// red only because these say so.
+{
+  const one = (verdict: Verdict): Site => ({ file: "p.html", line: 1, verdict, detail: "" });
+  const refused = summarize([one("unverifiable")]);
+  check("a REFUSAL is counted as a site and FAILS completeness, which is the only reason a refusal is red",
+    refused.sites.length === 1 && refused.bad.length === 1);
+  const stated = summarize([one("has-key")]);
+  check("...while a stated key is counted and PASSES, so the aggregation is not simply failing everything",
+    stated.sites.length === 1 && stated.bad.length === 0);
+  check("...and an ALIAS is kept out of the count, since its own cell is what judges it",
+    summarize([one("aliased")]).sites.length === 0 && summarize([one("aliased")]).aliased.length === 1);
+}
+
 console.log("\nB. the seam, across every source the compiler may or may not read");
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
@@ -1012,10 +1057,7 @@ check("every container language present in this tree has a recorded decision, re
 
 for (const seam of SEAMS) {
   const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
-  const sites = all.filter((s) => s.verdict !== "aliased");
-  const aliased = all.filter((s) => s.verdict === "aliased");
-  const bad = sites.filter((s) => s.verdict !== "has-key");
-  const untypechecked = sites.filter((s) => s.file.includes(`${sep}smoke${sep}`) || s.file.includes("/smoke/"));
+  const { sites, aliased, bad, untypechecked } = summarize(all);
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} typechecked)`);
