@@ -15,10 +15,9 @@
  * suite that obeyed only rule 2 would still open files it has no business opening, and "we read it
  * but printed nothing" is not a defence for reading it. They fail in different directions.
  *
- *   1. **Never glob a session directory.** A session is addressed by an exact path, and the one
- *      this lane runs it against is a session it GENERATED ITSELF in a scratch project. Walking
- *      `~/.claude/projects/` would make the suite's input whatever the operator happened to be
- *      doing that afternoon.
+ *   1. **Never glob a session directory.** A session is addressed by an exact path: the committed
+ *      fixture, or one file named by `COTAL_AGUI_SESSION`. Walking `~/.claude/projects/` would make
+ *      the suite's input whatever the operator happened to be doing that afternoon.
  *   2. **Never print record content.** Failures report counts, byte offsets, type names and key
  *      names. Never a text body, a prompt, a tool input, or a tool result. A smoke that dumps the
  *      offending record on failure is a content exfiltration path that only fires when something
@@ -27,11 +26,32 @@
  *      `COTAL_AGUI_SESSION` names one file. There is no search, no "latest", no directory.
  * ---------------------------------------------------------------------------------------------
  *
- * **This suite is deliberately NOT in `smoke:ci`, and that limit is stated rather than hidden.** It
- * needs a real session file, and the capture is not committed: a genuine session carries the
- * operator's local skill/command inventory in its context records, and committing one would both
- * publish that and freeze the shape the plan requires to stay real. So a green from this suite is
- * only ever a claim about the session it names, and it names it.
+ * **TWO ARMS, ONE SUITE, AND ONLY ONE OF THEM RUNS IN CI.**
+ *
+ *   `pnpm smoke:agui-map`       GATED. Points this suite at `fixtures/session-shape.jsonl`, a
+ *                               fixture DERIVED from a real session by
+ *                               `scripts/redact-claude-session.mjs`. Every cell runs.
+ *   `pnpm smoke:agui-map:real`  UNGATED, and declared so in the gate inventory. Names an
+ *                               operator's own session through `COTAL_AGUI_SESSION`.
+ *
+ * **The derived fixture does not undermine this suite's founding argument, and it is worth being
+ * precise about why, because a fixture is exactly what the argument objects to.** The objection is
+ * to an AUTHORED fixture: a person writes the records the spec describes, and the spec is what was
+ * wrong. This fixture is not authored. It is a real session with every field it carries built into
+ * a fresh object from the declared field set, identifiers replaced through a stable pseudonym map
+ * so every equality relation survives, and free text collapsed to a placeholder that preserves only
+ * emptiness. The RECORDS are the harness's; only the strings are gone. All 46 shape cells passed
+ * against it unchanged on the first run, which is the evidence that the derivation preserved what
+ * they assert.
+ *
+ * **What the real arm still buys, since it would otherwise be ceremony.** Two things, and both are
+ * failures the fixture cannot have. A fixture is a SNAPSHOT: a harness that starts emitting a new
+ * `origin.kind` tomorrow throws in production, and the committed file will never show it, because
+ * the file cannot change on its own. And the redactor itself encodes a belief about which fields
+ * matter, which is the SAME belief the mapper encodes, so a fixture built by it cannot catch a
+ * field they are both wrong about. The real arm shares neither property.
+ *
+ * A green from the real arm is only ever a claim about the session it names, and it names it.
  *
  * **What this suite does NOT re-prove: that the emitted events conform to the AG-UI schemas.** The
  * mapper never hand-builds an event object — every event leaves through a `connector-core`
@@ -228,7 +248,9 @@ if (SESSION === "" || !existsSync(SESSION)) {
       `  This suite refuses rather than falling back to a fixture.\n` +
       `  Produce one:  mkdir -p /tmp/agui-scratch-session && cd /tmp/agui-scratch-session &&\n` +
       `                claude -p "<some prompt that uses a tool>" --allowedTools Read,Bash\n` +
-      `  Or name one:  COTAL_AGUI_SESSION=/exact/path/to/<session>.jsonl pnpm smoke:agui-map`,
+      `  Or name one:  COTAL_AGUI_SESSION=/exact/path/to/<session>.jsonl pnpm smoke:agui-map:real\n` +
+      `  The GATED arm, \`pnpm smoke:agui-map\`, points this same suite at the committed fixture and\n` +
+      `  needs no environment at all.`,
   );
   process.exit(1);
 }
@@ -856,6 +878,53 @@ c("real:the-WHOLE-real-sequence-brackets", (() => {
     return false;
   }
 })(), { events: events.length });
+
+
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+// THE FIXTURE'S OWN GUARD, which only runs when this suite is pointed at the committed fixture.
+//
+// The fixture is DERIVED from a real session by `scripts/redact-claude-session.mjs`, which builds
+// each record from an empty object using only the fields `ClaudeEntry`/`ClaudeBlock` declare. That
+// is a whitelist by construction: a field the harness adds tomorrow cannot reach the output,
+// because nothing copies it. Identifiers go through a stable pseudonym map so every equality
+// relation survives and no original string does; free text collapses to a placeholder that
+// preserves only emptiness, because `promptText.length` decides whether a body is carried.
+//
+// A ONE-TIME SCAN BEFORE COMMIT IS NOT ENOUGH, which is why these are cells. The fixture will be
+// regenerated, by someone who wants a shape it does not currently contain, and the regeneration is
+// exactly when a leak arrives. A scan that ran once, in a terminal nobody kept, protects the file
+// that was committed and not the one that replaces it.
+// ─────────────────────────────────────────────────────────────────────────────────────────────
+if (SESSION.endsWith("session-shape.jsonl")) {
+  const WHITELIST = new Set([
+    ".type", ".uuid", ".sessionId", ".timestamp", ".isSidechain", ".origin", ".origin.kind",
+    ".promptSource", ".isCompactSummary", ".isVisibleInTranscriptOnly", ".entrypoint",
+    ".message", ".message.id", ".message.stop_reason", ".message.content",
+    ".message.content[].type", ".message.content[].text", ".message.content[].thinking",
+    ".message.content[].id", ".message.content[].name", ".message.content[].input",
+    ".message.content[].input.redacted", ".message.content[].tool_use_id",
+    ".message.content[].content", ".message.content[].content[].type",
+    ".message.content[].content[].text", ".message.content[].is_error",
+  ]);
+  const seenKeys = new Set<string>();
+  const walk = (o: unknown, path: string): void => {
+    if (o === null || typeof o !== "object") return;
+    if (Array.isArray(o)) { for (const v of o) walk(v, `${path}[]`); return; }
+    for (const [k, v] of Object.entries(o)) { seenKeys.add(`${path}.${k}`); walk(v, `${path}.${k}`); }
+  };
+  for (const e of entries) walk(e, "");
+  const stray = [...seenKeys].filter((k) => !WHITELIST.has(k));
+  c("fixture:carries NO key outside the redactor's whitelist", stray.length === 0, stray);
+  // The control: an empty intersection is also what a walker that visited nothing returns.
+  c("fixture:the whitelist check actually visited the records", seenKeys.size >= 10, seenKeys.size);
+  // Path- and project-shaped strings, over the raw bytes rather than the parsed tree, because a
+  // leak that lands in a value this suite never reads is still a leak in a committed file.
+  const rawText = raw.toString("utf8");
+  c("fixture:matches no filesystem-path or project-name pattern",
+    !/\/Users\/|\/home\/|Projects|\.claude/.test(rawText));
+  c("fixture:the pattern check has a working instrument",
+    /\/Users\/|\/home\/|Projects|\.claude/.test("/Users/x"));
+}
 
 const typesOf = (t: string): number => events.filter((e) => e.type === t).length;
 

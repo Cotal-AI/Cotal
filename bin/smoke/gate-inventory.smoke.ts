@@ -67,12 +67,15 @@ const UNGATED: Record<string, string> = {
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
-  // A STANDING DECISION, and the reason is the suite's own founding argument rather than
-  // convenience: it maps a REAL Claude session JSONL, and a real session cannot be committed
-  // (it carries the operator's local context) so no CI runner has an input for it. Its
-  // security half, "no peer-authored body reaches the event channel", is a hostile fixture that
-  // needs no session and IS gated, as `smoke:agui-authorship`.
-  "smoke:agui-map": "maps a real, uncommittable Claude session JSONL (COTAL_AGUI_SESSION)",
+  // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
+  // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
+  // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised
+  // stably, free text collapsed), so every cell runs in CI. This arm names an operator's actual
+  // session file, which cannot be committed, and it buys two things the fixture cannot: it sees
+  // TODAY's harness rather than a snapshot, so a new `origin.kind` shows up here as a throw before
+  // it shows up in production; and it shares no assumption with the redactor, which itself encodes
+  // a belief about which fields matter and could be wrong in the same direction as the mapper.
+  "smoke:agui-map:real": "names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map",
   // Known-red or documented flakes: debt with a fuse, counted as such. Gating them would make the
   // gate lie; leaving them unmarked made the list unable to say how much debt it held.
   "smoke:channels": `${BROKEN} documented timing flake + fixed-port cleanup leak`,
