@@ -211,50 +211,6 @@ if (process.platform !== "win32") {
 }
 console.log("✓ A6: a material file that says nothing is refused on read, and a valid one still reads");
 
-// A5 - dropping the pointer makes the control token unreachable, so every reader has to run first,
-// and the file it pointed at is GONE rather than merely unreferenced.
-//
-// This is here because the ordering it describes was got WRONG, and the suite did not catch it: the
-// pi extension scrubbed the pointer immediately after parsing its config and then asked for the
-// control token, which was by then gone. Every pi launch refused, loudly and correctly, and it took
-// a live spawn to see it. The property is pinned here so the hazard is a named, tested fact rather
-// than a comment somebody has to remember, and the contract keeps failing loud when it is violated.
-//
-// IT RUNS AFTER A4 ON PURPOSE. The scrub now unlinks, so this leg destroys the pi launch's material
-// file; A4 needs that file on disk to chmod it. Ordering is the whole dependency, and stating it
-// here is cheaper than a future reader rediscovering it as a confusing A4 failure.
-{
-  const env = { ...piSpec.env } as NodeJS.ProcessEnv;
-  const file = env[LAUNCH_MATERIAL_ENV] as string;
-  assert.ok(controlFromEnv(env)?.token, "A5: the control token is reachable before the pointer is dropped");
-  scrubLaunchMaterial(env);
-  assert.equal(env[LAUNCH_MATERIAL_ENV], undefined, "A5: the pointer itself is gone");
-  assert.equal(existsSync(file), false, "A5: the material file survived the scrub that was supposed to unlink it");
-  // Not `undefined`: the socket path is still in this env, so what remains is a BROKEN control
-  // endpoint rather than an absent one, and the contract is that a half pair is refused out loud.
-  assert.throws(
-    () => controlFromEnv(env),
-    /no control token could be resolved/,
-    "A5: a scrubbed env with a socket path still resolved a control endpoint instead of refusing",
-  );
-}
-console.log("✓ A5: the pointer is dropped, the file is unlinked, and what is left refuses instead of half-working");
-
-// A7 - the two-carrier refusal covers every direct carrier, COTAL_LINK included.
-//
-// A join link is connection material in one string: server, auth and space. Left off the refusal
-// list it did not conflict loudly, it lost quietly to material precedence, which is the same silent
-// answer to "who is this session" that the creds pair is refused for.
-{
-  const env = { ...piSpec.env, COTAL_LINK: "cotal://example.invalid/space" } as NodeJS.ProcessEnv;
-  assert.throws(
-    () => configFromEnv(env),
-    /carries connection material BOTH as COTAL_LAUNCH_MATERIAL and as COTAL_LINK/,
-    "A7: a launch carrying both a material file and a join link resolved by precedence instead of refusing",
-  );
-}
-console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refused, not silently ranked");
-
 // A8 - half a control pair throws in BOTH directions, from the one place the pair is resolved.
 //
 // It used to return undefined and leave the policy to each caller, and the callers did not agree.
@@ -274,5 +230,51 @@ console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refus
   assert.equal(controlFromEnv({} as NodeJS.ProcessEnv), undefined, "A8: a launch with no control plane at all still reads as none");
 }
 console.log("✓ A8: half a control pair is refused in both directions; no control plane at all is still fine");
+
+// A7 - the two-carrier refusal covers every direct carrier, COTAL_LINK included.
+//
+// A join link is connection material in one string: server, auth and space. Left off the refusal
+// list it did not conflict loudly, it lost quietly to material precedence, which is the same silent
+// answer to "who is this session" that the creds pair is refused for.
+{
+  const env = { ...piSpec.env, COTAL_LINK: "cotal://example.invalid/space" } as NodeJS.ProcessEnv;
+  assert.throws(
+    () => configFromEnv(env),
+    /carries connection material BOTH as COTAL_LAUNCH_MATERIAL and as COTAL_LINK/,
+    "A7: a launch carrying both a material file and a join link resolved by precedence instead of refusing",
+  );
+}
+console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refused, not silently ranked");
+
+// A5 - dropping the pointer makes the control token unreachable, so every reader has to run first,
+// and the file it pointed at is GONE rather than merely unreferenced.
+//
+// This is here because the ordering it describes was got WRONG, and the suite did not catch it: the
+// pi extension scrubbed the pointer immediately after parsing its config and then asked for the
+// control token, which was by then gone. Every pi launch refused, loudly and correctly, and it took
+// a live spawn to see it. The property is pinned here so the hazard is a named, tested fact rather
+// than a comment somebody has to remember, and the contract keeps failing loud when it is violated.
+//
+// IT RUNS LAST ON PURPOSE, and the ordering is load-bearing twice. The scrub now unlinks, so this
+// leg destroys the pi launch's material file and A4 needs that file on disk to chmod it. And its
+// half-pair assertion below is reddened by the SAME mutation that A8 exists to catch, so A8 has to
+// run first or the mutation reds here instead and names the wrong assertion. That is not a guess:
+// it was measured as a WRONG-RED before this block moved.
+{
+  const env = { ...piSpec.env } as NodeJS.ProcessEnv;
+  const file = env[LAUNCH_MATERIAL_ENV] as string;
+  assert.ok(controlFromEnv(env)?.token, "A5: the control token is reachable before the pointer is dropped");
+  scrubLaunchMaterial(env);
+  assert.equal(env[LAUNCH_MATERIAL_ENV], undefined, "A5: the pointer itself is gone");
+  assert.equal(existsSync(file), false, "A5: the material file survived the scrub that was supposed to unlink it");
+  // Not `undefined`: the socket path is still in this env, so what remains is a BROKEN control
+  // endpoint rather than an absent one, and the contract is that a half pair is refused out loud.
+  assert.throws(
+    () => controlFromEnv(env),
+    /no control token could be resolved/,
+    "A5: a scrubbed env with a socket path still resolved a control endpoint instead of refusing",
+  );
+}
+console.log("✓ A5: the pointer is dropped, the file is unlinked, and what is left refuses instead of half-working");
 
 console.log("\nseat-env-scope: PASS");

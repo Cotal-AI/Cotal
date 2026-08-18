@@ -13,6 +13,35 @@ import { HANDOFF_RECEIPT } from "./control.js";
 
 const TIMEOUT_MS = 2000;
 
+/**
+ * One bounded warning per hook process, on stderr, with no values in it.
+ *
+ * FAIL OPEN IS NOT THE SAME AS FAIL SILENT, and this relay was doing both. A hook that throws is a
+ * hook that blocked a human's session, so the catch below stays. But a material file that is
+ * missing, permissive, malformed, or contradicted by a direct carrier used to produce a hook that
+ * did nothing and said nothing: the seat runs, presence never advances, no queued peer message is
+ * ever injected, and there is no line anywhere to read. That is the same failure this connector's
+ * Python counterpart shipped, one connector over, and it is why the repair is a WARNING rather than
+ * a stricter refusal.
+ *
+ * Bounded means once per process, and the runtime starts one hook process per lifecycle event, so a
+ * genuinely broken session keeps saying so. That is the intended trade: the alternative is a single
+ * line early in a session that scrolls away, for a fault that persists until someone fixes the
+ * launch. Nothing is interpolated into the message. The variable NAMES are the diagnosis and the
+ * operator can read their own environment; a value in a hook's stderr is a disclosure in whatever
+ * captures that stream.
+ */
+let warned = false;
+function warnOnce(message: string): void {
+  if (warned) return;
+  warned = true;
+  try {
+    process.stderr.write(`[cotal-connector] ${message}\n`);
+  } catch {
+    /* a hook that cannot even warn still must not block the session */
+  }
+}
+
 function readStdin(): Promise<string> {
   return new Promise((resolve) => {
     if (process.stdin.isTTY) return resolve("");
@@ -65,8 +94,17 @@ export async function runHookRelay(): Promise<void> {
   try {
     control = controlFromEnv();
   } catch {
+    warnOnce(
+      "this session's control endpoint could not be resolved: the launch material is missing, " +
+        "unreadable, readable beyond its owner, malformed, or contradicted by direct COTAL_ variables. " +
+        "Lifecycle relays are disabled for this session, so presence will not advance and queued peer " +
+        "messages will not be injected. Check COTAL_LAUNCH_MATERIAL and COTAL_CONTROL_SOCKET.",
+    );
     return done("");
   }
+  // No control endpoint AT ALL is not a fault and is not warned about: a hand-driven session that
+  // sets COTAL_NAME and never had a control socket is a legitimate launch, and warning here would
+  // fire on every hook of a working session and teach the operator to ignore the channel.
   if (!control) return done("");
   const { path, token } = control;
   const raw = (await readStdin()).trim() || "{}";
