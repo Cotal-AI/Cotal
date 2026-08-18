@@ -16,6 +16,25 @@
  * So the reader here is static and gated: a new call site missing the argument is red in the run
  * that adds it, whatever suite it belongs to and whether or not that suite is ever executed.
  *
+ * IT READS THE REAL GRAMMAR, via the TypeScript parser, and that is a correctness requirement rather
+ * than a convenience. The first two cuts of this file scanned text with a hand lexer and a call
+ * regex, and both were defeated by ordinary code rather than by anything contrived. A regex literal
+ * containing a quote opened a phantom string that blanked every later call site in the file, so the
+ * lexer learned regexes; then the same hole reopened one keyword away, because `/` after `return` or
+ * `typeof` looks like division to anything that decides by the last CHARACTER. The floor cells do
+ * not cover that: a file hidden from its first line never increments the count, so an exact floor
+ * still passes. Chasing lexer holes one at a time is a losing shape when a parser that already knows
+ * the grammar costs about seven hundred milliseconds over nine hundred files. Everything below asks
+ * the syntax tree, so regex-versus-division, template substitutions, casts, generic instantiation,
+ * optional calls and unicode escapes in identifiers are the parser's problem and not this file's.
+ *
+ * THE SEAM MUST BE CALLED BY ITS OWN NAME, and a rebinding is red rather than ignored. This reader
+ * has no type checker, so it cannot follow `const f = seam` or `import { seam as f }` to the call
+ * that uses `f`, and a call it cannot follow is a call it would silently bless. It therefore refuses
+ * the rebinding itself, at the point the name escapes, which is one line for an author to see and
+ * fail-closed for everyone else. Importing or destructuring the seam under its OWN name is not a
+ * rebinding and is how every dynamic-import smoke here reaches it, so that stays legal.
+ *
  * SEAMS is a table because the class is "a runtime-required argument whose callers are only partly
  * typechecked", not one function. It has one row today because one seam in this repo has that
  * shape. Adding the next one is a line.
@@ -27,12 +46,14 @@
  * WHAT THIS DOES NOT CATCH, so nobody mistakes it for more than it is: it checks that the argument
  * is PASSED, never that its value is right. `tls: false` against a TLS broker is a wrong value and
  * this check is blind to it, by design, because the seam it guards demands a decision rather than a
- * particular decision. It also cannot see through an alias (`const f = seam; f({...})`) or a
- * wrapper; those change the call's NAME, so they present as the seam losing call sites and land on
- * the floor cells rather than here.
+ * particular decision. The one value it does judge is a provable `undefined`, which is not a boolean
+ * and which the seam throws on, so stating the key as `undefined` counts as omitting it. It also
+ * cannot see through a WRAPPER: a function that takes an options object and passes it on is a call
+ * site whose own argument is an identifier, which lands as `unverifiable` rather than as a pass.
  *
  * Run: pnpm smoke:required-arg-seam
  */
+import ts from "typescript";
 import { readFileSync, readdirSync } from "node:fs";
 import { join, dirname, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -53,6 +74,12 @@ const SEAMS: Seam[] = [
   { fn: "standaloneConnectOpts", key: "tls", floor: 93, untypecheckedFloor: 66 },
 ];
 
+/**
+ * Directories the walk does not enter, named one by one on purpose. An earlier cut skipped every
+ * dot-directory with a single `startsWith(".")`, which is a hole nobody wrote down: a source file
+ * under any dotted path was unreachable to this check and to its floors alike. If a new dotted
+ * directory ever holds vendored code, add it here, so that the skip is a decision on the record.
+ */
 const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".internal", "build", "coverage", ".next", "out"]);
 const EXTS = [".ts", ".tsx", ".mts", ".cts", ".mjs", ".cjs", ".js", ".jsx"];
 
@@ -60,295 +87,333 @@ function sources(dir: string, acc: string[] = []): string[] {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     const p = join(dir, e.name);
     if (e.isDirectory()) {
-      if (SKIP_DIRS.has(e.name) || e.name.startsWith(".")) continue;
+      if (SKIP_DIRS.has(e.name)) continue;
       sources(p, acc);
     } else if (EXTS.some((x) => e.name.endsWith(x))) acc.push(p);
   }
   return acc;
 }
 
+/** JSX is a different grammar, so a `.tsx` parsed as `.ts` mis-reads `<T>` and can drop call sites. */
+const parse = (file: string, text: string): ts.SourceFile =>
+  ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
+    /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : undefined);
+
+const WRAPPERS = new Set([
+  ts.SyntaxKind.ParenthesizedExpression, ts.SyntaxKind.AsExpression,
+  ts.SyntaxKind.SatisfiesExpression, ts.SyntaxKind.NonNullExpression,
+  ts.SyntaxKind.TypeAssertionExpression,
+]);
+
+/** Down through the wrappers that change an expression's type or spelling but not its value, so
+ *  `(x as F)`, `(x)`, `x!` and `x satisfies T` are all just `x`. */
+function unwrap(e: ts.Expression): ts.Expression {
+  let cur = e;
+  while (WRAPPERS.has(cur.kind)) cur = (cur as ts.ParenthesizedExpression).expression;
+  return cur;
+}
+
+/** Up through the same wrappers, to ask what a node is being USED as. */
+function outermost(n: ts.Node): ts.Node {
+  let cur = n;
+  while (cur.parent && WRAPPERS.has(cur.parent.kind)
+    && (cur.parent as ts.ParenthesizedExpression).expression === cur) cur = cur.parent;
+  return cur;
+}
+
+const isCalleeOf = (n: ts.Node): boolean => {
+  const o = outermost(n);
+  return !!o.parent && ts.isCallExpression(o.parent) && o.parent.expression === o;
+};
+
+/** `seam(...)`, `ns.seam(...)`, `ns["seam"](...)`, and any of them behind casts or parens. */
+function callsSeam(call: ts.CallExpression, fn: string): boolean {
+  const c = unwrap(call.expression);
+  if (ts.isIdentifier(c)) return c.text === fn;
+  if (ts.isPropertyAccessExpression(c)) return c.name.text === fn;
+  if (ts.isElementAccessExpression(c)) {
+    const a = c.argumentExpression;
+    return ts.isStringLiteralLike(a) && a.text === fn;
+  }
+  return false;
+}
+
+type Verdict = "has-key" | "missing-key" | "unverifiable" | "aliased";
+type Site = { file: string; line: number; verdict: Verdict; detail: string };
+
 /**
- * Blank out comments, string/template bodies and regex literals, preserving length and newlines so
- * every offset in the result still indexes the original file. Everything below scans the blanked
- * copy, so a mention of a seam inside a doc comment or a string is not a call site, and a brace or
- * a quote inside one cannot throw off the depth counting.
+ * Is this mention of the seam's name one that cannot smuggle a call past the reader?
  *
- * REGEX LITERALS ARE LEXED, not ignored, for a measured reason rather than tidiness. Without it,
- * `/https?:\/\//` reads as a line comment and hides the call that follows it, and a regex containing
- * a quote (`/['"]/`, an ordinary idiom) opens a phantom string that closes on the next apostrophe in
- * the file and can blank everything after it, swallowing every later call site. `/` is disambiguated
- * from division the standard way, by the last significant character: after a value it divides,
- * otherwise it opens a regex.
- *
- * This is a lexer, not a parser. It does not evaluate template substitutions, so a `${...}` inside a
- * template literal is blanked with the rest of the template. No call site in this repo lives inside
- * one; if one ever does, this check will not see it, which is the direction the floor cells cover.
+ * Legal: the seam's own declaration; a call, however it is spelled; a same-name import, re-export or
+ * destructure, which binds the name this file already looks for; and a `typeof` type query, which
+ * cannot invoke anything. Everything else is the name escaping to somewhere this file cannot follow,
+ * and is reported rather than assumed harmless.
  */
-function blankNonCode(src: string): string {
-  const out = src.split("");
-  let i = 0;
-  let lastSig = "";
-  const blankTo = (end: number): void => {
-    for (let k = i; k < end && k < out.length; k++) if (out[k] !== "\n") out[k] = " ";
-    i = end;
-  };
-  /** After these a `/` opens a regex; after a value (identifier, literal, closing bracket) it divides. */
-  const regexAllowed = (): boolean => lastSig === "" || "(,=:[!&|?{};+-*%~^<>".includes(lastSig);
-  while (i < src.length) {
-    const c = src[i], n = src[i + 1];
-    if (c === "/" && n === "/") { let e = src.indexOf("\n", i); if (e === -1) e = src.length; blankTo(e); continue; }
-    if (c === "/" && n === "*") { const e = src.indexOf("*/", i + 2); blankTo(e === -1 ? src.length : e + 2); continue; }
-    if (c === "/" && regexAllowed()) {
-      let k = i + 1, inClass = false, closed = false;
-      while (k < src.length) {
-        const ch = src[k];
-        if (ch === "\\") { k += 2; continue; }
-        if (ch === "\n") break; // an unterminated regex is not a regex
-        if (ch === "[") { inClass = true; k++; continue; }
-        if (ch === "]") { inClass = false; k++; continue; }
-        if (ch === "/" && !inClass) { k++; closed = true; break; }
-        k++;
-      }
-      if (closed) {
-        while (k < src.length && /[dgimsuvy]/.test(src[k])) k++;
-        lastSig = "/";
-        blankTo(k);
-        continue;
-      }
-      // not a regex after all: fall through and treat it as an ordinary character
-    }
-    if (c === '"' || c === "'" || c === "`") {
-      let k = i + 1;
-      while (k < src.length) {
-        if (src[k] === "\\") { k += 2; continue; }
-        if (src[k] === c) { k++; break; }
-        k++;
-      }
-      lastSig = c;
-      blankTo(k);
+function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
+  const p = id.parent;
+  if (!p) return true;
+  if ((ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p) || ts.isVariableDeclaration(p)
+    || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p))
+    && p.name === id) return true;
+  if (ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isBindingElement(p)) {
+    // `{ seam }` binds the same name; `{ seam as seam }` is the same thing spelled out.
+    if (!p.propertyName) return true;
+    return p.propertyName === id && ts.isIdentifier(p.name) && p.name.text === fn;
+  }
+  if (isCalleeOf(id)) return true;
+  // `ns.seam(...)` and `ns["seam"](...)`: the name sits inside the callee rather than being it.
+  if (ts.isPropertyAccessExpression(p) && p.name === id && isCalleeOf(p)) return true;
+  if (ts.isTypeQueryNode(p)) return true;
+  return false;
+}
+
+const isProvablyUndefined = (e: ts.Expression): boolean => {
+  const x = unwrap(e);
+  return (ts.isIdentifier(x) && x.text === "undefined") || ts.isVoidExpression(x);
+};
+
+/**
+ * The values an argument expression can actually evaluate to.
+ *
+ * The tree answers this where text could only guess it: a ternary's CONDITION is a different field
+ * from its branches, so it is excluded structurally rather than by spotting a `?`. `||`, `??` and
+ * `&&` each yield one side or the other, and both sides are real arguments, which is the hole that
+ * blessed a throwing site once: `opts || { tls: false }` reads as a keyed literal and passes `opts`.
+ * A comma sequence produces only its right-hand value.
+ */
+function alternatives(e: ts.Expression): ts.Expression[] {
+  const x = unwrap(e);
+  if (ts.isConditionalExpression(x)) return [...alternatives(x.whenTrue), ...alternatives(x.whenFalse)];
+  if (ts.isBinaryExpression(x)) {
+    const k = x.operatorToken.kind;
+    if (k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.QuestionQuestionToken
+      || k === ts.SyntaxKind.AmpersandAmpersandToken) return [...alternatives(x.left), ...alternatives(x.right)];
+    if (k === ts.SyntaxKind.CommaToken) return alternatives(x.right);
+  }
+  return [x];
+}
+
+/** `key` named by this property, in any of the three spellings that all state it: `key:`, `"key":`
+ *  and `["key"]:`. The shorthand `{ key }` arrives here as an identifier name and states it too. */
+function propertyNames(name: ts.PropertyName | undefined, key: string): boolean {
+  if (!name) return false;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text === key;
+  if (ts.isComputedPropertyName(name)) {
+    const e = unwrap(name.expression);
+    return ts.isStringLiteralLike(e) && e.text === key;
+  }
+  return false;
+}
+
+/**
+ * Does every object this call can pass state `key` at its own top level, with a value that is not
+ * provably absent?
+ *
+ * ORDER MATTERS INSIDE THE LITERAL, and getting that wrong is a false green in the severe direction:
+ * `{ tls: false, ...cfg }` states the key and then lets `cfg` overwrite it, so the seam can still
+ * receive nothing. A spread BEFORE the key cannot do that, and flagging it would be a false red on
+ * an ordinary override idiom, so the two orders are answered differently.
+ *
+ * Depth matters too: `{ opts: { tls: false } }` says nothing about the seam's own argument.
+ */
+function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFile): { verdict: Verdict; detail: string } {
+  if (!arg) return { verdict: "missing-key", detail: "called with no argument at all" };
+  const show = (n: ts.Node): string => n.getText(src).replace(/\s+/g, " ").slice(0, 100);
+  let unverifiable = "";
+  for (const alt of alternatives(arg)) {
+    if (!ts.isObjectLiteralExpression(alt)) {
+      unverifiable ||= `an alternative built elsewhere: ${show(alt)}`;
       continue;
     }
-    if (!/\s/.test(c)) lastSig = c;
-    i++;
-  }
-  return out.join("");
-}
-
-/** The balanced argument text of a call whose `(` is at `open`, or undefined if it never closes. */
-function argsOf(code: string, open: number): string | undefined {
-  let depth = 0;
-  for (let i = open; i < code.length; i++) {
-    const c = code[i];
-    if (c === "(" || c === "[" || c === "{") depth++;
-    else if (c === ")" || c === "]" || c === "}") {
-      depth--;
-      if (depth === 0) return code.slice(open + 1, i);
+    let keyAt = -1, keyValue: ts.Expression | undefined, spreadAfterKey = false, anySpread = false;
+    alt.properties.forEach((p, i) => {
+      if (ts.isSpreadAssignment(p)) {
+        anySpread = true;
+        if (keyAt >= 0) spreadAfterKey = true;
+        return;
+      }
+      if (!propertyNames(p.name, key)) return;
+      keyAt = i;
+      keyValue = ts.isPropertyAssignment(p) ? p.initializer : undefined;
+      spreadAfterKey = false; // a later restatement wins over an earlier spread
+    });
+    if (keyAt < 0) {
+      if (anySpread) { unverifiable ||= `the key may live in a spread: ${show(alt)}`; continue; }
+      return { verdict: "missing-key", detail: `an alternative omits it: ${show(alt)}` };
+    }
+    if (spreadAfterKey) { unverifiable ||= `a spread AFTER the key can overwrite it: ${show(alt)}`; continue; }
+    if (keyValue && isProvablyUndefined(keyValue)) {
+      return { verdict: "missing-key", detail: `states the key as \`undefined\`, which is not the boolean the seam demands: ${show(alt)}` };
     }
   }
-  return undefined;
+  return unverifiable ? { verdict: "unverifiable", detail: unverifiable } : { verdict: "has-key", detail: "" };
 }
 
-type Site = { file: string; line: number; verdict: "has-key" | "missing-key" | "unverifiable"; args: string };
-
-/** Every call of `fn` in `code`, classified. A generic instantiation and an optional call are the
- *  same call and are matched too; the DEFINITION is not a call and is excluded by the keyword that
- *  precedes it. */
-function sitesIn(file: string, raw: string, seam: Seam): Site[] {
-  const code = blankNonCode(raw);
+/** Every call of the seam in one file, classified, plus every escape of its name. */
+function sitesIn(file: string, text: string, seam: Seam): Site[] {
+  const src = parse(file, text);
   const found: Site[] = [];
-  const re = new RegExp(`\\b${seam.fn}\\s*(?:<[^<>()]*>\\s*)?(?:\\?\\.\\s*)?\\(`, "g");
-  let m: RegExpExecArray | null;
-  while ((m = re.exec(code)) !== null) {
-    const before = code.slice(Math.max(0, m.index - 40), m.index);
-    if (/\b(function|const|let|var|declare)\s+$/.test(before)) continue; // the definition, not a call
-    const open = m.index + m[0].length - 1;
-    const args = argsOf(code, open);
-    const line = code.slice(0, m.index).split("\n").length;
-    if (args === undefined) { found.push({ file, line, verdict: "unverifiable", args: "" }); continue; }
-    found.push({ file, line, verdict: keyVerdict(args, seam.key), args: args.trim() });
-  }
+  const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
+  const visit = (n: ts.Node): void => {
+    if (ts.isCallExpression(n) && callsSeam(n, seam.fn)) {
+      const { verdict, detail } = classify(n.arguments[0], seam.key, src);
+      found.push({ file, line: lineOf(n), verdict, detail });
+    } else if (ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn)) {
+      found.push({
+        file, line: lineOf(n), verdict: "aliased",
+        detail: `the name is rebound here (${ts.SyntaxKind[n.parent.kind]}); call the seam by its own name so this check can see the argument`,
+      });
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
   return found;
 }
 
-/**
- * Does every object this call can actually pass state `key` at its own top level?
- *
- * THE ALTERNATIVES ARE THE QUESTION, and getting this wrong is how the first cut of this file
- * blessed a throwing site. An argument is not always one literal: a live site here picks between
- * three objects with nested ternaries, and `opts || { tls: false }` picks between something built
- * elsewhere and a literal that states the key. Asking only the literals that are present answers
- * "has-key" for that second one while the seam throws at runtime, which is the severe direction of
- * error. So the argument is split at its own depth into the values it can evaluate to, the ternary
- * CONDITIONS are dropped because they are never passed, and every remaining alternative must be an
- * object literal that states the key. An alternative that is an identifier, a call, or a spread
- * cannot be decided from one file and makes the site `unverifiable`, never a pass.
- *
- * Depth matters within an alternative: `{ opts: { tls: false } }` states nothing about the seam's
- * own argument, and a check that only asked whether the text contains the key would call it a pass.
- */
-function keyVerdict(args: string, key: string): Site["verdict"] {
-  const alternatives = valueAlternatives(args.trim());
-  if (alternatives.length === 0) return "unverifiable";
-  let unverifiable = false;
-  for (const a of alternatives) {
-    const t = a.trim();
-    if (!isObjectLiteral(t)) { unverifiable = true; continue; }
-    if (statesKey(t, key)) continue;
-    if (topLevelSpread(t)) { unverifiable = true; continue; }
-    return "missing-key"; // an alternative that provably omits it is the severe answer, so it wins
-  }
-  return unverifiable ? "unverifiable" : "has-key";
-}
-
-/**
- * The values an argument expression can evaluate to, split at the argument's own depth.
- *
- * Handles the shapes that occur: `a ? X : Y` and nested chains of them, `X || Y`, `X ?? Y`, `X && Y`.
- * A segment immediately followed by `?` is a CONDITION and is dropped; everything else is a value
- * the seam could receive. `?.` is optional chaining rather than a ternary, and `??` is not `?`.
- */
-function valueAlternatives(t: string): string[] {
-  const segments: { text: string; op: string }[] = [];
-  let depth = 0, start = 0;
-  const push = (end: number, op: string, skip: number): number => {
-    segments.push({ text: t.slice(start, end), op });
-    start = end + skip;
-    return start;
-  };
-  for (let i = 0; i < t.length; i++) {
-    const c = t[i];
-    if (c === "{" || c === "[" || c === "(") { depth++; continue; }
-    if (c === "}" || c === "]" || c === ")") { depth--; continue; }
-    if (depth !== 0) continue;
-    if (c === "?" && t[i + 1] === "?") { i = push(i, "??", 2) - 1; continue; }
-    if (c === "?" && t[i + 1] === ".") continue; // optional chaining
-    if (c === "?") { i = push(i, "?", 1) - 1; continue; }
-    if (c === ":") { i = push(i, ":", 1) - 1; continue; }
-    if ((c === "|" && t[i + 1] === "|") || (c === "&" && t[i + 1] === "&")) { i = push(i, c + c, 2) - 1; continue; }
-  }
-  segments.push({ text: t.slice(start), op: "" });
-  return segments.filter((s) => s.op !== "?").map((s) => s.text).filter((s) => s.trim() !== "");
-}
-
-/** Is this alternative one balanced object literal, rather than an identifier or a call? */
-function isObjectLiteral(t: string): boolean {
-  if (!t.startsWith("{")) return false;
-  let depth = 0;
-  for (let i = 0; i < t.length; i++) {
-    const c = t[i];
-    if (c === "{" || c === "[" || c === "(") depth++;
-    else if (c === "}" || c === "]" || c === ")") {
-      depth--;
-      if (depth === 0) return t.slice(i + 1).trim() === "";
-    }
-  }
-  return false;
-}
-
-/** `key` as a property of THIS object literal, not of something nested inside it. Both spellings
- *  count: `key: value` and the shorthand `key`, which is idiomatic and passes the argument just as
- *  well, so flagging it would be a false red whose message says the opposite of the truth. */
-function statesKey(obj: string, key: string): boolean {
-  const keyRe = new RegExp(`^${key}\\s*(?::|,|\\}|$)`);
-  let depth = 0;
-  for (let i = 0; i < obj.length; i++) {
-    const c = obj[i];
-    if (c === "{" || c === "[" || c === "(") { depth++; continue; }
-    if (c === "}" || c === "]" || c === ")") { depth--; continue; }
-    if (depth === 1 && keyRe.test(obj.slice(i)) && !/[A-Za-z0-9_$.]/.test(obj[i - 1] ?? "")) return true;
-  }
-  return false;
-}
-
-function topLevelSpread(t: string): boolean {
-  let depth = 0;
-  for (let i = 0; i < t.length; i++) {
-    const c = t[i];
-    if (c === "{" || c === "[" || c === "(") { depth++; continue; }
-    if (c === "}" || c === "]" || c === ")") { depth--; continue; }
-    if (depth === 1 && t.startsWith("...", i)) return true;
-  }
-  return false;
-}
-
-console.log("A. the scanner itself, on fixtures whose verdicts are known");
+console.log("A. the reader itself, on fixtures whose verdicts are known");
 {
-  // POSITIVE CONTROLS FIRST. A scanner that matches nothing passes every completeness assertion
+  // POSITIVE CONTROLS FIRST. A reader that matches nothing passes every completeness assertion
   // below in silence, so it is graded on inputs whose answers are stated here before it runs.
   const fx = (body: string): Site[] => sitesIn("fixture.ts", body, SEAMS[0]);
-  check("a call that states the key is accepted",
-    fx(`standaloneConnectOpts({ creds: c, tls: false })`)[0]?.verdict === "has-key");
+  const one = (body: string): Verdict | undefined => fx(body)[0]?.verdict;
+
+  console.log(" A1. the argument");
+  check("a call that states the key is accepted", one(`standaloneConnectOpts({ creds: c, tls: false })`) === "has-key");
   check("a call that OMITS the key is flagged (the defect this check exists for)",
-    fx(`standaloneConnectOpts({ creds: c })`)[0]?.verdict === "missing-key");
-  check("the key on a LATER LINE is still accepted (a line-oriented grep would miss this, and the seam's callers are free to wrap)",
-    fx(`standaloneConnectOpts({\n  creds: c,\n  tls: true,\n})`)[0]?.verdict === "has-key");
+    one(`standaloneConnectOpts({ creds: c })`) === "missing-key");
+  check("a call with NO argument at all is flagged",
+    one(`standaloneConnectOpts()`) === "missing-key");
+  check("the key on a LATER LINE is still accepted (the seam's callers are free to wrap)",
+    one(`standaloneConnectOpts({\n  creds: c,\n  tls: true,\n})`) === "has-key");
   check("the key NESTED in a sub-object does not count (it says nothing about the seam's own argument)",
-    fx(`standaloneConnectOpts({ opts: { tls: false } })`)[0]?.verdict === "missing-key");
+    one(`standaloneConnectOpts({ opts: { tls: false } })`) === "missing-key");
   check("a key-like suffix of another identifier does not count (`notls:` is not `tls:`)",
-    fx(`standaloneConnectOpts({ notls: false })`)[0]?.verdict === "missing-key");
+    one(`standaloneConnectOpts({ notls: false })`) === "missing-key");
   check("SHORTHAND states the key as well as `tls: v` does, and must not be a false red",
-    fx(`standaloneConnectOpts({ creds, tls })`)[0]?.verdict === "has-key");
+    one(`standaloneConnectOpts({ creds, tls })`) === "has-key");
+  // Both were false REDS while the reader scanned blanked text: the quoted key vanished with the
+  // string it lived in, and the computed one never matched the `tls:` shape at all.
+  check("a QUOTED key states it, and a COMPUTED string key states it (both pass the argument)",
+    one(`standaloneConnectOpts({ creds: c, "tls": false })`) === "has-key"
+    && one(`standaloneConnectOpts({ creds: c, ["tls"]: v })`) === "has-key");
   check("an argument built elsewhere is UNVERIFIABLE, never silently passed",
-    fx(`standaloneConnectOpts(buildAuth())`)[0]?.verdict === "unverifiable");
+    one(`standaloneConnectOpts(buildAuth())`) === "unverifiable");
   check("a top-level spread is UNVERIFIABLE, because the key may live in what is spread",
-    fx(`standaloneConnectOpts({ ...base })`)[0]?.verdict === "unverifiable");
-  // A live call site picks between three objects with nested ternaries, so the question is asked of
-  // every alternative. The `||` and mixed-ternary cells below are the severe direction: the first
-  // cut of this file answered has-key for them while the seam threw at runtime.
+    one(`standaloneConnectOpts({ ...base })`) === "unverifiable");
+  // The severe order-of-properties case: the key is stated and then overwritten. Its mirror image is
+  // an ordinary override idiom and must stay green, so the two orders cannot share an answer.
+  check("a spread AFTER the key is UNVERIFIABLE, because it can overwrite what the key stated",
+    one(`standaloneConnectOpts({ tls: false, ...cfg })`) === "unverifiable");
+  check("a spread BEFORE the key is accepted, because the literal key wins (not a false red)",
+    one(`standaloneConnectOpts({ ...cfg, tls: false })`) === "has-key");
+  check("...and restating the key after that spread wins again",
+    one(`standaloneConnectOpts({ tls: false, ...cfg, tls: true })`) === "has-key");
+  // The seam demands a boolean, so the one value this reader judges is the one that provably is not.
+  check("the key stated as `undefined` is flagged, because the seam throws on it just the same",
+    one(`standaloneConnectOpts({ creds, tls: undefined })`) === "missing-key"
+    && one(`standaloneConnectOpts({ creds, tls: void 0 })`) === "missing-key");
+
+  console.log(" A2. what the argument can evaluate to");
   check("a TERNARY whose every branch states the key is accepted",
-    fx(`standaloneConnectOpts(a ? { creds: c, tls: true } : b ? { bearer: t, tls: false } : { tls: false })`)[0]?.verdict === "has-key");
+    one(`standaloneConnectOpts(a ? { creds: c, tls: true } : b ? { bearer: t, tls: false } : { tls: false })`) === "has-key");
   check("a ternary with the key on only ONE branch is flagged (the other branch is a real argument too)",
-    fx(`standaloneConnectOpts(a ? { creds: c, tls: true } : { creds: d })`)[0]?.verdict === "missing-key");
+    one(`standaloneConnectOpts(a ? { creds: c, tls: true } : { creds: d })`) === "missing-key");
   check("`opts || { tls: false }` is UNVERIFIABLE: the left alternative is a real argument and this file cannot see inside it",
-    fx(`standaloneConnectOpts(opts || { tls: false })`)[0]?.verdict === "unverifiable");
+    one(`standaloneConnectOpts(opts || { tls: false })`) === "unverifiable");
   check("...and so are `opts ?? { tls: false }` and `a && { tls: false }`",
-    fx(`standaloneConnectOpts(opts ?? { tls: false })`)[0]?.verdict === "unverifiable"
-    && fx(`standaloneConnectOpts(a && { tls: false })`)[0]?.verdict === "unverifiable");
+    one(`standaloneConnectOpts(opts ?? { tls: false })`) === "unverifiable"
+    && one(`standaloneConnectOpts(a && { tls: false })`) === "unverifiable");
   check("a ternary mixing a keyed literal with a NON-literal branch is UNVERIFIABLE, not a pass",
-    fx(`standaloneConnectOpts(a ? { tls: true } : base)`)[0]?.verdict === "unverifiable"
-    && fx(`standaloneConnectOpts(a ? { tls: true } : buildAuth())`)[0]?.verdict === "unverifiable");
-  check("a ternary CONDITION is not an argument, so an optional chain in one does not confuse the split",
-    fx(`standaloneConnectOpts(a?.b ? { tls: true } : { tls: false })`)[0]?.verdict === "has-key");
-  check("a mention inside a COMMENT is not a call site",
-    fx(`// standaloneConnectOpts({ creds: c })\nconst x = 1;`).length === 0);
-  check("a mention inside a STRING is not a call site",
-    fx('const s = "standaloneConnectOpts({ creds: c })";').length === 0);
-  check("a brace inside a string cannot throw off the depth counting",
-    fx(`standaloneConnectOpts({ creds: "}{", tls: false })`)[0]?.verdict === "has-key");
-  // Regex literals, both measured failure modes of the first cut: an escaped `//` inside one read as
-  // a line comment and hid the call, and a quote inside one opened a phantom string that swallowed
-  // everything after it.
-  check("a regex containing `//` does not hide the call that follows it",
-    fx(`const u = s.replace(/https?:\\/\\//, ""); standaloneConnectOpts({ creds: c })`)[0]?.verdict === "missing-key");
-  check("a regex containing a QUOTE does not open a phantom string that swallows later call sites",
-    fx(`const q = /['"]/; const s = "it's fine"; standaloneConnectOpts({ creds: c })`)[0]?.verdict === "missing-key");
-  check("division is not mistaken for a regex (a value before `/` divides)",
-    fx(`const r = a / b; standaloneConnectOpts({ creds: c, tls: false })`)[0]?.verdict === "has-key");
-  check("a GENERIC instantiation and an OPTIONAL call are the same call and are seen",
-    fx(`standaloneConnectOpts<Opts>({ creds: c })`)[0]?.verdict === "missing-key"
-    && fx(`standaloneConnectOpts?.({ creds: c })`)[0]?.verdict === "missing-key");
+    one(`standaloneConnectOpts(a ? { tls: true } : base)`) === "unverifiable"
+    && one(`standaloneConnectOpts(a ? { tls: true } : buildAuth())`) === "unverifiable");
+  check("a ternary CONDITION is not an argument, so an optional chain in one cannot confuse the split",
+    one(`standaloneConnectOpts(a?.b ? { tls: true } : { tls: false })`) === "has-key");
+  // A false RED while alternatives were split out of text: authors parenthesize long ternaries.
+  check("PARENTHESES around the argument change nothing (a keyed ternary in parens is not a false red)",
+    one(`standaloneConnectOpts((cond ? { creds: c, tls: true } : { creds: d, tls: false }))`) === "has-key");
+  check("a comma sequence passes only its right-hand value",
+    one(`standaloneConnectOpts((log(), { creds, tls: false }))`) === "has-key"
+    && one(`standaloneConnectOpts((log(), { creds }))`) === "missing-key");
+
+  console.log(" A3. finding the call at all");
+  check("a mention inside a COMMENT is not a call site", fx(`// standaloneConnectOpts({ creds: c })\nconst x = 1;`).length === 0);
+  check("a mention inside a STRING is not a call site", fx('const s = "standaloneConnectOpts({ creds: c })";').length === 0);
+  check("a brace inside a string cannot throw off the reading",
+    one(`standaloneConnectOpts({ creds: "}{", tls: false })`) === "has-key");
   check("the DEFINITION is not counted as a call site",
     fx(`export function standaloneConnectOpts(auth: StandaloneAuth) { return {}; }`).length === 0);
+  // Regex-versus-division, the hole that reopened twice under a hand lexer. The keyword case is the
+  // one that survived the character-based fix: after `return`, the last character is a letter.
+  check("a regex containing `//` does not hide the call that follows it",
+    one(`const u = s.replace(/https?:\\/\\//, ""); standaloneConnectOpts({ creds: c })`) === "missing-key");
+  check("a regex containing a QUOTE does not swallow later call sites, in VALUE position",
+    one(`const q = /['"]/; const s = "it's fine"; standaloneConnectOpts({ creds: c })`) === "missing-key");
+  check("...and in KEYWORD position, where a reader that looks at the last CHARACTER sees division",
+    one(`function f(s) { return /['"]/.test(s); }\nstandaloneConnectOpts({ creds: c })`) === "missing-key"
+    && one(`const t = typeof /['"]/; standaloneConnectOpts({ creds: c })`) === "missing-key");
+  check("division is not mistaken for a regex (a value before `/` divides)",
+    one(`const r = a / b; standaloneConnectOpts({ creds: c, tls: false })`) === "has-key");
+  check("a GENERIC instantiation is the same call, including a NESTED one",
+    one(`standaloneConnectOpts<Opts>({ creds: c })`) === "missing-key"
+    && one(`standaloneConnectOpts<Record<string, unknown>>({ creds: c })`) === "missing-key");
+  check("an OPTIONAL call is the same call", one(`standaloneConnectOpts?.({ creds: c })`) === "missing-key");
+  check("a call behind a CAST is the same call",
+    one(`(standaloneConnectOpts as (a: unknown) => unknown)({ creds: c })`) === "missing-key"
+    && one(`(standaloneConnectOpts satisfies Fn)({ creds: c })`) === "missing-key");
+  check("a call inside a TEMPLATE SUBSTITUTION is seen (the text around it is a literal, the call is code)",
+    one("`${standaloneConnectOpts({ creds: c })}`") === "missing-key");
+  check("a NAMESPACE call is seen, by property and by computed string alike",
+    one(`core.standaloneConnectOpts({ creds: c })`) === "missing-key"
+    && one(`core["standaloneConnectOpts"]({ creds: c })`) === "missing-key");
+  check("a UNICODE ESCAPE in the identifier is the same identifier",
+    one(`standaloneConnectOpt\\u0073({ creds: c })`) === "missing-key");
+  check("a JSX file is parsed as JSX, so `<T>` there is not mistaken for a tag",
+    sitesIn("fixture.tsx", `const el = <div />;\nstandaloneConnectOpts({ creds: c });`, SEAMS[0])[0]?.verdict === "missing-key");
+
+  console.log(" A4. the name escaping to where this reader cannot follow");
+  check("a LOCAL ALIAS is flagged", one(`const alias = standaloneConnectOpts;`) === "aliased");
+  check("an ALIASED IMPORT is flagged", one(`import { standaloneConnectOpts as connectOpts } from "x";`) === "aliased");
+  check("an ALIASED RE-EXPORT is flagged", one(`export { standaloneConnectOpts as connectOpts } from "x";`) === "aliased");
+  check("an ALIASED DESTRUCTURE is flagged", one(`const { standaloneConnectOpts: connectOpts } = core;`) === "aliased");
+  check("`.call` / `.apply` / `.bind` are flagged, because the argument moves out of the call's own list",
+    one(`standaloneConnectOpts.call(undefined, { creds })`) === "aliased"
+    && one(`standaloneConnectOpts.apply(undefined, [{ creds }])`) === "aliased");
+  check("passing the seam as a VALUE is flagged (Reflect.apply, a callback, anything)",
+    one(`Reflect.apply(standaloneConnectOpts, undefined, [{ creds }]);`) === "aliased"
+    && one(`register(standaloneConnectOpts);`) === "aliased");
+  // The false-red guard for the rule above: these bind the name this file already looks for.
+  check("a SAME-NAME import, re-export and destructure are NOT rebindings (the live idiom here)",
+    fx(`import { standaloneConnectOpts } from "@cotal-ai/core";`).length === 0
+    && fx(`export { standaloneConnectOpts } from "@cotal-ai/core";`).length === 0
+    && fx(`const { standaloneConnectOpts } = await import("@cotal-ai/core");`).length === 0);
+  check("a `typeof` type query cannot invoke anything, so it is not a rebinding",
+    fx(`type F = typeof standaloneConnectOpts;`).length === 0);
 }
 
-console.log("B. the seam, across every source the compiler may or may not read");
+console.log("\nB. the seam, across every source the compiler may or may not read");
 const files = sources(ROOT);
 check("the scan reached a source tree at all (a zero-file walk would pass every cell below)", files.length > 500, files.length);
 
 for (const seam of SEAMS) {
-  const sites = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
+  const all = files.flatMap((f) => sitesIn(relative(ROOT, f), readFileSync(f, "utf8"), seam));
+  const sites = all.filter((s) => s.verdict !== "aliased");
+  const aliased = all.filter((s) => s.verdict === "aliased");
   const bad = sites.filter((s) => s.verdict !== "has-key");
   const untypechecked = sites.filter((s) => s.file.includes(`${sep}smoke${sep}`) || s.file.includes("/smoke/"));
   // Printed on SUCCESS as well as failure: a legitimate removal then shows the number to put back,
   // instead of sending the next author into this file to find out what the floor should become.
   console.log(`  · ${seam.fn}: ${sites.length} call sites (${untypechecked.length} under smoke/, ${sites.length - untypechecked.length} typechecked)`);
   check(`\`${seam.fn}\`: every call site states \`${seam.key}\``, bad.length === 0,
-    bad.map((s) => `${s.file}:${s.line} [${s.verdict}] ${s.args.slice(0, 120)}`));
+    bad.map((s) => `${s.file}:${s.line} [${s.verdict}] ${s.detail}`));
+
+  check(`\`${seam.fn}\`: the name is never rebound, so no call can hide behind an alias`, aliased.length === 0,
+    aliased.map((s) => `${s.file}:${s.line} ${s.detail}`));
 
   // THE FLOORS. Without them this check degrades into a green that means nothing: a rename, a
-  // wrapper, an alias, or a lexer that stops matching all produce "no bad sites" out of "no sites
-  // at all". They are set to the counts measured when this file was last edited, so decay is red
-  // and a deliberate removal is a one-line edit made on purpose.
+  // wrapper, or a reader that stops matching all produce "no bad sites" out of "no sites at all".
+  // They are set to the counts measured when this file was last edited, so decay is red and a
+  // deliberate removal is a one-line edit made on purpose. What they cannot do is notice a call site
+  // that was never counted, which is why the reader above refuses aliases instead of relying here.
   check(`\`${seam.fn}\`: the scan still FINDS its call sites (>= ${seam.floor}; if you removed some, lower this floor deliberately)`,
     sites.length >= seam.floor, { found: sites.length, floor: seam.floor });
 
