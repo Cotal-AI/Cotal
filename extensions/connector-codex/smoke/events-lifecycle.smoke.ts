@@ -159,6 +159,8 @@ function startHost(name: string, home: string, rollout: string, log: string, cap
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
   const child = spawn(TSX, [HOST_ENTRY], {
+    // ITS OWN PROCESS GROUP, so teardown can take the seat AND what the seat spawned. See killTree.
+    detached: true,
     env: {
       ...cleanEnv,
       COTAL_SPACE: space,
@@ -182,6 +184,42 @@ function startHost(name: string, home: string, rollout: string, log: string, cap
   });
   if (capture) child.stderr?.on("data", (d: Buffer) => capture(String(d)));
   return child;
+}
+
+/** Kill a seat and everything the seat spawned, then let go of the pipes.
+ *
+ *  A seat spawns its own agent process, and that grandchild INHERITS the pipe this suite reads. A
+ *  signal aimed at the seat alone leaves the grandchild running with the write end open, so this
+ *  process never sees EOF on it and never exits: the suite prints its summary, passes every cell,
+ *  and then hangs. On CI that is a shard that dies at its own timeout with a green summary sitting
+ *  inside the log, which reads as a hung suite rather than as the leak it is. The seat is its own
+ *  process group, so the GROUP is what gets signalled, and the pipe ends are dropped after. */
+function killTree(child: ReturnType<typeof spawn> | undefined): void {
+  if (child?.pid === undefined) return;
+  try {
+    process.kill(-child.pid, "SIGKILL");
+  } catch {
+    /* the group is already gone */
+  }
+  try {
+    child.kill("SIGKILL");
+  } catch {
+    /* the leader is already gone */
+  }
+  child.stdout?.destroy();
+  child.stderr?.destroy();
+  child.stdin?.destroy();
+}
+
+/** Is the process group still there? `signal 0` asks without sending anything. */
+function groupAlive(child: ReturnType<typeof spawn> | undefined): boolean {
+  if (child?.pid === undefined) return false;
+  try {
+    process.kill(-child.pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** DM a peer by its ROSTER id (principal dot-form) — names are not unicast recipients. */
@@ -315,13 +353,7 @@ try {
   completed = true;
 } finally {
   if ((fail > 0 || !completed) && errB !== "") console.log(`--- late seat stderr (tail) ---\n${errB.slice(-4000)}\n---`);
-  for (const h of [hostA, hostB]) {
-    try {
-      h?.kill("SIGKILL");
-    } catch {
-      /* leaving anyway */
-    }
-  }
+  for (const h of [hostA, hostB]) killTree(h);
   try {
     await operator.stop();
   } catch {
@@ -336,6 +368,12 @@ try {
   if (process.env.CODEX_EVENTS_KEEP !== "1") rmSync(dir, { recursive: true, force: true });
   else console.log(`KEEP ${dir}`);
 }
+
+// A LEAK HERE IS INVISIBLE FROM INSIDE: the suite cannot assert its own exit, because the code that
+// would assert it runs before the exit. What it CAN assert is the thing whose absence causes the
+// hang, so that is the cell: after teardown, neither seat's process group still has a member.
+const groupsGone = await settle(() => !groupAlive(hostA) && !groupAlive(hostB), 10_000);
+check("teardown:both seat process groups are gone", groupsGone, { a: groupAlive(hostA), b: groupAlive(hostB) });
 
 console.log(
   `codex-events-lifecycle smoke: ${pass} passed, ${fail} failed  ` +
