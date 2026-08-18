@@ -43,7 +43,7 @@
  * It prints a timeline and grades nothing. The suite is where assertions live.
  */import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, connect as netConnect, type AddressInfo, type Server, type Socket } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -226,6 +226,16 @@ try {
   if (!await att.waitFor(new RegExp(`attached to ${QUIET}`), 90_000)) throw new Error(`attach never came up: ${att.seen().slice(-400)}`);
   console.log(`arm=${ARM} lag=${LAG_MS}ms   sessions before: ${base} -> with the attach: ${live()}`);
 
+  // COUNTED, never tested. `seen()` only ever grows, so "has it said it?" goes false to true once and
+  // stays there: every question this file asks about a reconnect is really "did it say it AGAIN,
+  // after the moment I care about", and that is a count against a baseline. The retry below asked it
+  // the monotone way and could therefore never come back green, which is the same defect the cell
+  // this probe justifies was fixed for.
+  const tx = att;
+  const RECONNECTED = /\[cotal: reconnected\]/g;
+  const LOST = /\[cotal: connection lost, reconnecting\]/g;
+  const said = (re: RegExp): number => (tx.seen().match(re) ?? []).length;
+
   // The link dies. From here the client's ladder runs on its own clock and the knocks below are
   // the only view of it this file has that does not go through the pty.
   await closeLink();
@@ -292,21 +302,23 @@ try {
     for (;;) {
       await waitForLongRung();
       await waitForQuiet(1_500);
+      const before = said(RECONNECTED);
       await closeLink();
       await heal();
       tHeal = Date.now();
       await wait(1_500);
-      if (!/\[cotal: reconnected\]/.test(att.seen())) break;
+      if (said(RECONNECTED) === before) break;
       if (++redone > 3) throw new Error("could not land a heal inside the wait in 4 tries");
       console.log(`  (heal ${redone} landed on an attempt, not in the wait: severing and taking the next rung)`);
-      const losses = (att.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length;
+      const losses = said(LOST);
       await closeLink();
       await knockListener();
       const byWhen = Date.now() + 30_000;
-      while (Date.now() < byWhen && (att.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length === losses) await wait(200);
+      while (Date.now() < byWhen && said(LOST) === losses) await wait(200);
     }
   }
   const lenAtPress = att.seen().length;
+  const reconnectsAtPress = said(RECONNECTED);
   att.write(DETACH_BYTE);
   const tPress = Date.now();
   // When does the press produce ANY output? If the wait is interruptible, the terminal moves within
@@ -330,9 +342,9 @@ try {
   console.log(`  press landed ${((tPress - lastKnock) / 1000).toFixed(1)}s after the last observed attempt; exit ${((tExit - lastKnock) / 1000).toFixed(1)}s after it`);
   console.log(`  press to first output: ${tGrew ? `${((tGrew - tPress) / 1000).toFixed(1)}s` : "none seen"}; press to exit: ${((tExit - tPress) / 1000).toFixed(1)}s; next attempt was due ${((lastKnock + 30_000 - tPress) / 1000).toFixed(1)}s after the press`);
   console.log(`  transcript tail: ${JSON.stringify(att.seen().slice(-260))}`);
-  const reconnected = /\[cotal: reconnected\]/.test(att.seen());
+  const reconnected = said(RECONNECTED) > reconnectsAtPress;
   const held = /the manager still holds/.test(att.seen());
-  console.log(`  RESULT: reconnected=${reconnected} (the cell asserts false) held-notice=${held} (the cell asserts false)`);
+  console.log(`  RESULT: reconnected-after-the-press=${reconnected} (the cell asserts false) held-notice=${held} (the cell asserts false)`);
   const settled = live();
   console.log(`  sessions after: ${settled} (base ${base})`);
   console.log(reconnected
@@ -348,6 +360,13 @@ try {
   onKnock = undefined;
   await closeLink();
   await manager?.stop().catch(() => {});
+  // Order is the whole of it, and the suite states the rule: kill and remove FIRST, release LAST.
+  // `releaseBroker` does not stop anything, it hands ownership BACK (`owned.delete(entry)`), and
+  // the reap that runs on exit only touches what it still owns. Releasing before exiting therefore
+  // leaves a live `nats-server` and its store dir behind on a clean exit 0, which is a worse
+  // failure than the hang the explicit exit was added to fix.
+  srv.kill("SIGKILL");
+  rmSync(dir, { recursive: true, force: true });
   releaseBroker();
   // A reconnect leaves the manager's session plane holding sockets this file did not open, and the
   // race arm always ends on one. `stop()` settles the manager's own work but node still has handles

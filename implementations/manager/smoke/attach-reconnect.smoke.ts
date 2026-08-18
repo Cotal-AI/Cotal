@@ -581,34 +581,46 @@ try {
     }
     check("the link is back with the loop WAITING rather than dialling, which is this cell's premise",
       landed, { knocks: knocks.length, tail: b.seen().slice(-300) });
-    // The next attempt is a full rung away from the knock that proved the rung, so the margin below
-    // is measured against where the boundary actually is rather than against a stopwatch.
-    const nextAttemptDue = (longRungAt() ?? Date.now()) + 30_000;
-    const reconnectsAtPress = saidReconnected(b);
-    const tPress = Date.now();
-    b.write(DETACH_BYTE);
-    check("the detach key ends the attach during the backoff", await b.waitExit(30_000), b.seen().slice(-300));
-    const tExit = Date.now();
-    check("...exiting clean", b.exit()?.code === 0, b.exit());
-    // Counted from the press, for the same reason the premise is: on a first-try landing this is
-    // "never reconnected" and says so, and after a miss it is the only form that can still be true
-    // of the run the cell actually set up.
-    check("...without re-establishing after the press, so this is the backoff path and not a reconnect",
-      saidReconnected(b) === reconnectsAtPress, { reconnectsAtPress, now: saidReconnected(b), tail: b.seen().slice(-600) });
-    // The shell comes back with the press, not with the rung. Losing a `Promise.race` does not stop
-    // a `setTimeout`, so before this was asserted the loop honoured the detach at once, printed
-    // `detached from`, and then held the process open until the abandoned backoff timer fired: 27.0s
-    // measured with the next attempt 26.9s away, and 8.3s with it 8.1s away. Bounded against the
-    // BOUNDARY rather than against a constant, because the defect is exactly a wait that runs to
-    // the boundary and a constant would have to be chosen loose enough to allow it on a slow runner.
-    check("...and it gives the shell back on the press, not when the rung it was waiting on expires",
-      tExit <= nextAttemptDue - 10_000,
-      { pressToExitMs: tExit - tPress, boundaryInMs: nextAttemptDue - tPress, spareMs: nextAttemptDue - tExit });
-    check("...saying NOTHING about a held session, because it handed the session back on the way out",
-      !/the manager still holds/.test(b.seen()), b.seen().slice(-600));
-    const freed = await settle(baseJ, 20_000);
-    check("...and the manager is back to the count it started with, with no slot left behind",
-      freed === baseJ, { baseJ, freed });
+    if (!landed) {
+      // Four tries and the scenario never happened. What this must NOT do is press anyway. The link
+      // is severed here, so a press lands on an outage, which is cell B's scenario, not this one:
+      // the client cannot hand the session back over a dead link, so it says the manager still
+      // holds it and the count stays up. Both are correct behaviour, and both would be recorded as
+      // failures of a hand-back that is not broken. Six assertions painting a defect that is not
+      // there is worse than no measurement, so the premise red above is the whole finding and the
+      // rest of the cell is not graded. It stays RED rather than being skipped quietly: a cell that
+      // cannot reach its own scenario in four tries is a broken cell and has to be seen as one.
+      console.log("    (premise never landed in 4 tries: NOT grading the 6 assertions that follow, on a severed link they would describe cell B)");
+    } else {
+      // The next attempt is a full rung away from the knock that proved the rung, so the margin below
+      // is measured against where the boundary actually is rather than against a stopwatch.
+      const nextAttemptDue = (longRungAt() ?? Date.now()) + 30_000;
+      const reconnectsAtPress = saidReconnected(b);
+      const tPress = Date.now();
+      b.write(DETACH_BYTE);
+      check("the detach key ends the attach during the backoff", await b.waitExit(30_000), b.seen().slice(-300));
+      const tExit = Date.now();
+      check("...exiting clean", b.exit()?.code === 0, b.exit());
+      // Counted from the press, for the same reason the premise is: on a first-try landing this is
+      // "never reconnected" and says so, and after a miss it is the only form that can still be true
+      // of the run the cell actually set up.
+      check("...without re-establishing after the press, so this is the backoff path and not a reconnect",
+        saidReconnected(b) === reconnectsAtPress, { reconnectsAtPress, now: saidReconnected(b), tail: b.seen().slice(-600) });
+      // The shell comes back with the press, not with the rung. Losing a `Promise.race` does not stop
+      // a `setTimeout`, so before this was asserted the loop honoured the detach at once, printed
+      // `detached from`, and then held the process open until the abandoned backoff timer fired: 27.0s
+      // measured with the next attempt 26.9s away, and 8.3s with it 8.1s away. Bounded against the
+      // BOUNDARY rather than against a constant, because the defect is exactly a wait that runs to
+      // the boundary and a constant would have to be chosen loose enough to allow it on a slow runner.
+      check("...and it gives the shell back on the press, not when the rung it was waiting on expires",
+        tExit <= nextAttemptDue - 10_000,
+        { pressToExitMs: tExit - tPress, boundaryInMs: nextAttemptDue - tPress, spareMs: nextAttemptDue - tExit });
+      check("...saying NOTHING about a held session, because it handed the session back on the way out",
+        !/the manager still holds/.test(b.seen()), b.seen().slice(-600));
+      const freed = await settle(baseJ, 20_000);
+      check("...and the manager is back to the count it started with, with no slot left behind",
+        freed === baseJ, { baseJ, freed });
+    }
   }
 
   // ---------------------------------------------------------------------------------------------
