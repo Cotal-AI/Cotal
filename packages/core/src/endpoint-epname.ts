@@ -19,10 +19,10 @@
  *
  * ⚠️ THIS PARAGRAPH SAID "written at `launching → live` … and every subsequent edge CARRIES it",
  * which was true of a simpler machine than the one below it. It named ONE move edge where four
- * ship, and said CARRIES of edges that MOVE: `relaunching → live`, `launching → draining` and
- * `relaunching → draining` all resolve a launch and take a new owner. A reader who implemented
- * from it would move the owner once and carry it through a relaunch, which is a different machine.
- * Rebound to the edge table rather than argued with.
+ * ship, and said CARRIES of two edges that MOVE: `relaunching → live` and `relaunching → draining`
+ * are both reached only after `live`, so they ARE subsequent, and both take a new owner. A reader
+ * who implemented from it would move the owner once and carry it through a relaunch, which is a
+ * different machine. Rebound to the edge table rather than argued with.
  *
  * ⚠️ AND THE FIRST VERSION OF THIS VERY PARAGRAPH GOT ITS OWN DIAGNOSIS WRONG, which is worth
  * leaving visible. It said the old wording "over-includes the creation edge". It does not:
@@ -30,6 +30,13 @@
  * The sentence that over-included the creation edge was a later one, corrected separately. I had
  * taken a true diagnosis of a neighbouring sentence and applied it to this one because they were
  * about the same field. A reviewer caught it.
+ *
+ * ⚠️ AND THE SECOND VERSION MADE THE SAME MISTAKE AGAIN, one sentence after correcting it. It
+ * listed `launching → draining` among the edges the old wording claimed CARRIES. It is not
+ * subsequent to `launching → live` either: it is a sibling exit from `launching`, exactly the
+ * shape the paragraph above had just finished granting to `— → live`. The same reviewer caught
+ * that too. Three generations of this paragraph, two of them wrong in the same way, which is the
+ * argument for reading the edge table rather than reasoning about the prose.
  *
  * It is deliberately never re-derived from a slot row,
  * because user mode has no slot row at all, so a derivation is unevaluable on a supported path,
@@ -323,7 +330,7 @@ export function assertEpNameEdge(
     // path, which is the same failure as a predicate whose actor cannot exist.
     if (!sameInc(prev.runtimeOwner, next.runtimeOwner))
       fail(`${from} → ${to} CARRIES \`runtimeOwner\` unchanged (${JSON.stringify(prev.runtimeOwner)} → `
-         + `${JSON.stringify(next.runtimeOwner)}) — it is INSTALLED when a launch resolves and CARRIED on this edge, never re-derived`);
+         + `${JSON.stringify(next.runtimeOwner)}) — it is established once, by a launch resolving or by the cutover backfill, then CARRIED on this edge and never re-derived`);
   }
   if (to === "draining" && next.enteredAt === undefined) fail("`draining` SETS `enteredAt`");
   if (from === "draining" && to === "released") {
