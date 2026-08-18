@@ -203,6 +203,15 @@
       "cell": "a same-millisecond pair too large to share one window still reaches the caller, both halves",
       "expectRed": "a same-millisecond pair too large to share one window still reaches the caller, both halves",
       "note": "Stepping over a gap looks like better packing: the window is fuller and nothing is lost yet. But a lane walked by one mark cannot record a hole, so everything delivered past it is served again on the next call, forever. The free lane may step over its own gaps because each of its items is acked by id. It reddens on the stranding half of the invariant first: with the gap stepped over, the mark passes the hole and what was in it never comes back, which is the harm. The re-serving half is asserted in the same cell one line later."
+    },
+    {
+      "name": "K21 a message nothing can carry clears the gap the walk was holding",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "      if (strict && !stuck.has(i.id)) strictGap = true;",
+      "replace": "      strictGap = strict && !stuck.has(i.id);",
+      "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
+      "note": "Stepping over an undeliverable message is correct; forgetting that the walk was already holding a gap is not. The combination it needs is a budget-skipped item followed by an oversized one, which no instance cell in this suite happens to contain and which the enumeration produces by construction. That is the point of enumerating the universe rather than the cases someone thought of."
     }
   ]
 }

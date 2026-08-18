@@ -628,6 +628,126 @@ try {
       [...times.values()].every((n) => n === 1), { counts: Object.fromEntries(times), calls });
   }
 
+  // ── 22a) A SKIP NEEDS NO TIE: one item too big to follow another, and mail behind it ──────────
+  //
+  // The first lens's E14, and the input that showed a watermark keyed to the last item shown is not
+  // enough on its own. No shared milliseconds anywhere: the middle item fits a response of its own
+  // and is skipped only because its predecessor took the budget, so a mark landing past the last
+  // item shown jumps it forever while the reply promises a next batch.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const items = [
+      { id: "A", ts: 30_001, text: `${"a".repeat(25_000)} SKIP_A` },
+      { id: "B", ts: 30_002, text: `${"b".repeat(25_000)} SKIP_B` },
+      { id: "C", ts: 30_003, text: `${"c".repeat(400)} SKIP_C` },
+    ].map((i) => ({
+      ...i, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+      channel: "general", mentionsMe: false, historical: false,
+    }));
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items, droppedChannels: [],
+    });
+
+    const seen = new Map<string, number>();
+    let calls = 0;
+    while (calls < 8 && seen.size < 3) {
+      const text = textOf(await inboxSpec().run(agent, cfg, {}));
+      assert.ok(text.length <= INBOX_WINDOW_CHARS, `E14 call ${calls} returned ${text.length} chars`);
+      for (const l of ["SKIP_A", "SKIP_B", "SKIP_C"]) {
+        const hits = (text.match(new RegExp(` ${l}\\b`, "g")) ?? []).length;
+        if (hits) seen.set(l, (seen.get(l) ?? 0) + hits);
+      }
+      calls++;
+    }
+    check("an item skipped only because its predecessor filled the window is still delivered",
+      seen.size === 3, { seen: [...seen.keys()], calls });
+    check("...and the mail behind it did not have to be re-served for that to happen",
+      [...seen.values()].every((n) => n === 1), { counts: Object.fromEntries(seen) });
+  }
+
+  // ── 22) THE CURSOR'S INPUT UNIVERSE, ENUMERATED ──────────────────────────────────────────────
+  //
+  // Six rounds of review failed this one organ on adjacent inputs, and every instance cell stayed
+  // green through all of them. An instance cell is the wrong instrument for a walk: it grades the
+  // fixture someone thought of. So this one enumerates the universe the walk actually has, sizes
+  // that fit easily, sizes where two cannot share a window, and sizes no window can carry, with and
+  // without shared milliseconds, and asserts the property rather than a case:
+  //
+  //   TOTAL PROGRESS  every item that any response could carry is eventually delivered
+  //   NO DUPLICATES   nothing is delivered twice
+  //   IN BOUND        every response fits the window
+  //   HONEST          what is never delivered is exactly what no response could carry, and is named
+  //
+  // A budget-skipped TAIL is not a stall: when nothing was shown behind the skip the mark does not
+  // move that call, and the next call leads with the skipped item. The assertion is eventual.
+  {
+    const SIZES = { small: 500, half: 23_000, giant: 60_000 } as const;
+    type Size = keyof typeof SIZES;
+    const shapes: Size[][] = [];
+    const kinds: Size[] = ["small", "half", "giant"];
+    for (const a of kinds) for (const b of kinds) for (const c of kinds) for (const d of kinds) shapes.push([a, b, c, d]);
+
+    let scenarios = 0;
+    let deliveries = 0;
+    for (const shape of shapes) {
+      for (const tied of [false, true]) {
+        const agent = new MeshAgent(cfg);
+        agent.on("error", () => {});
+        Object.defineProperty(agent, "attention", { get: () => "focus" });
+        const items = shape.map((size, n) => ({
+          id: `E-${n}`,
+          // Tied mode puts every pair in one millisecond, which is what a replay burst does.
+          ts: 20_000 + (tied ? Math.floor(n / 2) : n),
+          fromId: "peer",
+          fromName: "Peer",
+          kind: "channel" as const,
+          channel: "general",
+          mentionsMe: false,
+          historical: false,
+          text: `${"e".repeat(SIZES[size])} MARK_${n}`,
+        }));
+        (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+          items,
+          droppedChannels: [],
+        });
+
+        const seen = new Map<string, number>();
+        let calls = 0;
+        let progressed = true;
+        while (calls < 10 && progressed) {
+          const before = new Map(seen);
+          const text = textOf(await inboxSpec().run(agent, cfg, {}));
+          assert.ok(
+            text.length <= INBOX_WINDOW_CHARS,
+            `[${shape.join(",")}${tied ? ",tied" : ""}] call ${calls} returned ${text.length} chars`,
+          );
+          for (let n = 0; n < items.length; n++) {
+            const hits = (text.match(new RegExp(` MARK_${n}(?![0-9])`, "g")) ?? []).length;
+            if (hits) seen.set(`MARK_${n}`, (seen.get(`MARK_${n}`) ?? 0) + hits);
+          }
+          calls++;
+          progressed = seen.size > before.size;
+        }
+
+        const label = `[${shape.join(",")}${tied ? ",tied" : ""}]`;
+        for (let n = 0; n < items.length; n++) {
+          const deliverable = shape[n] !== "giant"; // a giant cannot ride any response of its own
+          const count = seen.get(`MARK_${n}`) ?? 0;
+          assert.ok(
+            deliverable ? count === 1 : count === 0,
+            `${label} MARK_${n} (${shape[n]}) was delivered ${count} times after ${calls} calls`,
+          );
+          deliveries += count;
+        }
+        scenarios++;
+      }
+    }
+    check("every scenario in the cursor's input universe makes total progress with no duplicates",
+      scenarios === shapes.length * 2, { scenarios, deliveries });
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {
