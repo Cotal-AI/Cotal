@@ -1,6 +1,6 @@
 # Cotal Wire Specification
 
-> **Status:** Draft, v0.4 (pre-1.0). This document is the normative wire contract. Libraries
+> **Status:** Draft, v0.5 (pre-1.0). This document is the normative wire contract. Libraries
 > (including the reference TypeScript implementation) are thin clients over it; where a
 > client disagrees with this document, this document wins.
 >
@@ -11,8 +11,20 @@
 > [Reference docs](docs/README.md#reference); those describe the TypeScript implementation,
 > not this contract.
 >
-> **Editors:** Cotal maintainers. **Last updated:** 2026-08-16. Changes are tracked in
+> **Editors:** Cotal maintainers. **Last updated:** 2026-08-18. Changes are tracked in
 > [Appendix D](#appendix-d-change-log); versioning rules are §11.
+>
+> **v0.5 binding revision: workflow runs.** A deployment MAY host **durable workflow runs**: programs
+> in the Cotal workflow language ([`spec/cotal-lang.md`](spec/cotal-lang.md), normative and
+> incorporated by reference) whose every effect is recorded in a per-run **step journal** so a run
+> resumes on any host by re-execution against its journal (§14). The revision adds one per-space
+> stream (`WFJ_<space>`, one subject per run, an append-only journal fenced by the run's own subject
+> sequence), four core record kinds (`run`, `answer`, `notice`, `migration`), a per-run driver grant
+> family, and the language reference; it changes no existing kind, subject, grant row or shipped
+> datum, so it is **additive** under §11: a v0.4 participant that ignores §14 conforms to v0.4
+> unchanged, and the advertised `protocolVersion` targets `0.5` once the v0.4 migration completes and
+> the §14 plane is served. Language semantics carry their own version (`languageVersion`, pinned on
+> every run record) and move independently of the wire version.
 >
 > **v0.3 binding revision: owner+actor identity.** An instance's wire identity moves from a single
 > id (the connection nkey, used as the sender token everywhere) to a two-token **principal**
@@ -739,6 +751,13 @@ every connect: the callout then mints the connection as the named elevated profi
   arcs (presence/addressing, multi-space, federation) may still break the wire). **The wire `protocolVersion`
   is the compatibility signal**; dated document snapshots (below) are navigation artifacts, not
   negotiation; an implementation MUST NOT treat a document date as an interop key.
+- **v0.5 (workflow runs, §14) is an additive revision.** It adds a per-space stream, four core
+  record kinds, a per-run grant family and a normative language reference, and changes no existing
+  kind, subject, grant row or shipped datum; a participant that ignores §14 conforms to v0.4
+  unchanged. Two versions ride it and they are deliberately distinct: the wire `protocolVersion`,
+  which targets `0.5` when the plane is served, and the language's own `languageVersion` (§14.2),
+  which is bumped when a program's MEANING changes and is pinned per run, so a language revision
+  never forces a wire revision and a wire revision never invalidates an open run.
 - v0 has no in-band capability negotiation. Deployments MUST agree on the binding and
   version out of band. A participant advertises the version it speaks via
   `AgentCard.protocolVersion` (§6) as a one-way change signal, optional before the v0.4
@@ -2410,7 +2429,7 @@ its writer roles, and its mediation class; grants and merged watches are derived
 grammar, so two implementations always agree on which key carries what. The core kinds'
 key grammars, pinned here (each key then splits `.spec`/`.status` per §13.4, EXCEPT the
 unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `oblig`,
-`goalidx`, `goaleff`, `epname`, and `epmig`):
+`goalidx`, `goaleff`, `epname`, `epmig`, and `answer`):
 
 | Kind | Key grammar |
 | --- | --- |
@@ -2432,6 +2451,11 @@ unsplit atomic keys the table marks: the `lifecycle` head, `govern`, `uid`, `obl
 | `oblig` | `oblig.<targetUid>.<endpoint>.<cOwner>.<cActor>.<cUid>.<id>`; the §13.8 **target-indexed acceptance obligation**: a **single unsplit key** whose grammar IS the deterministic acceptance identity (target lifecycle UID first, so a retirement barrier enumerates `oblig.<targetUid>.>`), create-only winner, monotonic value states, NEVER-DELETED. An admission under policy with NO target lifecycle keys the row with the fixed sentinel target token `ep` (which the §13.1 UID token grammar can never produce, so no collision exists): `oblig.ep.<endpoint>.<cOwner>.<cActor>.<cUid>.<id>`: excluded from retirement drains (it binds no lifecycle) and included, like every targeted row, in the endpoint's policy drain via the endpoint-position filter `oblig.*.<endpoint>.>` (§13.6/§13.8) |
 | `frontier` | `frontier.<lifecycleUid>`; the §13.1 **per-stream retirement frontiers**: a **single unsplit key** per retired lifecycle, create-only, NEVER-DELETED, value = `{ lifecycleUid, opId, streams }` where `streams` maps each lifecycle-bounded stream to its last sequence at retirement. Written by the terminal barrier AFTER the obligation drain, the drain's repair-principal fence, the pool cleaner, and the cleaner-credential revoke+evict, and BEFORE the gate/head terminals (§13.1 order), so a `retired` head implies its frontier exists. The cutoffs bound the predecessor's half-open interval `(activationFrontier, retirementFrontier]` (§8); they are never a successor's start (a successor captures its OWN activation frontier). Writer: the minting authority's retirement barrier ONLY; it records once, under its own operation (a foreign-op record refuses the barrier closed); a DEL/PURGE marker is corruption |
 | `govern` | `govern.<endpoint>`; the endpoint's **governance head**: a **single unsplit key** (NOT `.spec`/`.status`-split), value = the endpoint's MONOTONIC binding map, command to governed URN set, the NORMATIVE **admission-policy selector** `{ enforcedPolicyKey, enforcedPolicyRevision, pendingPolicyKey?, pendingPolicyRevision? }` (§13.6: `enforcedPolicyKey` is the exact records key of the immutable `policy` record currently governing admission and `enforcedPolicyRevision` its store revision, so any implementer selects the endpoint-wide enforced policy WITHOUT per-instance guesswork; a mutation stages `pendingPolicy…` and promotes it into `enforcedPolicy…` only after the endpoint's obligation drain, so the selector alone decides which revision governs during the drain window), plus whatever internal serialization state the provisioner's registration CAS needs (that state is non-normative: a second implementer may linearize registration with a different slot shape and conform, provided every registration contends on this head under its frozen gate through spec publication, the policy selector fields carry the meaning above, and the external guarantees hold). Enforcing the governed-attachment no-strip/no-downgrade mandate (Traits, below) is a HISTORY-bearing, ENDPOINT-WIDE property: a fresh instance, a remove-then-re-add, or a concurrent registration must not launder a governed binding away, so this head is also the endpoint's **registration linearization point**. Writer: the provisioner registration path ONLY (§13.9); NEVER-DELETED, per the `lifecycle`-head discipline |
+
+| `run` | `run.<endpoint>.<runId>`; a **workflow run's** last-value-wins state beside its append-only step journal (§14). `.spec`/`.status`-split, and the split is load-bearing: the spec is what the run IS, decided once at start and never rewritten (`{ v: 1, run, pins, createdAt, forkedFrom? }`, the resolved PIN SET of §14.3), the status is what it is DOING (`{ v: 1, observedSpecRevision, state, holder, epoch, fencingToken, journalHigh, at }`), so a lease renewal can never rewrite the pins. `<runId>` is an id token minted by the DRIVER, never caller-supplied and **never reused**: a run is never re-run under its own id (that is a fork, and a fork takes a new id), so a deleted `run` key staying closed is correct and no generation token is owed. **`forkedFrom = { parent, fromStep, at, actor }` is on the SPEC half and never the status half**, because parentage is decided at creation and is not a thing the run is doing, and a status-half lineage could name a different parent after a takeover; **`fromStep` is the journal KEY string and never an ordinal**, because a key survives edits to the program and an ordinal addresses a different step after any replay whose entry count differs. Absent means the run is not a fork, and absence is the only way to say so. Writer: the run driver's commit path ONLY (§13.9) |
+| `answer` | `answer.<endpoint>.<token>.<answerId>`; a checkpoint's ANSWER payload beside its one-use settle fact (§13.6, `answerId`/`settledAnswerId`): a **single unsplit key**, create-only, never updated and never deleted, value `{ v: 1, token, answerId, value?, artifact?, by, at }`. **Keyed per answer rather than per presenter because a workflow checkpoint's holder is the run driver and every resolver reaches the checkpoint through it, so every presenter is the same principal**: a presenter-keyed slot collapses to one, two racing resolvers overwrite it, and the settlement then selects whichever answer was written last rather than the one that won. `<answerId>` is derived from the answer's own content (§14.5), so a retry after a crash lands on its own record with its own bytes. Writer: the run driver's commit path ONLY (§13.9) |
+| `notice` | `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`; one bounded decision a workflow told one agent (`notify`, [`spec/cotal-lang.md`](spec/cotal-lang.md) §6.8), filed onto the run and rendered ahead of that agent's next turn, never a channel message. `.spec`/`.status`-split: the spec is the notice (`{ v: 1, run, step, addressee, fact, at }`) and is create-only, the status is its consumption (`{ v: 1, consumedAt, by, observedSpecRevision }`). **`<addresseeId>` is a digest of the agent's name and never the name, because an agent name is dotted and a dot is the key separator**: a raw name re-tokenizes the key into a key of another shape, and mangling it destroys the identity being keyed on; a reader holding the handle re-derives the same token (§14.5), so per-addressee enumeration stays one prefix scan. `<noticeId>` is derived from the step's request id and the addressee, so a `notify` re-run after a crash lands on the same records. Writer: the run driver's commit path ONLY (§13.9) |
+| `migration` | `migration.<endpoint>.<runId>.<migrationId>`; one run's move onto edited source ([`spec/cotal-lang.md`](spec/cotal-lang.md) §11.2): what the divergence-and-orphan check found, which refusals a person overrode, and who they were. `.spec`/`.status`-split: the spec is the REPORT (`{ v: 1, run, fromHash?, toHash, at, consumedThrough, orphans[], overrides[], actor }`) and is create-only, the status is the APPLICATION (`{ v: 1, appliedAt, by, observedSpecRevision }`) and names the driver that advanced the run. Its own kind because it is neither half of the run record: a migration is append-only history with an actor on it, and a run can migrate more than once, so the status half would let the second erase the first and the spec half cannot be written twice. **`<migrationId>` is a digest of the report's own content and never a counter**, because a migration is decided by a dry walk a crash can force to be re-run, so the same decision must land on the same record rather than filing a second one, and a counter would need a second arbiter for a fact the content already determines (§14.5). **The application is create-only for the same reason the notice's consumption is**: two drivers racing to advance one run both find no status and both write, and the store decides which one moved it. Writer: the run driver's commit path ONLY (§13.9) |
 
 Third-party kinds
 register under reverse-DNS kind names.
@@ -3198,8 +3222,9 @@ Per-space resources, created at space setup (`STREAM.CREATE` remains denied to a
 | `EPR_<space>` stream | `cotal.<space>.epr.>` (record-write ingress, §13.2) | Limits; epoch-pinned publish grants (§13.9); consumed only by the record writer; retention ≥ writer recovery lag |
 | `EPT_<space>` stream | `cotal.<space>.ept.*.*.*.*.armed` + `….fire` (authoritative schedules + fires, §13.2) | `AllowMsgSchedules`; only the timer writer publishes `.armed` (§13.9); each schedule targets its sibling `.fire` subject (ADR-51 forbids target = publish subject); retention ≥ max deadline + margin |
 | `EPW_<space>` stream | `cotal.<space>.epw.>` (work pools; one item per subject, §13.2) | WorkQueue; provisioner-pre-created non-overlapping exact-filter per-pool consumers (§13.9) with **`max_deliver=-1` pinned** (a finite delivery ceiling strands exhausted items outside `num_pending`/`num_ack_pending` and falsifies the §13.6 admission occupancy; the occupancy reader re-checks the pin at every read because MaxDeliver is editable post-create); **`allow_direct=false`**: EPW has NO non-fencing subject-confined reader (pool workers drain the WorkQueue via `CONSUMER.MSG.NEXT`, never a subject read), and its ONLY subject read is the reconciliation probe, which is FENCING and MUST be leader-served `STREAM.MSG.GET` (§13.9 read service; an acked item leaves the WorkQueue, an in-flight one remains readable, which is exactly the §13.6 predicate, and a stale follower miss would re-arm settled work). Disabling Direct Get on EPW makes that leader-served requirement STRUCTURAL: no reader (including virtual-endpoint activation reconciliation, §13.6) can take the follower path even by mistake. This differs from EPF, which keeps `allow_direct=true` because it DOES have non-fencing subject readers (the §13.9 last-by-subject fact reads); EPF's fencing CAS-winner read opts into the leader by caller choice |
+| `WFJ_<space>` stream | `cotal.<space>.wfj.*` (the workflow STEP JOURNAL, §14.4: **one subject per RUN, `cotal.<space>.wfj.<runId>`, not one per entry**) | Limits, file storage, **no `max_age`** and no finite count/byte limit that evicts (an evicted prefix is not a shorter journal, it is a run that re-performs effects it already performed, and a run that sleeps for a month resumes by re-reading it; retirement is by subject purge, deliberately); **`allow_direct=false`** (a resume must read its own predecessor's last appends, and Direct Get is follower-servable, so a stale miss there reads as "this step never ran"). Deliberately outside the `ep*` plane letters: the journal is a runtime layer over the control surface, not part of the endpoint contract. Every append is fenced by `Nats-Expected-Last-Subject-Sequence` on the run's own subject (§14.4); a run's driver holds publish on exactly its own run's subject plus a per-takeover replay durable filtered to it, and there is no space-wide `wfj.>` publish grant |
 | (sessions: core-only, no stream) | `cotal.<space>.eps.>` | never captured; bounded in-memory window |
-| `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`, `govern`, `uid`, `policy`, `oblig`) | per-key CAS; `.spec`/`.status`-split keys EXCEPT the unsplit atomic keys `lifecycle.<owner>.<actor>`, `govern.<endpoint>`, `uid.<lifecycleUid>`, `policy.<endpoint>.<digest-hex>`, and `oblig.>` (§13.1/§13.7/§13.8/§13.9); `allow_direct=true`, but the heads and every fencing read are leader-served `STREAM.MSG.GET` (§13.9 read service). **No age retention on authority keys:** `lifecycle` heads, `govern`, `uid` reservations, `policy` versions, and `oblig` rows are NEVER-DELETED (no grant permits DEL/PURGE; an age-evicted reservation would reopen UID reuse, an evicted obligation would orphan accepted work); a deletion marker on any of them refuses loudly as corruption, never as absence. **Shape is proved at bind, not assumed:** the stream MUST be primary (never a mirror/sourced copy) and MUST carry no bucket-wide silent-eviction limit (no `max_age`, no finite `max_msgs`/`max_bytes`: under `DiscardOld` a finite global limit evicts a prior authority key's latest row the moment an unrelated key is written); every trusted consumer of this store (the minting authority, the mapping reader, the mediator) verifies exactly this via `STREAM.INFO` when it binds and refuses to serve otherwise |
+| `cotal_records_<space>` KV | records: the §13.7 core-kind key grammars (`svc`, `signer`, `handle`, `contracts`, `goal`, `cp`, `lease`, `lifecycle`, `govern`, `uid`, `policy`, `oblig`, and the §14 kinds `run`, `answer`, `notice`, `migration`) | per-key CAS; `.spec`/`.status`-split keys EXCEPT the unsplit atomic keys `lifecycle.<owner>.<actor>`, `govern.<endpoint>`, `uid.<lifecycleUid>`, `policy.<endpoint>.<digest-hex>`, and `oblig.>` (§13.1/§13.7/§13.8/§13.9); `allow_direct=true`, but the heads and every fencing read are leader-served `STREAM.MSG.GET` (§13.9 read service). **No age retention on authority keys:** `lifecycle` heads, `govern`, `uid` reservations, `policy` versions, and `oblig` rows are NEVER-DELETED (no grant permits DEL/PURGE; an age-evicted reservation would reopen UID reuse, an evicted obligation would orphan accepted work); a deletion marker on any of them refuses loudly as corruption, never as absence. **Shape is proved at bind, not assumed:** the stream MUST be primary (never a mirror/sourced copy) and MUST carry no bucket-wide silent-eviction limit (no `max_age`, no finite `max_msgs`/`max_bytes`: under `DiscardOld` a finite global limit evicts a prior authority key's latest row the moment an unrelated key is written); every trusted consumer of this store (the minting authority, the mapping reader, the mediator) verifies exactly this via `STREAM.INFO` when it binds and refuses to serve otherwise |
 | `cotal_auth_<space>` KV | the credential ledger (`cred.<lifecycleUid>.<credentialId>` + issuance gates `gate.<lifecycleUid>` + the disjoint endpoint families `epgate.<endpoint>.<instanceId>` / `epcred.<endpoint>.<instanceId>.<credentialId>` + the staging family `stage.>` + source gates `srcgate.<issuerKeyId>.<id>` + lineage index `bysrc.…`, §13.1) + session ledger (`session.<sessionId>`, §13.6) | trusted auth path ONLY; no agent, endpoint, observer, admin, or host profile holds any grant (§13.9 matrix); **`allow_direct=false`** (every fence is a leader-served revision-pinned CAS write; Direct Get's follower/mirror reads would defeat read-your-writes, §13.1); CAS + monotonic states. **No bucket-wide age retention:** `gate.`, `epgate.`, `srcgate.`, and `session.` authority keys persist until their lifecycle/handle/session is explicitly terminal (an age-evicted `open` gate would silently reopen minting, or drop a `frozen`/`retired` fence); only `cred.`/`epcred.`/`bysrc.` rows carry a per-key TTL bounded by the credential TTL (NATS per-key message TTL, ≥ 2.12), never a bucket MaxAge; `stage.` rows follow their operation's retention, never a ledger row's. **Shape is proved at bind** (the records-store rule above, plus `allow_direct=false`): primary, un-mirrored, no bucket `max_age`, no finite `max_msgs`/`max_bytes`; the trusted auth path verifies this via `STREAM.INFO` when it binds and refuses to serve otherwise |
 | `EPC_<space>` stream | `cotal.<space>.epc.>` (content-addressed contract artifacts, one per digest subject, §13.7) | Limits, no age eviction (artifacts are permanent); create-only mediated publication (`Nats-Expected-Last-Subject-Sequence: 0`); `allow_direct=true` (the subject-scoped last-by-subject read IS the fetch path; non-fencing, verify-on-read); permanence is BROKER-ENFORCED: `deny_delete=true, deny_purge=true` (the broker rejects the message-delete and purge APIs even from a stream-API-holding principal). Permanence is the COMBINATION of these flags, the retention floor's no-early-removal rule (below: the flags alone stop delete/purge but not age eviction or a whole-stream teardown), verify-on-read pinning WHAT a subject carries, and the stream-management surface held by no profile (§13.9); no single flag makes deletion structurally impossible |
 
@@ -3386,6 +3411,198 @@ non-execution (§13.3).
 
 ---
 
+## 14. Workflow runs (v0.5)
+
+A **workflow run** is one execution of a program in the Cotal workflow language, hosted by a
+**driver** (an endpoint, in the reference deployment the manager daemon) that performs the
+program's effects against the mesh and records every one of them in a per-run **step journal**.
+This section defines the run's wire footprint: the record it is described by, the stream its
+journal travels on, the records its effects file, and the grants its driver holds. The
+language, the journal entry, and the rules of resume, migration and fork are defined in
+[`spec/cotal-lang.md`](spec/cotal-lang.md), which this section incorporates by reference: an
+implementation of this section MUST implement that document.
+
+### 14.1 Roles and identity
+
+The **driver** is the one principal that executes a run: it validates and runs the program, calls
+the effect handler, appends to the journal, and writes the run's records. It is hosted by an
+endpoint, and every §14 key leads with that `<endpoint>` token so a per-endpoint enumeration and a
+retirement drain (§13.1) both work by prefix. A **run id** (`<runId>`, an id token, §13.2) is minted
+by the driver when the run starts, is never caller-supplied, and is **never reused**: re-running a
+program from part of a run's history is a **fork**, and a fork is a new run under a new id whose
+record names its parent (§14.3). A run has exactly one **authoritative appender** at a time; §14.4
+is what makes that true.
+
+### 14.2 The language and its version
+
+Programs, values, primitives, the step key grammar, the input hash, the request id and the entry
+schema are those of [`spec/cotal-lang.md`](spec/cotal-lang.md). The language carries a
+**`languageVersion`**, bumped when a revision changes what a program means (its PRNG, a builtin,
+numeric behaviour, walker scheduling) and deliberately not the package or wire version; a run pins
+the version it started under (§14.3) and a resume under another version is refused
+(`spec/cotal-lang.md` §8.4). A wire revision of this document therefore never invalidates an open
+run, and a language revision never requires one here.
+
+### 14.3 The run record
+
+A run is described by the `run` record kind (§13.7): `run.<endpoint>.<runId>`, `.spec`/`.status`
+split, mediated, written by the driver's commit path only.
+
+- **Spec** (create-only, decided once): `{ v: 1, run, pins, createdAt, forkedFrom? }`. `pins` is
+  the **resolved pin set** the run started under, `{ seed, startedAt, yieldEvery, stepBudget,
+  effectCeiling, languageVersion }` (`spec/cotal-lang.md` §8.3): every one selects which effects run,
+  so a resume MUST read them back and bind to them, and MUST refuse a caller value that differs.
+  `startedAt` is the run's **logical epoch**, and a resuming host's own clock never moves a
+  replayed program. The RESOLVED value is pinned, never the default: a default is a property of the
+  interpreter, and the interpreter is the thing that may have changed between attempts. A spec that
+  already exists MUST refuse a second start under the same id. `forkedFrom = { parent, fromStep,
+  at, actor }` names the run this one was cut from, the journal KEY it was cut at, when, and who
+  asked; it is on the spec half because parentage is decided at creation and never again, and it is
+  absent on a run that is not a fork.
+- **Status** (last-value-wins, CAS-written): `{ v: 1, observedSpecRevision, state, holder, epoch,
+  fencingToken, journalHigh, at }`. `state` is one of `running`, `released`, `completed`, `failed`,
+  and `released` and `failed` are different facts: a failed program has a result and the journal has
+  it, a released run has none, because its driver stopped holding it (`spec/cotal-lang.md` §9.2,
+  L5012). `holder`, `epoch` and `fencingToken` name the driver that holds the run and the lease
+  (§13.6 work pool) it holds it under. `journalHigh` is the highest journal ordinal (§14.4) the run
+  is KNOWN to have reached, written at each activation: it is the one anchor OUTSIDE the journal, so
+  a replay whose last ordinal is below it has lost records from the journal's tail, which nothing
+  inside the journal can see, and the driver MUST refuse to resume it. It covers truncation back
+  past the last activation and no further; interior loss is the journal's own ordinal chain's.
+
+### 14.4 The step journal on the wire
+
+The journal of a run is carried by the per-space **`WFJ_<space>` stream** (§13.12) on **one subject
+per run**, `cotal.<space>.wfj.<runId>`. An implementation MUST create the stream with limits
+retention, file storage, no `max_age`, and `allow_direct=false`, and MUST NOT let any removal cause
+evict a live run's prefix (§13.12 retention floor). Retirement of a run's journal is by subject
+purge.
+
+Every message on the subject is one **journal record**, JSON, one of two kinds; unknown fields
+MUST be ignored and an unknown `kind` MUST be refused:
+
+- **activation**: `{ v: 1, kind: "activation", run, n, holder, fencingToken, epoch, replayedTo, at }`,
+  the successor's first act, and the only record the runtime layer writes that is not a step.
+- **step**: `{ v: 1, kind: "step", run, n, at, entry }`, where `entry` is a language journal entry
+  (`spec/cotal-lang.md` §10.1) carried verbatim: the wire layer MUST NOT read inside it. A step is
+  appended TWICE, once `pending` before its effect is dispatched and once settled after; a reader
+  folds by the entry's key and the last record wins.
+
+`n` is the record's **ordinal** in the run's journal, from 0, and a replay MUST require
+`records[i].n === i`: the chain is the only check that sees a record removed from the middle of a
+subject, since counting cannot and no anchor at the front can. `run` MUST equal the run the subject
+names.
+
+**The activation barrier.** A run has exactly one authoritative appender at a time, and the STREAM
+is the acceptor: every append MUST carry `Nats-Expected-Last-Subject-Sequence` for the run's own
+subject, so a publish lands only if the subject is exactly where the publisher believed it was, and
+there is no read-then-publish window because there is no read. Takeover is replay-then-activate:
+
+1. The successor replays the run subject from the beginning, through a **per-takeover replay
+   durable** it creates on the stream (`wfj_<runId>_<takeoverId>`, filtered to the run's subject,
+   explicit ack, deliver-all) and deletes when done. The last replayed record's stream sequence is
+   the only authoritative head there is (`STREAM.INFO`'s `last_seq` is stream-wide, and its subject
+   filter answers counts, not sequences).
+2. Its first act is an **activation record** appended at that expected sequence, and it drives
+   nothing before that record lands. Its authority is checked against the activation the journal
+   already holds: a lower `fencingToken` is refused (stale lease); an equal token is refused unless
+   `holder` AND `epoch` are the same (one process picking its own run back up); a higher token
+   activates.
+3. Once the activation lands the subject has advanced, so any append still in flight from the
+   superseded driver carries a stale expectation and the server rejects it.
+
+Two CAS refusals are two different states and MUST NOT be conflated. A refused ACTIVATION means "my
+replay is stale": the successor has driven nothing, the records that beat it are more prefix, and it
+MAY re-replay and activate again while it still holds the lease. A refused APPEND after an
+activation that won means "someone else activated": that driver IS superseded, MUST stop, and MUST
+NOT refresh the sequence and retry, because a retry at the new head is the defect the barrier
+exists to prevent. A driver publishes one entry at a time from one serial queue per run and
+advances its head only from each acknowledgement; any outcome without one poisons the queue and
+nothing behind it reaches the wire.
+
+The journal is a language artifact, and its contents are decided by the language: a driver MUST
+await the durable append of a `pending` entry before dispatching the effect it names, MUST settle
+the entry from the handler's outcome, and MUST keep the settling append outside the handler's
+failure domain, so a refused append is a durability failure (L5010) that stops the run and is never
+recorded as the effect's failure (`spec/cotal-lang.md` §10.5). A cancelling scope's `cancel.issued`
+records whether the driver has discharged the intent against the world; the record states the
+intent and its discharge, and how a driver disposes of a losing arm's live work is a driver policy
+this revision does not fix.
+
+### 14.5 Answers, notices, migrations
+
+Three record kinds carry the payloads a run's effects file (§13.7 for the grammar and the
+sentences that defend each shape). Their derived id tokens all take one form: **base64url of the
+SHA-256 over the strict RFC 8785 canonical JSON of the named object, truncated to 43 characters**,
+which is an id token by construction. The reference implementation's canonicalizer is the one
+§13.7's `*Digest` fields use.
+
+- **`answer`**, `answer.<endpoint>.<token>.<answerId>`, atomic, create-only: `{ v: 1, token,
+  answerId, value?, artifact?, by, at }`, filed BEFORE the checkpoint token is presented; the
+  one-use settle fact (§13.6) then NAMES the id it accepted. `answerId` = the digest id of
+  `{ token, by, value: value ?? null, artifact: artifact ?? null }`, so a retry of the same answer
+  lands on the same key with the same bytes and two different answers race on the settle, which is
+  what the settle is for. `by` is the answerer as the run's own authorization knows them, never the
+  presenting principal (the driver, for every answer).
+- **`notice`**, `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, split: spec `{ v: 1, run,
+  step, addressee, fact, at }` (create-only; `fact` is the language's bounded decision record and
+  is checked against its bound BEFORE any record is written), status `{ v: 1, consumedAt, by,
+  observedSpecRevision }` (create-only: the consumption is established once, by the turn that
+  carried it). `addresseeId` = the digest id of `{ agent }` (the addressee's name); `noticeId` = the
+  digest id of `{ requestId, addressee }`, where `requestId` is the `notify` step's request id, so
+  one call to N agents files N notices and a re-run after a crash lands on the same ones. A driver
+  MUST render an unconsumed notice ahead of its addressee's next turn and MUST NOT deliver it as a
+  channel message.
+- **`migration`**, `migration.<endpoint>.<runId>.<migrationId>`, split: spec `{ v: 1, run,
+  fromHash?, toHash, at, consumedThrough, orphans[], overrides[], actor }` (create-only), status
+  `{ v: 1, appliedAt, by, observedSpecRevision }` (create-only). `migrationId` = the digest id of the
+  spec without `at`, so a dry walk re-run after a crash files no second migration for one decision.
+  `orphans[]` is `{ step, kind, verdict, code? }` per journal entry the new source no longer reaches,
+  with the verdicts and refusals of `spec/cotal-lang.md` §11.2; `fromHash` is the caller's claim
+  and is absent when not supplied, because the run record carries no program hash to verify it
+  against. A migration never rewrites a journal.
+
+### 14.6 Driver grants
+
+Grants are DERIVED (§13.7, §13.9), and a run driver's are minted **per run and per takeover
+attempt**, never per space:
+
+- publish on exactly `cotal.<space>.wfj.<runId>`;
+- create, bind (info, next, ack) and **delete** its own replay durable `wfj_<runId>_<takeoverId>`
+  on `WFJ_<space>`, named per takeover because a durable remembers how far it delivered and a
+  successor needs the prefix from the top, and because a consumer name is one subject token that no
+  pattern covers in part, so the takeover id belongs to the credential;
+- the mediated writer path for the `run`, `answer`, `notice` and `migration` keys of its own
+  endpoint (§13.9).
+
+There is no wildcard form of any of these, on purpose: a space-wide `wfj.>` publish would let one
+run's driver append to another run's journal, which is not a read leak but a corruption (the other
+run would replay a step it never took), and the barrier's premise is exactly one authoritative
+appender per subject. The provisioner holds `STREAM.CREATE`/`STREAM.INFO` on `WFJ_<space>` and
+creates it at space setup; agents never hold `STREAM.CREATE` (§13.12).
+
+### 14.7 Conformance (workflow runs)
+
+A conformant driver (v0.5) MUST:
+
+1. Validate a program against `spec/cotal-lang.md` before running it, and run it with the language
+   semantics that document defines, under a pin set resolved once and read back on every resume.
+2. Mint run ids itself, never reuse one, and record a fork's parent and cut step on the child's spec.
+3. Append every journal record on the run's own subject under the subject-sequence fence, replay
+   before activating, activate under an authorized lease tuple, stop on a refused append after
+   activation, and never retry an append at a refreshed head.
+4. Write a `pending` entry durably before dispatching its effect, settle from the handler's outcome,
+   and treat a refused append as a durability failure that stops the run rather than as the effect's
+   outcome.
+5. Require the ordinal chain and the run id on replay, refuse a replay below the recorded
+   `journalHigh`, and refuse to resume without the recorded pins or under a different language
+   version.
+6. File answers, notices and migrations under their derived ids, create-only, and render notices
+   ahead of the addressee's next turn rather than as channel messages.
+7. Hold only the per-run, per-takeover grant family of §14.6.
+
+---
+
 ## Appendix A: Reference implementation map
 
 | Spec section | Source |
@@ -3397,6 +3614,7 @@ non-execution (§13.3).
 | §9 Security | `packages/core/src/provision.ts` |
 | §10 Join link | `packages/core/src/link.ts` |
 | §13 Endpoint control surface | `packages/core/src/` (endpoint rails, envelope, contracts; lands with the control-surface campaign) |
+| §14 Workflow runs, [`spec/cotal-lang.md`](spec/cotal-lang.md) | `packages/lang/src/` (the language, journal, keys, pins), `packages/core/src/run-record.ts`, `run-journal.ts`, `checkpoint-answer.ts`, `run-notice.ts`, `run-migration.ts`, `endpoint-binding.ts` (WFJ, grants), `implementations/runtime/src/` (driver, migrate, fork) |
 
 ## Appendix B: Profile ACLs
 
@@ -3611,6 +3829,8 @@ this appendix summarizes, not an independent authority. This appendix spells out
 | RFC 8259 | UTF-8 JSON envelopes (§5) |
 | RFC 4648 | base32 instance-id encoding (§2) |
 | RFC 8032 | Ed25519 keypairs behind nkeys (§2) |
+| RFC 8785 | JSON Canonicalization Scheme: every `*Digest` (§13.7), the program hash, input hashes and derived ids (§14, [`spec/cotal-lang.md`](spec/cotal-lang.md)) |
+| [ECMA-262, 14th edition (ECMAScript 2023)](https://262.ecma-international.org/14.0/) | the syntax and pure semantics the workflow language is a subset of ([`spec/cotal-lang.md`](spec/cotal-lang.md) §2) |
 | [NATS client protocol](https://docs.nats.io/reference/reference-protocols/nats-protocol) + [JetStream](https://docs.nats.io/nats-concepts/jetstream) | the v0 transport binding (§8) |
 | [NATS decentralized JWT auth](https://docs.nats.io/running-a-nats-service/configuration/securing_nats/auth_intro/jwt) + nkeys | identity and authorization (§2, §9) |
 
@@ -3621,6 +3841,7 @@ Normative revisions of this document, newest first. Dated snapshots per §11; th
 
 | Date | Revision |
 | --- | --- |
+| 2026-08-18 | **v0.5 binding revision: workflow runs (§14), additive.** A deployment MAY host durable workflow runs: programs in the Cotal workflow language, defined by the new normative reference [`spec/cotal-lang.md`](spec/cotal-lang.md) (language version `1`: the syntax table, values and the boundary rule, the library, the effect primitives with their hashed projections, the four concurrency scopes and the clock-decided `race`, the step key grammar, journal entry schema, input hash and request id, resume, migrate and fork), whose every effect is recorded in a per-run step journal on the new per-space `WFJ_<space>` stream (one subject per run, no age eviction, no Direct Get, every append fenced by the run subject's own sequence, replay-then-activate takeover with a fencing-token authorization tuple, an ordinal chain and a `journalHigh` anchor). Four core record kinds join §13.7: `run` (split; the resolved pin set and optional `forkedFrom` on the spec half, holder/lease/`journalHigh` on the status half; driver-minted, never-reused ids), `answer` (atomic, content-derived id, keyed per answer because every presenter is the driver), `notice` (split; addressee keyed by a digest of the name; consumption as status), `migration` (split; content-derived id; application as a create-only status). Driver grants are per run and per takeover, with no wildcard form. `languageVersion` is pinned per run and moves independently of the wire version. No existing kind, subject, grant row or shipped datum changes. |
 | 2026-08-16 | **A caller declares the incarnation it resolved against, and a responder that is not it refuses before any effect.** A class-addressed request is delivered to one member of a queue group, and the member that answers need not be the one the caller's `describe` resolved against. The caller could only detect that AFTERWARDS, from the reply subject, by which point the command had run: the split was observable but never preventable, and the reference client's recovery repeated the command. `bind` (§13.3) is the caller's declaration of `{ instanceId, epoch }`, checked by the responder against its own identity at the pre-effect seam, ahead of the governed gate and every handler. A mismatch is `failed-precondition` for a different instance and `expired` for another epoch of the same one, both carrying `details[].kind = ai.cotal.ep.bind-refused` and, per §13.3, `outcome: not-executed`. **ADDITIVE**: `bind` is MAY, a responder that does not implement the fence ignores it under §5 and executes, so the caller-side check remains the only protection in a skewed pair and `protocolVersion` stays 0.4. It confers nothing and narrows only, so it satisfies monotonic attenuation: a request carrying it reaches exactly the instances the subject already routes it to, and can only make one of them refuse. Absent on `describe` (the bootstrap that produces the bind) and on the scatter rail (which addresses every incarnation by construction); on the `inst` rail it MUST name the subject's instance and adds the epoch the subject grammar has no token for. Attribution still comes from the reply subject, never from this block: it is what the caller bound, not a claim about who answered. |
 | 2026-08-16 | **A command declares whether repeating it is safe, a responder reports whether a refusal already executed, and the two are separated from idempotency by `id`.** Three gaps that only bite together. **(1) `effect` (§13.7).** Nothing in a resolved command distinguished a read from a mutation — every manager command declares `class: "ephemeral"`, and `traits` carries no repeat-safety — so a client deciding whether to retry had nothing to consult, and the reference client repeats a mutation on a split. Precisely: the automatic repeat belongs to the high-level helper, not to the primitive — `invokeCommand` raises the post-reply currency refusal and stops, and the `invokeService` wrapper around it catches exactly that code, re-resolves, and invokes a second time. Measured on a live broker under a forced instance split, counting at the handler rather than on the wire, the repeated command executes TWICE. `effect` is `read` or `write`, with `read` defined OPERATIONALLY — repeating it changes nothing the command is TRYING to change, and the only excluded difference is the incidental trace of having been called (request ids, spans, logs, metrics, timing) — because the intuitive definition, indistinguishable to every observer, is satisfiable by no real command and would make the field decorative. The state in question is not only the endpoint's own: a command whose intended effect lands elsewhere is still a `write`, and `evictPrincipal` fixes that boundary, since dropping live broker connections while leaving the endpoint's own records untouched is the point of calling it. **(2) `error.outcome` (§13.3).** A refusal code cannot say whether the effect happened: the same code is correct for a request that ran and one that never left. `outcome` is emitted by the RESPONDER, which is the only party that knows — `not-executed` when it refuses before the handler, `executed` when it refuses after, `unknown` when it cannot tell. It describes a reply and only a reply — a caller-side refusal is not an `EndpointReply` and carries no `outcome` field — but it does NOT follow that the caller knows nothing, and the first cut of this amendment wrongly collapsed four distinguishable local cases into `unknown`. A refusal raised BEFORE publication is `not-executed`: the request never left, and calling that `unknown` suppresses a retry that is provably safe even for a `write`. A refusal raised while HOLDING a reply — the §13.2 post-reply currency check is the case in this document — takes what it knows from that reply: `ok:true` means the handler ran, and an `ok:false` reply carries the responder's own `outcome`, which the caller adopts rather than overwrites. A **broker-attested no-responders answer** on the reserved sentinel is also `not-executed`: it is positive evidence that the subject had zero subscribers, trusted only on that sentinel because the same status on an ordinary reply subject is a responder's own claim. Only "no reply observed at all" (deadline, transport failure after publication) is `unknown`. And **a reply proves the request was HANDLED, never that it was EXECUTED** — the version, class, target, sender, authz, contract, and guard checks all publish `ok:false` having executed nothing. It is also not a goal's terminal state (§13.6 owns that) and must not be used as one. **(3) Repeat versus resubmission (§13.8).** `effect` and "idempotent by `id`" are different axes and were unreconciled. They are now separated by CONVERGENCE rather than by token: a **resubmission** is a re-send the responder converges onto the decision it already recorded, a **repeat** is one it accepts as new work, and `effect` governs repeats whatever `id` they carry. Defining the split by the token instead left a hole — a post-horizon re-send under a reused `id` is accepted as new work, so it executes, while formally escaping a prohibition written as "under a fresh `id`". Reusing the token is how a caller ASKS for convergence; it is not the answer. Within the horizon `id` is what convergence is keyed on — and `id` is the whole key on the ephemeral rail but only ONE of the effect-defining dimensions the journal fingerprint binds — endpoint, command, `id`, `goalId`, `class`, args, both contract digests, the authorization mode, the target, `auth`, and the caller — where same id + different args is neither dedup nor a fresh call but a loud `conflict`. **Both rails are bounded by a horizon**, realized by decision-fact and result retention rather than by a clock, and outside it neither rule applies: the `id` carries no history, a re-send under it is a fresh call that WILL execute, and the same `id` with different args is no longer a `conflict`. A finite horizon is what keeps the decision store finite, so this is a fact callers must hold rather than a hole to close — and because a repeat is defined by acceptance rather than by token, a post-horizon same-`id` re-send of a `write` is exactly what §13.7 forbids a client to make automatically. A command idempotent by `id` is therefore NOT thereby `read`: safe to resubmit is not safe to repeat — and the dangerous reading is a reasonable one, since an operator who retries after a timeout mints a fresh `id` because the old request is gone. **NON-ADDITIVE, and versioned as such:** a client that ignored `effect` would keep performing exactly the retry the field exists to stop, so it rides `protocol.v` — the marker that ALREADY EXISTS on the service record spec and the describe descriptor, never a new field on the cluster document, which has no `protocol` and where §7 would drop it unread by exactly the clients this must stop. An instance whose clusters declare `effect` registers and describes at `v:2`; `v:1` descriptors stay valid, carry no `effect`, and every command served under one reads as `write`. The caller-side refusal of a `protocol.v` it does not implement is a requirement this cut CREATES, not one already met: today `describe`'s pinned output schema fixes `descriptor.protocol.v` to the constant `1`, so an unamended responder cannot publish a `v:2` descriptor at all, and the registry reader refuses a service record that is not `v:1` — but the resolving caller validates neither, and the shape it reads does not carry `protocol`. The responder-side fence is what protects old clients today, and only until this cut widens that constant. **Release order was the wrong instrument and is withdrawn**: a same-release ordering rule has no observable runtime meaning, since a release is not a deployment and an already-running v1 caller is unchanged by whatever a new artifact contains. **The cutover rule is §11's, and §13.7 does not state one.** Moving to `protocol.v: 2` IS a non-additive discovery change, so the §11 rule for one (previous row, landed first) is the sole authority on how it rolls out. §13.7 carries only what is specific to `2`: a caller that resolves a descriptor whose `protocol.v` it does not implement MUST fail the resolve (`unsupported-version`) and MUST NOT invoke against it — a descriptor it cannot read is no descriptor, and reading it as `v:1` reinstates the repeat — and implementing that refusal is what makes a caller count as having ADOPTED the section for §11's condition. Two intermediate drafts had to be withdrawn to reach that: one sited the cutover in §13.7 as a same-release ordering clause, which has no observable runtime meaning because a release is not a deployment; the next stated the cutover in BOTH sections, which is a single-source-of-truth defect, since two normative statements of one rule agree until either is edited and then silently become two conformance rules. The reason it cannot be sited here is the durable part: the condition is a property of the whole deployment, and a responder cannot evaluate it — no in-band negotiation, no caller version on the wire — so a rule stated here would bind the one party unable to check it. |
 | 2026-08-16 | **A non-additive discovery change is an out-of-band deployment cutover and rolls out CALLER-FIRST (§11).** The preceding §11 rule says v0 has no in-band capability negotiation and that deployments agree out of band; this says what that obliges when a discovery change CANNOT be ignored safely — where an unamended client that drops the new field per §7 would then behave in the very way the change exists to prevent, so no default value repairs the direction that matters. The obligation rests on the DEPLOYMENT, because neither participant can discharge it: a responder cannot tell an amended caller from an unamended one, since no request carries a caller version and `describe`'s answer is read by the caller without a version check. So every caller adopts the new rules BEFORE any responder registers or describes at the new version, and the two halves SHOULD ship in SEPARATE releases — **a release is not a deployment**, and an already-running caller is unchanged by whatever a new artifact contains, so the order of two source edits proves nothing about the processes on the wire. `protocol.v` on the registered service record is the observable marker: "has any responder cut over" is a checkable registry property, while "has every caller adopted" is the out-of-band agreement §11 already requires. **The residual is stated rather than engineered around**: an early cutover exposes unamended callers to exactly what the new version prevents, and within v0 nothing in band detects it — closing that needs negotiation v0 does not have, and the v1 marker owns it. Prose only: no schema, no wire field, no code. |
