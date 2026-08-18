@@ -42,7 +42,10 @@ component. Without that, a link planted where a session directory belongs took t
 another tree. A log reachable under more than one name is refused for the same reason.
 
 MIGRATION: `AguiEmitter.start` now requires a `subjectFrontier`, and refuses at runtime without one
-rather than falling back to the per-session number, because that fallback is the defect. Anyone
+rather than falling back to the per-session number, because that fallback is the defect. `EventWal`
+refuses the same way: a log with no record bound has no publish expectation and says so instead of
+offering its own last acknowledged sequence, so anyone driving a log toward a publish outside the
+emitter must bind one first. Anyone
 embedding the emitter directly must open a `FileSubjectFrontier` at the `subjectPath` that
 `ensureEventWalDir` now returns and pass it. Connectors in this repository are updated. No wire bytes
 move and no grant changes: the channel grammar is unchanged.
