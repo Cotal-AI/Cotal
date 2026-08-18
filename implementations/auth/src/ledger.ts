@@ -45,6 +45,7 @@ import {
   patternInAllow,
   writeSecretFile,
 } from "@cotal-ai/core";
+import { grantCommandLine } from "./grant-command.js";
 import type { ActorGrant } from "./idp.js";
 import type { ValidatedUserToken } from "./token.js";
 import type { AclResolver } from "./permissions.js";
@@ -67,13 +68,19 @@ export interface ActorRow {
   scope: string[];
   /** Channel read ACL minted at connect. Explicit HERE: this layer invents no default.
    *
-   *  THE LAYER ABOVE DOES, and that is the part a reader of this line will get wrong. `runActor`
-   *  (`commands.ts`) fills every flag the operator omits before the row ever reaches this type:
-   *  `>` read, `>` post, `spawn,role:default` scope. So a row written by `cotal actor grant`
-   *  without `--allow-subscribe` reads EVERY channel in the space, and because `grant` is an upsert
-   *  of the whole row, omitting the flag on a re-grant WIDENS a previously narrow row rather than
-   *  leaving it alone. This sentence used to stop at the first line, which was true of the resolver
-   *  and false of the system. */
+   *  LAYERS ABOVE DO, and that is the part a reader of this line will get wrong. Two of them:
+   *
+   *   - `runActor` (`commands.ts`), behind `cotal actor grant`, fills every flag the operator omits
+   *     with the WIDEST value: `>` read, `>` post, `spawn,role:default` scope. So a row written by
+   *     that command without `--allow-subscribe` reads EVERY channel in the space, and because a
+   *     grant is an upsert of the whole row, omitting the flag on a RE-grant widens a previously
+   *     narrow row rather than leaving it alone.
+   *   - the spawn paths (`manager.ts`, the CLI's `spawn.ts`) fall back to `["general"]` for the
+   *     read set and `[]` for the post set. Narrower, not wider, so not a hazard, but a reader
+   *     asking "does anything default these before they land here" must be told both.
+   *
+   *  This sentence used to stop at the first line, which was true of the resolver and false of the
+   *  system. The list above is what the honest version costs. */
   allowSubscribe: string[];
   /** Channel post ACL minted at connect. Explicit HERE (empty = cannot post anywhere), with the
    *  same caveat as {@link ActorRow.allowSubscribe}: `cotal actor grant` supplies `>` for an
@@ -326,8 +333,8 @@ function assertWithinSpawnerGrant(
     if (!parent)
       throw new Error(
         boundary === "spawn"
-          ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain; grant it first, spelling out EVERY field (\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn --allow-subscribe '<what its agents may read>' --allow-publish '<what they may post>'\`): an omitted flag is the WIDE default, \`>\` read and \`>\` post, and a spawner's reach is the ceiling for everything spawned under it`
-          : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`)`,
+          ? `spawner "${parentKey}"${deep ? ` (an ancestor of "${leaf}")` : ""} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\`, and DECIDE its --allow-subscribe and --allow-publish rather than leaving them off: an omitted flag is the WIDE default (\`>\` read, \`>\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against. No command is printed with those two filled in because there is no row to copy them from and this refusal will not invent them`
+          : `agent "${leaf}": spawner "${parentKey}"${deep ? ` (an ancestor)` : ""} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\`cotal spawn\`). The revoke deleted the row, so \`cotal actor list\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\`>\` read, \`>\` post) and a spawner's ACL is the ceiling for everything under it`,
       );
     if (parent.scope.includes("admin")) return;
     if (child.owner !== pOwner)
@@ -365,8 +372,7 @@ function assertWithinSpawnerGrant(
 }
 
 /** The exact re-grant that would admit the refused delegation: the spawner's CURRENT row with the
- *  missing entries unioned in. A grant is an upsert of the WHOLE row, so the repair must carry
- *  every field — a bare `--allow-subscribe` would silently narrow the rest. */
+ *  missing entries unioned in. */
 function widenGrantCommand(
   pOwner: string,
   pActor: string,
@@ -376,17 +382,13 @@ function widenGrantCommand(
   addPub: string[],
 ): string {
   const union = (base: string[], add: string[]) => [...new Set([...base, ...add])];
-  // The command is offered for copy-paste into a shell, so every free-form field is POSIX
-  // single-quote escaped — a row label like `x'; rm -rf ~` must never become a live command.
-  const shq = (s: string) => `'${s.replaceAll("'", `'\\''`)}'`;
-  const parts = [`cotal actor grant ${pActor} --owner ${pOwner}`];
-  const scope = union(parent.scope, addScope);
-  if (scope.length) parts.push(`--scope ${shq(scope.join(","))}`);
-  parts.push(`--allow-subscribe ${shq(union(parent.allowSubscribe, addSub).join(","))}`);
-  parts.push(`--allow-publish ${shq(union(parent.allowPublish, addPub).join(","))}`);
-  if (parent.role) parts.push(`--role ${shq(parent.role)}`);
-  if (parent.label) parts.push(`--label ${shq(parent.label)}`);
-  return parts.join(" ");
+  return grantCommandLine(pOwner, pActor, {
+    scope: union(parent.scope, addScope),
+    allowSubscribe: union(parent.allowSubscribe, addSub),
+    allowPublish: union(parent.allowPublish, addPub),
+    ...(parent.role ? { role: parent.role } : {}),
+    ...(parent.label ? { label: parent.label } : {}),
+  });
 }
 
 /** Author a MANAGED-AGENT row (spawn path only): the same upsert semantics, in the managed space,
@@ -448,7 +450,18 @@ export function ledgerAuthorizeGrant(dir: string): (owner: string, actor: string
     // claimless bearer here would only defer the same refusal to every connect it attempts.
     if (!row.lifecycleUid)
       throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - re-grant it (bearers are lifecycle-bound from v0.4)`);
-    return { scope: row.scope, ...(row.parent ? { parent: row.parent } : {}), lifecycleUid: row.lifecycleUid };
+    // The ACLs ride along so a refusal ABOVE this layer can print the row's REAL current values
+    // instead of a placeholder. A remedy that names a placeholder is a remedy whose shortest
+    // successful recovery is to delete the flag, and a deleted flag is the wide default.
+    return {
+      scope: row.scope,
+      allowSubscribe: row.allowSubscribe,
+      allowPublish: row.allowPublish,
+      ...(row.role ? { role: row.role } : {}),
+      ...(row.label ? { label: row.label } : {}),
+      ...(row.parent ? { parent: row.parent } : {}),
+      lifecycleUid: row.lifecycleUid,
+    };
   };
 }
 

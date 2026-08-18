@@ -235,7 +235,10 @@ try {
     clearNoAdmin.out.includes("ADDED") && !clearNoAdmin.out.includes("cotal mint"),
     clearNoAdmin.out,
   );
-  const adminGrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--label", "smoke human"]);
+  // Every field named, deliberately: this is a re-grant of a row that was narrowed above, and
+  // omitting the ACL flags here would widen it back to `>`/`>` as a side effect of adding a scope.
+  // The suite used to do exactly that, which is the operator mistake this PR is about.
+  const adminGrant = await cotal(["actor", "grant", "cli", "--sub", sub, "--scope", "spawn,role:default,admin", "--allow-subscribe", "general", "--allow-publish", "general", "--label", "smoke human"]);
   check("re-grant with admin ADDED to the current scope succeeds (upsert)", adminGrant.status === 0 && adminGrant.out.includes("admin"), adminGrant.out);
   const cleared = await cotal(["history", "clear", "--force", "--space", SPACE]);
   check("`history clear --force` passes over the one-shot purger view", cleared.status === 0 && cleared.out.includes("cleared"), cleared.out);

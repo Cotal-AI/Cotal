@@ -121,14 +121,20 @@ try {
     }),
     "has no grant in this space",
   );
-  // The repair command that refusal prints carries the ledger's authority, and a spawner's own ACL
-  // is the CEILING for everything spawned under it. Named with --scope alone it pastes into
-  // `runActor`'s wide defaults, so the operator repairing one delegation gap authors a spawner that
-  // reads and posts on every channel in the space, and hands that ceiling to every descendant.
+  // A spawner's own ACL is the CEILING for everything spawned under it, so the repair for a missing
+  // spawner decides that ceiling. There is no row to copy the ACLs from here, and a printed command
+  // carrying invented channel names would fail on paste and push the operator toward deleting the
+  // flags, which is `runActor`'s wide default. So this refusal must NAME the two flags and the
+  // default in prose, and must NOT ship a runnable command with values it made up.
   const ghostFix = /cotal actor grant [^`]+/.exec(ghostMsg)?.[0] ?? "";
   check(
-    "the missing-spawner repair command names read AND post, not --scope alone",
-    /--scope \S/.test(ghostFix) && /--allow-subscribe /.test(ghostFix) && /--allow-publish /.test(ghostFix),
+    "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
+    /--allow-subscribe/.test(ghostMsg) && /--allow-publish/.test(ghostMsg) && /WIDE default/.test(ghostMsg),
+    ghostMsg,
+  );
+  check(
+    "and the command it prints invents no channel values (no placeholder, no bare `>`)",
+    ghostFix.length > 0 && !/[<>]/.test(ghostFix) && !/--allow-(subscribe|publish)/.test(ghostFix),
     ghostFix,
   );
   rejects(
@@ -198,10 +204,18 @@ try {
   check("a grandchild within every link exchanges (cli → spawner2 → grandkid)",
     ledgerAuthorizeAgentExchange(dir, OWNER, "grandkid", gk.actorToken).parent === `${OWNER}.spawner2`);
   revokeActor(dir, OWNER, "cli");
-  rejects(
+  const revokedMsg = rejects(
     "revoking the ROOT refuses the grandchild's exchange (transitive, not single-hop)",
     () => ledgerAuthorizeAgentExchange(dir, OWNER, "grandkid", gk.actorToken),
     "no longer granted",
+  );
+  // The widest re-grant in the codebase lives on this branch: the revoke DELETED the row, so
+  // `cotal actor list` can no longer show what it held, and an operator re-granting from memory
+  // omits a flag and gets `>`. It said only "re-grant it, then respawn" until this cell.
+  check(
+    "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
+    /--allow-subscribe/.test(revokedMsg) && /--allow-publish/.test(revokedMsg) && /WIDE default/.test(revokedMsg),
+    revokedMsg,
   );
   rejects(
     "…and the surviving child cannot mint NEW grandchildren under the revoked root",

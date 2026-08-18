@@ -1,30 +1,52 @@
 {
   "suite": "implementations/auth/smoke/attenuation.smoke.ts",
-  "guard": "the repair command a delegation refusal prints authors the narrow spawner the sentence describes, not the whole-plane one an omitted flag defaults to",
+  "guard": "a delegation refusal that cannot copy a row's real ACLs names the two flags and their wide default in prose, and prints no runnable command carrying values it invented",
   "command": "pnpm smoke:auth-attenuation",
   "completionMarker": "ATTENUATION SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/spawner-repair-flags.json",
   "why": [
-    "The same composition as the view refusal, one door over, and with a longer reach. This refusal",
-    "printed `cotal actor grant <a> --owner <o> --scope spawn` and stopped, so an operator repairing a",
-    "broken delegation chain authored a spawner that reads and posts on every channel in the space.",
+    "A spawner's own ACL is the CEILING every agent beneath it is attenuated against, so the repair for",
+    "a broken delegation chain decides that ceiling. Both arms of this branch got it wrong in different",
+    "ways: the missing-spawner arm printed `--scope spawn` and stopped, and the revoked-spawner arm",
+    "printed no flags at all, on the one path where `cotal actor list` cannot help because the revoke",
+    "DELETED the row.",
     "",
-    "A spawner's own ACL is the CEILING every agent under it is attenuated against, so that ceiling then",
-    "governed everything spawned under it from that point on. The sentence promised a spawn capability",
-    "and delivered the whole plane, indefinitely.",
+    "There is no row to copy ACLs from on either arm, which is why the fix here is not the same as the",
+    "elevated-view one. A printed command carrying invented channel names fails on paste and pushes the",
+    "operator toward deleting the flags, and a deleted flag is `>`. So this refusal names the flags and",
+    "the default in prose and prints a command with NO ACL values at all. S2 is the mutant that proves",
+    "the difference: it puts a plausible fake value back and the prose stays correct.",
     "",
     "SPECIFIER BOUNDARY. The suite imports the ledger by relative source path (../src/index.js), so the",
     "mutated file is the file that runs and there is no build in the command."
   ],
   "mutations": [
     {
-      "name": "S1 the missing-spawner repair command names --scope and stops",
+      "name": "S1 the shipped text: the missing-spawner repair names --scope and stops",
       "file": "implementations/auth/src/ledger.ts",
-      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first, spelling out EVERY field (\\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn --allow-subscribe '<what its agents may read>' --allow-publish '<what they may post>'\\`): an omitted flag is the WIDE default, \\`>\\` read and \\`>\\` post, and a spawner's reach is the ceiling for everything spawned under it`",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\\`, and DECIDE its --allow-subscribe and --allow-publish rather than leaving them off: an omitted flag is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against. No command is printed with those two filled in because there is no row to copy them from and this refusal will not invent them`",
       "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first (\\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\\`)`",
-      "expectRed": "the missing-spawner repair command names read AND post, not --scope alone",
-      "cell": "the missing-spawner repair command names read AND post, not --scope alone",
-      "note": "This is the shipped state of the text. Every other cell stays green: the row is still refused, the refusal still names the missing spawner and still carries the `has no grant in this space` needle the neighbouring cell matches on."
+      "expectRed": "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
+      "cell": "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
+      "note": "Byte-for-byte the shipped string. The row is still refused, the refusal still names the missing spawner, and the `has no grant in this space` needle the neighbouring cell matches on is untouched."
+    },
+    {
+      "name": "S2 the prose is right and the command carries invented channel values",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn\\`, and DECIDE its --allow-subscribe and --allow-publish rather than leaving them off: an omitted flag is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against. No command is printed with those two filled in because there is no row to copy them from and this refusal will not invent them`",
+      "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \\`cotal actor grant ${pActor} --owner ${pOwner} --scope spawn --allow-subscribe '<what its agents may read>' --allow-publish '<what they may post>'\\`: an omitted flag is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`",
+      "expectRed": "and the command it prints invents no channel values (no placeholder, no bare `>`)",
+      "cell": "and the command it prints invents no channel values (no placeholder, no bare `>`)",
+      "note": "This was the FIRST version of the fix, and a security lens broke it by pasting it: the command throws `invalid channel \\\"<what its agents may read>\\\"`, and the shortest route to a command that succeeds is to delete the flags. Under this mutant the prose cell stays green, because the prose is correct; only the invents-nothing cell reddens."
+    },
+    {
+      "name": "S3 the shipped text on the revoked arm: re-grant it, then respawn, and no warning",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          : `agent \"${leaf}\": spawner \"${parentKey}\"${deep ? ` (an ancestor)` : \"\"} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\\`cotal spawn\\`). The revoke deleted the row, so \\`cotal actor list\\` can no longer show what it held: name --scope, --allow-subscribe and --allow-publish on the re-grant deliberately, because each one omitted comes back as the WIDE default (\\`>\\` read, \\`>\\` post) and a spawner's ACL is the ceiling for everything under it`,",
+      "replace": "          : `agent \"${leaf}\": spawner \"${parentKey}\"${deep ? ` (an ancestor)` : \"\"} is no longer granted - revoking a spawner revokes everything under it; re-grant it, then respawn (\\`cotal spawn\\`)`,",
+      "expectRed": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
+      "cell": "the revoked-spawner refusal warns that an omitted flag on the re-grant comes back WIDE",
+      "note": "The arm nobody had looked at, found by a security lens reading the sibling branch of the one that was being fixed. It is the worst arm to be silent on: the revoke deleted the row, so there is nothing left for `cotal actor list` to show and the operator re-grants from memory."
     }
   ]
 }
