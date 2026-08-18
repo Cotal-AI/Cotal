@@ -72,13 +72,18 @@
       "cell": "race:the holder the FIRST of two racing creates installed is retired, exactly once (and the session they both replace is retired ONCE, not drained twice)"
     },
     {
-      "name": "R5 the session identity flips OUTSIDE the swap, so an ordinary event in the gap is routed by the new id to the old holder",
+      "name": "R5 the route stops consulting the holder's own binding, so an event carrying the new id is handed to a holder still bound to the old thread and its re-adopt refusal takes the plane down",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "          const swap = swapChain.then(async () => {",
-      "replace": "          adoptSession(created, \"top-level session create\");\n          const swap = swapChain.then(async () => {",
-      "expectRed": "race:neither of two creates inside one drain window killed the emitter",
-      "cell": "race:neither of two creates inside one drain window killed the emitter",
-      "note": "Adding the early adopt back is the shipped defect exactly: the in-chain adopt then early-returns because the id already matches, so the identity flips before the holder does. Serializing the swap is necessary and NOT sufficient, which is the part this mutation exists to keep true. Found by review rather than by the author: a `message.part.updated` for the just-created session, delivered while both swaps were queued, passed the ownership check on the new id and landed a flush on a holder bound to the old thread, which refuses terminally and kills the plane."
+      "find": "    return holder.path === undefined || holder.path === id ? holder : undefined;\n",
+      "replace": "    return holder;\n",
+      "expectRed": "race:neither of two creates inside one drain window killed the emitter"
+    },
+    {
+      "name": "R6 the not-yet-bound arm is dropped, so a fresh holder is never the route for the very first event it should serve",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    return holder.path === undefined || holder.path === id ? holder : undefined;\n",
+      "replace": "    return holder.path === id ? holder : undefined;\n",
+      "expectRed": "reset:the session created by /new PUBLISHES, which is the whole defect"
     }
   ]
 }
