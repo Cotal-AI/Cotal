@@ -1,5 +1,6 @@
 import { userInfo } from "node:os";
-import { readFileSync, unlinkSync } from "node:fs";
+import { readFileSync, rmSync, unlinkSync } from "node:fs";
+import { basename, dirname } from "node:path";
 import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, assertValidChannel, channelInAllow, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -199,6 +200,13 @@ export function scrubLaunchMaterial(env: NodeJS.ProcessEnv = process.env): void 
   if (path) {
     try {
       unlinkSync(path);
+      // The private directory exists only to hold that one file, so it goes too. Measured on a live
+      // sandbox spawn: unlinking the file alone left an empty 0700 directory per launch in the OS
+      // temp tree, which is litter this change would have introduced rather than found. Guarded on
+      // the writer's own prefix so a hand-set pointer at some other path can never take its parent
+      // directory with it.
+      const dir = dirname(path);
+      if (basename(dir).startsWith("cotal-launch-")) rmSync(dir, { recursive: true, force: true });
     } catch {
       /* the pointer is already gone; the file outliving it is the pre-existing behaviour */
     }

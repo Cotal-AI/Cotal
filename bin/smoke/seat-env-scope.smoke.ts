@@ -45,7 +45,7 @@ import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import { configFromEnv, controlFromEnv, scrubLaunchMaterial } from "@cotal-ai/connector-core";
 import "@cotal-ai/connector-claude-code";
@@ -267,6 +267,10 @@ console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refus
   scrubLaunchMaterial(env);
   assert.equal(env[LAUNCH_MATERIAL_ENV], undefined, "A5: the pointer itself is gone");
   assert.equal(existsSync(file), false, "A5: the material file survived the scrub that was supposed to unlink it");
+  // The directory exists only to hold that one file. Leaving it is litter this change would have
+  // introduced rather than found, and it was found by a live spawn rather than here, which is why it
+  // is now pinned here.
+  assert.equal(existsSync(dirname(file)), false, "A5: the material's private directory was left behind");
   // Not `undefined`: the socket path is still in this env, so what remains is a BROKEN control
   // endpoint rather than an absent one, and the contract is that a half pair is refused out loud.
   assert.throws(

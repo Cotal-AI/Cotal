@@ -108,6 +108,15 @@
       "expectRed": "A5: the material file survived the scrub that was supposed to unlink it",
       "note": "The residual this carrier is honest about is same-uid access to a file that EXISTS. Where there is provably no later reader, the file not existing is the one part of that boundary that can actually be closed, so the closing has to be tested rather than intended.",
       "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M8 the scrub unlinks the file but leaves its private directory",
+      "file": "extensions/connector-core/src/config.ts",
+      "find": "      if (basename(dir).startsWith(\"cotal-launch-\")) rmSync(dir, { recursive: true, force: true });",
+      "replace": "      void dir;",
+      "expectRed": "A5: the material's private directory was left behind",
+      "note": "Found on a live sandbox spawn, not here: the file was gone and an empty 0700 directory per launch stayed in the OS temp tree. Litter this change would have introduced rather than found, which is a different and worse kind of defect than one it inherited.",
+      "afterRestore": "pnpm build > /dev/null"
     }
   ]
 }
