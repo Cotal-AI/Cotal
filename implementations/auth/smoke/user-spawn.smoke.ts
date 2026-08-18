@@ -686,22 +686,26 @@ try {
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
 
-  // ---------- E. the event plane rides the SAME delegation envelope, at the real door ----------
-  // The question this answers: can a peer that merely holds `spawn` hand its own child a READ grant
-  // on ANOTHER principal's event channel, where that plane is defined to carry tool inputs and
-  // outputs? Not through a unit call into the ledger: through the real ep `spawn` command, over a
-  // real bearer, at a live broker.
+  // ---------- E. the event plane, at the real door, under BOTH rules ----------
+  // Two rules meet here and the ORDER is the finding. The delegation envelope says a peer may hand
+  // down a subset of what it holds and no more. The OWN-CHANNEL rule says the agent being created
+  // may hold its OWN event plane and no other, whatever the spawner holds, because that plane
+  // carries the session's tool inputs and outputs verbatim. The own-channel rule runs FIRST and is
+  // NOT envelope-dependent, so widening the peer's own grant does not admit the request: a reader
+  // of somebody else's plane is granted out of band, never through a spawn.
   //
-  // WHAT IS ASSERTED AND WHY IT IS NOT THE REPLY TEXT. `spawn` is an ACTION: the door replies the
-  // instant the identity is minted, BEFORE provisioning, so the acceptance says the request was
-  // admitted and says nothing about the outcome. The verdict rides the goal terminal, and a
-  // spawn-scoped bearer following its own goal times out here (recorded as a finding, not worked
-  // around). So the cells assert the two facts that cannot be produced any other way: the door
-  // ACCEPTED the request, and the ledger then refused it, leaving no managed row and no live agent.
-  // A refusal at the schema or at the door would fail the first; a refusal that leaked would fail
-  // the second.
-  console.log("E) a peer cannot delegate a foreign event channel to its own child");
+  // WHY THESE CELLS WERE REWRITTEN RATHER THAN REPAIRED. Before the rule existed the door ACCEPTED
+  // the over-ask (spawn is an action: the door replies the instant the identity is minted) and the
+  // ledger refused it afterwards, so these cells asserted acceptance plus the absence of a row.
+  // The rule moved the refusal AHEAD of the mint. Keeping the old assertion would be asserting the
+  // defect, so what is asserted now is the refusal itself, at the door, over a real bearer.
+  //
+  // The stated limit is asserted too, from the other side, because a limit nobody tests is a
+  // sentence: the CONCRETE form is refused whatever the envelope says, and the WILDCARD form is
+  // left to the envelope exactly as every other channel is.
+  console.log("E) the own-channel rule at the real door, and the envelope's remaining half");
   const VICTIM = eventChannel({ owner: OWNER_B, actor: "auditor" });
+  const VICTIM_WILDCARD = `events.${OWNER_B}.>`;
   type Accepted = { ok: boolean; name?: string; error?: string };
   const epSpawnAccept = async (ep: CotalEndpoint, args: Record<string, unknown>): Promise<Accepted> => {
     try {
@@ -711,38 +715,67 @@ try {
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
   const settle = async (ms: number) => { await new Promise((r) => setTimeout(r, ms)); };
+  const ownChannelRefusal = (r: Accepted): boolean =>
+    r.ok === false && /another agent's event channel/.test(r.error ?? "") && (r.error ?? "").includes(VICTIM);
   const evtpeer = await ctlCaller("evtpeer", OWNER, ["spawn"], { allowSubscribe: ["general"], allowPublish: ["general"] });
   const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
-  check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is ACCEPTED at the door (the contract admits the field)",
-    readOverAsk.ok === true, readOverAsk);
+  check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is refused AT THE DOOR, naming the channel",
+    ownChannelRefusal(readOverAsk), readOverAsk);
   await settle(1500);
-  check("...and the ledger then refuses it: no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  check("...and no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
   check("...and no live agent by that name", !manager.list().some((a) => a.name === "epsilon"), manager.list().map((a) => a.name));
   const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
-  check("the same over-ask on the child's WRITE set is accepted at the door too", writeOverAsk.ok === true, writeOverAsk);
+  check("the same over-ask on the child's WRITE set is refused at the door too: publishing INTO another agent's plane is forgery, not eavesdropping",
+    ownChannelRefusal(writeOverAsk), writeOverAsk);
   await settle(1500);
-  check("...and refused the same way: publishing INTO another agent's plane leaves no row",
-    !existsSync(rowFile("managed", OWNER, "epsilon")));
-  // The other half, and the reason this is containment rather than a ban: an OPERATOR widening the
-  // peer's own grant admits the very same request. The authority is the ledger, not a special case
-  // for `events.`, so the plane inherits the delegation rule every other channel already has.
+  check("...and leaves no row either", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  // THE HALF THE ENVELOPE NO LONGER DECIDES. An operator widening the peer's own grant used to
+  // admit this exact request, and that was the whole "containment rather than ban" story. The
+  // own-channel rule takes the CONCRETE form out of the envelope's hands: the answer is the same
+  // refusal, from a spawner that demonstrably holds the channel.
   const widened = await ctlCaller("evtpeer2", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
   const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
-  check("with the peer's OWN grant widened by the operator, the identical spawn is accepted", admitted.ok === true, admitted);
+  check("with the peer's OWN grant widened by the operator, the identical spawn is STILL refused: the concrete form is not the envelope's to hand down",
+    ownChannelRefusal(admitted), admitted);
   await settle(2500);
-  const epsilonRow = existsSync(rowFile("managed", OWNER, "epsilon"))
+  check("...and still writes no row", !existsSync(rowFile("managed", OWNER, "epsilon")), admitted);
+  // THE STATED LIMIT, ASSERTED. `eventChannelPrincipal` decodes exactly two principal tokens, so a
+  // WILDCARD is not an event channel to the rule and passes it untouched, governed by the envelope
+  // alone. That is deliberate: the wildcard is the form an operator writes on purpose for an
+  // observer, and this cell is what stops the limit being a comment nobody tests.
+  const wildpeer = await ctlCaller("evtpeer3", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  const wildAdmitted = await epSpawnAccept(wildpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  check("the WILDCARD form is left to the delegation envelope: a peer whose own grant covers it CAN hand it down", wildAdmitted.ok === true, wildAdmitted);
+  await settle(2500);
+  const wildRow = existsSync(rowFile("managed", OWNER, "epsilon"))
     ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "epsilon"), "utf8")) as { allowSubscribe?: string[]; parent?: string })
     : undefined;
-  check("...and THIS time a row is written, carrying exactly the channel it asked for",
-    epsilonRow?.allowSubscribe?.includes(VICTIM) === true, epsilonRow);
-  check("...recording the peer that delegated it as parent", epsilonRow?.parent === `${OWNER}.evtpeer2`, epsilonRow);
-  // The same over-ask, run through the op core directly with the SAME spawner principal, so the
-  // refusal TEXT is on the record next to the door cells above. The route is proved by them; this
-  // names what the ledger said.
+  check("...and a row IS written, carrying exactly the pattern it asked for", wildRow?.allowSubscribe?.includes(VICTIM_WILDCARD) === true, wildRow);
+  check("...recording the peer that delegated it as parent", wildRow?.parent === `${OWNER}.evtpeer3`, wildRow);
+  // THE TWO REFUSALS, SIDE BY SIDE, through the op core with the same spawner principal, so the
+  // TEXT of each is on the record. Without the second one the first proves only that something
+  // refused: the envelope is still the authority for every channel that is not a concrete event
+  // channel, and a rule that had swallowed it would look identical from one cell.
   const overText: ControlReply = await manager.startAgent(
     { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
-  check("the refusal is the delegation envelope, and it names the event channel it would have granted",
-    overText.ok === false && /delegation only narrows/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
+  check("the refusal for a concrete event channel is the OWN-CHANNEL rule, and it names the channel",
+    overText.ok === false && /another agent's event channel/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
+  const envelopeText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", "not-mine"], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("and an ORDINARY channel the peer does not hold is still refused by the delegation envelope, which the rule did not replace",
+    envelopeText.ok === false && /delegation only narrows/.test(envelopeText.error ?? "") && (envelopeText.error ?? "").includes("not-mine"), envelopeText);
+  // AND THE WILDCARD FORM IS ATTENUATED LIKE ANY OTHER PATTERN. The rule leaves it alone; that is
+  // not the same as nothing governing it. A peer that does NOT hold the pattern cannot hand it
+  // down, on either side, and these are the cells that would notice an author exempting the
+  // `events.` prefix from the containment walk to make arming "just work".
+  const wildOverText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
+    wildOverText.ok === false && /delegation only narrows/.test(wildOverText.error ?? "") && (wildOverText.error ?? "").includes(VICTIM_WILDCARD), wildOverText);
+  const wildPubText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM_WILDCARD] }, `${OWNER}.evtpeer`);
+  check("and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",
+    wildPubText.ok === false && /delegation only narrows/.test(wildPubText.error ?? "") && (wildPubText.error ?? "").includes(VICTIM_WILDCARD), wildPubText);
 
   // ---------- V. elevated views (exchange-gated per-connection profiles), live ----------
   // The live half of the views design (unit layers: smoke:views). Real wire: refused under-scoped

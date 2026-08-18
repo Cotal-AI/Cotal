@@ -3246,8 +3246,10 @@ export class Manager {
         throw new Error(
           `this spawn asks for another agent's event channel: ${foreign.join(", ")}. An ` +
             `agent may be granted its OWN event plane and no other, because that plane carries the ` +
-            `session's tool inputs and outputs. Grant a reader out of band with \`cotal actor grant\` ` +
-            `rather than through a spawn.`,
+            `session's tool inputs and outputs. Grant a reader out of band rather than through a ` +
+            `spawn: \`cotal actor grant\` on a user-auth mesh, or \`cotal mint <name> --profile ` +
+            `observer --allow-subscribe ${foreign[0]}\` on a static one, where there is no actor ` +
+            `ledger for \`actor grant\` to write to.`,
         );
       }
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
@@ -3603,8 +3605,10 @@ export class Manager {
         throw new Error(
           `retained agent ${entry.name}: its record claims another agent's event channel ` +
             `(${foreign.join(", ")}). An agent may hold its OWN event plane and no other, because that ` +
-            `plane carries the session's tool inputs and outputs. Remove it from the inventory, or ` +
-            `grant the reader out of band with \`cotal actor grant\`.`,
+            `plane carries the session's tool inputs and outputs. Remove it from the inventory and ` +
+            `grant the reader out of band instead: \`cotal actor grant\` on a user-auth mesh, or ` +
+            `\`cotal mint <name> --profile observer --allow-subscribe ${foreign[0]}\` on a static ` +
+            `one, where there is no actor ledger for \`actor grant\` to write to.`,
         );
     }
     if (entry.identity.mode === "open") {

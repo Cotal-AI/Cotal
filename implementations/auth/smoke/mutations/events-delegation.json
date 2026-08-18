@@ -1,6 +1,6 @@
 {
   "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
-  "guard": "the event plane rides the SAME delegation envelope every other channel rides: a peer that holds spawn cannot hand its child a read or write grant on another principal's event channel",
+  "guard": "the event plane's WILDCARD form rides the same delegation envelope every other pattern rides: a peer that holds spawn cannot hand its child a read or write grant on a pattern it does not itself hold, and the `events.` prefix buys no exemption from the containment walk",
   "command": "pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
   "completionMarker": "USER-SPAWN SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/events-delegation.json",
@@ -17,13 +17,13 @@
     "the prefix from the containment walk so a session can be armed without widening its spawner.",
     "The property is that no such exemption exists, and the plane inherits the ordinary rule.",
     "",
-    "WHAT THE CELLS CAN AND CANNOT ASSERT. `spawn` is an ACTION: the door replies the instant the",
-    "identity is minted, before any provisioning, so the ep reply says the request was ADMITTED and",
-    "says nothing about the outcome. The verdict rides the goal terminal, and a spawn-scoped bearer",
-    "following its own goal times out (reported as a separate defect, not worked around here). So",
-    "the cells assert the two facts the door does produce: the request was accepted, and the ledger",
-    "then refused it, leaving no managed row. A refusal at the schema fails the first; a refusal",
-    "that leaked fails the second.",
+    "WHY THESE MUTATIONS WERE RE-AIMED. They used to land on the CONCRETE form, where the ledger was",
+    "the only authority: the door accepted the over-ask and the ledger refused it afterwards. An",
+    "own-channel rule now refuses a concrete foreign event channel AT THE DOOR, ahead of the mint, so",
+    "a concrete over-ask never reaches the ledger and neither mutation could be observed through it.",
+    "The WILDCARD form is what still reaches the ledger, deliberately: `eventChannelPrincipal` decodes",
+    "exactly two principal tokens, so a pattern is not an event channel to that rule and is governed",
+    "by the envelope alone. That is where an exemption would now bite, and that is where these land.",
     "",
     "SPECIFIER BOUNDARY, and it is why this command carries a build. The suite imports",
     "@cotal-ai/auth and the manager by PACKAGE NAME and by dist path, so the bytes it executes are",
@@ -39,9 +39,9 @@
       "find": "    const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));",
       "replace": "    const overSub = child.allowSubscribe.filter((ch) => !ch.startsWith(\"events.\") && !patternInAllow(parent.allowSubscribe, ch));",
       "afterRestore": "pnpm --filter @cotal-ai/auth build",
-      "expectRed": "...and the ledger then refuses it: no managed row for the child",
-      "cell": "...and the ledger then refuses it: no managed row for the child",
-      "note": "Scoped to the READ side on purpose: the existing attenuation cells use ordinary channel names and stay green, so the kill lands on the event-plane cell and names it."
+      "expectRed": "a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
+      "cell": "a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
+      "note": "Scoped to the READ side on purpose: the ordinary-channel attenuation cells use plain names and stay green, so the kill lands on the event-plane cell and names it."
     },
     {
       "name": "D2 exempt the event prefix from the WRITE containment walk",
@@ -49,8 +49,8 @@
       "find": "    const overPub = child.allowPublish.filter((ch) => !patternInAllow(parent.allowPublish, ch));",
       "replace": "    const overPub = child.allowPublish.filter((ch) => !ch.startsWith(\"events.\") && !patternInAllow(parent.allowPublish, ch));",
       "afterRestore": "pnpm --filter @cotal-ai/auth build",
-      "expectRed": "...and refused the same way: publishing INTO another agent's plane leaves no row",
-      "cell": "...and refused the same way: publishing INTO another agent's plane leaves no row",
+      "expectRed": "and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",
+      "cell": "and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",
       "note": "The write half is not symmetry for its own sake: publishing INTO another agent's plane forges frames a reader attributes to that agent by subject."
     }
   ]

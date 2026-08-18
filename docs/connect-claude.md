@@ -230,10 +230,30 @@ The channel is **`events.<owner>.<actor>`**, named after the principal the manag
 the session and never after its display name, because two live agents may share a display name and
 would then share a stream. The launch grants publish rights on exactly that one channel. A spawn
 that asks for a *different* agent's event channel is refused at the door rather than granted, since
-that channel carries the session's tool inputs and outputs; grant a reader out of band with
-`cotal actor grant` instead. The same rule runs on restart: a manager resume document that names
-another agent's event channel is refused rather than adopted, because the managed row is re-armed
-from that document and the credential is re-minted from the row.
+that channel carries the session's tool inputs and outputs. The same rule runs on restart: a manager
+resume document that names another agent's event channel is refused rather than adopted, because the
+managed row is re-armed from that document and the credential is re-minted from the row.
+
+The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+`events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+authority: on a user mesh the delegation envelope, on a static mesh the spawning credential itself.
+That is deliberate, because the pattern is the form an operator writes on purpose for an observer,
+and it is worth knowing rather than assuming the fence is total.
+
+To let something else read a plane, grant it out of band. On a user-auth mesh that is
+`cotal actor grant`. On a static mesh there is no actor ledger for `actor grant` to write to, and it
+says so; mint the reader instead:
+
+```bash
+cotal mint watcher --profile observer --allow-subscribe 'events.<owner>.<actor>'
+```
+
+The `<owner>.<actor>` pair is the session's principal, not its display name. On a user-auth mesh
+the actor half **is** the agent's name, so the channel is `events.<your-owner>.<agent-name>`. On a
+static mesh the actor is a key the manager allocated, and the spawn reply carries it as `id`. Note
+that `cotal console` and the web console keep event channels out of their channel lists on purpose,
+since a plane is a machine feed rather than a conversation; they draw the frames when you open the
+channel by name.
 
 The rule governs the manager's doors, which are the ones a caller other than you can reach. A
 foreground `cotal spawn` on your own machine mints from your own signing material, so it can still
