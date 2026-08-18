@@ -62,6 +62,39 @@
  *      honoured, because the release had been hiding inside the detach watcher's `stop`.
  *   N. the third stream kind. A stdin that is a FILE has no `unref` at all, so the exit release
  *      crashed there while the pty and pipe cells all passed; CI found it in another suite.
+ *
+ * WHAT THIS SUITE DOES NOT COVER, named so the next reader inherits the finding rather than the
+ * search. The universe is two axes. The stream KIND (pty, pipe, file) is covered across the cells.
+ * The session LIFECYCLE has three points, and only two of them are graded here:
+ *   never-opened      an attempt that dies before a session exists. Cells A, B and I type into it.
+ *   died-after-ready  a session that opened and then ended, on any of the five link states. Every
+ *                     other cell lives here.
+ *   died-BEFORE-ready a session that opens and ends without its `ready` ever firing. It is the one
+ *                     point where the handoff in `attachClient`'s `onReady` never runs while its
+ *                     `cleanup` still pauses the stream, which would leave the loop's own reader
+ *                     installed over a paused stream and reading nothing. NOT GRADED, because it
+ *                     is MEASURED UNREACHABLE through a link fault on this code path: the gap it
+ *                     would have to land in contains no I/O, and `ready` is decided by the
+ *                     client's own write rather than by anything the link answers. That mechanism
+ *                     is the finding; the four rounds below are only how it was measured.
+ *
+ * Four rounds, each with a proxy that cuts ONE link and a session-id-tagged trace of the client's
+ * own transport events, and the reason is structural rather than a matter of aim:
+ *   1. sever anywhere in the backoff: the next session opens normally. Wrong window.
+ *   2. cut the chunk carrying the rail SUB and the flush PING: ready fires anyway. `nc.flush()`
+ *      settles on the CLIENT'S OWN WRITE, not on a PONG round trip, so swallowing those bytes does
+ *      not stop it. Measured against the client directly as well as here.
+ *   3. cut at the session handshake with `destroy()`: no session at all. A destroy on a socket
+ *      holding unread bytes sends RST, the RST discards the PONG the client had not read, and the
+ *      handshake never completes, so the ATTEMPT fails instead.
+ *   4. same cut with `end()`, so the PONG survives and the close lands one turn later: no session
+ *      either, same shape as 3.
+ * `establishAttachSession` returns immediately after `connect()` resolves, nothing awaits between
+ * that and the transport constructor, and `attachClient` registers `onReady` synchronously in the
+ * same tick. So a close either precedes connect()'s resolution, and the attempt fails with no
+ * session, or it follows the first write's drain, and ready has already fired and handed the
+ * keyboard over. The gap being aimed at contains no I/O. Should an await ever appear between
+ * connect() and that first flush, this becomes reachable and belongs back on this list.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
