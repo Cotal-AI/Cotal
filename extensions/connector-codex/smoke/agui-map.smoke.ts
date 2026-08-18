@@ -254,24 +254,38 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
 // asserted fact is the DROP rather than the absence of a throw: a throw kills the emitter, the
 // holder is terminal on error, and the seat then publishes nothing for the rest of its life with
 // one log line inside its own process as the only trace.
+//
+// THE REPLAY RUNS INSIDE A CATCH, and that is what makes this a cell rather than a stack trace. An
+// unguarded throw here takes the whole file down before any check prints, so the run is red with a
+// RED PREFIX and no cell name in it: the reader cannot tell which fact broke, and a mutation that
+// removes the guard grades as "red for some reason" instead of "this cell caught it".
 {
   const ts = "2026-08-18T15:00:00.000Z";
   const start = { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } };
   const done = { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } };
   const degenerate = [null, undefined, 5, "x", []] as unknown as CodexRecord[];
-  const R = replay([start, ...degenerate, done]);
-  const k = kinds(R.events);
-  c("degenerate:a null JSONL line is DROPPED, not thrown on", R.perRecord[1] === null, { got: R.perRecord[1] });
+  let thrown: string | null = null;
+  let R: ReturnType<typeof replay> | null = null;
+  try {
+    R = replay([start, ...degenerate, done]);
+  } catch (e) {
+    thrown = (e as Error).message;
+  }
+  c("degenerate:a null JSONL line is DROPPED, not thrown on", thrown === null && R !== null && R.perRecord[1] === null, {
+    thrown,
+    got: R?.perRecord[1],
+  });
   c(
     "degenerate:and so is every other non-object line",
-    R.perRecord.slice(1, 1 + degenerate.length).every((x) => x === null),
-    { perRecord: R.perRecord.slice(1, 1 + degenerate.length) },
+    R !== null && R.perRecord.slice(1, 1 + degenerate.length).every((x) => x === null),
+    { thrown, perRecord: R?.perRecord.slice(1, 1 + degenerate.length) },
   );
   // The drop is COUNTED, so it stays visible to a reader of the census rather than vanishing into
   // "nothing happened". A silent drop and a correct map are the same shape from outside.
-  const dropped = R.perRecord.filter((x) => x === null).length;
+  const dropped = R === null ? -1 : R.perRecord.filter((x) => x === null).length;
   c("degenerate:the census counts them as dropped", dropped === degenerate.length, { dropped, expected: degenerate.length });
-  c("degenerate:and the run around them still opens and closes exactly once", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R.bracketError === null, { k, err: R.bracketError });
+  const k = R === null ? {} : kinds(R.events);
+  c("degenerate:and the run around them still opens and closes exactly once", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R?.bracketError === null, { thrown, k });
 }
 
 // THE STATED GAP, PINNED. Codex's model-side built-in tools (web search, tool search, image
@@ -281,23 +295,33 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
 // A bracket built across that divide would be a correlation invented by analogy with `function_call`.
 // This cell exists so the gap is a stated limit rather than a silent drop, and so that anyone who
 // later publishes the family has to come here and change the sentence the docs make.
+//
+// Same catch, same reason: publishing that END record produces a result for a call nothing started,
+// which the bracket machine refuses by throwing, and an unguarded throw would take the file down
+// before the cell that names the gap ever printed.
 {
   const ts = "2026-08-18T15:00:00.000Z";
   const start = { timestamp: ts, type: "event_msg", payload: { type: "task_started", turn_id: "t1" } };
   const done = { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: null } };
-  const R = replay([
-    start,
-    { timestamp: ts, type: "response_item", payload: { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "q" } } },
-    { timestamp: ts, type: "event_msg", payload: { type: "web_search_end", call_id: "call-ws", query: "q", action: { type: "search" } } },
-    done,
-  ]);
-  const k = kinds(R.events);
-  c("gap:a web_search_call is dropped, deliberately", R.perRecord[1] === null, { got: R.perRecord[1] });
-  c("gap:and so is its end record, which carries the only call id", R.perRecord[2] === null, { got: R.perRecord[2] });
-  c("gap:no tool event is published for the built-in family", k.TOOL_CALL_START === undefined && k.TOOL_CALL_RESULT === undefined, k);
+  let thrown: string | null = null;
+  let R: ReturnType<typeof replay> | null = null;
+  try {
+    R = replay([
+      start,
+      { timestamp: ts, type: "response_item", payload: { type: "web_search_call", id: "ws_1", status: "completed", action: { type: "search", query: "q" } } },
+      { timestamp: ts, type: "event_msg", payload: { type: "web_search_end", call_id: "call-ws", query: "q", action: { type: "search" } } },
+      done,
+    ]);
+  } catch (e) {
+    thrown = (e as Error).message;
+  }
+  const k = R === null ? {} : kinds(R.events);
+  c("gap:a web_search_call is dropped, deliberately", thrown === null && R !== null && R.perRecord[1] === null, { thrown, got: R?.perRecord[1] });
+  c("gap:and so is its end record, which carries the only call id", R !== null && R.perRecord[2] === null, { thrown, got: R?.perRecord[2] });
+  c("gap:no tool event is published for the built-in family", thrown === null && k.TOOL_CALL_START === undefined && k.TOOL_CALL_RESULT === undefined, { thrown, k });
   // The run must survive the family it cannot describe. A gap that also broke the brackets would be
   // a second defect wearing the first one's clothes.
-  c("gap:and the run still opens and closes exactly once around it", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R.bracketError === null, { k, err: R.bracketError });
+  c("gap:and the run still opens and closes exactly once around it", k.RUN_STARTED === 1 && k.RUN_FINISHED === 1 && R?.bracketError === null, { thrown, k });
 }
 
 // The census is printed, not just asserted: a reader who sees "28 passed" learns nothing about
