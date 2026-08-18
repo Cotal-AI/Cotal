@@ -137,6 +137,24 @@
       "expectRed": "moved:concurrent-advances-on-ONE-view-cannot-both-pass-a-check-neither-still-satisfies",
       "cell": "moved:concurrent-advances-on-ONE-view-cannot-both-pass-a-check-neither-still-satisfies",
       "note": "The re-read is a read-modify-write, so unordered callers all read the same tip before any of them renames and all of them pass. The cell uses three calls carrying the SAME number: ordered exactly one can succeed, unordered all three do, so the count discriminates. An increasing trio would succeed three times either way and grade nothing."
+    },
+    {
+      "name": "S26 the recovery scan stops at the first thread directory, so the population it reads is a subset of the population it claims",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "    for (const ent of entries) {\n",
+      "replace": "    for (const ent of entries.slice(0, 1)) {\n",
+      "expectRed": "population:the-max-is-found-when-it-sits-in-the-LAST-sibling-by-name",
+      "cell": "population:the-max-is-found-when-it-sits-in-the-LAST-sibling-by-name",
+      "note": "EXPECT A BLAST RADIUS, and that is the point rather than a defect in the plant: a scan reading one sibling still returns a number and still refuses a poisoned log that happens to come first, so several cells go red together and the count is reported with the result. Registered because a floor, a count, or a canary cannot see a shrunken population: each of those asks whether the scan produced something, and this asks whether it read everything. The cell it is named for puts the highest tip in the LAST directory by name, which is the reading a subset cannot produce."
+    },
+    {
+      "name": "S27 any pending is folded as though it were acked, which reads an assigned sequence out of a frame the broker never answered",
+      "file": "extensions/connector-core/src/subject-frontier.ts",
+      "find": "      if (pending && pending.state === \"acked\") {\n",
+      "replace": "      if (pending) {\n",
+      "expectRed": "recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence",
+      "cell": "recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence",
+      "note": "The omission of `sent_unacked` is deliberate and is now written down, so it is graded: a deliberate omission nobody can break is indistinguishable from an oversight nobody noticed. The mutant makes the scan reach for an `ackSeq` that the state is forbidden to carry."
     }
   ]
 }

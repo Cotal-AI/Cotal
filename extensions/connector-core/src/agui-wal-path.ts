@@ -295,7 +295,7 @@ export async function acquirePrincipalLock(lockPath: string): Promise<PrincipalL
  * on a platform that simply does not offer the guarantee would trade a durability improvement for
  * an availability regression. Every other error propagates.
  */
-async function fsyncDir(dir: string): Promise<void> {
+export async function fsyncDir(dir: string): Promise<void> {
   let fh;
   try {
     fh = await open(dir, "r");

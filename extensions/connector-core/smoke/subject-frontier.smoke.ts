@@ -139,6 +139,41 @@ try {
       () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /a thread log for principal/);
   }
 
+  // ------------------------------------------- the scan's POPULATION, not just its answer
+  // WHAT THESE THREE GRADE: that the scan reads EVERY sibling, not merely enough of them to
+  // produce a plausible number. A count or a floor cannot see this. A scan that stops at the
+  // first thread directory still returns a tip, still refuses a poisoned log when the poison
+  // happens to come first, and still passes every cell above whose fixture puts the interesting
+  // entry early. So the interesting entry is placed LAST here, by name, in both flavours: the
+  // highest tip, and the refusal. Directory order is not guaranteed by the filesystem, which is
+  // exactly why the poison is planted at both ends across these cells and the one above rather
+  // than trusted to land where it is wanted.
+  {
+    const d = dir();
+    walFor(d, "aaa_first", 3);
+    walFor(d, "zzz_last", 9);
+    const f = await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P });
+    c("population:the-max-is-found-when-it-sits-in-the-LAST-sibling-by-name", f.tip === 9, f.tip);
+  }
+  {
+    const d = dir();
+    walFor(d, "aaa_good", 5);
+    const td = join(d, "zzz_bad");
+    mkdirSync(td, { recursive: true });
+    writeFileSync(join(td, "wal.json"), "{not json");
+    await threw("population:a-poisoned-sibling-is-refused-when-a-VALID-log-comes-before-it",
+      () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /a readable thread log/);
+  }
+  {
+    const d = dir();
+    const td = join(d, "aaa_bad");
+    mkdirSync(td, { recursive: true });
+    writeFileSync(join(td, "wal.json"), "{not json");
+    walFor(d, "zzz_good", 5);
+    await threw("population:...and-refused-when-the-valid-log-comes-AFTER-it",
+      () => FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P }), /a readable thread log/);
+  }
+
   // ---------------------------------------------------------------- corruption
   {
     const d = dir();
@@ -266,13 +301,18 @@ try {
   }
   {
     // A sent-but-unacked pending carries no assigned sequence, and `EventWal` refuses an `ackSeq`
-    // on it. Recovery must not invent one from a frame the broker never answered.
+    // on it, so there is nothing in it to fold and recovery must not invent one. The cell used to be
+    // named for the claim that the broker assigned nothing to such a frame, and that is the one
+    // thing this state does not know: the frame went out and the answer was never seen. What is
+    // knowable is about the LOG. The residue is real and deliberate, and `recoverTipFromThreadLogs`
+    // says why: if the broker did assign a sequence, this scan comes back one short and the next
+    // publish halts on a moved tip, which is the safe direction of the two.
     const d = dir();
     const td = join(d, "t-sent");
     mkdirSync(td, { recursive: true });
     writeFileSync(join(td, "wal.json"), JSON.stringify({ principal: P, frontier: { lastSubjectSeq: 7 }, pending: { state: "sent_unacked", seq: 3 } }));
     const f = await FileSubjectFrontier.open(join(d, "subject.json"), { space: SPACE, principal: P });
-    c("recover:a-SENT-but-unacked-pending-adds-nothing-because-nothing-was-assigned", f.tip === 7, f.tip);
+    c("recover:a-SENT-but-unacked-pending-adds-nothing-because-it-CARRIES-no-assigned-sequence", f.tip === 7, f.tip);
   }
   {
     // An acked pending that is NOT ahead of its own frontier contradicts the invariant `EventWal`

@@ -32,6 +32,7 @@ import { constants } from "node:fs";
 import { lstat, open, readdir, readFile, rename, unlink } from "node:fs/promises";
 import type { Dirent } from "node:fs";
 import { dirname, join } from "node:path";
+import { fsyncDir } from "./agui-wal-path.js";
 
 /** The document on disk. Versioned, because a shape change must be refused rather than misread. */
 const SUBJECT_FRONTIER_VERSION = 1;
@@ -354,6 +355,23 @@ export class FileSubjectFrontier implements SubjectFrontier {
           throw new SubjectFrontierCorruptError(walPath, "an acked pending is ahead of the frontier it will fold into", `ackSeq=${acked} frontier.lastSubjectSeq=${seq}`);
         if (acked > best) best = acked;
       }
+      // A `sent_unacked` PENDING IS PASSED OVER DELIBERATELY, AND NOT BECAUSE NOTHING WAS ASSIGNED.
+      //
+      // An earlier description of this scan said the broker assigned nothing to such a frame. That
+      // is the one thing the state does not know: the frame went out and the acknowledgement was
+      // never observed, so the subject may or may not have taken it. What is certain is structural
+      // and about the log rather than the broker: `sent_unacked` carries no `ackSeq` at all, and a
+      // document that pairs the two is refused as contradicting its own tag. There is therefore no
+      // sequence in it to fold, and inventing one, `frontier.lastSubjectSeq + 1` for instance, would
+      // assert an assignment nobody saw.
+      //
+      // The residue is real and is left standing on purpose. If the broker did assign a sequence to
+      // that frame, this scan recovers a number one short of the tip, and the next publish halts on
+      // a moved tip rather than publishing into a gap or overwriting anything. That is the safe
+      // direction of the two, it is the halt this file's message now explains, and its remedy is the
+      // one the message names. The owning session would have republished the frozen id and let the
+      // broker deduplicate, but that session is exactly what an upgrade forks away from, which is
+      // why the case reaches here at all.
     }
     return best;
   }
@@ -392,12 +410,14 @@ export class FileSubjectFrontier implements SubjectFrontier {
     }
     // The rename itself must be durable, or a crash can lose the new name and leave the old file:
     // the record would silently go backwards, which is the one direction `advance` refuses.
-    const dh = await open(dirname(this.path), constants.O_RDONLY);
-    try {
-      await dh.sync();
-    } finally {
-      await dh.close();
-    }
+    //
+    // THE SHARED HELPER, NOT A SECOND STRICTER COPY. This was an inline open/sync that let every
+    // error propagate, and it sits on the ACK path: on a filesystem that refuses to fsync a
+    // directory handle, or under a permission that refuses the open, the same conditions the
+    // directory-creating path already tolerates would throw HERE, after the broker has acknowledged
+    // the frame, leaving an ack with no durable record and a halt on the next start. Two paths over
+    // the same operation disagreeing about which errors are fatal is a divergence, not a policy.
+    await fsyncDir(dirname(this.path));
     this.doc = next;
   }
 }

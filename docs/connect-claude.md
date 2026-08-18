@@ -298,15 +298,23 @@ holding the last sequence the broker assigned on that channel, so a new session 
 its predecessor left instead of starting again from nothing. Both live under the events state root
 (`COTAL_WORKSPACE_ROOT`), and neither is something you edit by hand.
 
-A **missing** record is not a fault: the connector rebuilds it from the session logs beside it, which
-is how an agent that was already running before this record existed keeps its stream. A record that
-**disagrees with the broker** is a fault, and the connector stops publishing and says why rather than
-guessing. A record that **moved while a session was writing to it** is refused the same way: it means
-something else wrote the principal's record, and the connector reports which value it held and which
-the file holds rather than writing over the later one. There is no command to clear it. The state is the principal's directory under the events
-root, and clearing it by hand means removing that directory whole: the sequence, the cursor and the
-per-session logs only mean anything together, so removing part of it leaves a state the next start
-refuses.
+A **missing** record is not a fault: the connector rebuilds it from the session logs beside it,
+which is how an agent that was already running before this record existed keeps its stream. That
+rebuild stops if any one of those session logs is damaged, meaning unreadable, not valid JSON, or
+written for a different principal: a tip taken from the rest would be too low, and it would stop
+publication later with nothing left to point at the cause. The connector names the file instead, and
+the only way past it is the directory removal described below, under the same condition. A record
+that **disagrees with the broker** is a fault, and the connector stops publishing and says why
+rather than guessing. A record that **moved while a session was writing to it** is refused the same
+way: it means something else wrote the principal's record, and the connector reports which value it
+held and which the file holds rather than writing over the later one. There is no command to clear
+it. The state is the principal's directory under the events root, and clearing it by hand means
+removing that directory whole: the sequence, the cursor and the per-session logs only mean anything
+together, so removing part of it leaves a state the next start refuses. Removing it is only half a
+remedy, and the half that comes first is the channel. The directory is where the agent's memory of
+the tip lives, not the tip itself, so on a channel that still holds frames the next session opens
+expecting an empty one and stops on the same disagreement, with the logs a tip could have been
+rebuilt from now gone. Purge the channel first, then remove the directory.
 
 Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
 part by design, so a surface that renders a message as flat text shows a marker instead of prose.
