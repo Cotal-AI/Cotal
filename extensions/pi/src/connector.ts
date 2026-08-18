@@ -105,6 +105,17 @@ export const piConnector: Connector = {
       env.COTAL_MODEL = model;
       args.push("--model", model);
     }
+    // The auto-submitted first turn (`cotal spawn --prompt`). Pi takes it as its positional initial
+    // message, which its parser reads as any bare argument, so it goes LAST, after every flag that
+    // consumes a value. A message Pi's parser would misread cannot be delivered as a turn, so refuse
+    // the launch rather than start a seat whose first turn silently became a flag or a file ref.
+    if (opts.prompt !== undefined) {
+      const prompt = opts.prompt.trim();
+      if (!prompt) throw new Error("pi connector: an initial prompt was given but it is empty, there is no first turn to submit");
+      if (prompt.startsWith("-") || prompt.startsWith("@"))
+        throw new Error("pi connector: an initial prompt cannot start with '-' or '@' (pi reads those as an option or a file reference); reword it");
+      args.push(prompt);
+    }
 
     const control = controlEndpoint(opts.space, opts.name);
     env.COTAL_CONTROL_SOCKET = control.path;

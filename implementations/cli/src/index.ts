@@ -9,7 +9,7 @@ import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions } from "./commands/spawn.js";
-import { attach, attachFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
+import { attach, attachFlags, input, inputFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
@@ -362,6 +362,15 @@ const baseCommands: Command[] = [
     summary: "stream + drive an agent's terminal (pty runtime) - --name <n>",
     flags: attachFlags,
     run: attach,
+    complete: managedAgentComplete,
+  },
+  {
+    kind: "command",
+    name: "input",
+    group: "Agents",
+    summary: "type one line into an agent's terminal without attaching - --name <n> --text <t>",
+    flags: inputFlags,
+    run: input,
     complete: managedAgentComplete,
   },
   {

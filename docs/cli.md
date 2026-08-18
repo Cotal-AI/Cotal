@@ -45,6 +45,7 @@ runtimes ship this way.
 | Agents & personas | [`ps`](#ps-stop-attach) | List managed agents and their mesh status |
 | Agents & personas | [`stop`](#ps-stop-attach) | Ask the manager to stop a managed agent |
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
+| Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
@@ -475,6 +476,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--prompt <text>` | — | Initial prompt auto-submitted at start |
 | `--resume <id>` | — | Fork an existing session id into the mesh (claude only) |
 | `--transcript` / `--no-transcript` | off | Mirror the session transcript to `tr-<name>` |
+| `--events` / `--no-events` | off | Publish the session's structured event plane to its own event channel |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
@@ -485,6 +487,18 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
+
+`--events` turns on the session's **event plane**: a stream of structured events describing what
+the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
+the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
+agents are allowed to share a display name and would then share a stream. The launch grants publish
+rights on exactly that one channel, foreground and detached alike, and a connector that does not
+publish an event plane refuses the flag rather than starting a session whose events have nowhere to
+go.
+
+The flag and the grant are separate on purpose. Holding publish rights on a channel is not a request
+to publish to it, so writing an event channel into an agent file's `allowPublish` does not turn the
+plane on: only the launch does.
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
@@ -634,6 +648,62 @@ single-use and short-lived, so one authorized attach can never be re-pointed at 
 agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
 manager's output. The roster, the live feed, and the PTY stream all answer `401` without one; the
 static console shell is served openly, since it describes no agent.
+
+## input
+
+```bash
+cotal input --name <n> --text <text> [--no-enter] [--on <instance>] [--space <s>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--name <n>` | | Managed agent to type into (required) |
+| `--text <text>` | | The text to type, taken verbatim (required) |
+| `--no-enter` | off | Type the text and stop there, without pressing Enter |
+| `--on <instance>` | class anycast | Pin to one manager instance id, exactly as [`attach`](#ps-stop-attach) |
+
+Types one line into a running agent's terminal, as if you had typed it there, and returns. This is
+the half of [`attach`](#ps-stop-attach) that a program wants: `attach` is a live stream that holds a
+session open and expects a terminal on your side, so a script, a cron job or a web UI cannot use it
+to send a single line. `input` is one authorized call.
+
+What it is for is **harness commands**. A line beginning with `/` is not chat and not a message: it
+is something the agent's own harness handles, and the only way in is the keyboard.
+
+```bash
+cotal input --name reviewer --text "/compact"          # ask the harness to compact its context
+cotal input --name reviewer --text "/model opus"       # switch its model
+cotal input --name reviewer --text "hold on that PR"   # ordinary typing works too
+```
+
+**Quoting.** `--text` takes a value, so a payload starting with `/` survives as written. A payload
+starting with a dash needs the `=` form, because the shell-style `--text --foo` is ambiguous and is
+refused rather than guessed:
+
+```bash
+cotal input --name reviewer --text=--verbose          # dash-leading text: use --text=<value>
+```
+
+Enter is pressed by default, since a command typed but never submitted has not been delivered.
+`--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
+send it later.
+
+Nothing comes back but a delivery receipt (`✓ sent 9 bytes to reviewer`, counting the trailing
+carriage return). Whatever the agent does next shows up where its output already goes: the mesh, its
+transcript, or an `attach`.
+
+**This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
+anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
+not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
+needs the `admin` scope, the same scope [`ps`](#ps-stop-attach) already needs there. The reason is
+that a write into a terminal is control of whatever is running in it, and on a user-auth mesh the
+own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
+could otherwise type into a sibling it never started. Seat locality is still resolved for you.
+
+Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
+`herdr`) attach to a process they do not own, so they have no input stream for it and the command
+refuses by name rather than dropping the keystroke.
 
 ## personas
 

@@ -1,0 +1,74 @@
+{
+  "suite": "extensions/connector-core/smoke/agui-close-run.smoke.ts",
+  "guard": "closing a run out of band from the record stream publishes one RUN_FINISHED, consumes no source record, and refuses every state where publishing would be a guess",
+  "command": "pnpm smoke:agui-close-run",
+  "completionMarker": "agui-close-run smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-close-run.json",
+  "why": [
+    "The plane reads a file and a harness reports the end of a turn through a lifecycle hook that",
+    "writes no record, so a hook-sourced terminal had no vehicle into a record-sourced stream. The",
+    "terminal added here is an ordinary frame with one exception, the source cursor, and that",
+    "exception is the whole risk: a closing frame that advanced the cursor would mark records",
+    "consumed that were never mapped, and a consumer would see no seq gap to notice it by.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the emitter and the holder",
+    "by RELATIVE SOURCE PATH (../src/agui.js, ../src/agui-holder.js), so the bytes mutated are the",
+    "bytes graded. There is no dist in the path and no build in the command. Its one package-name",
+    "import is `type Part` from @cotal-ai/core, which is erased at compile time and carries no",
+    "behaviour.",
+    "",
+    "NOT PROVED HERE, named rather than implied. The clone validation before the publish carries no",
+    "kill: a closing unit is one event and the real bracket machine refuses it before mutating, so",
+    "removing the clone changes nothing observable. It is symmetry with `pump`, where a multi-event",
+    "batch makes it load-bearing. And the holder cell about starting nothing is enforced by a",
+    "signature that takes no path, so it is a fence against a future signature rather than evidence",
+    "about this one."
+  ],
+  "mutations": [
+    {
+      "name": "K1 the closing frame takes its cursor from a fresh source read, the copy-paste from pump",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    const cursor = this.wal.frontier.sourceCursor;\n    if (cursor === undefined)",
+      "replace": "    const cursor = (await this.source.read(this.wal.frontier.sourceCursor)).cursor;\n    if (cursor === undefined)",
+      "expectRed": "close:the-source-cursor-is-REPUBLISHED-UNCHANGED",
+      "cell": "close:the-source-cursor-is-REPUBLISHED-UNCHANGED",
+      "note": "The plausible authoring error, not a contrived one: pump ends by advancing to the read end, and repeating that here swallows any record that landed between the flush and the close."
+    },
+    {
+      "name": "K2 mint a run id when none is open instead of answering null",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    const runId = this.brackets.runId;\n    if (runId === undefined) return null;",
+      "replace": "    const runId = this.brackets.runId ?? randomUUID();",
+      "expectRed": "close:a-stream-at-a-stopping-point-answers-null-and-publishes-NOTHING",
+      "cell": "close:a-stream-at-a-stopping-point-answers-null-and-publishes-NOTHING",
+      "note": "Idempotence is the property a hook needs, because a hook fires whether or not the previous one already closed the run."
+    },
+    {
+      "name": "K3 drop the pending guard on the close",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    if (this.wal.pending)\n      throw new Error(\n        `event emitter for ${this.channel}: a frame is still pending; recovery must settle it before a run can be closed`,\n      );",
+      "replace": "",
+      "expectRed": "close:a-PENDING-frame-refuses-the-close",
+      "cell": "close:a-PENDING-frame-refuses-the-close",
+      "note": "Closing on top of an uncertain frame publishes a second frame claiming a seq the pending one may already hold."
+    },
+    {
+      "name": "K4 drop the halted guard on the close",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "  async closeRun(o: { timestamp: number; cotal?: CotalMeta }): Promise<string | null> {\n    if (this.halted) throw this.halted;",
+      "replace": "  async closeRun(o: { timestamp: number; cotal?: CotalMeta }): Promise<string | null> {",
+      "expectRed": "close:a-HALTED-emitter-refuses-to-close",
+      "cell": "close:a-HALTED-emitter-refuses-to-close",
+      "note": "A halt means the stream's position is not known. The suite scripts a broker answer the mutant could use, so the kill is the guard and not an instrument running dry."
+    },
+    {
+      "name": "K5 drop the onRunClosed report",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      if (runId !== null) this.onRunClosed?.(runId);",
+      "replace": "",
+      "expectRed": "holder:the-closed-run-is-reported-so-a-mapper-can-forget-it",
+      "cell": "holder:the-closed-run-is-reported-so-a-mapper-can-forget-it",
+      "note": "Without the report a connector's mapper keeps attributing records to a run the published stream has already closed, and the emitter refuses the batch."
+    }
+  ]
+}
