@@ -202,7 +202,13 @@ try {
     // naming it is honest; claiming it PREVENTS this is not, because its file lives under one
     // workspace root on one host. Two roots, two hosts, or a reclaim onto a reused pid walk past
     // it, and those are the situations an operator reading this halt is actually in.
-    c("control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this", /lock refuses only/.test(s4.err ?? "") && /workspace root/.test(s4.err ?? "") && !/lock is meant to prevent/.test(s4.err ?? ""), s4.err);
+    // Three requirements, and the third is the one a later edit is most likely to break: the
+    // message may not claim the lock PREVENTS this, and it may not name a case that in fact
+    // REFUSES THE START. Another host and a stale pid are refusals, not ways past the lock, and a
+    // cause list that includes them sends an operator to look at machines instead of at roots.
+    c("control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
+      /lock refuses a second one/.test(s4.err ?? "") && /workspace root/.test(s4.err ?? "") &&
+      !/lock is meant to prevent/.test(s4.err ?? "") && !/two hosts/.test(s4.err ?? ""), s4.err);
 
     // A named remedy has to exist where it is named. Nothing in shipped code calls `abandon()`, so
     // the halt cannot send an operator looking for a command; it has to hand them the directory.

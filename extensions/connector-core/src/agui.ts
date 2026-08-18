@@ -1601,9 +1601,11 @@ export class AguiEmitter<T> {
           "cas-loss",
           `event emitter for ${this.channel}: the subject tip is no longer ${o.E} (${(e as Error).message}). ` +
             `The broker ACL confines this subject to one principal, so the tip moved for one of: a ` +
-            `CONCURRENT emitter under this same principal, which the per-principal lock refuses only ` +
-            `within one workspace root on one host, so two roots, two hosts, or a lock reclaimed onto ` +
-            `a reused pid all get past it; a subject frontier record that disagrees with the stream, ` +
+            `CONCURRENT emitter under this same principal. The per-principal lock refuses a second ` +
+            `one, but the lock FILE lives under a workspace root, so an emitter started against a ` +
+            `DIFFERENT root, or by a path that never takes the lock, meets no lock at all. Another ` +
+            `host and a stale pid do not get past it; they refuse the start instead, loudly; a ` +
+            `subject frontier record that disagrees with the stream, ` +
             `which is what an interrupted upgrade or a restored backup leaves behind; a RESTORED ` +
             `stream; or a FILTERED PURGE, which returns the tip to 0 for every thread on the channel. ` +
             `None of these is resolvable by re-reading the tip, which agent credentials cannot read in ` +

@@ -79,11 +79,11 @@
     {
       "name": "S8 the halt claims the per-principal lock PREVENTS a concurrent emitter, instead of stating its limit",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "            `CONCURRENT emitter under this same principal, which the per-principal lock refuses only ` +\n            `within one workspace root on one host, so two roots, two hosts, or a lock reclaimed onto ` +\n            `a reused pid all get past it; a subject frontier record that disagrees with the stream, ` +\n",
-      "replace": "            `CONCURRENT emitter under this same principal (two sessions publishing at once, which the ` +\n            `per-principal lock is meant to prevent); a subject frontier record that disagrees with the stream, ` +\n",
+      "find": "            `CONCURRENT emitter under this same principal. The per-principal lock refuses a second ` +\n",
+      "replace": "            `CONCURRENT emitter under this same principal (two sessions publishing at once, which the per-principal lock is meant to prevent). The per-principal lock refuses a second ` +\n",
       "expectRed": "control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
       "cell": "control:the-halt-states-the-LIMIT-of-the-lock-rather-than-claiming-it-prevents-this",
-      "note": "The lock is real and taken on the shipped path (acquirePrincipalLock, via ensureEventWalDir at connector-claude-code/src/mcp.ts), so naming it is honest. Its file is per workspace root on one host, so it cannot prevent the case this halt fires on, and a guard named without its boundary sends an operator hunting a writer the guard supposedly made impossible."
+      "note": "The lock is real and taken on the shipped path (acquirePrincipalLock, via ensureEventWalDir at connector-claude-code/src/mcp.ts), so naming it is honest. Its file is per workspace root on one host, so it cannot prevent the case this halt fires on, and a guard named without its boundary sends an operator hunting a writer the guard supposedly made impossible. The clause was wrong twice: first it claimed the lock prevents the case, then it named another host and a reused pid as ways past it, when both REFUSE the start loudly. The get-past is a second workspace root, because that is where the lock file lives."
     },
     {
       "name": "S9 the halt points at this session's own log instead of the principal directory",

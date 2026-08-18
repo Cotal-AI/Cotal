@@ -296,8 +296,15 @@ One channel carries **every session of one agent**, because it is named after th
 after the session. Alongside the per-session logs the connector keeps one small record per principal,
 holding the last sequence the broker assigned on that channel, so a new session continues the stream
 its predecessor left instead of starting again from nothing. Both live under the events state root
-(`COTAL_WORKSPACE_ROOT`), and neither is something you edit by hand: if either goes missing or
-disagrees with the broker, the connector stops publishing and says so rather than guessing.
+(`COTAL_WORKSPACE_ROOT`), and neither is something you edit by hand.
+
+A **missing** record is not a fault: the connector rebuilds it from the session logs beside it, which
+is how an agent that was already running before this record existed keeps its stream. A record that
+**disagrees with the broker** is a fault, and the connector stops publishing and says why rather than
+guessing. There is no command to clear it. The state is the principal's directory under the events
+root, and clearing it by hand means removing that directory whole: the sequence, the cursor and the
+per-session logs only mean anything together, so removing part of it leaves a state the next start
+refuses.
 
 Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
 part by design, so a surface that renders a message as flat text shows a marker instead of prose.
