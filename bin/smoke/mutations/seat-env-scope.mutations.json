@@ -2,7 +2,6 @@
   "suite": "bin/smoke/seat-env-scope.smoke.ts",
   "guard": "a manager-spawned seat hands no connection material to the processes it spawns, and still resolves its own identity and control token from the launch-material file",
   "command": "pnpm build > /dev/null && pnpm smoke:seat-env-scope",
-  "completionMarker": "seat-env-scope: PASS",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/seat-env-scope.mutations.json",
   "why": [
     "THE SUITE MAKES TWO OPPOSITE CLAIMS AND EACH NEEDS ITS OWN KILL. It asserts an ABSENCE (no",
@@ -24,7 +23,13 @@
     "`@cotal-ai/connector-core` resolve to `dist/`, so a mutation to `src` that is not compiled is a",
     "mutation the suite never sees: the run would be green and the verdict would be a lie in the",
     "reassuring direction. `afterRestore` rebuilds, because `dist/` is gitignored and git cannot be",
-    "the recovery for a tree left holding a build compiled from the mutant."
+    "the recovery for a tree left holding a build compiled from the mutant.",
+    "",
+    "NO `completionMarker` IS DECLARED, and that is deliberate. This suite is fail-fast: it exits at",
+    "the first assertion, so its `seat-env-scope: PASS` banner is by construction the one line a",
+    "killed run never reaches. Declaring it as the marker graded all three genuine kills",
+    "INCONCLUSIVE - the tool's own header warns about exactly this, and it was measured here before",
+    "it was believed. A fail-fast suite with no line common to both outcomes declares none."
   ],
   "mutations": [
     {
