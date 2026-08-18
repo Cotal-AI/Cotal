@@ -589,7 +589,7 @@ try {
   // a spawn-only cross-owner op is broker-DENIED at publish while an admin operator's is admitted
   // and the manager's fresh ledger read governs.
   type EpReply = { ok: boolean; data?: unknown; error?: string };
-  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop" | "input", name: string): Promise<EpReply> => {
+  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop" | "input", name: string, forceMode?: "owner" | "any"): Promise<EpReply> => {
     let info;
     try { info = await ep.invokeService("manager", "inspect", { name }); }
     catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
@@ -597,7 +597,11 @@ try {
     const rowInfo = info.reply.data as { id: string; lifecycleUid: string };
     const dot = rowInfo.id.indexOf(".");
     const [tOwner, tActor] = dot > 0 ? [rowInfo.id.slice(0, dot), rowInfo.id.slice(dot + 1)] : [ep.principal.owner, rowInfo.id];
-    const mode = tOwner !== ep.principal.owner ? "any" : "owner";
+    // Derived from the owners, EXCEPT when a caller forces it. The derivation is right for every
+    // ordinary call, and wrong for one question: a same-owner target always derives `owner`, so a
+    // cell that wants to prove the ANY-mode subject is also closed can never reach it by asking
+    // nicely. `forceMode` exists for exactly that cell and for nothing else.
+    const mode = forceMode ?? (tOwner !== ep.principal.owner ? "any" : "owner");
     const command = op === "stop" ? "despawn" : op;
     // `input` is the one op here that carries a body. Everything else about the call is identical,
     // which is the point: the same resolve, the same derived mode, the same rails.
@@ -629,16 +633,27 @@ try {
   // whatever the peer is running, so it must NOT ride the same spawn scope. It does not: a spawn
   // bearer is minted no `input` row in either mode, so the publish is broker-denied before the
   // manager sees it. `alpha` rather than `delta` because the sibling stop above took delta.
-  const sibInput = await epTargeted(opsmate, "input", "alpha");
   // The refusal is asserted BY SHAPE, not just by `ok === false`, because an absence assertion is
-  // the kind that passes for the wrong reason. `deadline-exceeded` is the broker dropping the
-  // publish: the request never reached a manager, so nothing answered. Restoring the grant would
-  // not merely change that string, it would make this call SUCCEED, since the own-domain arm admits
-  // the sibling. A `permission-denied` here would mean the publish was admitted and the handler
-  // refused, which is a different and weaker property than the one this cell is for.
-  check("owner-domain: the SAME sibling actor that could attach and stop is REFUSED seat input, dropped at the BROKER (no row in either mode)",
-    sibInput.ok === false && /deadline-exceeded/.test(sibInput.error ?? ""), sibInput);
-  check("alpha survived the refused sibling input", manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
+  // the kind that passes for the wrong reason. A broker drop surfaces as `unavailable` or
+  // `deadline-exceeded`: the publish never reached a manager, so nothing answered. Restoring the
+  // grant would not merely change that string, it would make the owner-mode call SUCCEED, since the
+  // own-domain arm admits the sibling. A `permission-denied` would mean the publish was ADMITTED
+  // and the handler refused, which is a weaker property than the one these cells are for.
+  const brokerDropped = (r: EpReply): boolean =>
+    r.ok === false && /unavailable|deadline-exceeded/.test(r.error ?? "");
+  // BOTH modes, and the second one has to be forced. The helper derives `owner` for a same-owner
+  // target, so without the override the any-mode subject is never published and a claim about it
+  // would be untested text sitting next to a green cell.
+  const sibInput = await epTargeted(opsmate, "input", "alpha", "owner");
+  check("owner-domain: the SAME sibling actor that could attach and stop is REFUSED owner-mode seat input, dropped at the BROKER",
+    brokerDropped(sibInput), sibInput);
+  const sibInputAny = await epTargeted(opsmate, "input", "alpha", "any");
+  check("...and the any-mode subject is closed to it too, so the refusal is the missing grant and not the mode derivation",
+    brokerDropped(sibInputAny), sibInputAny);
+  // Named for what it proves and no more. `input` never removes a seat, so this rules out a wild
+  // despawn rather than a successful write; the load-bearing half is the pair above.
+  check("the refused input did not take alpha with it (it never should; this is the belt, not the braces)",
+    manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
   // A CROSS-OWNER caller with only spawn scope: the ep any-mode row it would need is broker-DENIED
   // at publish (a spawn bearer holds owner-mode rows only), so the op fails before the manager.
   const OWNER_B = "u_" + "b".repeat(26);
