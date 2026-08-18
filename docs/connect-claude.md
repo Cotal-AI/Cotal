@@ -218,15 +218,34 @@ still can't drive presence or stop the agent. The full Claude Code hook-event li
 with the adapter:
 [`extensions/connector-claude-code`](../extensions/connector-claude-code/README.md).
 
-## Transcript mirror
+## Event plane
 
-A managed session mirrors its own transcript onto a per-agent channel, **`tr-<name>`**, so
-peers and cheap observer agents can read what the agent *actually* did: assistant text in
-full, tool calls as one-liners, results truncated, thinking omitted. Gated by
-`COTAL_TRANSCRIPT` (set for managed sessions; a personal session with the plugin never
-mirrors). A `tr-` channel is a regular channel (durable, listed by `cotal_channels`,
-readable on demand) with a rolling window, so long sessions age out early entries. In
-auth mode the launcher provisions publish rights for it alongside the agent's channels.
+A session launched with `cotal spawn --events` publishes a **structured** account of what it
+did: run boundaries per turn, assistant text, reasoning, and each tool call with its arguments,
+its end, and its result. Not prose about the work, the work itself, in a vocabulary a program can
+read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
+with the plugin installed publishes nothing.
+
+The channel is **`events.<owner>.<actor>`**, named after the principal the manager allocated for
+the session and never after its display name, because two live agents may share a display name and
+would then share a stream. The launch grants publish rights on exactly that one channel. A spawn
+that asks for a *different* agent's event channel is refused at the door rather than granted, since
+that channel carries the session's tool inputs and outputs; grant a reader out of band with
+`cotal actor grant` instead.
+
+Events are written to a per-session write-ahead log before they are published, so a hook that fires
+after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
+open when the session stopped is closed rather than left dangling.
+
+Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
+part by design, so a surface that renders a message as flat text shows a marker instead of prose.
+
+**On a per-user-auth mesh, arming needs the spawner's grant to cover the channel.** The event
+channel is added to the child's publish set, and delegation only narrows: an agent may hand down
+a subset of what it holds and no more. So a peer-initiated `--events` spawn is refused unless the
+spawning identity's own grant already covers the child's event channel. The refusal prints the
+exact `cotal actor grant` command that widens it. An operator launch, whose chain reaches an
+admin-scoped or roster row, is unaffected.
 
 ## Resume an existing session (fork, never hijack)
 
