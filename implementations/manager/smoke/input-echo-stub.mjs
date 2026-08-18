@@ -12,7 +12,7 @@
 // Written as raw bytes with no decoding, no trimming and no line buffering, because the assertions
 // are byte-exact: a trailing `\r` present or absent is a cell, so a stub that normalised newlines
 // would silently answer the question the test is asking.
-import { appendFileSync, readFileSync } from "node:fs";
+import { appendFileSync, readFileSync, writeFileSync } from "node:fs";
 import { CotalEndpoint } from "@cotal-ai/core";
 
 const e = process.env;
@@ -35,6 +35,17 @@ if (process.stdin.isTTY) process.stdin.setRawMode(true);
 // suite would flake in the direction of a false red.
 process.stdin.on("data", (chunk) => appendFileSync(sink, chunk));
 process.stdin.resume();
+
+// READINESS, and it is load-bearing rather than tidy. The manager puts a seat in its slot map (and
+// therefore in `ps`) when it LAUNCHES the process, not when that process has finished booting, so a
+// suite that waits for the `ps` row can type into a node process that has not yet run this file:
+// the tty is still in cooked mode, ICRNL turns the written CR into an LF, and the byte-exact cell
+// reds for a reason that has nothing to do with the product. Observed once in review, green on five
+// re-runs, which is exactly the profile of a race CI would learn to ignore.
+//
+// The marker is a SEPARATE file, never a byte on the sink: the sink is compared byte for byte, so
+// announcing readiness through it would corrupt the thing being measured.
+if (e.COTAL_INPUT_READY) writeFileSync(e.COTAL_INPUT_READY, "ready");
 
 const ep = new CotalEndpoint({
   space: e.COTAL_SPACE,

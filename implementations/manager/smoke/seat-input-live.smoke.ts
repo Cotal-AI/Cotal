@@ -48,7 +48,7 @@
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -118,6 +118,9 @@ const releaseBroker = teardownOnSignal(srv, dir);
  *  number a collision into `typist-2`), so a fixture that read the requested name would silently
  *  watch an empty file. */
 const sinkFor = (name: string): string => join(sinkDir, `${name}.bin`);
+/** Where the child announces that its tty is in raw mode and a reader is attached. A SEPARATE file
+ *  from the sink, never a byte on it, because the sink is compared byte for byte. */
+const readyFor = (name: string): string => join(sinkDir, `${name}.ready`);
 /** The raw bytes the child has received so far, `<empty>` before it has been typed into at all.
  *  Deliberately a Buffer and never a string: a `\r` present or absent IS a cell here, so a helper
  *  that decoded or trimmed would answer the question the suite is asking. */
@@ -127,6 +130,21 @@ const sinkBytes = (name: string): Buffer => {
 /** Wait for the child's sink to reach `want` bytes. Delivery is a real pty write to a real
  *  process, so it is not synchronous with the reply; polling for a LENGTH (not for a match) means a
  *  wrong-bytes delivery is graded by the assertion that follows, never masked by this wait. */
+/** Block until the child has actually booted far enough to receive a keystroke correctly.
+ *  REQUIRED, not belt and braces: the manager lists a seat in `ps` from the moment it LAUNCHES the
+ *  process, so a `ps` row proves a process exists, never that node has run the stub. Typing into
+ *  the gap lands on a tty still in cooked mode, where ICRNL rewrites the CR as an LF and a
+ *  byte-exact cell reds for a reason that is not the product. Caught in review as a once-in-six
+ *  false red, which is precisely the failure profile that teaches a team to re-run a suite instead
+ *  of reading it. */
+const seatReady = async (name: string, ms = 60_000): Promise<void> => {
+  const deadline = Date.now() + ms;
+  while (Date.now() < deadline) {
+    if (existsSync(readyFor(name))) return;
+    await wait(100);
+  }
+  throw new Error(`FIXTURE FAILURE: ${name} never announced stdin readiness within ${ms}ms; nothing typed at it could be graded`);
+};
 const sinkReaches = async (name: string, want: number, ms = 15_000): Promise<Buffer> => {
   const deadline = Date.now() + ms;
   let b = sinkBytes(name);
@@ -137,7 +155,7 @@ const sinkReaches = async (name: string, want: number, ms = 15_000): Promise<Buf
 const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? SERVERS), COTAL_CREDS: String(o.creds),
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
-  COTAL_INPUT_SINK: sinkFor(o.name),
+  COTAL_INPUT_SINK: sinkFor(o.name), COTAL_INPUT_READY: readyFor(o.name),
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 const echoCon: Connector = { kind: "connector", name: "input-echo", requires: ["node"], buildLaunch: (o): LaunchSpec => ({ command: "node", args: [STUB], env: envFor(o) }) };
@@ -161,7 +179,9 @@ const spawnLive = async (call: Call, args: Record<string, unknown>): Promise<{ n
   for (let i = 0; i < 120; i++) {
     const ps = await call("ps");
     const row = ((ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string }>) ?? []).find((x) => x.name === name);
-    if (row) return row;
+    // Readiness is awaited HERE rather than at each call site, so a cell added later cannot forget
+    // it: `ps` proves the process was launched, this proves it can receive a keystroke.
+    if (row) { await seatReady(name); return row; }
     await wait(250);
   }
   throw new Error(`agent ${name} never became live in ps`);
@@ -248,6 +268,8 @@ try {
   // ("no trailing \r") is satisfied by a sink that never receives anything at all.
   check("the spawned seat's sink starts empty (so an absence below means absence, not a dead stub)",
     sinkBytes(typist.name).length === 0, sinkBytes(typist.name).toString("hex"));
+  check("...and the child has announced its tty is in RAW mode with a reader attached, so a keystroke can be graded at all",
+    existsSync(readyFor(typist.name)), readyFor(typist.name));
 
   console.log("\n2. owner reach: the spawner types into its OWN seat and the exact bytes reach the child");
   {

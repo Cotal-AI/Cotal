@@ -197,10 +197,14 @@ const INPUT_INPUT_SCHEMA = {
     enter: { type: "boolean" },
   },
 } as const;
-/** `input` output: the seat written to and how many BYTES landed in its pty (the UTF-8 length of
- *  the text plus the `\r` when one was appended, so a caller can tell the two apart without
- *  re-deriving the encoding). Deliberately NOT an echo: output rides the event plane / transcript,
- *  and a responder that replayed input would be inventing a second, lying source of turns. */
+/** `input` output: the seat written to and how many BYTES WERE WRITTEN into its pty (the UTF-8
+ *  length of the text plus the `\r` when one was appended, so a caller can tell the two apart
+ *  without re-deriving the encoding). "Written", not "landed", and the distinction is real: the
+ *  runtime handle's write is fire-and-forget, so a large payload against a slow reader can sit in
+ *  the pty master's buffer while this number is already reported. It is the size of what was
+ *  handed to the terminal, which is the only thing the responder can honestly know.
+ *  Deliberately NOT an echo: output rides the event plane / transcript, and a responder that
+ *  replayed input would be inventing a second, lying source of turns. */
 const INPUT_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["name", "bytes"],
   properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
