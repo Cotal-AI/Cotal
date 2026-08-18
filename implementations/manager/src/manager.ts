@@ -595,6 +595,35 @@ export async function epAwaitReply(
  * form, which is what a caller writes when it knows which agent it wants to read, and not the
  * wildcard form, which is what an operator writes deliberately for an observer.
  */
+/**
+ * The out-of-band route for the mesh the refusal is running on, as ONE paste-ready command.
+ *
+ * **A REMEDY A REFUSAL PRINTS IS AUTHORITY THE REFUSAL LENDS, AND BOTH HALVES OF THIS ONE WERE
+ * WIDER THAN THE SENTENCE AROUND THEM.** The static half named `--profile observer`, and `mint`
+ * reads `--allow-subscribe` only for the agent profile while the observer arm of `permissionsFor`
+ * hardcodes `chat.>`: an operator narrowing a reader to one event plane was handed a reader of every
+ * channel in the space. The user half named a bare `cotal actor grant`, and an omitted flag there is
+ * not "leave it alone" but the WIDE default (`>` read, `>` post, `spawn` scope), so the same
+ * sentence handed out a full-mesh reader-writer with spawn. Both were found by running the printed
+ * command and decoding what it produced, which is the only way this class of defect surfaces.
+ *
+ * So the command is spelled out in full and only ONE is printed: the one for the mesh this manager
+ * is actually running, because a sentence carrying both routes is a sentence an operator picks the
+ * wrong half of. `smoke:events-grant` section 9 runs the static half and grades the credential;
+ * `smoke:user-spawn:live` section E runs the user half and grades the row.
+ */
+function readerRemedy(userMode: boolean, owner: string, channel: string): string {
+  return userMode
+    ? `\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +
+        `--allow-publish ''\`, with every field spelled out: \`actor grant\` is an upsert of the ` +
+        `WHOLE row and an omitted flag means the WIDE default (\`>\` read, \`>\` post, \`spawn\` ` +
+        `scope), not "leave it alone".`
+    : `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
+        `is no actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer ` +
+        `one: \`mint\` reads --allow-subscribe only for that profile, so an observer mint would ` +
+        `ignore the channel and hand out a reader of the whole chat plane.`;
+}
+
 function foreignEventChannels(channels: readonly string[], owner: string, actor: string): string[] {
   return channels.filter((ch) => {
     const p = eventChannelPrincipal(ch);
@@ -3247,11 +3276,7 @@ export class Manager {
           `this spawn asks for another agent's event channel: ${foreign.join(", ")}. An ` +
             `agent may be granted its OWN event plane and no other, because that plane carries the ` +
             `session's tool inputs and outputs. Grant a reader out of band rather than through a ` +
-            `spawn: \`cotal actor grant\` on a user-auth mesh, or \`cotal mint <name> --profile ` +
-            `agent --allow-subscribe ${foreign[0]} --provision\` on a static one, where there is no ` +
-            `actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer one: ` +
-            `\`mint\` reads --allow-subscribe only for that profile, so an observer mint would ignore ` +
-            `the channel and hand out a reader of the whole chat plane.`,
+            `spawn: ${readerRemedy(this.userMode, agentTriple.owner, foreign[0]!)}`,
         );
       }
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
@@ -3608,10 +3633,8 @@ export class Manager {
           `retained agent ${entry.name}: its record claims another agent's event channel ` +
             `(${foreign.join(", ")}). An agent may hold its OWN event plane and no other, because that ` +
             `plane carries the session's tool inputs and outputs. Remove it from the inventory and ` +
-            `grant the reader out of band instead: \`cotal actor grant\` on a user-auth mesh, or ` +
-            `\`cotal mint <name> --profile agent --allow-subscribe ${foreign[0]} --provision\` on a ` +
-            `static one, where there is no actor ledger for \`actor grant\` to write to. The AGENT ` +
-            `profile, not the observer one: \`mint\` reads --allow-subscribe only for that profile.`,
+            `grant the reader out of band instead: ` +
+            `${readerRemedy(entry.identity.mode === "user", owner, foreign[0]!)}`,
         );
     }
     if (entry.identity.mode === "open") {

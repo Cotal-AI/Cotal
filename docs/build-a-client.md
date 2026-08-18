@@ -33,8 +33,10 @@ receive-side authenticity checks, and the presence/channel loops. See
   cotal mint <name> --profile agent          # write an agent creds file to join with
   ```
 
-  `cotal mint <name> --profile <agent|observer|admin>` also takes `--allow-subscribe a,b`
-  and `--allow-publish a,b` to scope the read/post ACLs, and `--out <path>`. The creds file
+  `cotal mint <name> --profile agent` also takes `--allow-subscribe a,b` and
+  `--allow-publish a,b` to scope the read/post ACLs, and `--out <path>`. Those two flags apply to
+  the **agent** profile only: `observer` and `admin` carry a fixed read set (`observer` reads the
+  whole chat plane) and ignore them, so scope a reader with the agent profile. The creds file
   binds your principal (`owner.actor`, [SPEC §2](../SPEC.md#2-identity)) and your channel
   grants; see
   [identity-and-auth.md](identity-and-auth.md) and [run-a-mesh.md](run-a-mesh.md).

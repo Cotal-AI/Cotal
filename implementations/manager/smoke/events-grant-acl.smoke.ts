@@ -506,10 +506,18 @@ try {
   // profile out of the manager's own refusal string rather than hardcoding one, so rewording the
   // remedy back to a profile that ignores the flag reddens HERE instead of in a terminal.
   {
-    const foreign = remedyChannel;
-    const named = /cotal mint <name> --profile (\S+) --allow-subscribe/.exec(remedyRefusal);
-    check("the refusal prints a mint command and names a profile for it", named !== null, remedyRefusal.slice(0, 300));
+    // BOTH FIELDS COME OUT OF THE REFUSAL, not just the profile. An engineering lens pointed out
+    // that grading the profile while minting the suite's OWN channel leaves the channel field
+    // ungraded: a refusal printing `--allow-subscribe events.wrong.wrong` would keep every cell
+    // here green, which is the defect this section exists for, one field over. So the mint runs on
+    // the channel the refusal PRINTED and the result is compared against the channel the manager
+    // actually refused.
+    const named = /cotal mint <reader> --profile (\S+) --allow-subscribe (\S+)/.exec(remedyRefusal);
+    check("the refusal prints a mint command, naming a profile and a channel", named !== null, remedyRefusal.slice(0, 400));
     const profile = named?.[1] ?? "";
+    const printedChannel = named?.[2] ?? "";
+    check("the channel it prints is the channel it refused", printedChannel === remedyChannel, { printedChannel, refused: remedyChannel });
+    const foreign = printedChannel;
     const credsPath = join(workspaceRoot, "remedy.creds");
     writeFileSync(
       credsPath,
@@ -521,8 +529,8 @@ try {
     const granted = subAcl(credsPath);
     check(
       "the profile the refusal names mints a reader of EXACTLY the one event channel",
-      granted.length === 1 && channelOf(granted[0]!) === foreign,
-      { profile, granted },
+      granted.length === 1 && channelOf(granted[0]!) === remedyChannel,
+      { profile, granted, refused: remedyChannel },
     );
     check(
       "and hands out no wildcard over the chat plane",
@@ -538,7 +546,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 37;
+const EXPECTED = 38;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

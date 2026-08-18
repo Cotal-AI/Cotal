@@ -1,0 +1,35 @@
+{
+  "suite": "implementations/auth/smoke/user-spawn.smoke.ts",
+  "guard": "the out-of-band remedy a user-mesh refusal prints is a NARROW grant, spelled out field by field, rather than a bare verb whose omitted flags mean the wide default",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm --filter @cotal-ai/auth build && pnpm smoke:user-spawn:live",
+  "afterRestore": "pnpm --filter @cotal-ai/manager build",
+  "completionMarker": "USER-SPAWN",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/events-remedy-user.json",
+  "why": [
+    "A confinement refusal lends its own authority to whatever command it prints, and this half of",
+    "this one printed a bare `cotal actor grant`. `runActor` fills every omitted flag from",
+    "`csv(values.x, dflt)` with the WIDE default: `>` read, `>` post, `spawn,role:default` scope. So an",
+    "operator following a refusal in order to grant a READER of one event plane wrote a row that reads",
+    "and posts on every channel in the space and can spawn, which is strictly worse than the spawn the",
+    "refusal blocked, and it arrives carrying the manager's authority.",
+    "",
+    "A security lens found it after the static half of the same sentence was fixed. The cells parse the",
+    "command out of the refusal and run the values it printed through the real ledger writer, so the",
+    "text and the row cannot drift apart. R1 reverts the text to the bare verb.",
+    "",
+    "SPECIFIER BOUNDARY. The suite loads the manager from `implementations/manager/dist/index.js`, so",
+    "the command builds the manager before running and `afterRestore` rebuilds it, or a restored source",
+    "would sit behind a mutated dist and every later run would grade the wrong tree."
+  ],
+  "mutations": [
+    {
+      "name": "R1 the user-mesh refusal prints a bare actor grant, whose omitted flags mean the wide default",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    ? `\\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +",
+      "replace": "    ? `\\`cotal actor grant <reader> --owner ${owner}` +",
+      "expectRed": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+      "cell": "the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+      "note": "This is the shipped state of the text until a security lens read it against `runActor`'s defaults. The second cell reddens too, because the parsed flags fall back to `>` and the row that lands is the wide one an operator would have written."
+    }
+  ]
+}

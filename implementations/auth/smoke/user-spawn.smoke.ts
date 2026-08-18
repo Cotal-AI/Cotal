@@ -760,6 +760,40 @@ try {
     { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
   check("the refusal for a concrete event channel is the OWN-CHANNEL rule, and it names the channel",
     overText.ok === false && /another agent's event channel/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
+  // THE REMEDY THAT REFUSAL PRINTS, PARSED AND RUN. A confinement refusal lends its own authority
+  // to whatever command it prints, and BOTH halves of this one were once wider than the sentence
+  // around them: the static half named a profile that ignores `--allow-subscribe`, and this half
+  // named a bare `cotal actor grant`. A bare grant is not a narrow one. `runActor` fills every
+  // omitted flag from `csv(values.x, dflt)` with the WIDE default (`>` read, `>` post,
+  // `spawn,role:default` scope), and it says so in its own comment, so an operator following this
+  // refusal to the letter in order to grant a READER would have written a row that reads and posts
+  // everywhere and can spawn. That is a worse outcome than the spawn the refusal blocked, and it
+  // arrives carrying the manager's authority.
+  //
+  // Two cells, because the text and the effect are different claims. The first is that the command
+  // spells every field out, which is what stops a default applying at all. The second RUNS the
+  // values it printed through the real ledger writer and grades the row that lands.
+  const grantCmd = /cotal actor grant [^`]+/.exec(overText.error ?? "")?.[0] ?? "";
+  const flag = (name: string): string | undefined => new RegExp(`--${name} '([^']*)'`).exec(grantCmd)?.[1];
+  const ownerFlag = /--owner (\S+)/.exec(grantCmd)?.[1];
+  check("the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+    grantCmd.length > 0 && flag("allow-subscribe") === VICTIM && flag("allow-publish") === "" && flag("scope") === "" && ownerFlag === OWNER,
+    { grantCmd, sub: flag("allow-subscribe"), pub: flag("allow-publish"), scope: flag("scope"), owner: ownerFlag });
+  const READER = "evtreader";
+  grantActor(dir, {
+    owner: ownerFlag ?? "",
+    actor: READER,
+    scope: (flag("scope") ?? ">").split(",").filter(Boolean),
+    allowSubscribe: (flag("allow-subscribe") ?? ">").split(",").filter(Boolean),
+    allowPublish: (flag("allow-publish") ?? ">").split(",").filter(Boolean),
+  });
+  const readerRow = existsSync(rowFile("interactive", OWNER, READER))
+    ? (JSON.parse(readFileSync(rowFile("interactive", OWNER, READER), "utf8")) as { allowSubscribe: string[]; allowPublish: string[]; scope: string[] })
+    : undefined;
+  check("running exactly what it printed writes a row that reads that ONE channel, posts nowhere, and cannot spawn",
+    JSON.stringify(readerRow?.allowSubscribe) === JSON.stringify([VICTIM]) && readerRow?.allowPublish.length === 0 && readerRow?.scope.length === 0,
+    readerRow);
+
   const envelopeText: ControlReply = await manager.startAgent(
     { name: "zeta", agent: "e2e", allowSubscribe: ["general", "not-mine"], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
   check("and an ORDINARY channel the peer does not hold is still refused by the delegation envelope, which the rule did not replace",

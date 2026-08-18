@@ -240,9 +240,22 @@ authority: on a user mesh the delegation envelope, on a static mesh the spawning
 That is deliberate, because the pattern is the form an operator writes on purpose for an observer,
 and it is worth knowing rather than assuming the fence is total.
 
-To let something else read a plane, grant it out of band. On a user-auth mesh that is
-`cotal actor grant`. On a static mesh there is no actor ledger for `actor grant` to write to, and it
-says so; mint the reader instead:
+To let something else read a plane, grant it out of band. The refusal prints the command for the
+mesh it is running on, spelled out in full, and only that one.
+
+On a **user-auth** mesh:
+
+```bash
+cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe 'events.<owner>.<actor>' --allow-publish ''
+```
+
+Every field, deliberately. `actor grant` is an upsert of the whole row, and an omitted flag is not
+"leave it alone": it is the wide default, `>` read, `>` post, and `spawn` scope. A bare
+`cotal actor grant <reader>` therefore grants a reader of every channel in the space, which is the
+opposite of what a scoped watcher is for.
+
+On a **static** mesh there is no actor ledger for `actor grant` to write to, and the refusal says
+so; mint the reader instead:
 
 ```bash
 cotal mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>' --provision

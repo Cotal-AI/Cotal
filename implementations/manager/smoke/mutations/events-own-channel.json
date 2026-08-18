@@ -31,7 +31,10 @@
     "E7 rewords the refusal's own remedy back to the profile that ignores --allow-subscribe. Every",
     "other cell stays green: the refusal still refuses, still names the channel, still releases the",
     "name. Only the credential the printed command actually mints changes, which is the half an",
-    "operator pays for and the half no cell watched before."
+    "operator pays for and the half no cell watched before.",
+    "E8 is E7 one field over: the printed CHANNEL rather than the printed profile. It exists because",
+    "the first version of section 9 graded the profile and then minted the suite's own channel, so a",
+    "refusal pointing an operator at a different plane would have kept every cell green."
   ],
   "mutations": [
     {
@@ -91,11 +94,20 @@
     {
       "name": "E7 the refusal names a mint profile that ignores the channel it prints",
       "file": "implementations/manager/src/manager.ts",
-      "find": "            `agent --allow-subscribe ${foreign[0]} --provision\\` on a static one, where there is no ` +",
-      "replace": "            `observer --allow-subscribe ${foreign[0]}\\` on a static one, where there is no ` +",
+      "find": "    : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "    : `\\`cotal mint <reader> --profile observer --allow-subscribe ${channel}\\`, where there ` +",
       "expectRed": "the profile the refusal names mints a reader of EXACTLY the one event channel",
       "cell": "the profile the refusal names mints a reader of EXACTLY the one event channel",
       "note": "This is the shipped state of the text until a live mint decoded what it produced. `mint` reads --allow-subscribe only for the agent profile and the observer arm of permissionsFor hardcodes chat.>, so the printed command handed an operator a reader of the whole chat plane while the sentence around it promised one channel. Section 9 parses the profile out of the refusal rather than hardcoding one, so this mutant is the drift it exists to catch."
+    },
+    {
+      "name": "E8 the refusal prints a channel other than the one it refused",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    : `\\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\\`, where there ` +",
+      "replace": "    : `\\`cotal mint <reader> --profile agent --allow-subscribe events.local.UNOTTHEONEREFUSED --provision\\`, where there ` +",
+      "expectRed": "the channel it prints is the channel it refused",
+      "cell": "the channel it prints is the channel it refused",
+      "note": "E7's sibling, one field over, and an engineering lens is why it exists: a section that grades the PROFILE the refusal names while minting the suite's own channel leaves the channel field ungraded, and a refusal pointing an operator at the wrong plane is the same defect class as one naming the wrong profile. Section 9 now mints on the channel the refusal printed and compares the result against the channel the manager refused, so this mutant reddens twice."
     }
   ]
 }

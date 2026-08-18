@@ -50,9 +50,15 @@ The rule reads a **concrete** channel, two principal tokens and nothing else. A 
 authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
 observer.
 
-To let something read a plane, grant it out of band. On a user-auth mesh that is `cotal actor
-grant`. On a static mesh there is no actor ledger for `actor grant` to write to, so mint the reader
-instead: `cotal mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>'
---provision`. The agent profile, not the observer one: `mint` reads `--allow-subscribe` only for
-that profile, so an observer mint ignores the channel and hands out a reader of the whole chat
-plane.
+To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+full, for the mesh it is running on. On a user-auth mesh:
+`cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+wide default (`>` read, `>` post, `spawn` scope), not "leave it alone". On a static mesh there is no
+actor ledger for `actor grant` to write to, so mint the reader instead:
+`cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+not the observer one, since `mint` reads `--allow-subscribe` only for that profile and an observer
+mint hands out a reader of the whole chat plane.
+
+`cotal mint`'s `--allow-subscribe` / `--allow-publish` rows in `cli.md` and the sentence in
+`build-a-client.md` now say the same thing: those flags apply to the agent profile only.
