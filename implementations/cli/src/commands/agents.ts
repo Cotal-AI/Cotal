@@ -334,6 +334,35 @@ const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
 
 const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
+/** How long any single wait on a LINK may take before the loop stops waiting on it. Neither
+ *  `flush()` nor `drain()` carries a deadline of its own, and `connect`'s `timeout` covers only the
+ *  dial: a link that half-opens AFTER connect (the exact slow death this command exists for) would
+ *  otherwise pin the loop, and the detach key with it, until the connection's own heartbeat gave up
+ *  around two minutes later. */
+const LINK_DEADLINE_MS = 5_000;
+
+/** A deadline that never holds the process open by itself: the loser of a race must not add five
+ *  seconds to an exit. */
+const after = (ms: number): Promise<void> =>
+  new Promise((r) => { const t = setTimeout(r, ms); t.unref?.(); });
+
+/** Did a flush RETURN inside the deadline? That, and not the publish, is what says a frame left:
+ *  publishing is a local buffer write. A rejection and a timeout are the same answer here, `no`. */
+const flushed = (nc: NatsConnection): Promise<boolean> =>
+  Promise.race([nc.flush().then(() => true, () => false), after(LINK_DEADLINE_MS).then(() => false)]);
+
+/** Give a connection back, bounded. Draining is another flush, so a link that has already missed
+ *  its deadline is closed outright instead of being asked to drain through the same dead socket. */
+const closeLink = async (nc: NatsConnection): Promise<void> => {
+  const drained = await Promise.race([nc.drain().then(() => true, () => true), after(LINK_DEADLINE_MS).then(() => false)]);
+  if (!drained) await nc.close().catch(() => { /* already gone */ });
+};
+
+/** A session that ran at least this long counts as one that WORKED, whether or not the seat spoke.
+ *  Below it, a link that comes up for the control round trip and dies again is a flap, and resetting
+ *  the backoff on those re-mints a grant, a credential and a hand-back connection every second. */
+const SESSION_WORKED_MS = 5_000;
+
 /** One establishment attempt: the manager's answer, classified by what the CALLER should do about
  *  it rather than by prose. `gone`/`denied` stop the loop; `fatal` is a refusal that retrying can
  *  never fix; everything else is worth another attempt. */
@@ -376,6 +405,21 @@ export function attachRefusal(code: string | undefined): AttachRefusal {
 export function reconnectNotice(est: { fromManager?: true; message: string }, alreadySaid: string): string | undefined {
   if (!est.fromManager || est.message === alreadySaid) return undefined;
   return `[cotal: ${est.message}]`;
+}
+
+/**
+ * The line an exit owes an operator about sessions this attach could not hand back, or nothing.
+ *
+ * Suppressed on `gone`, and that is not tidiness. That verdict exists because the manager answered
+ * `not-found`, which it only answers once the seat has been freed, and freeing a seat ends every
+ * session bound to it (`freeSlot` into `endForTarget`, on despawn, self-stop, reap and natural exit
+ * alike). The sessions this would name have already been collected, so naming them would be
+ * inventing work for someone who is about to close their terminal.
+ */
+export function heldSessionNotice(pending: number, verdict: AttachVerdict["kind"]): string | undefined {
+  if (pending < 1 || verdict === "gone") return undefined;
+  const what = pending === 1 ? "a session" : `${pending} sessions`;
+  return `[cotal: the manager still holds ${what} from the lost link; each frees when the seat or the manager ends it]`;
 }
 
 /**
@@ -480,15 +524,20 @@ async function releaseAbandonedSession(s: Abandoned): Promise<void> {
     ...standaloneConnectOpts({ creds: s.creds, tls: false }),
     inboxPrefix: `_INBOX_${s.inbox}`,
     maxReconnectAttempts: 0,
-    timeout: 5_000,
+    timeout: LINK_DEADLINE_MS,
+    // The same short ping the reconnecting session uses. This connection exists BECAUSE a link died,
+    // so it is the last one that should be left waiting on the stock two-minute heartbeat to find
+    // out that the replacement died too.
+    pingInterval: 10_000,
   });
   try {
     // The rail is opened only because `close()` is the public way to speak the framing; no timers,
     // and it tears itself down on the same call.
     openSessionRail({ nc, grant: s.grant, role: "caller", onData: () => {}, idleCreditMs: 0, stallTimeoutMs: 0 }).close();
-    await nc.flush();
+    // Throwing is what keeps the record: the caller holds the session until a flush RETURNS.
+    if (!(await flushed(nc))) throw new Error(`the close frame for session ${s.grant.sessionId} never left`);
   } finally {
-    await nc.drain().catch(() => nc.close());
+    await closeLink(nc);
   }
 }
 
@@ -520,17 +569,17 @@ async function runAttachLoop(
 ): Promise<AttachVerdict> {
   let first = true;
   let attempt = 0; // consecutive re-establishment attempts since the last live session
-  let abandoned: Abandoned | undefined; // a session the manager still counts, waiting to be told
+  // Sessions the manager still counts, waiting to be told. A LIST rather than one slot: a second
+  // link death before the first hand-back lands would overwrite the first and leak it with nothing
+  // said. It cannot grow without bound, because every entry needed a successful establishment, and
+  // successful establishments are exactly what the manager's own session ceiling counts.
+  const abandoned: Abandoned[] = [];
   let saidWhy = ""; // the last transient refusal printed, so a steady reason prints once, not per attempt
-  // Every exit runs through here, so the one thing an operator cannot see for themselves — that
-  // the manager is still holding a session this attach could never close — is never swallowed.
-  // Not on `gone`, though: that verdict means the manager answered `not-found`, which it only does
-  // once the seat has been freed, and freeing a seat ends every session bound to it
-  // (`freeSlot` -> `endForTarget`, on despawn, self-stop, reap and exit alike). Saying the manager
-  // still holds it would be telling an operator to worry about something already collected.
+  // Every exit runs through here, so the one thing an operator cannot see for themselves is never
+  // swallowed. What to say, and when to say nothing, is `heldSessionNotice`.
   const done = (v: AttachVerdict): AttachVerdict => {
-    if (abandoned && v.kind !== "gone")
-      console.error(c.dim("[cotal: the manager still holds the session from the lost link; it frees when the seat or the manager ends it]"));
+    const notice = heldSessionNotice(abandoned.length, v.kind);
+    if (notice) console.error(c.dim(notice));
     return v;
   };
   for (;;) {
@@ -544,14 +593,16 @@ async function runAttachLoop(
       if (detached) return done({ kind: "ended" });
       attempt++;
     }
-    // Give the manager its slot back BEFORE claiming another one. The order is load-bearing at the
-    // ceiling: a client that claims first is refused by the very session it abandoned. A failure
-    // here is the link still being down, which the next attempt retries and `done` accounts for.
-    if (abandoned) {
+    // Give the manager its slots back BEFORE claiming another one. The order is load-bearing at the
+    // ceiling: a client that claims first is refused by the very sessions it abandoned. Oldest
+    // first, and one failure ends the round rather than skipping ahead, because the reason is the
+    // link and the link is the same for all of them. A failure is retried on the next attempt and
+    // accounted for by `done` if it never lands.
+    while (abandoned.length > 0) {
       try {
-        await releaseAbandonedSession(abandoned);
-        abandoned = undefined;
-      } catch { /* still unreachable; retried on the next attempt, reported by `done` if never */ }
+        await releaseAbandonedSession(abandoned[0]);
+        abandoned.shift();
+      } catch { break; }
     }
     let est: Established;
     try {
@@ -578,6 +629,7 @@ async function runAttachLoop(
     else console.error(c.dim("[cotal: reconnected]"));
     first = false;
     let outcome;
+    const startedAt = Date.now();
     const transport = meshSessionTransport(est.nc, est.grant);
     try {
       // The manager replays its byte-exact backlog snapshot on every open (the `ready` handshake
@@ -595,17 +647,19 @@ async function runAttachLoop(
       let handedBack = false;
       if (!est.nc.isClosed()) {
         transport.close();
-        handedBack = await est.nc.flush().then(() => true).catch(() => false);
+        handedBack = await flushed(est.nc);
       }
       if (!handedBack && reconnect) {
-        abandoned = { grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server };
+        abandoned.push({ grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server });
       }
-      await est.nc.drain().catch(() => est.nc.close());
+      await closeLink(est.nc);
     }
-    // The backoff resets on a session that WORKED, not on one that merely opened. A link that comes
-    // up long enough for the control round trip and then dies would otherwise never leave the 1s
-    // rung, and each of those rungs costs a grant, a credential and two connections.
-    if (outcome.carried) attempt = 0;
+    // The backoff resets on a session that WORKED, not on one that merely opened. `carried` is not
+    // enough on its own: a seat that has produced nothing has an empty backlog snapshot, so a
+    // perfectly healthy attach to a QUIET agent would never reset and would climb to the 30s cap
+    // over a few blips, which is the seat this whole change cares most about. A session that simply
+    // lasted is the other half of the same question.
+    if (outcome.carried || Date.now() - startedAt >= SESSION_WORKED_MS) attempt = 0;
     if (!reconnect) {
       // One-shot: a faulted session still throws, so `--no-reconnect` exits the way it does today.
       if (outcome.error) throw outcome.error;

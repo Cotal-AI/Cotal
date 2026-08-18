@@ -2,7 +2,7 @@
   "suite": "implementations/manager/smoke/attach-reconnect.smoke.ts",
   "guard": "`cotal attach` re-establishes its session when the LINK dies, and stops, saying why, when re-establishing cannot help",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-reconnect",
-  "completionMarker": "F. the three classifications the loop turns on",
+  "completionMarker": "F. the four classifications the loop turns on",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-reconnect.json",
   "why": [
     "SPECIFIER BOUNDARY, and it is the reason every command here builds first. The suite reads the",
@@ -16,13 +16,14 @@
     "because `dist/` is gitignored and git cannot be the recovery for it.",
     "",
     "THE PAIRING IS THE POINT, not the count. Cell F builds its inputs by hand, so on its own it",
-    "proves only that the suite depends on those three functions. Mutations 1, 2, 4, 5, 6 and 7 are",
+    "proves only that the suite depends on those three functions. Mutations 1, 2, 4, 5, 6, 7 and 8 are",
     "aimed at END-TO-END cells, which is what shows a real entry point reaches them: mutation 4 changes what",
     "`attachRefusal` answers for `not-found` and the despawn cell goes red, having travelled the",
     "whole path from a real `cotal stop` through the manager's reply code into the loop's verdict.",
-    "Mutation 3 is the one aimed at the hand-built cell, and it is aimed there because nothing this",
-    "harness can do makes the manager answer `permission-denied`: a static single-owner mesh mints",
-    "an admin instrument for every attach.",
+    "Mutations 3 and 9 are the ones aimed at hand-built cells, and each says why in its own note:",
+    "nothing this harness can do makes the manager answer `permission-denied` (a static single-owner",
+    "mesh mints an admin instrument for every attach), and nothing here can produce a hand-back that",
+    "FAILED on the same attempt whose control ask SUCCEEDED over the same broker.",
     "",
     "NOT GRADED, and MEASURED rather than asserted. The loop's own `denied` BRANCH -- the line that",
     "turns a `denied` classification into a non-zero exit rather than another retry -- has no",
@@ -52,7 +53,14 @@
     "session for free -- which would have made the client's hand-back look load-bearing when it was not.",
     "7 lets a LOCAL refusal reach the terminal, and cell A catches it, because the mesh preflight really",
     "does refuse there for several backoff rungs while the broker is down. Cell F's third check pins the",
-    "same branch by hand; the kill at cell A is what shows the real binary travels it."
+    "same branch by hand; the kill at cell A is what shows the real binary travels it.",
+    "",
+    "MUTATIONS 8 AND 9 CAME OUT OF REVIEW, and 8 is worth reading before the others because it grades a",
+    "defect the suite had already passed over. The hand-back used to treat a local publish as delivery.",
+    "Publishing to NATS is a buffer write; the FLUSH is the round trip that says the frame left. Cell B",
+    "detaches while the link is still down, so it is the one cell that reaches the exit with a session",
+    "genuinely unhandled, and its line was ABSENT on the buggy code. That absence is how the defect was",
+    "found, and mutation 8 is the same absence on demand."
   ],
   "mutations": [
     {
@@ -108,8 +116,8 @@
     {
       "name": "a reconnecting client forgets the session it abandoned, so it never hands it back",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "      } else if (reconnect) {",
-      "replace": "      } else if (!reconnect) {",
+      "find": "        abandoned.push({ grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server });",
+      "replace": "        void est;",
       "expectRed": "...and the reconnect left ONE live session, not two: the abandoned one was handed back",
       "cell": "...and the reconnect left ONE live session, not two: the abandoned one was handed back",
       "note": "The state of the world before this change, restored in one word. When the link is gone the client is the only party that knows the session is over -- nothing on the serving side reaps a session whose caller went away while the seat is quiet -- so a client that does not record the abandoned session's credential can never tell the manager, and each outage costs one of its 64 slots. Aimed at cell H, which is end to end: a real seat, a real severed link, a real re-establishment, and the manager's own live-session count read on the way through.",
@@ -123,6 +131,26 @@
       "expectRed": "a broker that is down AT the reconnect step produces another wait, never an exit",
       "cell": "a broker that is down AT the reconnect step produces another wait, never an exit",
       "note": "The notice exists so a manager that is refusing for a reason a person can act on is not hidden behind `reconnecting`. It must not become a channel for copy written for a different reader: the mesh preflight's refusal ends with `run `cotal up``, which is the wrong instruction for someone whose laptop lid was shut. Aimed at cell A, where the preflight really does refuse for several backoff rungs, so a kill shows the silent branch is travelled by the real binary rather than only by cell F's hand-built input.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a local publish is treated as delivery, so a close frame that never left is recorded as handed back",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "        handedBack = await flushed(est.nc);",
+      "replace": "        handedBack = true;",
+      "expectRed": "...saying the manager is still holding the session it could not hand back",
+      "cell": "...saying the manager is still holding the session it could not hand back",
+      "note": "Publishing is a local buffer write; the FLUSH is the round trip that says the frame left. This mutation restores the shape the code had before review: a link dying between the closed-check and the frame looked like a successful hand-back, the record was dropped, and nothing ever told the manager. Aimed at cell B, which detaches while the link is still down and therefore reaches the exit with something genuinely unhandled. That cell's line was ABSENT on the buggy code, which is how the defect was found.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the exit warns about a held session even when the seat is the thing that is gone",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "  if (pending < 1 || verdict === \"gone\") return undefined;",
+      "replace": "  if (pending < 1) return undefined;",
+      "expectRed": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
+      "cell": "held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
+      "note": "The `gone` verdict only exists because the manager answered `not-found`, and it only answers that once the seat has been freed; freeing a seat ends every session bound to it. So the sessions this line would name are already collected and naming them invents work. Aimed at the hand-built cell because the harness cannot produce the state that reaches it end to end: it needs a hand-back that FAILED on the same attempt whose control ask SUCCEEDED, over the same broker. Its sibling is mutation 8, which drives the same function's printing branch through the real binary.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]

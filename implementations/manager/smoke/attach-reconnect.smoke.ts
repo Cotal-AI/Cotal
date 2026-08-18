@@ -40,15 +40,16 @@
  *      failure mark, the refusal's own remedy, and no reconnect it was never going to make.
  *   H. a reconnect hands the abandoned session back to the manager. Against a SILENT seat, which
  *      is the one nothing on the serving side reaps, so the count is the client's doing or nobody's.
- *   F. the three classifications the loop turns on, as functions.
+ *   F. the four classifications the loop turns on, as functions.
  *
  * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
  * depends on those functions. The reachability it does not prove is proven beside it: cell E
  * drives `attachRefusal("not-found")` through the real `cotal attach` binary end to end, cells
- * A to D drive `isTransportEnd` the same way, and cell A drives `reconnectNotice`'s SILENT branch
+ * A to D drive `isTransportEnd` the same way, cell A drives `reconnectNotice`'s SILENT branch
  * end to end (the mesh preflight refuses at the reconnect step for several attempts there, and the
- * cell asserts its remedy line never reaches the terminal). Cell F then pins the REMAINING inputs
- * of the same three functions, which no end-to-end fault in this harness can produce: a static
+ * cell asserts its remedy line never reaches the terminal), and cell B drives `heldSessionNotice`'s
+ * PRINTING branch the same way, by detaching while the link is still down. Cell F then pins the REMAINING inputs
+ * of the same four functions, which no end-to-end fault in this harness can produce: a static
  * single-owner mesh mints an admin instrument for every attach, so the manager has no reason to
  * answer `permission-denied`, and nothing here can drive it to its 64-session ceiling.
  */
@@ -65,7 +66,7 @@ import {
   registry, type Connector, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { attachRefusal, reconnectNotice } from "../../cli/src/commands/agents.js"; // dev-only cross-impl smoke import
+import { attachRefusal, heldSessionNotice, reconnectNotice } from "../../cli/src/commands/agents.js"; // dev-only cross-impl smoke import
 import { isTransportEnd } from "../../cli/src/lib/attach-client.js"; // dev-only cross-impl smoke import
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -309,6 +310,12 @@ try {
     a.write(DETACH_BYTE);
     check("the detach key ends the attach mid-reconnect", await a.waitExit(20_000), a.seen().slice(-300));
     check("...exiting clean", a.exit()?.code === 0, a.exit());
+    // Detaching while the link is still down leaves a session this client could not hand back, and
+    // the exit is the only place an operator can learn that. It is also the end-to-end proof that
+    // the hand-back RECORDS what it could not deliver: this line was absent when the code treated a
+    // local publish as delivery, because the flush that failed was swallowed and nothing was kept.
+    check("...saying the manager is still holding the session it could not hand back",
+      /the manager still holds a session/.test(a.seen()), a.seen().slice(-600));
     await heal();
   }
 
@@ -446,7 +453,7 @@ try {
   }
 
   // ---------------------------------------------------------------------------------------------
-  console.log("\nF. the three classifications the loop turns on");
+  console.log("\nF. the four classifications the loop turns on");
   check("transport-class: the rail's own fault vocabulary reconnects",
     ["gap", "stall", "subscription", "peer-closed", "connection-closed", "publish", "flood", "credit-overrun", "garbled-frame", "handler", "seq-exhausted", "closed"]
       .every((r) => isTransportEnd(r)));
@@ -464,6 +471,13 @@ try {
     reconnectNotice({ fromManager: true, message: "same refusal" }, "same refusal") === undefined);
   check("notice: a LOCAL refusal is not relayed (its copy is written for someone who just typed a command)",
     reconnectNotice({ message: "✗ no mesh running at nats://127.0.0.1:4222 - run `cotal up`" }, "") === undefined);
+  check("held: a session the loop could not hand back is named on exit",
+    heldSessionNotice(1, "ended")?.includes("still holds a session") === true);
+  check("held: more than one is counted rather than collapsed",
+    heldSessionNotice(3, "failed")?.includes("still holds 3 sessions") === true);
+  check("held: nothing pending says nothing", heldSessionNotice(0, "ended") === undefined);
+  check("held: a seat that is GONE took its own sessions with it, so there is nothing to warn about",
+    heldSessionNotice(2, "gone") === undefined);
 
   console.log(`\n${fail === 0 ? "PASS" : "FAIL"} - ${pass} passed, ${fail} failed`);
 } finally {
