@@ -32,8 +32,14 @@
  * has no type checker, so it cannot follow `const f = seam` or `import { seam as f }` to the call
  * that uses `f`, and a call it cannot follow is a call it would silently bless. It therefore refuses
  * the rebinding itself, at the point the name escapes, which is one line for an author to see and
- * fail-closed for everyone else. Importing or destructuring the seam under its OWN name is not a
- * rebinding and is how every dynamic-import smoke here reaches it, so that stays legal.
+ * fail-closed for everyone else. The name counts as escaping whether it is spelled as an identifier
+ * or as a string, because `const f = core["seam"]` reaches the same binding as `const f = seam` and
+ * a rule about identifiers cannot see it. What stays legal is every form that binds the name this
+ * reader already scans for: a same-name import, re-export or destructure, `import { default as
+ * seam }`, and an object key, which names a slot rather than reading the seam (the READ of such a
+ * table is caught, and a call through it is counted, so flagging the key would say something
+ * untrue). Each of those has a cell, so the refusal cannot quietly become a false red on the live
+ * idiom.
  *
  * SEAMS is a table because the class is "a runtime-required argument whose callers are only partly
  * typechecked", not one function. It has one row today because one seam in this repo has that
@@ -50,6 +56,13 @@
  * and which the seam throws on, so stating the key as `undefined` counts as omitting it. It also
  * cannot see through a WRAPPER: a function that takes an options object and passes it on is a call
  * site whose own argument is an identifier, which lands as `unverifiable` rather than as a pass.
+ *
+ * Two residuals are known and left open on purpose, because closing either means a different
+ * instrument rather than a better rule. A name ASSEMBLED at runtime (`core["standalone" +
+ * "ConnectOpts"]`) is not constant-folded and stays invisible; only the floors cover it. And a file
+ * that does not parse loses the sites in whatever the recovery produces, which is bounded by the
+ * fact that a file which cannot parse cannot execute either: its own suite is red at import, before
+ * any cell, which is the loud failure this check exists so as not to depend on.
  *
  * Run: pnpm smoke:required-arg-seam
  */
@@ -152,18 +165,49 @@ type Site = { file: string; line: number; verdict: Verdict; detail: string };
 function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
   const p = id.parent;
   if (!p) return true;
-  if ((ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p) || ts.isVariableDeclaration(p)
-    || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p))
-    && p.name === id) return true;
-  if (ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isBindingElement(p)) {
-    // `{ seam }` binds the same name; `{ seam as seam }` is the same thing spelled out.
-    if (!p.propertyName) return true;
-    return p.propertyName === id && ts.isIdentifier(p.name) && p.name.text === fn;
-  }
+  // A construct NAMED for the seam declares or labels; it does not read the seam. That includes an
+  // object key (`{ seam: mock }`, `{ seam }`), which is how a test table is written: the READ of
+  // such a table is caught below, and a call through it is counted by `callsSeam`, so flagging the
+  // key would be a false red whose message says something untrue.
+  if ((p as { name?: ts.Node }).name === id
+    && (ts.isFunctionDeclaration(p) || ts.isFunctionExpression(p) || ts.isVariableDeclaration(p)
+      || ts.isMethodDeclaration(p) || ts.isPropertyDeclaration(p) || ts.isPropertySignature(p)
+      || ts.isTypeAliasDeclaration(p) || ts.isInterfaceDeclaration(p) || ts.isClassDeclaration(p)
+      || ts.isEnumDeclaration(p) || ts.isModuleDeclaration(p) || ts.isParameter(p)
+      || ts.isPropertyAssignment(p) || ts.isShorthandPropertyAssignment(p))) return true;
+  // A binding is safe exactly when the name it binds LOCALLY is still the one this reader scans
+  // for. `import { seam }`, `import { default as seam }` and `const { seam } = core` all bind it;
+  // every rename AWAY from it (`{ seam as other }`) is the hazard, whichever half is being visited.
+  if (ts.isImportSpecifier(p) || ts.isExportSpecifier(p) || ts.isBindingElement(p))
+    return ts.isIdentifier(p.name) && p.name.text === fn;
   if (isCalleeOf(id)) return true;
   // `ns.seam(...)` and `ns["seam"](...)`: the name sits inside the callee rather than being it.
   if (ts.isPropertyAccessExpression(p) && p.name === id && isCalleeOf(p)) return true;
   if (ts.isTypeQueryNode(p)) return true;
+  return false;
+}
+
+/**
+ * The same escape, spelled as a STRING, which no rule about identifiers can see.
+ *
+ * `core["seam"](...)` is a call and is counted. `const f = core["seam"]` is the identical rebinding
+ * wearing a different spelling, and it reaches the same binding with no identifier naming the seam
+ * anywhere in the file; so does a computed rename in a destructure. Found by review, proven as a
+ * green pass on a real throwing call site, which is the reads-as-coverage failure this file exists
+ * to refuse.
+ *
+ * A computed key in an object LITERAL (`{ ["seam"]: mock }`) is a key rather than a read, so it is
+ * left alone for the same reason the identifier keys above are.
+ *
+ * RESIDUAL, stated rather than papered over: a name assembled at runtime (`core["standalone" +
+ * "ConnectOpts"]`) is not constant-folded here and stays invisible. Closing it means evaluating
+ * expressions, which is a different instrument; the floors are the only cover it has.
+ */
+function stringEscapesTheName(s: ts.StringLiteralLike): boolean {
+  const p = s.parent;
+  if (!p) return false;
+  if (ts.isElementAccessExpression(p) && p.argumentExpression === s) return !isCalleeOf(p);
+  if (ts.isComputedPropertyName(p) && p.expression === s) return ts.isBindingElement(p.parent);
   return false;
 }
 
@@ -258,7 +302,8 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
     if (ts.isCallExpression(n) && callsSeam(n, seam.fn)) {
       const { verdict, detail } = classify(n.arguments[0], seam.key, src);
       found.push({ file, line: lineOf(n), verdict, detail });
-    } else if (ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn)) {
+    } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
+      || (ts.isStringLiteralLike(n) && n.text === seam.fn && stringEscapesTheName(n))) {
       found.push({
         file, line: lineOf(n), verdict: "aliased",
         detail: `the name is rebound here (${ts.SyntaxKind[n.parent.kind]}); call the seam by its own name so this check can see the argument`,
@@ -381,11 +426,33 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   check("passing the seam as a VALUE is flagged (Reflect.apply, a callback, anything)",
     one(`Reflect.apply(standaloneConnectOpts, undefined, [{ creds }]);`) === "aliased"
     && one(`register(standaloneConnectOpts);`) === "aliased");
+  // The same escape spelled as a STRING, which no rule about identifiers can see. Found by review
+  // as a green pass on a real throwing call site: `const f = core["seam"]` reaches the same binding
+  // with no identifier naming the seam anywhere in the file.
+  check("a STRING-spelled read of the name is a rebinding too",
+    one(`const connectOpts = core["standaloneConnectOpts"];`) === "aliased");
+  check("...including a computed rename in a destructure",
+    one(`const { ["standaloneConnectOpts"]: f } = core;`) === "aliased");
+  check("...while the string-spelled CALL stays a counted call site, not an alias",
+    one(`core["standaloneConnectOpts"]({ creds: c })`) === "missing-key");
   // The false-red guard for the rule above: these bind the name this file already looks for.
   check("a SAME-NAME import, re-export and destructure are NOT rebindings (the live idiom here)",
     fx(`import { standaloneConnectOpts } from "@cotal-ai/core";`).length === 0
     && fx(`export { standaloneConnectOpts } from "@cotal-ai/core";`).length === 0
     && fx(`const { standaloneConnectOpts } = await import("@cotal-ai/core");`).length === 0);
+  check("`import { default as standaloneConnectOpts }` binds the scannable name, so it is not a rebinding",
+    fx(`import { default as standaloneConnectOpts } from "@cotal-ai/core";`).length === 0);
+  // A key NAMES a slot; it does not read the seam. A call through such a table is counted by
+  // `callsSeam` and a READ of it is caught above, so flagging the key says something untrue.
+  check("an object KEY of the same name is not a rebinding, in either spelling",
+    fx(`const tbl = { standaloneConnectOpts: mockFn };`).length === 0
+    && fx(`const tbl = { standaloneConnectOpts };`).length === 0
+    && fx(`const tbl = { ["standaloneConnectOpts"]: mockFn };`).length === 0);
+  check("...and reading that table back IS caught, which is why allowing the key loses nothing",
+    one(`const f = tbl.standaloneConnectOpts;`) === "aliased");
+  check("a TYPE named like the seam declares a type, and cannot invoke anything",
+    fx(`type standaloneConnectOpts = (a: unknown) => unknown;`).length === 0
+    && fx(`interface standaloneConnectOpts { x: number }`).length === 0);
   check("a `typeof` type query cannot invoke anything, so it is not a rebinding",
     fx(`type F = typeof standaloneConnectOpts;`).length === 0);
 }
