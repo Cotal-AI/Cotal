@@ -580,6 +580,13 @@ export class MeshAgent extends EventEmitter {
    * reader that shows only what fits in one response would show the same prefix forever. This mark
    * moves when a response actually delivered recall items, and it is session-local by design: it
    * says how far THIS incarnation has read, not what the stream still holds.
+   *
+   * WHAT THIS MARK DOES NOT OWN, said here so nothing above it claims otherwise. It orders what
+   * {@link recallAmbient} hands over; it does not decide what becomes recallable. A message that only
+   * becomes readable after this mark has passed its timestamp, through late persistence or clock skew
+   * between agents, is below the watermark and will not be walked to. That is governed by the frontier
+   * `recallAmbient` derives from ({@link chatFrontier} and the focus watermark), not here, and it is
+   * the same for any timestamp-ordered reader of that stream.
    */
   get recallCursor(): RecallMark {
     return this._recallCursor;
