@@ -111,17 +111,17 @@
     },
     {
       "name": "M7 the scrub drops the pointer but leaves the file on disk",
-      "file": "extensions/connector-core/src/config.ts",
-      "find": "      unlinkSync(path);",
-      "replace": "      void path;",
+      "file": "packages/core/src/launch-material.ts",
+      "find": "    rmSync(file, { force: true });",
+      "replace": "    void file;",
       "expectRed": "A5: the material file survived the scrub that was supposed to unlink it",
-      "note": "The residual this carrier is honest about is same-uid access to a file that EXISTS. Where there is provably no later reader, the file not existing is the one part of that boundary that can actually be closed, so the closing has to be tested rather than intended.",
+      "note": "The pointer is dropped and the material stays on disk for the life of the box. Retargeted when the removal moved out of the connector and beside the writer; the tool refused the stale target rather than reporting a kill against a string that was no longer there, which is the behaviour that makes a config safe to move code under.",
       "afterRestore": "pnpm build > /dev/null"
     },
     {
       "name": "M8 the scrub unlinks the file but leaves its private directory",
       "file": "packages/core/src/launch-material.ts",
-      "find": "    rmdirSync(dir); // non-recursive on purpose: anything else inside means this is not ours to delete",
+      "find": "    rmdirSync(dir); // rmdir cannot recurse: anything else inside means this is not ours to delete",
       "replace": "    void dir;",
       "expectRed": "A5: the material's private directory was left behind",
       "note": "Found on a live sandbox spawn, not here: the file was gone and an empty 0700 directory per launch stayed in the OS temp tree. Litter this change would have introduced rather than found, which is a different and worse kind of defect than one it inherited.",
@@ -130,10 +130,10 @@
     {
       "name": "M9 the discard removes the directory recursively again",
       "file": "packages/core/src/launch-material.ts",
-      "find": "    rmdirSync(dir); // non-recursive on purpose: anything else inside means this is not ours to delete",
+      "find": "    rmdirSync(dir); // rmdir cannot recurse: anything else inside means this is not ours to delete",
       "replace": "    rmSync(dir, { recursive: true, force: true });",
       "expectRed": "A9: the discard deleted a file it did not write",
-      "note": "The dangerous first version, restored exactly. A cleanup added to a security change must not be the most destructive thing in it, and the assertion that catches this watches a bystander file rather than the directory, because the directory going away is the intended outcome in the ordinary case.",
+      "note": "The dangerous first version, restored. It reddens an assertion about a BYSTANDER file rather than about the directory, because the directory going away is the intended outcome in the ordinary case and an assertion watching the directory alone would stay green under this mutant. Two earlier attempts at this mutation are worth recording: one wrote a recursive call using a symbol the module did not import, which failed the BUILD and graded WRONG-RED at zero progress marks (a mutation that cannot compile grades the compiler, not the suite); the other reached for rmSync with recursive false as the real implementation, which does not remove a directory at all, so the SUITE caught the wrong fix before the mutation could. The module now removes the file with rmSync and the directory with rmdirSync, which is both the correct behaviour and a shape this mutation can express in one line.",
       "afterRestore": "pnpm build > /dev/null"
     },
     {

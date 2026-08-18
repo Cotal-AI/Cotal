@@ -36,7 +36,7 @@
  * to outlive startup, so it lives as long as the seat and the OS temp reaper is what removes it. A
  * launch that dies before its session starts leaves its file to that same reaper.
  */
-import { mkdtempSync, readFileSync, realpathSync, rmdirSync, statSync, unlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, realpathSync, rmSync, rmdirSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { basename, dirname, join, resolve } from "node:path";
 import { hardenPrivate, writeSecretFile } from "./secret-fs.js";
@@ -201,27 +201,36 @@ function validate(raw: Record<string, unknown>, path: string): LaunchMaterial {
  *  - its parent carries the writer's prefix;
  *  - that parent sits DIRECTLY in the OS temp root, resolved through symlinks on both sides so
  *    `/tmp` and a `/private/tmp` style real path compare equal;
- *  - and the removal is `rmdir`, never recursive, so a directory holding anything else fails to go
- *    and is left exactly as it was found. That is also what closes the race: a file created in the
- *    window makes the removal fail rather than making it destroy more.
+ *  - and the removal is `rmdir`, which cannot recurse at all, so a directory holding anything else
+ *    fails to go and is left exactly as it was found. That is the load-bearing one: the other three
+ *    are defence in depth, while this one makes "anything else in here means this is not ours" true
+ *    by construction rather than by intention. It is also what closes the race, because a file
+ *    created between the file's removal and the directory's makes the directory's FAIL rather than
+ *    making it destroy more.
  *
- * The FILE is unlinked unconditionally, because the file is the secret and removing it is the whole
- * point. Only the directory is conditional. Both are best effort: a discard that throws would turn
- * tidy-up into a failed session, and the state it would fail into is the state every launch had
- * before this function existed.
+ * THE FILE, BY CONTRAST, IS UNLINKED UNCONDITIONALLY, and the asymmetry is deliberate rather than an
+ * oversight. {@link LAUNCH_MATERIAL_ENV} names material for ONE launch, and by the time a discard
+ * runs the session has already read it, so a pointer is a statement about a file that has served its
+ * purpose, wherever it happens to live. A hand-set pointer at a file somebody wanted to keep is a
+ * misuse of that variable rather than a case to defend. Deleting the named file is the operation the
+ * caller asked for; deleting a directory is an inference about something the caller never named, and
+ * an inference needs proof.
+ *
+ * Both halves are best effort: a discard that throws would turn tidy-up into a failed session, and
+ * the state it would fail into is the state every launch had before this function existed.
  */
 export function discardLaunchMaterial(path: string): void {
   const file = resolve(path);
   try {
-    unlinkSync(file);
+    rmSync(file, { force: true });
   } catch {
-    /* already gone, or not ours to remove; the directory check below still refuses to guess */
+    /* not ours to remove; the directory check below still refuses to guess */
   }
   const dir = dirname(file);
   if (basename(file) !== MATERIAL_FILE || !basename(dir).startsWith(DIR_PREFIX)) return;
   try {
     if (realpathSync(dirname(dir)) !== realpathSync(tmpdir())) return;
-    rmdirSync(dir); // non-recursive on purpose: anything else inside means this is not ours to delete
+    rmdirSync(dir); // rmdir cannot recurse: anything else inside means this is not ours to delete
   } catch {
     /* not empty, not there, or not resolvable: leaving it is always the safe answer */
   }
