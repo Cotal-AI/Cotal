@@ -197,11 +197,15 @@ try {
     c("control:the-halt-names-a-CONCURRENT-emitter-under-this-principal", /CONCURRENT emitter/.test(s4.err ?? ""), s4.err);
     c("control:the-halt-also-names-a-DISAGREEING-record-which-is-the-new-cause", /frontier record that disagrees/.test(s4.err ?? ""), s4.err);
 
-    // The message may not assert a guard that does not hold. A per-principal lock DOES exist
-    // (`acquirePrincipalLock`, taken by `ensureEventWalDir` on the shipped connector path), so
-    // naming it is honest; claiming it PREVENTS this is not, because its file lives under one
-    // workspace root on one host. Two roots, two hosts, or a reclaim onto a reused pid walk past
-    // it, and those are the situations an operator reading this halt is actually in.
+    // The message may not assert a guard that does not hold, and it may not invent holes in one
+    // that does. A per-principal lock DOES exist (`acquirePrincipalLock`, taken by
+    // `ensureEventWalDir` on the shipped connector path), so naming it is honest; claiming it
+    // PREVENTS this is not, because its FILE lives under a workspace root, so a second emitter
+    // started against a different root, or by a path that never takes the lock, meets no lock at
+    // all. Another host and a stale pid are NOT holes: `reclaimIfOwnerIsGone` refuses both, so the
+    // second emitter never starts. This comment said otherwise in an earlier version, which is why
+    // it is spelled out here rather than left to the reader.
+    //
     // Three requirements, and the third is the one a later edit is most likely to break: the
     // message may not claim the lock PREVENTS this, and it may not name a case that in fact
     // REFUSES THE START. Another host and a stale pid are refusals, not ways past the lock, and a
