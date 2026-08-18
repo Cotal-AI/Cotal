@@ -33,7 +33,8 @@ concepts leak into `@cotal-ai/core` or the shared layers.
 [docs/architecture.md](docs/architecture.md) (*how*) →
 [docs/connect-claude.md](docs/connect-claude.md) (the connector).
 - [SPEC.md](SPEC.md): the **normative** wire contract. Where a client disagrees with the spec,
-the spec wins.
+the spec wins. [spec/cotal-lang.md](spec/cotal-lang.md) is the normative reference for the
+workflow language (SPEC §14); every `js` block in it is validated by `pnpm smoke:lang-surface`.
 - `.internal/` (private submodule): working build-plans, research, and guidelines. Make sure it
 is current before changing behavior.
 
@@ -54,9 +55,9 @@ ESM only (`"type": "module"`); run TS directly with `tsx`, no build step for dev
 
 | Path                                    | What it is                                                                                                                                                                                                                        |
 | --------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
+| `packages/*`                            | The standard plus the local workstation layer. `@cotal-ai/core` is the wire protocol (generic; depends on nothing else in the repo); `@cotal-ai/workspace` is machine-local operator tooling over `~/.cotal` and depends on core; `@cotal-ai/lang` is the cotal-lang workflow language and depends on nothing else here; `@cotal-ai/smoke-kit` is private test-only helpers for the smoke suites, never published and never imported by shipped code. |
 | `extensions/*`                          | Pluggable adapters (connectors, runtimes). Peer-depend core; self-register on import.                                                                                                                                             |
-| `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon). Self-contained; never import each other.                                                                                                                          |
+| `implementations/*`                     | Opinionated surfaces over core (CLI, manager, delivery daemon, the cotal-lang runtime host). Self-contained; never import each other.                                                                                                                          |
 | `examples/*`                            | Use-cases / composition roots. Private, never published. Each self-documents in its README.                                                                                                                                       |
 | `bin/`                                  | The `cotal` binary (the published `cotal-ai` package): the composition root.                                                                                                                                                      |
 | `docs/`                                 | Protocol documentation (start at `docs/README.md`).                                                                                                                                                                               |
@@ -88,6 +89,14 @@ suites — currently the broker ownership that kills a spawned `nats-server` whe
 *signalled* rather than only when it returns. Never published and never imported by shipped code
 (enforced by `pnpm smoke:core-boundary`); it has no `dist`, so there is no build step and no
 compiled second copy that can disagree with the source.
+- `**@cotal-ai/lang**` (`packages/lang`): the cotal-lang workflow language, as
+[spec/cotal-lang.md](spec/cotal-lang.md) defines it: its grammar (one syntax table drives the
+validator and the interpreter), the interpreter's sequential core and concurrency scopes, the step
+journal, the effect interface a host implements, and the simulator and dry run that exercise a
+program with no broker. Depends on nothing else in the repo; it knows about effects, not about NATS.
+- `**@cotal-ai/runtime**` (`implementations/runtime`): the host that runs a cotal-lang program on
+the mesh: the mesh handler binding the effect interface onto the real planes, the durable step
+journal, and the `RunDriver` the manager daemon hosts. Depends on core and lang.
 - `**@cotal-ai/connector-core**` (`extensions/connector-core`): the shared MCP-bridge runtime:
 the mesh agent, the `cotal_*` tool specs (incl. `cotal_spawn` / `cotal_persona` /
 `cotal_despawn`), and the hook relay. The adapters below are thin clients over it.

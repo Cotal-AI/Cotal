@@ -8,6 +8,7 @@
       "@cotal-ai/core",
       "@cotal-ai/workspace",
       "@cotal-ai/lang",
+      "@cotal-ai/runtime",
       "@cotal-ai/cli",
       "@cotal-ai/manager",
       "@cotal-ai/delivery",

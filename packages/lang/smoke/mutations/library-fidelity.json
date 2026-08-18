@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/semantics.smoke.ts",
+  "guard": "The curated methods keep their namesakes' meaning under mutation and in replacement strings, against node as the reference. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-semantics",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/library-fidelity.json",
+  "mutations": [
+    {
+      "name": "map reads the length live again, the shipped defect",
+      "file": "packages/lang/src/library.ts",
+      "find": "      const f = asCallable(a[0], \"map\");\n      const out: unknown[] = [];\n      const len = xs.length;\n      for (let i = 0; i < len; i += 1) out.push(await f(frame, [xs[i], i, xs]));",
+      "replace": "      const f = asCallable(a[0], \"map\");\n      const out: unknown[] = [];\n      for (let i = 0; i < xs.length; i += 1) out.push(await f(frame, [xs[i], i, xs]));",
+      "expectRed": "a callback that appends does not grow the walk: the length is captured first",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "a callback that appends does not grow the walk: the length is captured first",
+      "note": "With the live read restored, a push inside the callback grows the walk and the result — node visits only the captured length."
+    },
+    {
+      "name": "replacement strings are literal again, the shipped defect",
+      "file": "packages/lang/src/library.ts",
+      "find": "    replace: (_f, s, a) => s.replace(str(\"replace\", a[0]), String(a[1])),",
+      "replace": "    replace: (_f, s, a) => s.replace(str(\"replace\", a[0]), () => String(a[1])),",
+      "expectRed": "replacement strings mean what JavaScript says: $-patterns, first vs all",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "replacement strings mean what JavaScript says: $-patterns, first vs all",
+      "note": "The function form makes every `$` literal, so `$&` stops naming the match — a meaning JavaScript gives neither replace nor replaceAll."
+    }
+  ]
+}

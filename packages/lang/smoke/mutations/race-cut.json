@@ -1,0 +1,55 @@
+{
+  "suite": "packages/lang/smoke/fuel.smoke.ts",
+  "guard": "A race arm's pure work is cut only when the arm can no longer win: the winner is a function of the recorded clocks and declaration order, never of the scheduler or `yieldEvery`. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-fuel",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-cut.json",
+  "why": [
+    "The design measured (§3.4) that `yieldEvery` selected the winner of a live race: a loser in a pure",
+    "tail was cut at its next yield, so whether an arm with the earlier clock got to settle depended on",
+    "how many dispatches its tail took against the pin. The two cells graded here are the two arms of",
+    "the repaired rule, one variable apart: the spinner cut because it cannot win the tie (declared",
+    "second, equal clock), and the spinner not cut because it could (declared first). A mutation that",
+    "cuts always is the old behaviour; a mutation that never cuts is the naive repair that lets a loser",
+    "spin the run into its step budget when it had already lost."
+  ],
+  "mutations": [
+    {
+      "name": "every cancelled arm is cut at its next yield (the old behaviour)",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: behindFrontier(j) });",
+      "replace": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: true });",
+      "expectRed": "a spinning arm that could still win is not cut: the step budget ends it (L4013)",
+      "completionMarker": "ok and the arm declared first wins the tie",
+      "cell": "a spinning arm that could still win is not cut: the step budget ends it (L4013)"
+    },
+    {
+      "name": "no arm is ever cut at a yield (the naive repair)",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: behindFrontier(j) });",
+      "replace": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: false });",
+      "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
+      "completionMarker": "ok so the timer is measuring the yield, not the runtime",
+      "cell": "a spinning arm that cannot win is cut at its next yield and the run returns",
+      "note": "Reddens as HUNG after the 8 s watchdog, which is the honest signal: the run does not return inside its budget window."
+    },
+    {
+      "name": "the yield boundary ignores the cut",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    if (frame.signal.cutPure) throw new Cancelled(frame.signal.reason ?? \"cancelled\");",
+      "replace": "",
+      "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
+      "completionMarker": "ok so the timer is measuring the yield, not the runtime",
+      "cell": "a spinning arm that cannot win is cut at its next yield and the run returns"
+    },
+    {
+      "name": "the tie falls to the arm declared LATER",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "        return !(other < bestAt || (other === bestAt && j < bestIndex));",
+      "replace": "        return !(other < bestAt || (other === bestAt && j > bestIndex));",
+      "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
+      "completionMarker": "ok so the timer is measuring the yield, not the runtime",
+      "cell": "a spinning arm that cannot win is cut at its next yield and the run returns",
+      "note": "Declaration order is half of the rule. Reversed, the spinner declared second could still win and is not cut, and the run spins into HUNG."
+    }
+  ]
+}
