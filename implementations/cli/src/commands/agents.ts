@@ -555,10 +555,12 @@ async function releaseAbandonedSession(s: Abandoned): Promise<void> {
  *  dead for as long as a reconnect takes, which is exactly when an operator is most likely to give
  *  up and press it. Non-detach keystrokes are dropped: there is no seat to send them to, and
  *  buffering them would replay a burst into the agent on reconnect. */
-function watchDetachKey(byte: number): { pressed: Promise<void>; stop: (opts?: { pause?: boolean }) => void } {
+function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => boolean; stop: (opts?: { pause?: boolean }) => void } {
   const stdin = process.stdin;
-  let hit!: () => void;
-  const pressed = new Promise<void>((r) => { hit = r; });
+  let fire!: () => void;
+  let pressedYet = false;
+  const pressed = new Promise<void>((r) => { fire = r; });
+  const hit = () => { pressedYet = true; fire(); };
   // Exactly one byte, and exactly the detach byte. A chunk carrying it alongside anything else is
   // NOT a keypress: measured on a pty, a real keypress arrives in a read of its own even at 3ms
   // spacing, and the only two ways the byte arrives with company are a paste and a reader that was
@@ -571,7 +573,10 @@ function watchDetachKey(byte: number): { pressed: Promise<void>; stop: (opts?: {
   // `pause: false` hands the stream to a session's own reader, which resumes it synchronously right
   // after; pausing there and resuming a line later would be a window where a byte has no owner,
   // which is the whole defect.
-  return { pressed, stop: ({ pause = true } = {}) => { stdin.off("data", onData); if (pause) stdin.pause(); } };
+  // `hit` as well as `pressed`, because the press has TWO consumers and one of them cannot await:
+  // the handoff to a session's reader is synchronous, and it has to know whether the byte it is
+  // taking the stream over from has already arrived.
+  return { pressed, hit: () => pressedYet, stop: ({ pause = true } = {}) => { stdin.off("data", onData); if (pause) stdin.pause(); } };
 }
 
 /**
@@ -607,7 +612,14 @@ async function runAttachLoop(
   // during a wait.
   let idle: ReturnType<typeof watchDetachKey> | undefined;
   const ownStdin = (): NonNullable<typeof idle> => (idle ??= watchDetachKey(key.byte));
-  const releaseStdin = (opts?: { pause?: boolean }): void => { idle?.stop(opts); idle = undefined; };
+  // Returns whether the detach key had ALREADY been pressed, which is the one thing the session's
+  // own reader cannot find out for itself once this reader is gone.
+  const releaseStdin = (opts?: { pause?: boolean }): boolean => {
+    const pressed = idle?.hit() ?? false;
+    idle?.stop(opts);
+    idle = undefined;
+    return pressed;
+  };
   // Give the manager its slots back. Oldest first, and one failure ends the round rather than
   // skipping ahead, because the reason is the link and the link is the same for all of them.
   const releaseAbandoned = async (): Promise<void> => {
@@ -634,6 +646,17 @@ async function runAttachLoop(
     if (notice) console.error(c.dim(notice));
     return v;
   };
+  // The FIRST establishment is an attach with no session too, and it is the path every attach takes.
+  // Own the keyboard from here rather than from the first reconnect, so a key struck while the
+  // command is still resolving the mesh is read and dropped instead of buffered and flushed into the
+  // seat when the session opens. Measured before this line existed: a nonce typed at that prompt
+  // arrived at the agent.
+  //
+  // A TERMINAL only, and the gate is the population rather than the moment. `printf 'ls\n' | cotal
+  // attach` writes into a PIPE before the session could possibly be open, and those bytes are a
+  // script's input, not an operator giving up on a frozen screen: a reader here would eat them with
+  // no fault anywhere in sight. Both halves are cells, so neither is an assumption.
+  if (reconnect && process.stdin.isTTY) ownStdin();
   for (;;) {
     if (!first) {
       // Back off BEFORE the attempt, and stay interruptible: the detach key must work while we
@@ -688,8 +711,11 @@ async function runAttachLoop(
       est = await attempting;
     } catch (e) {
       // The FIRST attempt throws exactly as it always has — the CLI's top-level handler renders
-      // it. Only a reconnect turns a thrown establishment into another attempt.
-      if (first) throw e;
+      // it. Only a reconnect turns a thrown establishment into another attempt. Give the stream
+      // back on the way out: this is the one exit from this loop that does not run through `done`,
+      // and a resumed stdin is a ref'd handle that would hold the command open after it has already
+      // printed why it is giving up.
+      if (first) { releaseStdin(); throw e; }
       est = { ok: false, kind: "transient", message: (e as Error).message };
     }
     if (!est.ok) {
@@ -716,6 +742,15 @@ async function runAttachLoop(
       // exists; there is no second backlog here.
       outcome = await attachClient(transport, hold, () => releaseStdin({ pause: false }));
     } finally {
+      // Take the stream back FIRST, ahead of the hand-back's own round trips. A session that ends
+      // while its SOCKET is still alive is the case this whole change is about, and everything
+      // below it here is a publish, a flush and a close, each bounded by LINK_DEADLINE_MS: placed
+      // after them, this line would leave the keyboard unowned for as long as a dying link takes
+      // to answer, which is precisely when an operator reaches for the detach key. attachClient's
+      // cleanup has already removed its own reader and paused the stream, so the ownerless gap is
+      // the width of this statement rather than of two deadlines. `done` releases it again on
+      // whichever exit follows, and the backoff wait re-installs the same reader.
+      if (reconnect) ownStdin();
       // Hand the session back. With the link still up that is one advisory frame over the
       // connection already open (a rail that broke while the socket lived — a stall, a gap — is
       // exactly this case, and it is idempotent after a detach has already closed it). The FLUSH is
@@ -732,19 +767,6 @@ async function runAttachLoop(
         abandoned.push({ grant: est.grant, creds: est.creds, inbox: est.inbox, server: est.server });
       }
       await closeLink(est.nc);
-      // The session is over: take the stream back before the hand-back's own round trip, so the
-      // period with no owner is the width of this statement rather than the width of a flush on a
-      // dying link. `done` releases it again on whichever exit follows.
-      //
-      // MEASURED, and this line is NOT graded by the suite: deleting it leaves every cell green.
-      // The backoff wait installs the same reader a moment later, so what this buys is only the
-      // window between a session ending and that wait starting. In every fault the smoke can
-      // produce, the connection is already closed when the session ends, so the flush above is
-      // skipped and that window is a few statements wide. The case it is here for is a session
-      // that ends transport-class while the SOCKET lives, a rail stall being the one that happens:
-      // there the flush runs to its 5s deadline, and without this the keyboard has no owner for
-      // all of it.
-      if (reconnect) ownStdin();
     }
     // The backoff resets on a session that WORKED, not on one that merely opened. `carried` is not
     // enough on its own: a seat that has produced nothing has an empty backlog snapshot, so a

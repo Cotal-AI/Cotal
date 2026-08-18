@@ -200,7 +200,7 @@ export function isTransportEnd(reason: string): boolean {
  * by default, {@link detachKey}) detaches without killing the agent. Transport-agnostic over the
  * mesh §13.6 session.
  */
-export function attachClient(transport: TerminalTransport, hold?: TerminalHold, takeStdin?: () => void): Promise<AttachOutcome> {
+export function attachClient(transport: TerminalTransport, hold?: TerminalHold, takeStdin?: () => boolean): Promise<AttachOutcome> {
   // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
   // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
   let detach: ReturnType<typeof detachKey>;
@@ -322,7 +322,17 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
       // than buffered; without this handoff both readers would be live at once and a detach byte
       // would be seen twice. Synchronous by construction: `data` is emitted on a later tick, so the
       // gap between the caller's `off` and the `on` below cannot lose a byte.
-      takeStdin?.();
+      //
+      // It ANSWERS, because the byte it may have just eaten is a detach. The caller's reader owns
+      // stdin until this line, and this line runs when the session is READY, which is a round trip
+      // after the caller announced the reconnect. A key pressed in between is seen by that reader
+      // and by nobody else: without this branch the operator's detach vanishes and the session they
+      // meant to leave comes up and keeps their keystrokes. So a press that already landed detaches
+      // the session that is opening, before it takes the terminal or reads a byte.
+      if (takeStdin?.()) {
+        transport.close();
+        return;
+      }
       // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
       // default label). Only on override, so the default case stays free of duplicate noise.
       if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (via COTAL_DETACH_KEY)`));
