@@ -9,6 +9,12 @@ covers every gap in the loop: the waits, the attempts, the hand-back of a sessio
 link that is still up, and the first establishment, so a key struck before the very first attach
 comes up does not arrive at the agent when it does. The detach key is read across all of them, and
 a press that lands while a session is opening ends the attach rather than being swallowed by the
-handoff to that session's own reader. With stdin a pipe the old behaviour is kept on purpose: a
-script's input is buffered and delivered when the session opens, and `--no-reconnect` keeps the
-single-session behaviour everywhere.
+handoff to that session's own reader. With stdin a pipe the old behaviour is kept on purpose, in
+every one of those windows rather than only the first: a script's input is buffered and delivered
+when the session opens, including across a reconnect, so a feed piped into an attach does not lose
+what was written while the link was down. `--no-reconnect` keeps the single-session behaviour
+everywhere.
+
+Also: a piped attach now gives the shell back when it detaches. `printf 'ls\n' | cotal attach --name
+web --no-reconnect` printed `detached from web` and then held the process open, because nothing
+released the command's own claim on stdin on the way out.

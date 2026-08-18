@@ -646,8 +646,10 @@ has not come up yet does not reach the agent when it does.
 
 With stdin a **pipe** the contract is the opposite, and deliberately so. `printf 'ls\n' | cotal
 attach --name web` is a script's input rather than an operator at a frozen screen, so it is buffered
-by the stream and delivered to the seat when the session opens, exactly as it always was. Only a
-terminal gets the reader; `--no-reconnect` keeps the old behaviour on both.
+by the stream and delivered to the seat when the session opens, exactly as it always was. That holds
+in every window, not just before the first session: a pipe keeps buffering across a reconnect too, so
+`tail -f log | cotal attach --name web` does not lose the part of its feed written while the link was
+down. Only a terminal gets the reader; `--no-reconnect` keeps the old behaviour on both.
 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there

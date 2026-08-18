@@ -303,10 +303,10 @@ function attachUnderPty(root: string): Attached {
 /** The same command with stdin as a PIPE rather than a terminal: what a script gets. Kept separate
  *  from the pty helper because the difference between the two is the whole point of the cell that
  *  uses it. */
-type Piped = { seen: () => string; write: (s: string) => void; exit: () => number | undefined; waitExit: (ms: number) => Promise<boolean>; kill: () => void };
+type Piped = { seen: () => string; write: (s: string) => void; exit: () => number | undefined; waitFor: (re: RegExp, ms: number) => Promise<boolean>; waitExit: (ms: number) => Promise<boolean>; kill: () => void };
 const pipedChildren: Piped[] = [];
-function attachPiped(root: string): Piped {
-  const child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
+function attachPiped(root: string, extra: readonly string[] = []): Piped {
+  const child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     cwd: root,
     env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
     stdio: ["pipe", "pipe", "pipe"],
@@ -321,6 +321,11 @@ function attachPiped(root: string): Piped {
     write: (str) => { child.stdin.write(str); },
     exit: () => code,
     kill: () => { try { child.kill("SIGKILL"); } catch { /* already gone */ } },
+    waitFor: async (re, ms) => {
+      const deadline = Date.now() + ms;
+      while (Date.now() < deadline) { if (re.test(buf)) return true; await wait(100); }
+      return re.test(buf);
+    },
     waitExit: async (ms) => {
       const deadline = Date.now() + ms;
       while (Date.now() < deadline) { if (code !== undefined) return true; await wait(100); }
@@ -660,7 +665,8 @@ try {
     for (let i = 0; i < 150 && !arrived; i++) { arrived = sink().subarray(mark).includes(Buffer.from(n)); if (!arrived) await wait(200); }
     check("the agent receives what the script wrote", arrived, { got: sink().subarray(mark).toString("utf8") });
     p.write(DETACH); // one byte, one write: a detach on a pipe is still a detach
-    check("...and the detach key still ends a piped attach", await p.waitExit(30_000) && p.exit() === 0, p.exit());
+    check("...and the detach key still ends a piped attach", await p.waitExit(30_000) && p.exit() === 0,
+      { code: p.exit(), tail: p.seen().slice(-400) });
     check("...leaving the manager on the session count it started with", await settle(base, 25_000) === base, { base, now: live() });
   }
 
@@ -729,6 +735,70 @@ try {
     await heal();
     check("K: the manager is back on the session count it started with",
       await settle(base, 30_000) === base, { base, now: live() });
+  }
+  // -----------------------------------------------------------------------------------------
+  console.log("\nL. with stdin a PIPE, what is written while there is NO session still arrives");
+  // The other half of J, one window along, and the reason the population gate belongs at every
+  // `ownStdin` site rather than only at the first. A pipe's bytes are a script's input wherever in
+  // the run they are written, so the contract J states has to hold across a reconnect too: buffered
+  // by the stream, delivered when the next session opens, which is what the code did before this
+  // change because it paused stdin between sessions and the next `resume()` flushed them. Measured
+  // with the gate on the first attach only: the reader installed for the backoff read the script's
+  // bytes and dropped them, so `tail -f log | cotal attach` lost its feed across a link blip with
+  // no fault printed anywhere. A terminal and a pipe differ in whether a human is at the other end,
+  // not in which window the loop is in.
+  {
+    const base = live();
+    const mark = sink().length;
+    const p = attachPiped(root);
+    if (!await p.waitFor(new RegExp(`attached to ${SEAT}`), 90_000)) throw new Error(`piped attach never came up: ${p.seen().slice(-400)}`);
+    await wait(500);
+    await closeLink();
+    await severLoud();
+    check("the piped attach is told the link went", await p.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000), p.seen().slice(-300));
+    // Same premise as cell A, measured the same way: write only once the client's own dials have
+    // been quiet long enough that the loop can only be in a backoff rung.
+    const quiet = Date.now() + 25_000;
+    while (Date.now() - (knocks.at(-1) ?? 0) < 1_500 && Date.now() < quiet) await wait(100);
+    const sinceLastDial = Date.now() - (knocks.at(-1) ?? 0);
+    check("the loop is between attempts, which is this cell's premise", sinceLastDial >= 1_500, { sinceLastDial, knocks: knocks.length });
+    const n = nonce();
+    p.write(`${n}\n`);
+    await wait(300);
+    await closeLink();
+    await heal();
+    check("the reconnect lands", await p.waitFor(/\[cotal: reconnected\]/, 60_000), p.seen().slice(-300));
+    let arrived = false;
+    for (let i = 0; i < 100 && !arrived; i++) { arrived = sink().subarray(mark).includes(Buffer.from(n)); if (!arrived) await wait(200); }
+    check("...and the seat receives what the script wrote while there was no session", arrived,
+      { got: sink().subarray(mark).toString("utf8").slice(-200) });
+    p.write(DETACH);
+    check("L: the piped attach detaches and exits clean", await p.waitExit(30_000) && p.exit() === 0,
+      { code: p.exit(), tail: p.seen().slice(-400) });
+    check("L: the manager is back on the session count it started with", await settle(base, 25_000) === base, { base, now: live() });
+  }
+  // -----------------------------------------------------------------------------------------
+  console.log("\nM. a piped one-shot attach still gives the process back when it detaches");
+  // The path with no reader anywhere: `--no-reconnect` at a PIPE never installs the loop's watcher,
+  // on this code or on the code before it. That made it the one route where nothing gave the stream
+  // back on the way out, because the pause that did it was inside the watcher's `stop`. So the
+  // obligation was accidentally conditional on having taken the stream at all, which is the same
+  // shape as a gate written at one call site of three. Measured here rather than inferred: this cell
+  // is what the `process.stdin.unref()` on the exit path answers to, and it grades the one-shot
+  // exit that a script's `$?` depends on.
+  {
+    const base = live();
+    const mark = sink().length;
+    const n = nonce();
+    const p = attachPiped(root, ["--no-reconnect"]);
+    p.write(`${n}\n`);
+    let arrived = false;
+    for (let i = 0; i < 150 && !arrived; i++) { arrived = sink().subarray(mark).includes(Buffer.from(n)); if (!arrived) await wait(200); }
+    check("the one-shot receives what the script wrote", arrived, { got: sink().subarray(mark).toString("utf8").slice(-200) });
+    p.write(DETACH);
+    check("M: the piped one-shot exits clean", await p.waitExit(30_000) && p.exit() === 0,
+      { code: p.exit(), tail: p.seen().slice(-400) });
+    check("M: the manager is back on the session count it started with", await settle(base, 25_000) === base, { base, now: live() });
   }
 } catch (e) {
   fail++;

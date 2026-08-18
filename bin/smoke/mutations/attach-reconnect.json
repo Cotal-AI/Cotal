@@ -184,8 +184,8 @@
     {
       "name": "the backoff timer is abandoned rather than cleared, so a detach holds the shell to the end of the rung",
       "file": "implementations/cli/src/commands/agents.ts",
-      "find": "      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);\n      clearTimeout(timer);",
-      "replace": "      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);",
+      "find": "      const detached = watch ? await Promise.race([waited, watch.pressed.then(() => true)]) : await waited;\n      clearTimeout(timer);",
+      "replace": "      const detached = watch ? await Promise.race([waited, watch.pressed.then(() => true)]) : await waited;",
       "expectRed": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
       "cell": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
       "note": "Losing a Promise.race does not stop a setTimeout. Without the clear, the detach is honoured at once and the terminal comes back, and then node keeps the process alive until the abandoned timer fires: measured at 27.0s with the next attempt 26.9s away and 8.3s with it 8.1s away, tracking the rung rather than any work. Aimed at cell J, which bounds the exit against where the next attempt actually falls rather than against a constant, because a constant loose enough for a slow runner is also loose enough for this.",

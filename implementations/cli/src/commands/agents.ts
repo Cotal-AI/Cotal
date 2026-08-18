@@ -611,7 +611,16 @@ async function runAttachLoop(
   // is what the loop always claimed to do, and the detach key works during an attempt as well as
   // during a wait.
   let idle: ReturnType<typeof watchDetachKey> | undefined;
-  const ownStdin = (): NonNullable<typeof idle> => (idle ??= watchDetachKey(key.byte));
+  // A TERMINAL only, and the gate lives HERE rather than at the call sites, because there are three
+  // of them and a gate written at one is a promise the other two break silently. `printf 'ls\n' |
+  // cotal attach` writes into a PIPE, and those bytes are a script's input rather than an operator
+  // giving up on a frozen screen: a reader would eat them with no fault anywhere in sight. That is
+  // true in EVERY window, not only before the first session, so a pipe keeps the old contract
+  // throughout, paused between sessions and flushed into the next one. Measured with the gate at the
+  // first call site alone: a piped attach buffered correctly until its first reconnect and then had
+  // the reader installed on it by the backoff, so `tail -f log | cotal attach` lost its feed across a
+  // link blip. Cells J and I are the first-session halves, cell L is the reconnect one.
+  const ownStdin = (): typeof idle => (process.stdin.isTTY ? (idle ??= watchDetachKey(key.byte)) : undefined);
   // Returns whether the detach key had ALREADY been pressed, which is the one thing the session's
   // own reader cannot find out for itself once this reader is gone.
   const releaseStdin = (opts?: { pause?: boolean }): boolean => {
@@ -641,6 +650,12 @@ async function runAttachLoop(
     // detached. That is the same shape as the abandoned backoff timer, and it is why this lives
     // here rather than at the call sites.
     releaseStdin();
+    // And drop the process's own claim on the stream, which a PIPE keeps even after a pause. This is
+    // the exit path by definition, so nothing here reads stdin again. MEASURED, on a piped attach
+    // with the reader correctly not installed: the detach was honoured, the manager freed the slot,
+    // `detached from` printed, and the process then sat past 30s with its three stdio pipes as the
+    // only resources keeping the loop alive. A pause was not enough on its own.
+    process.stdin.unref();
     if (v.kind !== "gone") await releaseAbandoned();
     const notice = heldSessionNotice(abandoned.length, v.kind);
     if (notice) console.error(c.dim(notice));
@@ -652,11 +667,8 @@ async function runAttachLoop(
   // seat when the session opens. Measured before this line existed: a nonce typed at that prompt
   // arrived at the agent.
   //
-  // A TERMINAL only, and the gate is the population rather than the moment. `printf 'ls\n' | cotal
-  // attach` writes into a PIPE before the session could possibly be open, and those bytes are a
-  // script's input, not an operator giving up on a frozen screen: a reader here would eat them with
-  // no fault anywhere in sight. Both halves are cells, so neither is an assumption.
-  if (reconnect && process.stdin.isTTY) ownStdin();
+  // `ownStdin` is a no-op at a pipe; both halves are cells (I and J), so neither is an assumption.
+  if (reconnect) ownStdin();
   for (;;) {
     if (!first) {
       // Back off BEFORE the attempt, and stay interruptible: the detach key must work while we
@@ -671,7 +683,10 @@ async function runAttachLoop(
       const watch = ownStdin(); // and it STAYS installed through the attempt this wait precedes
       let timer: ReturnType<typeof setTimeout> | undefined;
       const waited = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });
-      const detached = await Promise.race([waited, watch.pressed.then(() => true)]);
+      // No watcher at a pipe, and nothing to replace it with: a detach byte a script writes here
+      // buffers and reaches the next session's own reader, which is exactly what it did before this
+      // change. Racing a promise that can never settle would be the same thing written longer.
+      const detached = watch ? await Promise.race([waited, watch.pressed.then(() => true)]) : await waited;
       clearTimeout(timer);
       if (detached) return await done({ kind: "ended" });
       attempt++;
