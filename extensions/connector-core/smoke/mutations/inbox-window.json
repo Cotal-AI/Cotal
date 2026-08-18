@@ -35,9 +35,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  while (text.length > budget && shown.length) {",
       "replace": "  while (false && text.length > budget && shown.length) {",
-      "expectRed": "the response is inside the receivable window, not 463,788 chars",
-      "cell": "the response is inside the receivable window, not 463,788 chars",
-      "note": "THE CLASS GUARD. Three escapes were found here, each a writer to the response body that the arithmetic did not know about. This loop is what replaced the arithmetic: it measures the finished string and gives back trailing items until the real text fits. Disable it and the estimate alone decides again, which is where every one of those escapes lived."
+      "expectRed": "the head line and the held-note are inside the budget, not outside it",
+      "cell": "the head line and the held-note are inside the budget, not outside it",
+      "note": "THE CLASS GUARD. Three escapes were found here, each a writer to the response body that the arithmetic did not know about. This loop is what replaced the arithmetic: it measures the finished string and gives back trailing items until the real text fits. Disable it and the estimate alone decides again, which is where every one of those escapes lived. The cell that notices first is the near-boundary one: with the measurement disabled the estimate is all that is left, and the estimate is exactly what does not know about the framing."
     },
     {
       "name": "K2 clear the whole scope up front, the order the defect was written in",
@@ -78,8 +78,8 @@
     {
       "name": "K6 the focus drain acks every id in the reply, recall included",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
-      "replace": "        if (!peek) agent.drainInboxIds(all.map((i) => i.id));",
+      "find": "          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "replace": "          agent.drainInboxIds(all.map((i) => i.id));",
       "expectRed": "focus: a recall id was NOT marked handled",
       "cell": "focus: a recall id was NOT marked handled, so a later live copy of it still buffers",
       "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxIds marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned."
@@ -116,9 +116,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "    else if (held.length) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);",
       "replace": "    else if (false) parts.push(`Nothing could be delivered in this response.${heldNote(held, peek, stuck)}`);",
-      "cell": "a buffer holding only undeliverable mail does not report an empty inbox",
-      "expectRed": "a buffer holding only undeliverable mail does not report an empty inbox",
-      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
+      "cell": "...and the reply names it rather than leaving it silently stuck",
+      "expectRed": "...and the reply names it rather than leaving it silently stuck",
+      "note": "An inbox that says it is empty while holding mail it cannot deliver is the silent version of the same loss: nobody calls back for what they were told is not there. The cell that notices first is the oversized-item cell, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side. The cell that notices first is the oversized-item one, because a single oversized message is exactly the case where nothing can be shown; the later empty-inbox cell asserts the same guard from the other side."
     },
     {
       "name": "K11 the note names every oversized message instead of a few",
@@ -143,9 +143,9 @@
       "file": "extensions/connector-core/src/tool-specs.ts",
       "find": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(\", \");",
       "replace": "  const named = channels.map((c) => `#${c.slice(0, 40)}`).join(\", \");",
-      "cell": "a long recall warning cannot push an acking response past the window",
-      "expectRed": "a long recall warning cannot push an acking response past the window",
-      "note": "A caller with many silenced or expired channels is exactly the caller who gets a long list, so an unbounded list is not a rare case: it is the case. It reddens on the size assertion before the boundedness one, which is the right order: an unbounded warning is a defect because of what it does to the response, not because of how it reads."
+      "cell": "...and the warning is bounded rather than naming all eighty channels",
+      "expectRed": "...and the warning is bounded rather than naming all eighty channels",
+      "note": "A caller with many silenced or expired channels is exactly the caller who gets a long list, so an unbounded list is not a rare case: it is the case. With the reply now assembled and measured, an unbounded warning no longer breaks the bound; it eats the window instead, giving back real messages to make room for channel names, which is why the boundedness assertion is the one that catches it."
     },
     {
       "name": "K15 the held note gives a peeking caller the destructive read's promise",
