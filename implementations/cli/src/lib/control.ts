@@ -221,7 +221,11 @@ async function askManagerEp(
       // the spawn-scoped user bearers - the 1c.2b read narrowing - and hangs their stop/attach).
       const info = await invokeCommand(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
       if (info.reply.ok !== true)
-        return { ok: false, error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}` };
+        return {
+          ok: false,
+          error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}`,
+          ...(info.reply.error?.code ? { code: info.reply.error.code } : {}),
+        };
       const row = info.reply.data as { id: string; lifecycleUid: string };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
@@ -254,7 +258,12 @@ async function askManagerEp(
     const r = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command)
       ? await submitAndFollowGoal(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, timeoutMs ?? START_TIMEOUT_MS, submit)
       : await submit();
-    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    if (r.reply.ok !== true)
+      return {
+        ok: false,
+        error: r.reply.error?.message ?? r.reply.error?.code ?? "error",
+        ...(r.reply.error?.code ? { code: r.reply.error.code } : {}),
+      };
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
@@ -270,7 +279,11 @@ async function askManagerEp(
  *  deadline elapsed with nothing attributed to the request). `up`'s resume readiness poll keys on it;
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
  *  predicate in another file. */
-export type ManagerReply = ControlReply & { unanswered?: boolean };
+/** The manager's error CODE, when there was one. A caller that has to DECIDE on a refusal — the
+ *  attach loop distinguishing "you may not" from "that seat is gone" from "try again" — was left
+ *  matching English, because both renderings below collapse the envelope to
+ *  `message ?? code` and the code is the only stable half. */
+export type ManagerReply = ControlReply & { unanswered?: boolean; code?: string };
 
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
  *  (`ps`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator typed, if

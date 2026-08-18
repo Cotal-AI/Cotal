@@ -1,9 +1,9 @@
-import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { isReachable, mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
-import { connect } from "@nats-io/transport-node";
+import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness } from "../lib/control.js";
-import { attachClient, detachKey, meshSessionTransport } from "../lib/attach-client.js";
+import { attachClient, detachKey, holdTerminal, isTransportEnd, meshSessionTransport, type TerminalHold } from "../lib/attach-client.js";
 import { completingFlagValue } from "../lib/completion.js";
 
 /**
@@ -23,7 +23,11 @@ const nameFlag = (what: string) =>
 const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
 export const psFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];
-export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)"), onFlag] as const satisfies readonly FlagSpec[];
+/** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,
+ *  which is right for a person at a terminal and wrong for a script that wants a single run with a
+ *  single exit code. */
+const noReconnectFlag = { name: "no-reconnect", type: "boolean", description: "exit when the session ends instead of re-establishing it" } as const;
+export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)"), onFlag, noReconnectFlag] as const satisfies readonly FlagSpec[];
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, attachFlags);
@@ -310,44 +314,214 @@ export async function ps(args: ParsedArgs): Promise<void> {
   }
 }
 
-export async function attach(args: ParsedArgs): Promise<void> {
-  const v = args.values as FlagValues<typeof attachFlags>;
-  if (!v.name) {
-    console.error(c.red("--name is required"));
-    process.exit(1);
-  }
+/** Re-establishment backoff, in order; the last value is the cap and repeats forever. A seat that
+ *  exists is worth waiting for — the operator asked to be attached to it, and the alternative is
+ *  the terminal they walked away from being gone when they come back. */
+const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
+
+const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
+/** One establishment attempt: the manager's answer, classified by what the CALLER should do about
+ *  it rather than by prose. `gone`/`denied` stop the loop; `fatal` is a refusal that retrying can
+ *  never fix; everything else is worth another attempt. */
+type Established =
+  | { ok: true; nc: NatsConnection; grant: SessionGrant }
+  | { ok: false; kind: AttachRefusal | "fatal"; message: string };
+
+/** What a caller should DO about a manager refusal. `denied` will not change by asking again;
+ *  `gone` is the seat the manager no longer knows, so there is nothing left to attach to; anything
+ *  else is worth another attempt. */
+export type AttachRefusal = "denied" | "gone" | "transient";
+
+/**
+ * Classify a refusal on the manager's error CODE, never on its wording. The wording is operator
+ * copy and changes; the code is the contract. Getting this wrong in either direction is a real
+ * failure: reading `permission-denied` as transient turns a refusal into an infinite retry loop
+ * against a manager that has already said no, and reading `not-found` as transient does the same
+ * to a seat that no longer exists.
+ */
+export function attachRefusal(code: string | undefined): AttachRefusal {
+  if (code === "permission-denied") return "denied";
+  if (code === "not-found") return "gone";
+  return "transient";
+}
+
+/**
+ * Ask the manager for a session and open it: a FRESH grant, a FRESH per-session caller credential,
+ * a FRESH connection, every time. Nothing is carried over from a previous attempt, so a reconnect
+ * re-runs the manager's whole authorization path (`serveGated` → `authorizeNamed` → a one-use
+ * holder-bound grant with its own TTL) exactly as the first attach did. A revoked or expired grant
+ * cannot be kept alive by reconnecting, because no grant is ever presented twice.
+ */
+async function establishAttachSession(
+  v: FlagValues<typeof attachFlags>,
+  on: string | undefined,
+  reconnecting: boolean,
+  /** The broker a previous attempt resolved to. Present only on a re-establishment. */
+  knownServer?: string,
+): Promise<Established> {
+  // Do not re-enter the operator-facing connect path while the broker is not answering. Its
+  // preflight is written to END THE COMMAND ("no mesh running at X - run `cotal up`"), which is the
+  // right answer for a person who just typed a command and exactly the wrong one for a link that is
+  // coming back. Probe first and treat silence as the transient it is.
+  //
+  // RESIDUAL, NAMED: a link that dies in the milliseconds between this probe and that preflight's
+  // own connect still ends the attach through that exit. It ends LOUDLY, with the message that path
+  // has always given, so it is a give-up that says why — not a silent one.
+  if (knownServer !== undefined && !(await isReachable(knownServer)))
+    return { ok: false, kind: "transient", message: `no answer from ${knownServer}` };
   // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
   // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
   // passes with "spawn", cross-owner needs ledger "admin").
-  // Same seat-locality rule as stop, and it matters more here: attaching to a seat means reaching
-  // the process, which only its host manager has.
-  const on = await pinForTarget(v as never, "cotal attach");
   const t = await resolveControlTarget(v, "control-caller-admin", on);
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
-  failIfNotOk(reply);
+  if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code), message: reply.error ?? "error" };
   // P2 item 6: the reply is the holder-bound §13.6 session GRANT (no ws:// URL). Redeem it over the
   // mesh — mint a per-session, rails-only caller cred from the local space seed, connect, and drive
   // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
   // 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
   const { grant } = reply.data as { grant: SessionGrant };
   const auth = loadSpaceAuth(authDir(findCotalRoot()), t.space);
-  if (!auth) {
-    console.error(c.red("mesh attach needs the local space seed (static auth mesh); user-mode session redemption is the #29 callout follow-up, not wired yet"));
-    process.exit(1);
-  }
+  if (!auth)
+    return {
+      ok: false, kind: "fatal",
+      message: "mesh attach needs the local space seed (static auth mesh); user-mode session redemption is the #29 callout follow-up, not wired yet",
+    };
   const id = newIdentity();
   const creds = await mintCreds(auth, id, "session-caller", {
     sessionCaller: { endpoint: grant.endpoint, sessionId: grant.sessionId, epoch: grant.serving.epoch },
     expiresAt: Math.floor(grant.exp / 1000), // grant.exp is ms (now+ttlMs); the JWT exp is seconds
   });
-  const nc = await connect({ servers: t.server, ...standaloneConnectOpts({ creds, tls: false }), inboxPrefix: `_INBOX_${id.id}`, maxReconnectAttempts: -1 });
-  console.error(c.dim(`attached to ${v.name} - ${detachKey().label} to detach`));
-  try {
-    await attachClient(meshSessionTransport(nc, grant));
-  } finally {
-    await nc.drain().catch(() => nc.close());
-  }
-  console.error(c.dim(`\ndetached from ${v.name}`));
+  // maxReconnectAttempts is the whole difference between the two modes, and it is deliberate.
+  // ONE-SHOT keeps the old -1: the NATS layer redials forever under a single session.
+  // RECONNECTING uses 0, because that redial is what breaks the attach rather than saving it — the
+  // session is already dead by the time the link comes back (the serving rail either kept
+  // advancing `seq` into a subject nobody was subscribed to, so the restored subscription faults
+  // with `gap`, or it stalled out and closed while this side was away, so nothing ever arrives
+  // again). Owning re-establishment here means the link coming back produces a real session with a
+  // real repaint, instead of a restored socket over a session that ended without us.
+  const nc = await connect({
+    servers: t.server,
+    ...standaloneConnectOpts({ creds, tls: false }),
+    inboxPrefix: `_INBOX_${id.id}`,
+    maxReconnectAttempts: reconnecting ? 0 : -1,
+  });
+  return { ok: true, nc, grant };
 }
 
+/** Watch stdin for the detach key while there is NO session reading it. Without this the key is
+ *  dead for as long as a reconnect takes, which is exactly when an operator is most likely to give
+ *  up and press it. Non-detach keystrokes are dropped: there is no seat to send them to, and
+ *  buffering them would replay a burst into the agent on reconnect. */
+function watchDetachKey(byte: number): { pressed: Promise<void>; stop: () => void } {
+  const stdin = process.stdin;
+  let hit!: () => void;
+  const pressed = new Promise<void>((r) => { hit = r; });
+  const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };
+  stdin.on("data", onData);
+  stdin.resume();
+  return { pressed, stop: () => { stdin.off("data", onData); stdin.pause(); } };
+}
+
+/**
+ * The attach loop. One session at a time; when the LINK breaks and the operator did not detach, it
+ * re-establishes with backoff and keeps going, because the seat is still there and the terminal the
+ * operator walked away from should still be theirs when they come back.
+ */
+async function runAttachLoop(
+  vv: FlagValues<typeof attachFlags>,
+  pin: string | undefined,
+  reconnect: boolean,
+  key: ReturnType<typeof detachKey>,
+  hold: TerminalHold,
+): Promise<AttachVerdict> {
+  let first = true;
+  let attempt = 0; // consecutive re-establishment attempts since the last live session
+  let server: string | undefined; // the broker the first resolve landed on; re-probed before each retry
+  for (;;) {
+    if (!first) {
+      // Back off BEFORE the attempt, and stay interruptible: the detach key must work while we
+      // wait, not only while a session is up.
+      const wait = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
+      const watch = watchDetachKey(key.byte);
+      const detached = await Promise.race([sleep(wait).then(() => false), watch.pressed.then(() => true)]);
+      watch.stop();
+      if (detached) return { kind: "ended" };
+      attempt++;
+    }
+    let est: Established;
+    try {
+      est = await establishAttachSession(vv, pin, reconnect, first ? undefined : server);
+    } catch (e) {
+      // The FIRST attempt throws exactly as it always has — the CLI's top-level handler renders
+      // it. Only a reconnect turns a thrown establishment into another attempt.
+      if (first) throw e;
+      est = { ok: false, kind: "transient", message: (e as Error).message };
+    }
+    if (!est.ok) {
+      // Nothing changes for the first attach: any refusal is the same loud exit as before.
+      if (first || est.kind === "fatal" || est.kind === "denied") return { kind: "failed", message: est.message };
+      if (est.kind === "gone") return { kind: "gone" };
+      continue; // transient: the manager or the link is unreachable right now
+    }
+    server = est.nc.getServer();
+    if (first) console.error(c.dim(`attached to ${vv.name} - ${key.label} to detach`));
+    else console.error(c.dim("[cotal: reconnected]"));
+    first = false;
+    attempt = 0;
+    let outcome;
+    try {
+      // The manager replays its byte-exact backlog snapshot on every open (the `ready` handshake
+      // in session/bridge.ts), so the reconnected screen repaints through the path that already
+      // exists; there is no second backlog here.
+      outcome = await attachClient(meshSessionTransport(est.nc, est.grant), hold);
+    } finally {
+      await est.nc.drain().catch(() => est.nc.close());
+    }
+    if (!reconnect) {
+      // One-shot: a faulted session still throws, so `--no-reconnect` exits the way it does today.
+      if (outcome.error) throw outcome.error;
+      return { kind: "ended" };
+    }
+    if (!isTransportEnd(outcome.reason)) return { kind: "ended" };
+    console.error(c.dim("[cotal: connection lost, reconnecting]"));
+  }
+}
+
+/** How the attach finished, decided inside the loop and acted on outside it — so the terminal is
+ *  always given back before anything prints or exits. */
+type AttachVerdict = { kind: "ended" } | { kind: "gone" } | { kind: "failed"; message: string };
+
+export async function attach(args: ParsedArgs): Promise<void> {
+  const v = args.values as FlagValues<typeof attachFlags>;
+  if (!v.name) {
+    console.error(c.red("--name is required"));
+    process.exit(1);
+  }
+  const reconnecting = v["no-reconnect"] !== true;
+  // Seat-locality first, exactly as `stop` does it: attaching to a seat means reaching the process,
+  // which only its host manager has. Resolved ONCE — the seat does not move between reconnects, and
+  // a manager that stops answering is a transient the loop already retries through.
+  const on = await pinForTarget(v as never, "cotal attach");
+  const detach = detachKey();
+  const hold = holdTerminal();
+  let verdict: AttachVerdict;
+  try {
+    verdict = await runAttachLoop(v, on, reconnecting, detach, hold);
+  } finally {
+    // The terminal comes back before anything else happens, whatever ended the attach — including
+    // a throw out of the one-shot path, which is how `--no-reconnect` keeps its old exit.
+    hold.restore();
+  }
+  if (verdict.kind === "failed") {
+    console.error(c.red(`✗ ${verdict.message}`));
+    process.exit(1);
+  }
+  if (verdict.kind === "gone") {
+    console.error(c.dim(`\nseat ${v.name} is gone`));
+    return;
+  }
+  console.error(c.dim(`\ndetached from ${v.name}`));
+
+}
