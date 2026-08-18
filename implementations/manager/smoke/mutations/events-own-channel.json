@@ -1,0 +1,53 @@
+{
+  "suite": "implementations/manager/smoke/events-grant-acl.smoke.ts",
+  "guard": "a spawn may be granted the event plane of the agent it is creating and no other, over both ACL fields, and the wildcard form is deliberately left to ordinary ACL authority",
+  "command": "pnpm smoke:events-grant",
+  "completionMarker": "EVENTS-GRANT/ACL SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/mutations/events-own-channel.json",
+  "why": [
+    "An event channel carries a session's tool inputs and outputs verbatim. On a static mesh there is",
+    "no ledger, so a caller-supplied allowSubscribe/allowPublish is attenuated by nothing at all: a",
+    "caller that may spawn may otherwise mint its child a read on any subject it names, including",
+    "another live agent's plane.",
+    "",
+    "The three mutations are chosen so that no two of them redden the same cell. E1 removes the rule",
+    "entirely. E2 leaves the rule but narrows its INPUT to one of the two ACL fields, which is the",
+    "shape a refactor produces and which E1 cannot distinguish. E3 goes the other way and makes the",
+    "rule catch more than it claims to, which is the only way to show the stated-limit cell is an",
+    "assertion rather than a sentence.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the manager by relative source path (../src/manager.js), so",
+    "the mutated file is the file that runs and there is no build in the command. Its package-name",
+    "imports are core's eventChannel/eventChannelPrincipal/isEventChannel, which the cells compare the",
+    "manager AGAINST; no mutation below replaces them, so a kill cannot come from moving both sides."
+  ],
+  "mutations": [
+    {
+      "name": "E1 the rule finds nothing foreign, ever",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        (ch) => isEventChannel(ch) && ch !== ownEventChannel,",
+      "replace": "        () => false,",
+      "expectRed": "a spawn asking for ANOTHER agent's event channel to READ is refused",
+      "cell": "a spawn asking for ANOTHER agent's event channel to READ is refused",
+      "note": "The rule deleted at its predicate rather than at its call site, so the surrounding throw and its message survive and cannot pass the cell by themselves."
+    },
+    {
+      "name": "E2 the rule reads the read-set only, and forgets the post-set",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "const foreignEventChannels = [...allowSubscribe, ...(allowPublish ?? [])].filter(",
+      "replace": "const foreignEventChannels = [...allowSubscribe].filter(",
+      "expectRed": "a spawn asking to POST to another agent's event channel is refused too",
+      "cell": "a spawn asking to POST to another agent's event channel is refused too",
+      "note": "The half-fence. It reads as the obvious one, because read amplification is the risk people name first, and it leaves a caller able to mint publish rights onto another agent's plane, which is forgery rather than eavesdropping. E1 cannot tell this mutant from a healthy tree."
+    },
+    {
+      "name": "E3 the rule catches the wildcard form too, which it does not claim to",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        (ch) => isEventChannel(ch) && ch !== ownEventChannel,",
+      "replace": "        (ch) => (isEventChannel(ch) || ch.startsWith(\"events.\")) && ch !== ownEventChannel,",
+      "expectRed": "a WILDCARD event pattern is NOT refused by this rule",
+      "cell": "a WILDCARD event pattern is NOT refused by this rule",
+      "note": "The limit asserted from the other side. Without this, the cell recording the gap would be satisfied by any tree, including one that had quietly closed it, and the comment describing the limit would be a sentence nobody tests."
+    }
+  ]
+}
