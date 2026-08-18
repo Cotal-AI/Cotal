@@ -225,15 +225,21 @@ const RESPONSE_OVERHEAD = 768;
  * rest, and it truncates a sender's name, because a steady stream of oversized mail would otherwise
  * fill every reply with metadata about mail it cannot carry, which is the same overflow one layer up.
  */
-function heldNote(held: readonly InboxItem[]): string {
+function heldNote(held: readonly InboxItem[], peek = false): string {
   if (!held.length) return "";
   const stuck = held.filter((i) => undeliverableAlone(i));
   const waiting = held.length - stuck.length;
   const parts: string[] = [];
   if (waiting) {
     const dms = held.filter((i) => i.kind !== "channel" && !undeliverableAlone(i)).length;
+    // Under peek nothing is cleared, so the next call returns THIS window again. Telling a peeking
+    // caller to call again for the next batch is a promise the read cannot keep, and an obedient
+    // caller loops on it forever.
+    const next = peek
+      ? "A peek clears nothing, so calling again returns this same window; read without peek to take it and see the next."
+      : "Call cotal_inbox again for the next batch.";
     parts.push(
-      `${waiting} more message${waiting === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. Call cotal_inbox again for the next batch.`,
+      `${waiting} more message${waiting === 1 ? "" : "s"} held (${dms} direct). This response was capped at the receivable window, and nothing held was cleared. ${next}`,
     );
   }
   if (stuck.length) {
@@ -248,6 +254,24 @@ function heldNote(held: readonly InboxItem[]): string {
   }
   return `\n\n… ${parts.join(" ")}`;
 }
+
+/**
+ * The recall warning, bounded and budgeted like every other part of a response.
+ *
+ * It used to be appended AFTER the window had been filled, so its length rode outside the bound:
+ * measured at a 49,598-character response, over the cap, with twenty already-acked messages inside
+ * it. A caller with many silenced or expired channels is exactly the caller who gets a long list, so
+ * the list itself is capped and counted rather than trusted to stay short.
+ */
+function droppedNote(channels: readonly string[]): string {
+  if (!channels.length) return "";
+  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(", ");
+  const rest = channels.length - Math.min(NAMED_DROPPED, channels.length);
+  return `⚠ Some earlier chatter could not be recalled completely on ${named}${rest ? `, and ${rest} more channel${rest === 1 ? "" : "s"}` : ""} (retention or local safety bounds were reached).`;
+}
+
+/** How many channels the recall warning names before it starts counting them instead. */
+const NAMED_DROPPED = 5;
 
 /** How many oversized messages the note names before it starts counting them instead. */
 const NAMED_STUCK = 3;
@@ -435,7 +459,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           if (!shown.length)
             return ok(
               held.length
-                ? `Nothing could be delivered in this response.${heldNote(held)}`
+                ? `Nothing could be delivered in this response.${heldNote(held, peek)}`
                 : scope
                   ? `No pull-only messages.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
                   : "Inbox empty, no new messages.",
@@ -445,7 +469,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             : `${shown.length} message${shown.length === 1 ? "" : "s"}${peek ? " (peek: nothing cleared)" : ""}:`;
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical.
-          const body = `${head}\n${shown.map(fmtItem).join("\n")}${heldNote(held)}`;
+          const body = `${head}\n${shown.map(fmtItem).join("\n")}${heldNote(held, peek)}`;
           if (!peek) agent.drainInboxIds(shown.map((i) => i.id));
           return ok(body);
         }
@@ -455,12 +479,18 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         const recall = await agent.recallAmbient();
         // The window spans both lanes, because the response carries both; but only the buffered
         // lane is destructive, so only ids from it are ever cleared. Recall stays re-readable.
-        const { shown: all, held } = windowInbox([...buffered, ...recall.items]);
+        // The warning is part of the response, so it is part of the budget. Appending it after the
+        // window was filled put its length outside the bound this tool advertises.
+        const warning = droppedNote(recall.droppedChannels);
+        const { shown: all, held } = windowInbox(
+          [...buffered, ...recall.items],
+          INBOX_WINDOW_CHARS - (warning ? warning.length + 2 : 0), // + the blank line that joins it
+        );
         const bufferedIds = new Set(buffered.map((i) => i.id));
         if (!all.length && !recall.droppedChannels.length)
           return ok(
             held.length
-              ? `Nothing could be delivered in this response.${heldNote(held)}`
+              ? `Nothing could be delivered in this response.${heldNote(held, peek)}`
               : scope
                 ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
                 : "Inbox empty, no new messages, and no channel chatter since you entered focus.",
@@ -470,16 +500,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           const head = scope
             ? `${all.length} message${all.length === 1 ? "" : "s"} — buffered pull-only items were cleared; normal focus channel items are read-only recall and may appear again:`
             : `${all.length} message${all.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`;
-          parts.push(`${head}\n${all.map(fmtItem).join("\n")}${heldNote(held)}`);
+          parts.push(`${head}\n${all.map(fmtItem).join("\n")}${heldNote(held, peek)}`);
         }
         // Same order as above: render first, ack second, and only ever ids from the buffered lane.
         if (!peek) agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));
-        if (recall.droppedChannels.length)
-          parts.push(
-            `⚠ Some earlier chatter could not be recalled completely on ${recall.droppedChannels
-              .map((c) => `#${c}`)
-              .join(", ")} (retention or local safety bounds were reached).`,
-          );
+        if (warning) parts.push(warning);
         return ok(parts.join("\n\n"));
       },
     },

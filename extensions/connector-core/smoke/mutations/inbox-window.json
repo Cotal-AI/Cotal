@@ -16,6 +16,10 @@
     "budgeted the items and not the framing, and an item too large for an empty window was shown alone",
     "AND acked, which reproduced the original defect in miniature at 60,026 characters.",
     "",
+    "K13, K14 and K15 came from the first lens's re-pointed pass. Its first pass graded the wedging",
+    "question and read a 100,038-character acked response as evidence of health; re-aimed at the bound",
+    "the code advertises, the same seat found the warning riding outside the budget.",
+    "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent and the tool specs",
     "by RELATIVE SOURCE PATH (../src/agent.js, ../src/tool-specs.js), so the bytes mutated are the",
     "bytes graded: no dist in the path and no build in the command. Its only package-name import is",
@@ -135,6 +139,33 @@
       "cell": "...and it does not promise that calling again will deliver them",
       "expectRed": "...and it does not promise that calling again will deliver them",
       "note": "A queue that looks like it is moving when it is not. The caller keeps calling, the same messages keep not arriving, and nothing in the reply says why."
+    },
+    {
+      "name": "K13 the recall warning is appended outside the budget again",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          INBOX_WINDOW_CHARS - (warning ? warning.length + 2 : 0), // + the blank line that joins it",
+      "replace": "          INBOX_WINDOW_CHARS,",
+      "cell": "a long recall warning cannot push an acking response past the window",
+      "expectRed": "a long recall warning cannot push an acking response past the window",
+      "note": "The shape the first lens found on its re-pointed pass: the warning was pushed after the window was filled, so it rode outside the bound. Measured at 49,598 characters with twenty already-acked messages inside."
+    },
+    {
+      "name": "K14 the recall warning names every dropped channel",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "  const named = channels.slice(0, NAMED_DROPPED).map((c) => `#${c.slice(0, 40)}`).join(\", \");",
+      "replace": "  const named = channels.map((c) => `#${c.slice(0, 40)}`).join(\", \");",
+      "cell": "...and the warning is bounded rather than naming all sixty channels",
+      "expectRed": "...and the warning is bounded rather than naming all sixty channels",
+      "note": "A caller with many silenced or expired channels is exactly the caller who gets a long list, so an unbounded list is not a rare case: it is the case."
+    },
+    {
+      "name": "K15 the held note gives a peeking caller the destructive read's promise",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "    const next = peek\n      ? \"A peek clears nothing, so calling again returns this same window; read without peek to take it and see the next.\"\n      : \"Call cotal_inbox again for the next batch.\";",
+      "replace": "    const next = \"Call cotal_inbox again for the next batch.\";",
+      "cell": "a peek that holds mail does not promise a next batch it cannot deliver",
+      "expectRed": "a peek that holds mail does not promise a next batch it cannot deliver",
+      "note": "Peek clears nothing, so the next call returns the same window. An obedient caller told to call again loops on it forever, which the first lens measured as three byte-identical replies."
     }
   ]
 }

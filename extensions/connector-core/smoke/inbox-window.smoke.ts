@@ -340,6 +340,87 @@ try {
       text.includes("calling again will not produce them") && !text.includes("next batch"), text.slice(-240));
   }
 
+  // ── 13) THE RECALL WARNING IS PART OF THE RESPONSE, SO IT IS PART OF THE BUDGET ───────────────
+  //
+  // Found by the first lens on its re-pointed pass, with a working repro. The focus branch appended
+  // the dropped-channels warning AFTER the window had been filled, so its length rode outside the
+  // bound: 49,598 characters, over the cap, with twenty already-acked messages inside it. #603
+  // re-entering through a side door, and the reason the invariant below is worth stating as one.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const dropped = Array.from({ length: 60 }, (_, n) => `silenced-channel-number-${n}`);
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: [],
+      droppedChannels: dropped,
+    });
+    for (let n = 0; n < 20; n++) agent.ep.emit("message", dmMsg(`fb-${n}`, "b".repeat(2_300)), noop(), dmMeta);
+
+    const text = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a long recall warning cannot push an acking response past the window",
+      text.length <= INBOX_WINDOW_CHARS, { chars: text.length, window: INBOX_WINDOW_CHARS });
+    check("...and the warning is bounded rather than naming all sixty channels",
+      (text.match(/#silenced-channel-number-/g) ?? []).length <= 5 && text.includes("more channels"),
+      text.slice(-260));
+  }
+
+  // ── 14) THE HELD NOTE TELLS A PEEKING CALLER THE TRUTH ────────────────────────────────────────
+  //
+  // Also from the first lens: peek clears nothing, so the next call returns the same window. Telling
+  // a peeking caller to call again for the next batch is a promise the read cannot keep, and an
+  // obedient caller loops on it forever. Measured there as three byte-identical replies.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    for (let n = 0; n < 60; n++) agent.ep.emit("message", dmMsg(`pk-${n}`, "p".repeat(2_300)), noop(), dmMeta);
+
+    const t1 = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    const t2 = textOf(await inboxSpec().run(agent, cfg, { peek: true }));
+    check("a peek that holds mail does not promise a next batch it cannot deliver",
+      !t1.includes("Call cotal_inbox again for the next batch") && t1.includes("read without peek"), t1.slice(-220));
+    check("...and it is honest because the window really does repeat", t1 === t2 && agent.inboxCount() === 60,
+      { identical: t1 === t2, held: agent.inboxCount() });
+  }
+
+  // ── 15) THE INVARIANT ITSELF, over every branch that acks ─────────────────────────────────────
+  //
+  // The lens's own suggestion after finding cell 13: the property is not "this fixture fits", it is
+  // "no response that clears anything is larger than the window". Each case below acks something.
+  {
+    type Case = { name: string; build: (a: MeshAgent) => void; args: Record<string, unknown>; focus?: boolean; dropped?: string[] };
+    const cases: Case[] = [
+      { name: "plain replay", args: {}, build: (a) => { for (let n = 0; n < 199; n++) a.ep.emit("message", replayMsg(n), noop(), replayMeta); } },
+      { name: "mail and replay", args: {}, build: (a) => {
+        for (let n = 0; n < 100; n++) a.ep.emit("message", replayMsg(n), noop(), replayMeta);
+        for (let n = 0; n < 40; n++) a.ep.emit("message", dmMsg(`m-${n}`, "m".repeat(2_300)), noop(), dmMeta);
+      } },
+      { name: "one oversized plus ordinary", args: {}, build: (a) => {
+        a.ep.emit("message", dmMsg("big", "z".repeat(60_000)), noop(), dmMeta);
+        for (let n = 0; n < 30; n++) a.ep.emit("message", dmMsg(`o-${n}`, "o".repeat(2_300)), noop(), dmMeta);
+      } },
+      { name: "focus with a long warning", args: {}, focus: true, dropped: Array.from({ length: 60 }, (_, n) => `chan-${n}`),
+        build: (a) => { for (let n = 0; n < 30; n++) a.ep.emit("message", dmMsg(`f-${n}`, "f".repeat(2_300)), noop(), dmMeta); } },
+    ];
+    let worst = 0;
+    for (const c of cases) {
+      const agent = new MeshAgent(cfg);
+      agent.on("error", () => {});
+      if (c.focus) {
+        Object.defineProperty(agent, "attention", { get: () => "focus" });
+        (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({ items: [], droppedChannels: c.dropped ?? [] });
+      }
+      c.build(agent);
+      const before = agent.inboxCount();
+      const text = textOf(await inboxSpec().run(agent, cfg, c.args));
+      worst = Math.max(worst, text.length);
+      assert.ok(text.length <= INBOX_WINDOW_CHARS, `${c.name}: ${text.length} chars exceeds the window`);
+      assert.ok(agent.inboxCount() < before, `${c.name}: nothing was cleared, so this case does not exercise the invariant`);
+    }
+    check("no response that clears anything exceeds the window, across every acking branch",
+      worst <= INBOX_WINDOW_CHARS, { worst, window: INBOX_WINDOW_CHARS, cases: cases.length });
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {
