@@ -245,8 +245,18 @@ To let something else read a plane, grant it out of band. On a user-auth mesh th
 says so; mint the reader instead:
 
 ```bash
-cotal mint watcher --profile observer --allow-subscribe 'events.<owner>.<actor>'
+cotal mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>' --provision
 ```
+
+The **agent** profile, not the observer one. `mint` reads `--allow-subscribe` only for that
+profile: an observer mint ignores the flag and hands out a reader of the whole chat plane, which is
+the opposite of what a scoped watcher is for. The agent profile also prints the lifecycle uid the
+reader needs, since an authed consuming endpoint refuses to start without one.
+
+Two things a reader has to do that are not obvious. It must pass the event channel as its channel
+set, or the endpoint joins `general` by default and is refused there. And it reads history through
+`readHistory`, the delivery daemon's mediated read, not `channelHistory`: a scoped credential is
+denied the ad-hoc consumer that the direct read creates, by design.
 
 The `<owner>.<actor>` pair is the session's principal, not its display name. On a user-auth mesh
 the actor half **is** the agent's name, so the channel is `events.<your-owner>.<agent-name>`. On a

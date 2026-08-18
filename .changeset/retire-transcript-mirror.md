@@ -52,4 +52,7 @@ observer.
 
 To let something read a plane, grant it out of band. On a user-auth mesh that is `cotal actor
 grant`. On a static mesh there is no actor ledger for `actor grant` to write to, so mint the reader
-instead: `cotal mint watcher --profile observer --allow-subscribe 'events.<owner>.<actor>'`.
+instead: `cotal mint watcher --profile agent --allow-subscribe 'events.<owner>.<actor>'
+--provision`. The agent profile, not the observer one: `mint` reads `--allow-subscribe` only for
+that profile, so an observer mint ignores the channel and hands out a reader of the whole chat
+plane.

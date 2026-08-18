@@ -45,6 +45,7 @@ import {
   principalKey,
   eventChannel,
   eventChannelPrincipal,
+  mintLifecycleUid,
   setupSpaceStreams,
   DEV_OWNER,
   type Connector,
@@ -117,6 +118,11 @@ const newManager = (): Manager => {
   return m;
 };
 const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot });
+// Carried from section 1 to section 9: the refusal text an operator actually sees, and the channel
+// it refused. Section 9 cannot raise its own refusal, because by then this manager is in preserving
+// mode and every spawn is fenced for a different reason.
+let remedyRefusal = "";
+let remedyChannel = "";
 (mgr as unknown as { auth: unknown }).auth = auth; // real trust material; the broker enforces it
 
 const fakeSession = { cols: 80, rows: 24, backlog: () => Buffer.alloc(0), onData: () => () => {}, onExit: () => () => {}, write: () => {}, resize: () => {} };
@@ -246,13 +252,17 @@ try {
   // legitimate spawn that carries its child's own channel forward would be refused. That door is
   // graded in `implementations/auth/smoke/user-spawn.smoke.ts` against a real user-mode mesh. This
   // suite grades the refusal half and states which half it cannot see rather than implying both.
+  // Section 9 mints with the profile THIS refusal names, so its text and the channel it refused are
+  // carried out of this block rather than re-derived from a second, differently-fenced manager.
   {
     const foreign = eventChannel({ owner: DEV_OWNER, actor: "UVICTIMPRINCIPALNOTOURS" });
+    remedyChannel = foreign;
 
     // (a) over the READ set, which is the form that matters: this is a read amplification.
     const before = (mgr as unknown as { reserved: Set<string> }).reserved.size;
     const rowsBefore = (mgr as unknown as { agents: Map<string, unknown> }).agents.size;
     const r1 = await mgr.startAgent({ name: "event-bot", agent: "smoke-emitter", allowSubscribe: [foreign] });
+    remedyRefusal = r1.error ?? "";
     check(
       "a spawn asking for ANOTHER agent's event channel to READ is refused",
       r1.ok === false && /another agent's event channel/.test(r1.error ?? ""),
@@ -483,6 +493,44 @@ try {
     );
   }
 
+  // ===== 9. THE REMEDY THE REFUSAL NAMES IS THE ONE THAT ACTUALLY NARROWS =====
+  //
+  // A refusal is only as good as the command it hands the operator, and this one was wrong. The
+  // text used to name `--profile observer --allow-subscribe <channel>`; `mint` reads
+  // `--allow-subscribe` ONLY for the agent profile, and the observer arm of `permissionsFor`
+  // hardcodes `chat.>`. So an operator following the refusal to the letter got a reader of the
+  // WHOLE chat plane while believing they had scoped one channel, which is the opposite of what
+  // the sentence around it promises. A live mint against a real broker is what found it.
+  //
+  // This cell is what keeps the sentence and the mint from drifting apart again: it PARSES the
+  // profile out of the manager's own refusal string rather than hardcoding one, so rewording the
+  // remedy back to a profile that ignores the flag reddens HERE instead of in a terminal.
+  {
+    const foreign = remedyChannel;
+    const named = /cotal mint <name> --profile (\S+) --allow-subscribe/.exec(remedyRefusal);
+    check("the refusal prints a mint command and names a profile for it", named !== null, remedyRefusal.slice(0, 300));
+    const profile = named?.[1] ?? "";
+    const credsPath = join(workspaceRoot, "remedy.creds");
+    writeFileSync(
+      credsPath,
+      await mintCreds(auth, newIdentity(), profile as Parameters<typeof mintCreds>[2], {
+        allowSubscribe: [foreign],
+        lifecycleUid: mintLifecycleUid(),
+      }),
+    );
+    const granted = subAcl(credsPath);
+    check(
+      "the profile the refusal names mints a reader of EXACTLY the one event channel",
+      granted.length === 1 && channelOf(granted[0]!) === foreign,
+      { profile, granted },
+    );
+    check(
+      "and hands out no wildcard over the chat plane",
+      granted.every((s) => !s.endsWith(".chat.>")),
+      { profile, granted },
+    );
+  }
+
 } finally {
   await stopBroker();
   rmSync(workspaceRoot, { recursive: true, force: true });
@@ -490,7 +538,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 34;
+const EXPECTED = 37;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

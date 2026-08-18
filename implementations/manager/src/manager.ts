@@ -3248,8 +3248,10 @@ export class Manager {
             `agent may be granted its OWN event plane and no other, because that plane carries the ` +
             `session's tool inputs and outputs. Grant a reader out of band rather than through a ` +
             `spawn: \`cotal actor grant\` on a user-auth mesh, or \`cotal mint <name> --profile ` +
-            `observer --allow-subscribe ${foreign[0]}\` on a static one, where there is no actor ` +
-            `ledger for \`actor grant\` to write to.`,
+            `agent --allow-subscribe ${foreign[0]} --provision\` on a static one, where there is no ` +
+            `actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer one: ` +
+            `\`mint\` reads --allow-subscribe only for that profile, so an observer mint would ignore ` +
+            `the channel and hand out a reader of the whole chat plane.`,
         );
       }
       if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
@@ -3607,8 +3609,9 @@ export class Manager {
             `(${foreign.join(", ")}). An agent may hold its OWN event plane and no other, because that ` +
             `plane carries the session's tool inputs and outputs. Remove it from the inventory and ` +
             `grant the reader out of band instead: \`cotal actor grant\` on a user-auth mesh, or ` +
-            `\`cotal mint <name> --profile observer --allow-subscribe ${foreign[0]}\` on a static ` +
-            `one, where there is no actor ledger for \`actor grant\` to write to.`,
+            `\`cotal mint <name> --profile agent --allow-subscribe ${foreign[0]} --provision\` on a ` +
+            `static one, where there is no actor ledger for \`actor grant\` to write to. The AGENT ` +
+            `profile, not the observer one: \`mint\` reads --allow-subscribe only for that profile.`,
         );
     }
     if (entry.identity.mode === "open") {
