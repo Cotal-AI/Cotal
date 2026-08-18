@@ -188,9 +188,9 @@ const scanned = (ext: string): boolean => CONTAINERS[ext] !== undefined;
  * is a thing that can be wrong. Tripwiring what it did NOT treat as code means a mis-slice loses a
  * call into a region that still fails the run, rather than into silence.
  */
-function htmlSplit(text: string): { codes: { code: string; classic: boolean }[]; rest: string } {
+function htmlSplit(text: string): { codes: { code: string }[]; rest: string } {
   const blank = (t: string): string => t.replace(/[^\n]/g, " ");
-  const codes: { code: string; classic: boolean }[] = [];
+  const codes: { code: string }[] = [];
   let rest = "", last = 0;
   const re = /<script\b([^>]*)>([\s\S]*?)<\/script\s*>/gi;
   for (let m = re.exec(text); m; m = re.exec(text)) {
@@ -202,7 +202,7 @@ function htmlSplit(text: string): { codes: { code: string; classic: boolean }[];
     // numbers. Emitting a single concatenation instead would invent a source the browser never
     // runs: two adjacent tags put the second body on the same physical line as the first, where a
     // trailing `//` comment in the first comments the second out and its calls vanish silently.
-    if (isJs) codes.push({ code: blank(text.slice(0, bodyStart)) + body, classic: type !== "module" });
+    if (isJs) codes.push({ code: blank(text.slice(0, bodyStart)) + body });
     rest += text.slice(last, bodyStart) + (isJs ? blank(body) : body);
     last = bodyStart + body.length;
   }
@@ -230,23 +230,15 @@ function sources(dir: string, acc: string[] = []): string[] {
 }
 
 /** JSX is a different grammar, so a `.tsx` parsed as `.ts` mis-reads `<T>` and can drop call sites. */
-type Program = { src: ts.SourceFile; sharesGlobals: boolean };
-
-const parseAll = (file: string, text: string): Program[] => {
+const parseAll = (file: string, text: string): ts.SourceFile[] => {
   const container = CONTAINERS[extOf(file)];
   if (container === "frontmatter")
-    return [{ src: ts.createSourceFile(file, frontmatter(text)?.code ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS), sharesGlobals: true }];
-  // `sharesGlobals` is the SCOPE of each program, not a detail of its syntax. A classic script's
-  // top-level bindings land in the page's global lexical environment and are visible to the classic
-  // scripts after it; a module's stay in the module. Carrying it here is what stops a later module's
-  // local name from being read as the earlier global of the same spelling.
+    return [ts.createSourceFile(file, frontmatter(text)?.code ?? "", ts.ScriptTarget.Latest, true, ts.ScriptKind.TS)];
   if (container === "script")
-    return htmlSplit(text).codes.map((c) => ({
-      src: ts.createSourceFile(file, c.code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS),
-      sharesGlobals: c.classic,
-    }));
-  return [{ src: ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
-    /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : undefined), sharesGlobals: true }];
+    return htmlSplit(text).codes.map((c) =>
+      ts.createSourceFile(file, c.code, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS));
+  return [ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true,
+    /\.(tsx|jsx)$/.test(file) ? ts.ScriptKind.TSX : undefined)];
 };
 
 const WRAPPERS = new Set([
@@ -320,6 +312,28 @@ function constStrings(src: ts.SourceFile): Map<string, string> {
   };
   visit(src);
   return out;
+}
+
+/** Every name this program declares, foldable or not: what another program must not lean on. */
+function declaredNames(src: ts.SourceFile): Set<string> {
+  const out = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) out.add(n.name.text);
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  return out;
+}
+
+/** Whether an expression reads any of those names, which is what makes it unresolvable here. */
+function leansOn(e: ts.Expression, foreign: Set<string>): boolean {
+  let hit = false;
+  const visit = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && foreign.has(n.text)) hit = true;
+    ts.forEachChild(n, visit);
+  };
+  visit(e);
+  return hit;
 }
 
 type Folds = (e: ts.Expression | undefined) => boolean;
@@ -583,7 +597,7 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   // Refusing here is also fail-closed in the direction that matters: an unparseable file cannot run,
   // so nothing is lost by declining to report a count for it, while scanning it silently reports a
   // number that looks like coverage.
-  for (const { src } of programs) {
+  for (const src of programs) {
     const diags = (src as unknown as { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
     if (diags.length) return [{
       file, line: 1, verdict: "unverifiable",
@@ -591,24 +605,34 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
     }];
   }
   const found: Site[] = [];
-  // Only the CLASSIC programs contribute here, and getting that wrong is how the first cut of this
-  // union hid a call. Classic scripts share the page's global lexical environment, so a constant one
-  // declares can spell the seam in a later one. A module's bindings are its own, so folding them
-  // into the same map let a later module's `const N = "other"` overwrite the earlier global `N` a
-  // classic script was really calling through, and that call stopped folding and vanished silently.
-  const shared = new Map<string, string>();
-  for (const p of programs) if (p.sharesGlobals) for (const [k, v] of constStrings(p.src)) shared.set(k, v);
-  for (const { src, sharesGlobals } of programs) {
-    // Its own bindings win over the shared ones, which is what scope means: a module sees the page
-    // globals but its own `const` shadows them, and for a classic program this is already the map.
-    const consts = new Map(shared);
-    if (!sharesGlobals) for (const [k, v] of constStrings(src)) consts.set(k, v);
+  // NO NAME IS RESOLVED ACROSS PROGRAMS, and this is a deliberate retreat from trying. Two review
+  // rounds killed two different attempts to model it: sharing every program's constants let a later
+  // module's `const N = "other"` overwrite a classic global, and sharing only the classic ones still
+  // let a later `var N = "other"` overwrite the value an EARLIER call had already run with. Each fix
+  // modelled one more rule of browser scope (module vs classic, then execution order) and each
+  // opened another. A smoke check is the wrong place to reimplement that, so it is not modelled at
+  // all: a program folds only what it declares itself, and a key that leans on a name from another
+  // program is REFUSED by name rather than resolved. That turns the whole class from a silent miss
+  // into a loud one, and it is the same answer this file already gives an alias: call the seam by
+  // its own name so the argument can be seen.
+  const declaredElsewhere = programs.map((_, i) =>
+    new Set(programs.flatMap((o, j) => (i === j ? [] : [...declaredNames(o)]))));
+  programs.forEach((src, i) => {
+    const consts = constStrings(src);
+    const foreign = declaredElsewhere[i];
     const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
     const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
     const visit = (n: ts.Node): void => {
       if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
         const { verdict, detail } = classify(n.arguments[0], seam.key, src);
         found.push({ file, line: lineOf(n), verdict, detail });
+      } else if (ts.isCallExpression(n) && ts.isElementAccessExpression(n.expression)
+        && foldString(n.expression.argumentExpression, consts) === undefined
+        && leansOn(n.expression.argumentExpression, foreign)) {
+        found.push({
+          file, line: lineOf(n), verdict: "unverifiable",
+          detail: `this call is spelled through a name declared in ANOTHER script of this document, which cannot be resolved without running the page in order; call the seam by its own name, or declare the name in the same script`,
+        });
       } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
         || escapesAt(n, seam.fn, folds)) {
         found.push({
@@ -619,7 +643,7 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
       ts.forEachChild(n, visit);
     };
     visit(src);
-  }
+  });
   // A frontmatter container's TEMPLATE half is executable too: Astro evaluates `{expr}` at build
   // time, so extracting only the fenced head would leave a second live surface unread. It is not
   // TypeScript and cannot be parsed as any, so the same tripwire covers it. Extract what is a
@@ -881,19 +905,18 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     html(`<!doctype html>\n<body>\n<script>a = 1; // x</script><script>standaloneConnectOpts({ creds: c });</script>`)[0]?.line === 3);
   // The same split must not cost the reach it had while concatenated. Classic scripts share one
   // global scope, so a constant declared in an earlier script still spells the seam in a later one.
-  check("a constant declared in an EARLIER script still folds in a later one, since they share scope",
-    html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
+  check("a name from ANOTHER script is REFUSED rather than folded, since resolving it means running the page",
+    html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
   check("...and a LATER script's own constants are collected too, not just the first program's",
     html(`<script>const a = 1;</script>\n<script>const N = "standaloneConnectOpts";\ncore[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
-  // SCOPE, not just order. Review found the first cut of that union folding MODULE bindings into the
-  // page globals: a later module's `const N = "other"` overwrote the classic global `N` a classic
-  // script was really calling through, the call stopped folding, and it vanished while the page ran
-  // it in a real browser. The module goes LAST in these fixtures on purpose, because a reader that
-  // merges scopes last-wins is only wrong there.
-  check("a LATER module's local name does not overwrite the classic global a call is spelled with",
-    html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>\n<script type="module">const N = "other";</script>`)[0]?.verdict === "missing-key");
-  check("...and a module's own binding does not LEAK outward into a classic script that follows it",
-    html(`<script type="module">const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>`).length === 0);
+  // The two shapes that killed the two attempts to MODEL cross-script scope, kept as cells because
+  // the refusal is what makes them safe rather than any rule about scope. Both were silent greens
+  // while a real browser executed the call; both are now the same loud refusal, and neither depends
+  // on this file knowing what a module is or which script ran first.
+  check("...so a LATER script rebinding that name cannot hide the call, whatever the browser would do",
+    html(`<script>var N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>\n<script>var N = "other";</script>`)[0]?.verdict === "unverifiable");
+  check("...and the same holds when the rebinding is a MODULE, whose scope is not the page's at all",
+    html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>\n<script type="module">const N = "other";</script>`)[0]?.verdict === "unverifiable");
   check("...while a module still folds its OWN constants, so the split does not cost it that",
     html(`<script>const a = 1;</script>\n<script type="module">const N = "standaloneConnectOpts";\ncore[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
   // Separate parsing must not turn a neighbour's syntax error into silence for the whole document.
