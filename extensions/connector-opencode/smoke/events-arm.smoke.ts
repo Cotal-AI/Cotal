@@ -1,8 +1,8 @@
 /**
  * ARMING IS NOT AUTHORIZATION, and this suite keeps the two apart for the OpenCode launch path.
  *
- * A session publishes its AG-UI event plane only when the launch ARMED it (`--events`, which reaches
- * the connector as `opts.events` and leaves as `COTAL_EVENTS`). The manager separately mints a
+ * A session publishes its AG-UI event plane only when the launch ARMED it: `opts.events` goes in and
+ * `COTAL_EVENTS` comes out. The manager separately mints a
  * publish GRANT on the channel that plane lands on. Those are two different facts, and the dangerous
  * confusion is to treat the second as the first: an agent file or a manifest can hand-write anything
  * into `allowPublish`, so if a grant could arm the emitter, anyone who could write an agent file
@@ -14,6 +14,12 @@
  * a complete, correct emitter and never start it, because the plugin only builds one when
  * `COTAL_EVENTS` is set. A mapping suite passes either way: it drives the mapper directly and never
  * asks whether a real launch reaches it.
+ *
+ * WHAT THIS FILE DOES NOT COVER, stated rather than left to be found. Every cell here hand-builds the
+ * launch options and calls `buildLaunch`, so this suite is silent on whether a real `cotal spawn
+ * --events` puts `events` and `workspaceRoot` into that bag at all: if the CLI or the manager stopped
+ * passing either one, nothing below would notice. That is one layer up and it is proved by
+ * `smoke:spawn-foreground-events`, which drives real argv through `runCli` against a probe connector.
  *
  * The other half is the write-ahead log's home. The log records what has already gone on the wire;
  * a LATER start reads it to learn where to continue. A log written under the launch working

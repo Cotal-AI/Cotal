@@ -80,13 +80,24 @@ export const cotal: Plugin = async () => {
    * a managed session.
    */
   let events: AguiEmitterHolder<OpenCodeRecord> | undefined;
-  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) {
-    // Held here because the run-closed callback below has to reach it, and the two are assigned at
-    // different times: the mapper is built inside the factory, keyed on the session the bus names.
+  /**
+   * ONE HOLDER PER SESSION, built on demand rather than once per process.
+   *
+   * A holder binds to one thread for the life of its emitter and refuses a second, terminally: the
+   * write-ahead log is keyed to the thread, so re-adopting would continue one session's epoch and
+   * sequence against another session's bytes. That refusal is correct and stays. What it means here
+   * is that `/new`, a second top-level session in the same OpenCode process, needs its own holder,
+   * its own emitter and its own log, which is the sequential-sessions-one-principal case the shared
+   * subject frontier exists for.
+   */
+  function newEventHolder(): AguiEmitterHolder<OpenCodeRecord> {
+    // Scoped to this holder, not to the process: the run-closed callback below has to reach the
+    // mapper, and the two are assigned at different times because the mapper is built inside the
+    // factory, keyed on the session the bus names.
     let mapper: OpenCodeMapper | undefined;
     // Built LAZILY, on the first event that names a session: `start()` reaches the broker, and that
     // work must not run for a session that never emits.
-    events = new AguiEmitterHolder<OpenCodeRecord>(
+    return new AguiEmitterHolder<OpenCodeRecord>(
       async (id: string) => {
         // Throws rather than defaulting to the working directory: a write-ahead log written
         // somewhere no later start looks for is a silent loss.
@@ -127,6 +138,7 @@ export const cotal: Plugin = async () => {
       (runId: string) => mapper?.forgetOpenRun(runId),
     );
   }
+  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) events = newEventHolder();
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -473,16 +485,32 @@ export const cotal: Plugin = async () => {
         return;
       }
       switch (event.type) {
-        case "session.created":
+        case "session.created": {
           // Adopt every top-level session created in this OpenCode process. That makes `/new` a
           // Cotal-aware context reset: same mesh identity, new OpenCode context/session id.
-          if (!event.properties.info.parentID) {
-            adoptSession(event.properties.info.id, "top-level session create");
-            // Adopt READS FROM HERE. A resumed session must not republish its history, and the
-            // source's fresh adopt returns the position of the end for exactly that reason.
-            events?.adopt(event.properties.info.id);
+          if (event.properties.info.parentID) break;
+          const created = event.properties.info.id;
+          adoptSession(created, "top-level session create");
+          const previous = events;
+          if (previous && previous.path !== undefined && previous.path !== created) {
+            // DRAIN, THEN SWAP. Flush first so the session being left publishes what it settled,
+            // then close its open run: an observer that never sees the close holds a run that never
+            // ends, and the plane's rule is that a divergence is on the wire rather than silent.
+            //
+            // THE AWAIT IS THE ORDERING AND IS NOT A STYLE CHOICE. The two calls above land on the
+            // OLD holder's chain and the new session's frames go out on a DIFFERENT one, so without
+            // a settled point between them the new session's first frame can reach the subject
+            // before the old session's close.
+            previous.flush(previous.path);
+            previous.closeRun(Date.now());
+            await previous.settled();
+            events = newEventHolder();
           }
+          // Adopt READS FROM HERE. A resumed session must not republish its history, and the
+          // source's fresh adopt returns the position of the end for exactly that reason.
+          events?.adopt(created);
           break;
+        }
         case "session.idle": {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;

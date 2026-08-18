@@ -99,7 +99,7 @@ are the same on every connector: see [connect-claude.md](connect-claude.md#event
 channel, the grant, and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for
 `--events` spawns; a personal `opencode` with the plugin installed publishes nothing.
 
-Two things are specific to OpenCode and worth knowing before you read a stream:
+Three things are specific to OpenCode and worth knowing before you read a stream:
 
 - **No user-authored text is published, ever.** When a peer message is injected into a native
   prompt, OpenCode prepends it into the human's own text part, so one record holds peer-authored and
@@ -110,6 +110,11 @@ Two things are specific to OpenCode and worth knowing before you read a stream:
   between the start and the finish, and what the finish actually carries is cost and token counts.
   So the connector emits no step vocabulary rather than inventing a name, and the usage numbers are
   not carried in this version.
+
+- **`/new` starts a new thread on the same channel.** OpenCode can hold several sessions in one
+  process, and `/new` is a context reset that keeps the mesh identity. Each session publishes under
+  its own thread id on the one `events.<owner>.<actor>` channel. Before the switch, the session you
+  are leaving is flushed and its open run is closed, so a reader never holds a run that never ends.
 
 Reasoning is off by default. A turn that fails ends with a run-finished event carrying no outcome,
 which says the turn ended and does not claim it succeeded.
