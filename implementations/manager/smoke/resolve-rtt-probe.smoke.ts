@@ -163,7 +163,7 @@ try {
   check("no artifact is read twice in one resolve — the shared memo eliminated every refetch",
     m1.total === distinct, { reads: m1.total, distinct });
   check("the resolve still reads every distinct artifact it needs (dedupe dropped nothing)",
-    distinct >= 40 && service.commands.size === 17, { distinct, commands: service.commands.size });
+    distinct >= 40 && service.commands.size === 18, { distinct, commands: service.commands.size });
 
   // ---- 2. CONCURRENCY: the reads no longer queue one behind another ----------------------------
   // RED-FIRST TARGET #2. Reverting the concurrent walks pins max-in-flight back to 1.
@@ -229,7 +229,7 @@ try {
   // to ~11s and this goes red by a factor of ten, not by a flaky margin.
   check("a WAN-profile resolve now completes in well under 2s (was 11.7s serialized)",
     slowTotal < 2_000, `${(slowTotal / 1000).toFixed(1)}s`);
-  check("...and still resolves the full 17-command surface", outcome === "RESOLVED 17 commands", outcome);
+  check("...and still resolves the full 18-command surface", outcome === "RESOLVED 18 commands", outcome);
   // The no-total-deadline FINDING is unchanged by this fix and is still worth asserting: deadlineMs
   // never bounded the store reads, it only bounds the describe leg. The fix made the call fast; it
   // did not give it a bound. Recorded so the deadline inversion is not quietly assumed fixed.

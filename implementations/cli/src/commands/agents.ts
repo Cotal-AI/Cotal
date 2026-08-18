@@ -24,6 +24,19 @@ const onFlag = { name: "on", type: "string", value: "<instance>", description: "
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
 export const psFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];
 export const attachFlags = [...targetFlags, nameFlag("managed agent to attach to (required)"), onFlag] as const satisfies readonly FlagSpec[];
+/** `cotal input`: type into a seat without holding a terminal open. `--text` is a VALUE flag, so
+ *  its argument is taken verbatim and may begin with `/` or `-` (`--text "/compact"`) - which is
+ *  the point: a harness command is exactly the payload that would be eaten by a positional
+ *  grammar. `--no-enter` is a declared boolean literally named `no-enter` rather than a negation
+ *  of an `enter` flag: node's `parseArgs` does not negate under `strict`, and the CLI already
+ *  spells this shape (`--no-open`, `--no-replay`, `--no-transcript`). */
+export const inputFlags = [
+  ...targetFlags,
+  nameFlag("managed agent to type into (required)"),
+  { name: "text", type: "string", value: "<text>", description: "the text to type, verbatim (required); quote it when it starts with / or -" },
+  { name: "no-enter", type: "boolean", description: "type the text without pressing Enter after it" },
+  onFlag,
+] as const satisfies readonly FlagSpec[];
 
 export function managedAgentComplete(argv: string[]): CompletionResult {
   const flag = completingFlagValue(argv, attachFlags);
@@ -351,3 +364,36 @@ export async function attach(args: ParsedArgs): Promise<void> {
   console.error(c.dim(`\ndetached from ${v.name}`));
 }
 
+/**
+ * `cotal input --name <seat> --text <text> [--no-enter]`: deliver one line of text into a running
+ * seat's terminal, as if a human had typed it. The command an external control surface needs that
+ * `attach` cannot be: `attach` is a stream that holds a session and wants a pty on this side, and a
+ * web request has neither.
+ *
+ * Routing is `attach`'s, unchanged: the seat-locality pin first (only the manager HOSTING the seat
+ * can type into it), then the reach that mesh mode implies. Nothing is echoed back - the caller
+ * reads the resulting turns from the event plane or the transcript, so this prints only what was
+ * delivered.
+ */
+export async function input(args: ParsedArgs): Promise<void> {
+  const v = args.values as FlagValues<typeof inputFlags>;
+  if (!v.name) {
+    console.error(c.red("--name is required"));
+    process.exit(1);
+  }
+  // An EMPTY --text is refused here rather than sent: the op's contract requires a non-empty
+  // string, so sending it would spend a round trip to be told the same thing in a contract error
+  // that names a schema instead of the flag the operator got wrong. `v.text === undefined` (flag
+  // omitted) and `""` (flag given, empty) are the same mistake to the caller, so one message.
+  if (!v.text) {
+    console.error(c.red("--text is required and must not be empty"));
+    process.exit(1);
+  }
+  const on = await pinForTarget(v as never, "cotal input");
+  const t = await resolveControlTarget(v, "control-caller-admin", on);
+  const reach = t.auth.bearer ? "owner" : "any";
+  const reply = await askManager(t.space, t.server, "input", { name: v.name, text: v.text, enter: v["no-enter"] !== true }, t.auth, reach, undefined, { instanceId: on });
+  failIfNotOk(reply);
+  const { name, bytes } = reply.data as { name: string; bytes: number };
+  console.log(c.dim(`✓ sent ${bytes} bytes to ${name}`));
+}

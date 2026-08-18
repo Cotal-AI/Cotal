@@ -5,6 +5,12 @@
   "completionMarker": "USER-SPAWN SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config implementations/auth/smoke/mutations/events-delegation.json",
   "why": [
+    "AFTER-RESTORE REBUILD, and it is not tidiness. The suite runs against `@cotal-ai/auth`'s dist,",
+    "so the command builds before each run. mutation-proof restores SOURCE and not artifacts, which",
+    "means the last mutant's compiled ledger survives the proof: a graded run leaves a local dist",
+    "with the security check removed, and the next thing to import it does so silently. Each",
+    "mutation rebuilds after its own restore.",
+    "",
     "The event plane carries tool inputs and outputs, which makes it the most valuable read on the",
     "mesh, and the tempting shortcut when wiring it is to treat `events.` as a special prefix. Both",
     "mutations here ARE that shortcut, written the way an author would plausibly write it: exempt",
@@ -32,6 +38,7 @@
       "file": "implementations/auth/src/ledger.ts",
       "find": "    const overSub = child.allowSubscribe.filter((ch) => !patternInAllow(parent.allowSubscribe, ch));",
       "replace": "    const overSub = child.allowSubscribe.filter((ch) => !ch.startsWith(\"events.\") && !patternInAllow(parent.allowSubscribe, ch));",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
       "expectRed": "...and the ledger then refuses it: no managed row for the child",
       "cell": "...and the ledger then refuses it: no managed row for the child",
       "note": "Scoped to the READ side on purpose: the existing attenuation cells use ordinary channel names and stay green, so the kill lands on the event-plane cell and names it."
@@ -41,6 +48,7 @@
       "file": "implementations/auth/src/ledger.ts",
       "find": "    const overPub = child.allowPublish.filter((ch) => !patternInAllow(parent.allowPublish, ch));",
       "replace": "    const overPub = child.allowPublish.filter((ch) => !ch.startsWith(\"events.\") && !patternInAllow(parent.allowPublish, ch));",
+      "afterRestore": "pnpm --filter @cotal-ai/auth build",
       "expectRed": "...and refused the same way: publishing INTO another agent's plane leaves no row",
       "cell": "...and refused the same way: publishing INTO another agent's plane leaves no row",
       "note": "The write half is not symmetry for its own sake: publishing INTO another agent's plane forges frames a reader attributes to that agent by subject."
