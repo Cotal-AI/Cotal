@@ -159,8 +159,8 @@
     {
       "name": "K16 focus recall is re-served from the same frontier every call",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          .filter((i) => i.ts > agent.recallCursor)",
-      "replace": "          .filter((i) => i.ts > -1)",
+      "find": "          .filter((i) => afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor))",
+      "replace": "          .filter(() => true)",
       "cell": "successive calls walk the whole of focus recall instead of repeating its first window",
       "expectRed": "successive calls walk the whole of focus recall instead of repeating its first window",
       "note": "Reproduced by the second lens on a live broker: recall is re-derived from an unchanged frontier, so windowing its prefix returned the same fifteen of thirty messages three times while every reply promised a next batch. The window created that starvation, so the cursor is part of this change rather than a later one."
