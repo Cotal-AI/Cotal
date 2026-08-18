@@ -1,0 +1,53 @@
+{
+  "suite": "implementations/manager/smoke/seat-input-live.smoke.ts",
+  "guard": "the `input` op authorizes exactly as `attach` does before it writes, and `enter:false` really suppresses the carriage return",
+  "command": "pnpm smoke:seat-input",
+  "completionMarker": "SEAT INPUT SMOKE",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/manager/smoke/fixtures/seat-input.mutations.json",
+  "why": [
+    "Two cells carry the whole feature's risk and they fail in opposite directions, so each is",
+    "aimed at separately rather than trusting one kill to speak for the suite.",
+    "",
+    "AUTHORIZATION is the one that fails toward harm. `input` writes into somebody's running agent,",
+    "so a handler that answered before checking would let any spawn-capable credential type into any",
+    "seat on the manager. The refusal cell would still be there, still named, and still green if the",
+    "check moved, was reordered after the write, or was deleted in a refactor that kept the shape.",
+    "",
+    "THE CARRIAGE RETURN is the one that fails toward a wrong result rather than a loud one. It is a",
+    "one-character ternary; flipping it makes `enter:false` submit the line anyway, which for a",
+    "harness command means the command RUNS when the caller asked to stage it. Nothing about that",
+    "looks broken from the reply, which reports a byte count the mutant would also compute.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports `../src/manager.js`, which",
+    "tsx resolves to the SOURCE file both mutations edit, so the bytes mutated are the bytes",
+    "executed and no build step is needed. The one part of the suite that rides `dist` is cell 8,",
+    "which spawns the real `bin/cotal.ts`; that cell is deliberately NOT what either mutation is",
+    "aimed at, and it staying green under a mutant is the boundary working as described, not a",
+    "survival.",
+    "",
+    "NOT GRADED HERE, and named rather than implied: the refusal for a runtime with no `write` on",
+    "its handle. That branch is reached by ABSENCE of an optional method, which no mutation of this",
+    "source can produce and no fixture in this suite can spawn, so it is covered by the type and by",
+    "the handler's own `if (!write)` rather than by a kill."
+  ],
+  "mutations": [
+    {
+      "name": "the authorization is dropped from the `input` handler, keeping everything else",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));\n        if (denied) throw new EpEnvelopeError(\"permission-denied\", denied);\n        return this.inputAuthorized(a, args(ctx));",
+      "replace": "        return this.inputAuthorized(a, args(ctx));",
+      "expectRed": "a caller that did NOT spawn the seat is refused (permission-denied, the shared named-control policy)",
+      "cell": "a caller that did NOT spawn the seat is refused (permission-denied, the shared named-control policy)",
+      "note": "The refactor that reads as tidying: the handler still resolves a fresh incarnation, still refuses a dead seat, still refuses an unwritable runtime, and still reports honest bytes. Everything a reviewer scans for is present and the door is open. Anchored on the `inputAuthorized` call so the find cannot match the identically-shaped `attach` handler above it."
+    },
+    {
+      "name": "the carriage return is appended unconditionally, so `enter:false` submits the line anyway",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const data = `${String(args.text)}${args.enter !== false ? \"\\r\" : \"\"}`;",
+      "replace": "    const data = `${String(args.text)}\\r`;",
+      "expectRed": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
+      "cell": "THE CHILD RECEIVED EXACTLY `part` with NO trailing carriage return",
+      "note": "The reply is not a witness to this and cannot be: a mutant that always appends still reports a byte count derived from what it wrote, so the count and the bytes agree with each other while disagreeing with what was asked for. Only the child's own transcript separates them, which is why the delivery cells read the sink and not the reply."
+    }
+  ]
+}
