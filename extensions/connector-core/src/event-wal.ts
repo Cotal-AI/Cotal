@@ -711,11 +711,18 @@ export class EventWal {
     // permanent halt by a longer road. Both fail closed; this one fails closed on the easier value
     // to explain.
     //
-    // `?.` here is not a degradation: `this.expectedTip` two lines up throws when nothing is bound,
-    // so an unbound log never reaches this statement. `abandon` had no such guard above it, which
-    // is why the same shape there was a real hole and is now an explicit refusal.
+    // A LOCAL, NOT `this.subject?.advance(ackSeq)`. The optional call was not a hole: `expectedTip`
+    // above throws when nothing is bound, so an unbound log never reaches this statement, and that
+    // was measured rather than assumed. It is the wrong SHAPE all the same, and this file already
+    // has the counterexample: `abandon`'s optional call shipped on the identical argument until the
+    // argument stopped being true. A comment claiming the line above throws cannot survive that
+    // line being moved or deleted; a local the compiler checks can. The refusal below is therefore
+    // unreachable by construction and NO CELL GRADES IT, which is said here rather than registered
+    // as a mutant that could only ever survive.
+    const subject = this.subject;
+    if (!subject) throw new Error(`event WAL ${this.path}: no subject frontier is bound, so this ack has no shared record to advance`);
     await this.assertNotClobbering();
-    await this.subject?.advance(ackSeq);
+    await subject.advance(ackSeq);
     await this.write({ ...this.doc, pending: { ...p, state: "acked", ackSeq } });
     });
   }

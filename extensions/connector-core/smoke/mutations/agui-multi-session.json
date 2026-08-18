@@ -49,7 +49,7 @@
     {
       "name": "S2 the shared record is never advanced, so it stays virgin forever",
       "file": "extensions/connector-core/src/event-wal.ts",
-      "find": "    await this.subject?.advance(ackSeq);\n",
+      "find": "    await subject.advance(ackSeq);\n",
       "replace": "",
       "expectRed": "session-1:the-shared-record-holds-the-assigned-sequence",
       "cell": "session-1:the-shared-record-holds-the-assigned-sequence",

@@ -37,8 +37,8 @@
     {
       "name": "S17 the stale-writer check runs after the shared record has already moved",
       "file": "extensions/connector-core/src/event-wal.ts",
-      "find": "    await this.assertNotClobbering();\n    await this.subject?.advance(ackSeq);\n",
-      "replace": "    await this.subject?.advance(ackSeq);\n",
+      "find": "    await this.assertNotClobbering();\n    await subject.advance(ackSeq);\n",
+      "replace": "    await subject.advance(ackSeq);\n",
       "expectRed": "[H] ...and the PRINCIPAL's shared tip never moved for it",
       "cell": "[H] ...and the PRINCIPAL's shared tip never moved for it",
       "note": "Removing the early check puts the generation guard back inside `write`, where it still refuses the write but only after the principal's shared tip has taken this handle's number. The sibling cell that asserts the refusal is a STALE-WRITER refusal is what makes this one legible: without it the mutant merely changes which error comes out."
