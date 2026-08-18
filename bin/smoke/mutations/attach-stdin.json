@@ -2,7 +2,7 @@
   "suite": "implementations/manager/smoke/attach-stdin.smoke.ts",
   "guard": "nothing typed at a terminal with no session reaches the agent, and the detach key still works there",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-stdin",
-  "completionMarker": "N: the manager is back on the session count it started with",
+  "completionMarker": "O: the manager is back on the session count it started with",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-stdin.json",
   "why": [
     "EVERY CELL HERE RUNS THE BINARY, so every command builds first. The suite drives `tsx",
@@ -24,7 +24,7 @@
     "must hold in EVERY window rather than only at the first attach.",
     "",
     "TWO MUTATIONS CARRY THEIR OWN COMPLETION MARKER, and the reason is the finding rather than a",
-    "workaround. The global marker is cell M's trailer, the last cell in the file. Reverting the fix does not",
+    "workaround. The global marker is the last cell's trailer. Reverting the fix does not",
     "merely redden a check: under it cell D's Ctrl-C reaches the seat as a real SIGINT and kills the",
     "agent, cell E then cannot resolve the seat at all, and the suite stops there. So no mutation",
     "that restores the shipped defect can reach the last cell, by construction, and the harness",
@@ -241,6 +241,16 @@
       "cell": "N. an attach whose stdin is a FILE exits without crashing on the way out",
       "completionMarker": "N: the manager is back on the session count it started with",
       "note": "The shipped defect in one line. Dropping the capability test restores the unguarded call, and a file-backed stdin is an `fs.ReadStream` with no `unref`, so `done` throws `process.stdin.unref is not a function` on the way out. Registered on the check that names that text rather than on the exit code, because an exit code says only that the route is broken and this cell exists to say HOW. Found by CI in `smoke:cli-on-instance`, which spawns attach with stdin ignored for an unrelated claim; every cell in this file drove the attach through a pty or a pipe, the two kinds that HAVE `unref`, so the gate had no cell in the universe where the bug lived.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "a session that never took the stream pauses it anyway on the way out",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "else if (tookStdin) stdin.pause();",
+      "replace": "else stdin.pause();",
+      "expectRed": "...and the seat read nothing of what was typed after a session died before it was ready",
+      "cell": "O. a session that dies BEFORE it is READY leaves the keyboard where it was",
+      "note": "The shipped defect in one word, and it restores the code exactly as it was before this round: `cleanup` pauses the stream whether or not this session ever resumed it. A session that ends before its `ready` fires never ran the handoff, so the loop's own watcher is still installed, and pausing under it leaves a reader that reads nothing for the whole backoff and every attempt after it; the bytes come back in the next session's `resume` and go to the agent. Measured on this exact code before the fix line existed: 76 passed, 1 failed, the red on this assertion with the nonce in the payload and `sessionsSinceTheCut: 1`.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]

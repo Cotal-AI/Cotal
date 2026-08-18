@@ -230,6 +230,14 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
     // reads (per-session: bytes still in flight when a link dies are gone with it).
     // Did this session ever put bytes on the terminal (see AttachOutcome.carried)?
     let carried = false;
+    // Did THIS session ever take the stream? A reconnecting caller holds a reader between sessions,
+    // and a session that ends before its `ready` fires never ran the handoff below, so it never
+    // took anything: pausing on the way out would pause a stream it does not own, under a reader
+    // that is still installed and now reads nothing. Measured before this line existed: a link
+    // killed while a session's opening flush was in flight left the loop's watcher listening over a
+    // paused stream for the whole backoff, and everything typed at that frozen terminal was flushed
+    // into the agent by the NEXT session's resume. Cell O of `smoke:attach-stdin` is that window.
+    let tookStdin = false;
     let mouseBuf = "";
     // Carry the tail of the previous output frame so an alt-screen escape split across ws frames
     // (e.g. `ESC[?10` then `49h`) is still detected; 16 bytes covers these private-mode sequences.
@@ -312,7 +320,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
       // terminal: a reconnecting caller undoes it once, after the last attempt, so the screen does
       // not flash back to the shell and get repainted over between sessions.
       if (ownsTerminal) term.restore();
-      else stdin.pause();
+      else if (tookStdin) stdin.pause();
     };
 
     transport.onReady(() => {
@@ -338,6 +346,7 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold, 
       if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (via COTAL_DETACH_KEY)`));
       term.enterRaw();
       stdin.resume();
+      tookStdin = true;
       sendResize();
       process.stdout.on("resize", sendResize);
       stdin.on("data", onInput);

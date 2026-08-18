@@ -62,39 +62,32 @@
  *      honoured, because the release had been hiding inside the detach watcher's `stop`.
  *   N. the third stream kind. A stdin that is a FILE has no `unref` at all, so the exit release
  *      crashed there while the pty and pipe cells all passed; CI found it in another suite.
+ *   O. the one session lifecycle point the others miss: a session that dies BEFORE it is READY, so
+ *      the handoff never runs, and pausing on the way out pauses a stream that session never took.
+ *      Found by review reading the cleanup path, not by a cell.
  *
- * WHAT THIS SUITE DOES NOT COVER, named so the next reader inherits the finding rather than the
- * search. The universe is two axes. The stream KIND (pty, pipe, file) is covered across the cells.
- * The session LIFECYCLE has three points, and only two of them are graded here:
+ * THE UNIVERSE THIS GRADES, on two axes, because naming it is what found the hole in it. The stream
+ * KIND (pty, pipe, file) runs across the cells. The session LIFECYCLE has three points:
  *   never-opened      an attempt that dies before a session exists. Cells A, B and I type into it.
- *   died-after-ready  a session that opened and then ended, on any of the five link states. Every
- *                     other cell lives here.
- *   died-BEFORE-ready a session that opens and ends without its `ready` ever firing. It is the one
- *                     point where the handoff in `attachClient`'s `onReady` never runs while its
- *                     `cleanup` still pauses the stream, which would leave the loop's own reader
- *                     installed over a paused stream and reading nothing. NOT GRADED, because it
- *                     is MEASURED UNREACHABLE through a link fault on this code path: the gap it
- *                     would have to land in contains no I/O, and `ready` is decided by the
- *                     client's own write rather than by anything the link answers. That mechanism
- *                     is the finding; the four rounds below are only how it was measured.
+ *   died-after-ready  a session that opened and then ended, on any of the link states. Most cells.
+ *   died-before-ready a session that opens and ends without its `ready` ever firing. Cell O, and it
+ *                     was the last one written because it was the last one REACHED.
  *
- * Four rounds, each with a proxy that cuts ONE link and a session-id-tagged trace of the client's
- * own transport events, and the reason is structural rather than a matter of aim:
- *   1. sever anywhere in the backoff: the next session opens normally. Wrong window.
- *   2. cut the chunk carrying the rail SUB and the flush PING: ready fires anyway. `nc.flush()`
- *      settles on the CLIENT'S OWN WRITE, not on a PONG round trip, so swallowing those bytes does
- *      not stop it. Measured against the client directly as well as here.
- *   3. cut at the session handshake with `destroy()`: no session at all. A destroy on a socket
- *      holding unread bytes sends RST, the RST discards the PONG the client had not read, and the
- *      handshake never completes, so the ATTEMPT fails instead.
- *   4. same cut with `end()`, so the PONG survives and the close lands one turn later: no session
- *      either, same shape as 3.
- * `establishAttachSession` returns immediately after `connect()` resolves, nothing awaits between
- * that and the transport constructor, and `attachClient` registers `onReady` synchronously in the
- * same tick. So a close either precedes connect()'s resolution, and the attempt fails with no
- * session, or it follows the first write's drain, and ready has already fired and handed the
- * keyboard over. The gap being aimed at contains no I/O. Should an await ever appear between
- * connect() and that first flush, this becomes reachable and belongs back on this list.
+ * How it was reached is the part worth keeping. `ready` is a flush, and a flush is a PING and its
+ * PONG, so the window between a session being announced and taking the keyboard is ONE ROUND TRIP
+ * wide. On a healthy loopback link that is a fraction of a millisecond, and four rounds of cutting
+ * ever more precisely AT ESTABLISHMENT (in the backoff, on the chunk carrying the rail SUB and the
+ * flush PING, at the handshake with a destroy, at the handshake with a graceful end) never landed
+ * in it: they measured, correctly and only, that a cut at establishment on a fast link either fails
+ * the attempt outright or arrives after ready. The window is not narrow, it is SHORT, and the way
+ * in is to make the round trip long. Cell O's link is slow in both directions, which widens the
+ * same window to about 800ms, and its cut is timed off the protocol rather than a clock.
+ *
+ * Two rules came out of that, and both are cheap to apply next time: to probe a race, WIDEN the
+ * window rather than sharpen the trigger; and a trigger that leaves the system able to REPAIR
+ * itself measures the repair. Cell O's first shape left the link healed after its cut, the loop
+ * reconnected a second later, that session's `ready` resumed the very stream whose pause was the
+ * defect, and the cell passed 77/0 against code that had it.
  */
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
@@ -273,6 +266,51 @@ const healSlowLossy = (delayMs: number): Promise<void> =>
     s.on("error", rej);
     s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
   });
+/** SLOW, and able to kill ONE session at the exact moment its rail is opened, which is the only
+ *  window where the loop still holds the keyboard while a session is live enough to end.
+ *
+ *  A session becomes READY when the flush that follows its rail SUB comes back, and `ready` is what
+ *  hands the keyboard to the session's own reader. So a link that dies while that flush is still in
+ *  flight ends a session that never took the stream. The window is one round trip wide, which over
+ *  a healthy loopback link is a fraction of a millisecond; SLOWING the link is what makes it a place
+ *  a cut can land, and this is why the cell needs a sixth link state rather than a sharper aim. The
+ *  cut is timed off the PROTOCOL, not a clock: the client's own chunk carrying the rail SUB and the
+ *  flush PING is DROPPED rather than forwarded, so no PONG for it can exist and the flush cannot
+ *  have settled. `ready` before the cut is not a race this can lose. */
+let cutArmed = false;
+let cutFired = 0;
+let cutWitness = "";
+const healSlowCutAtSessionFlush = (delayMs: number): Promise<void> =>
+  new Promise((res, rej) => {
+    knocks.length = 0;
+    cutArmed = true; cutFired = 0; cutWitness = "";
+    const s = createServer((client) => {
+      const up = netConnect(BROKER_PORT, "127.0.0.1");
+      liveSockets.add(client); liveSockets.add(up);
+      fireKnock();
+      const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
+      for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
+      let sawRailSub = false;
+      client.on("data", (b) => {
+        const text = b.toString("latin1");
+        if (text.includes("SUB ") && text.includes(".eps.")) sawRailSub = true;
+        if (cutArmed && sawRailSub && text.includes("PING\r\n")) {
+          cutArmed = false; cutFired++;
+          cutWitness = `dropped ${b.length}b carrying the rail flush, and killed the link`;
+          drop();
+          return;
+        }
+        const copy = Buffer.from(b);
+        setTimeout(() => { if (!up.destroyed) up.write(copy); }, delayMs);
+      });
+      up.on("data", (b) => {
+        const copy = Buffer.from(b);
+        setTimeout(() => { if (!client.destroyed) client.write(copy); }, delayMs);
+      });
+    });
+    s.on("error", rej);
+    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
+  });
 /** HELD: the dial connects and then nothing ever comes back. This is what holds an establishment
  *  open long enough for a key pressed in the middle of one to be pressed in the middle of one. */
 const holdOpen = (): Promise<void> =>
@@ -420,6 +458,7 @@ const sink = (): Buffer => readFileSync(SINK);
 const seatPid = (): number => Number(readFileSync(PIDSINK, "utf8"));
 const seatAlive = (): boolean => { try { process.kill(seatPid(), 0); return true; } catch { return false; } };
 const saidReconnected = (a: Attached): number => (a.seen().match(/\[cotal: reconnected\]/g) ?? []).length;
+const saidLost = (a: Attached): number => (a.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length;
 const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
 
 let manager: InstanceType<typeof Manager> | undefined;
@@ -917,6 +956,68 @@ try {
     check("N: ...with the detach byte consumed as a keypress rather than forwarded to the agent",
       !sink().subarray(mark).includes(Buffer.from(DETACH)), { got: sink().subarray(mark).toString("utf8").slice(-200) });
     check("N: the manager is back on the session count it started with", await settle(base, 25_000) === base, { base, now: live() });
+  }
+  // -----------------------------------------------------------------------------------------
+  console.log("\nO. a session that dies BEFORE it is READY leaves the keyboard where it was");
+  // THE ONE WINDOW WHERE THE HANDOFF NEVER RUNS. Every other cell here ends a session that was
+  // READY, so its own reader had taken the stream and `cleanup` giving it back is right. A session
+  // whose opening flush never comes back ends without ever having taken anything, and `cleanup`
+  // paused the stream regardless: the loop's watcher was still installed, still listening, and
+  // reading nothing, because a paused stream delivers to nobody. The keyboard was unowned in the
+  // exact sense this whole change is about, for the whole backoff and every attempt after it, and
+  // the bytes came back in the next session's `resume`.
+  //
+  // Found by review reading the cleanup path rather than by any cell, and then reproduced with
+  // review's own trigger after four of mine missed it. Mine all asked whether a cut could beat
+  // `ready` on a HEALTHY link, where the flush's round trip is a fraction of a millisecond and it
+  // cannot; the window is not narrow, it is one round trip wide, and the way in is to make the
+  // round trip long. Hence the sixth link state, and hence a cut timed off the protocol rather than
+  // off a clock: the chunk carrying the rail SUB and its flush PING is dropped, so no PONG for that
+  // flush can exist and the session cannot have been ready when the link died.
+  {
+    const base = live();
+    await closeLink();
+    await heal();
+    const { a, mark } = await attached();
+    const n = nonce();
+    const rec0 = saidReconnected(a);
+    const lost0 = saidLost(a);
+    await loseTheLink(a);
+    await nextDial();
+    await closeLink();
+    await healSlowCutAtSessionFlush(400);
+    // The cut is watched for from the PROXY side and the link is severed the moment it fires, with
+    // no window for another session to come up and repair the state in between. Measured, and this
+    // is what the first shape of this cell got wrong: left healed, the loop reconnects a second
+    // later, the new session's `ready` takes the stream and resumes it, and by the time anything is
+    // typed the defect has been undone by the thing that would have exposed it. The cell then
+    // passed against the code that has the defect. That ONE session came up and no other is checked
+    // rather than assumed, below.
+    const cutBy = Date.now() + 90_000;
+    while (Date.now() < cutBy && cutFired === 0) await wait(50);
+    await closeLink();
+    await severLoud();
+    const ended = Date.now() + 30_000;
+    while (Date.now() < ended && !(saidReconnected(a) === rec0 + 1 && saidLost(a) === lost0 + 2)) await wait(100);
+    check("a session was announced and then died before it was ready",
+      cutFired === 1 && saidReconnected(a) === rec0 + 1 && saidLost(a) === lost0 + 2,
+      { cutFired, cutWitness, announced: saidReconnected(a) - rec0, losses: saidLost(a) - lost0, tail: a.seen().slice(-300) });
+    const quiet = Date.now() + 25_000;
+    while (Date.now() - (knocks.at(-1) ?? 0) < 1_500 && Date.now() < quiet) await wait(100);
+    check("the loop is between attempts, which is this cell's premise", Date.now() - (knocks.at(-1) ?? 0) >= 1_500,
+      { sinceLastDial: Date.now() - (knocks.at(-1) ?? 0), knocks: knocks.length });
+    a.write(`${n}\r`);
+    await wait(300);
+    await closeLink();
+    await heal();
+    const recovered = Date.now() + 60_000;
+    while (Date.now() < recovered && saidReconnected(a) < rec0 + 2) await wait(100);
+    check("the reconnect lands", saidReconnected(a) >= rec0 + 2, a.seen().slice(-300));
+    await wait(2_000);
+    check("...and the seat read nothing of what was typed after a session died before it was ready",
+      !sink().subarray(mark).includes(Buffer.from(n)),
+      { got: sink().subarray(mark).toString("utf8").slice(-300), sessionsSinceTheCut: saidReconnected(a) - rec0 - 1 });
+    await detachAndSettle(a, base, "O");
   }
 } catch (e) {
   fail++;
