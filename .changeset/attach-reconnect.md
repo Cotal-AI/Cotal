@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/cli": minor
+"@cotal-ai/workspace": minor
 "@cotal-ai/connector-core": minor
 ---
 
@@ -31,3 +32,10 @@ detach key, or the agent's process exiting, ends the attach as before.
 
 `--no-reconnect` restores the single-session behaviour for scripts that want one run and one exit
 code.
+
+Under it, `@cotal-ai/workspace` separates a connect refusal from what is done about one. Resolving a
+mesh and its preflight answered every refusal by printing a sentence and ending the process, which is
+right for a person who just typed a command and wrong for a loop riding out a broker that is briefly
+unreachable. The decision now raises a `ConnectRefusal` carrying that exact sentence, and the
+`*OrExit` entry points are thin wrappers that print it and exit as before, so one place writes each
+message and the two forms cannot drift.
