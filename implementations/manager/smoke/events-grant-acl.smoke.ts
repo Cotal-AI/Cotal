@@ -489,6 +489,15 @@ try {
       /another agent's event channel/.test(rf),
       rf.slice(0, 400),
     );
+    // The remedy is chosen off the mesh THIS MANAGER runs, never off the document. Here the two
+    // disagree on purpose: the record is user-mode and the manager is static. Judging by the
+    // document hands a static operator `cotal actor grant`, for a mesh with no actor ledger to
+    // write it to. The operator reading this refusal is on the manager's mesh.
+    check(
+      "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
+      /cotal mint /.test(rf) && !/cotal actor grant/.test(rf),
+      rf.slice(0, 600),
+    );
     const rc2 = JSON.stringify(await newManager().resumePreserved(build(false)));
     check(
       "the SAME record without that channel is refused for its own reason, not by this rule",
@@ -554,7 +563,7 @@ try {
 
 // A count, because several cells above only run when the spawn before them succeeded: a regression
 // that refuses every spawn DELETES them rather than failing them, and the run still prints a verdict.
-const EXPECTED = 38;
+const EXPECTED = 39;
 check(`every cell ran - ${EXPECTED} expected`, cells === EXPECTED + 1, `${cells} cells reported`);
 
 console.log(`\nEVENTS-GRANT/ACL SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);

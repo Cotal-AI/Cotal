@@ -39,7 +39,13 @@
     "actually running, and until now no cell watched that selector. E9 pins the selector open on the",
     "user branch while the suite runs a STATIC mesh, so the refusal hands a static operator a",
     "`cotal actor grant` against a ledger that does not exist. Every other cell stays green: it still",
-    "refuses, still names the channel, still releases the name."
+    "refuses, still names the channel, still releases the name.",
+    "E10 is E9's twin at the OTHER door, and it is a real defect rather than only an ungraded field.",
+    "The resume door selected the remedy off the resumed DOCUMENT's identity mode rather than off the",
+    "manager's. Those agree on an honest inventory and disagree on exactly the shape section 8 already",
+    "builds, a user-mode record under a static manager, where the refusal handed a static operator a",
+    "`cotal actor grant` for a mesh with no actor ledger to write it to. An engineering lens found it by",
+    "asking what E9 and R2 did NOT cover, which is the question a pair of mutants invites."
   ],
   "mutations": [
     {
@@ -122,6 +128,15 @@
       "expectRed": "the refusal prints a mint command, naming a profile and a channel",
       "cell": "the refusal prints a mint command, naming a profile and a channel",
       "note": "The mesh-mode selector is a field like the profile (E7) and the channel (E8), and it was the one field section 9 read past: the section parsed a mint command out of a static-mesh refusal without ever asserting that a static mesh is what selected it. Pinned to the user branch, this static suite is handed an `actor grant` against a mesh with no actor ledger, and the parse finds nothing to grade."
+    },
+    {
+      "name": "E10 the resume door selects the remedy off the resumed document, not off the manager",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "            `${readerRemedy(this.userMode, owner, foreign[0]!)}`,",
+      "replace": "            `${readerRemedy(entry.identity.mode === \"user\", owner, foreign[0]!)}`,",
+      "expectRed": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
+      "cell": "the resume refusal's remedy is chosen off the MANAGER's mesh, not off the resumed document",
+      "note": "Byte-for-byte the shipped expression. It needs its OWN find string: E9 and R2 pin the spawn seam and cannot reach this line, which is why the gap survived a pair of mutants that looked like they covered the field. Section 8's record is user-mode under a static manager on purpose, so the two selectors disagree and the mutant prints the ledger route on a mesh that has no ledger."
     }
   ]
 }

@@ -611,6 +611,12 @@ export async function epAwaitReply(
  * is actually running, because a sentence carrying both routes is a sentence an operator picks the
  * wrong half of. `smoke:events-grant` section 9 runs the static half and grades the credential;
  * `smoke:user-spawn:live` section E runs the user half and grades the row.
+ *
+ * BOTH call sites pass the MANAGER's mode. The resume door used to pass the resumed DOCUMENT's
+ * (`entry.identity.mode === "user"`), which agrees on an honest inventory and disagrees on the
+ * shape section 8 exercises: a user-mode record under a static manager, where it handed a static
+ * operator `cotal actor grant` for a mesh with no actor ledger to write it to. The operator reading
+ * the refusal is on the manager's mesh, never on the record's.
  */
 function readerRemedy(userMode: boolean, owner: string, channel: string): string {
   return userMode
@@ -3634,7 +3640,7 @@ export class Manager {
             `(${foreign.join(", ")}). An agent may hold its OWN event plane and no other, because that ` +
             `plane carries the session's tool inputs and outputs. Remove it from the inventory and ` +
             `grant the reader out of band instead: ` +
-            `${readerRemedy(entry.identity.mode === "user", owner, foreign[0]!)}`,
+            `${readerRemedy(this.userMode, owner, foreign[0]!)}`,
         );
     }
     if (entry.identity.mode === "open") {
