@@ -630,7 +630,14 @@ try {
   // bearer is minted no `input` row in either mode, so the publish is broker-denied before the
   // manager sees it. `alpha` rather than `delta` because the sibling stop above took delta.
   const sibInput = await epTargeted(opsmate, "input", "alpha");
-  check("owner-domain: the SAME sibling actor that could attach and stop is REFUSED seat input (no row in either mode)", sibInput.ok === false, sibInput);
+  // The refusal is asserted BY SHAPE, not just by `ok === false`, because an absence assertion is
+  // the kind that passes for the wrong reason. `deadline-exceeded` is the broker dropping the
+  // publish: the request never reached a manager, so nothing answered. Restoring the grant would
+  // not merely change that string, it would make this call SUCCEED, since the own-domain arm admits
+  // the sibling. A `permission-denied` here would mean the publish was admitted and the handler
+  // refused, which is a different and weaker property than the one this cell is for.
+  check("owner-domain: the SAME sibling actor that could attach and stop is REFUSED seat input, dropped at the BROKER (no row in either mode)",
+    sibInput.ok === false && /deadline-exceeded/.test(sibInput.error ?? ""), sibInput);
   check("alpha survived the refused sibling input", manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
   // A CROSS-OWNER caller with only spawn scope: the ep any-mode row it would need is broker-DENIED
   // at publish (a spawn bearer holds owner-mode rows only), so the op fails before the manager.
