@@ -18,7 +18,7 @@
     "them, because a kill there would say the fix matters when the old code passes the same cell.",
     "Cells C, E, F and G are the ones whose behaviour the change actually inverts.",
     "",
-    "RUN, NOT PREDICTED: 4 of 4 KILLED, each on its named assertion, in a detached copy of the tip at",
+    "RUN, NOT PREDICTED: every mutation below KILLED on its named assertion, in a detached copy of",
     "`b67b1e65` with the CLI rebuilt before every run. Progress marks against a 37-mark baseline: 32,",
     "36, 34, 34.",
     "",
@@ -46,6 +46,16 @@
     "class we do not build machinery for."
   ],
   "mutations": [
+    {
+      "name": "the fix reverted for exactly the establishment window: the reader is stopped before each attempt",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    const attempting = establishAttachSession(vv, pin, reconnect, first);",
+      "replace": "    releaseStdin();\n    const attempting = establishAttachSession(vv, pin, reconnect, first);",
+      "expectRed": "...and the seat read nothing of what was typed while the session was being established",
+      "cell": "C. bytes typed during an attempt that SUCCEEDS never reach the agent",
+      "note": "The shipped defect restored, in the shape it actually had: the old code stopped the watcher and paused stdin before each attempt, so bytes typed while a session was being established buffered and were flushed into the seat by `attachClient`'s own `stdin.resume()`. `releaseStdin()` rather than `idle?.stop()` on purpose, so the next wait builds a FRESH reader exactly as the old code did: a mutant that leaves a stopped reader in place is not the old behaviour, and it would redden cells A and B, which the old code passed. Run at the tip it grades, this reddens C, D and E and leaves A, B, F and G green, which is both the kill and a check on this file's claim about which cells are boundaries and which are witnesses.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
     {
       "name": "the detach key is not read while a session is being established",
       "file": "implementations/cli/src/commands/agents.ts",
