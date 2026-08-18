@@ -45,7 +45,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { cotal } from "../src/plugin.js";
+import { cotal, SESSION_RETIRED } from "../src/plugin.js";
 
 async function freePort(): Promise<number> {
   const s = createNetServer();
@@ -313,11 +313,13 @@ try {
   // nothing ever retires it.
   // Anchored on the RETIRED id, not merely present in the line: the line names the session causing
   // the retirement too, so a bare `includes` counts the wrong one and reports two for every session.
-  const retiredCount = (id: string): number => logs.filter((l) => l.includes(`retiring opencode session ${id} `)).length;
+  // Keyed on the exported token, not on the sentence: the product owns the wording and the suite owns
+  // the assertion, and a reword must not be able to disarm this quietly.
+  const retiredCount = (id: string): number => logs.filter((l) => l.includes(`${SESSION_RETIRED} ${id} `)).length;
   const retiredC = retiredCount(C);
   const retiredB = retiredCount(B);
   check("race:the holder the FIRST of two racing creates installed is retired, exactly once",
-    retiredC === 1, { retiredC, retires: logs.filter((l) => l.includes("retiring opencode session")) });
+    retiredC === 1, { retiredC, retires: logs.filter((l) => l.includes(SESSION_RETIRED)) });
   check("race:and the session they both replace is retired ONCE, not drained twice",
     retiredB === 1, { retiredB });
   check("race:and the session that survived the window publishes",
