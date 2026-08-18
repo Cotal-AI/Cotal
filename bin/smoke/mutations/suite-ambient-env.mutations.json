@@ -1,0 +1,44 @@
+{
+  "suite": "bin/smoke/suite-ambient-env.smoke.ts",
+  "guard": "no suite may spread the ambient environment into a child without first stripping the COTAL_ variables, and the frozen baseline of pre-existing spreads can only shrink",
+  "command": "pnpm smoke:suite-ambient-env",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/suite-ambient-env.mutations.json",
+  "why": [
+    "THIS CENSUS EXISTS BECAUSE TWO RUNTIME CELLS COULD NOT SEE THE DEFECT AND A REVIEWER NAMED THE",
+    "SHAPE THAT COULD. A suite that builds a child env as `{ ...process.env, ...ours }` hands that",
+    "child whatever identity the session running the suite happens to hold. Both instances found on",
+    "this branch were GREEN before the change, because the connector env layered on top overwrote the",
+    "very variables that would have revealed the inheritance.",
+    "",
+    "N1 REMOVES ONE STRIP, from the suite where the defect was actually found. It must redden the",
+    "offenders assertion, which is the census's only real output. A census that cannot notice a strip",
+    "disappearing is a list, not a guard.",
+    "",
+    "N2 IS THE RATCHET'S OWN TEETH. Freezing a baseline is only honest if the baseline is forced to",
+    "shrink; a frozen entry that stops spreading has to leave the list, or the waiver outlives the",
+    "thing it waived and the file quietly re-earns its exemption forever. Mutating a frozen entry's",
+    "spread away must therefore go RED on the stale-baseline assertion, not quietly pass.",
+    "",
+    "NO BUILD STEP: the suite reads source files off disk and imports nothing from a built package, so",
+    "there is no dist/ copy that could disagree with the mutation."
+  ],
+  "mutations": [
+    {
+      "name": "N1 the opencode cooperative-stop suite loses its COTAL_ strip",
+      "file": "extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
+      "find": "  for (const key of Object.keys(clean)) if (key.startsWith(\"COTAL_\")) delete clean[key];",
+      "replace": "  void 0;",
+      "expectRed": "spread the ambient environment into a child without stripping COTAL_ first",
+      "note": "The exact regression the census exists to stop: this file is where the live-identity capture was found, and without the strip it is an offender again."
+    },
+    {
+      "name": "N2 a frozen baseline entry stops spreading and is left on the list",
+      "file": "implementations/delivery/smoke/delivery-cred-renewal.smoke.ts",
+      "find": "...process.env",
+      "replace": "...{}",
+      "allowMultiple": true,
+      "expectRed": "FROZEN still lists file(s) that no longer spread",
+      "note": "Proves the baseline can only shrink. Without this the frozen list would be a permanent waiver that no assertion ever revisits."
+    }
+  ]
+}
