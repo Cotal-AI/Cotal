@@ -115,6 +115,15 @@
       "find": "`subject record together, and it is VALID ONLY ONCE THE SUBJECT IS ACTUALLY EMPTY, which ` +\n            `of the causes above is true of the FILTERED PURGE alone. On any other cause the tip is ` +\n            `still where it is, so removing this state does not clear the halt: the next session ` +\n            `opens virgin, expects 0, halts on the same tip, and the sibling logs a tip could have ` +\n            `been rebuilt from are gone. Purge the channel first, or find the second writer. Once ` +\n            `the subject really is back to 0, no command performs the abandonment, so by hand it ` +",
       "replace": "`subject record together; no command performs it, so by hand it ` +",
       "expectRed": "control:the-halt-states-the-PRECONDITION-for-its-own-remedy"
+    },
+    {
+      "name": "S30 the subject record resolves under the THREAD dir, plumbed all the way through a REAL emitter against a REAL broker: the same break as L3, registered a second time where it reproduces the reported defect rather than where it is convenient to catch",
+      "file": "extensions/connector-core/src/agui-wal-path.ts",
+      "find": "    subjectPath: join(principalDir, \"subject.json\"),",
+      "replace": "    subjectPath: join(threadDir, \"subject.json\"),",
+      "expectRed": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "cell": "session-2:a-NEW-thread-of-the-SAME-principal-publishes",
+      "note": "REGISTERED BECAUSE A REVIEWER READ THE LEDGER RATHER THAN THE PROSE. The description of this branch said the plant kills in both suites, and it did, but only one of the two kills was registered: the other was a hand observation, so the claim was true of the code and false of the kill ledger, which is the same defect shape this branch exists to fix. The layout mutant is now driven end to end here as well, where it fails by making the SECOND and THIRD sessions of one principal publish nothing, which is the released defect itself rather than a layout assertion about it. EXPECT A BLAST RADIUS: the `layout:` cells go red before session 2 does, and they go red for the same reason. The pair is deliberate in the same way S15 is: the first kill proves the layout line is graded, and only this one proves a real emitter over a real broker reaches it."
     }
   ]
 }
