@@ -26,6 +26,7 @@ import {
   JsonlFileSource,
   ensureEventWalDir,
   resolveEventsStateRoot,
+  controlFromEnv,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
@@ -121,17 +122,19 @@ async function main(): Promise<void> {
   }
 
   // Local control plane for the lifecycle hooks (presence + message injection) and the manager's
-  // cooperative shutdown. Path + token come from the launch env (buildLaunch set them, and the hooks
-  // inherit this process's env) — a managed session without them is misconfigured, so fail loud
-  // rather than serve an unauthenticated/no control plane.
-  const controlPath = process.env.COTAL_CONTROL_SOCKET;
-  const controlToken = process.env.COTAL_CONTROL_TOKEN;
-  if (!controlPath || !controlToken) {
+  // cooperative shutdown. The SOCKET PATH comes from the launch env; the first-frame TOKEN comes
+  // from the launch-material file that env points at, which is also where the hooks read it. A
+  // managed session without both is misconfigured, so fail loud rather than serve an
+  // unauthenticated (or no) control plane.
+  const control = controlFromEnv();
+  if (!control) {
     process.stderr.write(
-      "[cotal-connector] managed session missing COTAL_CONTROL_SOCKET/COTAL_CONTROL_TOKEN — cannot serve the control plane\n",
+      "[cotal-connector] managed session missing its control socket path or its control token — cannot serve the control plane\n",
     );
     process.exit(1);
   }
+  const controlPath = control.path;
+  const controlToken = control.token;
   // Defined before the server so it can be the cooperative-shutdown handler; only ever CALLED after
   // `controlServer` is assigned (on a signal or an authed `{op:"shutdown"}`), so the forward ref is safe.
   // `wake` is likewise assigned later — declared with `let` (not `const` further down) so a shutdown

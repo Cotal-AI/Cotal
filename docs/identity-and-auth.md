@@ -243,8 +243,11 @@ cotals://<token>@host:4222/<space>?channel=general   # cotals:// = TLS required;
 
 Humans: `cotal join --link …`. Agents: `COTAL_LINK=… ` in the environment. The connector
 expands it and auto-joins. Token/user-pass links are the open-mode path; the default
-authed path threads a minted creds file (`COTAL_CREDS`), and the endpoint adopts the
-credential's identity as its card id.
+authed path threads a minted creds file, and the endpoint adopts the credential's identity
+as its card id. A seat the manager spawned reaches that file through its **launch
+material** rather than through `COTAL_CREDS` in an environment every descendant process
+inherits (see [Configuration](config.md#launch-material)); a session you drive by hand
+still sets `COTAL_CREDS` itself.
 
 ## Honest limitations (v0)
 

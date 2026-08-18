@@ -18,7 +18,7 @@ import { mkdirSync, writeFileSync, cpSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { loadAgentFile } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, loadAgentFile, readLaunchMaterial, writeLaunchMaterial } from "@cotal-ai/core";
 import { hasIdentity, configFromEnv, controlEndpoint, ORIENTATION_BOOTSTRAP, MESH_FIRST_STEER } from "@cotal-ai/connector-core";
 import { startSidecar } from "./sidecar.js";
 
@@ -114,8 +114,22 @@ async function main(): Promise<void> {
   const control = controlEndpoint(config.space, config.name);
   const bridgeSock = bridgeSocketPath(config.space, config.name);
   const toolsFile = join(home, "cotal-tools.json");
+  // This launcher mints the control endpoint itself, so it has to hand the token onward to two
+  // readers: the in-process sidecar below, and the gateway child. It rides the launch-material file
+  // rather than an environment variable, because the gateway's own descendants would inherit the
+  // variable and none of them has any business holding a control-plane bearer.
+  //
+  // MERGED onto the material this launcher was itself launched with, not written fresh over it: the
+  // sidecar re-parses the environment for its mesh config, and a control-only file would leave it
+  // reading a launch with no creds in it, which is open mode wearing the wrong hat. Merging keeps
+  // one carrier per launch, which is the invariant configFromEnv enforces.
+  const inherited = process.env[LAUNCH_MATERIAL_ENV]?.trim();
+  const material = writeLaunchMaterial({
+    ...(inherited ? readLaunchMaterial(inherited) : {}),
+    controlToken: control.token,
+  });
+  process.env[LAUNCH_MATERIAL_ENV] = material;
   process.env.COTAL_CONTROL_SOCKET = control.path;
-  process.env.COTAL_CONTROL_TOKEN = control.token; // first-frame auth, shared sidecar↔plugin via env
   process.env.COTAL_BRIDGE_SOCKET = bridgeSock;
   process.env.COTAL_TOOLS_FILE = toolsFile;
 
@@ -127,8 +141,8 @@ async function main(): Promise<void> {
   const childEnv: NodeJS.ProcessEnv = {
     ...process.env,
     HERMES_HOME: home,
+    [LAUNCH_MATERIAL_ENV]: material,
     COTAL_CONTROL_SOCKET: control.path,
-    COTAL_CONTROL_TOKEN: control.token,
     COTAL_BRIDGE_SOCKET: bridgeSock,
     COTAL_TOOLS_FILE: toolsFile,
   };

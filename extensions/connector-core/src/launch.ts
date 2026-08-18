@@ -7,6 +7,11 @@
  * spawned child. What a child sees is auditable from the spec, not "whatever the manager
  * inherited."
  *
+ * That covers bleed in one direction: the OPERATOR's environment into the child. Bleed in the other
+ * direction — Cotal's OWN connection material out of the seat and into every process the seat ever
+ * spawns — is closed by {@link materialEnv}, which hands it over as a private file instead of as
+ * inherited environment.
+ *
  * Scope this is HONEST about (P6): it closes ENV-VAR bleed. It does NOT close (i) model-key
  * exfil for key-based providers — the agent holds the key in its own process to do inference, so
  * a compromised agent exfils from its OWN env, spawn-gating the key only breaks the child's LLM
@@ -14,7 +19,15 @@
  * secret access — HOME / XDG / platform config dirs are forwarded, so a child can still read
  * ~/.aws / ~/.ssh / ~/.config off disk (needs a workspace sandbox, a separate control).
  */
-import { eventChannel, parsePrincipalKey, principalKey, type McpServerSpec } from "@cotal-ai/core";
+import {
+  eventChannel,
+  LAUNCH_MATERIAL_ENV,
+  parsePrincipalKey,
+  principalKey,
+  writeLaunchMaterial,
+  type LaunchMaterial,
+  type McpServerSpec,
+} from "@cotal-ai/core";
 
 /** OS env a coding-agent TUI genuinely needs to run — find its binary (PATH), render (TERM /
  *  COLORTERM), resolve home/config/data roots (HOME / XDG_*_HOME on Unix,
@@ -175,22 +188,44 @@ export function connectorLaunchOptions(
   return Object.entries(launchOptions);
 }
 
-/** USER-MODE launch identity as `COTAL_*` env, when present — the one place the LaunchOpts.userAuth
- *  → env mapping lives, so every connector forwards the identical contract configFromEnv parses.
- *  Refuses a creds+userAuth combination here (one launch, one identity plane — U10). */
-export function userAuthEnv(opts: {
+/**
+ * The launch's CONNECTION MATERIAL as a private file, and one env entry naming it.
+ *
+ * This replaces `userAuthEnv` and the per-connector `COTAL_CREDS` / `COTAL_SERVERS` /
+ * `COTAL_CONTROL_TOKEN` assignments it used to sit beside. Those put the broker address, the
+ * credential and a control-plane bearer into the seat's process environment, which every descendant
+ * of the seat inherits: the build it runs, the linter, the third-party CLI, the test suite that
+ * reads its broker from the environment. Nothing in that chain asked for any of it, and there is no
+ * moment where a human sees a credential being handed over, so there is no natural moment to object.
+ *
+ * Now they ride a 0600 file (see `writeLaunchMaterial`) and only its PATH is exported. The identity
+ * that is not secret — space, name, role, id, lifecycle uid, the ACLs, the control SOCKET path —
+ * stays in the environment where the launcher's contract has always put it, because a descendant
+ * learning the seat's name is not the failure.
+ *
+ * Refuses a creds+userAuth combination here (one launch, one identity plane — U10), which is where
+ * `userAuthEnv` refused it.
+ */
+export function materialEnv(opts: {
   creds?: string;
+  servers?: string;
+  token?: string;
+  controlToken?: string;
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
 }): Record<string, string> {
-  if (!opts.userAuth) return {};
-  if (opts.creds)
+  if (opts.userAuth && opts.creds)
     throw new Error("launch: creds (static auth) and userAuth (user-mode auth) are mutually exclusive — one launch carries one identity plane");
-  return {
-    COTAL_OWNER: opts.userAuth.owner,
-    COTAL_ACTOR: opts.userAuth.actor,
-    COTAL_SENTINEL_CREDS: opts.userAuth.sentinelCredsPath,
-    COTAL_BEARER_CMD: JSON.stringify(opts.userAuth.bearerCmd),
-  };
+  const material: LaunchMaterial = {};
+  if (opts.creds) material.creds = opts.creds;
+  if (opts.servers) material.servers = opts.servers;
+  if (opts.token) material.token = opts.token;
+  if (opts.controlToken) material.controlToken = opts.controlToken;
+  if (opts.userAuth) material.userAuth = opts.userAuth;
+  // Nothing to hand over (an open mesh launched with no control endpoint) → no file and no env
+  // entry, rather than a file that says nothing. writeLaunchMaterial refuses the empty case too;
+  // this is the caller-side half of the same rule.
+  if (Object.keys(material).length === 0) return {};
+  return { [LAUNCH_MATERIAL_ENV]: writeLaunchMaterial(material) };
 }
 
 /** The per-agent EVENT channel and its classifier, RE-EXPORTED FROM CORE.

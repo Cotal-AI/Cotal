@@ -16,6 +16,7 @@
 import { writeFileSync } from "node:fs";
 import {
   configFromEnv,
+  controlFromEnv,
   MeshAgent,
   startControlServer,
   type AgentConfig,
@@ -37,15 +38,21 @@ function need(name: string): string {
 }
 
 /** Start the mesh agent, the control + bridge servers, and emit the tool descriptors file.
- *  Reads `COTAL_CONTROL_SOCKET`, `COTAL_BRIDGE_SOCKET`, and `COTAL_TOOLS_FILE` from the env. */
+ *  Reads `COTAL_CONTROL_SOCKET`, `COTAL_BRIDGE_SOCKET`, and `COTAL_TOOLS_FILE` from the env, and the
+ *  control token from the launch material (see controlFromEnv). */
 export function startSidecar(): Sidecar {
   const config = configFromEnv();
   config.connector = "hermes"; // advertise the host harness on our AgentCard (meta.connector)
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry
 
-  const controlSock = need("COTAL_CONTROL_SOCKET");
-  const controlToken = need("COTAL_CONTROL_TOKEN");
+  // Socket path from the env, first-frame token from the launch material the launcher merged it
+  // into. Absent means the launcher did not mint a control endpoint, which is a broken launch here.
+  const control = controlFromEnv();
+  if (!control)
+    throw new Error("COTAL_CONTROL_SOCKET / the launch material's control token not set — the sidecar must be spawned with bridge/control/tools paths");
+  const controlSock = control.path;
+  const controlToken = control.token;
   const bridgeSock = need("COTAL_BRIDGE_SOCKET");
   const toolsFile = need("COTAL_TOOLS_FILE");
 

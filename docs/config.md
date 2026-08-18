@@ -72,8 +72,8 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_SPACE` | connector session | Space to join | `demo` (or the join link's) |
 | `COTAL_NAME` | connector session | Presence name / identity | required (or via `COTAL_AGENT_FILE` / `COTAL_LINK`) |
 | `COTAL_ROLE` | connector session | Role | agent file's `role:`, else none |
-| `COTAL_SERVERS` | connector session | Broker URL(s) | the default local broker (or the link's) |
-| `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode) | none (open mode) |
+| `COTAL_SERVERS` | connector session | Broker URL(s). Hand-driven sessions only: a launcher-spawned seat gets this in its launch material instead (see below) | the default local broker (or the link's) |
+| `COTAL_CREDS` | connector session | Path to a NATS creds file (auth mode). Hand-driven sessions only, same as above | none (open mode) |
 | `COTAL_LINK` | connector session | `cotal://token@host/space` join link: supplies server, auth, space | none |
 | `COTAL_AGENT_FILE` | connector session | Path to a persona file: supplies name, role, kind, channels | none |
 | `COTAL_SUBSCRIBE` | connector session | Active channel read set | agent file / link, else `general` |
@@ -112,8 +112,9 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 |---|---|
 | `COTAL_ID` | Stable agent id chosen by the launcher (static meshes) |
 | `COTAL_LIFECYCLE_UID` | The incarnation's lifecycle UID, minted once per spawn; the session binds its lifecycle-keyed DM/delivery/history consumers by it (its credential pins the same names). Required for an authed launch (`COTAL_CREDS` or user-mode); config parsing fails loud without it. Open mode omits it (the endpoint self-mints per session) |
-| `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS` |
-| `COTAL_CONTROL_SOCKET` / `COTAL_CONTROL_TOKEN` | The session's local control endpoint (path + token) the MCP server listens on and the lifecycle hooks connect to; token is env-only, never argv or logs |
+| `COTAL_OWNER` / `COTAL_ACTOR` / `COTAL_SENTINEL_CREDS` / `COTAL_BEARER_CMD` | User-auth launch identity: the agent's principal, its sentinel creds path, and the exec-able bearer command; all four together, mutually exclusive with `COTAL_CREDS`. A launcher-spawned seat carries them in its launch material instead of its environment |
+| `COTAL_LAUNCH_MATERIAL` | Path to this launch's private 0600 material file (see [Launch material](#launch-material) below). Carries the broker URL, the creds path, the auth token, the user-auth identity, and the control token. A PATH, never a secret |
+| `COTAL_CONTROL_SOCKET` | The session's local control endpoint path. The MCP server listens on it and the lifecycle hooks connect to it; the token that authenticates the first frame rides the launch material, not the environment |
 | `COTAL_BRIDGE_SOCKET` / `COTAL_TOOLS_FILE` / `COTAL_PARENT_PID` | Hermes sidecar plumbing (bridge socket, generated tool descriptors, launcher pid to watch) |
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
@@ -123,6 +124,36 @@ The launcher forwards only a fixed OS allow-list (PATH, HOME, TERM, locale, XDG/
 your whole environment, so unrelated secrets don't bleed into spawned agents. There are also a few
 internal timing knobs (e.g. `COTAL_MEMBERSHIP_INTERVAL_MS`, `COTAL_DELIVERY_BROKER_GONE_MS`) that you
 should not set in normal operation.
+
+### Launch material
+
+A process environment is inherited by every descendant. A seat launched with its credential, its
+broker URL and its control token in the environment hands all three to the build it runs, the linter,
+the third-party CLI, the test suite that reads its broker from the environment. Nothing in that chain
+asked for any of it.
+
+So a launcher-spawned seat does not get them in its environment. The launcher writes them to a single
+**0600 file inside a 0700 private directory** and exports only its path, as `COTAL_LAUNCH_MATERIAL`.
+The session reads the file once at startup. This is the same shape `cotal agent-bearer` already uses
+for its spawn-time secret: the material rides a file, never argv (which is visible in a process
+listing) and never the ambient environment (which is inherited).
+
+Connectors whose session runs **in** the seat process (pi, OpenCode, codex) drop the path from their
+own environment once they have read it, so the shells and tools those seats run inherit no reference
+at all. The Claude connector keeps it: its readers are short-lived child processes (the MCP server,
+one per lifecycle hook) that start after the session is already running and would find it gone.
+
+What this does: the values are out of every descendant's environment, so an `env` dump, a CI log, a
+suite that defaults its broker from the environment, or a tool handed a credential it never asked
+for, all stop seeing them. What it does not do: hide the material from a process running as the same
+user that deliberately opens the file. No environment-level control can, and the same is already true
+of `~/.cotal/auth/creds`. What changes is that reaching the material is a deliberate act rather than
+an inheritance nobody chose.
+
+Driving a connector session **by hand** still works the documented way: set `COTAL_CREDS` /
+`COTAL_SERVERS` (and the user-auth quartet) yourself, and no material file is involved. Setting both
+a material file and those variables is refused rather than resolved by precedence: one launch carries
+one identity plane.
 
 ## On-disk layout
 

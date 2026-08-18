@@ -16,7 +16,7 @@ import {
   connectorLaunchOptions,
   controlEndpoint,
   launchEnv,
-  userAuthEnv,
+  materialEnv,
 } from "@cotal-ai/connector-core";
 
 const STANDALONE = fileURLToPath(
@@ -78,18 +78,20 @@ export const piConnector: Connector = {
       persona = definition.persona;
     }
 
+    // Minted before the env is built: the token goes into the launch material, the path into the env.
+    const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: PI_PROVIDER_KEYS }),
       ...aclEnv(opts),
-      ...userAuthEnv(opts),
+      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
+      // extension drops even that once it has read it, so a shell this seat runs inherits neither.
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
-    if (opts.creds) env.COTAL_CREDS = opts.creds;
-    if (opts.servers) env.COTAL_SERVERS = opts.servers;
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
 
     const args = ["--extension", STANDALONE];
@@ -117,9 +119,7 @@ export const piConnector: Connector = {
       args.push(prompt);
     }
 
-    const control = controlEndpoint(opts.space, opts.name);
     env.COTAL_CONTROL_SOCKET = control.path;
-    env.COTAL_CONTROL_TOKEN = control.token;
     return { command: "pi", args, env, control };
   },
 };

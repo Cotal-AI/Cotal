@@ -8,6 +8,8 @@ import {
   startControlServer,
   type AgentConfig,
   type InboxItem,
+  controlFromEnv,
+  scrubLaunchMaterial,
 } from "@cotal-ai/connector-core";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
@@ -85,10 +87,11 @@ function cleanPersonaFile(runtime: PiRuntime): void {
 }
 
 function createRuntime(config: AgentConfig): PiRuntime {
-  const path = process.env.COTAL_CONTROL_SOCKET?.trim();
-  const token = process.env.COTAL_CONTROL_TOKEN?.trim();
-  if (Boolean(path) !== Boolean(token)) {
-    throw new Error("pi connector: COTAL_CONTROL_SOCKET and COTAL_CONTROL_TOKEN must be provided together");
+  // The socket path rides the env; the first-frame token rides the launch material, so a shell this
+  // seat runs cannot pick a control-plane bearer out of its own environment.
+  const control = controlFromEnv();
+  if (process.env.COTAL_CONTROL_SOCKET?.trim() && !control) {
+    throw new Error("pi connector: COTAL_CONTROL_SOCKET was set without a matching control token in the launch material");
   }
 
   const mesh = new MeshAgent(config);
@@ -105,10 +108,10 @@ function createRuntime(config: AgentConfig): PiRuntime {
   mesh.on("mention-wake", (item: InboxItem) => driver.onMentionWake(item));
   mesh.start();
 
-  if (path && token) {
+  if (control) {
     runtime.controlServer = startControlServer(
       mesh,
-      { path, token },
+      control,
       async () => ({ ok: false, error: "pi uses in-process lifecycle events; only shutdown is supported" }),
       { fatalBind: true, onShutdown: () => driver.requestShutdown() },
     );
@@ -124,6 +127,10 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
 
   const config = configFromEnv();
+  // Everything this session needs is now in `config` and in the control pair below, so the pointer
+  // to the launch material has no reader left. Dropping it here is what keeps it out of the
+  // environment of every shell command, build and tool this seat goes on to run.
+  scrubLaunchMaterial();
   config.connector = "pi";
   const key = runtimeKey(config);
   const runtimes = runtimeMap();

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -145,10 +145,14 @@ export const opencodeConnector: Connector = {
     // the named model-provider key (opencode's hosted models read OPENCODE_API_KEY; other
     // providers read their own) are forwarded BY NAME — never `...process.env` — so the operator's
     // unrelated secrets don't reach the child (P3).
+    // Minted before the env is built: the token goes into the launch material, the path into the env.
+    const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
       ...aclEnv(opts),
-      ...userAuthEnv(opts),
+      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
+      // plugin drops even that once it has read it, so a shell this seat runs inherits neither.
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
@@ -177,8 +181,6 @@ export const opencodeConnector: Connector = {
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
-    if (opts.creds) env.COTAL_CREDS = opts.creds;
-    if (opts.servers) env.COTAL_SERVERS = opts.servers;
     // The auto-submitted first turn (`cotal spawn --prompt`). It rides the child ENV, the same
     // carrier codex uses (COTAL_CODEX_PROMPT): the plugin runs inside `opencode serve`, which
     // inherits this env, so the text reaches the one component that can issue a turn without going
@@ -269,9 +271,7 @@ export const opencodeConnector: Connector = {
     // leaves the mesh cleanly on shutdown. Minted here; passed to the plugin in the child env (the
     // token never on argv/logs) — opencode serve inherits this process env, the attached TUI strips
     // COTAL_*. Returned in the LaunchSpec so the manager holds it in memory to drive the stop.
-    const control = controlEndpoint(opts.space, opts.name);
     env.COTAL_CONTROL_SOCKET = control.path;
-    env.COTAL_CONTROL_TOKEN = control.token;
 
     // Run the shim (node dist/serve.js): `opencode serve` + an attached foreground TUI.
     return {

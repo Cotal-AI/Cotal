@@ -1,6 +1,6 @@
 import { userInfo } from "node:os";
 import { readFileSync } from "node:fs";
-import { DEFAULT_SERVER, assertValidChannel, channelInAllow, isConcreteChannel, loadAgentFile, parseJoinLink, type AgentDef, type ChannelMode, type EndpointKind } from "@cotal-ai/core";
+import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, assertValidChannel, channelInAllow, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
 export const FEEDBACK_URL = "https://broker.cotal.ai/v1/feedback";
@@ -95,6 +95,62 @@ function splitList(v: string | undefined): string[] {
     .filter(Boolean);
 }
 
+/** The env vars that carry connection material DIRECTLY, for a hand-driven session. A
+ *  launcher-spawned seat gets the same material as a file instead, so that a build script, a linter
+ *  or a test suite the seat shells out to does not inherit a live credential nobody handed it. */
+const DIRECT_MATERIAL_VARS = [
+  "COTAL_CREDS",
+  "COTAL_SERVERS",
+  "COTAL_TOKEN",
+  "COTAL_OWNER",
+  "COTAL_ACTOR",
+  "COTAL_SENTINEL_CREDS",
+  "COTAL_BEARER_CMD",
+] as const;
+
+/** Resolve the launch-material file, if this launch uses one. Refuses the two-carrier case: a
+ *  material file AND direct material vars means two answers to "who is this session", and picking
+ *  one silently is how a seat ends up connected as something nobody chose. An unreadable or
+ *  permissive file throws from {@link readLaunchMaterial} — never a fall back to the env, which
+ *  would turn a broken launch into a quietly different one. */
+function readMaterial(env: NodeJS.ProcessEnv): LaunchMaterial | undefined {
+  const path = env[LAUNCH_MATERIAL_ENV]?.trim();
+  if (!path) return undefined;
+  const direct = DIRECT_MATERIAL_VARS.filter((k) => env[k]?.trim());
+  if (direct.length)
+    throw new Error(
+      `COTAL config: this launch carries connection material BOTH as ${LAUNCH_MATERIAL_ENV} and as ${direct.join(", ")}. ` +
+        "One launch carries one identity plane - drop the direct variables, or drop the material file.",
+    );
+  return readLaunchMaterial(path);
+}
+
+/** This session's local control endpoint: the socket PATH from the env (not a secret, and the
+ *  short-lived hook processes need it too) and the first-frame token out of the launch material,
+ *  which is where the token now rides instead of `COTAL_CONTROL_TOKEN`. Returns a pair or nothing —
+ *  half a pair is not a control endpoint. What to DO about nothing is the caller's policy and
+ *  differs on purpose: the in-agent server refuses to serve, a lifecycle hook fails open rather
+ *  than block the session. */
+export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: string; token: string } | undefined {
+  const path = env.COTAL_CONTROL_SOCKET?.trim();
+  const token = readMaterial(env)?.controlToken ?? env.COTAL_CONTROL_TOKEN?.trim();
+  return path && token ? { path, token } : undefined;
+}
+
+/**
+ * Drop the reference to the launch material once this process has read it.
+ *
+ * Only correct where the session runs IN the seat process and nothing starts later that has to read
+ * the material again: pi, the OpenCode plugin, the codex host. There the seat's own tool calls are
+ * the descendants that would otherwise inherit the reference, and after this they inherit nothing at
+ * all. It is NOT correct for the Claude connector, whose readers are short-lived child processes
+ * (the MCP server, each lifecycle hook) that start after the session is already running and would
+ * find the reference gone.
+ */
+export function scrubLaunchMaterial(env: NodeJS.ProcessEnv = process.env): void {
+  delete env[LAUNCH_MATERIAL_ENV];
+}
+
 /** True iff the env carries a Cotal identity — i.e. this is a launcher-spawned
  *  session, not an operator's plain `claude`. `COTAL_LINK` / `COTAL_AGENT_FILE`
  *  count: setting either is itself the explicit opt-in. The connector stays
@@ -145,15 +201,28 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
       if (!channelInAllow(resolvedAllowSub, ch))
         throw new Error(`COTAL config: ${field} channel "${ch}" is not within allowSubscribe [${resolvedAllowSub.join(", ")}]`);
     }
-  const credsPath = env.COTAL_CREDS?.trim();
+  // CONNECTION MATERIAL. A launcher-spawned seat gets it as a private file it is pointed at; a
+  // hand-driven session (an operator's own `claude` with the plugin, a custom launcher) still sets
+  // the documented COTAL_CREDS/COTAL_SERVERS/... variables itself. Both carriers together is a
+  // BROKEN LAUNCH, not a precedence question: two sources of identity for one session is exactly
+  // the ambiguity that ends with a seat connected as something nobody chose, so it throws.
+  const material = readMaterial(env);
+  const credsPath = material?.creds ?? env.COTAL_CREDS?.trim();
   // USER-MODE identity: all-or-nothing — a partial set means a broken launcher, and connecting
   // with half an identity (or silently falling back to open) is exactly the U10 hazard.
-  const userVars = {
-    owner: env.COTAL_OWNER?.trim(),
-    actor: env.COTAL_ACTOR?.trim(),
-    sentinel: env.COTAL_SENTINEL_CREDS?.trim(),
-    bearerCmd: env.COTAL_BEARER_CMD?.trim(),
-  };
+  const userVars = material?.userAuth
+    ? {
+        owner: material.userAuth.owner,
+        actor: material.userAuth.actor,
+        sentinel: material.userAuth.sentinelCredsPath,
+        bearerCmd: JSON.stringify(material.userAuth.bearerCmd),
+      }
+    : {
+        owner: env.COTAL_OWNER?.trim(),
+        actor: env.COTAL_ACTOR?.trim(),
+        sentinel: env.COTAL_SENTINEL_CREDS?.trim(),
+        bearerCmd: env.COTAL_BEARER_CMD?.trim(),
+      };
   const userSet = Object.values(userVars).filter(Boolean).length;
   if (userSet > 0 && userSet < 4)
     throw new Error("COTAL config: user-mode launch needs ALL of COTAL_OWNER, COTAL_ACTOR, COTAL_SENTINEL_CREDS, COTAL_BEARER_CMD — a partial set is a broken launcher, not a mode");
@@ -200,7 +269,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     capabilities: splitList(env.COTAL_CAPABILITIES).length ? splitList(env.COTAL_CAPABILITIES) : def?.capabilities,
     model: env.COTAL_MODEL?.trim() || def?.model || undefined,
     variant: env.COTAL_VARIANT?.trim() || def?.variant || undefined,
-    servers: env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
+    servers: material?.servers || env.COTAL_SERVERS?.trim() || link?.servers || DEFAULT_SERVER,
     subscribe: resolvedSubscribe,
     allowSubscribe: resolvedAllowSub,
     // Post ACL is default-DENY: only what's explicitly declared (env > agent-file). The broker
@@ -209,7 +278,7 @@ export function configFromEnv(env: NodeJS.ProcessEnv = process.env): AgentConfig
     quiet: resolvedQuiet,
     muted: resolvedMuted,
     kind: (env.COTAL_KIND?.trim() as EndpointKind) || def?.kind || "agent",
-    token: env.COTAL_TOKEN?.trim() || link?.token,
+    token: material?.token || env.COTAL_TOKEN?.trim() || link?.token,
     user: link?.user,
     pass: link?.pass,
     tls: env.COTAL_TLS?.trim() === "1" || link?.tls || false,

@@ -8,7 +8,7 @@
  * entry points are one-liners over {@link runHookRelay}.
  */
 import { connect } from "node:net";
-import { hasIdentity } from "./config.js";
+import { controlFromEnv, hasIdentity } from "./config.js";
 import { HANDOFF_RECEIPT } from "./control.js";
 
 const TIMEOUT_MS = 2000;
@@ -56,12 +56,19 @@ function done(out: string, confirm?: (then: () => void) => void): void {
 /** Relay one hook event from stdin to the connector's control socket and print the reply. */
 export async function runHookRelay(): Promise<void> {
   if (!hasIdentity()) return done(""); // plain session, not a managed one — no-op
-  // Path + token come from the launch env (shared with the in-agent server, which we inherited from);
-  // never recomputed from public identity. Absent → not an authenticated control session: no-op (fail
-  // open, so a hook never blocks the user's session).
-  const path = process.env.COTAL_CONTROL_SOCKET;
-  const token = process.env.COTAL_CONTROL_TOKEN;
-  if (!path || !token) return done("");
+  // The socket path comes from the launch env; the token comes from the launch-material file that
+  // env points at (the same file the in-agent server reads), never recomputed from public identity.
+  // A malformed or missing material file THROWS from controlFromEnv, and a hook that throws is a
+  // hook that blocked the session, so it is caught here and treated as "no control session": fail
+  // open is this relay's whole contract.
+  let control: { path: string; token: string } | undefined;
+  try {
+    control = controlFromEnv();
+  } catch {
+    return done("");
+  }
+  if (!control) return done("");
+  const { path, token } = control;
   const raw = (await readStdin()).trim() || "{}";
   let event: unknown = {};
   try {

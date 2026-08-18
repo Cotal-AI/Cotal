@@ -56,6 +56,8 @@ import {
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
   type InboxItem,
+  controlFromEnv,
+  scrubLaunchMaterial,
 } from "@cotal-ai/connector-core";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
@@ -826,16 +828,20 @@ export async function runCodexHost(): Promise<void> {
     }
   };
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  const controlPath = process.env.COTAL_CONTROL_SOCKET?.trim();
-  const controlToken = process.env.COTAL_CONTROL_TOKEN?.trim();
-  if (controlPath && controlToken) {
+  // Socket path from the env, first-frame token from the launch material (see controlFromEnv).
+  const control = controlFromEnv();
+  if (control) {
     controlServer = startControlServer(
       agent,
-      { path: controlPath, token: controlToken },
+      control,
       async () => ({ ok: false, error: "codex runs cotal in-process; only the shutdown control op is supported" }),
       { fatalBind: true, onShutdown: () => void shutdown() },
     );
   }
+  // Config and control pair are both materialized now, so the pointer to the launch material has no
+  // reader left: drop it, and the codex child and every tool it runs inherit no reference to this
+  // session's credential or control token.
+  scrubLaunchMaterial();
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 
