@@ -19,6 +19,10 @@
  *   A3  the seat's own launch still resolves its identity: servers, creds and the control token
  *       round-trip through the material file
  *   A4  a material file readable beyond its owner is refused, not read
+ *   A5  dropping the pointer unlinks the file, and the half that is left refuses instead of working
+ *   A6  a material file that says nothing is refused on READ, and a valid one still reads
+ *   A7  a material file plus a direct carrier (COTAL_LINK here) is refused, never ranked silently
+ *   A8  half a control pair throws in both directions, from the one place the pair is resolved
  *
  * A2 is the one that could not have been faked by reading the same object the assertion was written
  * against: the seat is a real `node` process started with the connector's env, and the observer is a
@@ -39,7 +43,7 @@
  */
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
@@ -148,22 +152,6 @@ for (const name of CONNECTORS) {
   console.log(`✓ ${name}: no material in the seat env; identity + control recovered from the material file`);
 }
 
-// A5 — dropping the pointer makes the control token unreachable, so every reader has to run first.
-//
-// This is here because the ordering it describes was got WRONG, and the suite did not catch it: the
-// pi extension scrubbed the pointer immediately after parsing its config and then asked for the
-// control token, which was by then gone. Every pi launch refused, loudly and correctly, and it took
-// a live spawn to see it. The property is pinned here so the hazard is a named, tested fact rather
-// than a comment somebody has to remember, and the contract keeps failing loud when it is violated.
-{
-  const env = { ...piSpec.env } as NodeJS.ProcessEnv;
-  assert.ok(controlFromEnv(env)?.token, "A5: the control token is reachable before the pointer is dropped");
-  scrubLaunchMaterial(env);
-  assert.equal(controlFromEnv(env), undefined, "A5: the control token is unreachable after the pointer is dropped");
-  assert.equal(env[LAUNCH_MATERIAL_ENV], undefined, "A5: the pointer itself is gone");
-}
-console.log("✓ A5: the launch material is unreachable once the pointer is dropped, so readers must run first");
-
 // A4 — a material file other local users can read is refused, not read. Without this the carrier
 // could be quietly weaker than the environment it replaced, and nothing would say so.
 if (process.platform !== "win32") {
@@ -222,5 +210,69 @@ if (process.platform !== "win32") {
   assert.equal(ok.servers, SERVERS, "A6: a valid material file no longer reads");
 }
 console.log("✓ A6: a material file that says nothing is refused on read, and a valid one still reads");
+
+// A5 — dropping the pointer makes the control token unreachable, so every reader has to run first,
+// and the file it pointed at is GONE rather than merely unreferenced.
+//
+// This is here because the ordering it describes was got WRONG, and the suite did not catch it: the
+// pi extension scrubbed the pointer immediately after parsing its config and then asked for the
+// control token, which was by then gone. Every pi launch refused, loudly and correctly, and it took
+// a live spawn to see it. The property is pinned here so the hazard is a named, tested fact rather
+// than a comment somebody has to remember, and the contract keeps failing loud when it is violated.
+//
+// IT RUNS AFTER A4 ON PURPOSE. The scrub now unlinks, so this leg destroys the pi launch's material
+// file; A4 needs that file on disk to chmod it. Ordering is the whole dependency, and stating it
+// here is cheaper than a future reader rediscovering it as a confusing A4 failure.
+{
+  const env = { ...piSpec.env } as NodeJS.ProcessEnv;
+  const file = env[LAUNCH_MATERIAL_ENV] as string;
+  assert.ok(controlFromEnv(env)?.token, "A5: the control token is reachable before the pointer is dropped");
+  scrubLaunchMaterial(env);
+  assert.equal(env[LAUNCH_MATERIAL_ENV], undefined, "A5: the pointer itself is gone");
+  assert.equal(existsSync(file), false, "A5: the material file survived the scrub that was supposed to unlink it");
+  // Not `undefined`: the socket path is still in this env, so what remains is a BROKEN control
+  // endpoint rather than an absent one, and the contract is that a half pair is refused out loud.
+  assert.throws(
+    () => controlFromEnv(env),
+    /no control token could be resolved/,
+    "A5: a scrubbed env with a socket path still resolved a control endpoint instead of refusing",
+  );
+}
+console.log("✓ A5: the pointer is dropped, the file is unlinked, and what is left refuses instead of half-working");
+
+// A7 — the two-carrier refusal covers every direct carrier, COTAL_LINK included.
+//
+// A join link is connection material in one string: server, auth and space. Left off the refusal
+// list it did not conflict loudly, it lost quietly to material precedence, which is the same silent
+// answer to "who is this session" that the creds pair is refused for.
+{
+  const env = { ...piSpec.env, COTAL_LINK: "cotal://example.invalid/space" } as NodeJS.ProcessEnv;
+  assert.throws(
+    () => configFromEnv(env),
+    /carries connection material BOTH as COTAL_LAUNCH_MATERIAL and as COTAL_LINK/,
+    "A7: a launch carrying both a material file and a join link resolved by precedence instead of refusing",
+  );
+}
+console.log("✓ A7: a material file plus a direct carrier (COTAL_LINK) is refused, not silently ranked");
+
+// A8 — half a control pair throws in BOTH directions, from the one place the pair is resolved.
+//
+// It used to return undefined and leave the policy to each caller, and the callers did not agree.
+// A session that believes it configured a control plane and silently has none is the shape of defect
+// this whole change exists to remove, so the refusal lives where the pair is built.
+{
+  assert.throws(
+    () => controlFromEnv({ COTAL_CONTROL_SOCKET: "/tmp/cotal-nonexistent.sock" } as NodeJS.ProcessEnv),
+    /COTAL_CONTROL_SOCKET is set but no control token could be resolved/,
+    "A8: a socket with no resolvable token was reported as no control plane rather than a broken one",
+  );
+  assert.throws(
+    () => controlFromEnv({ COTAL_CONTROL_TOKEN: "orphan-token" } as NodeJS.ProcessEnv),
+    /COTAL_CONTROL_SOCKET is unset/,
+    "A8: a control token with no socket was accepted as a normal launch",
+  );
+  assert.equal(controlFromEnv({} as NodeJS.ProcessEnv), undefined, "A8: a launch with no control plane at all still reads as none");
+}
+console.log("✓ A8: half a control pair is refused in both directions; no control plane at all is still fine");
 
 console.log("\nseat-env-scope: PASS");

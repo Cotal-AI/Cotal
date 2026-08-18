@@ -1,5 +1,5 @@
 import { userInfo } from "node:os";
-import { readFileSync } from "node:fs";
+import { readFileSync, unlinkSync } from "node:fs";
 import { DEFAULT_SERVER, LAUNCH_MATERIAL_ENV, assertValidChannel, channelInAllow, isConcreteChannel, loadAgentFile, parseJoinLink, readLaunchMaterial, type AgentDef, type ChannelMode, type EndpointKind, type LaunchMaterial } from "@cotal-ai/core";
 
 /** Keyed beta intake — used when a `COTAL_FEEDBACK_KEY` is configured. */
@@ -113,6 +113,11 @@ const DIRECT_MATERIAL_VARS = [
   // its own explicit token sat unused. That is not hypothetical: it is what a test harness spreading
   // `...process.env` does, and this whole change exists because that spread used to be invisible.
   "COTAL_CONTROL_TOKEN",
+  // A join link is connection material in one string: it carries the server, the auth and the space.
+  // Left off this list, a launch with both a material file and a link resolved the conflict by
+  // precedence and said nothing, which is the same silent answer to "who is this session" that the
+  // credential pair is refused for.
+  "COTAL_LINK",
 ] as const;
 
 /** Resolve the launch-material file, if this launch uses one. Refuses the two-carrier case: a
@@ -132,16 +137,39 @@ function readMaterial(env: NodeJS.ProcessEnv): LaunchMaterial | undefined {
   return readLaunchMaterial(path);
 }
 
-/** This session's local control endpoint: the socket PATH from the env (not a secret, and the
- *  short-lived hook processes need it too) and the first-frame token out of the launch material,
- *  which is where the token now rides instead of `COTAL_CONTROL_TOKEN`. Returns a pair or nothing —
- *  half a pair is not a control endpoint. What to DO about nothing is the caller's policy and
- *  differs on purpose: the in-agent server refuses to serve, a lifecycle hook fails open rather
- *  than block the session. */
+/**
+ * This session's local control endpoint: the socket PATH from the env (not a secret, and the
+ * short-lived hook processes need it too) and the first-frame token out of the launch material,
+ * which is where the token now rides instead of `COTAL_CONTROL_TOKEN`.
+ *
+ * NOTHING means nothing: neither half present, so this is a session with no control plane, which is
+ * a normal launch. HALF A PAIR THROWS HERE, centrally, and that is the change worth explaining.
+ *
+ * Returning `undefined` for a half pair made every caller's own check the real contract, and the
+ * callers do not agree: the in-agent server would refuse to serve, a hook would fall silent, and one
+ * caller could simply forget, leaving a session that runs with a control plane it believes it
+ * configured and does not have. That is a silent degradation wearing the shape of an optional
+ * feature. Half a pair is not an absent control endpoint, it is a BROKEN one, and the difference
+ * belongs where the pair is resolved rather than in five copies downstream.
+ *
+ * Callers that must survive anything still can, and do so visibly: the lifecycle hook relay wraps
+ * this call in a try/catch because a hook that throws is a hook that blocked the session, and fail
+ * open is that relay's whole documented contract. Every other caller wants exactly this throw.
+ */
 export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: string; token: string } | undefined {
   const path = env.COTAL_CONTROL_SOCKET?.trim();
   const token = readMaterial(env)?.controlToken ?? env.COTAL_CONTROL_TOKEN?.trim();
-  return path && token ? { path, token } : undefined;
+  if (path && token) return { path, token };
+  if (!path && !token) return undefined;
+  if (path)
+    throw new Error(
+      "COTAL config: COTAL_CONTROL_SOCKET is set but no control token could be resolved - neither the launch material nor COTAL_CONTROL_TOKEN carries one. " +
+        "Half a pair is not a control endpoint, so this launch is refused rather than started without the control plane it was configured to have.",
+    );
+  throw new Error(
+    "COTAL config: a control token was supplied but COTAL_CONTROL_SOCKET is unset, so there is no socket to authenticate against. " +
+      "Half a pair is not a control endpoint, so this launch is refused rather than started without the control plane it was configured to have.",
+  );
 }
 
 /**
@@ -157,7 +185,24 @@ export function controlFromEnv(env: NodeJS.ProcessEnv = process.env): { path: st
  * find the reference gone.
  */
 export function scrubLaunchMaterial(env: NodeJS.ProcessEnv = process.env): void {
+  const path = env[LAUNCH_MATERIAL_ENV]?.trim();
   delete env[LAUNCH_MATERIAL_ENV];
+  // UNLINK IT TOO, where there is provably no later reader. Dropping the pointer stops the reference
+  // being inherited; deleting the file stops a same-uid process finding it by any other means, which
+  // is the one part of the residual boundary that CAN be closed here. It is the only place in this
+  // change where the honest limit gets smaller rather than better documented.
+  //
+  // Best-effort on purpose, and this is the one swallowed error in the file. The scrub has already
+  // succeeded by the time this runs: throwing here would turn a tidy-up failure (a read-only tmpdir,
+  // a file already reaped) into a failed session, and the state it would fail into is exactly the
+  // state every launch had before this line existed.
+  if (path) {
+    try {
+      unlinkSync(path);
+    } catch {
+      /* the pointer is already gone; the file outliving it is the pre-existing behaviour */
+    }
+  }
 }
 
 /** True iff the env carries a Cotal identity — i.e. this is a launcher-spawned

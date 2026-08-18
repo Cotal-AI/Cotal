@@ -35,7 +35,15 @@
     "notices the seat can no longer reach its broker. M4 leaves the material carrier in place and",
     "removes the READER's refusal of a file that says nothing, which is how a launch that references",
     "material and supplies none resolved to open mode without a word. A write-side guard cannot cover",
-    "it: the reader is handed a path by an environment variable and never sees the writer."
+    "it: the reader is handed a path by an environment variable and never sees the writer.",
+    "",
+    "M5/M6/M7 COVER THE THREE REFUSALS ADDED AFTER REVIEW, and each one restores a real prior state of",
+    "this branch rather than an invented one. M5 drops COTAL_LINK back out of the two-carrier list: a",
+    "join link carries server, auth and space in one string, and off the list it did not conflict, it",
+    "lost quietly to material precedence. M6 restores the half-pair `undefined`, which left the policy",
+    "to five callers that did not agree and let a session run believing it had a control plane it did",
+    "not have. M7 restores a scrub that drops the pointer without unlinking, which is the difference",
+    "between material that is unreferenced and material that is gone."
   ],
   "mutations": [
     {
@@ -72,6 +80,33 @@
       "replace": "  if (false)\n    throw new Error(",
       "expectRed": "A6: an empty material object was read as a valid launch instead of refused",
       "note": "The write-side refusal survives this mutation untouched, which is the point: it is the READ side that a broken or truncated file reaches, and without this check `{}` resolved to the default broker with no credential - open mode, silently, on a launch that asked for the opposite.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M5 a join link stops counting as a direct carrier",
+      "file": "extensions/connector-core/src/config.ts",
+      "find": "  \"COTAL_LINK\",\n] as const;",
+      "replace": "] as const;",
+      "expectRed": "A7: a launch carrying both a material file and a join link resolved by precedence instead of refusing",
+      "note": "The silent half of the two-carrier defect: no error, no warning, just one of two answers to 'who is this session' winning on precedence.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M6 half a control pair reads as no control plane instead of throwing",
+      "file": "extensions/connector-core/src/config.ts",
+      "find": "  if (path && token) return { path, token };\n  if (!path && !token) return undefined;",
+      "replace": "  if (path && token) return { path, token };\n  if (true) return undefined;",
+      "expectRed": "A8: a socket with no resolvable token was reported as no control plane rather than a broken one",
+      "note": "Exactly the shape that shipped: a broken control endpoint indistinguishable from a session that never had one. The pi launch failure this branch hit live was the loud version of it; the quiet version is a seat whose presence never advances.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M7 the scrub drops the pointer but leaves the file on disk",
+      "file": "extensions/connector-core/src/config.ts",
+      "find": "      unlinkSync(path);",
+      "replace": "      void path;",
+      "expectRed": "A5: the material file survived the scrub that was supposed to unlink it",
+      "note": "The residual this carrier is honest about is same-uid access to a file that EXISTS. Where there is provably no later reader, the file not existing is the one part of that boundary that can actually be closed, so the closing has to be tested rather than intended.",
       "afterRestore": "pnpm build > /dev/null"
     }
   ]

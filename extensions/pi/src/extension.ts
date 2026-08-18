@@ -124,11 +124,9 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   // seat runs cannot pick a control-plane bearer out of its own environment. Read BEFORE the scrub
   // below, and read on every load rather than inside createRuntime: a second load reuses the cached
   // runtime, but the first one must not find the pointer already gone. That ordering is not a
-  // detail - reversed, it refused every pi launch with "COTAL_CONTROL_SOCKET was set without a
-  // matching control token", which is the failure this contract is supposed to produce and did.
+  // detail - reversed, it refused every pi launch with the half-pair error `controlFromEnv` throws,
+  // which is the failure that contract is supposed to produce and did.
   const control = controlFromEnv();
-  if (process.env.COTAL_CONTROL_SOCKET?.trim() && !control)
-    throw new Error("pi connector: COTAL_CONTROL_SOCKET was set without a matching control token in the launch material");
   // Both readers are done, so the pointer to the launch material has none left. Dropping it here is
   // what keeps it out of the environment of every shell command, build and tool this seat runs.
   scrubLaunchMaterial();

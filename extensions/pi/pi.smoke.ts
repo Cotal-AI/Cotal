@@ -532,7 +532,7 @@ for (const assistant of [
     registerMessageRenderer(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
-  await assert.rejects(() => cotalMesh(compatibleApi), /without a matching control token in the launch material/);
+  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
   checks++;
   for (const key of keys) {
     const value = saved[key];

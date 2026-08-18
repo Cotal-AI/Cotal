@@ -72,6 +72,12 @@ const REVIEWED: Record<string, string> = {
 /**
  * THE RATCHET, and read the next sentence before you read the list.
  *
+ * IT IS A TRACKED DEFERRAL, NOT A WAIVER: the 44 are owned by issue #619, which carries the names,
+ * which of them spawn the CLI, and what "done" looks like for each. A frozen baseline pointing at an
+ * open issue is a deferral; one pointing at nothing is a waiver that outlives everyone who agreed to
+ * it. If #619 is closed and this list is not empty, this comment is the lie and the list is the
+ * truth.
+ *
  * THESE FILES ARE NOT CLEARED. Nobody has measured whether their children read connection material,
  * and this suite does not claim they are safe. They are the ambient spreads that already existed
  * when this census was written, frozen so that the SET CANNOT GROW. A new suite that spreads without

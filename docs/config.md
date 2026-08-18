@@ -141,7 +141,9 @@ listing) and never the ambient environment (which is inherited).
 Three connectors drop the path once they have read it, so the shells and tools those seats run
 inherit no reference at all: **pi** and **codex**, whose sessions run in the seat process, and
 **OpenCode**, whose seat process is a shim that starts `opencode serve` (the plugin runs in that
-server, which is also what executes the session's tool calls).
+server, which is also what executes the session's tool calls). Those three also **delete the file**
+at the same moment. Nothing reads it again, so leaving it on disk would only extend how long a copy
+of the material exists.
 
 Two keep it, and for the same reason in both cases: a process that starts LATER has to read it.
 **Claude**'s readers are short-lived children, the MCP server and one process per lifecycle hook,
@@ -158,8 +160,15 @@ an inheritance nobody chose.
 
 Driving a connector session **by hand** still works the documented way: set `COTAL_CREDS` /
 `COTAL_SERVERS` (and the user-auth quartet) yourself, and no material file is involved. Setting both
-a material file and those variables is refused rather than resolved by precedence: one launch carries
-one identity plane.
+a material file and any of them is refused rather than resolved by precedence: one launch carries one
+identity plane. `COTAL_LINK` counts as one of them, because a join link carries the server, the auth
+and the space in a single string.
+
+The control endpoint is a pair, and **half a pair is refused**. A launch with a control socket path
+and no resolvable token, or a token and no socket path, does not fall back to running without a
+control plane: it fails with a sentence naming which half is missing. The one exception is the
+lifecycle hook relay, which catches that refusal and does nothing, because a hook that throws is a
+hook that blocked the session.
 
 ## On-disk layout
 
