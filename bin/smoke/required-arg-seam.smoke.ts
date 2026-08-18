@@ -6,7 +6,7 @@
  * in this file rather than a property of the repository. It reads the extensions in `EXTS`, plus the
  * executable part of each container language in `CONTAINERS`; it counts calls made through the
  * seam's own NAME, and turns every spelling that rebinds that name RED rather than following it, so
- * the bound fails loud instead of narrowing in silence. The floors watch the seeing itself for decay.
+ * the bound fails loud instead of narrowing in silence. The population watches the seeing itself.
  * Read the paragraph headed THE ALIAS REFUSAL IS NOT A PROOF OF TOTAL CLOSURE as part of this
  * sentence rather than as a footnote to it.
  *
@@ -28,8 +28,8 @@
  * regex, and both were defeated by ordinary code rather than by anything contrived. A regex literal
  * containing a quote opened a phantom string that blanked every later call site in the file, so the
  * lexer learned regexes; then the same hole reopened one keyword away, because `/` after `return` or
- * `typeof` looks like division to anything that decides by the last CHARACTER. The floor cells do
- * not cover that: a file hidden from its first line never increments the count, so an exact floor
+ * `typeof` looks like division to anything that decides by the last CHARACTER. The population cells
+ * do not cover a file that was ALWAYS hidden: its sites were never counted, so the expected count
  * still passes. Chasing lexer holes one at a time is a losing shape when a parser that already knows
  * the grammar costs about seven hundred milliseconds over nine hundred files. Everything below asks
  * the syntax tree, so regex-versus-division, template substitutions, casts, generic instantiation,
@@ -53,7 +53,7 @@
  * shape. Adding the next one is a line.
  *
  * TWO DIRECTIONS OF ERROR, and they are not equally bad. Blessing a site that lacks the argument is
- * severe: the check then reads as coverage and is not. Failing to SEE a site is caught by the floor
+ * severe: the check then reads as coverage and is not. Failing to SEE a site is caught by the count
  * cells, which is why a count is part of the instrument rather than trivia.
  *
  * WHAT THIS DOES NOT CATCH, so nobody mistakes it for more than it is: it checks that the argument
@@ -106,8 +106,17 @@
  * What it still cannot EVALUATE is a key computed from a runtime value, a function's return
  * (`["standalone", "ConnectOpts"].join("")` reaches the same binding), or an import it would have to
  * resolve. Closing those means executing the program or running a type checker, which is a different
- * instrument rather than a better rule. In a PLAIN source that stays a residual with the floors as
- * its only cover. In a multi-program DOCUMENT it does not: there, a computed key that does not
+ * instrument rather than a better rule. In a PLAIN source that stays a residual with the count as
+ * its only cover.
+ *
+ * That residual USED to be wider than the sentence above admitted, and adversarial review is what
+ * measured the difference. A stringly dispatch table written in ONE file, `const API = { connect:
+ * "<seam>" }; core[API.connect]({creds})`, needs no runtime value and no import: it is static to any
+ * human reading it, and it was invisible. A table's string properties now fold, so that call is seen
+ * and classified like any other. What remains open is genuinely CROSS-FILE: `export const KEY =
+ * "<seam>"` in one file and `core[KEY]({...})` in another. Fencing that was implemented and MEASURED
+ * rather than argued about, and it costs ten refusals on ordinary computed calls that have nothing
+ * to do with this seam, so it is a stated door rather than a fence people would route around. In a multi-program DOCUMENT it does not: there, a computed key that does not
  * settle within its own script is refused outright, because a document's scripts can hand each other
  * state and three successive attempts to say which of them mattered were each defeated by an
  * ordinary page. The difference is not that a document is more dangerous, it is that a document is
@@ -118,9 +127,17 @@
  * Both directions are conservative, neither has an occupant here, and resolving them is the same
  * type checker as above. The folding map INHERITS that blindness: it is file-wide and the last
  * declaration in source order wins, so two same-named bindings in different scopes fold to whichever
- * is written later. It also reads `let` as well as `const`, which the wording above should not be
- * taken to deny; a reassigned `let` therefore folds to its first value, which can invent an escape
- * that the program does not contain. Both are the conservative direction, which is the one to be on.
+ * is written later. It also reads `let` as well as `const`.
+ *
+ * An earlier version of this paragraph claimed a reassigned `let` folds to its first value and that
+ * this is "the conservative direction". THAT WAS FALSE, and adversarial review executed the half it
+ * got wrong. Folding to the first value is conservative only when the seam is written FIRST: then a
+ * later reassignment leaves a call flagged that no longer reaches the seam, which is a false red and
+ * loud. Written the other way round, `let m = "other"; m = "<seam>"; core[m]({creds})`, the map
+ * answers `"other"`, the call is never recognised as the seam, and the file is never named. That is
+ * the silent direction, and it is the one this file exists to refuse. A name BOUND MORE THAN ONCE
+ * where any binding spells the seam is therefore refused outright, counting declarations and
+ * assignments alike, so neither direction depends on which line came first.
  *
  * The name handed to a call AS DATA is an escape, and that rule has a cost worth stating so the
  * author who pays it knows it is the rule working: an ordinary assertion about the name, such as
@@ -149,17 +166,18 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
 };
 
 /** One seam: a function whose argument object must carry `key`, enforced at runtime by a throw, and
- *  therefore needing a static reader for the call sites the compiler never sees. The two floors are
- *  the counts measured when this was last edited; see the floor cells for why they are here. */
-type Seam = { fn: string; key: string; floor: number; untypecheckedFloor: number };
+ *  therefore needing a static reader for the call sites the compiler never sees. The two counts are
+ *  the population measured when this was last edited, and they are matched EXACTLY rather than as a
+ *  floor; see the population cells for why. */
+type Seam = { fn: string; key: string; sites: number; untypecheckedSites: number };
 const SEAMS: Seam[] = [
-  { fn: "standaloneConnectOpts", key: "tls", floor: 93, untypecheckedFloor: 66 },
+  { fn: "standaloneConnectOpts", key: "tls", sites: 94, untypecheckedSites: 67 },
 ];
 
 /**
  * Directories the walk does not enter, named one by one on purpose. An earlier cut skipped every
  * dot-directory with a single `startsWith(".")`, which is a hole nobody wrote down: a source file
- * under any dotted path was unreachable to this check and to its floors alike. If a new dotted
+ * under any dotted path was unreachable to this check and to its counts alike. If a new dotted
  * directory ever holds vendored code, add it here, so that the skip is a decision on the record.
  */
 const SKIP_DIRS = new Set(["node_modules", "dist", ".git", ".internal", "build", "coverage", ".next", "out"]);
@@ -302,12 +320,22 @@ const isCalleeOf = (n: ts.Node): boolean => {
  * exists because review showed `core["standalone" + "ConnectOpts"]` and `const k = "..."; core[k]`
  * are ordinary code rather than exotica. Documenting an escape is not closing it.
  */
-function foldString(e: ts.Expression, consts: Map<string, string>): string | undefined {
+function foldString(e: ts.Expression, consts: Map<string, string>, objects?: Objects): string | undefined {
   const x = unwrap(e);
   if (ts.isStringLiteralLike(x)) return x.text;
   if (ts.isIdentifier(x)) return consts.get(x.text);
+  // `TABLE.name` and `TABLE["name"]`, where TABLE is a same-file object literal of string literals.
+  // This is a fold rather than a fence: it makes the reader SEE more calls, so it cannot turn
+  // ordinary code red the way a refusal can. Review landed the shape it exists for, and it is
+  // ordinary rather than exotic: `const API = { connect: "<seam>" }; core[API.connect]({creds})`.
+  if (objects && ts.isPropertyAccessExpression(x) && ts.isIdentifier(x.expression))
+    return objects.get(x.expression.text)?.get(x.name.text);
+  if (objects && ts.isElementAccessExpression(x) && ts.isIdentifier(x.expression)) {
+    const k = foldString(x.argumentExpression, consts, objects);
+    return k === undefined ? undefined : objects.get(x.expression.text)?.get(k);
+  }
   if (ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.PlusToken) {
-    const l = foldString(x.left, consts), r = foldString(x.right, consts);
+    const l = foldString(x.left, consts, objects), r = foldString(x.right, consts, objects);
     return l !== undefined && r !== undefined ? l + r : undefined;
   }
   // A template whose spans ALL fold is the same arithmetic as `+`, done with different punctuation:
@@ -317,13 +345,40 @@ function foldString(e: ts.Expression, consts: Map<string, string>): string | und
   if (ts.isTemplateExpression(x)) {
     let out = x.head.text;
     for (const span of x.templateSpans) {
-      const v = foldString(span.expression, consts);
+      const v = foldString(span.expression, consts, objects);
       if (v === undefined) return undefined;
       out += v + span.literal.text;
     }
     return out;
   }
   return undefined;
+}
+
+type Objects = Map<string, Map<string, string>>;
+
+/** Every same-file `const TABLE = { k: "<foldable string>" }`, so `TABLE.k` is still a spelling. A
+ *  stringly dispatch table is the person-shaped version of a computed key, and review landed one
+ *  that this reader could not see: same file, no runtime value anywhere, obvious to any human. */
+function constObjects(src: ts.SourceFile, consts: Map<string, string>): Objects {
+  const out: Objects = new Map();
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
+      const init = unwrap(n.initializer);
+      if (ts.isObjectLiteralExpression(init)) {
+        const props = new Map<string, string>();
+        for (const prop of init.properties) {
+          if (!ts.isPropertyAssignment(prop)) continue;
+          const k = ts.isIdentifier(prop.name) || ts.isStringLiteralLike(prop.name) ? prop.name.text : undefined;
+          const v = foldString(prop.initializer, consts);
+          if (k !== undefined && v !== undefined) props.set(k, v);
+        }
+        if (props.size > 0) out.set(n.name.text, props);
+      }
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  return out;
 }
 
 /** Every same-file `const x = <foldable string>`, so a key held in one variable is still a spelling. */
@@ -352,11 +407,20 @@ function constStrings(src: ts.SourceFile): Map<string, string> {
  *  names are reused constantly and none of it is about this seam. */
 function orderDependent(src: ts.SourceFile, fn: string, consts: Map<string, string>): Set<string> {
   const count = new Map<string, number>(), spellsSeam = new Set<string>();
+  const bind = (name: string, value: ts.Expression | undefined): void => {
+    count.set(name, (count.get(name) ?? 0) + 1);
+    if (value && foldString(value, consts) === fn) spellsSeam.add(name);
+  };
   const visit = (n: ts.Node): void => {
-    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer) {
-      count.set(n.name.text, (count.get(n.name.text) ?? 0) + 1);
-      if (foldString(n.initializer, consts) === fn) spellsSeam.add(n.name.text);
-    }
+    // A declaration WITHOUT an initializer still binds the name, and counting it is what makes
+    // `let m: string; m = "<seam>";` two bindings rather than one.
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) bind(n.name.text, n.initializer);
+    // An ASSIGNMENT rebinds exactly as a redeclaration does, and `constStrings` never sees it, so
+    // the folding map keeps answering with the value the name was DECLARED with. Review executed
+    // that: `let m = "other"; m = "<seam>"; core[m]({creds})` folded to `"other"`, so the call was
+    // never recognised as the seam at all and the file was never named.
+    else if (ts.isBinaryExpression(n) && n.operatorToken.kind === ts.SyntaxKind.EqualsToken
+      && ts.isIdentifier(n.left)) bind(n.left.text, n.right);
     ts.forEachChild(n, visit);
   };
   visit(src);
@@ -478,7 +542,7 @@ function referenceIsAllowed(id: ts.Identifier, fn: string): boolean {
  *
  * RESIDUAL, stated rather than papered over: a name assembled at runtime (`core["standalone" +
  * "ConnectOpts"]`) is not constant-folded here and stays invisible. Closing it means evaluating
- * expressions, which is a different instrument; the floors are the only cover it has.
+ * expressions, which is a different instrument; the population count is the only cover it has.
  */
 /**
  * Is this node inside an object/array pattern that is the TARGET of an assignment, rather than
@@ -525,9 +589,32 @@ function escapesAt(n: ts.Node, fn: string, folds: Folds): boolean {
   return false;
 }
 
-const isProvablyUndefined = (e: ts.Expression): boolean => {
+const literalUndefined = (x: ts.Node): boolean =>
+  (ts.isIdentifier(x) && x.text === "undefined") || ts.isVoidExpression(x);
+
+/** Same-file `const x = undefined`. Restricted to `const` on purpose: a `let` can be assigned a real
+ *  boolean later, and claiming undefined there would be a FALSE RED, which is the one direction this
+ *  reader must not take. Review passed `const tls = undefined; seam({ creds, tls })` through the
+ *  check as a counted, GREEN site while it threw at runtime. */
+const UNDEF_BOUND = new WeakMap<ts.SourceFile, Set<string>>();
+function undefinedBound(src: ts.SourceFile): Set<string> {
+  const cached = UNDEF_BOUND.get(src);
+  if (cached) return cached;
+  const out = new Set<string>();
+  const visit = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer
+      && ts.isVariableDeclarationList(n.parent) && (n.parent.flags & ts.NodeFlags.Const) !== 0
+      && literalUndefined(unwrap(n.initializer))) out.add(n.name.text);
+    ts.forEachChild(n, visit);
+  };
+  visit(src);
+  UNDEF_BOUND.set(src, out);
+  return out;
+}
+
+const isProvablyUndefined = (e: ts.Expression, src: ts.SourceFile): boolean => {
   const x = unwrap(e);
-  return (ts.isIdentifier(x) && x.text === "undefined") || ts.isVoidExpression(x);
+  return literalUndefined(x) || (ts.isIdentifier(x) && undefinedBound(src).has(x.text));
 };
 
 /**
@@ -613,7 +700,7 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
     if (keyIsOpaque) { unverifiable ||= `the key is a getter, whose value this file cannot read: ${show(alt)}`; continue; }
     // The VALUE is asked the same question the argument was: an expression that can evaluate to
     // `undefined` on any branch delivers exactly what the seam throws on.
-    if (keyValue && alternatives(keyValue).some(isProvablyUndefined)) {
+    if (keyValue && alternatives(keyValue).some((v) => isProvablyUndefined(v, src))) {
       return { verdict: "missing-key", detail: `states the key as \`undefined\`, which is not the boolean the seam demands: ${show(alt)}` };
     }
   }
@@ -673,12 +760,13 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   const multiProgram = CONTAINERS[extOf(file)] === "script";
   programs.forEach((src) => {
     const consts = constStrings(src);
+    const objects = constObjects(src, consts);
     const redeclared = orderDependent(src, seam.fn, consts);
-    const folds: Folds = (e) => !!e && foldString(e, consts) === seam.fn;
+    const folds: Folds = (e) => !!e && foldString(e, consts, objects) === seam.fn;
     const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
     const visit = (n: ts.Node): void => {
       if (ts.isCallExpression(n) && ts.isElementAccessExpression(n.expression)
-        && ((multiProgram && foldString(n.expression.argumentExpression, consts) === undefined)
+        && ((multiProgram && foldString(n.expression.argumentExpression, consts, objects) === undefined)
           || reads(n.expression.argumentExpression, redeclared))) {
         found.push({
           file, line: lineOf(n), verdict: "unverifiable",
@@ -990,7 +1078,7 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     html(`<script>String.prototype.k = function () { return "standaloneConnectOpts"; };</script>\n<script>core["".k()]({ creds: c });</script>`)[0]?.verdict === "unverifiable");
   // The fence is the DOCUMENT's programs, not every computed call in the repository. A plain source
   // is one program, so an unfoldable key there is the residual this file already documents and the
-  // floors already cover; refusing it would redden ordinary code across the tree.
+  // population count already covers; refusing it would redden ordinary code across the tree.
   check("a computed key in a PLAIN source stays the documented residual, since only a document is fenced",
     fx(`const r = core[k()]({ creds: c });`).length === 0);
   // ORDER WITHIN one program, which is where the retreat stopped one dimension short. The folding
@@ -1014,6 +1102,40 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>\n<script type="module">const N = "other";</script>`)[0]?.verdict === "unverifiable");
   check("...while a module still folds its OWN constants, so the split does not cost it that",
     html(`<script>const a = 1;</script>\n<script type="module">const N = "standaloneConnectOpts";\ncore[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
+
+  // ASSIGNMENT, not just redeclaration. The folding map is built from DECLARATIONS, so an ordinary
+  // reassignment never reached it and the map kept answering with the declared value. Adversarial
+  // review executed the silent direction on a real tree: the call below was not counted at all, the
+  // file was never named, and the suite stayed green while that call reaches the seam and throws.
+  check("a name ASSIGNED the seam after being declared something else is refused, not folded to the stale value",
+    fx(`let m = "otherConnect";\nm = "standaloneConnectOpts";\ncore[m]({ creds: c });`)[0]?.verdict === "unverifiable");
+  check("...and a bare `let` assigned the seam afterwards is the same two bindings, so it is refused too",
+    fx(`let m: string;\nm = "standaloneConnectOpts";\ncore[m]({ creds: c });`)[0]?.verdict === "unverifiable");
+  check("...and the OPPOSITE order is refused as well, so the rule does not depend on which line came first",
+    fx(`let m = "standaloneConnectOpts";\nm = "otherConnect";\ncore[m]({ creds: c });`)[0]?.verdict === "unverifiable");
+  // The same bound as the redeclaration rule: a name whose bindings never spell the seam cannot make
+  // any call the seam, so refusing it would say nothing and would redden ordinary reassignment.
+  check("...while a name reassigned among values that are NEVER the seam is not refused (not a false red)",
+    fx(`let m = "a";\nm = "b";\ncore[m]({ creds: c });`).length === 0);
+
+  // A STRINGLY DISPATCH TABLE is the person-shaped computed key: same file, no runtime value, and
+  // obvious to a human reader. This is a FOLD rather than a fence, so it makes the reader see the
+  // call and classify it; it cannot turn unrelated code red the way a refusal can.
+  check("a key read from a same-file const TABLE folds, so the call is seen and classified",
+    fx(`const API = { connect: "standaloneConnectOpts" };\ncore[API.connect]({ creds: c });`)[0]?.verdict === "missing-key");
+  check("...including through a quoted index into that table, which is the same spelling",
+    fx(`const API = { connect: "standaloneConnectOpts" };\ncore[API["connect"]]({ creds: c });`)[0]?.verdict === "missing-key");
+  check("...and such a call that STATES the key passes, so folding more did not start failing everything",
+    fx(`const API = { connect: "standaloneConnectOpts" };\ncore[API.connect]({ creds: c, tls: false });`)[0]?.verdict === "has-key");
+  check("...while a table whose values are never the seam yields no site at all (not a false red)",
+    fx(`const API = { connect: "otherConnect" };\ncore[API.connect]({ creds: c });`).length === 0);
+
+  // The seam throws on `undefined`, and a `const` bound to it is exactly that value spelled in two
+  // steps. Review passed this through as a COUNTED, GREEN site while it threw at runtime.
+  check("a `const` bound to `undefined` states the key as undefined, which is what the seam throws on",
+    one(`const t = undefined;\nstandaloneConnectOpts({ creds: c, tls: t });`) === "missing-key");
+  check("...while a `let` bound to undefined is NOT claimed, since it can hold a real boolean later",
+    one(`let t = undefined;\nt = false;\nstandaloneConnectOpts({ creds: c, tls: t });`) !== "missing-key");
   // Separate parsing must not turn a neighbour's syntax error into silence for the whole document.
   check("a script that does not PARSE refuses the document rather than scanning its recovery tree",
     html(`<script>function (</script>\n<script>standaloneConnectOpts({ creds: c });</script>`)[0]?.verdict === "unverifiable");
@@ -1098,18 +1220,27 @@ for (const seam of SEAMS) {
   check(`\`${seam.fn}\`: the name is never rebound, so no call can hide behind an alias`, aliased.length === 0,
     aliased.map((s) => `${s.file}:${s.line} ${s.detail}`));
 
-  // THE FLOORS. Without them this check degrades into a green that means nothing: a rename, a
+  // THE POPULATION. Without it this check degrades into a green that means nothing: a rename, a
   // wrapper, or a reader that stops matching all produce "no bad sites" out of "no sites at all".
-  // They are set to the counts measured when this file was last edited, so decay is red and a
-  // deliberate removal is a one-line edit made on purpose. What they cannot do is notice a call site
-  // that was never counted, which is why the reader above refuses aliases instead of relying here.
-  check(`\`${seam.fn}\`: the scan still FINDS its call sites (>= ${seam.floor}; if you removed some, lower this floor deliberately)`,
-    sites.length >= seam.floor, { found: sites.length, floor: seam.floor });
+  //
+  // These were FLOORS (`>=`) until adversarial review executed the cost of the slack. With the live
+  // population one above each floor, it rewrote a single counted site into a form the reader could
+  // not see, the count fell to exactly the floor, and every cell stayed green while a call that
+  // throws at runtime sat in the tree. Slack of one is one free silent hide, so the counts are now
+  // matched EXACTLY: any movement, in either direction, is a call site added, removed, or hidden,
+  // and each of those deserves a human look rather than an inequality that absorbs it.
+  //
+  // The cost is honest and small: a PR that legitimately adds or removes a seam call site updates
+  // one number here, and the failure prints both counts so there is nothing to work out. What this
+  // still cannot do is notice a site that moves BETWEEN files, since a count carries no identity,
+  // which is why the reader above refuses what it cannot resolve instead of relying on this.
+  check(`\`${seam.fn}\`: the scan finds EXACTLY ${seam.sites} call sites (if you added or removed one, update this number deliberately)`,
+    sites.length === seam.sites, { found: sites.length, expected: seam.sites });
 
   // Split from the total on purpose. The half the compiler cannot see is the whole reason this file
   // exists, and a bare "> 0" here would be satisfied by a single smoke site while the rest vanished.
-  check(`\`${seam.fn}\`: the UNTYPECHECKED half is still reached (>= ${seam.untypecheckedFloor} call sites under smoke/, which no tsconfig includes)`,
-    untypechecked.length >= seam.untypecheckedFloor, { found: untypechecked.length, floor: seam.untypecheckedFloor });
+  check(`\`${seam.fn}\`: EXACTLY ${seam.untypecheckedSites} of them are under smoke/, which no tsconfig includes`,
+    untypechecked.length === seam.untypecheckedSites, { found: untypechecked.length, expected: seam.untypecheckedSites });
 }
 
 console.log(`\n${fail === 0 ? "REQUIRED-ARG SEAM SMOKE OK ✅" : "REQUIRED-ARG SEAM SMOKE FAILED ❌"}  (${pass} passed, ${fail} failed)`);
