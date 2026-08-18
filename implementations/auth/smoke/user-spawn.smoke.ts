@@ -91,10 +91,12 @@ type AddressInfo = import("node:net").AddressInfo;
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
   setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
-  resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError,
+  resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError, epAuthBucket,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds,
 } = await import("@cotal-ai/core");
 const { connect: rawConnect } = await import("@nats-io/transport-node");
+const { Kvm } = await import("@nats-io/kv");
+const { createHash } = await import("node:crypto");
 const { decodeJwt } = await import("jose");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
@@ -626,11 +628,83 @@ try {
   // so a DIFFERENT actor under the same owner is a true sibling — not the spawner, not the manager.
   check("precondition: delta is live under the operator's owner", manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
   const opsmate = await ctlCaller("opsmate", OWNER, ["spawn"]);
+  // delta's lifecycle uid, read off the same `inspect` the helper uses, so the retirement cells
+  // below key on the incarnation that is actually stopped rather than on a name.
+  const deltaInfo = await opsmate.invokeService("manager", "inspect", { name: "delta" });
+  const deltaUid = (deltaInfo.reply.data as { lifecycleUid: string }).lifecycleUid;
   const sibAttach = await epTargeted(opsmate, "attach", "delta");
   check("owner-domain: a spawn-scoped SIBLING actor attaches an agent under its owner (ep owner mode)", sibAttach.ok === true && typeof (sibAttach.data as { grant?: { sessionId?: string } })?.grant?.sessionId === "string", sibAttach);
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
   check("delta is gone from the manager after the sibling stop", !manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
+  // Read from STATE, never from the despawn's log copy. The defect this covers made the auth rail's
+  // principal cross-check unsatisfiable, because the gate is bound to `principalKey(DEV_OWNER,
+  // serveIdentity.id)` while the request used to carry the manager's ENDPOINT identity: two real
+  // identities of the same manager that can never be equal. Every user-mesh retirement was refused.
+  //
+  // WHY NOT ASSERT THE TERMINAL. `runAgentRetirementBarrier` cannot reach its terminal here: the
+  // final step needs `verifiedGone` from the delivery daemon's `evictPrincipal`, and this fixture
+  // runs no delivery daemon. Asserting "the name was released" would therefore be red for a reason
+  // that has nothing to do with authorization.
+  //
+  // WHY NOT ASSERT THE REFUSAL IS GONE. That is the wrong experiment, and it is the one I would
+  // most easily have run: a fix that only rewrote the refusal's wording would pass it. Measured on
+  // the broken tree, the string disappearing and the retirement working are genuinely different
+  // outcomes, because with the cross-check fixed the requests still fail further down.
+  //
+  // WHAT IS ASSERTED. The two durable facts the barrier writes BEFORE any of that, both of which a
+  // request refused at the cross-check never reaches: the operation intent row exists, and the
+  // agent's own issuance gate has moved from `open` to `frozen` under exactly that opId. The gate
+  // freeze is the load-bearing half: an intent row alone would only prove something was recorded,
+  // while the freeze proves the retirement began ACTING on the lifecycle.
+  //
+  // The opId is recomputed here rather than exported from the manager, because it is deterministic
+  // by contract (a stable op per retiring incarnation, so retries re-drive the same operation). If
+  // that derivation ever changes, this cell fails loudly rather than silently reading a stale key.
+  //
+  // FIXTURE HYGIENE. The freeze this cell waits for is real state left in the auth store, and a
+  // frozen gate is a known wedge class. It cannot wedge anything here: the row is `gate.<uid>` for
+  // delta's ONE stopped incarnation, `delta` is never spawned again below (the later cells use
+  // `alpha` and fresh names), and an issuance gate is keyed per lifecycle uid, so no later mint or
+  // registration reads it. The manager's OWN endpoint gate, which is the row whose freeze deadlocks
+  // a restart, is a different key family and is untouched.
+  {
+    const retireOpId = (uid: string): string => createHash("sha256").update(`retire:${uid}`).digest("hex").slice(0, 26);
+    // A `lifecycle-executor` pinned to delta. That profile is the one credential documented as able
+    // to READ (never write) other rows in the auth store for its one-shot lifetime, because its
+    // reads are body-selected `STREAM.MSG.GET` and a subject grant cannot see the requested key.
+    // It is used here rather than widening any production profile for a test, and it is pinned to
+    // exactly the incarnation under test.
+    const kvCreds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
+      lifecycleExecutor: { owner: OWNER, actor: "delta", lifecycleUid: deltaUid, alias: "delta" },
+    });
+    const kvNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ creds: kvCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const authKv = await new Kvm(kvNc).open(epAuthBucket(SPACE));
+      // The retirement is single-flighted and driven off the despawn rather than awaited by it, so
+      // this polls to a deadline. A timeout leaves both observations at their last read, which is
+      // what the failure payload prints.
+      let intent: unknown, gateState: string | undefined, gateOp: string | undefined;
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const i = await authKv.get(`stage.${retireOpId(deltaUid)}`);
+        const g = await authKv.get(`gate.${deltaUid}`);
+        intent = i?.operation === "PUT" ? JSON.parse(new TextDecoder().decode(i.value)) as unknown : undefined;
+        const row = g?.operation === "PUT" ? JSON.parse(new TextDecoder().decode(g.value)) as { state?: string; op?: { opId?: string } } : undefined;
+        gateState = row?.state; gateOp = row?.op?.opId;
+        if (intent !== undefined && gateState === "frozen") break;
+        await wait(250);
+      }
+      check("the sibling stop's retirement was AUTHORIZED: the auth rail wrote its durable operation intent for delta's lifecycle",
+        (intent as { kind?: string; lifecycleUid?: string })?.kind === "retirement"
+        && (intent as { lifecycleUid?: string })?.lifecycleUid === deltaUid, { intent, deltaUid });
+      check("...and it ACTED: delta's own issuance gate is FROZEN under exactly that opId (an unauthorized request never reaches a gate)",
+        gateState === "frozen" && gateOp === retireOpId(deltaUid), { gateState, gateOp, expected: retireOpId(deltaUid) });
+    } finally {
+      await kvNc.close().catch(() => {});
+    }
+  }
   // THE SIBLING-WRITE VECTOR, executed on a real user mesh rather than argued from the mint table.
   // The two cells above are the reason it exists: on a user mesh the own-domain arm admits any seat
   // under the caller's owner, so `opsmate` attaches and stops an agent it never spawned. That is the
