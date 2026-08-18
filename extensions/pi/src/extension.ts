@@ -86,14 +86,7 @@ function cleanPersonaFile(runtime: PiRuntime): void {
   }
 }
 
-function createRuntime(config: AgentConfig): PiRuntime {
-  // The socket path rides the env; the first-frame token rides the launch material, so a shell this
-  // seat runs cannot pick a control-plane bearer out of its own environment.
-  const control = controlFromEnv();
-  if (process.env.COTAL_CONTROL_SOCKET?.trim() && !control) {
-    throw new Error("pi connector: COTAL_CONTROL_SOCKET was set without a matching control token in the launch material");
-  }
-
+function createRuntime(config: AgentConfig, control: { path: string; token: string } | undefined): PiRuntime {
   const mesh = new MeshAgent(config);
   const driver = new PiDriver(mesh);
   const runtime: PiRuntime = {
@@ -127,16 +120,24 @@ export default async function cotalMesh(pi: ExtensionAPI): Promise<void> {
   }
 
   const config = configFromEnv();
-  // Everything this session needs is now in `config` and in the control pair below, so the pointer
-  // to the launch material has no reader left. Dropping it here is what keeps it out of the
-  // environment of every shell command, build and tool this seat goes on to run.
+  // The socket path rides the env; the first-frame token rides the launch material, so a shell this
+  // seat runs cannot pick a control-plane bearer out of its own environment. Read BEFORE the scrub
+  // below, and read on every load rather than inside createRuntime: a second load reuses the cached
+  // runtime, but the first one must not find the pointer already gone. That ordering is not a
+  // detail - reversed, it refused every pi launch with "COTAL_CONTROL_SOCKET was set without a
+  // matching control token", which is the failure this contract is supposed to produce and did.
+  const control = controlFromEnv();
+  if (process.env.COTAL_CONTROL_SOCKET?.trim() && !control)
+    throw new Error("pi connector: COTAL_CONTROL_SOCKET was set without a matching control token in the launch material");
+  // Both readers are done, so the pointer to the launch material has none left. Dropping it here is
+  // what keeps it out of the environment of every shell command, build and tool this seat runs.
   scrubLaunchMaterial();
   config.connector = "pi";
   const key = runtimeKey(config);
   const runtimes = runtimeMap();
   let runtime = runtimes.get(key);
   if (!runtime) {
-    runtime = createRuntime(config);
+    runtime = createRuntime(config, control);
     runtimes.set(key, runtime);
   }
   runtime.driver.bind(pi);
