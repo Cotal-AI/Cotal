@@ -172,6 +172,17 @@
  * even that only against an author who does not add a call while removing one. Closing it needs
  * identity rather than population, which is the site manifest named below and a different instrument.
  *
+ * THE DELIBERATE AUTHOR IS OUT OF SCOPE, by this file's construction rather than by omission, and
+ * saying so is what keeps the paragraph above from reading as a security claim it cannot make. Every
+ * instrument here is aimed at ACCIDENT and negligence. Someone who WANTS to conceal a call can edit
+ * this file, lower the counts, or delete the census, so a manifest would only move concealment from
+ * a dummy call to a dummy manifest line. What such an instrument actually buys is accidental-drift
+ * visibility, and the accidental form is the narrow real one: two unrelated edits landing in a single
+ * change, one refactoring a site into a table and one adding a call elsewhere in the same half. That
+ * is the case a follow-up earns, and the shape it should take is PER-FILE exact counts rather than
+ * file and line, since line numbers would redden on every unrelated edit to a touched file and
+ * reintroduce exactly the cry-wolf tax this design exists to avoid.
+ *
  * A FOURTH boundary is the TREE ITSELF, and it matters more now that the counts are matched exactly
  * rather than as floors. This walk reads the FILESYSTEM, not the commit, so a working copy that has
  * run a build carries files a fresh clone does not. `node_modules`, `dist`, `build` and friends are
