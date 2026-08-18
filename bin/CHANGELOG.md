@@ -1,5 +1,186 @@
 # cotal-ai
 
+## 0.23.0
+
+### Minor Changes
+
+- 5e3951a: events: an agent's second session publishes again, and the halt names the causes that can actually produce it
+
+  Only an agent's first session ever published AG-UI events. Every session after it halted the emitter
+  permanently. The write-ahead log is keyed per session and the event channel is keyed per principal,
+  so a new session opened with an expectation that its channel was empty, while its own previous
+  session had already filled it. The broker refused the publish and the emitter stopped for good. On a
+  mesh with user authentication the agent name is the actor, and a restart forks the session id, so
+  the first restart of any agent spawned with the event plane armed was enough to take its event
+  stream dark. An agent on a static credential is reached the same way through preserve and resume,
+  which relaunches the recorded identity while the session under it is new. Reproduced against a real
+  broker across three sessions, and it did not recover on its own.
+
+  Alongside the per-session logs the connector now keeps one record per principal, holding the last
+  sequence the broker assigned on that channel, so a new session continues the stream instead of
+  starting again from nothing. An installation upgrading from a release without that record recovers
+  the sequence from the session logs already on disk, so the fix applies to agents that have already
+  run rather than only to ones starting fresh. That recovery reads the sequence a log took an
+  acknowledgement for but did not fold, which is where the real number sits when a session died in
+  that window, and it refuses a log it cannot account for rather than taking the largest number it can
+  find. An abandonment after a channel purge clears the record with the logs, and a record that reads
+  zero is never re-seeded, because that is what abandonment writes.
+
+  The halt message previously offered three causes, another writer, a restored stream, or a filtered
+  purge, and the real one was not among them, so an operator went looking for a rogue writer. It now
+  names what a moved tip can actually mean, including a concurrent session under the same principal
+  and a frontier record that disagrees with the stream. It also names the one cause that is not
+  another writer at all: a crash between the shared record's advance and the log's own record of the
+  ack leaves the record ahead of the expectation the log is still holding, so the retry publishes a
+  sequence the subject has already passed and the halt looks exactly like a foreign write. The
+  message says what that state looks like on disk. It also states the real gap in the per-principal
+  lock rather than claiming the lock prevents the case the halt fires on: the lock file lives under a
+  workspace root, so a second emitter started against a different root meets no lock, while another
+  host or a stale pid refuse the start instead of slipping past. And where it used to name an
+  abandonment as the remedy, it now says no command performs one, names the directory that has to go,
+  and says removing less leaves a mixed state the next start refuses. Clearing that state is valid
+  only once the channel itself is back to empty, which of the causes above is true of a filtered
+  purge alone; on any other cause the tip stays where it is, so removing the directory returns the
+  same halt with the logs a tip could have been rebuilt from now gone, and the channel purge is the
+  half that comes first.
+
+  The scan that recovers a tip from the session logs refuses a linked entry and refuses a linked log,
+  matching the directory chain that creates this state and already refused a symlinked component.
+  Without that, a link planted where a session directory belongs took the scan to a log in another
+  tree. What it does not close is a session directory swapped for a link in the moment between the
+  check and the open: the non-following open flag covers the final name only, and closing that window
+  would take a per-component walk the scan does not do. A log reachable under more than one name is
+  refused too, and the ordinary way to produce one is copying a workspace with hard links, which makes
+  the recovery refuse every log rather than half-trust them.
+
+  The record itself is now graded on the file rather than on the writer's view of it. A second view of
+  one record could take the tip backwards with no error at all, because the comparison was against
+  memory while the rule was written about the value on disk. Nothing shipped reaches that today, and
+  that is measured rather than assumed: a stale view publishes a stale expectation and the broker
+  refuses it before an acknowledgement exists to record. It is guarded anyway, because an assumption
+  recorded in prose where a guard belongs is what produced this defect in the first place. A record
+  that goes corrupt underneath a live writer is now refused before the write instead of being
+  overwritten, and an abandonment refuses outright when it cannot reach the shared record, rather than
+  clearing the log's half and reporting a completed abandonment.
+
+  MIGRATION: `AguiEmitter.start` now requires a `subjectFrontier`, and refuses at runtime without one
+  rather than falling back to the per-session number, because that fallback is the defect. `EventWal`
+  refuses the same way: a log with no record bound has no publish expectation and says so instead of
+  offering its own last acknowledged sequence, and an abandonment on an unbound log now refuses rather
+  than clearing half of the state, so anyone driving a log outside the emitter must bind one first.
+  Anyone embedding the emitter directly must open a `FileSubjectFrontier` at the `subjectPath` that
+  `ensureEventWalDir` now returns and pass it. Connectors in this repository are updated. No wire
+  bytes move and no grant changes: the channel grammar is unchanged.
+
+### Patch Changes
+
+- Updated dependencies [401f0d6]
+- Updated dependencies [5634356]
+- Updated dependencies [5e3951a]
+  - @cotal-ai/cli@0.23.0
+  - @cotal-ai/workspace@0.23.0
+  - @cotal-ai/connector-core@0.23.0
+  - @cotal-ai/auth@0.23.0
+  - @cotal-ai/delivery@0.23.0
+  - @cotal-ai/manager@0.23.0
+  - @cotal-ai/core@0.23.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 57d3a57: A Claude session publishes a structured event plane, and the `tr-<name>` transcript mirror is
+  retired
+
+  A session launched with `cotal spawn --events` now actually publishes. The Claude connector maps
+  its session records to structured events behind the same hook relay the mirror used to sit behind:
+  run boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end
+  and its result, written to a per-session write-ahead log before they go on the wire so a restart
+  resumes at its cursor instead of replaying or skipping. Until now no connector constructed the
+  emitter at all, so every event channel was empty.
+
+  The `tr-<name>` mirror is removed in the same change rather than deprecated alongside it. Gone with
+  it: the `--transcript` and `--no-transcript` flags on `cotal spawn`, the `transcript` field on the
+  manager's spawn op and its service contract, `COTAL_TRANSCRIPT` and `COTAL_TRANSCRIPT_DEFAULT`,
+  `LaunchOpts.transcript`, `Connector.transcriptChannel`, and the mirror in all three connectors that
+  carried one.
+
+  MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. A managed session no
+  longer mirrors its prose there under any flag or environment variable, and a spawn that passes
+  `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
+  channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
+  the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+  manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+  `events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+  gives both forms. `cotal console` and the web console render event frames directly. Unlike
+  `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+  it is under "To let something read a plane" below.
+
+  What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
+  end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner
+  of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
+  every prompt, and the event plane withholds the body of a turn the agent did not author, because
+  republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
+  peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+  because the loss column is only useful if it is complete: a tool result is this session's own output
+  and is republished, so peer text quoted inside one still reaches the wire. A cell in
+  `agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
+
+  A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
+  a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
+  because that channel carries the session's tool inputs and outputs. The same rule runs on a manager
+  resume: a retained inventory naming another agent's event channel is refused rather than adopted.
+
+  The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+  `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+  authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
+  observer.
+
+  To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+  full, for the mesh it is running on. On a user-auth mesh:
+  `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+  wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
+  actor ledger for `actor grant` to write to, so mint the reader instead:
+  `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+  not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+  that profile.
+
+  `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+  ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+  messaging plane for admin, so
+  `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+  out a credential that reads every channel in the space: an operator asking to narrow got the
+  opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+  rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.
+
+### Patch Changes
+
+- Updated dependencies [dfad94f]
+- Updated dependencies [57d3a57]
+  - @cotal-ai/auth@0.22.0
+  - @cotal-ai/connector-core@0.22.0
+  - @cotal-ai/manager@0.22.0
+  - @cotal-ai/workspace@0.22.0
+  - @cotal-ai/core@0.22.0
+  - @cotal-ai/cli@0.22.0
+  - @cotal-ai/delivery@0.22.0
+
+## 0.21.0
+
+### Patch Changes
+
+- Updated dependencies [4cf5f72]
+- Updated dependencies [219d33c]
+- Updated dependencies [9c2412c]
+  - @cotal-ai/core@0.21.0
+  - @cotal-ai/connector-core@0.21.0
+  - @cotal-ai/workspace@0.21.0
+  - @cotal-ai/cli@0.21.0
+  - @cotal-ai/manager@0.21.0
+  - @cotal-ai/auth@0.21.0
+  - @cotal-ai/delivery@0.21.0
+
 ## 0.20.1
 
 ### Patch Changes

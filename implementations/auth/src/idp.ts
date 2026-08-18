@@ -30,6 +30,7 @@ import { assertValidOwnerToken } from "@cotal-ai/core";
 import { deriveOwnerForIdpSubject } from "./derive.js";
 import type { UserTokenIssuer } from "./issuer.js";
 import { MAX_TOKEN_TTL_SEC, USER_TOKEN_VIEWS, VIEW_REQUIRED_SCOPE, type UserTokenView } from "./token.js";
+import { grantCommandLine } from "./grant-command.js";
 
 /** The pinned identity of ONE external IdP. All fields are operator config — nothing in here is
  *  ever read from a presented token. */
@@ -50,6 +51,16 @@ export interface IdpConfig {
  *  to deny. */
 export interface ActorGrant {
   scope?: string[];
+  /** The row's CURRENT channel ACLs, when the bridge's ledger can supply them. A refusal that has
+   *  to print a re-grant needs these: `cotal actor grant` is a whole-row upsert, so a command that
+   *  names only the field being changed resets these two to `>` and `>`. Optional because the hook
+   *  is pluggable; a bridge that cannot supply them gets a refusal that names the flags and
+   *  refuses to invent their values, rather than one that prints a placeholder. */
+  allowSubscribe?: string[];
+  allowPublish?: string[];
+  /** Carried for the same reason: an upsert that does not name them drops them. */
+  role?: string;
+  label?: string;
   /** The spawning principal (`<owner>.<actor>` dot-form), when the ledger records one. */
   parent?: string;
   /** The row's lifecycle UID (SPEC 13.1) — stamped into the bearer so a predecessor incarnation's
@@ -137,6 +148,44 @@ async function verifyIdpToken(token: string, idp: IdpConfig): Promise<{ sub: str
 
 /** Build an {@link IdpBridge}. Misconfig fails HERE, at construction — an empty pin would
  *  otherwise fail closed on every exchange with a far worse operator signal. */
+/**
+ * The re-grant an elevated-view refusal points the operator at.
+ *
+ * `cotal actor grant` is an upsert of the WHOLE row, so a command naming only the scope resets the
+ * row's channel ACLs to `>` and `>` and drops its role and label. Until this was fixed, that was
+ * exactly what this refusal printed, described as "the upsert replaces the scope list".
+ *
+ * The command is printed only when the bridge's ledger supplied the row's CURRENT values, in which
+ * case every field is real and the line is genuinely paste-ready. When it did not, no command is
+ * printed at all: a line carrying `\'<current read set>\'` looks paste-ready, fails on an invalid
+ * channel, and the operator's shortest route to a command that succeeds is to delete the flag,
+ * which is the wide default this exists to avoid. Naming the flags and refusing to invent their
+ * values is the honest answer.
+ */
+function regrantRemedy(owner: string, actor: string, grant: ActorGrant, need: string): string {
+  const scope = [...new Set([...(grant.scope ?? []), need])];
+  if (grant.allowSubscribe === undefined || grant.allowPublish === undefined)
+    return (
+      "no ready-to-run line is printed here, and that is deliberate: this bridge did not supply the row's " +
+      "current ACLs, so a printed command would either invent them or leave them off, and a flag " +
+      "left off comes back as the WIDE default, `>` read and `>` post. Read the row first " +
+      "(`cotal actor list`), then re-grant it whole: the scope it already carries plus " +
+      `"${need}", and --allow-subscribe and --allow-publish set to exactly what that row holds today.`
+    );
+  return (
+    "run exactly the line below, which already carries every other field the row holds today. " +
+    grantCommandLine(owner, actor, {
+      scope,
+      allowSubscribe: grant.allowSubscribe,
+      allowPublish: grant.allowPublish,
+      ...(grant.role ? { role: grant.role } : {}),
+      ...(grant.label ? { label: grant.label } : {}),
+    }) +
+    "  (every field spelled out on purpose: the upsert replaces the WHOLE row, not just the scope, " +
+    "and a field left off comes back as the WIDE default, `>` read and `>` post)"
+  );
+}
+
 export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
   if (!opts.space) throw new Error("idp bridge: a space is required");
   if (typeof opts.idp?.issuer !== "string" || !opts.idp.issuer)
@@ -169,8 +218,8 @@ export function createIdpBridge(opts: CreateIdpBridgeOpts): IdpBridge {
         const need = VIEW_REQUIRED_SCOPE[req.view];
         if (!(grant.scope ?? []).includes(need))
           throw new Error(
-            `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant with "${need}" ADDED to your current scope: ` +
-              `cotal actor grant ${req.actor} --owner ${owner} --scope ${[...(grant.scope ?? []), need].join(",")}  (the upsert replaces the scope list; the operator can confirm with \`cotal actor list\`)`,
+            `the "${req.view}" view needs scope "${need}", which your grant lacks. Ask the mesh operator to re-grant the WHOLE ROW with "${need}" ADDED to its scope. This is not a scope edit: ` +
+              regrantRemedy(owner, req.actor, grant, need),
           );
       }
       // Lifecycle-BIND every human bearer at the MINT boundary (SPEC 13.1), views included: the

@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/herdr",
   "description": "Cotal Herdr integration: a Herdr Runtime provider for spawning agents into panes of a dedicated Herdr session.",
-  "version": "0.20.1",
+  "version": "0.23.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",

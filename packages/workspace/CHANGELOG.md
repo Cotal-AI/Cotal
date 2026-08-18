@@ -1,5 +1,210 @@
 # @cotal-ai/workspace
 
+## 0.23.0
+
+### Minor Changes
+
+- 5634356: `cotal attach` re-establishes its session when the link dies, instead of leaving you with a dead terminal.
+
+  An attach left alone while the laptop slept was gone by the time you came back, in one of two ways
+  depending on how long the link was down. Shorter than the serving side's stall watchdog: the
+  manager's rail keeps advancing its sequence into a subject nobody is subscribed to, and the session
+  transport has no retention, so those frames are gone. The moment the client redials and its
+  subscription is restored, the next frame lands far ahead of what the client expected, the rail
+  faults, and the CLI exits with `mesh session transport error: gap` about a second after the network
+  came back. Longer than the stall: the serving rail fills its window, stalls, ends the session and
+  closes, and both of those notices are published while the client is disconnected, so neither is ever
+  delivered. On redial the client is subscribed to a session nobody is serving and hangs there with no
+  output, no honest end and no exit at all.
+
+  `attach` now owns re-establishment rather than leaving it to the NATS layer. When the link breaks and
+  you did not press the detach key, it prints `[cotal: connection lost, reconnecting]` on stderr, then
+  asks the manager for a fresh grant, mints a fresh per-session credential, opens a fresh connection
+  and a fresh session, prints `[cotal: reconnected]`, and carries on in the same raw-mode terminal.
+  The manager repaints the seat's current screen through the path it already uses for any attach.
+  Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists, and the detach key is read
+  during the waits between attempts, so a reconnect never traps you. Every attempt re-runs the manager's full authorization, so a
+  reconnect cannot keep a revoked or expired grant alive: no grant is ever presented twice.
+
+  Giving up always says why. A manager that refuses the attach exits non-zero with the manager's own
+  message; a reconnect that finds the seat no longer there exits cleanly with `seat <name> is gone`. A
+  refusal that could still pass, such as a manager at its session ceiling, is relayed in the manager's
+  own words while the loop keeps trying, so waiting is never unexplained. Pressing the detach key, or
+  the agent's process exiting while you are attached, ends the attach as before.
+
+  Each reconnect also hands the abandoned session back to the manager, over the first link that can
+  carry the message, so an attach that rides out several outages does not consume a session slot per
+  outage. Nothing on the serving side reaps a session whose caller went away while the seat is quiet:
+  the stall watchdog only arms once the send window fills, and an idle seat never fills it. The client
+  is the only party that knows, so it says so, using the session's own credential, the only one
+  scoped to that session's subjects. If it never gets a link that can carry the message, it says that
+  instead, on exit. Every wait on a link that is dying is bounded, and the bound is real: the timer
+  that enforces it is what keeps the process alive while a socket that will never answer is waited
+  on. A link that stays UP and carries nothing, which is what a sleeping laptop looks like from the
+  client, ends with the same clean exit and the same message as any other fault instead of the
+  command aborting on a wait that never returned.
+
+  `--no-reconnect` restores the single-session behaviour for scripts that want one run and one exit
+  code.
+
+  Under it, `@cotal-ai/workspace` separates a connect refusal from what is done about one. Resolving a
+  mesh and its preflight answered every refusal by printing a sentence and ending the process, which is
+  right for a person who just typed a command and wrong for a loop riding out a broker that is briefly
+  unreachable. The decision now raises a `ConnectRefusal` carrying that exact sentence, and the
+  `*OrExit` entry points are thin wrappers that print it and exit as before, so one place writes each
+  message and the two forms cannot drift.
+
+### Patch Changes
+
+- @cotal-ai/core@0.23.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 57d3a57: A Claude session publishes a structured event plane, and the `tr-<name>` transcript mirror is
+  retired
+
+  A session launched with `cotal spawn --events` now actually publishes. The Claude connector maps
+  its session records to structured events behind the same hook relay the mirror used to sit behind:
+  run boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end
+  and its result, written to a per-session write-ahead log before they go on the wire so a restart
+  resumes at its cursor instead of replaying or skipping. Until now no connector constructed the
+  emitter at all, so every event channel was empty.
+
+  The `tr-<name>` mirror is removed in the same change rather than deprecated alongside it. Gone with
+  it: the `--transcript` and `--no-transcript` flags on `cotal spawn`, the `transcript` field on the
+  manager's spawn op and its service contract, `COTAL_TRANSCRIPT` and `COTAL_TRANSCRIPT_DEFAULT`,
+  `LaunchOpts.transcript`, `Connector.transcriptChannel`, and the mirror in all three connectors that
+  carried one.
+
+  MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. A managed session no
+  longer mirrors its prose there under any flag or environment variable, and a spawn that passes
+  `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
+  channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
+  the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+  manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+  `events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+  gives both forms. `cotal console` and the web console render event frames directly. Unlike
+  `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+  it is under "To let something read a plane" below.
+
+  What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
+  end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner
+  of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
+  every prompt, and the event plane withholds the body of a turn the agent did not author, because
+  republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
+  peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+  because the loss column is only useful if it is complete: a tool result is this session's own output
+  and is republished, so peer text quoted inside one still reaches the wire. A cell in
+  `agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
+
+  A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
+  a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
+  because that channel carries the session's tool inputs and outputs. The same rule runs on a manager
+  resume: a retained inventory naming another agent's event channel is refused rather than adopted.
+
+  The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+  `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+  authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
+  observer.
+
+  To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+  full, for the mesh it is running on. On a user-auth mesh:
+  `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+  wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
+  actor ledger for `actor grant` to write to, so mint the reader instead:
+  `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+  not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+  that profile.
+
+  `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+  ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+  messaging plane for admin, so
+  `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+  out a credential that reads every channel in the space: an operator asking to narrow got the
+  opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+  rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.
+
+### Patch Changes
+
+- Updated dependencies [57d3a57]
+  - @cotal-ai/core@0.22.0
+
+## 0.21.0
+
+### Minor Changes
+
+- 4cf5f72: Give a session's structured event plane a way to be turned on, and a channel that names who is publishing.
+
+  An agent can now be launched with `cotal spawn --events`, foreground or detached, which publishes
+  that session's structured event stream, what it did rather than the prose it wrote, on a channel of
+  its own so an external observer or UI can read it. Off by default. Nothing about an existing launch
+  changes.
+
+  **The channel is named after the principal, never the display name.** It is `events.<owner>.<actor>`,
+  derived from the principal the manager actually allocated. A display name is UI convenience: this
+  mesh permits two live agents to carry one, and the manager itself auto-numbers a collision, so a
+  name-keyed channel would fuse two principals onto one subject and, in auth mode, would authorize both
+  onto it from a value that identifies neither. The derivation is a single function on the connector
+  contract, `eventChannel`, so the subject the manager grants and the subject the session publishes to
+  cannot drift apart. A connector that does not implement it refuses `--events` before any provisioning
+  rather than starting a session whose events have nowhere legal to land, and the refusal releases the
+  name it had already reserved.
+
+  **The flag and the grant are deliberately separate.** Holding publish rights on a channel is not a
+  request to publish to it. An agent file or a manifest can hand-write anything into `allowPublish`, so
+  if a grant could arm the plane, any author who could write an agent file could turn on a full
+  transcript of another seat's tool inputs and outputs without ever touching the launch grammar. Only
+  the launch arms the session; the grant is what makes the arming useful. `cotal_spawn`, the peer-facing
+  tool, does not expose the option at all. That is the shape of the tool and not a control-plane refusal:
+  the manager's spawn service op is a second door onto the same handler and still accepts the field,
+  which is a pre-existing property of that door and is fenced separately.
+
+  **The flag rides the whole launch path, including the record a restart reads.** It is on the
+  foreground launch, the detached spawn payload, the manager service contract, and the resume document,
+  so a manager restart brings an armed session back armed. The foreground path mints its own grant, from
+  the principal it allocated, and passes the workspace root the emitter's write-ahead log needs: a
+  session armed by one launch surface and not the other would be a flag that means two different
+  things. A resume adopts the credential the spawn wrote rather than minting a new
+  one, so what a restart can lose is the record: either the channel leaves `allowPublish`, or the
+  arming flag does and the session returns holding publish rights it will never use, which reads as a
+  working system with an empty panel. Both halves are now carried and both are asserted.
+
+  **One behaviour change to state plainly.** The foreground launch now passes the mesh's root as the
+  launch's workspace root, on every foreground spawn rather than only on an armed one, which is what the
+  manager has always done. Two connectors already read that field and root their per-agent home at it:
+  Codex, which puts its per-agent home under it, and OpenCode, which puts its database and its serve
+  pidfile there. Both previously fell back to the directory the operator happened to run the command
+  in. So a foreground Codex or OpenCode session moves its local state from that directory to the mesh
+  root, which is where its detached counterpart has always put it. Operators who ran `cotal spawn` from
+  somewhere other than the mesh root will find that session's state under the mesh root instead. The
+  Claude connector reads the field only on an armed launch, and Hermes and pi do not read it at all.
+
+  **Supporting pieces in the shared connector runtime.** The event vocabulary is exported from
+  `@cotal-ai/connector-core` for the first time, so a connector can reach it by package name instead of
+  by deep path. The emitter gained a way to close an open run out of band: a harness reports the end of
+  a turn through a lifecycle hook that writes no record, so a record-sourced stream previously had no
+  vehicle for a turn terminal. The closing frame is an ordinary frame with one exception, it republishes
+  the source cursor unchanged, because advancing it would mark records consumed that were never mapped
+  and leave a consumer no gap to notice it by. The emitter refuses to close while a message or a tool
+  call is still open under the run, while a frame is still pending recovery, and after a halt.
+
+  **One pre-existing limit this makes visible earlier.** In user mode the allocated actor is the display
+  name, and principal tokens forbid `-`, which is reserved as the principal name form's separator. The
+  manager's collision handling appends `-2`, so the second user-mode launch of any persona has never
+  been principal-keyable; it already failed at the identity and provisioning sites. The event grant is
+  derived before provisioning, so that launch now fails before it leaves a footprint rather than after.
+  The underlying naming limit is unchanged and is not addressed here.
+
+### Patch Changes
+
+- Updated dependencies [4cf5f72]
+- Updated dependencies [219d33c]
+- Updated dependencies [9c2412c]
+  - @cotal-ai/core@0.21.0
+
 ## 0.20.1
 
 ### Patch Changes

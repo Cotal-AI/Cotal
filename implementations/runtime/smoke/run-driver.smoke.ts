@@ -7,7 +7,7 @@
  * says so as `released` and never as a run result: a program whose journal refused an append has not
  * failed, and recording that it did would be the durability layer inventing an outcome.
  *
- * The handler here counts what it actually performed, which is the only way to tell a replayed
+ * The handler here counts what it actually effects, which is the only way to tell a replayed
  * effect from a repeated one — a journal that looks right proves nothing if the world was touched
  * twice.
  *
@@ -67,11 +67,11 @@ const attempt = async (p: Promise<Awaited<ReturnType<typeof driveRun>>>): Promis
 };
 const why = (a: Attempt) => (a.status === "completed" ? "completed" : a.reason.name);
 
-/** A handler that COUNTS what it performed. A replayed effect must not reach it at all. */
+/** A handler that COUNTS what it effects. A replayed effect must not reach it at all. */
 class CountingHandler extends SimHandler {
-  readonly performed: string[] = [];
+  readonly effects: string[] = [];
   override async sleep(req: Parameters<SimHandler["sleep"]>[0], ctx: Parameters<SimHandler["sleep"]>[1]) {
-    this.performed.push(`sleep:${req.duration}`);
+    this.effects.push(`sleep:${req.duration}`);
     return await super.sleep(req, ctx);
   }
 }
@@ -95,8 +95,8 @@ await sleep("2h", { name: "second" });
   c("its journal holds one entry per step, not one per append",
     out.status === "completed" && out.result.journal.entries().length === 2,
     out.status === "completed" ? out.result.journal.entries().length : "-");
-  c("the handler performed each effect exactly once", handler.performed.join(",") === "sleep:1h,sleep:2h",
-    handler.performed);
+  c("the handler effects each effect exactly once", handler.effects.join(",") === "sleep:1h,sleep:2h",
+    handler.effects);
   const back = await replayRunJournal(js, jsm, SPACE, "d-1", `r${(takeovers += 1)}`);
   c("and both phases of both steps are durable on the broker, not in the driver",
     back.records.filter((r) => r.record.kind === "step").length === 4,
@@ -116,7 +116,7 @@ await sleep("2h", { name: "second" });
   c("a successor resumes a fully-journalled run to completion", taken.status === "completed",
     taken.status === "released" ? taken.reason.name : taken.status);
   c("and performs NOTHING again: every effect came back from the journal",
-    second.performed.length === 0, second.performed);
+    second.effects.length === 0, second.effects);
   const back = await replayRunJournal(js, jsm, SPACE, "d-1", `r${(takeovers += 1)}`);
   c("the resume wrote no duplicate steps either — only its activation",
     back.records.filter((r) => r.record.kind === "step").length === 4 &&
@@ -136,7 +136,7 @@ await sleep("2h", { name: "second" });
   class Blocking extends CountingHandler {
     override async sleep(req: Parameters<CountingHandler["sleep"]>[0], ctx: Parameters<CountingHandler["sleep"]>[1]) {
       const out = await super.sleep(req, ctx);
-      if (this.performed.length === 1) await gate; // held inside the FIRST effect
+      if (this.effects.length === 1) await gate; // held inside the FIRST effect
       return out;
     }
   }
@@ -146,7 +146,7 @@ await sleep("2h", { name: "second" });
   });
   await wait(300);
   const usurper = await activateRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
+    space: SPACE, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
   const firstOut = await attempt(started);
@@ -184,7 +184,7 @@ await sleep("2h", { name: "second" });
   c("and resuming a run with no journal is released rather than started from scratch",
     missing.status === "released" && missing.reason.name === "RunNotResumable",
     why(missing));
-  c("none of those touched the world", handler.performed.length === 2, handler.performed);
+  c("none of those touched the world", handler.effects.length === 2, handler.effects);
 }
 
 // ── 4) a program cannot CATCH the loss of its own journal ────────────────────────────────────
@@ -218,7 +218,7 @@ await sleep("3h", { name: "after-the-catch" });
   class Held extends CountingHandler {
     override async sleep(req: Parameters<CountingHandler["sleep"]>[0], ctx: Parameters<CountingHandler["sleep"]>[1]) {
       const out = await super.sleep(req, ctx);
-      if (this.performed.length === 1) await gate;
+      if (this.effects.length === 1) await gate;
       return out;
     }
   }
@@ -228,14 +228,14 @@ await sleep("3h", { name: "after-the-catch" });
   });
   await wait(300);
   await activateRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
+    space: SPACE, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
   const lost = await attempt(started);
   c("but a run that LOSES its journal is released, not caught and carried on", lost.status === "released",
     why(lost));
   c("and it stopped at the refusal rather than performing the catch block's effects",
-    handler2.performed.length < 3, handler2.performed);
+    handler2.effects.length < 3, handler2.effects);
 
   // The sharper shape, and the one a dead appender MASKS: when the catch block performs no further
   // effect, nothing else tries to append, so a swallowed refusal is never re-raised and the run
@@ -262,7 +262,7 @@ try {
   });
   await wait(300);
   await activateRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
+    space: SPACE, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   letGo();
   const quietOut = await attempt(running);
@@ -277,7 +277,7 @@ try {
 // as this run's own, and a PubAck on one run's subject makes the other's journal say "durable".
 {
   const a = await activateRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "d-6", holder: "m1", fencingToken: 1, epoch: 1, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "new",
+    space: SPACE, runId: "d-6", holder: "m1", fencingToken: 1, epoch: 1, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "new",
   });
   const store = new RunJournalStore(a);
   let crossed: unknown;
@@ -304,9 +304,9 @@ try {
 {
   const handler = new CountingHandler();
   // The horizon passes WHILE the first effect is in flight — the case that matters. A clock that
-  // ticks per call made this cell pass with nothing performed at all, which proved only that a
+  // ticks per call made this cell pass with nothing effects at all, which proved only that a
   // driver can refuse to start; asserting the exact count is what caught it.
-  (handler as unknown as { now: () => number }).now = () => (handler.performed.length >= 1 ? 9_000 : 1_000);
+  (handler as unknown as { now: () => number }).now = () => (handler.effects.length >= 1 ? 9_000 : 1_000);
   const out = await attempt(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-7", source: PROGRAM, lease: lease("m1", 1, 1), handler,
     workExpiry: 5_000,
@@ -315,10 +315,10 @@ try {
     out.status === "released", why(out));
   c("and says so as the host's reason, not as a program error",
     out.status === "released" && /work horizon/.test(out.reason.message), why(out));
-  c("it stopped BETWEEN effects, not before the run and not after it: exactly one performed",
-    handler.performed.length === 1, handler.performed);
+  c("it stopped BETWEEN effects, not before the run and not after it: exactly one effects",
+    handler.effects.length === 1, handler.effects);
   // The load-bearing half, on the wire this time: a pending record here would be durable evidence
-  // of work nobody performed, and the next driver would recover it — handing a resume token for a
+  // of work nobody effects, and the next driver would recover it — handing a resume token for a
   // handler that never ran.
   const back = await replayRunJournal(js, jsm, SPACE, "d-7", `r${(takeovers += 1)}`);
   const steps = back.records.filter((r) => r.record.kind === "step");
@@ -351,8 +351,8 @@ try {
   c("a paused driver releases the run", out.status === "released", why(out));
   c("carrying the operator's reason", out.status === "released" && /operator asked/.test(out.reason.message),
     out.status === "released" ? out.reason.message : why(out));
-  c("and performed nothing at all: the pause was already set at the first boundary",
-    handler.performed.length === 0, handler.performed);
+  c("and effects nothing at all: the pause was already set at the first boundary",
+    handler.effects.length === 0, handler.effects);
   const back = await replayRunJournal(js, jsm, SPACE, "d-8", `r${(takeovers += 1)}`);
   c("the run exists and holds only its activation: a pause writes no step",
     back.records.length === 1 && back.records[0]!.record.kind === "activation",

@@ -1,5 +1,148 @@
 # @cotal-ai/core
 
+## 0.23.0
+
+## 0.22.0
+
+### Minor Changes
+
+- 57d3a57: A Claude session publishes a structured event plane, and the `tr-<name>` transcript mirror is
+  retired
+
+  A session launched with `cotal spawn --events` now actually publishes. The Claude connector maps
+  its session records to structured events behind the same hook relay the mirror used to sit behind:
+  run boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end
+  and its result, written to a per-session write-ahead log before they go on the wire so a restart
+  resumes at its cursor instead of replaying or skipping. Until now no connector constructed the
+  emitter at all, so every event channel was empty.
+
+  The `tr-<name>` mirror is removed in the same change rather than deprecated alongside it. Gone with
+  it: the `--transcript` and `--no-transcript` flags on `cotal spawn`, the `transcript` field on the
+  manager's spawn op and its service contract, `COTAL_TRANSCRIPT` and `COTAL_TRANSCRIPT_DEFAULT`,
+  `LaunchOpts.transcript`, `Connector.transcriptChannel`, and the mirror in all three connectors that
+  carried one.
+
+  MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. A managed session no
+  longer mirrors its prose there under any flag or environment variable, and a spawn that passes
+  `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
+  channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
+  the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+  manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+  `events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+  gives both forms. `cotal console` and the web console render event frames directly. Unlike
+  `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+  it is under "To let something read a plane" below.
+
+  What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
+  end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner
+  of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
+  every prompt, and the event plane withholds the body of a turn the agent did not author, because
+  republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
+  peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+  because the loss column is only useful if it is complete: a tool result is this session's own output
+  and is republished, so peer text quoted inside one still reaches the wire. A cell in
+  `agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
+
+  A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
+  a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
+  because that channel carries the session's tool inputs and outputs. The same rule runs on a manager
+  resume: a retained inventory naming another agent's event channel is refused rather than adopted.
+
+  The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+  `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+  authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
+  observer.
+
+  To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+  full, for the mesh it is running on. On a user-auth mesh:
+  `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+  wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
+  actor ledger for `actor grant` to write to, so mint the reader instead:
+  `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+  not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+  that profile.
+
+  `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+  ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+  messaging plane for admin, so
+  `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+  out a credential that reads every channel in the space: an operator asking to narrow got the
+  opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+  rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.
+
+## 0.21.0
+
+### Minor Changes
+
+- 4cf5f72: Give a session's structured event plane a way to be turned on, and a channel that names who is publishing.
+
+  An agent can now be launched with `cotal spawn --events`, foreground or detached, which publishes
+  that session's structured event stream, what it did rather than the prose it wrote, on a channel of
+  its own so an external observer or UI can read it. Off by default. Nothing about an existing launch
+  changes.
+
+  **The channel is named after the principal, never the display name.** It is `events.<owner>.<actor>`,
+  derived from the principal the manager actually allocated. A display name is UI convenience: this
+  mesh permits two live agents to carry one, and the manager itself auto-numbers a collision, so a
+  name-keyed channel would fuse two principals onto one subject and, in auth mode, would authorize both
+  onto it from a value that identifies neither. The derivation is a single function on the connector
+  contract, `eventChannel`, so the subject the manager grants and the subject the session publishes to
+  cannot drift apart. A connector that does not implement it refuses `--events` before any provisioning
+  rather than starting a session whose events have nowhere legal to land, and the refusal releases the
+  name it had already reserved.
+
+  **The flag and the grant are deliberately separate.** Holding publish rights on a channel is not a
+  request to publish to it. An agent file or a manifest can hand-write anything into `allowPublish`, so
+  if a grant could arm the plane, any author who could write an agent file could turn on a full
+  transcript of another seat's tool inputs and outputs without ever touching the launch grammar. Only
+  the launch arms the session; the grant is what makes the arming useful. `cotal_spawn`, the peer-facing
+  tool, does not expose the option at all. That is the shape of the tool and not a control-plane refusal:
+  the manager's spawn service op is a second door onto the same handler and still accepts the field,
+  which is a pre-existing property of that door and is fenced separately.
+
+  **The flag rides the whole launch path, including the record a restart reads.** It is on the
+  foreground launch, the detached spawn payload, the manager service contract, and the resume document,
+  so a manager restart brings an armed session back armed. The foreground path mints its own grant, from
+  the principal it allocated, and passes the workspace root the emitter's write-ahead log needs: a
+  session armed by one launch surface and not the other would be a flag that means two different
+  things. A resume adopts the credential the spawn wrote rather than minting a new
+  one, so what a restart can lose is the record: either the channel leaves `allowPublish`, or the
+  arming flag does and the session returns holding publish rights it will never use, which reads as a
+  working system with an empty panel. Both halves are now carried and both are asserted.
+
+  **One behaviour change to state plainly.** The foreground launch now passes the mesh's root as the
+  launch's workspace root, on every foreground spawn rather than only on an armed one, which is what the
+  manager has always done. Two connectors already read that field and root their per-agent home at it:
+  Codex, which puts its per-agent home under it, and OpenCode, which puts its database and its serve
+  pidfile there. Both previously fell back to the directory the operator happened to run the command
+  in. So a foreground Codex or OpenCode session moves its local state from that directory to the mesh
+  root, which is where its detached counterpart has always put it. Operators who ran `cotal spawn` from
+  somewhere other than the mesh root will find that session's state under the mesh root instead. The
+  Claude connector reads the field only on an armed launch, and Hermes and pi do not read it at all.
+
+  **Supporting pieces in the shared connector runtime.** The event vocabulary is exported from
+  `@cotal-ai/connector-core` for the first time, so a connector can reach it by package name instead of
+  by deep path. The emitter gained a way to close an open run out of band: a harness reports the end of
+  a turn through a lifecycle hook that writes no record, so a record-sourced stream previously had no
+  vehicle for a turn terminal. The closing frame is an ordinary frame with one exception, it republishes
+  the source cursor unchanged, because advancing it would mark records consumed that were never mapped
+  and leave a consumer no gap to notice it by. The emitter refuses to close while a message or a tool
+  call is still open under the run, while a frame is still pending recovery, and after a halt.
+
+  **One pre-existing limit this makes visible earlier.** In user mode the allocated actor is the display
+  name, and principal tokens forbid `-`, which is reserved as the principal name form's separator. The
+  manager's collision handling appends `-2`, so the second user-mode launch of any persona has never
+  been principal-keyable; it already failed at the identity and provisioning sites. The event grant is
+  derived before provisioning, so that launch now fails before it leaves a footprint rather than after.
+  The underlying naming limit is unchanged and is not addressed here.
+
+- 9c2412c: `cotal input --name <seat> --text <text> [--no-enter]` types one line into a running managed agent's terminal and returns, so a program can deliver a harness command (`/compact`, `/clear`, `/model`) without holding an `attach` stream open. It is backed by a new manager op `input`, which carries the same row shape and the same authorization as `attach` (capability `manager.lifecycle`, targeted, authz modes `owner` and `any`), takes `{text, enter?}` with the text verbatim up to 64KiB, and answers `{name, bytes}`. Enter is appended unless suppressed; nothing is echoed back. The manager's cluster document is revision 7, so a caller's `describe` sees the new command. `AgentHandle` gains an optional `write(data)`: the `pty` runtime implements it, and the external terminal runtimes (`tmux`, `cmux`, `orca`, `herdr`) do not own the child's input stream, so `input` refuses and names the runtime rather than dropping the keystroke. The command is granted only to operator credentials, in both modes, and NOT to the `spawn` capability that already carries `despawn` and `attach`. That placement is deliberate: an `attach` grant needs a `session-caller` credential to redeem and an agent profile cannot mint one, so `input` would be genuinely new authority rather than a restatement of `attach`, and the own-owner rule that bounds `despawn` covers every seat under an owner rather than only the ones a caller launched. Killing a peer is denial; typing into a peer is control of it. On a user-auth mesh `cotal input` therefore needs ledger scope `admin`, the scope `ps` already needs there.
+
+### Patch Changes
+
+- 219d33c: `cotal spawn --agent pi --prompt <text>` now delivers the prompt as Pi's initial message (its first turn) instead of silently dropping it; an empty prompt, or one starting with `-` or `@`, refuses the launch. The connector contract no longer describes an initial prompt as something a connector may ignore: a connector delivers it or throws at launch. The other connectors follow the same rule: Claude Code and Codex refuse a prompt that is empty after trimming instead of dropping it, and Hermes refuses an initial prompt outright until its first turn is wired.
+
 ## 0.20.1
 
 ### Patch Changes

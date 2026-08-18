@@ -586,7 +586,7 @@ const plan = async (
   // child ends up with journal records on the wire and no record — the exact state the write-last
   // ordering produces. Then the retry, through the door a caller actually has.
   const appender = await activateRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "r-durable", holder: "m1", fencingToken: 1, epoch: 1,
+    space: SPACE, runId: "r-durable", holder: "m1", fencingToken: 1, epoch: 1,
     takeoverId: "t-first", at: NOW, expect: "new",
   });
   const real = new RunJournalStore(appender);
@@ -605,7 +605,7 @@ const plan = async (
     { wrote, err: durableCrash?.message });
 
   const fenced = await activateRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "r-durable", holder: "m2", fencingToken: 2, epoch: 1,
+    space: SPACE, runId: "r-durable", holder: "m2", fencingToken: 2, epoch: 1,
     takeoverId: "t-retry", at: NOW, expect: "new",
   }).then(() => null, (e: unknown) => e as Error);
   c("and the retry is refused at the door a caller actually uses: a journal with records is not NEW",
@@ -737,7 +737,7 @@ const plan = async (
   const log: JournalEntry[] = [];
   const j = new Journal({
     run: "r-log",
-    store: { load: async () => [], append: async (e: JournalEntry) => { log.push(e); } },
+    store: { append: async (e: JournalEntry) => { log.push(e); } },
   });
   await runProgram(FLAT, { runId: "r-log", handler: new SimHandler({ clock: { start: NOW } }), journal: j, pins: PINS });
 

@@ -90,7 +90,7 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid,
+  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
   resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds,
 } = await import("@cotal-ai/core");
@@ -340,6 +340,11 @@ try {
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
   for (const n of ["alpha", "beta", "delta"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
+  // `epsilon` and `zeta` carry NO role on purpose: section E asks what a peer may delegate on the EVENT
+  // PLANE, and a role is itself a delegated capability, so a `role: worker` persona would be
+  // refused for the role before the channel was ever weighed and the cell would read as a pass.
+  for (const n of ["epsilon", "zeta"])
+    writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
 
   authChild = spawnAuthService();
   await waitAuthReady();
@@ -564,11 +569,11 @@ try {
   // PRIVILEGED ctl subject, admitted by the callout-minted scope grants and decided by the
   // manager's owner-domain authorization.
   console.log("O) own-agent control: owner-domain attach/stop on the spawn tier");
-  const ctlCaller = async (actor: string, owner: string, scope: string[]) => {
+  const ctlCaller = async (actor: string, owner: string, scope: string[], acl?: { allowSubscribe?: string[]; allowPublish?: string[] }) => {
     // The row's lifecycleUid ALSO rides the endpoint options: invokeService's caller triple is
     // (owner, actor, uid) and refuses without it (SPEC 13.1 — no alias-keyed fallback).
     const uid = mintLifecycleUid();
-    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [], lifecycleUid: uid });
+    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: acl?.allowSubscribe ?? [], allowPublish: acl?.allowPublish ?? [], lifecycleUid: uid });
     const ex = await agentExchange(actor, g.actorToken, owner);
     if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
     const ep = new CotalEndpoint({
@@ -681,6 +686,140 @@ try {
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
 
+  // ---------- E. the event plane, at the real door, under BOTH rules ----------
+  // Two rules meet here and the ORDER is the finding. The delegation envelope says a peer may hand
+  // down a subset of what it holds and no more. The OWN-CHANNEL rule says the agent being created
+  // may hold its OWN event plane and no other, whatever the spawner holds, because that plane
+  // carries the session's tool inputs and outputs verbatim. The own-channel rule runs FIRST and is
+  // NOT envelope-dependent, so widening the peer's own grant does not admit the request: a reader
+  // of somebody else's plane is granted out of band, never through a spawn.
+  //
+  // WHY THESE CELLS WERE REWRITTEN RATHER THAN REPAIRED. Before the rule existed the door ACCEPTED
+  // the over-ask (spawn is an action: the door replies the instant the identity is minted) and the
+  // ledger refused it afterwards, so these cells asserted acceptance plus the absence of a row.
+  // The rule moved the refusal AHEAD of the mint. Keeping the old assertion would be asserting the
+  // defect, so what is asserted now is the refusal itself, at the door, over a real bearer.
+  //
+  // The stated limit is asserted too, from the other side, because a limit nobody tests is a
+  // sentence: the CONCRETE form is refused whatever the envelope says, and the WILDCARD form is
+  // left to the envelope exactly as every other channel is.
+  console.log("E) the own-channel rule at the real door, and the envelope's remaining half");
+  const VICTIM = eventChannel({ owner: OWNER_B, actor: "auditor" });
+  const VICTIM_WILDCARD = `events.${OWNER_B}.>`;
+  type Accepted = { ok: boolean; name?: string; error?: string };
+  const epSpawnAccept = async (ep: CotalEndpoint, args: Record<string, unknown>): Promise<Accepted> => {
+    try {
+      const r = await ep.invokeService("manager", "spawn", args, { deadlineMs: 15_000 });
+      if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+      return { ok: true, name: (r.reply.data as { name?: string }).name };
+    } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
+  };
+  const settle = async (ms: number) => { await new Promise((r) => setTimeout(r, ms)); };
+  const ownChannelRefusal = (r: Accepted): boolean =>
+    r.ok === false && /another agent's event channel/.test(r.error ?? "") && (r.error ?? "").includes(VICTIM);
+  const evtpeer = await ctlCaller("evtpeer", OWNER, ["spawn"], { allowSubscribe: ["general"], allowPublish: ["general"] });
+  const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is refused AT THE DOOR, naming the channel",
+    ownChannelRefusal(readOverAsk), readOverAsk);
+  await settle(1500);
+  check("...and no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  check("...and no live agent by that name", !manager.list().some((a) => a.name === "epsilon"), manager.list().map((a) => a.name));
+  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
+  check("the same over-ask on the child's WRITE set is refused at the door too: publishing INTO another agent's plane is forgery, not eavesdropping",
+    ownChannelRefusal(writeOverAsk), writeOverAsk);
+  await settle(1500);
+  check("...and leaves no row either", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  // THE HALF THE ENVELOPE NO LONGER DECIDES. An operator widening the peer's own grant used to
+  // admit this exact request, and that was the whole "containment rather than ban" story. The
+  // own-channel rule takes the CONCRETE form out of the envelope's hands: the answer is the same
+  // refusal, from a spawner that demonstrably holds the channel.
+  const widened = await ctlCaller("evtpeer2", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("with the peer's OWN grant widened by the operator, the identical spawn is STILL refused: the concrete form is not the envelope's to hand down",
+    ownChannelRefusal(admitted), admitted);
+  await settle(2500);
+  check("...and still writes no row", !existsSync(rowFile("managed", OWNER, "epsilon")), admitted);
+  // THE STATED LIMIT, ASSERTED. `eventChannelPrincipal` decodes exactly two principal tokens, so a
+  // WILDCARD is not an event channel to the rule and passes it untouched, governed by the envelope
+  // alone. That is deliberate: the wildcard is the form an operator writes on purpose for an
+  // observer, and this cell is what stops the limit being a comment nobody tests.
+  const wildpeer = await ctlCaller("evtpeer3", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  const wildAdmitted = await epSpawnAccept(wildpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  check("the WILDCARD form is left to the delegation envelope: a peer whose own grant covers it CAN hand it down", wildAdmitted.ok === true, wildAdmitted);
+  await settle(2500);
+  const wildRow = existsSync(rowFile("managed", OWNER, "epsilon"))
+    ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "epsilon"), "utf8")) as { allowSubscribe?: string[]; parent?: string })
+    : undefined;
+  check("...and a row IS written, carrying exactly the pattern it asked for", wildRow?.allowSubscribe?.includes(VICTIM_WILDCARD) === true, wildRow);
+  check("...recording the peer that delegated it as parent", wildRow?.parent === `${OWNER}.evtpeer3`, wildRow);
+  // THE TWO REFUSALS, SIDE BY SIDE, through the op core with the same spawner principal, so the
+  // TEXT of each is on the record. Without the second one the first proves only that something
+  // refused: the envelope is still the authority for every channel that is not a concrete event
+  // channel, and a rule that had swallowed it would look identical from one cell.
+  const overText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("the refusal for a concrete event channel is the OWN-CHANNEL rule, and it names the channel",
+    overText.ok === false && /another agent's event channel/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
+  // THE REMEDY THAT REFUSAL PRINTS, PARSED AND RUN. A confinement refusal lends its own authority
+  // to whatever command it prints, and BOTH halves of this one were once wider than the sentence
+  // around them: the static half named a profile that ignores `--allow-subscribe`, and this half
+  // named a bare `cotal actor grant`. A bare grant is not a narrow one. `runActor` fills every
+  // omitted flag from `csv(values.x, dflt)` with the WIDE default (`>` read, `>` post,
+  // `spawn,role:default` scope), and it says so in its own comment, so an operator following this
+  // refusal to the letter in order to grant a READER would have written a row that reads and posts
+  // everywhere and can spawn. That is a worse outcome than the spawn the refusal blocked, and it
+  // arrives carrying the manager's authority.
+  //
+  // Two cells, because the text and the effect are different claims. The first is that the command
+  // spells every field out, which is what stops a default applying at all. The second RUNS the
+  // values it printed through the real ledger writer and grades the row that lands.
+  const grantCmd = /cotal actor grant [^`]+/.exec(overText.error ?? "")?.[0] ?? "";
+  const flag = (name: string): string | undefined => new RegExp(`--${name} '([^']*)'`).exec(grantCmd)?.[1];
+  const ownerFlag = /--owner (\S+)/.exec(grantCmd)?.[1];
+  check("the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+    grantCmd.length > 0 && flag("allow-subscribe") === VICTIM && flag("allow-publish") === "" && flag("scope") === "" && ownerFlag === OWNER,
+    { grantCmd, sub: flag("allow-subscribe"), pub: flag("allow-publish"), scope: flag("scope"), owner: ownerFlag });
+  // A THIRD claim, and the one no cell read until now: the RATIONALE. The two cells above grade the
+  // printed command and the row it writes; both stay green while the sentence explaining WHY every
+  // field must be spelled out understates how wide the default is. It said `spawn` scope when
+  // `runActor` omitting `--scope` writes `spawn,role:default` - dropping a DELEGATION capability
+  // from a sentence whose only job is calibration. An operator auditing a past omitted-scope grant
+  // by that sentence concludes it "only got spawn" and closes a question that is open.
+  const remedyText = overText.error ?? "";
+  check("the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
+    /spawn,role:default/.test(remedyText) && !/`spawn` scope/.test(remedyText), remedyText);
+  const READER = "evtreader";
+  grantActor(dir, {
+    owner: ownerFlag ?? "",
+    actor: READER,
+    scope: (flag("scope") ?? ">").split(",").filter(Boolean),
+    allowSubscribe: (flag("allow-subscribe") ?? ">").split(",").filter(Boolean),
+    allowPublish: (flag("allow-publish") ?? ">").split(",").filter(Boolean),
+  });
+  const readerRow = existsSync(rowFile("interactive", OWNER, READER))
+    ? (JSON.parse(readFileSync(rowFile("interactive", OWNER, READER), "utf8")) as { allowSubscribe: string[]; allowPublish: string[]; scope: string[] })
+    : undefined;
+  check("running exactly what it printed writes a row that reads that ONE channel, posts nowhere, and cannot spawn",
+    JSON.stringify(readerRow?.allowSubscribe) === JSON.stringify([VICTIM]) && readerRow?.allowPublish.length === 0 && readerRow?.scope.length === 0,
+    readerRow);
+
+  const envelopeText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", "not-mine"], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("and an ORDINARY channel the peer does not hold is still refused by the delegation envelope, which the rule did not replace",
+    envelopeText.ok === false && /delegation only narrows/.test(envelopeText.error ?? "") && (envelopeText.error ?? "").includes("not-mine"), envelopeText);
+  // AND THE WILDCARD FORM IS ATTENUATED LIKE ANY OTHER PATTERN. The rule leaves it alone; that is
+  // not the same as nothing governing it. A peer that does NOT hold the pattern cannot hand it
+  // down, on either side, and these are the cells that would notice an author exempting the
+  // `events.` prefix from the containment walk to make arming "just work".
+  const wildOverText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
+    wildOverText.ok === false && /delegation only narrows/.test(wildOverText.error ?? "") && (wildOverText.error ?? "").includes(VICTIM_WILDCARD), wildOverText);
+  const wildPubText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM_WILDCARD] }, `${OWNER}.evtpeer`);
+  check("and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",
+    wildPubText.ok === false && /delegation only narrows/.test(wildPubText.error ?? "") && (wildPubText.error ?? "").includes(VICTIM_WILDCARD), wildPubText);
+
   // ---------- V. elevated views (exchange-gated per-connection profiles), live ----------
   // The live half of the views design (unit layers: smoke:views). Real wire: refused under-scoped
   // exchange, managed-path rejection, a standing god-view tap over a bearer SOURCE that survives
@@ -701,6 +840,45 @@ try {
   // cli's scope is still [spawn] here — every admin-gated view must refuse naming the gate.
   const deniedView = await humanViewEx("admin");
   check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
+  // ...and the re-grant it prints is a WHOLE-row upsert, not a scope edit. `runActor` fills every
+  // omitted flag from `csv(v, dflt)` with the WIDE default, so a scope-only paste silently resets
+  // this row's read/post to `>`/`>`: adding a view would widen the operator to the whole chat
+  // plane.
+  //
+  // Naming the flags is NOT enough, and a security lens is why this cell says more than that: a
+  // command that names `--allow-subscribe '<its current read set>'` reads as paste-ready, fails on
+  // an invalid channel, and the operator's shortest route to a command that succeeds is to delete
+  // the flag or write `>`. So the values are graded against the ROW, not the sentence: whatever the
+  // refusal prints must be what the row actually holds right now.
+  const viewErr = deniedView.body.error ?? "";
+  const viewRegrant = /cotal actor grant [^(]+/.exec(viewErr)?.[0] ?? "";
+  const flagOf = (name: string): string | undefined =>
+    new RegExp(`--${name} '([^']*)'`).exec(viewRegrant)?.[1];
+  const liveRow = JSON.parse(readFileSync(rowFile("interactive", OWNER, "cli"), "utf8")) as {
+    allowSubscribe: string[]; allowPublish: string[]; scope: string[]; label?: string;
+  };
+  check(
+    "the view refusal's re-grant names read AND post, not scope alone, and says the upsert replaces the WHOLE row",
+    /--scope '/.test(viewRegrant) &&
+      /--allow-subscribe '/.test(viewRegrant) &&
+      /--allow-publish '/.test(viewRegrant) &&
+      /WHOLE row/.test(viewErr),
+    { viewRegrant, error: viewErr },
+  );
+  check(
+    "the ACL values it prints are the row's REAL current sets, not a placeholder and not the wide default",
+    flagOf("allow-subscribe") === liveRow.allowSubscribe.join(",") &&
+      flagOf("allow-publish") === liveRow.allowPublish.join(",") &&
+      !/[<>]/.test(`${flagOf("allow-subscribe")}${flagOf("allow-publish")}`),
+    { printed: { sub: flagOf("allow-subscribe"), pub: flagOf("allow-publish") }, row: liveRow },
+  );
+  check(
+    "and it carries the scope ADDED to the row's own, plus the label the upsert would otherwise drop",
+    (flagOf("scope") ?? "").split(",").includes("admin") &&
+      liveRow.scope.every((sc) => (flagOf("scope") ?? "").split(",").includes(sc)) &&
+      flagOf("label") === liveRow.label,
+    { printedScope: flagOf("scope"), printedLabel: flagOf("label"), row: liveRow },
+  );
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
   const vg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {

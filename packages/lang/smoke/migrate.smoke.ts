@@ -532,7 +532,7 @@ await parallel({
   };
   /** The same entries as a run recorded them BEFORE scopes carried arm names on failure. */
   const asLegacy = (es: readonly JournalEntry[]) =>
-    es.map((e) => { const c = { ...e } as Record<string, unknown>; delete c.branches; return c as JournalEntry; });
+    es.map((e) => { const c = { ...e } as Record<string, unknown>; delete c.branches; return c as unknown as JournalEntry; });
   const walk6 = async (runId: string, src: string, es: readonly JournalEntry[]) =>
     await deadline(`${runId} walk`, run(src, {
       runId, handler: checkHandler(10_000_000), migration: true,

@@ -86,9 +86,8 @@ launcher. Comma-separated lists are trimmed.
 | `COTAL_CAPABILITIES` | connector session | Control-plane capabilities (e.g. `spawn`) that gate manager tools | agent file's `capabilities:` |
 | `COTAL_QUIET` / `COTAL_MUTED` | connector session | Per-channel attention defaults (never-wake / drop-on-receive) | agent file's, else none |
 | `COTAL_CHANNEL` | Claude connector | Force channel wake-nudges on (`1`) / off; set to `1` by the Claude launcher | auto-detect |
-| `COTAL_TRANSCRIPT` | connector session | Mirror this session's transcript to `tr-<name>` (`1`) | off |
-| `COTAL_TRANSCRIPT_DEFAULT` | manager | Default transcript-mirror for managed spawns (`1`) | off |
-| `COTAL_EVENTS_DEFAULT` | manager | Default AG-UI event plane for managed spawns (`1`) | off |
+| `COTAL_EVENTS` | connector session | Arm this session's event plane (`1`); set by the launcher for `--events` spawns | off |
+| `COTAL_EVENTS_DEFAULT` | manager | Default event plane for managed spawns (`1`) | off |
 | `COTAL_DEFAULT_AGENT` | `cotal spawn` | Default connector type for a bare spawn | `claude` |
 | `COTAL_DEFAULT_PERSONA` | `cotal spawn` | Default persona for a bare spawn | `default` |
 | `COTAL_SKIP_CONNECTOR_SEED` | boot gate | Skip the automatic built-in-connector seed/refresh on a command (`1`); `cotal ext seed` still works | off |

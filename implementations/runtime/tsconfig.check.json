@@ -1,0 +1,9 @@
+{
+  // Typecheck-only. The build config is `src` alone, because `rootDir` decides what lands in
+  // `dist` and the smokes must not — but that left the smoke files typechecked by NOTHING: a
+  // deliberate `const x: number = "s"` planted in a smoke passed `pnpm typecheck` at rc=0.
+  // Suites that run under tsx erase types, so those files ran green over real type errors.
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "rootDir": "." },
+  "include": ["src", "smoke"]
+}

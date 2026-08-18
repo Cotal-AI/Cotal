@@ -1,0 +1,40 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/agui-authorship.smoke.ts",
+  "guard": "a peer-authored record opens a run and republishes no body, while a self-authored one still emits its content in full",
+  "command": "pnpm smoke:agui-authorship",
+  "completionMarker": "agui-authorship smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/agui-authorship.json",
+  "why": [
+    "An event channel carries a different read ACL from the channel a peer message arrived on, so",
+    "re-emitting an injected mesh message's text there is a republication across an ACL boundary.",
+    "",
+    "The claim is joined, so it gets a mutation per fact. 'No peer content is emitted' is satisfied",
+    "completely by a mapper that emits nothing at all, which is why A2 exists: it suppresses every",
+    "body and must redden the liveness arm while leaving the safety arm green. If one mutation",
+    "reddened both, the two arms would be one axis under two names.",
+    "",
+    "SPECIFIER BOUNDARY. The suite imports the mapper by relative source path (../src/agui-map.js) and",
+    "calls it directly. Its only other import is connector-core's event constructors, which no",
+    "mutation below touches, so a kill comes from the mapper and not from the vocabulary."
+  ],
+  "mutations": [
+    {
+      "name": "A1 attribute the turn but stop withholding the body",
+      "file": "extensions/connector-claude-code/src/agui-map.ts",
+      "find": "const carriesBody = selfAuthored && promptText.length > 0;",
+      "replace": "const carriesBody = promptText.length > 0;",
+      "expectRed": "a peer record's text does NOT appear anywhere on the wire",
+      "cell": "a peer record's text does NOT appear anywhere on the wire",
+      "note": "This is not hypothetical: it is exactly what the mapper did before the filter existed, measured at 240 bytes in and 240 bytes out on a real session."
+    },
+    {
+      "name": "A2 withhold every body, peer and human alike",
+      "file": "extensions/connector-claude-code/src/agui-map.ts",
+      "find": "const carriesBody = selfAuthored && promptText.length > 0;",
+      "replace": "const carriesBody = false;",
+      "expectRed": "DECOY/LIVENESS — a self-authored record DOES still emit its content",
+      "cell": "DECOY/LIVENESS — a self-authored record DOES still emit its content",
+      "note": "The over-broad filter, which passes every safety cell in the file. Without a liveness arm this mutant survives and the suite goes green against a mapper that publishes no prose at all."
+    }
+  ]
+}
