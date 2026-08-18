@@ -128,8 +128,16 @@ export interface CotalMeta {
    * `"unknown"` is never written by the mapper: an unrecognised provenance FAILS LOUD instead, so a
    * future harness value produces an error rather than a confident wrong attribution. It exists for
    * consumers that must render something for a producer which did not set the field.
+   *
+   * **`"auto-continuation"` was added because a fail-loud branch is only safe if you know what is on
+   * the other side of it.** It is the harness re-injecting a standing goal into an unattended
+   * session, and it is a turn: work begins, and an observer asking what triggered it is owed the
+   * real answer rather than `"human"`. Measured over 237 real session files and 531,882 records on
+   * one machine, where the whole provenance universe is four values: `channel` 30,385, `human`
+   * 1,505, `task-notification` 706, `auto-continuation` 4. The rare one is exactly the one an
+   * enumeration built from a smaller sample misses, and missing it throws in production.
    */
-  turnSource?: "human" | "channel" | "notification" | "sdk" | "unknown";
+  turnSource?: "human" | "channel" | "notification" | "sdk" | "auto-continuation" | "unknown";
   /** What was cut to fit the wire, and how big it was. Set only by the sizing path. */
   truncated?: { field: string; originalBytes: number };
 }
@@ -1428,6 +1436,78 @@ export class AguiEmitter<T> {
     if (read.cursor !== this.wal.frontier.sourceCursor) await this.wal.advanceCursorOnly(read.cursor);
 
     return { frames: frames.length, events };
+  }
+
+  /**
+   * Close the run this stream currently has open, at a boundary the RECORD STREAM CANNOT SEE.
+   *
+   * **This exists because the two halves of the mapping were specified against different inputs.**
+   * The plan sources `RUN_FINISHED` from a harness lifecycle hook, and the durable plane reads a
+   * FILE: a hook fires in another process and writes no record, so a hook-sourced terminal has no
+   * vehicle into a record-sourced stream. Deriving the terminal from records instead is possible but
+   * lies about time in two ways that matter to a live view: the finish lands only when the NEXT turn
+   * starts, so a finished agent renders as still running, and the last run of a session never closes
+   * at all, because there is no later record to close it on. This is that vehicle.
+   *
+   * It is a FRAME LIKE ANY OTHER: same epoch, same `seq` line, same write-ahead discipline, same
+   * halt rules. The single thing that differs is the cursor, which is republished UNCHANGED, because
+   * this frame consumes no source record. A frame that advanced the cursor here would mark records
+   * consumed that were never mapped.
+   *
+   * Idempotent by construction rather than by a flag: the bracket machine is the only state it
+   * reads, so once the run is closed there is nothing open to close and it answers `null`. That also
+   * makes it safe on a stream whose run was opened by a PREVIOUS process, since the machine is
+   * restored from the WAL.
+   *
+   * @returns the run that was closed, or `null` when the stream was already at a stopping point.
+   */
+  async closeRun(o: { timestamp: number; cotal?: CotalMeta }): Promise<string | null> {
+    if (this.halted) throw this.halted;
+    if (this.wal.pending)
+      throw new Error(
+        `event emitter for ${this.channel}: a frame is still pending; recovery must settle it before a run can be closed`,
+      );
+
+    const runId = this.brackets.runId;
+    if (runId === undefined) return null;
+
+    const cursor = this.wal.frontier.sourceCursor;
+    if (cursor === undefined)
+      throw new Error(
+        `event emitter for ${this.channel}: run "${runId}" is open on a frontier that carries no source ` +
+          `cursor. A run can only be open because a frame published it, and a frame that published ` +
+          `cannot leave the cursor unset, so this WAL disagrees with itself. Refusing to invent a ` +
+          `cursor for the closing frame.`,
+      );
+
+    const event = runFinished({
+      threadId: this.threadId,
+      runId,
+      timestamp: o.timestamp,
+      ...(o.cotal ? { cotal: o.cotal } : {}),
+    });
+
+    // Validated on a clone first, exactly as a mapped batch is. The refusal that matters here is a
+    // message or tool call still open under this run: `RUN_FINISHED` while something it opened is
+    // unclosed is a protocol violation, and it must surface as one rather than be published.
+    const probe = this.brackets.clone();
+    try {
+      probe.accept(event);
+    } catch (err) {
+      throw this.diagnoseBracket(err as Error);
+    }
+    this.fedAnyEvent = true;
+
+    const frames = packUnits({
+      threadId: this.threadId,
+      epoch: this.wal.epoch,
+      firstSeq: this.wal.frontier.seq + 1,
+      units: [{ runId, events: [event], cursor }],
+      measure: (f) => this.measure(f),
+      limit: this.ep.maxPayload,
+    });
+    for (const { frame, cursor: c } of frames) await this.publish(frame, c);
+    return runId;
   }
 
   /** Measure a candidate frame EXACTLY as the wire will, at an upper bound over id and expectation. */

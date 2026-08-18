@@ -38,7 +38,7 @@ process.env.COTAL_CAPABILITIES = "spawn";
  *  Types are erased at runtime, so this list is the golden — a StartAgentOpts change must
  *  consciously edit it. */
 const START_OP_KEYS = new Set([
-  "name", "identity", "agent", "role", "config", "model", "variant", "launchOptions", "resume", "transcript", "cwd",
+  "name", "identity", "agent", "role", "config", "model", "variant", "launchOptions", "resume", "transcript", "events", "cwd",
   "prompt", "subscribe", "allowSubscribe", "allowPublish", "shareTools",
 ]);
 
@@ -52,6 +52,7 @@ const flagToOpKey: Record<string, string> = {
   "allow-subscribe": "allowSubscribe",
   "allow-publish": "allowPublish",
   "no-transcript": "transcript",
+  "no-events": "events",
 };
 
 // 1 — spawn parses the whole shared grammar.
@@ -83,6 +84,17 @@ for (const p of toolParams) {
 // `resume` stays deliberately OFF the peer-facing tool (host-transcript disclosure — see the
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
 assert.ok(!toolParams.includes("resume"), "cotal_spawn must not expose resume (deferred, #159)");
+// `events` is likewise OFF the peer-facing tool, and deliberately so: arming another session's event
+// plane publishes that session's full tool inputs and outputs to a channel.
+//
+// BUT READ WHAT THIS CELL ACTUALLY PROVES, because an earlier version of this comment claimed more.
+// The MCP tool and the manager's `spawn` service op are two doors onto one handler, and the service
+// op's schema accepts `events`, `subscribe`, `allowSubscribe` and `allowPublish` in full. So this
+// assertion fences the TOOL SHAPE and nothing else: it is not a control-plane refusal, and a
+// spawn-capable caller that can reach the service door directly is not stopped by it. Stating that
+// here is the point. A cell whose comment claims a guarantee it does not deliver is worse than no
+// cell, because the next reader stops looking.
+assert.ok(!toolParams.includes("events"), "cotal_spawn must not expose events until the admin precheck exists");
 
 // 4 — every launch client outlives the manager's readiness wait (#159 B1). The tier rule forbids
 // the clients importing READINESS_TIMEOUT_MS, so the relation is enforced here, by test.

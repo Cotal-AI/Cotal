@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { hardenPrivate, loadAgentFile, registry, writeSecretFile, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, mcpServerEnvKeys, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, mcpServerEnvKeys, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** Name the cotal MCP server is registered under via --mcp-config (see buildLaunch). */
 const MCP_SERVER_NAME = "cotal";
@@ -64,6 +64,11 @@ export const claudeConnector: Connector = {
   kind: "connector",
   name: "claude",
   transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
+  // The event channel is core's own derivation, exposed through the contract so the grant the
+  // manager mints and the subject this session publishes to come from ONE function. Re-deriving it
+  // here would be a second place the subject is decided, and the two would drift the first time
+  // either changed.
+  eventChannel,
   pluginRoot: PLUGIN_ROOT,
   requires: ["claude"],
   supportsResume: true, // renders `--resume <id> --fork-session` (fork-from, never hijack) — see buildLaunch
@@ -98,6 +103,23 @@ export const claudeConnector: Connector = {
     // agent actually did — OFF by default (transcripts are verbose and may carry sensitive
     // content); `--transcript` (opts.transcript === true) opts in. Personal sessions never mirror.
     if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1";
+    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter and is what makes a grant meaningful:
+    // holding publish rights on a channel is not a request to publish to it. `COTAL_WORKSPACE_ROOT`
+    // rides with it because the emitter's write-ahead log has to live somewhere a LATER start will
+    // look, and there is no safe default: a WAL written under the launch cwd is invisible to the
+    // next start, which then reads an already-published thread as virgin and republishes sequences
+    // the stream has seen. Sent only when events are on, so a session that never emits carries no
+    // path it has no use for.
+    if (opts.events === true) {
+      env.COTAL_EVENTS = "1";
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "claude connector: events were requested but the launch carries no workspaceRoot, so the " +
+            "event write-ahead log has nowhere to live that a later start would look. Refusing rather " +
+            "than defaulting to the working directory.",
+        );
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
