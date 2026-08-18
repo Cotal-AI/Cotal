@@ -84,11 +84,16 @@ for (const p of toolParams) {
 // `resume` stays deliberately OFF the peer-facing tool (host-transcript disclosure — see the
 // tool-specs note); this asserts today's intent so re-adding it is a conscious edit here too.
 assert.ok(!toolParams.includes("resume"), "cotal_spawn must not expose resume (deferred, #159)");
-// `events` is likewise OFF the peer-facing tool, and deliberately so. Arming another session's
-// event plane publishes that session's full tool inputs and outputs to a channel, so the option
-// needs an admin precheck that runs BEFORE connector resolution or any grant mutation, and that
-// precheck does not exist yet. Asserting the absence is what keeps "not built" from drifting into
-// "built and unguarded" by way of a one-line schema addition.
+// `events` is likewise OFF the peer-facing tool, and deliberately so: arming another session's event
+// plane publishes that session's full tool inputs and outputs to a channel.
+//
+// BUT READ WHAT THIS CELL ACTUALLY PROVES, because an earlier version of this comment claimed more.
+// The MCP tool and the manager's `spawn` service op are two doors onto one handler, and the service
+// op's schema accepts `events`, `subscribe`, `allowSubscribe` and `allowPublish` in full. So this
+// assertion fences the TOOL SHAPE and nothing else: it is not a control-plane refusal, and a
+// spawn-capable caller that can reach the service door directly is not stopped by it. Stating that
+// here is the point. A cell whose comment claims a guarantee it does not deliver is worse than no
+// cell, because the next reader stops looking.
 assert.ok(!toolParams.includes("events"), "cotal_spawn must not expose events until the admin precheck exists");
 
 // 4 — every launch client outlives the manager's readiness wait (#159 B1). The tier rule forbids
