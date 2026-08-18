@@ -97,7 +97,7 @@
 import { mkdtempSync, rmSync, writeFileSync, readFileSync, appendFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Part } from "@cotal-ai/core";
+import { eventChannel, principalKey, type Part } from "@cotal-ai/core";
 import {
   aguiFrame,
   AguiEmitter,
@@ -148,6 +148,10 @@ interface Call {
   id: string;
   expectedLastSubjectSeq: number;
   parts: Part[];
+  /** THE SUBJECT THE FRAME WENT TO. Recorded because the claim "nothing caller-supplied can select
+   *  the subject" is a claim about every publish, and a instrument that discards the channel can
+   *  testify to nothing about it. */
+  channel: string;
 }
 
 /**
@@ -158,8 +162,12 @@ interface Call {
  * constant is not a packer.
  */
 class FakeEndpoint {
-  readonly principal = PRINCIPAL;
-  readonly actorIsEphemeral = false;
+  readonly principal: { owner: string; actor: string };
+  readonly actorIsEphemeral: boolean;
+  constructor(o?: { principal?: { owner: string; actor: string }; actorIsEphemeral?: boolean }) {
+    this.principal = o?.principal ?? PRINCIPAL;
+    this.actorIsEphemeral = o?.actorIsEphemeral ?? false;
+  }
   maxPayload = 4096;
   preflightError: Error | undefined;
   preflightCalls = 0;
@@ -185,7 +193,7 @@ class FakeEndpoint {
     id: string;
     expectedLastSubjectSeq: number;
   }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
-    this.publishes.push({ id: o.id, expectedLastSubjectSeq: o.expectedLastSubjectSeq, parts: o.parts });
+    this.publishes.push({ id: o.id, expectedLastSubjectSeq: o.expectedLastSubjectSeq, parts: o.parts, channel: o.channel });
     // THE INSTRUMENT ENFORCES THE CEILING, because the broker does. A fake that accepts any size
     // cannot witness an over-packed frame, and "the packer produced N frames" is not the property —
     // "every frame it produced could actually be sent" is.
@@ -931,6 +939,90 @@ try {
       realBytes <= ep.maxPayload + 10,
       { realBytes, ceiling: ep.maxPayload },
     );
+  });
+
+  // ── THE SUBJECT COMES FROM THE ALLOCATED PRINCIPAL AND FROM NOTHING ELSE ─────────────────────
+  //
+  // The plane is defined to carry tool inputs and outputs, so "which subject does a session publish
+  // to" is an authorization question, not a routing detail: the manager mints a publish grant for
+  // exactly one channel, and a session that could be talked into publishing somewhere else would
+  // either be silently unauthorized or, worse, authorized onto a channel a reader trusts to name
+  // its author.
+  //
+  // WHAT IS ASSERTED IS AN ABSENCE, so the instrument records every publish's channel rather than
+  // only its parts. `AguiEmitter.start` takes an endpoint, a WAL, a source and a mapper, and NONE
+  // of the last three name a subject: the channel is derived once by `eventChannelForSession(ep)`
+  // from `ep.principal`. These cells hold that derivation to it against inputs that try to say
+  // otherwise.
+  await block("THE SUBJECT COMES FROM THE ALLOCATED PRINCIPAL AND FROM NOTHING ELSE", async () => {
+    const { wal, source, src } = await fresh("subject-derivation");
+    const ep = new FakeEndpoint();
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }))).value!;
+    await em.pump(); // adopt
+    c("subject:the-emitter-derives-its-channel-from-the-ENDPOINT-principal", em.channel === eventChannel(PRINCIPAL), {
+      channel: em.channel,
+      expected: eventChannel(PRINCIPAL),
+    });
+    // The mapped RECORD carries a channel-shaped string in its own content. A mapper is caller code
+    // reading a file the session's harness wrote, so this is the closest thing to caller-supplied
+    // input the emitter has, and it must not reach the subject.
+    append(src, { run: "r1", msg: "m1", text: "events.local.somebody_else" }, { run: "r2", msg: "m2", text: "channel: events.other.victim" });
+    ep.answers = [
+      { seq: 1, duplicate: false },
+      { seq: 2, duplicate: false },
+    ];
+    const pumped = await attempt(() => em.pump());
+    c("subject:content-that-NAMES-another-channel-does-not-move-the-publish", pumped.err === undefined && ep.publishes.length > 0, {
+      err: pumped.err?.message,
+      publishes: ep.publishes.length,
+    });
+    c(
+      "subject:EVERY-publish-went-to-the-principal-channel-and-to-no-other",
+      ep.publishes.length > 0 && ep.publishes.every((call) => call.channel === eventChannel(PRINCIPAL)),
+      ep.publishes.map((call) => call.channel),
+    );
+  });
+
+  // A DIFFERENT principal, identical WAL/source/mapper inputs: the subject moves with the principal
+  // and with nothing else. Without this the cell above is satisfied by a hard-coded constant.
+  await block("A DIFFERENT PRINCIPAL PUBLISHES SOMEWHERE ELSE, FROM THE SAME INPUTS", async () => {
+    const OTHER = { owner: "local", actor: "bbb" };
+    const d = join(dir, "subject-other");
+    const src = join(d, "session.jsonl");
+    const { mkdirSync } = await import("node:fs");
+    mkdirSync(d, { recursive: true });
+    writeFileSync(src, "");
+    const wal = await EventWal.open(join(d, "wal.json"), {
+      space: SPACE,
+      threadId: THREAD,
+      principal: principalKey(OTHER.owner, OTHER.actor).key,
+      subjectMayExist: false,
+    });
+    const ep = new FakeEndpoint({ principal: OTHER });
+    const em = (await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source: new JsonlFileSource<Rec>(src), map: mapper }))).value!;
+    c("subject:CONTROL-the-channel-tracks-the-principal-rather-than-being-a-constant", em.channel === eventChannel(OTHER) && em.channel !== eventChannel(PRINCIPAL), {
+      channel: em.channel,
+    });
+  });
+
+  // The WAL is the one input that carries a principal of its own, and it is the one that could put
+  // a session's frames under another identity. It is cross-checked, and the refusal is the cell.
+  await block("A WAL BELONGING TO ANOTHER PRINCIPAL IS REFUSED, NOT ADOPTED", async () => {
+    const { wal, source } = await fresh("subject-wal-mismatch");
+    const ep = new FakeEndpoint({ principal: { owner: "local", actor: "ccc" } });
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
+    c("subject:a-WAL-from-another-principal-REFUSES-rather-than-publishing-under-two-identities", started.err !== undefined && /refusing to/.test(started.err.message), started.err?.message);
+    c("subject:...and-nothing-was-published-on-the-way-to-that-refusal", ep.publishes.length === 0, ep.publishes.length);
+  });
+
+  // The mode with no stable identity at all. A fallback here would put the fused-name channel back
+  // on the one path that has no credential to grade it against, so the refusal is load-bearing.
+  await block("A SELF-MINTED IDENTITY IS REFUSED RATHER THAN DEFAULTED", async () => {
+    const { wal, source } = await fresh("subject-ephemeral");
+    const ep = new FakeEndpoint({ actorIsEphemeral: true });
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, source, map: mapper }));
+    c("subject:an-EPHEMERAL-actor-refuses-events-rather-than-inventing-a-channel", started.err !== undefined && /self-minted identity/.test(started.err.message), started.err?.message);
+    c("subject:...and-that-refusal-publishes-nothing-either", ep.publishes.length === 0, ep.publishes.length);
   });
 } finally {
   rmSync(dir, { recursive: true, force: true });
