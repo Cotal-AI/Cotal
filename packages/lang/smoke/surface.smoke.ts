@@ -13,7 +13,9 @@
  * 3. the interpreter's `case` labels are exactly the admitted and structural sets, read from its source;
  * 4. every admitted node type EXECUTES, and every forbidden row REJECTS with its own code;
  * 5. every method in the curated tables is callable on its receiver, and `sort`'s total order holds;
- * 6. every code block in the language reference parses, so the reference cannot drift from the code.
+ * 6. every ```js block in the language reference and the guide VALIDATES as written (it is not run:
+ *    a block's behaviour is held by the cells above and by the differential suite, this holds only
+ *    that no example uses syntax or names the language refuses).
  */
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
@@ -290,6 +292,13 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
   ok("a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
     (await logsOf("const o = { a: 1 }; o.b = 2; const xs = [1]; xs.push(2); xs[5] = 6; log(o, xs.length);"))[0]?.toString() === "[object Object],6"
       && await logsOf('const b = await spawn("b"); b.x = 1;').then(() => false, (e: Error) => e.message.startsWith("L2031")));
+  // `xs.length = n` is a write the table permits; a LONGER length is refused with its own code rather
+  // than escaping as the host's "Cannot redefine property: length" (measured before the rule).
+  ok("`xs.length = n` longer than the array, negative, or not an integer is L4017, catchable, and names the bound",
+    await logsOf("const xs = [1]; xs.length = 3;").then(() => false, (e: Error) => e.message.startsWith("L4017") && e.message.includes("current length (1)"))
+      && await logsOf("const xs = [1]; xs.length = -1;").then(() => false, (e: Error) => e.message.startsWith("L4017"))
+      && await logsOf("const xs = [1]; xs.length = 0.5;").then(() => false, (e: Error) => e.message.startsWith("L4017"))
+      && JSON.stringify(await logsOf('const xs = [1]; try { xs.length = 3 } catch (e) { log(e.code) } log(xs);')) === '["L4017",[1]]');
   ok("a value born outside a concurrent branch and written inside it, through an alias, is L2032",
     await logsOf("const acc = {}; await parallel({ a: async () => { const local = acc; local.a = 1; }, b: async () => 2 });").then(() => false, (e: Error) => e.message.startsWith("L2032")));
   ok("a value born inside a branch may be written there and is returned frozen",

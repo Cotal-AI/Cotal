@@ -644,7 +644,22 @@ class Interpreter {
     }
     this.assertWritable(obj, frame);
     if (Array.isArray(obj)) {
-      if (prop !== "length" && arrayIndex(prop) === undefined) {
+      if (prop === "length") {
+        // `xs.length = n` truncates, as in JavaScript. A LONGER length is refused: JavaScript would
+        // fill the gap with holes, and a hole is a value class this language does not have (its
+        // methods do not skip holes, so a program with holes would read differently here and on a
+        // real engine). Push what you need instead. `length` is not an own data property that
+        // `setOwn` can define, so the write goes to the array itself.
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > obj.length) {
+          throw new RuntimeFault(
+            "L4017",
+            `\`length\` can only be set to an integer between 0 and the array's current length (${obj.length}), got ${typeof value === "number" ? value : typeof value}: a longer length would create holes, which this language does not have; push the elements instead`,
+          );
+        }
+        obj.length = value;
+        return;
+      }
+      if (arrayIndex(prop) === undefined) {
         throw new RuntimeFault("L4014", `\`${prop}\` is not a member of an array: an array takes an index or \`length\``);
       }
     } else if (prop === "__proto__") {

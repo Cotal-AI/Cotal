@@ -245,6 +245,17 @@ const m = [[1, 2], [3, 4]];
 log(a, b, b.length, b[0], b[99], m[1][0], [..."ab"], [1, 2].concat([3], 4));
 `);
 
+await same("`xs.length = n` truncates, to a shorter length and to zero, as JavaScript does", `
+const xs = [1, 2, 3, 4]; xs.length = 2; const ys = [9]; ys.length = 0;
+log(xs, xs.length, ys, ys.length, xs.map((x) => x * 2));
+`);
+
+// The names the design once reserved for sugar it never built (\`any\`, \`all\`) are ordinary names.
+await same("`any` and `all` are ordinary names", `
+const any = 1; let all = [any, 2]; all = all.map((x) => x + any);
+log(any, all);
+`);
+
 await same("destructuring: objects, arrays, defaults, rest, nested, in parameters, swap", `
 const { a, b: renamed, c = 3, ...restO } = { a: 1, b: 2, d: 4, e: 5 };
 const [x, , y = 9, ...restA] = [1, 2, undefined, 4, 5];

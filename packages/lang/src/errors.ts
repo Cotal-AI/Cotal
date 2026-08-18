@@ -89,6 +89,7 @@ export const CATALOG = {
   L4014: "Unknown member",
   L4015: "Not iterable",
   L4016: "Builtin failed",
+  L4017: "Invalid array length",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

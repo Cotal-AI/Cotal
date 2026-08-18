@@ -299,8 +299,6 @@ export const RESERVED_NAMES: ReadonlySet<string> = new Set([
   ...Object.keys(PURE_PRIMITIVES),
   ...BUILTINS,
   ...VALUE_NAMES,
-  "any",
-  "all",
 ]);
 
 /**
