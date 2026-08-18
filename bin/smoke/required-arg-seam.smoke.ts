@@ -776,14 +776,8 @@ function bindingCounts(src: ts.SourceFile): Map<string, number> {
   const out = new Map<string, number>();
   const bump = (name: string): void => { out.set(name, (out.get(name) ?? 0) + 1); };
   const walk = (n: ts.Node): void => {
-    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) bump(n.name.text);
-    else if (ts.isBinaryExpression(n) && ts.isIdentifier(n.left)
-      && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
-      && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) bump(n.left.text);
-    else if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
-      && ts.isIdentifier(n.operand)
-      && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken))
-      bump(n.operand.text);
+    if (ts.isVariableDeclaration(n)) { const b = new Set<string>(); boundNames(n.name, b); b.forEach(bump); }
+    else writesTo(n).forEach(bump);
     ts.forEachChild(n, walk);
   };
   walk(src);
@@ -826,13 +820,54 @@ function settledStrings(src: ts.SourceFile, consts: Map<string, string>): Map<st
  *  that costs a verdict rather than the one that grants a pass. */
 type NameFact = "undefined" | "unsettled" | "unknown";
 
-const rebinds = (n: ts.Node, name: string): boolean =>
-  (ts.isBinaryExpression(n) && ts.isIdentifier(n.left) && n.left.text === name
-    && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
-    && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
-  || ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
-    && ts.isIdentifier(n.operand) && n.operand.text === name
-    && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken));
+/** Every name an assignment WRITES, which is not the same as the name on its left. `({ K } = o)`
+ *  and `[K] = a` write K through a pattern, and a rule that reads only `x = v` sees no write at all
+ *  and answers the name from its declaration while the program runs on the assignment. That is the
+ *  original false green wearing different syntax. */
+function assignmentTargets(e: ts.Expression, out: Set<string>): void {
+  const x = unwrap(e);
+  if (ts.isIdentifier(x)) { out.add(x.text); return; }
+  if (ts.isBinaryExpression(x) && x.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+    assignmentTargets(x.left, out); // a default inside a pattern: `{ a: b = 1 }`
+    return;
+  }
+  if (ts.isObjectLiteralExpression(x)) {
+    x.properties.forEach((q) => {
+      if (ts.isShorthandPropertyAssignment(q)) out.add(q.name.text);
+      else if (ts.isPropertyAssignment(q)) assignmentTargets(q.initializer, out);
+      else if (ts.isSpreadAssignment(q)) assignmentTargets(q.expression, out);
+    });
+    return;
+  }
+  if (ts.isArrayLiteralExpression(x)) {
+    x.elements.forEach((el) => {
+      if (ts.isOmittedExpression(el)) return;
+      assignmentTargets(ts.isSpreadElement(el) ? el.expression : el, out);
+    });
+  }
+}
+
+/** The names a DECLARATION binds, pattern included. */
+function boundNames(n: ts.BindingName, out: Set<string>): void {
+  if (ts.isIdentifier(n)) { out.add(n.text); return; }
+  n.elements.forEach((el) => { if (!ts.isOmittedExpression(el)) boundNames(el.name, out); });
+}
+
+const writesTo = (n: ts.Node): Set<string> => {
+  const out = new Set<string>();
+  if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+    && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) assignmentTargets(n.left, out);
+  // `for (K of xs)` rebinds K on every pass and is not an assignment expression at all.
+  else if ((ts.isForOfStatement(n) || ts.isForInStatement(n))
+    && !ts.isVariableDeclarationList(n.initializer)) assignmentTargets(n.initializer, out);
+  else if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
+    && ts.isIdentifier(n.operand)
+    && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken))
+    out.add(n.operand.text);
+  return out;
+};
+
+const rebinds = (n: ts.Node, name: string): boolean => writesTo(n).has(name);
 
 /** The nearest enclosing scope of a node: a function, or the file when there is no function. */
 function scopeOf(n: ts.Node): ts.Node | undefined {
@@ -867,9 +902,44 @@ function opaqueBinding(n: ts.Node, name: string): boolean {
   return false;
 }
 
+/** What a destructuring pattern hands this name, when the thing being taken apart is written out
+ *  right here. `const { tls } = { tls: undefined }` is readable and was passing as stated; `const
+ *  { tls } = cfg` is not readable, and the difference between those two is the difference between
+ *  declining to answer and answering wrongly. */
+function patternValue(pattern: ts.BindingName, init: ts.Expression | undefined,
+  name: string): ts.Expression | undefined | "opaque" {
+  if (!ts.isObjectBindingPattern(pattern) || !init) return "opaque";
+  const src = unwrap(init);
+  if (!ts.isObjectLiteralExpression(src)) return "opaque";
+  if (src.properties.some((q) => ts.isSpreadAssignment(q)
+    || (!!q.name && ts.isComputedPropertyName(q.name)))) return "opaque";
+  const el = pattern.elements.find((e) => ts.isIdentifier(e.name) && e.name.text === name);
+  if (!el || el.dotDotDotToken || el.initializer) return "opaque"; // a rest or a default is another read
+  const key = el.propertyName ?? el.name;
+  if (!ts.isIdentifier(key) && !ts.isStringLiteralLike(key)) return "opaque";
+  const hit = src.properties.find((q) => !!q.name
+    && (ts.isIdentifier(q.name) || ts.isStringLiteralLike(q.name)) && q.name.text === key.text);
+  if (!hit) return undefined; // the property is absent, so this name IS undefined
+  if (ts.isPropertyAssignment(hit)) return hit.initializer;
+  if (ts.isShorthandPropertyAssignment(hit)) return hit.name;
+  return "opaque";
+}
+
+/** The value a DECLARATION gives this name, or "opaque" where it binds the name by a route this
+ *  file cannot value. A catch variable is bound by the throw and a for-of variable by the
+ *  iteration: neither has an initializer to read, and reading the absent one as undefined is how
+ *  `catch (tls)` came to claim the very value the seam throws on. */
+function declaredValue(decl: ts.VariableDeclaration, name: string): ts.Expression | undefined | "opaque" {
+  if (ts.isCatchClause(decl.parent)) return "opaque";
+  if (ts.isVariableDeclarationList(decl.parent) && decl.parent.parent
+    && (ts.isForOfStatement(decl.parent.parent) || ts.isForInStatement(decl.parent.parent))) return "opaque";
+  if (ts.isIdentifier(decl.name)) return decl.initializer;
+  return patternValue(decl.name, decl.initializer, name);
+}
+
 function nameFact(id: ts.Identifier): NameFact {
   for (let scope = scopeOf(id); scope; scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope)) {
-    const decls: ts.VariableDeclaration[] = [];
+    const values: (ts.Expression | undefined)[] = [];
     let writes = 0, opaque = 0;
     const visit = (n: ts.Node): void => {
       // A nested function DECLARATION is both a binding here and a scope of its own, and the binding
@@ -877,20 +947,28 @@ function nameFact(id: ts.Identifier): NameFact {
       // outward to an unrelated binding that then answered for it.
       if (opaqueBinding(n, id.text)) { opaque += 1; return; }
       if (n !== scope && ts.isFunctionLike(n)) return; // another scope answers for its own names
-      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) {
-        // A catch variable is bound by the throw, not by this text, and it has no initializer to
-        // read. Counting it as a readable declaration made `catch (tls)` claim undefined.
-        if (ts.isCatchClause(n.parent)) opaque += 1;
-        else decls.push(n);
-      } else if (rebinds(n, id.text)) writes += 1;
+      if (ts.isVariableDeclaration(n)) {
+        const bound = new Set<string>();
+        boundNames(n.name, bound);
+        if (bound.has(id.text)) {
+          const v = declaredValue(n, id.text);
+          if (v === "opaque") opaque += 1;
+          else values.push(v);
+          // The pattern IS this binding, so do not walk it again; the initializer can still hold
+          // rebindings of the name and is walked on its own.
+          if (n.initializer) visit(n.initializer);
+          return;
+        }
+      }
+      if (rebinds(n, id.text)) writes += 1;
       ts.forEachChild(n, visit);
     };
     visit(scope);
-    const binds = decls.length + writes + opaque;
+    const binds = values.length + writes + opaque;
     if (binds === 0) continue; // not bound here: the enclosing scope answers
     if (binds > 1) return "unsettled";
     if (opaque === 1) return "unknown"; // bound here, by something this file cannot value
-    const init = decls[0].initializer;
+    const init = values[0];
     return !init || literalUndefined(unwrap(init)) ? "undefined" : "unknown";
   }
   return "unknown";
@@ -1560,6 +1638,32 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`function f({ tls }: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
   check("...and a PLAIN identifier parameter shadows it as well, which is a different branch entirely",
     one(`const tls = undefined;\nfunction f(tls: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  // A REBINDING does not have to be `x = v`. Review found three routes that are not, and each one
+  // was a green while the program ran on a value this reader had answered from the declaration.
+  check("a value rebound through an OBJECT assignment pattern is not answered from its declaration",
+    one(`let tls: any = false;\n({ tls } = { tls: undefined });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and through an ARRAY assignment pattern, which writes the name without naming it on the left",
+    one(`let tls: any = false;\n[tls] = [undefined];\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and by a for-of, which rebinds on every pass and is no assignment expression at all",
+    one(`let tls: any = false;\nfor (tls of [undefined]) standaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  // The same routes in KEY position, where the fold answers which key the call states.
+  check("a KEY rebound through an assignment pattern does not fold, so the stated key cannot be faked",
+    one(`let K = "tls";\n({ K } = { K: "other" });\nstandaloneConnectOpts({ creds: c, [K]: false });`) === "missing-key");
+  check("...and a KEY rebound by a for-of does not fold either",
+    one(`let K = "tls";\nfor (K of ["other"]) standaloneConnectOpts({ creds: c, [K]: false });`) === "missing-key");
+  // DESTRUCTURING declarations: read the ones written out here, decline the ones that are not.
+  check("a destructured local IS read when what it takes apart is written out right here",
+    one(`const { tls } = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...including an absent property, which is exactly the undefined the seam throws on",
+    one(`const { tls } = { other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...while the same shape holding a real boolean is untouched",
+    one(`const { tls } = { tls: false };\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and one taken from a value this file cannot read is DECLINED, not claimed",
+    one(`const { tls } = cfg;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a RENAME binds the new name, not the property name it reads from",
+    one(`function f({ tls: renamed }: any) { const tls = undefined as any; return standaloneConnectOpts({ creds: c, tls }); }`) === "missing-key");
+  check("a for-of DECLARATION is bound by the iteration, so it is not read as an undefined declaration",
+    one(`for (const tls of [true, false]) standaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("...and a DESTRUCTURED local shadows it too, since the walk stops at any binding of the name",
     one(`const tls = undefined;\nfunction f(cfg: any) { const { tls } = cfg; return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
   check("...and a CATCH variable likewise, which parses as a declaration with no initializer and is not one",
