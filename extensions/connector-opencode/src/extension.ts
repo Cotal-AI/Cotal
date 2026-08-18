@@ -150,8 +150,14 @@ export const opencodeConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
       ...aclEnv(opts),
-      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
-      // plugin drops even that once it has read it, so a shell this seat runs inherits neither.
+      // Creds, broker URL and the control token ride a 0600 file; only its path is exported.
+      //
+      // The plugin drops even that path once it has read it, and WHERE it does so is the part worth
+      // stating: this connector's seat process is a shim that starts `opencode serve` and a TUI
+      // attached to it, and the plugin runs inside the SERVER. The server is also the process that
+      // executes the session's tool calls, so a shell this seat runs inherits neither the material
+      // nor a reference to it. The shim itself keeps the reference, because the server it starts is
+      // the reader; it runs no tools of its own.
       ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
