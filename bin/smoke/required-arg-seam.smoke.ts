@@ -869,9 +869,13 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // global scope, so a constant declared in an earlier script still spells the seam in a later one.
   check("a constant declared in an EARLIER script still folds in a later one, since they share scope",
     html(`<script>const N = "standaloneConnectOpts";</script>\n<script>core[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
+  check("...and a LATER script's own constants are collected too, not just the first program's",
+    html(`<script>const a = 1;</script>\n<script>const N = "standaloneConnectOpts";\ncore[N]({ creds: c });</script>`)[0]?.verdict === "missing-key");
   // Separate parsing must not turn a neighbour's syntax error into silence for the whole document.
   check("a script that does not PARSE refuses the document rather than scanning its recovery tree",
     html(`<script>function (</script>\n<script>standaloneConnectOpts({ creds: c });</script>`)[0]?.verdict === "unverifiable");
+  check("...and a LATER script's syntax error refuses it just the same, so the refusal is not first-only",
+    html(`<script>standaloneConnectOpts({ creds: c });</script>\n<script>function (</script>`)[0]?.verdict === "unverifiable");
   check("a BARE DEFAULT import binds the scannable name, so it is not a rebinding",
     fx(`import standaloneConnectOpts from "@cotal-ai/core";`).length === 0);
   // The residual both reviews called ordinary rather than exotic, and they were right: this is
