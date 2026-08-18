@@ -764,29 +764,120 @@ function escapesAt(n: ts.Node, fn: string, folds: Folds): boolean {
 const literalUndefined = (x: ts.Node): boolean =>
   (ts.isIdentifier(x) && x.text === "undefined") || ts.isVoidExpression(x);
 
-/** Same-file `const x = undefined`. Restricted to `const` on purpose: a `let` can be assigned a real
- *  boolean later, and claiming undefined there would be a FALSE RED, which is the one direction this
- *  reader must not take. Review passed `const tls = undefined; seam({ creds, tls })` through the
- *  check as a counted, GREEN site while it threw at runtime. */
-const UNDEF_BOUND = new WeakMap<ts.SourceFile, Set<string>>();
-function undefinedBound(src: ts.SourceFile): Set<string> {
-  const cached = UNDEF_BOUND.get(src);
+/** How many times each name is BOUND across this file, declarations and assignments alike.
+ *  The KEY fold needs this at file granularity, because the const map it folds through is itself
+ *  built file-wide: a name this file binds twice has no one value, and folding it means answering
+ *  what it WOULD BE at runtime from text that does not settle it. The VALUE reader below asks a
+ *  narrower, scoped question and does not use this. */
+const BINDS = new WeakMap<ts.SourceFile, Map<string, number>>();
+function bindingCounts(src: ts.SourceFile): Map<string, number> {
+  const cached = BINDS.get(src);
   if (cached) return cached;
-  const out = new Set<string>();
-  const visit = (n: ts.Node): void => {
-    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.initializer
-      && ts.isVariableDeclarationList(n.parent) && (n.parent.flags & ts.NodeFlags.Const) !== 0
-      && literalUndefined(unwrap(n.initializer))) out.add(n.name.text);
-    ts.forEachChild(n, visit);
+  const out = new Map<string, number>();
+  const bump = (name: string): void => { out.set(name, (out.get(name) ?? 0) + 1); };
+  const walk = (n: ts.Node): void => {
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name)) bump(n.name.text);
+    else if (ts.isBinaryExpression(n) && ts.isIdentifier(n.left)
+      && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+      && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment) bump(n.left.text);
+    else if ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
+      && ts.isIdentifier(n.operand)
+      && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken))
+      bump(n.operand.text);
+    ts.forEachChild(n, walk);
   };
-  visit(src);
-  UNDEF_BOUND.set(src, out);
+  walk(src);
+  BINDS.set(src, out);
   return out;
 }
 
+/** The consts an ARGUMENT key may fold through: those this file SETTLES, meaning bound exactly once.
+ *  Review defeated the unfiltered version by rewriting a real counted site to `let K = "tls"; K =
+ *  "other"; seam({ creds, [K]: false })`: the fold answered "tls" from the declaration, the runtime
+ *  key was "other", the seam threw, and the suite stayed green at 94 of 94 with the counts unmoved.
+ *  That is the same false green the seam-name path already refuses by its own order rule, and it
+ *  arrived through the fold this file had just widened to argument position. */
+function settledStrings(src: ts.SourceFile, consts: Map<string, string>): Map<string, string> {
+  const counts = bindingCounts(src);
+  return new Map([...consts].filter(([name]) => (counts.get(name) ?? 0) <= 1));
+}
+
+/** What this file can say about a NAME used as the key's value, answered in the SCOPE that binds it.
+ *
+ *  A file-wide map cannot answer this, and the two ways it fails are the two findings that produced
+ *  this function. Claiming too much: `let tls = false; tls = undefined` passed as has-key, because a
+ *  map keyed by name reads the declaration while the program runs on the assignment. Claiming too
+ *  little, which is worse, because a false red teaches people to route around the check: two
+ *  ordinary functions, each with its own local `tls`, one of them dead, and the dead one answers for
+ *  the live call. Counting harder does not fix that second one, it only changes which red it is,
+ *  since the two names are genuinely different bindings and no file-wide count can tell them apart.
+ *
+ *  So the walk goes outward from the use to the nearest scope that BINDS the name, and that scope
+ *  alone answers. Bound once with no initializer or an undefined one: undefined, which is the value
+ *  the seam throws on. Bound more than once, by any declaration or assignment: unsettled, refused in
+ *  both directions rather than answered from whichever binding the text happens to show first. Bound
+ *  nowhere in this file, which is what a PARAMETER or an import is: unknown, and untouched. That
+ *  last case is the house idiom feeding `{ creds, tls }`, and it must stay green.
+ *
+ *  Residual, stated rather than papered over: a nested BLOCK binding is folded into its enclosing
+ *  function rather than given its own scope, so a name declared in both is unsettled and refused
+ *  where a full resolver would answer it. That is a refusal on a shadowing shape, in the direction
+ *  that costs a verdict rather than the one that grants a pass. */
+type NameFact = "undefined" | "unsettled" | "unknown";
+
+const rebinds = (n: ts.Node, name: string): boolean =>
+  (ts.isBinaryExpression(n) && ts.isIdentifier(n.left) && n.left.text === name
+    && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+    && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment)
+  || ((ts.isPrefixUnaryExpression(n) || ts.isPostfixUnaryExpression(n))
+    && ts.isIdentifier(n.operand) && n.operand.text === name
+    && (n.operator === ts.SyntaxKind.PlusPlusToken || n.operator === ts.SyntaxKind.MinusMinusToken));
+
+/** The nearest enclosing scope of a node: a function, or the file when there is no function. */
+function scopeOf(n: ts.Node): ts.Node | undefined {
+  let cur: ts.Node | undefined = n.parent;
+  while (cur && !ts.isSourceFile(cur) && !ts.isFunctionLike(cur)) cur = cur.parent;
+  return cur;
+}
+
+/** A PARAMETER of this scope, destructuring included. It binds the name to something this file
+ *  cannot read, which is exactly why it must stop the outward walk instead of letting an unrelated
+ *  outer binding of the same name answer for it. */
+function paramBinds(scope: ts.Node, name: string): boolean {
+  if (!ts.isFunctionLike(scope)) return false;
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (ts.isIdentifier(n) && n.text === name) found = true;
+    else ts.forEachChild(n, visit);
+  };
+  scope.parameters.forEach((prm) => visit(prm.name));
+  return found;
+}
+
+function nameFact(id: ts.Identifier): NameFact {
+  for (let scope = scopeOf(id); scope; scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope)) {
+    if (paramBinds(scope, id.text)) return "unknown";
+    const decls: ts.VariableDeclaration[] = [];
+    let writes = 0;
+    const visit = (n: ts.Node): void => {
+      if (n !== scope && ts.isFunctionLike(n)) return; // another scope answers for its own names
+      if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && n.name.text === id.text) decls.push(n);
+      else if (rebinds(n, id.text)) writes += 1;
+      ts.forEachChild(n, visit);
+    };
+    visit(scope);
+    if (decls.length === 0 && writes === 0) continue; // not bound here: the enclosing scope answers
+    if (decls.length !== 1 || writes > 0) return "unsettled";
+    const init = decls[0].initializer;
+    return !init || literalUndefined(unwrap(init)) ? "undefined" : "unknown";
+  }
+  return "unknown";
+}
+
 const isProvablyUndefined = (e: ts.Expression, src: ts.SourceFile): boolean => {
+  void src;
   const x = unwrap(e);
-  return literalUndefined(x) || (ts.isIdentifier(x) && undefinedBound(src).has(x.text));
+  return literalUndefined(x) || (ts.isIdentifier(x) && nameFact(x) === "undefined");
 };
 
 /**
@@ -813,14 +904,14 @@ function alternatives(e: ts.Expression): ts.Expression[] {
 /** `key` named by this property, in any of the three spellings that all state it: `key:`, `"key":`
  *  and `["key"]:`. The shorthand `{ key }` arrives here as an identifier name and states it too. */
 function propertyNames(name: ts.PropertyName | undefined, key: string,
-  consts: Map<string, string>): boolean {
+  consts: Map<string, string>, objects: Objects): boolean {
   if (!name) return false;
   if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text === key;
   // A computed key folds by exactly the arithmetic the SEAM's own name folds by. Review found the
   // asymmetry as a FALSE RED: this reader would fold `core["standalone" + "ConnectOpts"]` to find a
   // call, then refuse to fold `{ [TLS]: false }` with `const TLS = "tls"` beside it and report the
   // key missing from a call that states it. One arithmetic, both positions.
-  if (ts.isComputedPropertyName(name)) return foldString(name.expression, consts) === key;
+  if (ts.isComputedPropertyName(name)) return foldString(name.expression, consts, objects) === key;
   return false;
 }
 
@@ -836,7 +927,7 @@ function propertyNames(name: ts.PropertyName | undefined, key: string,
  * Depth matters too: `{ opts: { tls: false } }` says nothing about the seam's own argument.
  */
 function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFile,
-  consts: Map<string, string>): { verdict: Verdict; detail: string } {
+  consts: Map<string, string>, objects: Objects): { verdict: Verdict; detail: string } {
   if (!arg) return { verdict: "missing-key", detail: "called with no argument at all" };
   const show = (n: ts.Node): string => n.getText(src).replace(/\s+/g, " ").slice(0, 100);
   let unverifiable = "";
@@ -852,13 +943,13 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
       // that matters depends entirely on WHERE it sits, which is why position is tracked and not
       // just presence: before the key it is an ordinary override idiom, after it, it can undo it.
       const opaqueKey = !ts.isSpreadAssignment(p) && !!p.name && ts.isComputedPropertyName(p.name)
-        && foldString(p.name.expression, consts) === undefined;
+        && foldString(p.name.expression, consts, objects) === undefined;
       if (ts.isSpreadAssignment(p) || opaqueKey) {
         if (ts.isSpreadAssignment(p)) anySpread = true;
         if (keyAt >= 0) overwrittenAfterKey = ts.isSpreadAssignment(p) ? "a spread" : "a computed key this file cannot resolve";
         return;
       }
-      if (!propertyNames(p.name, key, consts)) return;
+      if (!propertyNames(p.name, key, consts, objects)) return;
       keyAt = i;
       // Only a property assignment carries a value this file can look at. A getter is a function
       // body, and reading it would be evaluating code, so it states the key without a knowable
@@ -883,6 +974,18 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
     // `undefined` on any branch delivers exactly what the seam throws on.
     if (keyValue && alternatives(keyValue).some((v) => isProvablyUndefined(v, src))) {
       return { verdict: "missing-key", detail: `states the key as \`undefined\`, which is not the boolean the seam demands: ${show(alt)}` };
+    }
+    // A value this file binds MORE THAN ONCE has no single value to read, and the order rule the KEY
+    // has carried since round 19 belongs here for exactly the reason it belongs there. Without it
+    // `let tls = false; tls = undefined` passed as has-key while the seam threw: the reader answered
+    // from the declaration and the program ran on the assignment. A parameter is bound nowhere this
+    // file can read and stays untouched, which is the load-bearing case: destructured params feeding
+    // `{ creds, tls }` are the house idiom and must not go red.
+    const unsettled = keyValue && alternatives(keyValue).map(unwrap)
+      .find((v) => ts.isIdentifier(v) && nameFact(v) === "unsettled");
+    if (unsettled) {
+      unverifiable ||= `the value is a name this file binds more than once, so its value at the call is not settled here: ${show(alt)}`;
+      continue;
     }
   }
   return unverifiable ? { verdict: "unverifiable", detail: unverifiable } : { verdict: "has-key", detail: "" };
@@ -942,6 +1045,7 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
   programs.forEach((src) => {
     const consts = constStrings(src);
     const objects = constObjects(src, consts);
+    const settled = settledStrings(src, consts);
     const redeclared = orderDependent(src, seam.fn, consts);
     const folds: Folds = (e) => !!e && foldString(e, consts, objects) === seam.fn;
     const lineOf = (n: ts.Node): number => src.getLineAndCharacterOfPosition(n.getStart(src)).line + 1;
@@ -954,7 +1058,7 @@ function sitesIn(file: string, text: string, seam: Seam): Site[] {
           detail: `this call's key does not settle in its own ${multiProgram ? "script" : "file"}, so answering it would mean running the program; call the seam by its own name, or spell the key from a name declared once here`,
         });
       } else if (ts.isCallExpression(n) && callsSeam(n, seam.fn, folds)) {
-        const { verdict, detail } = classify(n.arguments[0], seam.key, src, consts);
+        const { verdict, detail } = classify(n.arguments[0], seam.key, src, settled, objects);
         found.push({ file, line: lineOf(n), verdict, detail });
       } else if ((ts.isIdentifier(n) && n.text === seam.fn && !referenceIsAllowed(n, seam.fn))
         || escapesAt(n, seam.fn, folds)) {
@@ -1393,7 +1497,7 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     "a getter-valued property, which has no initializer to fold":
       fx(`const T = { get k() { return "standaloneConnectOpts"; } };\ncore[T.k]({ creds: c });`).length === 0,
   };
-  check("the DOOR CENSUS still measures what the docblock claims: control SEEN, five spellings silent",
+  check("the DOOR CENSUS still measures what the docblock claims: control SEEN, five SAMPLED spellings silent",
     Object.values(DOOR).every(Boolean),
     { moved: Object.entries(DOOR).filter(([, ok]) => !ok).map(([k]) => k),
       action: "the door changed direction; update THE DOOR'S OTHER SPELLINGS in the docblock to match" });
@@ -1411,6 +1515,37 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const tls = undefined;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
   check("...while shorthand holding a real boolean is untouched, so this is not a blanket on shorthand",
     one(`const tls = false;\nstandaloneConnectOpts({ creds: c, tls });`) !== "missing-key");
+  // A DECLARATION WITH NO INITIALIZER states the very value the seam throws on, one spelling over
+  // from the case above. The first rule demanded an initializer to read and so never visited these
+  // at all: both passed as counted, green sites while the seam threw.
+  check("`let tls;` with no initializer IS undefined at the call, which is what the seam throws on",
+    one(`let tls;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...and `var tls;` likewise, since the spelling of the declaration is not the fact",
+    one(`var tls;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  // ORDER on the value, the rule the key has carried since round 19. The kept-direction cell below
+  // covered undefined-then-real; real-then-undefined was invisible, and green while the seam threw.
+  check("a value made undefined AFTER a real boolean is not answered from the declaration",
+    one(`let tls = false;\ntls = undefined;\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and the mirror is refused too, not called undefined, since neither claim is supportable",
+    one(`let tls = undefined;\ntls = false;\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...while a name bound ONCE to undefined is settled, so `const` was never what made it safe",
+    one(`let tls = undefined;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...and a compound assignment counts as a binding, so `||=` cannot settle what it rewrites",
+    one(`let tls = undefined;\ntls ||= false;\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  // THE LOAD-BEARING GREEN. A parameter is bound zero times by this counter, and the house idiom is
+  // a destructured parameter fed straight into the call. If this goes red the check is unusable.
+  check("a PARAMETER value stays green, since this file binds it nowhere and claims nothing about it",
+    one(`function f({ tls }: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  check("...and a parameter SHADOWING an outer undefined binding stays green, since it is not that name",
+    one(`const tls = undefined;\nfunction f({ tls }: any) { return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+
+  // The VALUE rule has no scope either, so it is held to the same settlement discipline as the key.
+  // Review reddened an ordinary file: one function with a dead `const tls = undefined`, another
+  // calling the seam with `const tls = false`. The dead path answered for the live call.
+  check("a dead `const tls = undefined` in ANOTHER function does not redden a live call's own `tls`",
+    one(`function a() { const tls = undefined; return tls; }\nfunction b() { const tls = false; return standaloneConnectOpts({ creds: c, tls }); }`) === "has-key");
+  check("...and the same file with only the dead binding still reds, so scope did not become a blanket",
+    one(`function a() { const tls = undefined; return standaloneConnectOpts({ creds: c, tls }); }`) === "missing-key");
 
   // A computed ARGUMENT key folds by the arithmetic the SEAM's own name already folds by. The
   // asymmetry was a FALSE RED: this reader would fold a key to FIND a call and then refuse to fold
@@ -1419,8 +1554,26 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const TLS = "tls";\nstandaloneConnectOpts({ creds: c, [TLS]: false });`) === "has-key");
   check("...including one assembled from literals, so a key folds alike in both positions",
     one(`standaloneConnectOpts({ creds: c, ["tl" + "s"]: false });`) === "has-key");
+  // A multiply-bound key is REFUSED in argument position and reads as unverifiable in CALLEE
+  // position, and that is not an inconsistency to be tidied away: they are different programs. In
+  // argument position the value at the call is unknowable, so nothing can be claimed about the key;
+  // in callee position the same arithmetic says this call is knowably not the seam's. Each position
+  // answers its own question, and making them agree would make one of them wrong.
   check("...while a key that does NOT fold stays opaque, so folding did not become a blanket",
     one(`standaloneConnectOpts({ creds: c, [pick()]: false });`) === "missing-key");
+  // A computed key folds through a TABLE PATH in the seam's own position, so it folds here too. The
+  // gap made `{ [KEYS.transport]: false }` a false red on a call that states the key plainly.
+  check("...and an argument key folds through a const TABLE, the arithmetic the seam's name uses",
+    one(`const KEYS = { transport: "tls" };\nstandaloneConnectOpts({ creds: c, [KEYS.transport]: false });`) === "has-key");
+  // THE SAME ORDER RULE, in argument-key position. Review rewrote a real counted site in place to
+  // `let K = "tls"; K = "other"; seam({ creds, [K]: false })`: the fold answered from the
+  // declaration, the runtime key was `other`, the seam threw, and the suite stayed green at 94/67.
+  check("an argument key this file binds more than once does not fold, so a rewritten key cannot pass",
+    one(`let K = "tls";\nK = "other";\nstandaloneConnectOpts({ creds: c, [K]: false });`) === "missing-key");
+  check("...and the same holds when the LAST binding is the key, since order is not what settles it",
+    one(`let K = "other";\nK = "tls";\nstandaloneConnectOpts({ creds: c, [K]: false });`) === "missing-key");
+  check("...while a key bound exactly once still folds, so settlement did not disable the fold",
+    one(`let K = "tls";\nstandaloneConnectOpts({ creds: c, [K]: false });`) === "has-key");
 
   // A TYPE's method slot and an enum member NAME a slot; neither can hand anyone the seam. Review
   // reddened a typed facade that declared the seam's shape with no call anywhere in the file.
