@@ -796,6 +796,27 @@ try {
     sendErr !== undefined && /no subject frontier is bound/.test(sendErr.message), sendErr?.message ?? "did NOT throw");
 }
 
+// ---------------------------------------------------------------- binding is idempotent, once
+//
+// A caller that seeds a log directly and THEN starts an emitter over it binds the same record
+// twice, and refusing the second bind would push it into holding two handles on one file, which is
+// the state the generation guard exists to refuse. So rebinding the SAME record is a no-op. A
+// DIFFERENT record is still refused: that is a caller holding two beliefs about which subject this
+// log publishes to, and one of them is wrong.
+{
+  const w = await EventWal.open(p(), T);
+  const one = memorySubjectFrontier(0);
+  await w.bindSubjectFrontier(one);
+  let same: Error | undefined;
+  try { await w.bindSubjectFrontier(one); } catch (e) { same = e as Error; }
+  c("[H] rebinding the SAME record is a no-op, not a refusal", same === undefined, same?.message);
+
+  let other: Error | undefined;
+  try { await w.bindSubjectFrontier(memorySubjectFrontier(0)); } catch (e) { other = e as Error; }
+  c("[H] ...and a DIFFERENT record is refused, even though it holds the same number",
+    other !== undefined && /DIFFERENT subject frontier/.test(other.message), other?.message ?? "did NOT throw");
+}
+
 // ---------------------------------------------------------------- a stale writer touches nothing
 //
 // The generation guard used to run inside `write`, which is AFTER the shared record moves, so a

@@ -42,6 +42,24 @@
       "expectRed": "[H] ...and the PRINCIPAL's shared tip never moved for it",
       "cell": "[H] ...and the PRINCIPAL's shared tip never moved for it",
       "note": "Removing the early check puts the generation guard back inside `write`, where it still refuses the write but only after the principal's shared tip has taken this handle's number. The sibling cell that asserts the refusal is a STALE-WRITER refusal is what makes this one legible: without it the mutant merely changes which error comes out."
+    },
+    {
+      "name": "S18 rebinding the same record is refused instead of ignored",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    if (this.subject === frontier) return;\n",
+      "replace": "",
+      "expectRed": "[H] rebinding the SAME record is a no-op, not a refusal",
+      "cell": "[H] rebinding the SAME record is a no-op, not a refusal",
+      "note": "Refusing it forces a caller that seeds a log and then starts an emitter over it to hold two handles on one file, which is exactly the state the generation guard refuses."
+    },
+    {
+      "name": "S19 a different record silently replaces the bound one",
+      "file": "extensions/connector-core/src/event-wal.ts",
+      "find": "    if (this.subject) throw new Error(`event WAL ${this.path}: a DIFFERENT subject frontier is already bound`);\n",
+      "replace": "",
+      "expectRed": "[H] ...and a DIFFERENT record is refused, even though it holds the same number",
+      "cell": "[H] ...and a DIFFERENT record is refused, even though it holds the same number",
+      "note": "The cell uses a second record holding the SAME number on purpose: a check that compared tips rather than identity would pass here while accepting a genuinely different subject's record."
     }
   ]
 }

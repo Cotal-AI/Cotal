@@ -607,7 +607,13 @@ export class EventWal {
    * that is not publishing at all means.
    */
   async bindSubjectFrontier(frontier: SubjectFrontier): Promise<void> {
-    if (this.subject) throw new Error(`event WAL ${this.path}: a subject frontier is already bound`);
+    // Binding the SAME record twice is not a change, and refusing it would only push a caller that
+    // legitimately pre-seeds a log and then starts an emitter over it into holding two handles on
+    // one file, which is the state the generation guard exists to refuse. A DIFFERENT record is
+    // still refused: that is a caller who believes two things about which subject this log
+    // publishes to, and one of them is wrong.
+    if (this.subject === frontier) return;
+    if (this.subject) throw new Error(`event WAL ${this.path}: a DIFFERENT subject frontier is already bound`);
     this.subject = frontier;
     // NO SEEDING HERE, and the first version of this method did it here and was wrong. The upgrade
     // case is a NEW thread whose own log is virgin while the sequence sits in a PREVIOUS thread's

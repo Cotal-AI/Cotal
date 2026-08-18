@@ -259,6 +259,10 @@ const arm = async (opts: { config: string; url: string; seed: boolean }) => {
       });
 
     const wal = await EventWal.open(walPath, { space, threadId: "thread-1", principal: PRINCIPAL_KEY, subjectMayExist: false });
+    // Bound before the first transition, because an unbound log has no expectation to publish.
+    // The SAME instance goes to the emitter below, which rebinds it as a no-op.
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
     await wal.beginSend({
       id: frozenId,
       E: 0,
@@ -272,7 +276,7 @@ const arm = async (opts: { config: string; url: string; seed: boolean }) => {
     let started: AguiEmitter<unknown> | undefined;
     let err: Error | undefined;
     try {
-      started = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(),
+      started = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf,
         source: new JsonlFileSource(srcPath),
         map: () => null,
       });

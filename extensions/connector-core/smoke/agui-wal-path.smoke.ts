@@ -21,6 +21,7 @@ import { hostname, tmpdir } from "node:os";
 import { join, resolve, sep } from "node:path";
 import { createHash } from "node:crypto";
 import { eventWalLocation, ensureEventWalDir, resolveEventsStateRoot, EventsStateRootMissing, acquirePrincipalLock, PrincipalLockError } from "../src/agui-wal-path.js";
+import { memorySubjectFrontier } from "@cotal-ai/smoke-kit";
 import { EventWal } from "../src/event-wal.js";
 
 let pass = 0;
@@ -211,6 +212,10 @@ try {
     principal: W.principal,
     subjectMayExist: false,
   });
+  // A log has no publish expectation until the principal's shared record is bound to it, and this
+  // block drives a transition directly rather than through the emitter. The double is seeded at 0,
+  // which is what a virgin subject means and what this cell has always assumed.
+  await wal.bindSubjectFrontier(memorySubjectFrontier());
   await wal.beginSend({
     id: "00000000-0000-4000-8000-00000000abcd",
     E: 0,

@@ -298,6 +298,12 @@ try {
   // OBSERVABLE. With no pending frame, before-recovery and after-recovery are the same program.
   await block("THE ORDERING CELL: RECOVERY'S RE-PUBLISH IS INSIDE THE GUARD, NOT AFTE", async () => {
     const { wal, source } = await fresh("preflight-before-recovery");
+    // The log is driven directly here, so it needs the record bound BEFORE the first transition:
+    // an unbound log has no expectation to publish and says so. The SAME instance goes to the
+    // emitter below, which rebinds it as a no-op; a different one would be two beliefs about
+    // which subject this log publishes to.
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
     await wal.beginSend({
       id: "frozen-id-1",
       E: 0,
@@ -309,7 +315,7 @@ try {
     const ep = new FakeEndpoint();
     ep.preflightError = new Error("cannot verify expectation semantics: stream info unavailable");
     ep.answers = [{ seq: 9, duplicate: false }];
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }));
     c(
       "preflight:runs-before-RECOVERY-republishes-a-frozen-frame",
       started.err !== undefined && ep.publishes.length === 0,
@@ -455,6 +461,12 @@ try {
   await block("HALT: A DUPLICATE ACK ON A RETRY — THE SINGLE-REPLICA RETRY RULE VIOLATED", async () => {
     const { source, walPath } = await fresh("dup-retry");
     const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: false });
+    // The log is driven directly here, so it needs the record bound BEFORE the first transition:
+    // an unbound log has no expectation to publish and says so. The SAME instance goes to the
+    // emitter below, which rebinds it as a no-op; a different one would be two beliefs about
+    // which subject this log publishes to.
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
     await wal.beginSend({
       id: "frozen-retry",
       E: 0,
@@ -465,7 +477,7 @@ try {
     });
     const ep = new FakeEndpoint();
     ep.answers = [{ seq: 88, duplicate: true }];
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }));
     c(
       "halt:a-duplicate-on-a-RETRY-names-the-SINGLE-REPLICA-RETRY-RULE-rather-than-a-foreign-first-publish",
       started.err instanceof AguiEmitterHalted &&
@@ -486,6 +498,12 @@ try {
   await block("CONTROL: THE SAME RECOVERY PATH SUCCEEDS ON A NON-DUPLICATE ACK", async () => {
     const { source, walPath } = await fresh("retry-ok");
     const wal = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: false });
+    // The log is driven directly here, so it needs the record bound BEFORE the first transition:
+    // an unbound log has no expectation to publish and says so. The SAME instance goes to the
+    // emitter below, which rebinds it as a no-op; a different one would be two beliefs about
+    // which subject this log publishes to.
+    const sf = memorySubjectFrontier();
+    await wal.bindSubjectFrontier(sf);
     await wal.beginSend({
       id: "frozen-ok",
       E: 0,
@@ -496,7 +514,7 @@ try {
     });
     const ep = new FakeEndpoint();
     ep.answers = [{ seq: 5, duplicate: false }];
-    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }));
+    const started = await attempt(() => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: sf, source, map: mapper }));
     const disk = await EventWal.open(walPath, { space: SPACE, threadId: THREAD, principal: PRINCIPAL_KEY, subjectMayExist: true });
     c(
       "halt:CONTROL-recovery-with-a-NON-duplicate-ack-folds-and-continues",
