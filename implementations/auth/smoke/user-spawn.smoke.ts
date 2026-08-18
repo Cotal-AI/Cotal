@@ -402,7 +402,7 @@ try {
   {
     const bearerClaims = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { sub: string; act: { actor: string; lifecycleUid: string } };
     const epCaller = { owner: bearerClaims.sub, actor: bearerClaims.act.actor, uid: bearerClaims.act.lifecycleUid };
-    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds }), maxReconnectAttempts: 0 });
+    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
     try {
       const svc = await resolveService(epNc, SPACE, "manager", epCaller, { deadlineMs: 10_000 });
       check("user bearer resolves the manager generically (describe + store fetch + digest-verified recompile, all over the bearer)",
