@@ -231,7 +231,13 @@ the session and never after its display name, because two live agents may share 
 would then share a stream. The launch grants publish rights on exactly that one channel. A spawn
 that asks for a *different* agent's event channel is refused at the door rather than granted, since
 that channel carries the session's tool inputs and outputs; grant a reader out of band with
-`cotal actor grant` instead.
+`cotal actor grant` instead. The same rule runs on restart: a manager resume document that names
+another agent's event channel is refused rather than adopted, because the managed row is re-armed
+from that document and the credential is re-minted from the row.
+
+The rule governs the manager's doors, which are the ones a caller other than you can reach. A
+foreground `cotal spawn` on your own machine mints from your own signing material, so it can still
+grant any channel you name: that is the out-of-band grant, not a way around the rule.
 
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
