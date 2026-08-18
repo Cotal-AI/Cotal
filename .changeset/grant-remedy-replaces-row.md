@@ -24,7 +24,11 @@ reads and posts on every channel. A spawner's own ACL is the ceiling every agent
 attenuated against, so one pasted repair set a whole-plane ceiling for everything spawned under it
 from then on.
 
-Both now print every field they are replacing and say what leaving one off means. `docs/cli.md` no
+The two doors now differ, on purpose. The elevated-view refusal has the row in hand, so it prints
+every field it is replacing, values included. The two delegation refusals have no row to copy from,
+so they print NO runnable command at all and name the flags and the wide default in prose instead:
+a line carrying channel values would invent them, and a line short of all three flags widens on
+paste. Both say what leaving a flag off means. `docs/cli.md` no
 longer tells a reader that a re-grant adds to the current scope, the `cotal actor grant` usage line
 now states what an omitted flag defaults to, and the two remaining hints that name a bare grant say
 that it is the full envelope, matching the wording `cotal login` already used.

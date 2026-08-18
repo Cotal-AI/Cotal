@@ -24,6 +24,10 @@
     "the runnable line in place: it is the one that proves the prose cell alone does not close this, and",
     "the two cells are not redundant. S2 is the second fix, with placeholder values.",
     "",
+    "S5 is S4 with two spaces after the verb. It exists because the first version of the no-line cell",
+    "matched a single ASCII space, so the property as coded was narrower than the property as stated,",
+    "and a security lens closed that gap by running the shape rather than reading the regex.",
+    "",
     "SPECIFIER BOUNDARY. The suite imports the ledger by relative source path (../src/index.js), so the",
     "mutated file is the file that runs and there is no build in the command."
   ],
@@ -45,6 +49,15 @@
       "expectRed": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
       "cell": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
       "note": "The first fix for S1, blocked by a security lens that extracted the backticked command and ran it through csv+grantActor: scope ['spawn'], allowSubscribe ['>'], allowPublish ['>']. The prose after the ticks is not what gets pasted. Under this mutant the prose cell stays GREEN and only the no-line cell reddens, which is exactly why both cells exist."
+    },
+    {
+      "name": "S5 the runnable line comes back with two spaces after the verb",
+      "file": "implementations/auth/src/ledger.ts",
+      "find": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain, so grant \"${pActor}\" under owner \"${pOwner}\" first, carrying \"spawn\" in its --scope. NO ready-to-run line is printed for it, deliberately: the row does not exist, so there is nothing to copy its read and post sets from, and any \\`cotal actor grant\\` short of all three flags widens the spawner on paste. Choose --allow-subscribe and --allow-publish yourself, because a flag left off is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against`",
+      "replace": "          ? `spawner \"${parentKey}\"${deep ? ` (an ancestor of \"${leaf}\")` : \"\"} has no grant in this space - delegation flows from a granted spawner chain; grant it first with \\`cotal actor grant  ${pActor} --owner ${pOwner} --scope spawn\\`, and DECIDE its --allow-subscribe and --allow-publish rather than leaving them off: an omitted flag is the WIDE default (\\`>\\` read, \\`>\\` post), and a spawner's own ACL is the ceiling every agent spawned under it is attenuated against. No command is printed with those two filled in because there is no row to copy them from and this refusal will not invent them`",
+      "expectRed": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "cell": "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
+      "note": "A security lens broke the FIRST version of this cell with exactly this shape. The regex was `cotal actor grant [^`\\\\s]`, one ASCII space, so a line with two spaces, a tab or a newline after the verb passed the cell and still pasted wide. The property as stated is \"followed by an operand\"; the cell as coded was narrower than the property. It is `\\\\s+\\\\S` now and this mutant is the guard for that, since S4 with one space would keep passing a cell that only knew one shape."
     },
     {
       "name": "S2 the prose is right and the printed line carries invented channel values",

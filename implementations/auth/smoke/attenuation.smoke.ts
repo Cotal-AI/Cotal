@@ -128,12 +128,16 @@ try {
   // omitted flag with `>`. Both were shipped here in turn and both were caught by pasting them. So
   // the property is not "print a better command", it is PRINT NO COMMAND: the refusal names the verb,
   // the flags and the default in prose, and leaves nothing an operator can select and run.
-  const ghostPasteable = /cotal actor grant [^`\s]/.exec(ghostMsg)?.[0] ?? "";
+  const ghostPasteable = /cotal actor grant\s+\S/.exec(ghostMsg)?.[0] ?? "";
   check(
     "the missing-spawner refusal names both ACL flags and the wide default they fall back to",
     /--allow-subscribe/.test(ghostMsg) && /--allow-publish/.test(ghostMsg) && /WIDE default/.test(ghostMsg),
     ghostMsg,
   );
+  // `\s+\S` and not `` [^`\s] ``: the first version required exactly one ASCII space, so
+  // `cotal actor grant  ghost --owner ...` with two spaces, or a tab, or a newline, satisfied the cell
+  // and still pasted wide. A security lens found that by running those shapes against it. The
+  // property is "followed by an operand", and any run of whitespace then a non-space is one.
   check(
     "and it prints NO pasteable grant line: no `cotal actor grant` in it is followed by an operand",
     /cotal actor grant/.test(ghostMsg) && ghostPasteable === "",

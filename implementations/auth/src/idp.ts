@@ -169,9 +169,8 @@ function regrantRemedy(owner: string, actor: string, grant: ActorGrant, need: st
       "no ready-to-run line is printed here, and that is deliberate: this bridge did not supply the row's " +
       "current ACLs, so a printed command would either invent them or leave them off, and a flag " +
       "left off comes back as the WIDE default, `>` read and `>` post. Read the row first " +
-      "(`cotal actor list`), then re-grant it whole: " +
-      `\`${actor}\` under owner ${owner} with --scope '${scope.join(",")}', and --allow-subscribe ` +
-      "and --allow-publish set to exactly what that row holds today."
+      "(`cotal actor list`), then re-grant it whole: the scope it already carries plus " +
+      `"${need}", and --allow-subscribe and --allow-publish set to exactly what that row holds today.`
     );
   return (
     "run exactly the line below, which already carries every other field the row holds today. " +
