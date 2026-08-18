@@ -97,6 +97,13 @@
       "find": "    return id === sessionID;\n",
       "replace": "    return true;\n",
       "expectRed": "boot:a foreign session's event does not pump the owned session's staged turn"
+    },
+    {
+      "name": "R8 a swap step never settles, which is the wedge the bound exists for: the backstop must fire, say what it cost, and let every later swap keep running",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "              const drained = await settleWithin(previous.settled(), SWAP_SETTLE_MS, `drain of ${previous.path}`);\n",
+      "replace": "              const drained = await settleWithin(new Promise<void>(() => {}), SWAP_SETTLE_MS, `drain of ${previous.path}`);\n",
+      "expectRed": "bound:a healthy drain abandons no step, so the backstop is not firing on completions"
     }
   ]
 }
