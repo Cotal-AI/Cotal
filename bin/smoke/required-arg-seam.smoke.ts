@@ -1285,6 +1285,36 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   check("...while a table declared exactly ONCE still folds, so the shadow rule is not a blanket",
     fx(`const T = { k: "standaloneConnectOpts" };\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key");
 
+  // THE DOOR CENSUS, executed rather than described. The docblock paragraph headed THE DOOR'S OTHER
+  // SPELLINGS names five table shapes the fold map does not admit, each measured silent. Prose rots:
+  // this file spent several rounds asserting the door was "two lines wide" when it is five, inside
+  // the very paragraph this cell now guards, and nothing caught it because a paragraph checks
+  // nothing. A paragraph plus a cell that runs the paragraph cannot silently diverge.
+  //
+  // This is a MEASUREMENT, not a pin on a hole, and the distinction is what a failure here means. If
+  // this cell reds, the door moved in one direction or the other and the census is now WRONG: update
+  // the paragraph to match what the reader does. It does not say these five ought to stay silent.
+  // The control carries the weight, because five silent probes and a harness that stopped running
+  // produce identical output; only a probe that must be SEEN separates them.
+  const DOOR: Record<string, boolean> = {
+    "CONTROL, a plain table, must be SEEN":
+      fx(`const T = { k: "standaloneConnectOpts" };\ncore[T.k]({ creds: c });`)[0]?.verdict === "missing-key",
+    "a nested table, read through a path":
+      fx(`const T = { a: { k: "standaloneConnectOpts" } };\ncore[T.a.k]({ creds: c });`).length === 0,
+    "a key destructured out of a table":
+      fx(`const T = { k: "standaloneConnectOpts" };\nconst { k } = T;\ncore[k]({ creds: c });`).length === 0,
+    "a table destructured out of a literal":
+      fx(`const { T } = { T: { k: "standaloneConnectOpts" } };\ncore[T.k]({ creds: c });`).length === 0,
+    "a table wrapped in Object.freeze":
+      fx(`const T = Object.freeze({ k: "standaloneConnectOpts" });\ncore[T.k]({ creds: c });`).length === 0,
+    "a getter-valued property, which has no initializer to fold":
+      fx(`const T = { get k() { return "standaloneConnectOpts"; } };\ncore[T.k]({ creds: c });`).length === 0,
+  };
+  check("the DOOR CENSUS still measures what the docblock claims: control SEEN, five spellings silent",
+    Object.values(DOOR).every(Boolean),
+    { moved: Object.entries(DOOR).filter(([, ok]) => !ok).map(([k]) => k),
+      action: "the door changed direction; update THE DOOR'S OTHER SPELLINGS in the docblock to match" });
+
   // The seam throws on `undefined`, and a `const` bound to it is exactly that value spelled in two
   // steps. Review passed this through as a COUNTED, GREEN site while it threw at runtime.
   check("a `const` bound to `undefined` states the key as undefined, which is what the seam throws on",
