@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/interpret.smoke.ts",
+  "guard": "A workflow's `catch` never sees a run divergence: L5001 unwinds the run, and no effect is performed past it. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-interpret",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/uncatchable-divergence.json",
+  "mutations": [
+    {
+      "name": "the divergence class is dropped from the rethrow list, so `catch` swallows it as a host error",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          e instanceof RunDivergence ||\n          e instanceof ScopeBranchMissing ||",
+      "replace": "          e instanceof ScopeBranchMissing ||",
+      "expectRed": "a workflow's catch does not swallow a divergence",
+      "completionMarker": "ok and offers fork as the repair",
+      "cell": "a workflow's catch does not swallow a divergence",
+      "note": "Measured before the rule: a resume whose edited `sleep` diverged inside a `try` caught `{ code: \"L4000\", kind: \"host\" }`, logged past it, and performed a new effect against the journal it had diverged from."
+    }
+  ]
+}

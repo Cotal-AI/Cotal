@@ -511,4 +511,46 @@ accepts("role-parametric procedures are the reuse mechanism",
   ok("fanOut with a key is clean", r.warnings.length === 0, r.warnings.map((w) => w.code));
 }
 
+
+// ---- the dead zone is refused when the program is read (L2004) --------------------------------
+//
+// A `let`/`const` binds the WHOLE block, so a reference above the declaration resolves to it and,
+// executed, would find a binding with no value yet: JavaScript's temporal dead zone, a guaranteed
+// runtime ReferenceError in straight-line code. This language refuses it statically, the way it
+// refuses an unknown name — and the interpreter shipped the OTHER reading (the reference resolved
+// to the outer binding and logged "outer"), which is not a meaning JavaScript has ever given this
+// program. Measured before the rule existed.
+
+rejects("a block reference above a shadowing `let` is the dead zone, not the outer binding", "L2004",
+  'let x = "outer"; { log(x); let x = "inner"; }');
+rejects("a reference above the declaration in the same block", "L2004", "{ log(y); const y = 2; }");
+rejects("a parameter default may not read a LATER parameter", "L2004",
+  "let b = 9; function f(a = b, b = 1) { return a; } log(f());");
+rejects("a parameter default may not read its own parameter", "L2004", "function f(a = a) { return a; }");
+rejects("an assignment above the declaration is the same dead zone", "L2004", "{ x = 5; let x = 1; }");
+accepts("a nested function may reference a binding declared later: it runs later",
+  "function g() { return x; } let x = 1; log(g());");
+accepts("mutual recursion through hoisted declarations stays legal",
+  "function even(n) { return n === 0 ? true : odd(n - 1); } function odd(n) { return n === 0 ? false : even(n - 1); } log(even(4));");
+accepts("a parameter default may read an EARLIER parameter", "function f(a = 1, b = a) { return b; } log(f());");
+accepts("shadowing with the reference below the declaration is ordinary", 'let x = "o"; { let x = "i"; log(x); } log(x);');
+
+// ---- a named function expression binds its own name inside itself ------------------------------
+
+accepts("a named function expression recurses through its own name",
+  "const f = function walk(n) { return n === 0 ? 0 : walk(n - 1); }; log(f(2));");
+rejects("but the name does not leak into the enclosing scope", "L2001",
+  "const f = function walk(n) { return n; }; log(walk);");
+rejects("and a builtin's name cannot be taken as the inner name", "L2002",
+  "const f = function sort(n) { return n; }; log(f(1));");
+
+// ---- bigint literals are refused (L1030) -------------------------------------------------------
+//
+// Numbers here are IEEE doubles with a canonical JSON form; a bigint has neither, so it could not
+// be journalled or cross an effect boundary. Measured before the rule: `1n` validated, ran, and
+// produced a value whose typeof no admitted kind names.
+
+rejects("a bigint literal is not a value here", "L1030", "log(1n);");
+rejects("even in arithmetic that never crosses a boundary", "L1030", "log(1n + 2n === 3n);");
+
 console.log(`grammar.smoke: ${pass} checks passed`);

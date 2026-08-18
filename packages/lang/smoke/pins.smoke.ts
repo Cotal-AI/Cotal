@@ -10,6 +10,7 @@
  * Refusals are tested by code AND by what they name. "It threw" is not the property; a resume that
  * fails without saying which pin disagreed is a failure an author cannot act on.
  */
+import { createHash } from "node:crypto";
 import { run, resume } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal } from "../src/journal.js";
@@ -254,6 +255,31 @@ await sleep("1s", { name: "s" })
   ok("L5005's title says what an author must do about it",
     CATALOG.L5005 === "A pending effect cannot be recovered");
   ok("L5021 is in the catalog", CATALOG.L5021 === "Resume over a journal without the run's pins");
+}
+
+// ---- 9) the draw is the derivation the reference states, byte for byte ------------------------
+//
+// `spec/cotal-lang.md` §8.2: a draw is the first 48 bits of SHA-256 over the UTF-8 bytes of the
+// seed, U+0000, the scope path string, U+0000, and the decimal draw index, divided by 2^48. This
+// cell computes that from the sentence, with node's own hash and no interpreter, and requires the
+// interpreter's `random()` to be the same number: the document and the code cannot separate.
+
+{
+  const draws: number[] = [];
+  await run(`log(random(), random())`, {
+    runId: "r-10", seed: "run-1", handler: new SimHandler({}),
+    onLog: (l) => draws.push(...(l.values as number[])),
+  });
+  const stated = (seed: string, scopePath: string, n: number): number => {
+    const h = createHash("sha256").update(`${seed}\u0000${scopePath}\u0000${n}`, "utf8").digest();
+    let v = 0;
+    for (let i = 0; i < 6; i += 1) v = v * 256 + (h[i] as number);
+    return v / 2 ** 48;
+  };
+  ok("random() at the root scope is the reference's derivation: sha256(seed U+0000 path U+0000 n), first 48 bits, over 2^48",
+    draws[0] === stated("run-1", "", 0) && draws[1] === stated("run-1", "", 1), { draws, stated: [stated("run-1", "", 0), stated("run-1", "", 1)] });
+  ok("and a space in place of U+0000 is a different stream, so the separator is part of the contract",
+    createHash("sha256").update("run-1  0", "utf8").digest("hex") !== createHash("sha256").update(`run-1\u0000\u00000`, "utf8").digest("hex"));
 }
 
 console.log(`pins.smoke: ${pass} checks passed`);
