@@ -52,17 +52,26 @@
  * WHAT THIS DOES NOT CATCH, so nobody mistakes it for more than it is: it checks that the argument
  * is PASSED, never that its value is right. `tls: false` against a TLS broker is a wrong value and
  * this check is blind to it, by design, because the seam it guards demands a decision rather than a
- * particular decision. The one value it does judge is a provable `undefined`, which is not a boolean
- * and which the seam throws on, so stating the key as `undefined` counts as omitting it. It also
+ * particular decision. The one value it does judge is an `undefined` written AT THE CALL, on any
+ * branch, which is not a boolean and which the seam throws on, so stating the key that way counts as
+ * omitting it. A value held in a VARIABLE is not judged and cannot be: `{ tls }` and `{ tls: flag }`
+ * are the same statement to this file, and deciding what the variable holds is symbol resolution. It
+ * also
  * cannot see through a WRAPPER: a function that takes an options object and passes it on is a call
  * site whose own argument is an identifier, which lands as `unverifiable` rather than as a pass.
  *
- * Two residuals are known and left open on purpose, because closing either means a different
- * instrument rather than a better rule. A name ASSEMBLED at runtime (`core["standalone" +
- * "ConnectOpts"]`) is not constant-folded and stays invisible; only the floors cover it. And a file
- * that does not parse loses the sites in whatever the recovery produces, which is bounded by the
- * fact that a file which cannot parse cannot execute either: its own suite is red at import, before
- * any cell, which is the loud failure this check exists so as not to depend on.
+ * THE ALIAS REFUSAL IS NOT A PROOF OF TOTAL CLOSURE, and it should not be read as one. It refuses
+ * every spelling that names the seam STATICALLY, as an identifier or as a string, in the positions
+ * that can obtain it. What it cannot refuse is a property selected by an expression this file does
+ * not evaluate: a key assembled at runtime (`core["standalone" + "ConnectOpts"]`), a key held in a
+ * variable, or a reflective get. Those reach the same binding with no static spelling to catch, and
+ * closing them means evaluating expressions or resolving symbols with a type checker, which is a
+ * different instrument rather than a better rule. They are measured, not assumed: the assembled-key
+ * form is executed against this check and observed green. The floors are the only cover they have.
+ *
+ * A file that does not parse loses the sites in whatever the recovery produces, which is bounded by
+ * the fact that a file which cannot parse cannot execute either: its own suite is red at import,
+ * before any cell, which is the loud failure this check exists so as not to depend on.
  *
  * Run: pnpm smoke:required-arg-seam
  */
@@ -208,6 +217,10 @@ function stringEscapesTheName(s: ts.StringLiteralLike): boolean {
   if (!p) return false;
   if (ts.isElementAccessExpression(p) && p.argumentExpression === s) return !isCalleeOf(p);
   if (ts.isComputedPropertyName(p) && p.expression === s) return ts.isBindingElement(p.parent);
+  // `import { "seam" as f }` and `export { "seam" as f }`: ordinary syntax, and the propertyName is
+  // a string rather than an identifier, so the rule above it never sees the rename.
+  if ((ts.isImportSpecifier(p) || ts.isExportSpecifier(p)) && p.propertyName === s)
+    return !(ts.isIdentifier(p.name) && p.name.text === s.text);
   return false;
 }
 
@@ -269,24 +282,37 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
       unverifiable ||= `an alternative built elsewhere: ${show(alt)}`;
       continue;
     }
-    let keyAt = -1, keyValue: ts.Expression | undefined, spreadAfterKey = false, anySpread = false;
+    let keyAt = -1, keyValue: ts.Expression | undefined, keyIsOpaque = false;
+    let overwrittenAfterKey = "", anySpread = false;
     alt.properties.forEach((p, i) => {
-      if (ts.isSpreadAssignment(p)) {
-        anySpread = true;
-        if (keyAt >= 0) spreadAfterKey = true;
+      // A spread, or a key this file cannot resolve, can both land on the seam's own key. Whether
+      // that matters depends entirely on WHERE it sits, which is why position is tracked and not
+      // just presence: before the key it is an ordinary override idiom, after it, it can undo it.
+      const opaqueKey = !ts.isSpreadAssignment(p) && !!p.name && ts.isComputedPropertyName(p.name)
+        && !ts.isStringLiteralLike(unwrap(p.name.expression));
+      if (ts.isSpreadAssignment(p) || opaqueKey) {
+        if (ts.isSpreadAssignment(p)) anySpread = true;
+        if (keyAt >= 0) overwrittenAfterKey = ts.isSpreadAssignment(p) ? "a spread" : "a computed key this file cannot resolve";
         return;
       }
       if (!propertyNames(p.name, key)) return;
       keyAt = i;
+      // Only a property assignment carries a value this file can look at. A getter is a function
+      // body, and reading it would be evaluating code, so it states the key without a knowable
+      // value and must not be answered as though the value were fine.
       keyValue = ts.isPropertyAssignment(p) ? p.initializer : undefined;
-      spreadAfterKey = false; // a later restatement wins over an earlier spread
+      keyIsOpaque = ts.isGetAccessorDeclaration(p);
+      overwrittenAfterKey = ""; // a later restatement wins over an earlier one
     });
     if (keyAt < 0) {
       if (anySpread) { unverifiable ||= `the key may live in a spread: ${show(alt)}`; continue; }
       return { verdict: "missing-key", detail: `an alternative omits it: ${show(alt)}` };
     }
-    if (spreadAfterKey) { unverifiable ||= `a spread AFTER the key can overwrite it: ${show(alt)}`; continue; }
-    if (keyValue && isProvablyUndefined(keyValue)) {
+    if (overwrittenAfterKey) { unverifiable ||= `${overwrittenAfterKey} AFTER the key can overwrite it: ${show(alt)}`; continue; }
+    if (keyIsOpaque) { unverifiable ||= `the key is a getter, whose value this file cannot read: ${show(alt)}`; continue; }
+    // The VALUE is asked the same question the argument was: an expression that can evaluate to
+    // `undefined` on any branch delivers exactly what the seam throws on.
+    if (keyValue && alternatives(keyValue).some(isProvablyUndefined)) {
       return { verdict: "missing-key", detail: `states the key as \`undefined\`, which is not the boolean the seam demands: ${show(alt)}` };
     }
   }
@@ -357,6 +383,17 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   check("the key stated as `undefined` is flagged, because the seam throws on it just the same",
     one(`standaloneConnectOpts({ creds, tls: undefined })`) === "missing-key"
     && one(`standaloneConnectOpts({ creds, tls: void 0 })`) === "missing-key");
+  check("...including when only ONE BRANCH of the value is `undefined`",
+    one(`standaloneConnectOpts({ tls: want ? true : undefined })`) === "missing-key"
+    && one(`standaloneConnectOpts({ tls: want ?? undefined })`) === "missing-key");
+  check("a GETTER states the key with a value this file cannot read, so it is UNVERIFIABLE, not a pass",
+    one(`standaloneConnectOpts({ get tls() { return undefined; } })`) === "unverifiable");
+  // The same ordering question as the spread, in the spelling that hides it: a key the file cannot
+  // resolve can be the seam's own key, so after the key it can undo it.
+  check("a COMPUTED KEY this file cannot resolve, AFTER the key, can overwrite it and is UNVERIFIABLE",
+    one(`standaloneConnectOpts({ tls: false, [k]: undefined })`) === "unverifiable");
+  check("...and the same computed key BEFORE the key is accepted, because the literal key wins",
+    one(`standaloneConnectOpts({ [k]: undefined, tls: false })`) === "has-key");
 
   console.log(" A2. what the argument can evaluate to");
   check("a TERNARY whose every branch states the key is accepted",
@@ -433,6 +470,11 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const connectOpts = core["standaloneConnectOpts"];`) === "aliased");
   check("...including a computed rename in a destructure",
     one(`const { ["standaloneConnectOpts"]: f } = core;`) === "aliased");
+  check("...and a QUOTED import or re-export rename, which is ordinary syntax and states no identifier",
+    one(`import { "standaloneConnectOpts" as connectOpts } from "x";`) === "aliased"
+    && one(`export { "standaloneConnectOpts" as connectOpts } from "x";`) === "aliased");
+  check("...while a quoted specifier that binds the SAME name is not a rebinding",
+    fx(`import { "standaloneConnectOpts" as standaloneConnectOpts } from "x";`).length === 0);
   check("...while the string-spelled CALL stays a counted call site, not an alias",
     one(`core["standaloneConnectOpts"]({ creds: c })`) === "missing-key");
   // The false-red guard for the rule above: these bind the name this file already looks for.
