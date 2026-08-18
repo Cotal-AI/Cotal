@@ -197,29 +197,66 @@ function principalFromBearer(bearer: string): { owner: string; actor: string; li
  *  meshes, but not for a user-auth mesh this machine KNOWS about. Otherwise an old static
  *  `local.<nkey>` creds file can bypass the user-mode branch and publish/join through raw `--creds`.
  *  Registry match covers cross-directory use; the on-disk marker covers a lost/stale registry. */
-export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: string | undefined, what: string): void {
+export function refuseStaticCredsForKnownUserAuth(space: string, server: string | undefined, what: string): void {
   const recorded = findMesh(space);
   const knownRecordedUser = recorded?.mode === "user" && (server === undefined || recorded.server === server);
   const knownLocalUser = hasUserAuthState(findCotalRoot(), space);
   if (!knownRecordedUser && !knownLocalUser) return;
-  console.error(
-    c.red(
-      `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
-    ),
+  throw new ConnectRefusal(
+    `✗ ${what} tried to authenticate with a static creds file, but space "${space}" is a per-user-auth mesh - old --creds files are refused here so they can't bypass user accounts.`,
+    `  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`,
   );
-  console.error(c.dim(`  Sign in with \`cotal login\` and use the user-mode path instead (for agents: \`cotal spawn\`).`));
+}
+
+/** {@link refuseStaticCredsForKnownUserAuth} with the exiting disposition, for the callers that are
+ *  one command deep and want the refusal to end it. */
+export function refuseStaticCredsForKnownUserAuthOrExit(space: string, server: string | undefined, what: string): void {
+  try {
+    refuseStaticCredsForKnownUserAuth(space, server, what);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
+}
+
+/**
+ * A refusal from the connect path, carrying the exact sentence the operator would have been shown.
+ *
+ * Every step below has one answer for "this cannot be connected", and until now that answer was
+ * always `print it and end the process`. That is right for a person who just typed a command and
+ * wrong for anything that has to KEEP GOING: `cotal attach` re-establishing a session after the
+ * link died has to treat an unreachable broker as the transient it is, and it cannot do that
+ * through a function that exits. So the decision (what happened, and what to say about it) is
+ * separated from the disposition (print and exit, or throw), and `connectOrExit` is now a thin
+ * wrapper that supplies the exiting disposition. The two forms cannot drift in what they say
+ * because there is only one place the sentence is written.
+ */
+export class ConnectRefusal extends Error {
+  constructor(readonly rendered: string, readonly hint?: string) {
+    super(rendered);
+    this.name = "ConnectRefusal";
+  }
+}
+
+/** The exiting disposition, in ONE place: print what the refusal already decided to say, and end
+ *  the command. Anything that is not a {@link ConnectRefusal} is a real fault and rethrows. */
+function exitOnRefusal(e: unknown): never {
+  if (!(e instanceof ConnectRefusal)) throw e;
+  console.error(c.red(e.rendered));
+  if (e.hint) console.error(c.dim(e.hint));
   process.exit(1);
 }
 
 /**
- * Resolve where a mesh-touching command connects + with what creds.
+ * Resolve where a mesh-touching command connects + with what creds, THROWING {@link ConnectRefusal}
+ * on every refusal instead of ending the process. {@link connectOrExit} is this plus the printing
+ * and the exit; a caller that must survive a refusal (a reconnect loop) calls this one.
  *  • Explicit `--creds` → a RAW off-registry connection, except when the target is a known
  *    per-user-auth mesh. Those refuse static creds fail-closed because old local creds remain
  *    broker-valid but are the wrong identity plane after the flip.
  *  • Otherwise → resolve the running mesh from the registry (works from any dir), mint `role` creds
  *    on an auth mesh, and preflight with the registry's stale-prune.
  */
-export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
+export async function connectOrThrow(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
   if (flags.creds) {
     const space = flags.space ?? DEFAULT_SPACE;
     // Run the flip guard with the RAW `--server` (may be undefined). The guard treats "no --server"
@@ -227,17 +264,14 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { 
     // recognized when the caller omits --server. Defaulting the server BEFORE the guard would make
     // its `recorded.server === server` match miss every non-4222 user mesh, letting a static --creds
     // slip past the flip.
-    refuseStaticCredsForKnownUserAuthOrExit(space, flags.server, "--creds");
+    refuseStaticCredsForKnownUserAuth(space, flags.server, "--creds");
     const server = flags.server ?? DEFAULT_SERVER;
-    if (!existsSync(flags.creds)) {
-      console.error(c.red(`✗ creds file not found: ${flags.creds}`));
-      process.exit(1);
-    }
+    if (!existsSync(flags.creds)) throw new ConnectRefusal(`✗ creds file not found: ${flags.creds}`);
     const creds = readFileSync(flags.creds, "utf8");
     // An explicit `--creds` file is an off-registry connect: no mesh record, so no recorded TLS
     // intent to inherit. It stays non-strict, and that is a real (documented) gap rather than a
     // safe default - a `--creds` connect to a TLS broker still upgrades, but is downgradeable.
-    await reachableOrExit(server, { creds });
+    await reachableOrThrow(server, { creds });
     return { server, space, tls: false, creds };
   }
   // A raw OPEN remote mesh: explicit `--server` + a `--space` that isn't locally registered. Naming
@@ -249,20 +283,16 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { 
     // for that very space even when the registry lost (or never had) the entry — treating it as an
     // open broker would credless-connect into a callout denial whose copy sends the operator
     // port-hunting. Name the real state and the recovery instead.
-    if (hasUserAuthState(findCotalRoot(), flags.space)) {
-      console.error(
-        c.red(
-          `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
-        ),
+    if (hasUserAuthState(findCotalRoot(), flags.space))
+      throw new ConnectRefusal(
+        `✗ space "${flags.space}" has user auth enabled on disk but no usable registry entry - re-record it with \`cotal up\` from its project folder, then sign in (\`cotal login\`)`,
       );
-      process.exit(1);
-    }
     // A raw OPEN remote broker named entirely on the command line: nothing recorded it, so there
     // is no intent to honour. Non-strict, same documented gap as `--creds`.
-    await reachableOrExit(flags.server, {});
+    await reachableOrThrow(flags.server, {});
     return { server: flags.server, space: flags.space, tls: false };
   }
-  const target = await resolveTargetOrExit({ server: flags.server, space: flags.space });
+  const target = await resolveTargetOrThrow({ server: flags.server, space: flags.space });
   // USER MODE is a HARD branch: it never mints from on-disk trust material (static creds DO work
   // on a user-auth broker — minting here would silently connect the operator on the wrong identity
   // plane) and never connects credlessly. Everything it needs comes from the login cache + the
@@ -279,14 +309,14 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { 
   // still lands: `userConnectOrExit` sets `epCaller` from the bearer's principal, so ep request
   // subjects can be built. "Never consults role" means never mints by role — not "no triple".
   if (target.mode === "user") {
-    if (role === "control-caller-privileged" || role === "control-caller-admin") {
-      console.error(
-        c.red(
-          `✗ cannot mint the "${role}" instrument on a user-mode mesh - the logged-in user bearer is the control surface (ledger scope is the grant). Operator instruments are static-mesh only.`,
-        ),
+    if (role === "control-caller-privileged" || role === "control-caller-admin")
+      throw new ConnectRefusal(
+        `✗ cannot mint the "${role}" instrument on a user-mode mesh - the logged-in user bearer is the control surface (ledger scope is the grant). Operator instruments are static-mesh only.`,
       );
-      process.exit(1);
-    }
+    // NAMED, not overlooked: the user-mode connect still ends the process on its own refusals. No
+    // reconnect loop reaches it (`cotal attach` refuses a user-mode mesh before it ever loops, and
+    // a static mesh does not become a user mesh mid-session), and dragging that path into this
+    // refactor would widen the diff well past the one behaviour it exists to fix.
     return userConnectOrExit(target);
   }
   // An operator INSTRUMENT mint pins a fresh lifecycle uid: its ep-rail caller rows are
@@ -317,7 +347,7 @@ export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { 
       creds = await mintCreds(target.auth, identity, role);
     }
   }
-  await preflightOrExit(target, creds);
+  await preflightOrThrow(target, creds);
   // THE REGISTRY-RESOLVED PATH, and the one that must inherit the recorded decision: if the mesh
   // record says this broker is TLS-required, the connection REQUIRES it. This is the site whose
   // omission had no symptom - it connects either way against an honest broker.
@@ -412,14 +442,22 @@ async function userConnectOrExit(target: MeshTarget): Promise<Connection> {
 /** Reachability check for a RAW (off-registry) connection — one plain sentence, never a registry/
  *  stale-entry message and never a prune. Used by the `--creds` escape hatch and `join`'s explicit
  *  (link/token/creds) path, both of which connect to a broker the user named, not the registry. */
-export async function reachableOrExit(server: string, auth: RawAuth = {}): Promise<void> {
+export async function reachableOrThrow(server: string, auth: RawAuth = {}): Promise<void> {
   const probe = await probeConnect(server, auth);
   if (probe.ok) return;
   // Whether the caller actually presented anything to be rejected. `tls` is deliberately not part
   // of this: it is transport, not identity, and a TLS-only connection presents no credential.
   const hasAuth = Boolean(auth.creds ?? auth.token ?? (auth.user && auth.pass));
-  console.error(c.red(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth })));
-  process.exit(1);
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "reachable", reason: probe.reason, server, hasAuth }));
+}
+
+/** {@link reachableOrThrow} with the exiting disposition. */
+export async function reachableOrExit(server: string, auth: RawAuth = {}): Promise<void> {
+  try {
+    await reachableOrThrow(server, auth);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
 }
 
 /** Resolve the mesh a command targets, exiting with one human sentence on an unresolved/ambiguous
@@ -428,7 +466,7 @@ export async function reachableOrExit(server: string, auth: RawAuth = {}): Promi
  *  explicit `--space`. A named `--space` is resolved + preflighted directly, so pre-pruning can't
  *  erase a dead-recorded mesh the operator is recovering with a live `--server` override; preflight
  *  still prunes it (with the friendly message) when no override revives it. */
-export async function resolveTargetOrExit(flags: {
+export async function resolveTargetOrThrow(flags: {
   server?: string;
   space?: string;
 }): Promise<MeshTarget> {
@@ -437,10 +475,7 @@ export async function resolveTargetOrExit(flags: {
   try {
     target = resolveMeshTarget(process.cwd(), flags);
   } catch (e) {
-    if (isWorkspaceTargetError(e)) {
-      console.error(c.red(renderWorkspaceError({ kind: "target", error: e })));
-      process.exit(1);
-    }
+    if (isWorkspaceTargetError(e)) throw new ConnectRefusal(renderWorkspaceError({ kind: "target", error: e }));
     throw e;
   }
   // If a dangling `current` was silently bypassed — it named a mesh that's since gone and we fell
@@ -458,7 +493,7 @@ export async function resolveTargetOrExit(flags: {
  *  acts on the prune decision, colours, and exits. Probes with `probeCreds` when given (the
  *  caller's `--creds`/minted creds); otherwise a throwaway identity is minted from the target's
  *  own trust material. */
-export async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise<void> {
+export async function preflightOrThrow(target: MeshTarget, probeCreds?: string): Promise<void> {
   // USER-mode targets are never credless-probed here: the callout denies a bare connect, the
   // classifier reads that as a stale registry entry, and the PRUNE deletes a healthy mesh's
   // record (found live: foreground `spawn` did exactly this and every later command fell into
@@ -466,8 +501,7 @@ export async function preflightOrExit(target: MeshTarget, probeCreds?: string): 
   // target is the user connect / bearer chain itself.
   if (target.mode === "user") {
     if (await isReachable(target.server)) return;
-    console.error(c.red(`✗ mesh "${target.space}" at ${target.server} is not reachable - start it with \`cotal up\` from its project folder`));
-    process.exit(1);
+    throw new ConnectRefusal(`✗ mesh "${target.space}" at ${target.server} is not reachable - start it with \`cotal up\` from its project folder`);
   }
   const r = await preflightTarget(target, probeCreds);
   if (r.ok) return;
@@ -475,6 +509,35 @@ export async function preflightOrExit(target: MeshTarget, probeCreds?: string): 
   // record is one an automatic sweep may delete (an operator-registered mesh is not). The message
   // reports what ACTUALLY happened, so it never claims a removal that the registry refused.
   const pruned = r.prune ? pruneMesh(target.space) : false;
-  console.error(c.red(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned })));
-  process.exit(1);
+  throw new ConnectRefusal(renderWorkspaceError({ kind: "preflight", failure: r.kind, target, pruned }));
+}
+
+/** {@link preflightOrThrow} with the exiting disposition. */
+export async function preflightOrExit(target: MeshTarget, probeCreds?: string): Promise<void> {
+  try {
+    await preflightOrThrow(target, probeCreds);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
+}
+
+/**
+ * {@link connectOrThrow} with the exiting disposition: the form nearly every command wants, where a
+ * refusal is the end of the command and the operator gets one sentence rather than a stack trace.
+ */
+export async function connectOrExit(flags: ConnectFlags, role: Profile, opts: { instanceId?: string | string[] } = {}): Promise<Connection> {
+  try {
+    return await connectOrThrow(flags, role, opts);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
+}
+
+/** {@link resolveTargetOrThrow} with the exiting disposition. */
+export async function resolveTargetOrExit(flags: { server?: string; space?: string }): Promise<MeshTarget> {
+  try {
+    return await resolveTargetOrThrow(flags);
+  } catch (e) {
+    exitOnRefusal(e);
+  }
 }

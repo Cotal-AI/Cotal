@@ -1,4 +1,4 @@
-import { isReachable, mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
+import { mintCreds, newIdentity, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
 import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
@@ -357,23 +357,20 @@ async function establishAttachSession(
   v: FlagValues<typeof attachFlags>,
   on: string | undefined,
   reconnecting: boolean,
-  /** The broker a previous attempt resolved to. Present only on a re-establishment. */
-  knownServer?: string,
 ): Promise<Established> {
-  // Do not re-enter the operator-facing connect path while the broker is not answering. Its
-  // preflight is written to END THE COMMAND ("no mesh running at X - run `cotal up`"), which is the
-  // right answer for a person who just typed a command and exactly the wrong one for a link that is
-  // coming back. Probe first and treat silence as the transient it is.
+  // A reconnect must never cross a path that can END THE PROCESS. The mesh resolve and its
+  // preflight are written to do exactly that ("no mesh running at X - run `cotal up`"), which is
+  // the right answer for a person who just typed a command and the wrong one for a link that is
+  // coming back. So a re-establishment asks for the THROWING form and treats the refusal as the
+  // transient it is; the first attach keeps the exiting form, and with it today's wording and exit
+  // code for an operator who typed the command against a mesh that is not there.
   //
-  // RESIDUAL, NAMED: a link that dies in the milliseconds between this probe and that preflight's
-  // own connect still ends the attach through that exit. It ends LOUDLY, with the message that path
-  // has always given, so it is a give-up that says why — not a silent one.
-  if (knownServer !== undefined && !(await isReachable(knownServer)))
-    return { ok: false, kind: "transient", message: `no answer from ${knownServer}` };
+  // `pinForTarget` is deliberately not crossed here: seat locality is resolved ONCE, before the
+  // loop, and the pin is carried in. It is the other step on this path that exits.
   // Same reach routing as stop: static mesh → any-mode on the `control-caller-admin` instrument;
   // user mesh → the operator's own bearer with owner reach, the manager deciding (own owner-domain
   // passes with "spawn", cross-owner needs ledger "admin").
-  const t = await resolveControlTarget(v, "control-caller-admin", on);
+  const t = await resolveControlTarget(v, "control-caller-admin", on, reconnecting ? { onRefusal: "throw" } : {});
   const reach = t.auth.bearer ? "owner" : "any";
   const reply = await askManager(t.space, t.server, "attach", { name: v.name }, t.auth, reach, undefined, { instanceId: on });
   if (!reply.ok) return { ok: false, kind: attachRefusal(reply.code), message: reply.error ?? "error" };
@@ -406,6 +403,12 @@ async function establishAttachSession(
     ...standaloneConnectOpts({ creds, tls: false }),
     inboxPrefix: `_INBOX_${id.id}`,
     maxReconnectAttempts: reconnecting ? 0 : -1,
+    // Detection latency is part of the defect, not a detail of it. A laptop waking from sleep does
+    // not always get a socket error: the connection can sit half-open, and on the stock two-minute
+    // ping with two misses the client would not learn its link was dead for about four minutes,
+    // with the terminal frozen the whole time. Ten seconds puts that in tens of seconds. Only on
+    // the reconnecting path, so `--no-reconnect` keeps today's timing along with today's exit.
+    ...(reconnecting ? { pingInterval: 10_000 } : {}),
   });
   return { ok: true, nc, grant };
 }
@@ -438,7 +441,6 @@ async function runAttachLoop(
 ): Promise<AttachVerdict> {
   let first = true;
   let attempt = 0; // consecutive re-establishment attempts since the last live session
-  let server: string | undefined; // the broker the first resolve landed on; re-probed before each retry
   for (;;) {
     if (!first) {
       // Back off BEFORE the attempt, and stay interruptible: the detach key must work while we
@@ -452,7 +454,7 @@ async function runAttachLoop(
     }
     let est: Established;
     try {
-      est = await establishAttachSession(vv, pin, reconnect, first ? undefined : server);
+      est = await establishAttachSession(vv, pin, reconnect);
     } catch (e) {
       // The FIRST attempt throws exactly as it always has — the CLI's top-level handler renders
       // it. Only a reconnect turns a thrown establishment into another attempt.
@@ -465,7 +467,6 @@ async function runAttachLoop(
       if (est.kind === "gone") return { kind: "gone" };
       continue; // transient: the manager or the link is unreachable right now
     }
-    server = est.nc.getServer();
     if (first) console.error(c.dim(`attached to ${vv.name} - ${key.label} to detach`));
     else console.error(c.dim("[cotal: reconnected]"));
     first = false;

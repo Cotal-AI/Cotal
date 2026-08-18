@@ -33,7 +33,7 @@ import {
   pruneStaleMeshes, renderWorkspaceError, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
-import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
@@ -77,7 +77,14 @@ export async function resolveControlTarget(
    *  only, exactly as before. It has to arrive HERE rather than at the invoke: the instrument is
    *  minted during this resolve, and a credential cannot gain a rail after it is issued. */
   instanceId?: string,
+  /** `onRefusal: "throw"` makes an unresolvable or unreachable mesh a THROWN
+   *  {@link ConnectRefusal} instead of a printed sentence and `process.exit(1)`. A command that is
+   *  one shot deep wants the exit; a loop that has to survive the broker being briefly gone (the
+   *  attach reconnect) cannot use a path that ends the process, and "no mesh running at X - run
+   *  `cotal up`" is the wrong answer to a link that is coming back. */
+  opts: { onRefusal?: "exit" | "throw" } = {},
 ): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth }> {
+  const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
@@ -134,7 +141,7 @@ export async function resolveControlTarget(
     }
   }
   // Static / open / raw-creds: mint the requested instrument (or bare open connect).
-  const conn = await connectOrExit(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
+  const conn = await connect_(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
   return {
     space: conn.space,
     server: conn.server,

@@ -28,16 +28,20 @@
  *      the heal reaches the client. The last is a nonce written into the client's keyboard after
  *      the reconnect and returned by the seat wrapped as `ECHO[...]`, which neither a local
  *      terminal echo nor the manager's replayed backlog can manufacture.
+ *      It also measures how long the loss takes to NOTICE, and pins that a broker which is down AT
+ *      the reconnect step produces another wait rather than ending the command.
  *   B. the detach key detaches DURING a reconnect, not only while a session is up.
- *   C. `--no-reconnect` still exits the way it does today: non-zero, on the transport fault.
- *   D. a seat despawned while the client is reconnecting ends the attach CLEAN, saying the seat is
+ *   C. `--no-reconnect` still exits the way it does today: non-zero, on the `gap` fault.
+ *   D. an outage LONGER than the serving side's own stall still reconnects, which is the arm that
+ *      used to hang forever rather than exit.
+ *   E. a seat despawned while the client is reconnecting ends the attach CLEAN, saying the seat is
  *      gone, rather than retrying forever against something that no longer exists.
- *   E. the two classifications the loop turns on, as functions.
+ *   F. the two classifications the loop turns on, as functions.
  *
- * ON CELL E. It builds its inputs by hand, so on its own it would prove only that the suite
- * depends on those functions. The reachability it does not prove is proven beside it: cell D
+ * ON CELL F. It builds its inputs by hand, so on its own it would prove only that the suite
+ * depends on those functions. The reachability it does not prove is proven beside it: cell E
  * drives `attachRefusal("not-found")` through the real `cotal attach` binary end to end, and cells
- * A/B/C drive `isTransportEnd` the same way. Cell E then pins the REMAINING inputs of the same two
+ * A to D drive `isTransportEnd` the same way. Cell F then pins the REMAINING inputs of the same two
  * functions, which no end-to-end fault in this harness can produce (a static single-owner mesh
  * mints an admin instrument for every attach, so the manager has no reason to answer
  * `permission-denied`).
@@ -133,9 +137,14 @@ const sever = (): Promise<void> =>
     s.close(() => res());
   });
 
+// The seat ticks FAST. The manager's stall watchdog only arms once the 64-frame send window is
+// full, so at 50ms the window fills in about 3s and the serving side is dead by about 33s: that is
+// what makes the long-outage cell below cost 40 seconds instead of a minute and a half.
+const TICK_MS = 50;
 const envFor = (o: LaunchOpts): Record<string, string> => ({
   COTAL_SPACE: o.space, COTAL_SERVERS: String(o.servers ?? BROKER), COTAL_CREDS: String(o.creds),
   COTAL_ID: String(o.id), COTAL_NAME: o.name, PATH: process.env.PATH ?? "",
+  SEAT_TICK_MS: String(TICK_MS),
   ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
 });
 registry.register({
@@ -226,11 +235,25 @@ try {
     check("the attach comes up", await a.waitFor(/attached to rcseat/, 90_000), a.seen().slice(-400));
     check("seat output is flowing before the fault", await a.waitFor(/TICK-\d+/, 20_000), a.seen().slice(-400));
 
+    const tSever = Date.now();
     await sever();
-    check("the link dying is announced on the terminal",
-      await a.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000), a.seen().slice(-600));
+    const announced = await a.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000);
+    // Detection latency is part of the defect: a frozen terminal that has not yet noticed is the
+    // same experience as one that never will. Measured, not assumed, and printed either way.
+    const detectMs = Date.now() - tSever;
+    console.log(`    (sever to "connection lost": ${detectMs}ms)`);
+    check("the link dying is announced on the terminal", announced, a.seen().slice(-600));
+    check("...within 30s of the link dying, not on the NATS default ping (about four minutes)",
+      announced && detectMs < 30_000, { detectMs });
     check("...and the attach does NOT exit (it used to die of `gap` the moment the link returned)",
       a.exit() === undefined, a.exit());
+
+    // The broker is unreachable at the reconnect step for several attempts (1s, 2s, 5s of backoff),
+    // so the loop crosses the mesh resolve and its preflight while they cannot succeed. That path
+    // ends the COMMAND for every other caller; here it must produce another wait.
+    await wait(9_000);
+    check("a broker that is down AT the reconnect step produces another wait, never an exit",
+      a.exit() === undefined && !/run `cotal up`/.test(a.seen()), { exit: a.exit(), tail: a.seen().slice(-500) });
 
     await heal();
     check("the link healing is announced", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-600));
@@ -272,13 +295,41 @@ try {
     await wait(3_000); // let the serving rail advance seq into a subject nobody is subscribed to
     await heal();
     check("it exits", await a.waitExit(60_000), a.seen().slice(-400));
-    check("...non-zero, naming the transport fault, with no reconnect attempted",
-      a.exit()?.code === 1 && /mesh session transport error/.test(a.seen()) && !/\[cotal: connection lost/.test(a.seen()),
+    check("...non-zero on the `gap` fault, with no reconnect attempted",
+      a.exit()?.code === 1 && /mesh session transport error: gap/.test(a.seen()) && !/\[cotal: connection lost/.test(a.seen()),
       { exit: a.exit(), tail: a.seen().slice(-400) });
   }
 
   // ---------------------------------------------------------------------------------------------
-  console.log("\nD. a seat despawned mid-reconnect ends the attach CLEAN");
+  console.log("\nD. an outage LONGER than the serving side's own death still reconnects");
+  {
+    // The two arms of the original defect are the two sides of this boundary. Shorter than the
+    // serving stall (cells A to C), the manager's rail is still healthy and still advancing `seq`,
+    // and the old client died of `gap` when the link returned. LONGER, the rail fills its 64-frame
+    // window, stalls, ends the session and closes, and both notices are published while the client
+    // is away and lost: the old client then hung forever on a session nobody was serving, with no
+    // output and no exit. At a 50ms tick the window fills in about 3s and the stall lands about
+    // 33s in, so a 40s outage is on the far side of it.
+    const a = attachUnderPty(root); started.push(a);
+    check("the attach comes up", await a.waitFor(/attached to rcseat/, 90_000), a.seen().slice(-400));
+    check("seat output is flowing", await a.waitFor(/TICK-\d+/, 20_000), a.seen().slice(-400));
+    await sever();
+    check("the loss is announced", await a.waitFor(/\[cotal: connection lost, reconnecting\]/, 30_000), a.seen().slice(-400));
+    await wait(40_000); // past the serving rail's window-full + 30s stall watchdog
+    check("the attach is still alive after the SERVING session has been torn down (it used to hang here)",
+      a.exit() === undefined, { exit: a.exit(), tail: a.seen().slice(-400) });
+    await heal();
+    check("it reconnects to a NEW session", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-500));
+    const nonce = `LATE-${randomUUID().slice(0, 8)}`;
+    a.write(`${nonce}\r`);
+    check("...and seat output written after THAT heal reaches the client",
+      await a.waitFor(new RegExp(`ECHO\\[${nonce}\\]`), 30_000), a.seen().slice(-400));
+    a.write(DETACH_BYTE);
+    check("...and it detaches clean", (await a.waitExit(30_000)) && a.exit()?.code === 0, a.exit());
+  }
+
+  // ---------------------------------------------------------------------------------------------
+  console.log("\nE. a seat despawned mid-reconnect ends the attach CLEAN");
   {
     const a = attachUnderPty(root); started.push(a);
     check("the attach comes up", await a.waitFor(/attached to rcseat/, 90_000), a.seen().slice(-400));
@@ -298,7 +349,7 @@ try {
   }
 
   // ---------------------------------------------------------------------------------------------
-  console.log("\nE. the two classifications the loop turns on");
+  console.log("\nF. the two classifications the loop turns on");
   check("transport-class: the rail's own fault vocabulary reconnects",
     ["gap", "stall", "subscription", "peer-closed", "connection-closed", "publish", "flood", "credit-overrun", "garbled-frame", "handler", "seq-exhausted", "closed"]
       .every((r) => isTransportEnd(r)));

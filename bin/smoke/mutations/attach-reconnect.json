@@ -2,20 +2,20 @@
   "suite": "implementations/manager/smoke/attach-reconnect.smoke.ts",
   "guard": "`cotal attach` re-establishes its session when the LINK dies, and stops, saying why, when re-establishing cannot help",
   "command": "pnpm --filter @cotal-ai/cli build && pnpm smoke:attach-reconnect",
-  "completionMarker": "E. the two classifications the loop turns on",
+  "completionMarker": "F. the two classifications the loop turns on",
   "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/attach-reconnect.json",
   "why": [
     "SPECIFIER BOUNDARY, and it is the reason every command here builds first. The suite reads the",
-    "code under test through TWO different paths on purpose. Cell E imports `attachRefusal` and",
+    "code under test through TWO different paths on purpose. Cell F imports `attachRefusal` and",
     "`isTransportEnd` from `implementations/cli/src` directly, so a mutation lands on the bytes it",
-    "grades with no build at all. Cells A to D run the real binary, `tsx bin/cotal.ts`, and",
+    "grades with no build at all. Cells A to E run the real binary, `tsx bin/cotal.ts`, and",
     "`@cotal-ai/cli` resolves to `dist/` -- so those cells audit the last BUILD. Without a build in",
     "the command a mutation would kill the hand-built cell and leave every end-to-end cell green,",
     "which reads as `the classifier matters` when what was actually measured is `the suite imports",
     "the classifier`. Each mutation therefore builds the CLI first and rebuilds it in afterRestore,",
     "because `dist/` is gitignored and git cannot be the recovery for it.",
     "",
-    "THE PAIRING IS THE POINT, not the count. Cell E builds its inputs by hand, so on its own it",
+    "THE PAIRING IS THE POINT, not the count. Cell F builds its inputs by hand, so on its own it",
     "proves only that the suite depends on those two functions. Mutations 1, 2 and 4 are aimed at",
     "END-TO-END cells, which is what shows a real entry point reaches them: mutation 4 changes what",
     "`attachRefusal` answers for `not-found` and the despawn cell goes red, having travelled the",
@@ -29,7 +29,7 @@
     "end-to-end cell, for the reason above. Deleting `est.kind === \\\"denied\\\"` from that condition",
     "was run as a one-off mutation and SURVIVED, exactly as predicted: no cell in this suite reaches",
     "it. What is proved is the classification (mutation 3) and the loop's handling of the two",
-    "classifications this harness CAN produce, `gone` (mutation 4, cell D) and `transient` (cells A",
+    "classifications this harness CAN produce, `gone` (mutation 4, cell E) and `transient` (cells A",
     "and B). The gap is the mapping from `denied` to the exit, and it is stated here rather than",
     "left for a reader to infer from a kill count.",
     "",
@@ -47,7 +47,7 @@
       "replace": "  \"peer-closed\", \"closed\",",
       "expectRed": "the link dying is announced on the terminal",
       "cell": "the link dying is announced on the terminal",
-      "note": "The defect as shipped, in one list entry. Without this member the attach reads a dead link as a finished session, prints `detached from` and exits, which is the behaviour the whole change exists to remove. It is aimed at the end-to-end cell rather than at cell E deliberately: cell E would redden too, and a kill there alone would not show that the real binary travels this path.",
+      "note": "The defect as shipped, in one list entry. Without this member the attach reads a dead link as a finished session, prints `detached from` and exits, which is the behaviour the whole change exists to remove. It is aimed at the end-to-end cell rather than at cell F deliberately: cell F would redden too, and a kill there alone would not show that the real binary travels this path.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -77,7 +77,7 @@
       "replace": "  if (code === \"not-found\") return \"transient\";",
       "expectRed": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
       "cell": "...clean, saying the seat is gone (not an infinite retry against something that is not there)",
-      "note": "THE REACHABILITY PROOF for the classifier. This is one line in a pure function, and the cell it reddens is a full end-to-end run: a real `cotal stop` despawns the seat while the client is reconnecting, the manager answers `not-found` on the wire, the CLI's inspect resolution carries that code, and the loop turns it into a clean exit. A kill here is the evidence that cell E is grading a function the product actually calls, rather than one the suite happens to import.",
+      "note": "THE REACHABILITY PROOF for the classifier. This is one line in a pure function, and the cell it reddens is a full end-to-end run: a real `cotal stop` despawns the seat while the client is reconnecting, the manager answers `not-found` on the wire, the CLI's inspect resolution carries that code, and the loop turns it into a clean exit. A kill here is the evidence that cell F is grading a function the product actually calls, rather than one the suite happens to import.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]
