@@ -66,6 +66,42 @@
       "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:user-spawn:live",
       "completionMarker": "D1) an admin-scope caller follows its own goal to a terminal",
       "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the short-circuit is removed, so a knowable denial is still waited out to the deadline",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "    const terminal = terminals.get(goalId) ?? (subError !== undefined ? undefined : await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {",
+      "replace": "    const terminal = terminals.get(goalId) ?? (await new Promise<{ state: string; data?: unknown } | undefined>((resolve) => {",
+      "expectRed": "returned at once rather than after the deadline",
+      "cell": "...returned at once rather than after the deadline",
+      "note": "The half of this fix that a correct MESSAGE hides. The first version of the fix produced exactly the right refusal text and still consumed 20004ms of a 20000ms budget, because the error arrived before the waiter was registered and nothing checked for it beforehand. Without this mutation the timing assertion, which is the one that caught that, is itself ungraded: a guard nobody has proven guards.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:goal-follow",
+      "completionMarker": "A. a REFUSED progress subscription is reported as a refusal, not as a timeout",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the diagnosis stops discriminating, so a transport failure is reported as a grant refusal",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "      const refused = subError instanceof PermissionViolationError;",
+      "replace": "      const refused = true;",
+      "expectRed": "is not mislabelled a grant refusal",
+      "cell": "...and is not mislabelled a grant refusal",
+      "note": "A confidently wrong remedy is worse than a vague one: this mutation makes a closed connection report that the BROKER REFUSED A GRANT and that the fix is to grant a row, which sends an operator to the ACLs for a fault that is not there. Measured on the real class before the narrowing landed: a genuine transport error was labelled permission-denied.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:goal-follow",
+      "completionMarker": "C. a NON-permission subscription failure is just as loud, with a truthful cause",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
+    },
+    {
+      "name": "the SURFACE narrows to the permission class, so every other subscription error becomes a timeout again",
+      "file": "packages/core/src/endpoint-invoke.ts",
+      "find": "        subError ??= err instanceof Error ? err : new Error(String(err));",
+      "replace": "        if (!(err instanceof PermissionViolationError)) return;\n        subError ??= err;",
+      "expectRed": "a non-permission subscription failure is NOT swallowed into a deadline",
+      "cell": "a non-permission subscription failure is NOT swallowed into a deadline",
+      "note": "THE TEMPTING WRONG FIX, graded so it cannot be made quietly. Narrowing the surface rather than the diagnosis looks like precision and is this whole defect again in miniature: a non-permission subscription error stops being surfaced, falls through to the wait, and is reported as a deadline about a goal that may have settled on time. Whether the subscription failed is knowable from `err` being present; only the CAUSE and the REMEDY may key on its class.",
+      "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:goal-follow",
+      "completionMarker": "C. a NON-permission subscription failure is just as loud, with a truthful cause",
+      "afterRestore": "pnpm --filter @cotal-ai/core build"
     }
   ]
 }

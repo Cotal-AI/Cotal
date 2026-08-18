@@ -18,6 +18,7 @@
  * Run: pnpm smoke:goal-follow
  */
 import { submitAndFollowGoal } from "@cotal-ai/core";
+import { PermissionViolationError } from "@nats-io/transport-node";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -34,10 +35,32 @@ const DENIAL = 'permission denied: cannot subscription "cotal.s.epe.manager.*.*.
  *  arrives, which is exactly what a broker-denied subscription looks like from inside the client. */
 const deniedConn = {
   subscribe: (_subject: string, opts: { callback: (err: Error | null, m: unknown) => void }) => {
-    queueMicrotask(() => opts.callback(new Error(DENIAL), undefined));
+    // The REAL class the client delivers here, not a stand-in Error. The reply's diagnosis now keys
+    // on it, so a fixture carrying a plain Error would assert the branch while quietly assuming the
+    // shape, and would keep passing if the client ever stopped delivering this class.
+    queueMicrotask(() => opts.callback(new PermissionViolationError(DENIAL), undefined));
     return { unsubscribe: () => {} };
   },
 };
+
+/** A connection whose subscribe fails for a reason that is NOT a grant refusal. The subscription is
+ *  just as dead, so this must be just as loud, but the cause and the remedy differ and the reply
+ *  must not claim the broker refused a grant. */
+const brokenConn = {
+  subscribe: (_subject: string, opts: { callback: (err: Error | null, m: unknown) => void }) => {
+    queueMicrotask(() => opts.callback(new Error("connection closed while subscribing"), undefined));
+    return { unsubscribe: () => {} };
+  },
+};
+
+/** Acceptance REFUSED at submit, paired with a connection already denied: the ordering question.
+ *  The refusal must survive unchanged, because a subscription denial says nothing about a goal that
+ *  was never accepted, and claiming acceptance there would strand a goal that never ran. */
+const refuseAtAccept = () => Promise.resolve({
+  reply: { ok: false as const, data: undefined, error: { code: "failed-precondition", message: "refused at accept" } },
+  instanceId: "i1",
+  epoch: 0,
+});
 
 /** A connection whose subscribe succeeds and never delivers: the ordinary "no terminal yet" case,
  *  which must keep reporting a DEADLINE and must not be reworded by this change. */
@@ -73,6 +96,32 @@ console.log("B. an ordinary silent wait still reports a DEADLINE (the change is 
   const r = await submitAndFollowGoal(silentConn as never, "s", "manager", CALLER, 300, acceptance as never);
   ok("a subscribed-but-silent follow still times out", r.reply.error?.code === "deadline-exceeded", r.reply.error);
   ok("...and still says the timeout is about the WAIT, not the work", (r.reply.error?.message ?? "").includes("timeout on the WAIT"), r.reply.error?.message);
+}
+
+console.log("C. a NON-permission subscription failure is just as loud, with a truthful cause");
+{
+  const t0 = Date.now();
+  const r = await submitAndFollowGoal(brokenConn as never, "s", "manager", CALLER, 20_000, acceptance as never);
+  const elapsed = Date.now() - t0;
+  const msg = r.reply.error?.message ?? "";
+  // The SURFACE must not narrow with the diagnosis: if only the permission class were surfaced,
+  // every other class would fall back through to the deadline, which is this defect again in
+  // miniature.
+  ok("a non-permission subscription failure is NOT swallowed into a deadline", r.reply.error?.code !== "deadline-exceeded", r.reply.error);
+  ok("...and is not mislabelled a grant refusal", r.reply.error?.code === "unavailable", r.reply.error);
+  ok("...says plainly that ACLs are the wrong remedy", msg.includes("NOT a grant refusal"), msg);
+  ok("...still states the goal is unaffected and forbids the retry", msg.includes("THE GOAL IS UNAFFECTED") && msg.includes("Do NOT retry"), msg);
+  ok(`...and is knowable at once, like the denial (${elapsed}ms of 20000ms)`, elapsed < 5_000, elapsed);
+}
+
+console.log("D. a subscription denial NEVER manufactures an acceptance (the pre-accept ordering)");
+{
+  // The refusal text asserts "the goal was accepted" and says not to retry. If that branch were
+  // reachable when submit had NOT been accepted, the same sentence would strand a goal that never
+  // ran. The denial here is already pending before submit answers.
+  const r = await submitAndFollowGoal(deniedConn as never, "s", "manager", CALLER, 20_000, refuseAtAccept as never);
+  ok("a refusal at accept survives the pending subscription denial unchanged", r.reply.error?.code === "failed-precondition", r.reply.error);
+  ok("...and no acceptance is claimed for a goal that was never accepted", !(r.reply.error?.message ?? "").includes("was accepted"), r.reply.error?.message);
 }
 
 console.log(`\ngoal-follow smoke passed (${pass} checks)`);

@@ -11,3 +11,9 @@ already settled. Both branches now fold `sub` in. Independently, a subscription 
 path was discarded, which made a denied subscription indistinguishable from an empty one; it now
 surfaces at once as a distinct refusal naming the subject, stating the goal is unaffected, and
 telling the operator not to retry.
+
+Every subscription error is surfaced, not only the permission one: whether the subscription failed
+is knowable from the error being present, so narrowing that decision by error class would return
+every other class to the silent timeout. What does key on the class is the diagnosis. A broker
+refusal reports `permission-denied` and asks for the grant row; any other failure reports
+`unavailable`, names the class, and says plainly that changing ACLs is the wrong remedy.

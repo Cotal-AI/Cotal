@@ -476,11 +476,23 @@ export async function submitAndFollowGoal(
       const t = setTimeout(() => resolve(terminals.get(goalId)), deadlineMs);
       waiters.set(goalId, () => { clearTimeout(t); resolve(terminals.get(goalId)); });
     }));
-    if (terminal === undefined && subError !== undefined)
+    if (terminal === undefined && subError !== undefined) {
       // THE DISTINCT, ACTIONABLE FAILURE (#610). Deliberately NOT the deadline message below: this
       // caller was never listening, so "no terminal arrived" would be a statement about the goal
-      // when the true statement is about this credential. The remedy is a grant, never a retry.
-      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: { code: "permission-denied", message: `the goal "${goalId}" was accepted, but this caller is NOT PERMITTED to hear its outcome: the broker refused the per-goal progress subscription "${progressSubject}" (${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this credential's ability to observe it. Do NOT retry: a retry submits a second goal and duplicates the effect, and it will be just as unobservable. Read the outcome with 'ps'/'inspect', and grant this caller the per-goal progress read row so a following call can hear its own goal (SPEC 13.6)` } } };
+      // when the true statement is about this credential.
+      //
+      // SURFACING IS FOR EVERY ERROR; ONLY THE DIAGNOSIS IS NARROWED. Whether the subscription
+      // failed is knowable from `err` being present, so that decision must never key on the error's
+      // class: narrowing the SURFACE would re-create this very defect for every other class, which
+      // would fall back through to the silent timeout. What may key on the class is the CAUSE and
+      // the REMEDY, because "the broker refused your grant, ask for the row" is a specific claim
+      // and it is false for a transport failure. So an unrecognized class stays loud and says less,
+      // and never degrades to silence.
+      const refused = subError instanceof PermissionViolationError;
+      return { ...attributed, reply: { ...attributed.reply, ok: false, data: undefined, error: refused
+        ? { code: "permission-denied", message: `the goal "${goalId}" was accepted, but this caller is NOT PERMITTED to hear its outcome: the broker refused the per-goal progress subscription "${progressSubject}" (${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this credential's ability to observe it. Do NOT retry: a retry submits a second goal and duplicates the effect, and it will be just as unobservable. Read the outcome with 'ps'/'inspect', and grant this caller the per-goal progress read row so a following call can hear its own goal (SPEC 13.6)` }
+        : { code: "unavailable", message: `the goal "${goalId}" was accepted, but this caller's per-goal progress subscription "${progressSubject}" FAILED, so it cannot hear the outcome (${subError.name}: ${subError.message}). THE GOAL IS UNAFFECTED - it may already have succeeded, and its terminal may have been committed on time; what failed is this connection's ability to observe it. This is NOT a grant refusal, so changing ACLs is the wrong remedy. Do NOT retry: a retry submits a second goal and duplicates the effect. Read the outcome with 'ps'/'inspect' (SPEC 13.6)` } } };
+    }
     if (terminal === undefined)
       // WHAT THIS PROVED: nothing about the goal. The goal was ACCEPTED (the submit above returned
       // ok); only its terminal did not arrive here in time, which a slow runtime or a dropped
