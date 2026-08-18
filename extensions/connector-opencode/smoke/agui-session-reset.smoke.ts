@@ -305,10 +305,21 @@ try {
   // session it had adopted leaves a run OPEN on the subject. This is the defect, not the
   // interleaving: concurrency still happens on fixed code, and a cell that graded the interleave
   // would pass on the fix and prove nothing.
-  const openedC = seen.filter((e) => e.type === "RUN_STARTED" && e.thread === C).length;
-  const closedC = seen.filter((e) => e.type === "RUN_FINISHED" && e.thread === C).length;
-  check("race:the session retired by the SECOND create leaves no run open on the wire",
-    openedC === closedC, { openedC, closedC });
+  // THE ASSERTION THE FIX EXISTS FOR, and it is deliberately NOT about the interleaving: concurrency
+  // still happens on fixed code, so a cell that graded the overlap would pass on the fix. It is also
+  // not about frames, because the dropped session publishes NONE either way, which is what makes the
+  // leak silent. What separates the arms is whether the holder the first create installed was ever
+  // RETIRED: serialized, the second create finds it and drains it; unserialized, it is orphaned and
+  // nothing ever retires it.
+  // Anchored on the RETIRED id, not merely present in the line: the line names the session causing
+  // the retirement too, so a bare `includes` counts the wrong one and reports two for every session.
+  const retiredCount = (id: string): number => logs.filter((l) => l.includes(`retiring opencode session ${id} `)).length;
+  const retiredC = retiredCount(C);
+  const retiredB = retiredCount(B);
+  check("race:the holder the FIRST of two racing creates installed is retired, exactly once",
+    retiredC === 1, { retiredC, retires: logs.filter((l) => l.includes("retiring opencode session")) });
+  check("race:and the session they both replace is retired ONCE, not drained twice",
+    retiredB === 1, { retiredB });
   check("race:and the session that survived the window publishes",
     seen.some((e) => e.thread === D), { d: seen.filter((e) => e.thread === D).length });
 
@@ -316,7 +327,7 @@ try {
     !seen.some((e) => e.thread === CHILD), seen.filter((e) => e.thread === CHILD).length);
 
   // ---- Cell count, because a harness that threw early would DELETE cells rather than fail them.
-  const EXPECTED = 15;
+  const EXPECTED = 16;
   check(`every cell ran - ${EXPECTED} expected, a cell that vanishes is invisible without this`,
     pass + fail === EXPECTED, `${pass + fail} cells reported`);
 

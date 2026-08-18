@@ -516,6 +516,10 @@ export const cotal: Plugin = async () => {
             // OLD holder's chain and the new session's frames go out on a DIFFERENT one, so without
             // a settled point between them the new session's first frame can reach the subject
             // before the old session's close.
+            // Symmetric with the adoption line above, and load-bearing rather than decorative: a
+            // retirement that never happens is otherwise invisible, because a dropped holder has no
+            // frames left to publish and its open handle looks identical to a cleanly retired one.
+            log(`retiring opencode session ${previous.path} for ${created}; draining it first`);
             previous.flush(previous.path);
             previous.closeRun(Date.now());
             await previous.settled();
