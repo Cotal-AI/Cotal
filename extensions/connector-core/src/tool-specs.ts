@@ -318,6 +318,21 @@ function droppedNote(channels: readonly string[]): string {
 /** How many channels the recall warning names before it starts counting them instead. */
 const NAMED_DROPPED = 5;
 
+/** How many senders the future-stamp note names before it starts counting them instead. */
+const NAMED_AHEAD = 3;
+
+/** Say that recall items were withheld because this session will not take responsibility for
+ *  remembering them, and name who sent them, so a peer spending that bound is visible rather than
+ *  silent. Not a drop: nothing was cleared and the stream still holds them. */
+function aheadNote(items: readonly InboxItem[]): string {
+  if (!items.length) return "";
+  const senders = [...new Set(items.map((i) => i.fromName.slice(0, 40)))];
+  const named = senders.slice(0, NAMED_AHEAD).join(", ");
+  const rest = senders.length - Math.min(NAMED_AHEAD, senders.length);
+  const one = items.length === 1;
+  return `⚠ ${items.length} recalled message${one ? "" : "s"} from ${named}${rest ? `, and ${rest} more sender${rest === 1 ? "" : "s"}` : ""} ${one ? "is" : "are"} stamped ahead of this session's clock, more than it will hold a place for, so ${one ? "it is" : "they are"} not being handed over. Nothing was cleared.`;
+}
+
 /** How many oversized messages the note names before it starts counting them instead. */
 const NAMED_STUCK = 3;
 
@@ -528,22 +543,51 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // prefix forever while the reply promised a next batch: measured as three identical replies
         // where fifteen of thirty messages never appeared. The cursor is this session's own mark of
         // how far it has read, and it moves only when a call actually delivered them.
-        const fresh = recall.items
-          .filter((i) => afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor))
-          .sort((a, b) => (a.ts !== b.ts ? a.ts - b.ts : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
-        const warning = droppedNote(recall.droppedChannels);
+        // A SENDER'S CLOCK DOES NOT GET TO MOVE THIS SESSION'S MARK. `ts` is stamped by the sending
+        // endpoint, so one peer running ahead, or one peer writing whatever it likes, otherwise parks
+        // the mark in the future and every ordinary message after it is filtered out of recall for the
+        // rest of the session, under a reply saying there is no chatter. So the walk splits: items at
+        // or behind the clock are ordered by timestamp and move the mark, and items ahead of it are
+        // handed over once, tracked by id, and never move it. The ahead lane needs no gap rule for the
+        // same reason it needs no mark, since each of its items is accounted for on its own.
+        const byTsThenId = (a: InboxItem, b: InboxItem): number =>
+          a.ts !== b.ts ? a.ts - b.ts : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+        const clocked: InboxItem[] = [];
+        const aheadFresh: InboxItem[] = [];
+        const aheadWithheld: InboxItem[] = [];
+        let aheadRoom = agent.recallAheadRoom();
+        for (const i of recall.items) {
+          if (!agent.recallAhead(i)) {
+            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);
+            continue;
+          }
+          if (agent.recallAheadSeen(i.id)) continue;
+          // Never show what cannot be recorded: an unrecorded item comes back on every call forever.
+          if (aheadRoom <= 0) aheadWithheld.push(i);
+          else {
+            aheadRoom--;
+            aheadFresh.push(i);
+          }
+        }
+        clocked.sort(byTsThenId);
+        aheadFresh.sort(byTsThenId);
+        const fresh = [...clocked, ...aheadFresh];
+        const aheadIds = new Set(aheadFresh.map((i) => i.id));
+        const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
+          .filter(Boolean)
+          .join(" ");
         const bufferedIds = new Set(buffered.map((i) => i.id));
         const { text, shown: all, stuck } = renderInbox({
           items: [...buffered, ...fresh],
           peek,
           warning,
-          strictIds: new Set(fresh.map((i) => i.id)),
+          strictIds: new Set(clocked.map((i) => i.id)),
           head: (s) =>
             scope
               ? `${s.length} message${s.length === 1 ? "" : "s"}. Buffered pull-only items were cleared; normal focus channel items are read-only recall:`
               : `${s.length} message${s.length === 1 ? "" : "s"}${peek ? " (peek: live buffer not cleared)" : ""} in focus mode; channel items are recall since you focused:`,
         });
-        if (!buffered.length && !fresh.length && !recall.droppedChannels.length)
+        if (!buffered.length && !fresh.length && !recall.droppedChannels.length && !aheadWithheld.length)
           return ok(
             scope
               ? `No pull-only messages and no normal focus recall.${automaticPending ? ` ${automaticPending} connector-managed automatic message${automaticPending === 1 ? " is" : "s are"} still queued.` : ""}`
@@ -565,7 +609,9 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // the mark is exactly it. A walk over the prefix would compute the same value, which is why
           // the mutation for it survived and the code went rather than the test being weakened.
           const shownRecall = all.filter((i) => !bufferedIds.has(i.id));
-          const last = shownRecall[shownRecall.length - 1];
+          for (const i of shownRecall) if (aheadIds.has(i.id)) agent.noteRecalledAhead(i.id);
+          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));
+          const last = shownClocked[shownClocked.length - 1];
           if (last) agent.noteRecalled({ ts: last.ts, id: last.id });
           void stuck;
         }

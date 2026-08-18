@@ -45,7 +45,17 @@
     "cleared the held gap when an undeliverable message was met, but a strict item after a gap never",
     "reaches that line (the walk skips it earlier) and a buffered item never sorts after a recall gap,",
     "so no input could produce the difference. It was replaced by the mutation above, which turns on the",
-    "distinction that line actually makes, rather than kept as a kill the suite could not honestly claim."
+    "distinction that line actually makes, rather than kept as a kill the suite could not honestly claim.",
+    "",
+    "K22 through K25 are the seventh defect, which is #603's own family found inside #603's fix: `ts` is",
+    "stamped by the SENDING endpoint, so a mark that walks it is a mark a peer can move. One message",
+    "stamped ahead parked the mark in the future and filtered every ordinary message after it out of",
+    "recall for the rest of the session, under the reply that there was no chatter. It is a security",
+    "property as much as a clock one, so the kills cover both halves of the repair (the split lane and",
+    "the mark that only this session's own traffic may move), the record that makes the ahead lane",
+    "exactly-once, and the bound on that record. Where the bound's cost lands is the security question,",
+    "and cell 24 answers it by measurement: honest traffic never enters the bounded set, so a peer that",
+    "spends the whole bound spends it on its own messages and cannot cost another peer its recall."
   ],
   "mutations": [
     {
@@ -218,6 +228,42 @@
       "cell": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "expectRed": "every scenario in the cursor's input universe makes total progress with no duplicates",
       "note": "The distinction the walk turns on: a message no response could ever carry will never become deliverable, so waiting behind it is waiting forever, while anything else is a real gap and waiting is correct. Collapse the two and one oversized recall message stops the walk for good. No instance cell in this suite puts an undeliverable message in the recall lane; the enumeration does it by construction."
+    },
+    {
+      "name": "K22 a sender's clock is allowed to order the walk again",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    return item.ts > Date.now();",
+      "replace": "    return false;",
+      "cell": "...and the messages after it are still recalled, rather than filtered out for good",
+      "expectRed": "...and the messages after it are still recalled, rather than filtered out for good",
+      "note": "The defect itself, restored: with every item walked by the mark, one message stamped ahead of the local clock moves the mark past everything the session has not read, and ordinary traffic after it is filtered out of recall for the rest of the session under a reply saying there is none. `ts` is stamped by the sending endpoint, so this is one peer suppressing another peer's recall, not only a clock disagreement."
+    },
+    {
+      "name": "K23 an item stamped ahead of the clock moves the mark after all",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));",
+      "replace": "          const shownClocked = shownRecall;",
+      "cell": "...and the messages after it are still recalled, rather than filtered out for good",
+      "expectRed": "...and the messages after it are still recalled, rather than filtered out for good",
+      "note": "Splitting the lanes is not enough on its own: if the ahead lane still feeds the mark, the mark ends up in the future anyway and the starvation returns unchanged. Two mutations because the repair has two halves, and either half alone leaves the defect."
+    },
+    {
+      "name": "K24 the ahead lane hands over without recording what it handed over",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          for (const i of shownRecall) if (aheadIds.has(i.id)) agent.noteRecalledAhead(i.id);",
+      "replace": "",
+      "cell": "...and it is not handed over a second time, which is how a clamp alone would fail",
+      "expectRed": "...and it is not handed over a second time, which is how a clamp alone would fail",
+      "note": "The ahead lane has no mark, so the record BY ID is the only thing that makes it exactly-once. Without it every call hands the same future-stamped message over again, which is the duplicate failure that any repair clamping the timestamp instead would also produce."
+    },
+    {
+      "name": "K25 the ahead lane hands over more than it can remember",
+      "file": "extensions/connector-core/src/tool-specs.ts",
+      "find": "          if (aheadRoom <= 0) aheadWithheld.push(i);",
+      "replace": "          if (false) aheadWithheld.push(i);",
+      "cell": "...and what it will not take responsibility for, it names instead of dropping quietly",
+      "expectRed": "...and what it will not take responsibility for, it names instead of dropping quietly",
+      "note": "The memory that makes the ahead lane exact is bounded, because it is exactly what a flood of forged stamps would grow. Past the bound the reply must SAY the messages are not being handed over: show them without a place to record them and they come back on every call forever, silently, which is the failure the bound exists to avoid."
     }
   ]
 }

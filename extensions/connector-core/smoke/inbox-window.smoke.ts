@@ -750,6 +750,85 @@ try {
     check(UNIVERSE, scenarios === shapes.length * 2, { scenarios, deliveries });
   }
 
+  // ── 23) A SENDER'S CLOCK CANNOT PARK THIS SESSION'S RECALL IN THE FUTURE ─────────────────────
+  //
+  // Found by the second lens, which never got to report it: `ts` is stamped by the SENDING endpoint
+  // (packages/core/src/endpoint.ts:1204), so it is neither trustworthy nor bounded. Measured before
+  // the repair, on this shape: one message stamped in the year 2255 moved the mark to it, and every
+  // ordinary message after it was filtered out of recall FOREVER, under the reply "Inbox empty, no
+  // new messages, and no channel chatter since you entered focus." Silent, permanent, session-wide,
+  // and reachable by one peer with a wrong clock or a chosen field. Same family as #603 itself: mail
+  // not handed over, under a confident reply saying there is none.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const mk = (id: string, ts: number) => ({
+      id, ts, fromId: "peer", fromName: id === "SKEW" ? "Skewed" : "Peer", kind: "channel" as const,
+      channel: "general", mentionsMe: false, historical: false, text: `body ${id}_X`,
+    });
+    let items = [mk("A", 1_000), mk("B", 1_100), mk("SKEW", 9_000_000_000_000)];
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items, droppedChannels: [],
+    });
+
+    const t1 = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("a message stamped in the future is still delivered, in the place it was first seen",
+      t1.includes("A_X") && t1.includes("B_X") && t1.includes("SKEW_X"), t1.slice(0, 120));
+
+    // The channel keeps talking, with ordinary timestamps. This is the assertion the defect failed.
+    items = [...items, mk("C", 1_200), mk("D", 1_300)];
+    const t2 = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("...and the messages after it are still recalled, rather than filtered out for good",
+      t2.includes("C_X") && t2.includes("D_X"), t2.slice(0, 160));
+    check("...and it is not handed over a second time, which is how a clamp alone would fail",
+      !t2.includes("SKEW_X"), t2.slice(0, 160));
+
+    // Walked to the end, the walk stays ended: a remembered order cannot drift forward with the clock.
+    const t3 = textOf(await inboxSpec().run(agent, cfg, {}));
+    check("...and once the walk is done it stays done, on every later call",
+      !t3.includes("_X"), t3.slice(0, 160));
+  }
+
+  // ── 24) THE BOUND ON THAT MEMORY IS NOT A WAY TO SILENCE OTHER PEERS ─────────────────────────
+  //
+  // The repair remembers where each future-stamped id was placed, and that memory is exactly what a
+  // flood of forged stamps would grow. So the bound is deliberate, and the question a security lens
+  // asks of it is where its cost lands. It lands on the sender that spent it: honest traffic never
+  // enters the map, so it is ordered by its own timestamp whatever the flood is doing. What the
+  // session will not order it NAMES, and clears nothing.
+  {
+    const agent = new MeshAgent(cfg);
+    agent.on("error", () => {});
+    Object.defineProperty(agent, "attention", { get: () => "focus" });
+    const forged = Array.from({ length: 400 }, (_, n) => ({
+      id: `FORGE-${n}`, ts: 9_000_000_000_000 + n, fromId: "adv", fromName: "Adversary",
+      kind: "channel" as const, channel: "general", mentionsMe: false, historical: false,
+      text: `forged ${n}`,
+    }));
+    const honest = [1_000, 1_100, 1_200].map((ts, n) => ({
+      id: `HON-${n}`, ts, fromId: "peer", fromName: "Peer", kind: "channel" as const,
+      channel: "general", mentionsMe: false, historical: false, text: `honest HON_${n}`,
+    }));
+    (agent as unknown as { recallAmbient: () => Promise<unknown> }).recallAmbient = async () => ({
+      items: [...forged, ...honest], droppedChannels: [],
+    });
+
+    const seen = new Map<string, number>();
+    let text = "";
+    for (let call = 0; call < 8; call++) {
+      text = textOf(await inboxSpec().run(agent, cfg, {}));
+      check(`...call ${call + 1} stays inside the window while the flood is running`,
+        text.length <= INBOX_WINDOW_CHARS, { chars: text.length });
+      for (const h of honest) if (text.includes(h.text)) seen.set(h.id, (seen.get(h.id) ?? 0) + 1);
+    }
+    check("a flood of future-stamped messages cannot cost another peer its recall",
+      honest.every((h) => seen.get(h.id) === 1), [...seen.entries()]);
+    check("...and what it will not take responsibility for, it names instead of dropping quietly",
+      text.includes("not being handed over") && text.includes("Adversary") && text.includes("Nothing was cleared"),
+      text.slice(-260));
+  }
+
   console.log(`\nINBOX WINDOW SMOKE OK ✅  (${pass} passed, 0 failed)`);
   process.exit(0);
 } catch (e) {
