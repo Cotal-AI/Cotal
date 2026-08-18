@@ -1,5 +1,116 @@
 # @cotal-ai/connector-core
 
+## 0.22.0
+
+### Minor Changes
+
+- 57d3a57: A Claude session publishes a structured event plane, and the `tr-<name>` transcript mirror is
+  retired
+
+  A session launched with `cotal spawn --events` now actually publishes. The Claude connector maps
+  its session records to structured events behind the same hook relay the mirror used to sit behind:
+  run boundaries per turn, assistant text, reasoning, and each tool call with its arguments, its end
+  and its result, written to a per-session write-ahead log before they go on the wire so a restart
+  resumes at its cursor instead of replaying or skipping. Until now no connector constructed the
+  emitter at all, so every event channel was empty.
+
+  The `tr-<name>` mirror is removed in the same change rather than deprecated alongside it. Gone with
+  it: the `--transcript` and `--no-transcript` flags on `cotal spawn`, the `transcript` field on the
+  manager's spawn op and its service contract, `COTAL_TRANSCRIPT` and `COTAL_TRANSCRIPT_DEFAULT`,
+  `LaunchOpts.transcript`, `Connector.transcriptChannel`, and the mirror in all three connectors that
+  carried one.
+
+  MIGRATION. If you read a `tr-<name>` channel, nothing publishes to it any more. A managed session no
+  longer mirrors its prose there under any flag or environment variable, and a spawn that passes
+  `--transcript` now fails on an unknown flag rather than being ignored. Read the session's event
+  channel instead: launch with `--events` and subscribe to `events.<owner>.<actor>`, which is keyed on
+  the session's principal. On a static mesh that is `events.local.<key>`, where the key is what the
+  manager allocated and the spawn reply carries it as `id`; on a user-auth mesh it is
+  `events.<your-owner>.<agent-name>`, where the actor half is the agent's own name. `connect-claude.md`
+  gives both forms. `cotal console` and the web console render event frames directly. Unlike
+  `tr-<name>`, you cannot simply subscribe: the plane needs an out-of-band grant, and the command for
+  it is under "To let something read a plane" below.
+
+  What you gain and what you lose, both stated. A tool call now arrives with its full arguments, its
+  end and its result, in a vocabulary a program can read, where the mirror gave a truncated one-liner
+  of glyph-prefixed text. What you lose is prompt text somebody else wrote: the mirror republished
+  every prompt, and the event plane withholds the body of a turn the agent did not author, because
+  republishing a peer's message onto a channel that peer may not read crosses an ACL boundary. A
+  peer-authored turn still opens a run and still shows the work it caused. One stated limit on that,
+  because the loss column is only useful if it is complete: a tool result is this session's own output
+  and is republished, so peer text quoted inside one still reaches the wire. A cell in
+  `agui-authorship.smoke.ts` holds that as a measured limit rather than leaving it to be discovered.
+
+  A spawn may be granted the event plane of the agent it is creating, and no other. A spawn that names
+  a different agent's event channel in `allowSubscribe` or `allowPublish` is refused at the door,
+  because that channel carries the session's tool inputs and outputs. The same rule runs on a manager
+  resume: a retained inventory naming another agent's event channel is refused rather than adopted.
+
+  The rule reads a **concrete** channel, two principal tokens and nothing else. A pattern such as
+  `events.<owner>.>` is not an event channel to it and passes untouched, governed by ordinary ACL
+  authority. That is deliberate, since the pattern is the form an operator writes on purpose for an
+  observer.
+
+  To let something read a plane, grant it out of band. The refusal prints one command, spelled out in
+  full, for the mesh it is running on. On a user-auth mesh:
+  `cotal actor grant <reader> --owner <owner> --scope '' --allow-subscribe '<channel>' --allow-publish
+''`, every field named because `actor grant` is an upsert of the whole row and an omitted flag is the
+  wide default (`>` read, `>` post, `spawn,role:default` scope), not "leave it alone". On a static mesh there is no
+  actor ledger for `actor grant` to write to, so mint the reader instead:
+  `cotal mint watcher --profile agent --allow-subscribe '<channel>' --provision`, the agent profile and
+  not the observer one, since `mint` reads `--allow-subscribe` only for that profile and refuses it off
+  that profile.
+
+  `cotal mint` now REFUSES `--allow-subscribe` / `--allow-publish` off the agent profile rather than
+  ignoring them. Those profiles carry a FIXED read set, the chat plane for observer and the whole
+  messaging plane for admin, so
+  `--profile observer --allow-subscribe <one channel>` used to exit 0, print a success line, and hand
+  out a credential that reads every channel in the space: an operator asking to narrow got the
+  opposite, silently. `--role` and `--provision` were already refused there for the same reason. The
+  rows in `cli.md` and the sentence in `build-a-client.md` now say the same thing.
+
+### Patch Changes
+
+- dfad94f: Fix two refusals that told an operator to run a grant which silently widened the row
+
+  `cotal actor grant` is an upsert of the WHOLE row. Every flag the operator does not name is filled
+  from the wide default: `>` read, `>` post, `spawn,role:default` scope. Two refusals printed a
+  re-grant that named `--scope` and nothing else, so following either one reset the row's channel ACLs
+  to everything.
+
+  The elevated-view refusal is the sharper of the two. Asked for a view the grant lacks, it printed
+  `cotal actor grant <actor> --owner <owner> --scope <current+needed>` and called that "the upsert
+  replaces the scope list". An operator adding one view to a deliberately narrow row reset that row's
+  read and post sets to `>` and `>` in the same paste, and the same sentence sent them to
+  `cotal actor list` to confirm, where the widened row reads as confirmation that it worked. The row
+  is a human operator's, and the ACL is minted fresh at every connect, so it takes effect on the next
+  one with no restart.
+
+  The missing-spawner refusal has the longer reach. Repairing a broken delegation chain, it printed
+  `cotal actor grant <actor> --owner <owner> --scope spawn` and stopped, authoring a spawner that
+  reads and posts on every channel. A spawner's own ACL is the ceiling every agent beneath it is
+  attenuated against, so one pasted repair set a whole-plane ceiling for everything spawned under it
+  from then on.
+
+  The two doors now differ, on purpose. The elevated-view refusal has the row in hand, so it prints
+  every field it is replacing, values included. The two delegation refusals have no row to copy from,
+  so they print NO runnable command at all and name the flags and the wide default in prose instead:
+  a line carrying channel values would invent them, and a line short of all three flags widens on
+  paste. Both say what leaving a flag off means. `docs/cli.md` no
+  longer tells a reader that a re-grant adds to the current scope, the `cotal actor grant` usage line
+  now states what an omitted flag defaults to, and the two remaining hints that name a bare grant say
+  that it is the full envelope, matching the wording `cotal login` already used.
+
+  Both refusals are gated by cells that parse the service's own refusal string rather than matching a
+  hardcoded command, so the text and the assertion cannot drift apart, and a mutation per site reverts
+  each refusal to its shipped text and reddens that cell.
+
+  The strings are not new. Every release from v0.11.0 to v0.21.0 carries all three, which is the whole
+  life of the per-user actor ledger. Nothing about the on-disk row changes here, so no migration is
+  needed, but an operator who followed either refusal should check the affected rows with
+  `cotal actor list`: a widened row cannot be told from a deliberately full one, since the row records
+  only when it was granted, not what it held before.
+
 ## 0.21.0
 
 ### Minor Changes
