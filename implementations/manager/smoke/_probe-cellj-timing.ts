@@ -25,7 +25,12 @@
  *   --arm today  the cell as it stood: wait 40s from the announcement, heal, press. `--lag` adds
  *                the observation offset a loaded runner contributes.
  *   --arm race   the failure on demand: heal on the first dial of an attempt instead of in the wait
- *                between two, so that attempt gets to use it. reconnected=true, every time.
+ *                between two, so that attempt gets to use it. The heal is triggered from inside the
+ *                proxy's connection handler, not from a poll that notices a knock afterwards: a
+ *                cluster of dials is over inside 100ms and a 200ms poll sees it too late, which
+ *                heals into the wait and produces a GREEN run. With the hook it is 3 runs out of 3;
+ *                with the poll it was 1 out of 2, which is the difference between a demonstration
+ *                and an anecdote.
  *   --arm sync   the cell owning its timing: wait for two knocks a rung apart, let that attempt
  *                finish dialling, heal, and confirm nothing re-established before pressing.
  *
@@ -122,9 +127,15 @@ const heal = (): Promise<void> =>
 /** Severed, but LOUD: the port keeps listening and destroys what it accepts, so every dial the
  *  client makes lands here with a timestamp. To the client this is a link that resets rather than
  *  one that refuses; a failed attempt either way. */
+let onKnock: (() => void) | undefined;
 const knockListener = (): Promise<void> =>
   new Promise((res, rej) => {
-    const s = createServer((sock) => { knocks.push(Date.now()); sock.destroy(); });
+    knocks.length = 0; // one outage, one measurement: a knock from the last one is not this schedule
+    const s = createServer((sock) => {
+      knocks.push(Date.now());
+      sock.destroy();
+      const hook = onKnock; onKnock = undefined; hook?.();
+    });
     s.on("error", rej);
     s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
   });
@@ -188,6 +199,7 @@ function attachUnderPty(root: string, seat: string): Attached {
 const QUIET = "rcquiet";
 let manager: InstanceType<typeof Manager> | undefined;
 let att: Attached | undefined;
+let failed = false;
 
 try {
   let up = false;
@@ -257,10 +269,18 @@ try {
     tHeal = Date.now();
   } else if (ARM === "race") {
     // The failure, on demand: heal in the MIDDLE of an attempt instead of in the wait between two.
-    // The first knock of a cluster says an attempt has just begun and will dial again in a few
-    // milliseconds, so a heal here is one the in-flight attempt gets to use. This is what a loaded
-    // runner does by accident when the offset walks the 40s wait onto a rung boundary.
-    await waitForLongRung();
+    // An attempt dials about five times inside a hundred milliseconds, so the heal has to ride the
+    // FIRST of those dials to be one the in-flight attempt can still use. A poll cannot: at 200ms
+    // it sees the cluster only once it is over, which is a heal in the wait and a green run. So the
+    // hook fires inside the connection handler itself, before the socket is even destroyed.
+    //
+    // Waiting for the ladder is a wait for SILENCE, not for a pair: the pair that proves the rung
+    // is the knock this arm has to act on, and by the time it exists the moment has passed.
+    while (Date.now() - (knocks.at(-1) ?? Date.now()) < 26_000) await wait(200);
+    let armed!: () => void;
+    const fired = new Promise<void>((r) => { armed = r; });
+    onKnock = () => { armed(); };
+    await fired;
     await closeLink();
     await heal();
     tHeal = Date.now();
@@ -318,9 +338,23 @@ try {
   console.log(reconnected
     ? `  VERDICT: the retry won the race. Cell J's premise assertion would be RED here.`
     : `  VERDICT: the press landed inside the wait. Cell J's premise assertion would be GREEN here.`);
+} catch (e) {
+  // Recorded rather than rethrown, because the finally below has to exit explicitly and an exit
+  // code of 0 on a probe that threw would be the quietest lie in this file.
+  failed = true;
+  console.error(`  PROBE FAILED: ${(e as Error).message}`);
 } finally {
   att?.kill();
+  onKnock = undefined;
   await closeLink();
   await manager?.stop().catch(() => {});
   releaseBroker();
+  // A reconnect leaves the manager's session plane holding sockets this file did not open, and the
+  // race arm always ends on one. `stop()` settles the manager's own work but node still has handles
+  // it will wait on, so the probe used to print its timeline and then sit there until something
+  // killed it. It reports and it leaves; nothing here is worth an ambiguous exit.
+  const held = (process as unknown as { getActiveResourcesInfo?: () => string[] }).getActiveResourcesInfo?.() ?? [];
+  const stray = held.filter((h) => h !== "TTYWrap" && h !== "Immediate" && h !== "TickObject");
+  if (stray.length > 0) console.log(`  (exiting on ${stray.length} handle(s) node would still have waited on: ${[...new Set(stray)].join(", ")})`);
+  process.exit(failed ? 1 : 0);
 }

@@ -190,6 +190,10 @@ const severLoud = (): Promise<void> =>
  *  the client's schedule MEASURED rather than modelled from the ladder and a stopwatch. The whole
  *  run is scanned, not just the newest pair: an attempt dials several times within a few
  *  milliseconds, so the pair carrying the rung is buried the moment the rest of its cluster lands. */
+/** How many times this attach has announced each thing. Counted rather than searched: every one of
+ *  these lines stays in the transcript, so "has it ever" is not a question a retry can act on. */
+const saidReconnected = (a: { seen: () => string }): number => (a.seen().match(/\[cotal: reconnected\]/g) ?? []).length;
+const saidLost = (a: { seen: () => string }): number => (a.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length;
 const longRungAt = (): number | undefined => {
   for (let i = knocks.length - 1; i > 0; i--) if (knocks[i] - knocks[i - 1] >= 25_000) return knocks[i];
   return undefined;
@@ -556,19 +560,23 @@ try {
       while (longRungAt() === undefined && Date.now() < rungDeadline) await wait(200);
       const quietUntil = Date.now() + 20_000;
       while (Date.now() - (knocks.at(-1) ?? 0) < 1_500 && Date.now() < quietUntil) await wait(200);
+      // COUNTED, not searched. A miss leaves `[cotal: reconnected]` in the transcript forever, so a
+      // later try asking "has this attach ever reconnected" can only ever answer yes, and a retry
+      // that cannot come back green is worse than no retry: it reads as resilience and is not.
+      const before = saidReconnected(b);
       await sever();
       await heal();
       await wait(1_500);
-      landed = !/\[cotal: reconnected\]/.test(b.seen());
+      landed = saidReconnected(b) === before;
       if (!landed) {
         // The heal was used by an attempt that was already running. Sever and take the next rung:
         // the cell reports the miss rather than asserting against the scenario it did not get.
         console.log(`    (heal ${tries} landed on an attempt rather than in the wait; taking the next rung)`);
-        const losses = (b.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length;
+        const losses = saidLost(b);
         await sever();
         await severLoud();
         const again = Date.now() + 60_000;
-        while (Date.now() < again && (b.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length === losses) await wait(200);
+        while (Date.now() < again && saidLost(b) === losses) await wait(200);
       }
     }
     check("the link is back with the loop WAITING rather than dialling, which is this cell's premise",
@@ -576,13 +584,17 @@ try {
     // The next attempt is a full rung away from the knock that proved the rung, so the margin below
     // is measured against where the boundary actually is rather than against a stopwatch.
     const nextAttemptDue = (longRungAt() ?? Date.now()) + 30_000;
+    const reconnectsAtPress = saidReconnected(b);
     const tPress = Date.now();
     b.write(DETACH_BYTE);
     check("the detach key ends the attach during the backoff", await b.waitExit(30_000), b.seen().slice(-300));
     const tExit = Date.now();
     check("...exiting clean", b.exit()?.code === 0, b.exit());
-    check("...without ever re-establishing, so this is the backoff path and not a reconnect",
-      !/\[cotal: reconnected\]/.test(b.seen()), b.seen().slice(-600));
+    // Counted from the press, for the same reason the premise is: on a first-try landing this is
+    // "never reconnected" and says so, and after a miss it is the only form that can still be true
+    // of the run the cell actually set up.
+    check("...without re-establishing after the press, so this is the backoff path and not a reconnect",
+      saidReconnected(b) === reconnectsAtPress, { reconnectsAtPress, now: saidReconnected(b), tail: b.seen().slice(-600) });
     // The shell comes back with the press, not with the rung. Losing a `Promise.race` does not stop
     // a `setTimeout`, so before this was asserted the loop honoured the detach at once, printed
     // `detached from`, and then held the process open until the abandoned backoff timer fired: 27.0s
