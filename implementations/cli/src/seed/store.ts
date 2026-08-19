@@ -1,5 +1,6 @@
 import { cpSync, existsSync, mkdirSync, readdirSync, renameSync, rmSync } from "node:fs";
 import { dirname, join, relative, sep } from "node:path";
+import { provenance } from "@cotal-ai/workspace";
 import { seedStoreDir, seedStorePath, shippedSourceDir } from "./paths.js";
 
 /**
@@ -36,6 +37,12 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   mkdirSync(dirname(dest), { recursive: true });
   cpSync(src, staging, { recursive: true, filter: (from) => payloadFilter(src, from) });
   renameSync(staging, dest); // atomic within the store: the final path only ever holds a complete payload
+  // Announce the write on the provenance channel. This store is operator-global (a sibling of the
+  // shared `extensions/` prefix, moved only by `XDG_CONFIG_HOME`), so re-seeding it from a non-released
+  // checkout silently makes those bytes the machine-wide payload for that generation key; naming the
+  // path here lets the line read as the machine-wide action it is. Only on a real materialization: the
+  // idempotent early return above (an intact prior copy) writes nothing and stays silent.
+  provenance.wrote(`operator-global seed store payload (${name})`, dest);
   return dest;
 }
 

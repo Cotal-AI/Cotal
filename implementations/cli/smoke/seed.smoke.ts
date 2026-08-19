@@ -93,11 +93,22 @@ check("path spec: a registry name is NOT a path (versioned)", !isPathSpec("conne
   const ever = readJson(join(sd, "authority.json")).everSeeded.slice().sort();
   check("auto-seed: authority records all seven first-party exts", ever.join(",") === "claude,codex,hermes,jcode,opencode,pi,web", ever);
 
-  // 2. idempotent no-op: stamp untouched on a second boot.
+  // The operator-global seed-store write must not be silent (#593): re-seeding `~/.config/cotal/seed/store`
+  // from a non-released checkout makes those bytes the machine-wide payload for the version key, so the
+  // reconcile announces each materialization with its path on the provenance channel (stderr).
+  const storeRoot = join(cfg, "cotal", "seed", "store");
+  check("provenance: the machine-wide seed-store write is announced with its path (not silent)",
+    first.stderr.includes("wrote operator-global seed store payload") && first.stderr.includes(storeRoot),
+    first.stderr);
+
+  // 2. idempotent no-op: stamp untouched on a second boot, and NO seed-store write is announced, since
+  // the announce tracks a real materialization, not every boot (the fast path copies nothing).
   const m1 = statSync(join(sd, "stamp.json")).mtimeMs;
-  listNames(cfg);
+  const second = cotal(cfg, ["ext", "list"]);
   const m2 = statSync(join(sd, "stamp.json")).mtimeMs;
   check("idempotent: stamp untouched across boots (fast-path, no re-seed)", m1 === m2);
+  check("provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
+    !second.stderr.includes("seed store payload"), second.stderr);
 }
 
 // ── direct `supervise` (the agent supervisor) SEEDS on a fresh config — it is NOT a skipped daemon ─

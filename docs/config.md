@@ -272,5 +272,14 @@ Distinct from `~/.cotal`. Location: `$XDG_CONFIG_HOME/cotal`, else `~/.config/co
 | `extensions/` | `cotal ext` install prefix: its own npm root (`node_modules`) plus an `extensions.json` provider/command-display cache. Built-in connectors install here too, seeded on first run |
 | `seed/` | Built-in-connector seeding state: the `ever-seeded` authority (+ durable backup), the init witness, the version stamp, the crash cursor, and `store/<version>/<name>` (the stable payloads `ext add --install-links` reifies each seeded connector from) |
 
+Both `extensions/` and `seed/store/` are operator-global: shared by every space, project directory, and
+checkout on the machine, and moved only by `$XDG_CONFIG_HOME` (a fresh project dir isolates `.cotal/`,
+not these). Running `cotal up`, or any command that seeds, from a tree that is not a released install
+re-seeds `seed/store/<version>` with that tree's packages under the same version key, so every later
+mesh on the machine materializes those bytes while `cotal ext ls` still reports the published version.
+To keep the machine-wide store untouched when running from a non-released checkout, point
+`$XDG_CONFIG_HOME` at an isolated dir. The reconcile names the store path it writes on stderr, so a
+machine-wide re-seed is visible when it happens.
+
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).
