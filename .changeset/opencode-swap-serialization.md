@@ -3,11 +3,11 @@
 ---
 
 Serialize the top-level session swap. The plugin bus does not await the event handler, so a second
-top-level session created while the first swap is still draining captured the same holder to retire
-and installed its replacement over the first one. The dropped replacement had already been adopted,
-which is where its write-ahead log, subject frontier and log open, so it was orphaned with an open
-handle and the session it held left a run open on the wire with nothing reporting it. The holder they
-both replaced was drained twice.
+top-level session created while the first swap is still draining captured the same holder to
+retire and installed its replacement over the first one. The dropped replacement had already been
+adopted, which is where its write-ahead log, subject frontier and log open, so it was orphaned
+with an open handle and the session it held left a run open on the wire with nothing reporting it.
+The holder they both replaced was drained twice.
 
 Swaps now run one at a time, so each reads a holder that is already settled rather than one
 mid-retirement, and a rejected swap is absorbed so one failed drain cannot wedge every later swap.
@@ -41,14 +41,14 @@ back on the mesh it had just left, and a tool call already inside the model's tu
 know a stop was running. A refused tool call says so rather than returning nothing, because its
 caller is waiting on a result and silence would read as a hang.
 
-Departure is also the last thing the seat says. A presence write is not atomic, so a call admitted
-before the stop could be parked mid-write while the teardown published offline, and then put the
-seat back to work after it had announced it left; on the wire, a roster read `working` after
-`offline`. The teardown now waits, briefly, for interactive work it has already admitted before it
-publishes departure, and joins the slower event work afterwards as it already did. Event work is
-deliberately not in that wait, because waiting on a drain is what publishing departure early exists
-to avoid.
+Departure is also ordered behind the work the seat has already admitted. A presence write is not
+atomic, so a call admitted before the stop could be parked mid-write while the teardown published
+offline, and then put the seat back to work after it had announced it left; on the wire, a roster
+read `working` after `offline`. The teardown now waits, briefly, for interactive work it has
+already admitted before it publishes departure, and joins the slower event work afterwards as it
+already did. Event work is deliberately not in that wait, because waiting on a drain is what
+publishing departure early exists to avoid.
 
 That wait is bounded below the shortest runtime grace window, so a stop still publishes departure
-before a hard kill can take it. The tradeoff is stated rather than implied: a straggler that outlives
-the bound is not cancelled, so it can still complete after departure has been published.
+before a hard kill can take it. The tradeoff is stated rather than implied: a straggler that
+outlives the bound is not cancelled, so it can still complete after departure has been published.
