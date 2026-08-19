@@ -710,6 +710,7 @@
     // Now every source is read independently, only successful reads are applied, and what did not
     // land is named on screen. Nothing here can prevent `connect()` from running.
     const SNAP = window.COTAL_SNAPSHOT;
+    let activityPage = null;
     const stale = await SNAP.refreshAll([
       { name: "space", read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
         apply: (meta) => { $("space").textContent = "· " + meta.space; } },
@@ -724,11 +725,19 @@
       // `readJson`, and an unreadable feed reaches `membershipUnreadable()` through the stale path.
       { name: "membership", read: async () => SNAP.readJson(await fetch("/api/membership"), "membership"),
         apply: (m) => applyMembership(m) },
+      // `/api/activity` answers an ENVELOPE, never a bare array; a caller that ignored `partial`
+      // would break here rather than seed a short page as though it were the whole backfill.
       { name: "activity", read: async () => SNAP.readJson(await fetch("/api/activity?limit=400"), "activity"),
-        apply: (activity) => seedActivity(activity) },
+        apply: (page) => { activityPage = page; seedActivity(page.entries); } },
       { name: "direct messages", read: async () => SNAP.readJson(await fetch("/api/dms?limit=400"), "direct messages"),
         apply: (dmHist) => seedDms(dmHist) },
     ]);
+    if (activityPage && activityPage.partial)
+      stale.push({
+        kind: "partial",
+        name: "activity",
+        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
+      });
     setStale(stale);
     if (stale.some((s) => s.name === "membership")) membershipUnreadable();
     alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout

@@ -390,8 +390,13 @@ function extractBackfillFunction(src: string, file: string): string | undefined 
  *  The stubs are deliberately inert: every one of them is a no-op or an empty collection, so the
  *  only thing that can put a channel on a message is the shipped code under test. */
 async function runBackfillFunction(code: string, call: string, file: string, entries: unknown[]) {
+  // `/api/activity` answers a bounded PAGE; the entries under test ride inside it, exactly as the
+  // server sends them. `entries` is still the array the shipped code mutates, so the cells that read
+  // it back are unaffected.
   const json = (u: string): unknown =>
-    u.includes("/api/activity") ? entries : u.includes("/api/membership") ? { members: [] } : [];
+    u.includes("/api/activity")
+      ? { entries, partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }
+      : u.includes("/api/membership") ? { members: [] } : [];
   const ctx: Record<string, unknown> = {
     // `ok: true` is part of the stub, not decoration: shipped code that checks the status before
     // trusting the body reads `r.ok`, and a response object without it is a stub that reports every

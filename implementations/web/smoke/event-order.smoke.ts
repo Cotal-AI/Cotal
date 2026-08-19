@@ -435,6 +435,11 @@ console.log("event-order smoke");
       fetch: async (u: string) => {
         const isBackfill = u.includes("/api/activity") || u.includes("/history");
         if (isBackfill && mode === "reject") throw new Error("network down");
+        // `/api/activity` answers a BOUNDED PAGE, not a bare array, and the stub says so: a stub
+        // that still served the old shape would keep these cells green against a client that could
+        // no longer read what the server sends.
+        if (u.includes("/api/activity"))
+          return { ok: true, json: async () => ({ entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }) };
         return { ok: true, json: async () => [] };
       },
       // The stale pill's element, so the shipped `setStale` runs rather than being stubbed out: it is
@@ -566,6 +571,8 @@ console.log("event-order smoke");
     const ctx = page("resolve");
     (ctx as Record<string, unknown>).fetch = async (u: string) => {
       if (u.includes("/api/roster")) throw new Error("network down");
+      if (u.includes("/api/activity"))
+        return { ok: true, json: async () => ({ entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }) };
       return { ok: true, json: async () => [] };
     };
     await drive(ctx, "refresh()", frame(9));

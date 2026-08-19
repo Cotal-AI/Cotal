@@ -64,7 +64,7 @@
       const r = settled[i];
       if ("error" in r) {
         const e = r.error;
-        stale.push({ name: sources[i].name, reason: e && e.message ? e.message : String(e) });
+        stale.push({ kind: "refused", name: sources[i].name, reason: e && e.message ? e.message : String(e) });
         continue;
       }
       sources[i].apply(r.value);
@@ -72,10 +72,20 @@
     return stale;
   }
 
-  /** One line for the header: what is stale and why. Empty string when nothing is. */
+  /** One line for the header: what is stale, what is partial, and nothing when neither.
+   *
+   *  The two are DIFFERENT FACTS and the label keeps them apart. Stale means the page is showing the
+   *  last value that was read because the refresh was refused. Partial means the refresh DID land and
+   *  is short: some sources did not answer inside the request's deadline. Folding them into one word
+   *  would tell a reader that data is old when it is actually new and incomplete. */
   function staleLabel(stale) {
     if (!stale.length) return "";
-    return `stale: ${stale.map((s) => s.name).join(", ")}`;
+    const refused = stale.filter((s) => s.kind !== "partial").map((s) => s.name);
+    const partial = stale.filter((s) => s.kind === "partial").map((s) => s.name);
+    const parts = [];
+    if (refused.length) parts.push(`stale: ${refused.join(", ")}`);
+    if (partial.length) parts.push(`partial: ${partial.join(", ")}`);
+    return parts.join(" · ");
   }
 
   window.COTAL_SNAPSHOT = { readJson, refreshAll, staleLabel };

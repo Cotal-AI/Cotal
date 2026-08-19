@@ -898,6 +898,7 @@ async function refresh() {
   // The batch the settle will use. Only the all-activity path fills it; every other path settles on
   // empty, which is the machine's specified empty-history arm rather than a shortcut.
   let batch = [];
+  let activityPage = null;
   try {
     // ── A FAILED READ KEEPS WHAT IS ON SCREEN ─────────────────────────────────────────────────────
     //
@@ -912,6 +913,10 @@ async function refresh() {
     // `refreshAll` reads all four concurrently, applies ONLY the ones that succeeded, and returns
     // what did not land. `apply` is the only writer, so a refusal cannot reach page state at all.
     const SNAP = window.COTAL_SNAPSHOT;
+    // The all-activity backfill is a source ONLY when the reader is on all-activity. The other three
+    // lenses settle the order machine on an empty batch, which is its specified empty-history arm,
+    // and asking for a page nobody will draw is exactly the per-channel fan-out this change bounded.
+    const onAllActivity = !agentSel && !dmSel && selected === "*";
     const stale = await SNAP.refreshAll([
       {
         name: "peers",
@@ -948,24 +953,36 @@ async function refresh() {
         read: async () => SNAP.readJson(await fetch("/api/dms?limit=500"), "direct messages"),
         apply: (v) => { dms = v; },
       },
-      // The all-activity backfill is read here with the others rather than in the branch below, so a
-      // refusal on it is reported in the same place as the other three instead of being swallowed.
-      // It is only APPLIED when the reader is on all-activity; the other lenses settle on empty,
-      // which is the order machine's specified empty-history arm rather than a shortcut.
-      {
-        name: "activity",
-        read: async () =>
-          agentSel || dmSel || selected !== "*"
-            ? []
-            : SNAP.readJson(await fetch(`/api/activity?limit=200`), "activity"),
-        apply: (v) => { batch = v; },
-      },
+      // Read alongside the other three rather than after them, so a refusal on it is reported in the
+      // same place instead of being swallowed, and so it no longer waits for them on a slow link.
+      //
+      // `/api/activity` answers an ENVELOPE now, never a bare array, and the shape change is a guard
+      // rather than a nuisance: a caller that ignores `partial` breaks here instead of rendering a
+      // short page as a complete one. NO TOLERANCE FOR A BARE ARRAY either, and that is not
+      // pedantry: `[].entries` is a real Array METHOD, so a `page.entries ?? page` tolerance quietly
+      // hands a FUNCTION to the merge when the answer is a list. It is read exactly one way.
+      ...(onAllActivity
+        ? [{
+            name: "activity",
+            read: async () => SNAP.readJson(await fetch(`/api/activity?limit=200`), "activity"),
+            apply: (page) => { batch = page.entries; activityPage = page; },
+          }]
+        : []),
     ]);
+    // A PARTIAL PAGE IS NOT A REFUSAL AND IS NOT SILENCE. The entries it carries are real and are
+    // applied; what the reader is told is that some sources did not answer in time, which sources,
+    // and how many did. Reported on the same marker as a refusal so there is one place to look.
+    if (activityPage && activityPage.partial)
+      stale.push({
+        kind: "partial",
+        name: "activity",
+        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
+      });
     setStale(stale);
     // The order machine's own failure arm keeps its own note: a refused history read is what makes a
     // backfill incomplete, and the notice that draws it is about ordering. The other three sources
     // are carried by the stale pill and are not backfill failures, so they are not reported as ones.
-    const backfillRefused = stale.find((s) => s.name === "activity");
+    const backfillRefused = stale.find((s) => s.name === "activity" && s.kind !== "partial");
     if (backfillRefused) noteOrder([{ type: "backfill-failed", reason: backfillRefused.reason }]);
     renderSidebarNav();
     // THE BOUNDARY MUST PASS EVEN WHEN THE FETCH DOES NOT, and this is not a soft failure mode

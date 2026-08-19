@@ -4,14 +4,14 @@
     {
       "name": "W1 the state-retention is reverted: a refused read applies anyway, with an empty value standing in for the snapshot it could not fetch, which is the wipe the issue reports written as a fallback",
       "file": "implementations/web/src/web/snapshot.js",
-      "find": "        stale.push({ name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        continue;\n",
-      "replace": "        stale.push({ name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        sources[i].apply([]);\n        continue;\n",
+      "find": "        stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        continue;\n",
+      "replace": "        stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        sources[i].apply([]);\n        continue;\n",
       "expectRed": "2.1 a refused source's apply is NEVER called"
     },
     {
       "name": "W2 the refusal stops being reported, so the page keeps its last good snapshot and never says so: the reader is shown stale data as though it were current",
       "file": "implementations/web/src/web/snapshot.js",
-      "find": "        stale.push({ name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n",
+      "find": "        stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n",
       "replace": "",
       "expectRed": "2.3 the refusal is REPORTED, by source name"
     },
@@ -46,8 +46,8 @@
     {
       "name": "W7 the stale marker stops naming anything, so the page keeps its data and the reader is never told which half of it is old",
       "file": "implementations/web/src/web/snapshot.js",
-      "find": "    return `stale: ${stale.map((s) => s.name).join(\", \")}`;",
-      "replace": "    return \"stale\";",
+      "find": "    if (refused.length) parts.push(`stale: ${refused.join(\", \")}`);",
+      "replace": "    if (refused.length) parts.push(\"stale\");",
       "expectRed": "3.2 a stale set NAMES its sources"
     }
   ]

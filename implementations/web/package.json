@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
     "dompurify": "^3.4.12",
     "marked": "^18.0.6"
