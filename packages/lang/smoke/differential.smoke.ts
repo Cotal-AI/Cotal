@@ -300,6 +300,14 @@ log("rounds", rounds, r.status);`,
   // arms L4010, so the receiver law is decided before the thenable law and the order is not a
   // divergence here. It is one line above, where the receiver IS a record.
   ["refusals: a callable then written onto a non-record", '"x".then = () => 1; log("after");', {}, "L4010"],
+  // AND THE SAME QUESTION WHERE THE RECEIVER IS AN ARRAY, which was the divergence this row was
+  // written as: the walker answered L4014 and the engine L4018, because the engine asked the value's
+  // rule before the member rule. Ruled - target-kind, then the freeze, then that kind's member rule,
+  // then the value - and reordered on the engine at 2b5ac15f, so both arms now answer L4014 and this
+  // is a corpus row rather than a declared divergence. `then` is not a member of an array any more
+  // than `foo` is, whatever is being written into it.
+  ["refusals: a callable then written onto an array", 'keys({ a: 1 }).then = () => 1; log("after");', {}, "L4014"],
+  ["refusals: a non-member written onto an array, the control", 'keys({ a: 1 }).foo = 1; log("after");', {}, "L4014"],
   // The one admitted node type the gate never spelled, found by the coverage cell below rather than
   // by reading the corpus. An unbraced body is L1009, so a stray `;` between statements is the only
   // spelling the validator admits, and it is what the emitter has to carry through unchanged.
@@ -459,11 +467,6 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   ["the value law through `set`: a callable then, written plainly", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
   ["the value law through `set`: a callable then, written computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
   ["the value law through `set`: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, "logs []", "L4018"],
-  // AND THE ORDER THE TWO RULES ARE ASKED IN, which is a divergence rather than a coincidence: the
-  // walker reaches the curated-key rule first and answers L4014 for a record `keys()` minted, where
-  // the engine reaches the value law and answers L4018. Ruled: `set` is to ask target-kind, then the
-  // array-member rule, then the thenable rule; when H reorders, this cell reds and the row moves up.
-  ["the value law through `set`: which rule answers first on a minted record", 'keys({ a: 1 }).then = () => 1; log("after");', {}, "L4014", "L4018"],
 ];
 
 {

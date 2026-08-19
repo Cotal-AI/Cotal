@@ -765,6 +765,26 @@
       "completionMarker": "ok a literal with an own callable `then` refuses at birth",
       "cell": "and so does the engine, freeze ahead of the member rule",
       "note": "The other end of the same order, and it is measured on the oracle too: a frozen array written with a member it does not have answers L2031, not L4014. A host that asked the member rule first would tell an author to fix the member name on a value no member name would have made writable."
+    },
+    {
+      "name": "a member declares a parameter the seam never granted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    caught(e) {",
+      "replace": "    caught(e, unused) {",
+      "expectRed": "every member's declared MAX is its implemented parameter count (14 checked)",
+      "completionMarker": "ok and they are the SAME names, by set equality in both directions",
+      "cell": "every member's declared MAX is its implemented parameter count (14 checked)",
+      "note": "A pure ARITY mutant, which is the only kind this section can be graded by: it sits last in a fail-fast suite, so any mutant that also changes behaviour reds a rule that names itself better. One extra parameter changes nothing a program can see and everything the contract says - the seam's max for `caught` is 1, and a host declaring 2 has either invented an argument or is about to be handed one nobody ruled."
+    },
+    {
+      "name": "the host implements a member the seam never granted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "  const ctx: EngineCtx = {\n    fuel,",
+      "replace": "  const ctx: EngineCtx = {\n    noop: () => undefined,\n    fuel,",
+      "expectRed": "the seam declares 14 members and the host implements 14",
+      "completionMarker": "ok a ReferenceError escaping the whole run is an ENGINE fault too",
+      "cell": "the seam declares 14 members and the host implements 14",
+      "note": "The widening this whole surface exists to refuse, and the shape it would actually arrive in: not a member removed, which every behavioural cell would notice, but one ADDED - reachable from the program, invisible to every law cell, and outside the table both lanes hold. Set equality is checked in both directions for exactly this."
     }
   ]
 }

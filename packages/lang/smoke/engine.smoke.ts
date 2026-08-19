@@ -36,7 +36,7 @@ import { runInWorker } from "../src/engine/worker.js";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { run as walkerRun } from "../src/interpret.js";
-import { transform } from "../src/transform/index.js";
+import { SEAM_MEMBERS, transform } from "../src/transform/index.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
 
 let pass = 0;
@@ -2141,6 +2141,57 @@ let n = 1;
   // program through `runOnEngine`, so the boundary check is reached on every one of them. The mutant
   // that raises the floor past every version that exists reds the first of them.
   ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
+}
+
+// ---- 21) the seam ARITY TABLE, from the other side ----------------------------------------------
+//
+// `SEAM_MEMBERS` is the contract both lanes hold: member name -> [min, max] ARGUMENT COUNTS the
+// emitter may pass. Lane T checks every emitted call site against it; this half checks the
+// IMPLEMENTATION, and the two together are what make the table a contract rather than a comment on
+// one side of a seam.
+//
+// THE CHECK IS `length === max`, AND THE REASON IS MEASURED, not chosen. A TypeScript optional
+// parameter (`binding?: string`) is a plain parameter after erasure - only a default or a rest stops
+// the count - so `Function.length` reports the FULL declared count, and a `<= min` rule would be
+// vacuous on the ten fixed members and false on all four variadic ones. `=== max` catches both
+// directions that matter: a member declaring FEWER than max silently drops the argument the emitter
+// passes, with no type error at either call site since the seam type is what both halves agree on;
+// a member declaring MORE has invented a widening.
+//
+// THE MIN END CANNOT COME FROM A FUNCTION'S SHAPE at all - erasure has already thrown away which
+// parameters were optional - so it is BEHAVIOURAL, and the four variadic members are each called
+// here in their shortest form. The named cells that hold the same thing where their law lives:
+// "without a binding name, an absent field is still just undefined" (get), "without a binding name,
+// a first write to an empty cell just writes" (set), "a name outside that table is L4014" (call),
+// "a free builtin READ as a value is the program's view of it" (free).
+
+{
+  const h = harness();
+  const ctx = h.ctx as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const declared = Object.keys(SEAM_MEMBERS).sort();
+  const implemented = Object.keys(h.ctx).sort();
+  ok(`the seam declares ${declared.length} members and the host implements ${implemented.length}`, declared.length === implemented.length, { declared: declared.length, implemented: implemented.length });
+  ok("and they are the SAME names, by set equality in both directions", JSON.stringify(declared) === JSON.stringify(implemented), { declared, implemented });
+
+  let checked = 0;
+  const wrong: string[] = [];
+  for (const name of declared) {
+    const max = SEAM_MEMBERS[name]?.[1] as number;
+    checked += 1;
+    if (typeof ctx[name] !== "function" || ctx[name].length !== max) wrong.push(`${name}: declared max ${max}, implemented ${typeof ctx[name] === "function" ? ctx[name].length : typeof ctx[name]}`);
+  }
+  ok(`every member's declared MAX is its implemented parameter count (${checked} checked)`, wrong.length === 0 && checked === declared.length, wrong);
+
+  // THE MIN END, behaviourally: each variadic member called with the FEWEST arguments the table
+  // permits, and answering rather than refusing. `fuel` is the degenerate case and is in the count.
+  await h.inFrame(async () => {
+    ok("get in its 2-argument form answers the field", h.ctx.get(h.ctx.born({ a: 1 }), "a") === 1);
+    ok("set in its 3-argument form writes and answers the value", h.ctx.set(h.ctx.born({}), "a", 1) === 1);
+    ok("call in its 3-argument form calls the member", (await h.ctx.call("ab", "toUpperCase", [])) === "AB");
+    ok("free in its 1-argument form reads the builtin as a value", typeof h.ctx.free("json") === "object");
+    ok("fuel takes none, and its declared range says so", SEAM_MEMBERS.fuel?.[0] === 0 && SEAM_MEMBERS.fuel?.[1] === 0);
+    return undefined;
+  });
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);
