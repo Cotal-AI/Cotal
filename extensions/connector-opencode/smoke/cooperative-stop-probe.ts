@@ -2,8 +2,9 @@
  * Subprocess probe for the opencode cooperative-stop smoke (cooperative-stop.smoke.ts) — never run
  * standalone. Loads the REAL plugin with a tiny fake OpenCode HTTP server plus the COTAL_* identity +
  * control env the parent set, so the plugin connects its mesh agent and starts its control server. The
- * parent then sends an authenticated {op:"shutdown"} to that endpoint; the plugin leaves the mesh
- * (publishes offline presence) and exits 0 — which the parent asserts. A separate process because the
+ * parent then sends an authenticated {op:"shutdown"} to that endpoint; against this healthy fake the
+ * plugin leaves the mesh (its offline presence attempt lands) and exits 0 — which the parent asserts.
+ * The product's publish is best effort, so what is asserted here is this scenario, not a guarantee. A separate process because the
  * plugin's cooperative shutdown ends in process.exit, which would otherwise tear down the test itself.
  */
 import { once } from "node:events";

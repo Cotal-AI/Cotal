@@ -11,7 +11,7 @@
     "bound, and event work outliving the 10s swap bound, can both land afterwards, and both bounds say",
     "so where they fire. The join went into the plugin-unload path first while the manager's stop ran a",
     "separate routine that exited without joining, so even the narrow claim was false exactly where it",
-    "mattered. Both ways out now call one bounded teardown.",
+    "mattered. Both ways out now call one shared teardown, whose intake and event waits are bounded.",
     "",
     "THE TWO JOINS COVER DIFFERENT CASES AND ARE GRADED SEPARATELY. The holder join covers event work",
     "already running; the chain join covers a swap queued but not yet begun. C1 removes both and grades",
@@ -92,17 +92,21 @@
     "difference. It took a second call that FAILS, in the same seat, to make the distinction visible.",
     "",
     "since Promise.all short-circuits on the first rejection to OCCUR rather than on a slot, so the two",
-    "arms are not two ways for the defect to appear. What the pair pins is that the ABSORPTION covers",
-    "both ends of the set: one arm has the failing call at the tail, the other at the head, and a fix",
-    "that wrapped only part of the set would satisfy one and fail the other. Grading only one arm would",
-    "leave the cells of the other ungraded, which is the shape this suite has already shipped twice.",
+    "arms are not two ways for the defect to appear. What the pair pins is that the wait reaches both ENDS",
+    "of the set: one arm has the failing call at the tail, the other at the head.",
     "",
-    "C14 IS THE DEFECT AS IT EXISTED; C15 AND C16 ARE WHAT THE TWO ARMS EXIST FOR. Absorbing nothing",
-    "reddens both seats, so on its own it would let one arm's cells ride on the other's. C15 absorbs only",
-    "the head and C16 only the tail, and because the hook seat admits its failing call LAST while the",
-    "mirror seat admits it FIRST, each of those reddens exactly one seat. That is what makes the pair of",
-    "seats load-bearing rather than decorative: a fix that wrapped part of the set would satisfy one and",
-    "fail the other, and neither seat can show that alone."
+    "WHAT THE PAIR DOES NOT PIN, and a review proved this by live mutation rather than by argument: a",
+    "repair absorbing only `i === 0 || i === all.length - 1` passes BOTH arms and the whole suite, because",
+    "in a set of two every index is already an end. An earlier version of this file claimed the two arms",
+    "caught any partial wrap. They did not. C17 and the interior seat exist because of that measurement:",
+    "three admitted calls with the failing one in the middle is the smallest set that HAS an interior.",
+    "",
+    "THE IMPLEMENTATION NO LONGER HAS THAT DEGREE OF FREEDOM, which is why the seats stop carrying the",
+    "universal. The hand-rolled per-element map was replaced with `Promise.allSettled`: it waits for every",
+    "element and never rejects, so partial absorption is not a state this code can express. C14 through",
+    "C17 therefore grade a REGRESSION rather than a property. Each replaces allSettled with a different",
+    "hand-rolled wait, and each is caught by the seat whose shape that wait fails. None of them, and no",
+    "finite set of seats, establishes elementwise absorption for every length; the primitive does."
   ],
   "mutations": [
     {
@@ -164,14 +168,14 @@
     {
       "name": "C9 the tool map stops refusing, so a cotal_* call still inside the model's turn runs after the stop and its presence write puts the seat back on the mesh",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "find": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
       "replace": "            await track(def.execute(...args)),\n",
       "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
     },
     {
       "name": "C10 teardown stops waiting for work it already admitted, so a presence write parked mid-call resumes after departure and puts the seat back to work",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    const settled = await settleWithin(Promise.all(admitted), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
+      "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "replace": "    const settled = true;\n",
       "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     },
@@ -185,8 +189,8 @@
     {
       "name": "C12 the tool path stops being tracked, which the hook path cannot stand in for because a tool reaches the agent without passing through the plugin's presence helper",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
-      "replace": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
+      "find": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "replace": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
       "expectRed": "tool-seat: departure was still unpublished while admitted work was in flight"
     },
     {
@@ -197,31 +201,31 @@
       "expectRed": "model-seat: departure was still unpublished while admitted work was in flight"
     },
     {
-      "name": "C14 the wait stops absorbing at all, which is the defect as it existed: one rejection satisfies it and departure publishes while another call is still parked",
+      "name": "C14 the wait goes back to Promise.all over the raw calls, which is the defect as it shipped: one rejection satisfies it and departure publishes while another call is still parked",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
-      "replace": "    const admitted = [...inFlight];\n",
+      "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
+      "replace": "    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     },
     {
-      "name": "C15 absorption covers only the FIRST admitted call, so a failure anywhere behind it still ends the wait early",
+      "name": "C15 absorption is hand-rolled again and covers only the FIRST admitted call, so a failure anywhere behind it still ends the wait early",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
-      "replace": "    const admitted = [...inFlight].map((work, i) => (i === 0 ? work.then(() => undefined, () => undefined) : work));\n",
+      "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
+      "replace": "    const settled = await settleWithin(Promise.all([...inFlight].map((work, i) => (i === 0 ? work.then(() => undefined, () => undefined) : work))), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     },
     {
-      "name": "C16 absorption covers only the LAST admitted call, so a failure at the head of the set still ends the wait early",
+      "name": "C16 absorption is hand-rolled again and covers only the LAST admitted call, so a failure at the head of the set still ends the wait early",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
-      "replace": "    const admitted = [...inFlight].map((work, i, all) => (i === all.length - 1 ? work.then(() => undefined, () => undefined) : work));\n",
+      "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
+      "replace": "    const settled = await settleWithin(Promise.all([...inFlight].map((work, i, all) => (i === all.length - 1 ? work.then(() => undefined, () => undefined) : work))), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "expectRed": "mirror-seat: departure was still unpublished while admitted work was in flight"
     },
     {
-      "name": "C17 absorption covers only the ENDS of the set, which BOTH two-call seats pass because in a set of two every index is already an end, so only an interior failure can show it",
+      "name": "C17 absorption is hand-rolled again and covers only the ENDS of the set, the shape a review proved could pass every two-call cell, so only an interior failure shows it",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
-      "replace": "    const admitted = [...inFlight].map((work, i, all) => (i === 0 || i === all.length - 1 ? work.then(() => undefined, () => undefined) : work));\n",
+      "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
+      "replace": "    const settled = await settleWithin(Promise.all([...inFlight].map((work, i, all) => (i === 0 || i === all.length - 1 ? work.then(() => undefined, () => undefined) : work))), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "expectRed": "interior-seat: an interior failure did not release departure while parked work remained"
     }
   ]

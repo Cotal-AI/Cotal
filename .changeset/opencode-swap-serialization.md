@@ -33,7 +33,7 @@ Stopping a seat is now a teardown rather than an exit. The cooperative stop and 
 unloading the plugin run one shared routine, so neither can drift from the other, and it attempts
 the offline publish in front of the join rather than behind it: a supervised seat is hard killed after
 its runtime's grace window, so presence queued behind a long drain is the thing that gets lost.
-Queued event work is then given whatever time the runtime allows.
+Queued event work is then given a bounded chance to settle inside whatever time the runtime leaves.
 
 Once that routine has begun, no turn is started, no hook is admitted, and no `cotal_*` tool call
 is run. The refusals are stated as a condition on the state rather than as a list of the callers
@@ -50,6 +50,12 @@ announced it left; on the wire, a roster read `working` after `offline`. The tea
 briefly, for interactive work it has already admitted before it attempts departure, and joins the
 slower event work afterwards as it already did. Event work is deliberately not in that wait,
 because waiting on a drain is what publishing departure early exists to avoid.
+
+That wait is for the whole admitted set rather than for the first thing to happen to it, and it says
+so with `Promise.allSettled` rather than by absorbing each call by hand. The hand-rolled version was
+the same defect one level up: a map can absorb SOME elements, and a review proved by live mutation
+that absorbing only the two ends passed every cell the suite had at the time. The primitive waits for
+every element and never rejects, so partial absorption is no longer a state this code can be in.
 
 That wait is bounded below the shortest runtime grace window, which is what leaves room for
 departure to be published before a hard kill under ordinary conditions. It is a margin rather than

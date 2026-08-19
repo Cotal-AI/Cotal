@@ -4,7 +4,10 @@
  * Proves the opencode connector's control plane (extension.ts mints the endpoint + the plugin starts
  * the control server) leaves the mesh CLEANLY on a cooperative shutdown — the same {op:"shutdown"}
  * the manager sends on a signal-less runtime (ConPTY/Windows), instead of leaving the agent online
- * until its presence TTL expires. The real path, end to end:
+ * until its presence TTL expires. What is asserted is this scenario against a healthy broker: the
+ * publish itself is best effort in the product, so a kill or a failed write can still take it, and
+ * the sequence below is what a healthy run does rather than a guarantee the mechanism carries.
+ * The real path, end to end:
  *
  *   parent sends {token,op:"shutdown"}  →  the plugin's startControlServer first-frame auth
  *     →  onShutdown  →  agent.stop()  →  offline presence published  →  the plugin process exits 0.
@@ -281,8 +284,10 @@ try {
   // supposed: that is exactly how this mutation came back WRONG-RED.
   //
   // So ask the question the fix actually answers instead. While a presence write it admitted is
-  // still in flight, the teardown must NOT have published departure yet. A correct teardown is
-  // holding, so the seat is still non-offline here; one that does not wait has already departed.
+  // still in flight AND the bound has not expired, the teardown must NOT have attempted departure
+  // yet. A correct teardown is holding, so the seat is still non-offline here; one that does not
+  // wait has already departed. Past the bound a correct teardown DOES depart with work still in
+  // flight, which is why the interval below is part of the claim rather than incidental to it.
   // 300ms is inside the 1s bound, so the correct arm is still holding, and far past the moment an
   // unwaiting teardown publishes.
   // THE FAILING CALL IS RELEASED FIRST, inside the bound, so its rejection reaches the teardown's

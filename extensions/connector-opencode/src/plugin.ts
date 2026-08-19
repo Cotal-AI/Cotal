@@ -72,8 +72,10 @@ export const SETTLE_ABANDONED = "opencode-settle-abandoned";
  * measure comes from a cell rather than a guess: `reset:the /new drain puts the old session's tail
  * and its close ON THE WIRE` asserts that a whole drain, flush plus run close plus settle plus the
  * broker round trip, AND a read-back of the subject both complete inside the 2s the suite waits.
- * So a healthy settle is comfortably under two seconds and this is five times that. Reaching it
- * means the step is not slow, it is not coming back.
+ * So a healthy settle in that fixture is comfortably under two seconds and this is five times that.
+ * Reaching it is treated as a hang; it is NOT proof the step will never return. A broker or network
+ * pause can outlast the bound and then recover, which is exactly why the abandoned step is left
+ * uncancelled and may still publish afterwards.
  */
 const SWAP_SETTLE_MS = 10_000;
 /**
@@ -296,14 +298,17 @@ export const cotal: Plugin = async () => {
    * THE ONE TEARDOWN, because there are two ways out and an invariant that holds on one of them
    * is not an invariant. `dispose` is the editor unloading the plugin; `shutdown` is the manager
    * stopping a supervised seat over the control socket, which is the path a managed agent
-   * actually takes. Both must join the event work before the process stops, so the join lives
-   * here and neither caller owns a copy of it.
+   * actually takes. Both must give the event work a bounded chance to settle before the process
+   * stops, so that wait lives here and neither caller owns a copy of it.
    *
    * A queued swap still holds a drain that flushes and closes a run, and it runs on its own chain
-   * rather than on this one, so without joining it a stop can be followed by frames for a session
-   * the process no longer serves. Serializing the swap did not create that exposure but it does
-   * lengthen it, because drains that used to overlap now finish one after another, so joining is
-   * this change's own debt rather than a courtesy. Bounded for the same reason the drain is: a
+   * rather than on this one, so without waiting for it a stop can be followed by frames for a session
+   * the process no longer serves. The bounded wait REDUCES that exposure rather than removing it: a
+   * drain that outlives the bound is released and the same frames can still follow. Serializing the
+   * swap did not create the exposure but it does lengthen it, because drains that used to overlap now
+   * WAIT one after another, and only those settling inside the bound also finish in that order, since
+   * one that outlives it keeps running while the next begins. So this wait is this change's own debt
+   * rather than a courtesy. Bounded for the same reason the drain is: a
    * teardown that waits forever on a drain is a worse outcome than one that says it gave up.
    *
    * LEAVING THE MESH COMES FIRST, AND THE ORDER IS THE WHOLE POINT OF IT. A supervised stop is
@@ -317,8 +322,8 @@ export const cotal: Plugin = async () => {
    * bounded intake wait added later made untrue: that wait sits in front of this publish, so a kill
    * inside it takes the publish with it.
    *
-   * WHAT THAT BUYS IS DELIBERATELY UNDERSTATED HERE. Departure becomes an EXPLICIT publish rather
-   * than something a reader has to infer, and that is the whole of the claim. It is NOT that a stale
+   * WHAT THAT BUYS IS DELIBERATELY UNDERSTATED HERE. Departure becomes an EXPLICIT publish ATTEMPT
+   * rather than something a reader has to infer, and that is the whole of the claim. It is NOT that a stale
    * live entry would otherwise survive: losing the connection purges the presence record on its own,
    * so that outcome is not this ordering's to take credit for. A cell built to grade the difference
    * passed with the order reversed, twice, which is how the overclaim was caught rather than shipped.
@@ -335,25 +340,26 @@ export const cotal: Plugin = async () => {
     } catch {
       /* ignore */
     }
-    // BEFORE DEPARTURE IS ATTEMPTED, so that work this seat already admitted is ordered ahead of the
-    // departure it announces, for as long as the bound allows. NOT "nothing admitted can act after
-    // it said it left": the bound is the honest part, and a straggler that outlives it is not
+    // BEFORE DEPARTURE IS ATTEMPTED, so that work this seat already admitted that settles within the
+    // bound is ordered ahead of the departure it announces. NOT "nothing admitted can act after it
+    // said it left": the bound is the honest part, and a straggler that outlives it is not
     // cancelled, so the teardown goes on to ATTEMPT the departure publish and that straggler can
     // still finish afterwards. Attempt is the accurate word throughout: safeStatus skips the write
     // outright when the connection is already gone and swallows its failure when it is not, so this
     // publish has no deadline of its own, no result anyone reads, and a kill inside it takes it.
     // Waiting unboundedly instead is the worse of the two, because departure would go back to being
     // inferred from a dropped connection.
-    // EACH ONE ABSORBED SEPARATELY, which is the difference between waiting for the set and waiting
-    // for the first thing to happen to it. The set holds the raw calls, and a bare Promise.all
-    // rejects the moment ONE of them does, without waiting for the others; settleWithin then counts
-    // any settlement including a rejection as done, so departure published while another call was
-    // still parked. That is reachable rather than theoretical: setStatus begins with a connection
-    // assertion, and this helper's own connection check is a read before an await, so a stop landing
-    // in between produces exactly such a rejection. Absorbed per item, a failure removes one call
-    // from the wait instead of ending it. Same idiom as settleWithin's own absorption, deliberately.
-    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));
-    const settled = await settleWithin(Promise.all(admitted), INTAKE_SETTLE_MS, "admitted intake at teardown");
+    // `allSettled` STATES THE INVARIANT INSTEAD OF ENUMERATING IT. `Promise.all` rejects the moment
+    // ONE call does, without waiting for the others, and settleWithin counts any settlement including
+    // a rejection as done, so departure published while another call was still parked. That is
+    // reachable rather than theoretical: setStatus begins with a connection assertion and this
+    // helper's own check is a read before an await, so a stop landing in between produces exactly
+    // such a rejection. The first repair wrapped each element by hand to absorb it, which was the
+    // same defect one level up: a hand-rolled map can absorb SOME elements, and a review proved by
+    // live mutation that absorbing only the ends passed every cell the suite had. `allSettled` waits
+    // for every element and never rejects, so partial absorption stops being a state this code can
+    // express and no cell has to stand in for the universal claim.
+    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, "admitted intake at teardown");
     // The generic line above already says the work is uncancelled and may land late. This adds the
     // part specific to THIS site: the teardown stops waiting and moves on to the departure publish,
     // so a straggler here can publish or SEND around it rather than merely out of order. An earlier
@@ -439,7 +445,10 @@ export const cotal: Plugin = async () => {
   }
 
   /**
-   * EVENT-PLANE WORK IS ROUTED BY THE HOLDER'S OWN BINDING, NEVER BY THE AMBIENT SESSION ID (#600).
+   * EVENT-PLANE WORK IS ROUTED BY THE HOLDER'S OWN BINDING RATHER THAN BY THE AMBIENT SESSION ID
+   * ALONE (#600). The ambient id is still an input; what changed is that it is no longer trusted on
+   * its own. The window this closes is the REACHABLE one, under the call-site discipline described
+   * at the end of this comment, not every window of any width.
    *
    * The ambient id and the holder that serves it are two variables, and every attempt to ORDER them
    * left a nearer window: the id was assigned outside the swap, then inside it but before the drain,

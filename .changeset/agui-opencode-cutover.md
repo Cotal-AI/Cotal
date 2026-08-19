@@ -23,8 +23,9 @@ boundary would tell a reader that a phase ended when what happened is that count
 
 One OpenCode process can hold several sessions, and `/new` is a context reset that keeps the mesh
 identity. Each session publishes under its own thread id on the one channel. The session being left
-is flushed and its open run is closed before the switch, so a reader is not left holding a run that
-never ends. A drain that outlives its bound is the exception, and it says so in the log: that step
+has its flush and its run close queued before the switch, and when that drain settles inside the
+bound a reader is not left holding a run that never ends. A drain that outlives its bound is the
+exception, and it says so in the log: that step
 is abandoned rather than cancelled, so a run it had open can stay open.
 
 The reader is the same on every connector, so the channel, the grant and how to subscribe are
