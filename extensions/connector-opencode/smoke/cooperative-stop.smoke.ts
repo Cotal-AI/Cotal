@@ -222,9 +222,13 @@ try {
 
   // The plugin leaves the mesh cleanly: Otto flips offline, and the probe exits 0.
   let ottoOffline = false;
+  let markerAtOffline = true;
   for (let i = 0; i < 60 && !ottoOffline; i++) {
     await wait(100);
     ottoOffline = watcher.getRoster().find((p) => p.card.name === "Otto")?.status === "offline";
+    // Sampled AT the moment presence flips, because the question is an ORDER and it is unanswerable
+    // afterwards: by the end of the run both have happened either way.
+    if (ottoOffline) markerAtOffline = existsSync(marker);
   }
   check("cooperative stop leaves the mesh (watcher sees Otto offline)", ottoOffline, watcher.getRoster().find((p) => p.card.name === "Otto")?.status);
 
@@ -236,6 +240,14 @@ try {
   // publishes after teardown; this path ran a separate routine that exited without joining, so the
   // claim was false exactly where it mattered. The marker is written by the probe when a queued
   // read finishes, so it exists only if the stop waited for work that was already in flight.
+  // LEAVING THE MESH MUST NOT QUEUE BEHIND THE DRAIN. A supervised stop is hard-killed after the
+  // runtime's grace window, 1.5s for tmux and cmux and 3s for pty, and the join is bounded far above
+  // that on purpose, so a seat whose drain outlives the window is killed part way through. If
+  // presence waited for the drain it would be the thing lost, and the roster would hold a live entry
+  // for a dead process. So offline has to land while the drain is still running, not after it.
+  check("the seat left the mesh BEFORE the drain finished, not behind it",
+    ottoOffline && !markerAtOffline, { ottoOffline, markerAtOffline });
+
   check("cooperative stop joined the queued event work before exiting", existsSync(marker), { marker });
 
   // The other half of the same window. The drain covers the event plane; this covers turns.

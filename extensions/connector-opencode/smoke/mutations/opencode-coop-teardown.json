@@ -36,6 +36,13 @@
       "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n",
       "replace": "",
       "expectRed": "a swap still QUEUED at the stop was allowed to run before exit"
+    },
+    {
+      "name": "C4 leaving the mesh queues behind the drain again, so a seat whose drain outlives the runtime's grace window is killed before its presence goes offline",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    await safeStatus(\"offline\");\n    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n",
+      "replace": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    await safeStatus(\"offline\");\n",
+      "expectRed": "the seat left the mesh BEFORE the drain finished, not behind it"
     }
   ]
 }
