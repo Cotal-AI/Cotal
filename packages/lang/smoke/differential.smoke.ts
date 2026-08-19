@@ -594,17 +594,26 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       entries: journal.entries().length,
     });
 
+    // GUARDED, like the crossings above: an engine that cannot finish the resume must red one named
+    // cell, not take the suite down before its summary line and turn a real red into a dead run.
     const logs: unknown[][] = [];
     const back = { runId: "d", handler: new SimHandler({}), pins, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };
-    const r =
-      replays === "walker"
-        ? await walkResume(source, journal, back as never)
-        : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
-    ok(`and the ${replays} finishes it from there`, j(logs) === j([["done", "sim.one"]]) && r.journal.entries().length === 3, {
+    let r: Awaited<ReturnType<typeof walkResume>> | null = null;
+    let error: string | null = null;
+    try {
+      r =
+        replays === "walker"
+          ? await walkResume(source, journal, back as never)
+          : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
+    } catch (e) {
+      error = (e as { code?: string }).code ?? `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`;
+    }
+    ok(`and the ${replays} finishes it from there`, error === null && r !== null && j(logs) === j([["done", "sim.one"]]) && r.journal.entries().length === 3, {
+      error,
       logs,
-      entries: r.journal.entries().length,
+      entries: r === null ? null : r.journal.entries().length,
     });
-    finished.push({ logs, entries: [...r.journal.entries()], value: r.value });
+    finished.push({ logs, entries: r === null ? [] : [...r.journal.entries()], value: r === null ? undefined : r.value });
   }
   const [a, b] = finished as [(typeof finished)[0], (typeof finished)[0]];
   ok("and the two finished journals are the same journal, entry for entry", j(a.entries) === j(b.entries) && j(a.logs) === j(b.logs) && j(a.value) === j(b.value), {

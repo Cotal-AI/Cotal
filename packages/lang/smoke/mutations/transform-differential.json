@@ -25,8 +25,8 @@
     {
       "name": "a member read is emitted as a native index, so the host prototype is reachable on the engine",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
-      "replace": "      return `${obj}[${this.memberKey(node)}]`;",
+      "find": "        return done(this.seam(\"get\", `${obj}, ${this.memberKey(node)}`), g);",
+      "replace": "        return done(`${obj}[${this.memberKey(node)}]`, g);",
       "expectRed": "identical on both engines: refusals: a prototype member of a string",
       "cell": "identical on both engines: refusals: a prototype member of a string",
       "note": "A record has NO prototype to reach - `o.constructor` is undefined on both arms - so the cell that catches this is a string's, whose curated table refuses the name L4020. A native index answers the host String constructor there, which is a live capability inside a program that is supposed to have none."
