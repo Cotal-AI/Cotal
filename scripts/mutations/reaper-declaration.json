@@ -53,11 +53,11 @@
     {
       "name": "a NAMESPACE MERGE is added to an exported function and the declaration does not follow",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": "/**\n * One line when there is nothing to say, a named list when there is.",
-      "replace": "reportReaped.version = \"1\";\n\n/**\n * One line when there is nothing to say, a named list when there is.",
+      "find": "export function reportReaped(label, result) {",
+      "replace": "reportReaped.version = \"1\";\nexport function reportReaped(label, result) {",
       "expectRed": "the committed declaration is what the compiler emits from the module",
       "cell": "the committed declaration is what the compiler emits from the module",
-      "note": "The third form. A merged member reads as declared and resolves to undefined at runtime, which is the failure a declaration is supposed to prevent."
+      "note": "The third form. A merged member reads as declared and resolves to undefined at runtime, which is the failure a declaration is supposed to prevent. The expando sits ABOVE the declaration it merges into, which is legal because a function declaration is hoisted, and the anchor is that declaration's own signature line rather than the prose above it: a `find` that spans a comment is disarmed by anyone tidying the comment, and smoke:mutation-fixtures refuses one."
     },
     {
       "name": "a field's TYPE drifts in the module while its name stays",
