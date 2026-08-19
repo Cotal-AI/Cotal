@@ -259,7 +259,7 @@ try {
     const prev = process.env.COTAL_DEFAULT_PERSONA;
     process.env.COTAL_DEFAULT_PERSONA = "poet";
     try {
-      lastOpts = undefined;
+      lastOpts = undefined as LaunchOpts | undefined; // the connector reassigns it from a callback
       const envOut = await capture(() => run("spawn", ["--detach", "--agent", "e2e", "--space", SPACE, "--name", "envbard"]));
       ok("COTAL_DEFAULT_PERSONA bare detached spawn reached the connector", lastOpts !== undefined);
       ok(
