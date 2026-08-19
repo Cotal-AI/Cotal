@@ -506,6 +506,17 @@ const DEAD_ZONE: readonly (readonly [string, string])[] = [
   ["two functions deep", "const g = () => { const h = () => x; return h(); }; const r = g(); const x = 1; log(r);"],
 ];
 
+/**
+ * Clause (i) ALONE: a hoisted function reads a binding declared BEFORE it, so the textual clause is
+ * false and only "any hoisted declaration on the path" makes this a cell. The rule is deliberately
+ * conservative there - a hoisted function is reachable from anywhere in its block - and both engines
+ * answer 1 either way, so the classification is the only thing that can be checked.
+ */
+const HOISTED_ONLY: readonly (readonly [string, string])[] = [
+  ["a hoisted function reads a binding declared above it", "const x = 1; function f() { return x } log(f());"],
+  ["an arrow inside one, two deep", "const x = 1; function f() { const g = () => x; return g(); } log(f());"],
+];
+
 /** The mirror: captured, and provably not readable before the declaration. */
 const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   ["declared, then captured", "const x = 1; const f = () => x; log(f());"],
@@ -535,6 +546,17 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   ok("every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name", missed.length === 0, missed);
   console.log(`  (${DEAD_ZONE.length} dead-zone clauses)`);
 
+  // CLAUSE (i) ON ITS OWN. Every program above satisfies the textual clause too, so dropping the
+  // hoisted-declaration clause changed nothing there and the mutant SURVIVED. These two reach it
+  // alone: the declaration sits ABOVE the function, so only "a hoisted declaration on the path"
+  // makes them cells.
+  const natively: string[] = [];
+  for (const [name, source] of HOISTED_ONLY) {
+    const { hoists, named } = shape(source);
+    if (hoists < 1 || named < 1) natively.push(`${name}: hoists ${hoists}, named reads ${named}`);
+  }
+  ok("a hoisted function's read makes a cell wherever the declaration sits", natively.length === 0, natively);
+
   // AND THE MIRROR, which is the half that keeps the predicate from being "make everything a cell":
   // a binding no closure can reach early stays a native binding, at no seam cost per read.
   const wrong: string[] = [];
@@ -561,7 +583,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // L2004 on the walker and each native one answers its value, which is what the classification is
   // reproducing — and what the differential suite will hold the engine to once `get` takes the name.
   const answers: string[] = [];
-  for (const [, source] of [...DEAD_ZONE, ...NATIVE_CAPTURE]) {
+  for (const [, source] of [...DEAD_ZONE, ...HOISTED_ONLY, ...NATIVE_CAPTURE]) {
     try {
       await walk(source, { runId: "p", handler: new SimHandler({}) });
       answers.push("ok");
@@ -571,7 +593,8 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   }
   ok(
     "the walker refuses every dead-zone clause L2004 and answers every native one",
-    JSON.stringify(answers) === JSON.stringify([...DEAD_ZONE.map(() => "L2004"), ...NATIVE_CAPTURE.map(() => "ok")]),
+    JSON.stringify(answers) ===
+      JSON.stringify([...DEAD_ZONE.map(() => "L2004"), ...HOISTED_ONLY.map(() => "ok"), ...NATIVE_CAPTURE.map(() => "ok")]),
     answers,
   );
 }

@@ -77,8 +77,8 @@
     {
       "name": "a declaring identifier is not recorded, so the emitter cannot resolve a name it declared",
       "file": "packages/lang/src/transform/scope.ts",
-      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind));",
-      "replace": "        this.declare(scope, node.name as string, kind);",
+      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind, declEnd));",
+      "replace": "        this.declare(scope, node.name as string, kind, declEnd);",
       "expectRed": "resolves to nothing, which a validated program cannot contain",
       "completionMarker": "ok the emitted module has no unbound reference: array and object literals",
       "cell": "the emitted module has no unbound reference: for with per-iteration closures",
@@ -229,10 +229,10 @@
       "file": "packages/lang/src/transform/scope.ts",
       "find": "    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {",
       "replace": "    if ((path[0] as Enclosing).stmtStart < b.declEnd) {",
-      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "expectRed": "a hoisted function's read makes a cell wherever the declaration sits",
       "completionMarker": "ok a binding no nested function writes stays native",
-      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
-      "note": "A hoisted `function` declaration is reachable before anything textually after it has run, at any depth: measured, `const r = f()` with `function f() { const g = () => x; return g(); }` and `const x = 1` after it is L2004 on the walker. Without the clause that binding stays native and the engine answers a host ReferenceError."
+      "cell": "a hoisted function's read makes a cell wherever the declaration sits",
+      "note": "A hoisted `function` declaration is reachable before anything textually after it has run, so the rule takes it at any depth and wherever the declaration sits. Aimed at the cell whose programs reach clause (i) ALONE: every dead-zone program also satisfies the textual clause, and against those this mutant SURVIVED."
     },
     {
       "name": "the textual clause is dropped, so a closure written before the declaration stays native",
@@ -249,20 +249,20 @@
       "file": "packages/lang/src/transform/scope.ts",
       "find": "    if (path.length === 0) return;",
       "replace": "    if (path.length === 0) return;\n    if (path.length > 0) {\n      b.cell = true;\n      b.deadZone = true;\n      return;\n    }",
-      "expectRed": "a captured binding no closure can read early stays native",
+      "expectRed": "a const captured by a nested function is not a cell",
       "completionMarker": "ok a binding no nested function writes stays native",
-      "cell": "a captured binding no closure can read early stays native",
-      "note": "The predicate is a rule, not a preference: making every captured binding a record would pass the clause cell above and cost a seam call on every read of a binding nothing can reach early."
+      "cell": "a const captured by a nested function is not a cell",
+      "note": "The predicate is a rule, not a preference: making every captured binding a record costs a seam call on every read of a binding nothing can reach early. The first cell to notice is the one that says a captured `const` is not a cell, which is the same claim read from the site counts."
     },
     {
       "name": "a dead-zone cell's record is built at its declaration instead of at the top of the block",
       "file": "packages/lang/src/transform/emit.ts",
       "find": "          if (b?.deadZone !== true || this.hoisted.has(b)) continue;",
-      "replace": "          if (b === undefined || this.hoisted.has(b)) continue;",
-      "expectRed": "a cell for the write rule alone is still built where it is declared",
+      "replace": "          if (b?.cell !== true || this.hoisted.has(b)) continue;",
+      "expectRed": "a mutable binding written from a nested function is a born cell",
       "completionMarker": "ok a binding no nested function writes stays native",
-      "cell": "a cell for the write rule alone is still built where it is declared",
-      "note": "The two cell classes are kept apart on purpose: hoisting the write-rule class costs a second seam call on a path that runs, and the mutant that hoists everything (this one) shows the cell that keeps them apart is real."
+      "cell": "a mutable binding written from a nested function is a born cell",
+      "note": "The two cell classes are kept apart on purpose: hoisting the write-rule class costs a second seam call on a path that runs. Hoisting it turns its one `born({ v: init })` into a `born({})` plus a second `set`, which is what the site-count cell reads."
     },
     {
       "name": "a cell read is emitted without the binding's name",
