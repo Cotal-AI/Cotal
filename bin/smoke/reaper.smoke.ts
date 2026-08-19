@@ -20,12 +20,15 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
+// The whole namespace as well, because the declaration is checked against the module's ACTUAL
+// export set and a named import list would only ever confirm the names already written here.
+import * as reaper from "./reap-smoke-brokers.mjs";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -49,6 +52,71 @@ console.log("\n── smoke broker reaper ────────────�
 check("the reaper's prefix literal is the one the kit mints", SMOKE_BROKER_PREFIX === KIT_PREFIX, `${SMOKE_BROKER_PREFIX} vs ${KIT_PREFIX}`);
 // And the minted token must actually carry this process's pid, or the owner check has nothing to read.
 check("the kit's token stamps the owning pid into the dir name", SMOKE_BROKER_TOKEN === `${KIT_PREFIX}${process.pid}-`, SMOKE_BROKER_TOKEN);
+
+// ── the declaration file is a second source of truth, so check it against the module ──────────
+//
+// `reap-smoke-brokers.mjs` stays plain JavaScript because it runs on the CI runner before any
+// workspace build, so its types live in a hand written `reap-smoke-brokers.d.mts` beside it. A
+// declaration file is BELIEVED, never checked: rename an export, add a required parameter, or drop
+// a field from `ReapReport` and the declaration keeps compiling, this suite keeps passing, and the
+// mismatch surfaces only at runtime in the one job whose purpose is to clean up after other jobs.
+// The typecheck gate cannot close this; only reading the declaration back and comparing it to the
+// live module can.
+//
+// The declaration is PARSED rather than transcribed. A hand copied list of expected names here
+// would be a THIRD source of truth, free to agree with neither file.
+const declText = readFileSync(new URL("./reap-smoke-brokers.d.mts", import.meta.url), "utf8");
+// Comments first: `ReapReport` documents one of its fields inline, and prose is full of words that
+// look like field names.
+const declBody = declText.replace(/\/\*[\s\S]*?\*\//g, "").replace(/^\s*\/\/.*$/gm, "");
+const declaredValues = [...declBody.matchAll(/export\s+declare\s+const\s+(\w+)/g)].map((m) => m[1]);
+const declaredFns = [...declBody.matchAll(/export\s+declare\s+function\s+(\w+)\s*\(([^]*?)\)\s*:/g)]
+  .map((m) => ({ name: m[1], params: m[2] }));
+const reportFields = (() => {
+  const m = /export\s+interface\s+ReapReport\s*\{([^]*?)\n\}/.exec(declBody);
+  if (!m) return [];
+  return [...m[1].matchAll(/^\s*(\w+)\s*\??\s*:/gm)].map((f) => f[1]);
+})();
+
+// THE PARSER IS AN INSTRUMENT, so prove it read something before trusting what it did not find.
+// An expression that silently yields nothing passes every set comparison below.
+check("the declaration parser found the declared value exports", declaredValues.length > 0, `${declaredValues.length}`);
+check("the declaration parser found the declared function exports", declaredFns.length > 0, `${declaredFns.length}`);
+check("the declaration parser found ReapReport's fields", reportFields.length > 0, `${reportFields.length}`);
+
+const declaredNames = [...declaredValues, ...declaredFns.map((f) => f.name)].sort();
+const actualNames = Object.keys(reaper).sort();
+check("every name the declaration exports exists on the module", declaredNames.every((n) => actualNames.includes(n)), `missing: ${declaredNames.filter((n) => !actualNames.includes(n)).join(", ") || "none"}`);
+check("the module exports nothing the declaration omits", actualNames.every((n) => declaredNames.includes(n)), `undeclared: ${actualNames.filter((n) => !declaredNames.includes(n)).join(", ") || "none"}`);
+
+// Arity is compared on REQUIRED parameters, because that is what `Function.length` counts: a
+// parameter with a default is not in it. `reapSmokeBrokers({ dryRun = false } = {})` therefore has
+// length 0 and its declaration `(opts?: { dryRun?: boolean })` has zero required parameters, which
+// agree. Adding a required parameter on either side breaks that agreement, which is the drift worth
+// catching.
+const requiredParams = (params: string): number => {
+  let depth = 0, current = "", n = 0;
+  const finish = () => { const t = current.trim(); if (t && !/^\w+\s*\?/.test(t) && !t.includes("=")) n++; current = ""; };
+  for (const ch of params) {
+    if ("({[<".includes(ch)) depth++;
+    else if (")}]>".includes(ch)) depth--;
+    if (ch === "," && depth === 0) { finish(); continue; }
+    current += ch;
+  }
+  finish();
+  return n;
+};
+for (const fn of declaredFns) {
+  const live = (reaper as unknown as Record<string, unknown>)[fn.name];
+  const want = requiredParams(fn.params);
+  check(`${fn.name} takes the number of required parameters the declaration gives it`, typeof live === "function" && (live as (...a: unknown[]) => unknown).length === want, `declared ${want}, module ${typeof live === "function" ? (live as (...a: unknown[]) => unknown).length : "not a function"}`);
+}
+
+// And the report shape, from a REAL call rather than a literal written here. `dryRun` reads the
+// process table and signals nothing, so this is safe to run before the scenario builds its brokers.
+const shape = Object.keys(reapSmokeBrokers({ dryRun: true })).sort();
+check("a real ReapReport carries every field the declaration gives it", reportFields.every((f) => shape.includes(f)), `missing: ${reportFields.filter((f) => !shape.includes(f)).join(", ") || "none"}`);
+check("a real ReapReport carries no field the declaration omits", shape.every((f) => reportFields.includes(f)), `undeclared: ${shape.filter((f) => !reportFields.includes(f)).join(", ") || "none"}`);
 
 const dirs: string[] = [];
 const kids: ChildProcess[] = [];
