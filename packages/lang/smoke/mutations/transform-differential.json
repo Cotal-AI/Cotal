@@ -131,13 +131,22 @@
       "note": "The behavioural half of the surface cell: the walker answers a CATCHABLE L2004 and the program still reads the declared value afterwards, where the mutant's engine dies on an engine fault the program cannot see. Measured before it was aimed."
     },
     {
-      "name": "a program in the survival list is one that no longer refuses, so the check is a comment",
+      "name": "the survival list points at a corpus row that completes, so the check is a comment",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.then = (r) => { r(1); }; log(\"t\", typeof o.then);'],",
-      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.a = 1; log(\"t\", typeof o.a);'],",
+      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"refusals: a callable then, then a later reference to the record\"],",
+      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"absence and NaN are data, and still log\"],",
       "expectRed": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door",
       "cell": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door: a callable then, then any later reference to the record",
-      "note": "The list this replaced was a QUARANTINE and its mutant asked whether the exclusion had expired; this is the mirror, and it is the one that matters now that these three are corpus rows. Swap the subject for a program that completes and the child prints COMPLETED with exit 0 - the process survives, so an assertion that only read the exit code would stay green over a list that had stopped measuring the value law at all. The cell reds because SURVIVING IS NOT THE CLAIM: the claim is that the failure comes back to the caller as the ruled refusal."
+      "note": "Surviving is not the claim; coming back as the ruled refusal is. Point the entry at a corpus row that COMPLETES and the child prints COMPLETED with exit 0 - the lookup still finds a row, the process still survives, and a check reading only the exit code would stay green over a section that had stopped measuring the value law at all."
+    },
+    {
+      "name": "the survival list names a corpus row that is gone, so it checks a program the gate no longer runs",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"refusals: a callable then, then a later reference to the record\"],",
+      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"refusals: a callable then written onto a rekord\"],",
+      "expectRed": "the survival check names a corpus row that still exists, so the two cannot drift apart: issue 642 through the set door",
+      "cell": "the survival check names a corpus row that still exists, so the two cannot drift apart: issue 642 through the set door: a callable then, then any later reference to the record",
+      "note": "This list held its programs as LITERALS until now - two copies of each source with nothing keeping them equal, on the one section whose job is to stop those rows hanging the suite, so a drift would have been silent and green. The programs live in the corpus and are looked up by name, which removes text drift entirely; what remains is a row that is renamed or deleted out from under the reference, and that is what this mutant is. Note what it does NOT grade, since the lookup only asks whether A row was found: pointing the entry at a DIFFERENT row that exists passes this cell, and is caught by the mutant above it only because that row completes."
     },
     {
       "name": "the child swallows a failure that escaped the caller, so an uncatchable refusal reads as a caught one",

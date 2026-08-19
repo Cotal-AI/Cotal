@@ -15,6 +15,12 @@
  * what the engine cannot run yet, each pinned to the way it fails — landing the missing member
  * reds the hold rather than leaving a program silently outside the gate. A suite that dropped
  * either list would report the same green over a smaller universe.
+ *
+ * `HELD` IS EMPTY, and this sentence is here because an empty list reads as coverage: nothing is
+ * outside the gate for want of a seam member, and the two cells over it therefore assert nothing
+ * today. It is kept rather than deleted because the next member to land needs somewhere to be
+ * pinned while it is landing, and its count is printed so the emptiness is a number rather than a
+ * thing a reader has to notice.
  */
 import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
@@ -107,6 +113,18 @@ const j = (v: unknown) => JSON.stringify(v);
  * rather than the bare one that killed the worker with a DataCloneError. Everything else is bare
  * `typeof`: this stays a SHAPE, one bit per hazard, with no key names, depth or ordering in it, so
  * it never becomes a second serializer with blind spots of its own to argue about.
+ *
+ * ONE OF THESE FIVE DECISIONS HAS NO MUTANT BEHIND IT, and the reason is worth more than the note.
+ * Naming `null` is descriptive, not discriminating: a control can only grade this signature where
+ * the RENDERING already calls both arms identical, so a pair that could grade the `null` clause has
+ * to be `null` against a value JSON also draws as `null` — and that set is exactly undefined, a
+ * function, NaN, +Infinity and -Infinity, every one of them separately named already. `null`
+ * against a record diverges a leg earlier, on the rendering. So an unnamed `null` falling to typeof
+ * "object" cannot collide with anything, and no mutant for this clause can exist. That is a
+ * stronger statement than a measured survivor: a survivor says the suite did not notice, and
+ * invites someone to write the missing cell. This says there is no cell to write. The clause stays
+ * because it says what the value IS, and a reader who assumes every decision here is graded should
+ * learn from this comment that one is not.
  *
  * `carriesCode` CATCHES `assertNoCode` rather than re-implementing it, which is the load-bearing
  * part: that predicate is what the log rule itself is built on, so the signature and the rule
@@ -740,13 +758,22 @@ const HELD: readonly (readonly [string, string, object, readonly string[], HeldA
  * surviving process does not prove on its own, and the part the corpus rows depend on.
  */
 const SURVIVED: readonly (readonly [string, string])[] = [
-  ["issue 642 through the set door: a callable then, then any later reference to the record", 'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);'],
-  ["issue 642 through the branch-name door: a scope branch named then", 'await parallel({ then: async () => 1 }, { name: "p" });'],
-  ["the same door on a race, where one arm is enough", 'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });'],
+  ["issue 642 through the set door: a callable then, then any later reference to the record", "refusals: a callable then, then a later reference to the record"],
+  ["issue 642 through the branch-name door: a scope branch named then", "refusals: a scope branch named then"],
+  ["the same door on a race, where one arm is enough", "refusals: a race branch named then, where one arm is enough"],
 ];
 {
   const child = new URL("./walker-child.ts", import.meta.url).pathname;
-  for (const [name, source] of SURVIVED) {
+  for (const [name, row] of SURVIVED) {
+    // THE SECOND ELEMENT IS A CORPUS ROW'S NAME, NOT A PROGRAM. Written out as a literal it was a
+    // second copy of the same source, and nothing made the copies stay equal — so an edit to the
+    // corpus row would leave this checking a program the gate no longer runs, and PASSING while it
+    // did. That is the worst shape available here: what this section guards is the corpus row
+    // hanging the suite, so a silent drift turns the guard into a green cell above a hang. One copy
+    // of each program, looked up by name, and a cell of its own for the lookup.
+    const entry = CORPUS.find(([n]) => n === row);
+    ok(`the survival check names a corpus row that still exists, so the two cannot drift apart: ${name}`, entry !== undefined, { names: row });
+    const source = entry === undefined ? "" : entry[1];
     const run = spawnSync(process.execPath, ["--import", "tsx", child, source], { encoding: "utf8" });
     const out = `${run.stdout}${run.stderr}`;
     ok(`the oracle's own process survives it, and hands the refusal back to its caller: ${name}`,
@@ -1044,13 +1071,27 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // type. This one is the list of programs the gate actually RUNS, and it is five times the size;
   // a shape that only lives here would have had nothing checking it. The resolver is shared with
   // that suite, where a positive control requires it to name a free name that does exist.
+  //
+  // AND IT WALKS EVERY LIST THE GATE RUNS, not just the corpus. It used to iterate `CORPUS` alone
+  // while this comment claimed the wider set — a sentence naming a universe its loop did not walk,
+  // which is the shape that hides a gap rather than reporting one. The divergences and the
+  // crossings are transformed and executed on the engine exactly as corpus rows are, so a free
+  // identifier in one of them is the same silent read, and the twelve of them were outside the only
+  // check that can see it. Widening cost nothing and found nothing: latent, not live, and said
+  // that way rather than as a fix that caught something.
+  const RAN = [
+    ...CORPUS.map(([n, src]) => [n, src] as const),
+    ...DIVERGENT.map(([n, src]) => [n, src] as const),
+    ...HELD.map(([n, src]) => [n, src] as const),
+    ...RESUMABLE.map(([n, src]) => [n, src] as const),
+  ];
   const open: string[] = [];
-  for (const [name, source] of CORPUS) {
+  for (const [name, source] of RAN) {
     const free = unbound(parseModule(transform(source).module));
     if (free.length > 0) open.push(`${name}: ${free.join(",")}`);
   }
-  ok("every corpus program emits a module with no free identifier, which is what the compartment cannot catch", open.length === 0, open);
-  console.log(`  (${CORPUS.length} emitted modules resolved, ${open.length} with a free identifier)`);
+  ok("every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch", open.length === 0, open);
+  console.log(`  (${RAN.length} emitted modules resolved across the corpus, the divergences, the holds and the crossings, ${open.length} with a free identifier)`);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);

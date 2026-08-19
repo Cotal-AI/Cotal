@@ -279,8 +279,8 @@
       "file": "packages/lang/src/transform/seam.ts",
       "find": "  get: [2, 3],",
       "replace": "  get: [2, 2],",
-      "expectRed": "every seam call site passes an argument count the contract declares",
-      "cell": "every seam call site passes an argument count the contract declares",
+      "expectRed": "every seam call site the corpus and the wide list emit passes an argument count the contract declares",
+      "cell": "every seam call site the corpus and the wide list emit passes an argument count the contract declares",
       "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
       "note": "The names-only check cannot see this: every site still reaches `get`. Only the argument COUNT says the emitter and the contract have drifted, which is the drift that produced the eager-argument divergence."
     },

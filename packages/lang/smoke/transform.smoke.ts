@@ -659,7 +659,16 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
       observed.set(member, seen === undefined ? { min: arity, max: arity } : { min: Math.min(seen.min, arity), max: Math.max(seen.max, arity) });
     }
   }
-  ok("every seam call site passes an argument count the contract declares", outside.length === 0, outside);
+  // THE SENTENCE NAMES THE SET THE LOOP WALKS, and here that matters more than usual because the
+  // set cannot be everything: the property is about the EMITTER, and no loop enumerates every
+  // program the language admits. So this is a SAMPLE — this suite's corpus, written to reach every
+  // node type, plus the seven programs above that reach the arities the corpus does not. Named as
+  // if it were universal it would read as a guarantee about the emitter, which nothing here can
+  // give. The cell below is what keeps the sample honest in the other direction.
+  // The COUNT stays out of the name and goes to the line below it: `sites` is measured from the
+  // emission, so a mutant that changes what is emitted would change the cell's own name, and a
+  // mutation config cannot name a cell that renames itself the moment it fails.
+  ok("every seam call site the corpus and the wide list emit passes an argument count the contract declares", outside.length === 0, outside);
   // AND THE RANGE IS NOT WIDER THAN THE EMITTER USES, which is the half that keeps the table honest:
   // a range nobody reaches is a permission granted to a future emission with no ruling behind it,
   // and it would pass the cell above forever. Every declared bound has to be a site somewhere here.
