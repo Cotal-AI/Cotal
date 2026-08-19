@@ -22,6 +22,11 @@ const trigger = process.env.COOP_TRIGGER?.trim() || undefined;
 // performs is slowed and marked. Counting reads instead was wrong: the bind does not read, so the
 // drain's read was the first one and the marker was never written even with the join in place.
 let draining = false;
+// True only while the drain's read is outstanding, which is exactly the cutover window. A
+// prompt arriving in it means a turn was started against a session whose replacement holder is
+// not installed yet, so the probe records the violation where the parent can see it.
+let inCutover = false;
+const violation = process.env.COOP_VIOLATION?.trim() || undefined;
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== auth) {
     res.writeHead(401).end();
@@ -38,10 +43,19 @@ const oc = createServer((req, res) => {
   if (req.method === "GET" && /^\/session\/[^/]+\/message$/.test(req.url ?? "")) {
     const answer = (): void => {
       if (marker && draining) writeFileSync(marker, "the drain's read completed\n");
+      inCutover = false;
       res.writeHead(200, { "content-type": "application/json" }).end("[]");
     };
-    if (marker && draining) setTimeout(answer, 2_500);
-    else answer();
+    if (marker && draining) {
+      inCutover = true;
+      setTimeout(answer, 2_500);
+    } else answer();
+    return;
+  }
+  // A turn being submitted. Nothing may start one while the cutover is open.
+  if (req.method === "POST" && /\/prompt_async$/.test(req.url ?? "")) {
+    if (violation && inCutover) writeFileSync(violation, `a turn was started mid-cutover: ${req.url}\n`);
+    res.writeHead(200, { "content-type": "application/json" }).end("{}");
     return;
   }
   res.writeHead(404).end();

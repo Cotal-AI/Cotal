@@ -175,6 +175,7 @@ try {
   // process is gone says the drain was allowed to finish rather than cut off by the exit.
   const marker = join(dir, "coop-read-finished");
   const trigger = join(dir, "coop-start-drain");
+  const violation = join(dir, "coop-turn-in-cutover");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -184,6 +185,7 @@ try {
       COTAL_WORKSPACE_ROOT: join(dir, "ws"),
       COOP_MARKER: marker,
       COOP_TRIGGER: trigger,
+      COOP_VIOLATION: violation,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -203,6 +205,14 @@ try {
   // its own and the marker would say nothing about whether the stop waited.
   writeFileSync(trigger, "go\n");
   await wait(400);
+
+  // ASK FOR A TURN WHILE THE CUTOVER IS OPEN, through the ordinary door rather than the one the swap
+  // itself uses. Adopting a session clears `busy`, and the inbox handler starts a turn on `!busy`, so
+  // a plain inbound message is enough; nothing here reaches into the plugin. The refusal has to come
+  // from the connector deciding no turn may start mid-cutover.
+  const otto = watcher.getRoster().find((pr) => pr.card.name === "Otto");
+  if (otto) await watcher.unicast(otto.card.id, "a message arriving mid-cutover");
+  await wait(600);
 
   // Drive the cooperative shutdown — exactly what the manager sends on a win32 graceful stop.
   const reply = await sendShutdown(ep.path, ep.token);
@@ -225,6 +235,9 @@ try {
   // claim was false exactly where it mattered. The marker is written by the probe when a queued
   // read finishes, so it exists only if the stop waited for work that was already in flight.
   check("cooperative stop joined the queued event work before exiting", existsSync(marker), { marker });
+
+  // The other half of the same window. The drain covers the event plane; this covers turns.
+  check("no turn was started while the cutover was open", !existsSync(violation), { violation });
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
