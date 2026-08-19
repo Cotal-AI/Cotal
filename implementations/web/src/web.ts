@@ -12,6 +12,7 @@ import {
   mintCreds,
   newIdentity,
   clearChannel,
+  assertValidChannel,
   type CotalMessage,
   type ParsedArgs,
 } from "@cotal-ai/core";
@@ -261,26 +262,137 @@ export class BadRequest extends Error {}
  *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
  *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
  *  asked for. */
+/** Codepoints `JSON.stringify` leaves RAW that PRODUCE NO GLYPH OF THEIR OWN, or that reorder the
+ *  text around them, stated as Unicode PROPERTIES rather than as a hand list. That wording is
+ *  narrower than "change what a reader sees" on purpose, and the narrowing is a review finding:
+ *  the looser phrase admits every combining mark, and the paragraph at the end of this comment is
+ *  why escaping those would be this issue pointed the other way. The first version of this WAS a hand list, and review
+ *  found it missing U+061C, U+2060, the variation selectors and the tag characters, every one of
+ *  which is exactly the thing the list said it closed. A list is a claim about a set nobody
+ *  maintains; the property IS the set, and it moves with the Unicode version the runtime carries.
+ *
+ *  Two properties, because neither contains the other and both name the same harm from a different
+ *  side. `Default_Ignorable_Code_Point` is the renders-as-nothing family: the soft hyphen, the
+ *  zero-width characters, the word joiner, the variation selectors, the tag characters and the BOM.
+ *  `Cf` is the format family: characters with no glyph of their own that change how the text around
+ *  them is read, which is where the interlinear annotation controls U+FFF9 to U+FFFB live. Review
+ *  found those three arriving raw against a class that had only the first property, and they are the
+ *  clearest case of the harm: they mark a span as base text plus its gloss, so a reader whose
+ *  terminal does not implement them sees the two runs concatenated into a sentence nobody wrote.
+ *  Measured, the second property adds 32 codepoints and not one of them is a letter or a digit.
+ *
+ *  `Bidi_Control` is deliberately absent: measured on this runtime, all twelve of its codepoints,
+ *  U+061C and the isolates included, are already default-ignorable, so naming it would be a second
+ *  name for one set. The suite pins those twelve by hand, so a Unicode version that separated them
+ *  goes red rather than quietly leaving a reordering character raw.
+ *
+ *  What no property covers is DEL and the C1 controls, which are `Cc`, and U+2028/U+2029, which are
+ *  line and paragraph separators, so those are named. C0 is absent because `JSON.stringify` already
+ *  escapes all of it.
+ *
+ *  NOT IN THIS CLASS, and deliberately: a VISIBLE character that merely resembles another. A Cyrillic
+ *  small a is a letter, it renders as itself, and escaping it would make a refusal about a name a
+ *  human typed unreadable, which is this issue pointed the other way. Confusables are a different
+ *  problem with a different answer, and quoting for a human to read is not it.
+ *
+ *  NOT IN THIS CLASS EITHER, and this one review reached by finding U+0338 COMBINING LONG SOLIDUS
+ *  OVERLAY arriving raw and asking whether it belonged: a COMBINING MARK. It produces a visible
+ *  mark on a visible base, and the property that carries it, `gc=Mn`, is the same one carrying the
+ *  acute accent in a name written in NFD, the Devanagari vowel signs, the Arabic and Hebrew points
+ *  and the Vietnamese tones. Measured on this runtime, marks are 2543 codepoints and only 263 of
+ *  them are already in the class, so escaping them would take about 2280 codepoints of ordinary
+ *  written language and render an accented name as its escapes. A mark CAN build a confusable
+ *  (U+0338 over `=` renders as a not-equals sign, so a quoted `a=b` can display as `a` not-equals
+ *  `b`), which is a real harm and the same one the paragraph above declines: it is unbounded, it
+ *  needs no combining mark to exist, and its answer is normalization or confusable detection
+ *  rather than making every script that writes with marks unreadable. The suite asserts both
+ *  exclusions rather than only describing them. */
+const INVISIBLE_AFTER_JSON = /[\p{Default_Ignorable_Code_Point}\p{gc=Cf}\u007f-\u009f\u2028\u2029]/gu;
+
+/** QUOTE A CALLER'S OWN VALUE SO AN OPERATOR CAN READ IT.
+ *
+ *  `JSON.stringify` was doing two jobs at every site below and only claims one of them. It builds
+ *  valid JSON, and on the way it escapes every C0 control, so `ESC` arrives as the six characters
+ *  `\u001b` and a newline as `\n`. It is not a renderer for humans and never said it was: DEL, the
+ *  C1 range, `U+2028`/`U+2029`, the bidi controls and the zero-width characters are all valid JSON
+ *  string content and pass through untouched.
+ *
+ *  MEASURED against the shipped `web()` entry before this existed, driving `/api/activity?limit=`
+ *  with each codepoint percent-encoded and reading the answer as BYTES rather than through a JSON
+ *  parse (a parse decodes the very thing under test and hands the input back whatever the server
+ *  wrote). Six of eight arrived raw in BOTH the 400 body and the operator's stderr line: DEL,
+ *  `U+0085`, `U+009B`, `U+202E`, `U+2028`, `U+2029`. `ESC` and `LF` came back escaped, which is
+ *  what makes the other six a finding rather than a property of the harness.
+ *
+ *  The escape is emitted as `\uXXXX`, so the message stays valid JSON on the body path and reads as
+ *  the codepoint it is on the terminal path. Applied where the value is QUOTED rather than where it
+ *  is written out, because the untrusted thing is the value and the message is derived from it: a
+ *  guard at the two exits fences those two exits, while a guard here travels with the sentence.
+ *
+ *  The loop below is per UTF-16 UNIT, not per codepoint: `u` hands the callback a whole codepoint,
+ *  so an astral one (a tag character, a musical control) arrives as its surrogate pair and has to
+ *  leave as two escapes. `\u1d173` is not a JSON escape, and a body carrying it would stop parsing
+ *  for the caller who asked what was wrong with their request. */
+export function quoteForOperator(value: string): string {
+  return JSON.stringify(value).replace(INVISIBLE_AFTER_JSON, (ch) => {
+    let out = "";
+    for (let i = 0; i < ch.length; i++) out += "\\u" + ch.charCodeAt(i).toString(16).padStart(4, "0");
+    return out;
+  });
+}
+
 /** The channel name out of the path. A percent escape the decoder cannot read is the caller having
  *  typed a bad one, so it is refused as a bad request like any other malformed input. Left as a
  *  bare `URIError` it reached the request frame unrecognised and was reported as a server fault,
  *  which is the one thing the 400/500 split exists to prevent. */
 export function channelNameFromPath(raw: string): string {
+  let name: string;
   try {
-    return decodeURIComponent(raw);
+    name = decodeURIComponent(raw);
   } catch {
-    throw new BadRequest(`channel name ${JSON.stringify(raw)} is not valid percent-encoded text`);
+    throw new BadRequest(`channel name ${quoteForOperator(raw)} is not valid percent-encoded text`);
+  }
+  return canonicalChannel(name);
+}
+
+/** A caller's channel name, refused unless it is ALREADY the name the wire uses.
+ *
+ *  The wire builds a channel's subject through `token()`, which rewrites anything outside
+ *  `[A-Za-z0-9_-]` to `_` rather than refusing it, so a name a caller invented and a real channel
+ *  collide: `abc` + U+202E and `abc_` are one channel on the wire while the dashboard answers with
+ *  whichever the caller typed. Measured against the shipped routes on a local broker before this
+ *  existed, with one message seeded on `abc_`: the history read under the first name returned the
+ *  second's message, and the delete route purged the second while answering
+ *  `{"ok":true,"channel":"abc<U+202E>","purged":1}`. Rendering that answer readably would have made
+ *  the lie legible without removing it, which is why this refuses the name instead.
+ *
+ *  Core already owns the rule, written for the same aliasing gap on the ACL side; the dashboard
+ *  simply never asked it. Its message is rebuilt here rather than passed through, because core
+ *  quotes the raw name with `JSON.stringify` and this route is the one place that must not. */
+function canonicalChannel(name: string): string {
+  try {
+    return assertValidChannel(name);
+  } catch {
+    throw new BadRequest(
+      `channel name ${quoteForOperator(name)} is not a channel: dotted segments of [A-Za-z0-9_-], ` +
+        `and a name the wire would rewrite would address a different channel than it names`,
+    );
   }
 }
 
+/** The `limit` out of the query. The safe-integer refusal is reachable only through the digits-only
+ *  test above it, so its value cannot carry anything the quoter would escape today. It quotes
+ *  anyway: the guarantee that a refusal renders its input unambiguously should hold because the
+ *  quoting site holds it, not because a regex two lines up stays exactly as narrow as it is this
+ *  morning. */
 export function historyLimit(query: URLSearchParams, fallback: number): number {
   const raw = query.get("limit");
   if (raw === null || raw === "") return fallback;
   if (!/^[0-9]+$/.test(raw))
-    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);
+    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);
   const n = Number(raw);
   if (!Number.isSafeInteger(n))
-    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);
+    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);
   return n;
 }
 
@@ -680,6 +792,10 @@ export async function web(args: ParsedArgs): Promise<void> {
         res.end(JSON.stringify({ error: "channel required" }));
         return;
       }
+      // BEFORE the purge, not after: this is the destructive route, and an aliasing name here
+      // deletes a channel the caller did not name. Throws a BadRequest, which the request frame
+      // turns into the same 400 and the same operator line every other refusal gets.
+      canonicalChannel(channel);
       try {
         // User mode mints a one-shot channel-purger VIEW per delete — the ledger is re-checked at
         // this click, and a mid-session revoke becomes this handler's 400, never a dead dashboard.

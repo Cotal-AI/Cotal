@@ -358,6 +358,8 @@ smoke:presence-watch-rebuild:auth
 smoke:web-history-limit
 smoke:core-history-limit
 smoke:web-graph-boot
+smoke:web-echo-escaping
+smoke:web-channel-alias
 # The engine host: the seam the transformed module is handed, the worker that
 # runs it under lockdown in a Compartment with zero endowments, and the laws the walker enforces
 # inline enforced here at one boundary instead.

@@ -1,0 +1,90 @@
+{
+  "command": "pnpm smoke:web-echo-escaping",
+  "progressPattern": "^[0-9]\\. ",
+  "mutations": [
+    {
+      "name": "E1 the quoter stops escaping anything and becomes the bare `JSON.stringify` that shipped, so DEL, the C1 controls, the bidi marks and the line/paragraph separators go back to arriving raw in the value an operator reads",
+      "file": "implementations/web/src/web.ts",
+      "find": "  return JSON.stringify(value).replace(INVISIBLE_AFTER_JSON, (ch) => {\n    let out = \"\";\n    for (let i = 0; i < ch.length; i++) out += \"\\\\u\" + ch.charCodeAt(i).toString(16).padStart(4, \"0\");\n    return out;\n  });",
+      "replace": "  return JSON.stringify(value);",
+      "expectRed": "0.4 every codepoint in the class comes back as a JSON unicode escape, none of them raw"
+    },
+    {
+      "name": "E2 the class is widened to every codepoint above ASCII, which closes #711 and opens its mirror: a refusal naming a channel with an accented or CJK character renders as escapes instead of as the name the caller typed",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[^\\u0000-\\u007e]/gu;",
+      "expectRed": "0.2 CONTROL: a non-ASCII LETTER stays a readable letter, never a unicode escape"
+    },
+    {
+      "name": "E3 the escape is emitted in a form that reads fine on a terminal but is not JSON, so the body stops parsing back to what the caller sent and a caller who asked what was wrong with their request gets a different document",
+      "file": "implementations/web/src/web.ts",
+      "find": "    for (let i = 0; i < ch.length; i++) out += \"\\\\u\" + ch.charCodeAt(i).toString(16).padStart(4, \"0\");",
+      "replace": "    for (let i = 0; i < ch.length; i++) out += \"<U+\" + ch.charCodeAt(i).toString(16).padStart(4, \"0\") + \">\";",
+      "expectRed": "0.7 the quoted form is still valid JSON and round-trips to the ORIGINAL value"
+    },
+    {
+      "name": "E4 the helper is left correct and the SHIPPED CALL SITE is reverted to `JSON.stringify`, so every cell about the quoter stays green while the route an operator actually hits goes back to echoing raw codepoints",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);",
+      "replace": "    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);",
+      "expectRed": "1.3 the OPERATOR's line carries no raw codepoint from the class either"
+    },
+    {
+      "name": "E5 the low bound of the control range moves one codepoint down, so the printable tilde is escaped as well: the kind of off-by-one that makes a refusal about ordinary text unreadable and that a mid-range test cannot see",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007e-\\u009f\\u2028\\u2029]/gu;",
+      "expectRed": "0.6 the NAMED bounds are exact and the property ranges are sampled either side: eighteen neighbours of the class are left alone"
+    },
+    {
+      "name": "E6 the global flag is dropped, so only the FIRST class member in a value is escaped and every one after it still arrives raw: the classic regex slip, invisible to any cell whose input carries a single codepoint",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/u;",
+      "expectRed": "1.6 a MIXED value escapes only the class members and leaves the rest alone, including an astral emoji whose surrogate PAIR the class must not touch"
+    },
+    {
+      "name": "E7 an astral member is emitted from its CODEPOINT rather than per UTF-16 unit, producing the five-hex `u1d173` form, which reads fine on a terminal and is not a JSON escape at all",
+      "file": "implementations/web/src/web.ts",
+      "find": "    let out = \"\";\n    for (let i = 0; i < ch.length; i++) out += \"\\\\u\" + ch.charCodeAt(i).toString(16).padStart(4, \"0\");\n    return out;",
+      "replace": "    return \"\\\\u\" + ch.codePointAt(0)!.toString(16).padStart(4, \"0\");",
+      "expectRed": "0.8 an ASTRAL class member leaves as its two-unit SURROGATE PAIR and still parses back to the codepoint it was"
+    },
+    {
+      "name": "E8 the two separators no Unicode property carries are dropped from the class, which is what a class written as properties ALONE would silently do to them",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f]/gu;",
+      "expectRed": "0.9 the LINE and PARAGRAPH separators are escaped, and they are in the class by NAME because no property covers them"
+    },
+    {
+      "name": "E9 the property goes back to the hand list this change shipped with first, which is the exact defect review found: it has the isolates and the overrides and it does not have U+061C",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
+      "expectRed": "0.10 every BIDI CONTROL is escaped, including U+061C and the isolates, which the shipped hand list did not have"
+    },
+    {
+      "name": "E10 the format property is dropped, leaving the class the one property review already caught short: the interlinear annotation controls go back to arriving raw, so a base run and its gloss reach an operator as one sentence nobody wrote",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "expectRed": "0.11 the INTERLINEAR ANNOTATION controls are escaped, so a base run and its gloss cannot arrive as one sentence nobody wrote"
+    },
+    {
+      "name": "E11 the renders-as-nothing PROPERTY is replaced by an enumeration of exactly the codepoints this suite NAMES, so every named cell stays green and the thousands of members nobody named go raw: the shape of both boundary defects found so far, and only a sweep can see it",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\u034f\\u115f\\u3164\\ufe00\\ufe0f\\uffa0\\u{e0100}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "expectRed": "0.12 SWEPT over every codepoint: the set the quoter escapes is exactly the union this file claims, plus what JSON.stringify already closed"
+    },
+    {
+      "name": "E12 the class is widened to every COMBINING MARK, which is the boundary review pushed on after finding U+0338 raw: it looks like closing a gap and it makes a refusal about a name written in NFD, or in any script that writes with marks, come back as escapes",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\p{M}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "expectRed": "0.13 CONTROL: a COMBINING MARK is left RAW, so a refusal about a name written in NFD or in a script that writes with marks stays readable"
+    }
+  ]
+}
