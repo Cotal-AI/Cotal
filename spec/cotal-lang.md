@@ -353,7 +353,8 @@ Where a parameter takes a **primitive**, an array, record or function in that po
 (L4018) before any host conversion — the operators' rule (§4.5) at the library boundary — and this
 includes each element `join` and `sum` would stringify or add, and `assert`'s message. The positions
 that take a container or a function by contract (a callback, a list or record argument, a search
-value compared by identity, `log`'s values, `json.stringify`'s value) take exactly those. What a
+value compared by identity, `log`'s values, `json.stringify`'s value) are not refused there: L4018
+is a rule about the position, and a value position takes a value, primitive or not. What a
 position accepts past that point is its own rule rather than the group's: `log`'s values pass no
 further check under version `1` and must carry no code under version `2` (L4016, §8.4);
 `json.stringify`'s value must satisfy the effect-crossing rule of §4.4 at both versions (L4016),
