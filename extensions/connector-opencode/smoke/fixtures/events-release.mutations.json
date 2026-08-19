@@ -54,7 +54,7 @@
     {
       "name": "W2 a retirement no longer reaps the predecessor's log, so every /new leaves another thread directory behind for the life of the workspace",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "              if (drained) await reapRetiredWal(retired);\n",
+      "find": "              await reapRetiredWal(retired, drained);\n",
       "replace": "",
       "expectRed": "a retirement whose drain settled reaps the predecessor's log",
       "cell": "a retirement whose drain settled reaps the predecessor's log"
@@ -62,8 +62,8 @@
     {
       "name": "W3 the reap stops asking whether the drain settled, so a log whose uncancelled drain may still be writing is removed under it",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "              if (drained) await reapRetiredWal(retired);\n",
-      "replace": "              await reapRetiredWal(retired);\n",
+      "find": "    if (!drained) {\n      log(`${WAL_KEPT} ${threadId}: its drain spent the bound, so it may still be writing`);\n      return;\n    }\n",
+      "replace": "",
       "expectRed": "a retirement whose drain spent the bound KEEPS the predecessor's log",
       "cell": "a retirement whose drain spent the bound KEEPS the predecessor's log",
       "note": "The plausible over-repair, and the reason the lifetime is graded rather than the deletion. It passes W2's cell and every directory-count reading of 'the predecessor was cleaned up'."

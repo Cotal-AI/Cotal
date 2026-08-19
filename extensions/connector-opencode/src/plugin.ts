@@ -295,7 +295,15 @@ export const cotal: Plugin = async () => {
    * emitter has been released by this point and the file is the only authority on what it left. A
    * log that cannot be read is KEPT: this is a cleanup and never a repair.
    */
-  async function reapRetiredWal(threadId: string): Promise<void> {
+  async function reapRetiredWal(threadId: string, drained: boolean): Promise<void> {
+    // (a), AND IT IS FIRST BECAUSE IT IS THE CHEAPEST WAY TO BE WRONG. An abandoned drain is
+    // uncancelled work that may still write into this directory, so removing it turns a bounded
+    // delay into a lost frame. The decision lives here, next to the lifetime it belongs to, rather
+    // than at the call site: a caller holding half the rule is how the easy half gets shipped alone.
+    if (!drained) {
+      log(`${WAL_KEPT} ${threadId}: its drain spent the bound, so it may still be writing`);
+      return;
+    }
     const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
     const { threadDir, walPath } = eventWalLocation({
       workspaceRoot: resolveEventsStateRoot(process.env),
@@ -305,6 +313,8 @@ export const cotal: Plugin = async () => {
     });
     try {
       const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+      // (b), AND THIS IS THE HALF THAT IS ACTUALLY ABOUT RECOVERY. A pending frame is one whose fate
+      // the broker never confirmed, and only a start that reads this file can settle it.
       if (wal.pending !== null) {
         log(`${WAL_KEPT} ${threadId}: a frame is still pending, which is the one thing a later start recovers`);
         return;
@@ -1212,10 +1222,9 @@ export const cotal: Plugin = async () => {
               // holder's to decide. Bounded like every other join here, for the same reason.
               const retired = previous.path;
               await settleWithin(previous.close(), SWAP_SETTLE_MS, `release of ${retired}`);
-              // ONLY ON A SETTLED DRAIN. An abandoned one is uncancelled and may still be writing,
-              // so its log stays; see the lifetime stated on the reaper itself.
-              if (drained) await reapRetiredWal(retired);
-              else log(`${WAL_KEPT} ${retired}: its drain spent the bound, so it may still be writing`);
+              // The lifetime is stated on the reaper, not decided here: this hands over what only the
+              // swap knows, which is whether the drain settled or spent its bound.
+              await reapRetiredWal(retired, drained);
               events = newEventHolder();
             }
             // Adopt READS FROM HERE. A resumed session must not republish its history, and the
