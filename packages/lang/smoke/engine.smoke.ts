@@ -2330,7 +2330,8 @@ let n = 1;
   ok("the built worker entry section 16 spawned EXISTS on disk", existsSync(entry), entry);
   // MECHANIZED, not narrated: the leg names `dist`. A cell that only said so in prose would keep
   // saying it after someone pointed the leg back at `src` and made it a node-26-only suite again.
-  ok("and the worker leg runs it from `dist`, not from the sources beside this file", entry.includes("/dist/") && !entry.includes("/src/"), entry);
+  // Judged on the URL's path, which is `/`-separated on every platform; the OS path is not.
+  ok("and the worker leg runs it from `dist`, not from the sources beside this file", WORKER_ENTRY.pathname.includes("/dist/") && !WORKER_ENTRY.pathname.includes("/src/"), entry);
 
   // THE HOST DERIVES NO ENTRY, which is the rule put in place of a version check. Asked
   // for a run with none, nothing starts: no default, no probe of this module's own extension, and
