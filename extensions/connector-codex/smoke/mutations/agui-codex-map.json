@@ -1,0 +1,89 @@
+{
+  "command": "pnpm smoke:agui-codex-map",
+  "mutations": [
+    {
+      "name": "M1 the mapper stops branching on task_complete.error, so a failed turn publishes as a success",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      if (failed) {",
+      "replace": "      if (false) {",
+      "expectRed": "live:and RUN_ERROR was emitted anyway, from task_complete.error"
+    },
+    {
+      "name": "M2 the mapper stops withholding user and developer records",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      if (role !== \"assistant\") return null;",
+      "replace": "      if (role === \"zzz-never\") return null;",
+      "expectRed": "live:NO event carries a withheld record's id as its messageId"
+    },
+    {
+      "name": "M3 the tool identity becomes a synthesized key instead of the native call_id",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "          toolCallStart({ toolCallId, toolCallName, timestamp: ts }),",
+      "replace": "          toolCallStart({ toolCallId: `synth-${ts}`, toolCallName, timestamp: ts }),",
+      "expectRed": "shape:TOOL_CALL_START carries the NATIVE call_id, not a synthesized key"
+    },
+    {
+      "name": "M4 a list-shaped tool output silently serializes to nothing, so one of the two real shapes is dropped",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "  if (typeof o === \"string\") return o;",
+      "replace": "  if (typeof o === \"string\") return o;\n  if (Array.isArray(o)) return \"\";",
+      "expectRed": "shape:and the LIST output's content actually reaches the event"
+    },
+    {
+      "name": "M5 turn_aborted requires a turn id, turning a rare heterogeneity into a dead stream",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      const id = turn ?? runId;",
+      "replace": "      if (turn === undefined) return null;\n      const id = turn;",
+      "expectRed": "shape:turn_aborted WITHOUT a turn id still ends the run"
+    },
+    {
+      "name": "M6 the run stops being fenced on its turn, so any turn's completion closes it",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "    if (envelope === \"event_msg\" && inner === \"task_complete\") {\n      if (open === null) return null;\n      const turn = asString(payload.turn_id);\n      if (turn !== undefined && openTurn !== undefined && turn !== openTurn) return null;\n      const runId = open;",
+      "replace": "    if (envelope === \"event_msg\" && inner === \"task_complete\") {\n      if (open === null) return null;\n      const turn = asString(payload.turn_id);\n      const runId = open;",
+      "expectRed": "shape:a task_complete for a DIFFERENT turn emits NOTHING"
+    },
+    {
+      "name": "M7 the opaque reasoning blob is published alongside the summary",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      if (text.length === 0) return null;\n      const messageId = asString(payload.id) ?? `rsn:${runId}:${ts}`;",
+      "replace": "      text += asString(payload.encrypted_content) ?? \"\";\n      if (text.length === 0) return null;\n      const messageId = asString(payload.id) ?? `rsn:${runId}:${ts}`;",
+      "expectRed": "shape:encrypted_content is NEVER published"
+    },
+    {
+      "name": "M8 TOOL_CALL_RESULT loses the stable messageId every connector owes",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      const messageId = `res:${toolCallId}`;",
+      "replace": "      const messageId = `res:${ts}`;",
+      "expectRed": "shape:TOOL_CALL_RESULT carries the messageId every connector owes, derived from the call id"
+    },
+    {
+      "name": "M9 the mapper reads a record's fields without checking it is one, so a null JSONL line throws and kills the plane",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "    if (record === null || typeof record !== \"object\") return null;",
+      "replace": "    if (false) return null;",
+      "expectRed": "degenerate:a null JSONL line is DROPPED, not thrown on"
+    },
+    {
+      "name": "M10 the stated gap is filled by analogy: a built-in tool's END record is published as a result for a call nothing ever started",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "    if (envelope === \"response_item\" && (inner === \"function_call_output\" || inner === \"custom_tool_call_output\")) {",
+      "replace": "    if ((envelope === \"response_item\" && (inner === \"function_call_output\" || inner === \"custom_tool_call_output\")) || inner === \"web_search_end\") {",
+      "expectRed": "gap:no tool event is published for the built-in family"
+    },
+    {
+      "name": "M11 the object shape of task_complete.error stops being read, so a real failure loses its message and its code",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "        const message = asString(errRecord?.message) ?? errText ?? \"codex turn failed\";",
+      "replace": "        const message = errText ?? \"codex turn failed\";",
+      "expectRed": "error:the dict shape becomes RUN_ERROR carrying its message and code"
+    },
+    {
+      "name": "M12 only the object shape counts as a failure, so an error arriving as a bare string is published as a finished run",
+      "file": "extensions/connector-codex/src/agui-map.ts",
+      "find": "      const failed = payload.error !== null && payload.error !== undefined;",
+      "replace": "      const failed = errRecord !== undefined;",
+      "expectRed": "error:a bare string error is a FAILED run, not a finished one"
+    }
+  ]
+}
