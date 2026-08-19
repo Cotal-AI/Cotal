@@ -10,9 +10,9 @@
       "file": "implementations/runtime/src/run-driver.ts",
       "find": "    const served = ENGINES.find((e) => e.version === pins.languageVersion);",
       "replace": "    const served = ENGINES.find((e) => e.version === pins.languageVersion) ?? ENGINES[0];",
-      "expectRed": "and it is refused by name, L5023",
-      "cell": "and it is refused by name, L5023",
-      "note": "The defect this whole table exists to prevent, in the one spelling a reviewer would wave through: a `??` that reads as robustness. It is the repo's no-fallbacks rule at its sharpest, because the fallback is SILENT and produces a plausible outcome -- the run is released, just for the wrong reason, by an engine that does not speak the record's language."
+      "expectRed": "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+      "cell": "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+      "note": "The defect this whole table exists to prevent, in the one spelling a reviewer would wave through: a `??` that reads as robustness. It is the repo's no-fallbacks rule at its sharpest, because the fallback is SILENT and produces a plausible outcome -- the run is released, just for the wrong reason, by an engine that does not speak the record's language. RE-AIMED at the engine-version record rather than the unserved number: this is the dispatch-deletion mutant, and the cell it is graded on is the one that says which arm the dispatcher takes for the record the OTHER engine really writes."
     },
     {
       "name": "the refusal is filed under L5008, the same disagreement one layer in",

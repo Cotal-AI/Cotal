@@ -21,7 +21,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, RunJournalTailTruncated } from "@cotal-ai/core";
-import { LANGUAGE_VERSION, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, type JournalEntry } from "@cotal-ai/lang";
+import { ENGINE_LANGUAGE_VERSION, LANGUAGE_VERSION, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -589,6 +589,24 @@ try {
   const untouched = await readRunRecord(kv, EP, "d-v9");
   c("and the run was not touched: no activation, no status, nothing appended",
     untouched?.status === undefined, untouched?.status?.value);
+
+  // THE RECORD THIS BUILD WILL ACTUALLY MEET, as opposed to a version nobody wrote: one stamped by
+  // the ENGINE. It takes the same branch as the unserved number above and it is not the same claim -
+  // that one says the table refuses what it does not list, this one says the version the other
+  // engine really writes is on the far side of that line today. It is also the cell that must be
+  // revisited rather than silently kept the day the engine joins the table: it will red, and the
+  // red is the point, because on that day the dispatcher's answer for a v2 record changes.
+  const v2 = { ...resolvePins({ runId: "d-v2" }, 1_000, WALKER_LANGUAGE_VERSION), languageVersion: ENGINE_LANGUAGE_VERSION };
+  await createRunSpec(kv, EP, "d-v2", { pins: v2, createdAt: 1_000 });
+  const engineRecord = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v2", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+    engineRecord.status === "released"
+    && (engineRecord.reason as { code?: string }).code === "L5023"
+    && engineRecord.reason.message.includes(`language version ${ENGINE_LANGUAGE_VERSION}`),
+    engineRecord.status === "released" ? engineRecord.reason.message.slice(0, 120) : why(engineRecord));
 
   // A RECORD FROM BEFORE THE FIELD EXISTED. It reaches the same branch by a different route: not a
   // version this build does not serve, but no version at all, which `find` also fails to match. The
