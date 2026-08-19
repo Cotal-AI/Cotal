@@ -53,8 +53,6 @@ function identifiers(node: unknown, out: Set<string>): void {
 class Emitter {
   private readonly sites = new Map<string, number>();
   private readonly proposed = new Set<string>();
-  /** Free names reached in VALUE position: each gets one stable wrapper, so `map === map` stays true. */
-  private readonly freeValues = new Set<string>();
   private tempTop = 0;
   private tempMax = 0;
   private labels = 0;
@@ -111,10 +109,11 @@ class Emitter {
     const name = node.name as string;
     if (b !== undefined) return b.cell ? this.seam("get", `${name}, ${q("v")}`) : name;
     if (VALUE_NAMES.includes(name)) return VOID;
-    if (FREE_VALUES.has(name)) {
-      this.freeValues.add(name);
-      return `${this.n.temp}f_${name}`;
-    }
+    // A builtin is a BINDING in this language, so it has to be readable as a value: `const f = trim`,
+    // `map(xs, upper)`, and `json.stringify(x)` (whose callee's object is the free name `json`).
+    // Ruling 1a pins the read form as `free(name)` with the arguments OMITTED - the host answers it
+    // in the program's convention, so a native call on what comes back is correct.
+    if (FREE_VALUES.has(name)) return this.seam("free", q(name));
     // An effect primitive is not a binding the walker ever declares: `const t = turn` is admitted by
     // the validator and answers L2001 at run time (measured at 9dc154f8). The host answers the same
     // way for a name that is not a free builtin, so the reference is emitted as the call that asks.
@@ -127,15 +126,7 @@ class Emitter {
   module(program: AnyNode): string {
     const body = this.block(program, true);
     const decls = this.tempMax === 0 ? "" : `let ${Array.from({ length: this.tempMax }, (_, i) => `${this.n.temp}${i}`).join(", ")};\n`;
-    // One wrapper per free name reached in value position, minted once per run: the walker's
-    // builtins are bindings, so `map === map` is true and a fresh closure per read would make it
-    // false. They sit INSIDE the async thunk so the emitted module keeps the contract's shape.
-    const wrappers = [...this.freeValues]
-      .sort()
-      .map((name) => `const ${this.n.temp}f_${name} = (...${this.n.temp}a) => ${this.n.ctx}.free(${q(name)}, ${this.n.temp}a);\n`)
-      .join("");
-    if (wrappers !== "") this.sites.set("free", (this.sites.get("free") ?? 0) + this.freeValues.size);
-    return `(${this.n.ctx}) => async () => {\n${decls}${wrappers}${this.fuel()}${body}}\n`;
+    return `(${this.n.ctx}) => async () => {\n${decls}${this.fuel()}${body}}\n`;
   }
 
   private fuel(): string {
