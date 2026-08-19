@@ -671,10 +671,19 @@
       "file": "packages/lang/src/engine/host.ts",
       "find": "export const NODE_FLOOR = 22;",
       "replace": "export const NODE_FLOOR = 999;",
-      "expectRed": "and on the engine, with the same value and the same shape",
-      "completionMarker": "ok while an IN-RANGE index write completes on the walker",
-      "cell": "and on the engine, with the same value and the same shape",
-      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal has to fire on the FIRST program that goes through `runOnEngine`, and it does. Which cell that is, is a POSITION and not a name, and it moved: the section-3 control that compares an in-range index write on both arms is now the first engine run in the file, so the refusal arrives there, four sections before the cell that used to name it. Measured after the insertion, not assumed - the first run of this ledger graded WRONG-RED and that is how the shift was found. The control captures its engine run for the same reason: awaited into the assertion, this mutant killed the block anonymously instead of failing a named cell. The floor's own section still states the rule; what this grades is that a real run reaches it."
+      "expectRed": "the run boundary is reached, and a refusal at it has a cell to land on",
+      "cell": "the run boundary is reached, and a refusal at it has a cell to land on",
+      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal fires on the FIRST boundary crossing in the file. WHICH CELL THAT IS was a position and not a name, and it moved twice - once when two cells were inserted in section 3, which the ledger caught as a WRONG-RED, and once when that cell's run was left unguarded, which turned this mutant into an uncaught fault from host.ts with no cell attached to it. Section 0 exists so it stops moving: it is the first crossing by construction, it captures rather than awaiting into the cell, and the audit in section 23 asserts it is still first. NO COMPLETION MARKER, and that is not an omission - the cell is the first in the file, so there is nothing upstream of it to mark."
+    },
+    {
+      "name": "the crossing search narrows back to one entry point",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "  const CROSSING = \"On\" + \"Engine(\";",
+      "replace": "  const CROSSING = \"run\" + \"OnEngine(\";",
+      "expectRed": "and so is a resume, which is the same crossing under a name the other search misses",
+      "completionMarker": "ok a run spliced in above the guard is caught by the audit",
+      "cell": "and so is a resume, which is the same crossing under a name the other search misses",
+      "note": "The spelling this replaced, restored exactly, and the reason the check needed a second control arm. `resumeOnEngine` calls `runOnEngine`, which asks the node floor before the validator, so a resume crosses the boundary identically - and `runOnEngine(` is not a substring of `resumeOnEngine(`, so a search for the first walks past the second. Lane T found it while it was still latent (first run in section 0, first resume some 1500 lines below), and MEASURED before the fix: a resume spliced above the guard left the narrow audit fully green, 374 checks passed. The arm above stays green under this mutant - it splices the entry point the narrow needle already matches - which is exactly why one arm was not enough."
     },
     {
       "name": "a node below the floor is allowed through",

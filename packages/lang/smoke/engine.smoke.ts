@@ -170,6 +170,35 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   // eslint-disable-next-line no-eval
   (0, eval)(module) as (ctx: EngineCtx) => () => Promise<unknown>;
 
+// ---- 0) THE FIRST BOUNDARY CROSSING IN THIS FILE, and it is guarded on purpose -------------------
+//
+// A refusal at the run BOUNDARY - the node floor, today - fires before anything a program can do, so
+// it lands on whichever cell crosses first. If that cell awaits its run into an assertion, the
+// refusal leaves the block and kills the file: the suite exits non-zero having named nothing, and
+// every boundary-class mutant grades as "the process died somewhere" instead of "red, and named".
+// That is not hypothetical - it cost a fold round, from a cell inserted four sections above the one
+// that used to be first, and a crash cannot say which cell it belonged to.
+//
+// So the first crossing is THIS one, captured rather than awaited into a cell, and section 23
+// asserts it is still first. A crossing inserted above it reds there, at authoring time.
+//
+// A CROSSING IS EITHER ENTRY POINT. The resume wrapper calls straight through to the same function
+// and hits the same check, and its name does not contain the other's, so a search for one walks
+// past the other. Lane T found that while it was still latent. The audit matches both and names
+// which it found, and a control pins the wider universe rather than leaving it remembered.
+
+const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a cell to land on";
+{
+  const boundary = await caught(async () => {
+    await runOnEngine(`log("x", 1);\n`, transform(`log("x", 1);\n`).module, {
+      runId: "boundary",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+    });
+  });
+  ok(BOUNDARY_GUARD, boundary === undefined, String(boundary));
+}
+
 // ---- 1) the seam runs a program, and the journal is the walker's shape -------------------------
 //
 // The whole point of the lane in one cell: a module in the ruled shape (closed expression, zero free
@@ -2577,6 +2606,53 @@ let n = 1;
     ok("fuel takes none, and its declared range says so", SEAM_MEMBERS.fuel?.[0] === 0 && SEAM_MEMBERS.fuel?.[1] === 0);
     return undefined;
   });
+}
+
+// ---- 22b) THIS FILE'S OWN SHAPE: the first boundary crossing is the guarded one ------------------
+//
+// Printed BEFORE section 23, on purpose: that section audits the mutation config against the cells
+// this run has printed SO FAR, so a cell that prints after its loop cannot be named by a mutant.
+{
+  // AND THE FILE'S OWN SHAPE: the first BOUNDARY CROSSING must still be the guarded one in section 0,
+  // compared by OFFSET in this file's source, so a crossing inserted above it reds here rather than
+  // at a fold.
+  //
+  // THE NEEDLE IS BUILT AT RUN TIME so this check's own source does not contain the string it looks
+  // for - otherwise the first match would be this line and the audit would grade itself.
+  {
+  const CROSSING = "On" + "Engine(";
+  const src = readFileSync(fileURLToPath(new URL("./engine.smoke.ts", import.meta.url)), "utf8");
+  /** Is the first crossing in `text` inside the section-0 guard, and which entry point is it? */
+  const firstCrossing = (text: string, needle: string): { readonly guarded: boolean; readonly which: string } => {
+    const at = text.indexOf(needle);
+    const guardAt = text.indexOf("const BOUNDARY_GUARD");
+    const cellAt = text.indexOf("ok(BOUNDARY_GUARD");
+    return {
+      guarded: at > guardAt && at < cellAt,
+      which: text.slice(Math.max(0, at - 20), at + needle.length).match(/[A-Za-z]*OnEngine\($/)?.[0] ?? "?",
+    };
+  };
+  /** The same file with a crossing spliced in ABOVE the guard. The paren is built here too. */
+  const spliced = (call: string): string => {
+    const at = src.indexOf("const BOUNDARY_GUARD");
+    return `${src.slice(0, at)}await ${call}("x", "y", z);\n${src.slice(at)}`;
+  };
+  const live = firstCrossing(src, CROSSING);
+  ok(`the file's first boundary crossing is the guarded one in section 0, and it is a ${live.which.replace("(", "")}`, live.guarded, live);
+  // BOTH ARMS, and they are not the same arm twice. The first proves the audit sees the entry
+  // point its search was written for; the second proves it sees the OTHER one, which is the half
+  // that was missing.
+  ok("a run spliced in above the guard is caught by the audit", firstCrossing(spliced("run" + "OnEngine"), CROSSING).guarded === false);
+  ok("and so is a resume, which is the same crossing under a name the other search misses", firstCrossing(spliced("resume" + "OnEngine"), CROSSING).guarded === false);
+  // THE UNIVERSE, PINNED RATHER THAN REMEMBERED. Measured: with the needle narrowed to one entry
+  // point, that same spliced resume reads as GUARDED - the audit would report "the first crossing
+  // is inside the guard" while the file's real first crossing sat above it, uncaptured. This cell
+  // is that measurement, kept, so widening the needle can never be quietly undone.
+  ok(
+    "while a search for one entry point alone calls that resume guarded, which is why the needle matches both",
+    firstCrossing(spliced("resume" + "OnEngine"), "run" + "OnEngine(").guarded === true,
+  );
+  }
 }
 
 // ---- 23) the mutation config, audited against this suite's own cells -----------------------------
