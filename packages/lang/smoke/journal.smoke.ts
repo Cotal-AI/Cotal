@@ -251,7 +251,7 @@ const H = (v: unknown) => digest(v);
       order.push(`append:${e.state}:${e.kind}`);
     },
   };
-  const sim = new SimHandler({ turns: { build: [{ status: "done" }] } });
+  const sim = new SimHandler({ turns: { build: [{ status: "done", at: 0 }] } });
   // Built method by method rather than spread: a class instance's methods live on its prototype,
   // so a spread wrapper is an object with none of them.
   const watched: EffectHandler = {
