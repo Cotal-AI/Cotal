@@ -41,13 +41,13 @@ back on the mesh it had just left, and a tool call already inside the model's tu
 know a stop was running. A refused tool call says so rather than returning nothing, because its
 caller is waiting on a result and silence would read as a hang.
 
-Departure is also ordered behind the work the seat has already admitted. A presence write is not
-atomic, so a call admitted before the stop could be parked mid-write while the teardown published
-offline, and then put the seat back to work after it had announced it left; on the wire, a roster
-read `working` after `offline`. The teardown now waits, briefly, for interactive work it has
-already admitted before it publishes departure, and joins the slower event work afterwards as it
-already did. Event work is deliberately not in that wait, because waiting on a drain is what
-publishing departure early exists to avoid.
+Departure is also ordered behind the work the seat has already admitted, for as long as a short
+bound allows. A presence write is not atomic, so a call admitted before the stop could be parked
+mid-write while the teardown published offline, and then put the seat back to work after it had
+announced it left; on the wire, a roster read `working` after `offline`. The teardown now waits,
+briefly, for interactive work it has already admitted before it publishes departure, and joins the
+slower event work afterwards as it already did. Event work is deliberately not in that wait,
+because waiting on a drain is what publishing departure early exists to avoid.
 
 That wait is bounded below the shortest runtime grace window, which is what leaves room for
 departure to be published before a hard kill under ordinary conditions. It is a margin rather than
