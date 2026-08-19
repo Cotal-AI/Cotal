@@ -26,7 +26,7 @@ import { RuntimeFault } from "./errors.js";
 import { parseDuration } from "./duration.js";
 import type { ScopeFrame } from "./keys.js";
 import { scopePathString } from "./keys.js";
-import { NotCrossable, Prng, assertCrossable, born, deepFreeze } from "./values.js";
+import { NotCrossable, Prng, assertCrossable, assertNoCode, born, deepFreeze } from "./values.js";
 
 /** What the library needs of the interpreter's frame. `Frame` in interpret.ts satisfies it. */
 export interface LibFrame {
@@ -522,6 +522,17 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     [
       "log",
       fn("log", (frame, a) => {
+        // A log line is data, and this is the ONE place the rule is held: both engines log through
+        // here, so no transport (a host callback, a worker thread) ever sees code. Refused as the
+        // builtin refuses (L4016 naming the value and the path), the way json.stringify does.
+        a.forEach((v, i) => {
+          try {
+            assertNoCode(v, `log: value ${i + 1}`);
+          } catch (e) {
+            if (e instanceof NotCrossable) throw new RuntimeFault("L4016", e.message);
+            throw e;
+          }
+        });
         ctx.onLog?.({ scope: scopePathString(frame.keys.path), values: a });
         return null;
       }, "all"),
