@@ -963,7 +963,17 @@ const bindsPatternName = (n: ts.BindingName, name: string): boolean => {
  *  A literal anywhere in the initializer is text this reader is looking at, however it got there.
  *
  *  A literal inside a nested function body is deliberately not counted: it is a value that callback
- *  produces, not the structure this declaration takes apart.
+ *  produces, not the structure this declaration takes apart. Unless the function is INVOKED right
+ *  here, which is the distinction that decides it. `getOpts(() => ({ tls: undefined }))` hands a
+ *  function to somebody else and the declaration takes apart whatever getOpts returns, so that
+ *  literal is foreign. `(() => ({ tls: undefined }))()` takes apart what THAT function returns, so
+ *  the literal in its body is the structure itself, and skipping it erased the only evidence the
+ *  initializer was written here at all. Handed over and invoked are different acts.
+ *
+ *  Entering that body ARMS the refusal; it does not read the body. An invoked function is a call
+ *  this file does not model, so an IIFE returning a perfectly good boolean is refused exactly as
+ *  `structuredClone({ tls: false })` is, and for the same reason: reading a function's return means
+ *  following what its body does, and guessing at that is how a refusal becomes a false pass.
  *
  *  Stated cost, on the refusing side. A call this file does not model, carrying a literal that is
  *  perfectly readable, is refused too: `structuredClone({ tls: false })` is unverifiable although
@@ -981,13 +991,22 @@ const bindsPatternName = (n: ts.BindingName, name: string): boolean => {
  *  argument's alternatives are folded to decide whether the key is STATED, and a branch that omits
  *  it settles that. A source's branches hand over two different values, neither of which is the
  *  value at the call, so folding them would mean picking one. */
+/** Is this function called where it stands, rather than handed to someone else to call?
+ *  The walk UP goes through the wrappers, because the ordinary spelling puts the function in
+ *  parentheses, `(() => ({...}))()`, and a check on the immediate parent finds the parenthesis. */
+const invokedHere = (n: ts.Node): boolean => {
+  const o = outermost(n);
+  return !!o.parent && (ts.isCallExpression(o.parent) || ts.isNewExpression(o.parent))
+    && o.parent.expression === o;
+};
+
 function writtenSource(init: ts.Expression): boolean {
   const root = unwrap(init);
   let found = false;
   const visit = (n: ts.Node): void => {
     if (found) return;
     if (ts.isObjectLiteralExpression(n) || ts.isArrayLiteralExpression(n)) { found = true; return; }
-    if (n !== root && ts.isFunctionLike(n)) return; // a callback's literal is not this source
+    if (n !== root && ts.isFunctionLike(n) && !invokedHere(n)) return; // a callback's is not this
     ts.forEachChild(n, visit);
   };
   visit(root);
@@ -1920,6 +1939,17 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // never descends still sees it: the cells proved detection at depth one and claimed it anywhere.
   check("...and a literal nested deeper than one level is still text this reader is looking at",
     one(`const { tls } = new Wrapper(makeIt({ tls: undefined as any }));\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  // INVOKED versus HANDED OVER. The callback exclusion below is right, and it erased the evidence in
+  // the one shape where the function's own body IS the structure: an initializer that calls the
+  // function where it stands takes apart what that body returns.
+  check("...and a function INVOKED where it stands has its body read, since that is what is taken apart",
+    one(`const { tls } = (() => ({ tls: undefined as any }))();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...in either spelling, since the shape is the invocation and not the arrow",
+    one(`const { tls } = (function () { return { tls: undefined as any }; })();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and an async one awaited, which is the same act with a promise in the way",
+    one(`async function f() { const { tls } = await (async () => ({ tls: undefined as any }))(); return standaloneConnectOpts({ creds: c, tls }); }`) === "unverifiable");
+  check("...and it is REFUSED rather than read, so an invoked body holding a real boolean reds too",
+    one(`const { tls } = (() => ({ tls: false }))();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...while a literal inside a CALLBACK is that callback's value, not this declaration's source",
     one(`const { tls } = build(cfg, () => ({ tls: false }));\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   // THE COST of that rule, asserted so it is a decision rather than a surprise: a call this file does
