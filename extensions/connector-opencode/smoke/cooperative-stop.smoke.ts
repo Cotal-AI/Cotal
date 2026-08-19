@@ -235,6 +235,73 @@ try {
   await awaitExit(probe, 15_000);
   check("the plugin process exited cleanly (0) on cooperative shutdown", probeExit === 0, probeExit);
 
+  // ---- THE SAME ORDER, AGAINST A KILL. The cells above grade the ORDER and cannot grade whether it
+  // is sufficient, because this harness spawns the probe directly: no runtime, no grace window, no
+  // SIGKILL. That is exactly the blindness the ordering fix exists to correct, so grading the fix
+  // only here would let it inherit that blindness. This leg supplies the missing half: a second seat
+  // is stopped and then KILLED after a grace window shorter than its drain, the way `pty.ts` and the
+  // tmux and cmux runtimes do, and presence must already have left the mesh.
+  //
+  // The window is real rather than nominal. Presence goes stale on its own after the endpoint's TTL,
+  // 6s, so a roster that says offline long enough after a kill says nothing about who published it.
+  // Sampling about one second after the stop keeps the reading inside that margin, so an offline seen
+  // here was PUBLISHED and not inferred from silence.
+  // A FRESH control endpoint for the second seat rather than the first one's. Reusing it would ask
+  // the plugin to bind a socket path a dead process may still own, and that binding is deliberately
+  // fatal so a squatter cannot hijack a control plane, so the leg would fail on setup rather than on
+  // the behaviour it grades.
+  const spec2 = opencodeConnector.buildLaunch({
+    space, name: "Otto", role: "worker", id: ottoId.id, lifecycleUid: ottoUid, creds: credsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const ep2 = spec2.control!;
+  const marker2Path = join(dir, "coop-kill-read-finished");
+  const trigger2 = join(dir, "coop-kill-start-drain");
+  let probeExit2: number | null = null;
+  const probe2 = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...process.env,
+      ...spec2.env,
+      COTAL_EVENTS: "1",
+      COTAL_WORKSPACE_ROOT: join(dir, "ws2"),
+      COOP_MARKER: marker2Path,
+      COOP_TRIGGER: trigger2,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  probe2.on("exit", (code) => (probeExit2 = code ?? -1));
+  mkdirSync(join(dir, "ws2"), { recursive: true });
+
+  let live2 = false;
+  for (let i = 0; i < 100 && !live2; i++) {
+    await wait(100);
+    const o = watcher.getRoster().find((pr) => pr.card.name === "Otto");
+    live2 = o !== undefined && o.status !== "offline";
+  }
+  check("the second seat came online, so the kill leg grades a live one", live2);
+
+  writeFileSync(trigger2, "go\n");
+  await wait(300);
+  const reply2 = await sendShutdown(ep2.path, ep2.token);
+  check("control server acked the second shutdown", reply2.trim() === JSON.stringify({ ok: true }), reply2);
+
+  // A grace window shorter than the drain, then the kill the runtime would send.
+  await wait(400);
+  try {
+    probe2.kill("SIGKILL");
+  } catch {
+    /* already gone */
+  }
+
+  let offlineAfterKill = false;
+  for (let i = 0; i < 10 && !offlineAfterKill; i++) {
+    await wait(100);
+    offlineAfterKill = watcher.getRoster().find((pr) => pr.card.name === "Otto")?.status === "offline";
+  }
+  check("a seat killed mid-drain had ALREADY left the mesh, so no stale live entry survives it",
+    offlineAfterKill, { offlineAfterKill, drainFinished: existsSync(marker2Path) });
+  await awaitExit(probe2, 5_000).catch(() => undefined);
+
   // THE MANAGER'S STOP IS A TEARDOWN TOO, and it is the one a supervised seat actually takes.
   // The join went into the plugin-unload path first, with an absolute claim above it that nothing
   // publishes after teardown; this path ran a separate routine that exited without joining, so the

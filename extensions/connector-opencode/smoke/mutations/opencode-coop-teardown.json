@@ -13,7 +13,13 @@
     "THE TWO JOINS COVER DIFFERENT CASES AND ARE GRADED SEPARATELY. The holder join covers event work",
     "already running; the chain join covers a swap queued but not yet begun. C1 removes both and grades",
     "that the teardown joins anything at all. C3 removes only the chain join, which the running case",
-    "cannot detect because the holder join catches it, and is reddened by the queued case instead."
+    "cannot detect because the holder join catches it, and is reddened by the queued case instead.",
+    "",
+    "C4 IS GRADED TWICE, ON PURPOSE. The ordering cell samples the wire at the moment presence flips,",
+    "which grades the ORDER but not whether it is sufficient: this harness spawns the probe directly,",
+    "so there is no runtime grace window and no kill. The second leg supplies that: a seat is stopped",
+    "and then killed after a window shorter than its drain, and presence must already have left. The",
+    "first cell to fail names the red; both come from the same reorder."
   ],
   "mutations": [
     {
