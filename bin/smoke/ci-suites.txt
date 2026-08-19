@@ -338,3 +338,8 @@ smoke:opencode-events-arm
 smoke:opencode-events-reset
 smoke:goal-follow
 smoke:required-arg-seam
+
+# The source transform (engine wave, lane T): the emitted module's surface — closed over the seam,
+# reaching no unruled member, pure in its source, one rule per admitted node type. The differential
+# suite against the walker is the primary gate and lands with the engine host's `__ctx`.
+smoke:lang-transform

@@ -57,6 +57,7 @@
     "smoke:lang-migrate": "tsx packages/lang/smoke/migrate.smoke.ts",
     "smoke:lang-semantics": "tsx packages/lang/smoke/semantics.smoke.ts",
     "smoke:lang-surface": "tsx packages/lang/smoke/surface.smoke.ts",
+    "smoke:lang-transform": "tsx packages/lang/smoke/transform.smoke.ts",
     "smoke:orientation": "tsx extensions/connector-core/smoke/orientation.smoke.ts",
     "smoke:docs": "tsx extensions/connector-core/smoke/docs.smoke.ts",
     "smoke:pi": "tsx extensions/pi/pi.smoke.ts && tsx extensions/pi/pi-sdk.smoke.ts",
