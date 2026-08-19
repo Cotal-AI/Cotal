@@ -131,13 +131,22 @@
       "note": "The behavioural half of the surface cell: the walker answers a CATCHABLE L2004 and the program still reads the declared value afterwards, where the mutant's engine dies on an engine fault the program cannot see. Measured before it was aimed."
     },
     {
-      "name": "a quarantined program is one the walker actually survives, so the exclusion is a comment",
+      "name": "a program in the survival list is one that no longer refuses, so the check is a comment",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "    'const o = {}; o.then = (r) => { r(1); }; log(\"t\", typeof o.then);',\n    \"L4011\",",
-      "replace": "    'const o = {}; o.then = (r) => { r(1); }; log(\"after\");',\n    \"L4011\",",
-      "expectRed": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door",
-      "cell": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door: a callable then, then any later reference to the record",
-      "note": "A quarantine-discipline cell, so its mutant is in the fixture. Drop the later reference and the walker COMPLETES: the child prints it, and the cell that would otherwise be a comment saying 'we left this out' reds. This is the direction that matters - a list of exclusions nobody re-measures is how a program stays outside the gate after the reason expires."
+      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.then = (r) => { r(1); }; log(\"t\", typeof o.then);'],",
+      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.a = 1; log(\"t\", typeof o.a);'],",
+      "expectRed": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door",
+      "cell": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door: a callable then, then any later reference to the record",
+      "note": "The list this replaced was a QUARANTINE and its mutant asked whether the exclusion had expired; this is the mirror, and it is the one that matters now that these three are corpus rows. Swap the subject for a program that completes and the child prints COMPLETED with exit 0 - the process survives, so an assertion that only read the exit code would stay green over a list that had stopped measuring the value law at all. The cell reds because SURVIVING IS NOT THE CLAIM: the claim is that the failure comes back to the caller as the ruled refusal."
+    },
+    {
+      "name": "the child swallows a failure that escaped the caller, so an uncatchable refusal reads as a caught one",
+      "file": "packages/lang/smoke/walker-child.ts",
+      "find": "} catch (e) {\n  console.log(`REFUSED ${(e as { code?: string }).code ?? (e as Error).name}`);\n}",
+      "replace": "} catch (e) {\n  throw e;\n}",
+      "expectRed": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door",
+      "cell": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door: a callable then, then any later reference to the record",
+      "note": "The OTHER clause, and the one the whole section exists for. These three used to fail in ways a corpus row cannot report - one killed the interpreter's process outright, two never settled - so what the cell has to notice is a refusal that does NOT come back catchable. Break the child's catch and the failure escapes exactly as it used to: the process dies, nothing is printed, and the cell reds on the exit code. Without this mutant the survival clause is graded by nothing, because no program left in the language still kills the oracle."
     },
     {
       "name": "`undefined` is emitted as the global name, so a module the gate runs is no longer closed",

@@ -380,6 +380,25 @@ log("rounds", rounds, r.status);`,
   // than `foo` is, whatever is being written into it.
   ["refusals: a callable then written onto an array", 'keys({ a: 1 }).then = () => 1; log("after");', {}, "L4014"],
   ["refusals: a non-member written onto an array, the control", 'keys({ a: 1 }).foo = 1; log("after");', {}, "L4014"],
+  // AND THE VALUE LAW ON A RECORD, which is what all of the rows above are pointed at and what none
+  // of them could reach. These six were NOT COMPARABLE until #657. The walker had no gate on the way
+  // in, so writing a callable `then` onto a record completed there while the engine refused - three
+  // declared divergences - and the ones that went on to touch the record afterwards took the
+  // oracle's own PROCESS down, which is a third thing again and is why they sat in a quarantine
+  // instead of a list. #657 gave the walker the rule at its four record-member write sites and the
+  // engine adopted the walker's code, so all six now refuse L4021 on both arms. Measured before
+  // they were moved, and the part a shared code does not buy on its own: empty log and an EMPTY
+  // JOURNAL on both arms, so the prefixes are equal and not only the answers. Both spellings of the
+  // key, because it is the one thing a reader expects to change the answer and it does not; and the
+  // two branch names, because a branch called `then` makes the scope's own result record awaitable
+  // and the refusal has to land on the argument literal, ahead of the scope digest - one entry
+  // written there and these two rows would diverge on entry count with the same code on both arms.
+  ["refusals: a callable then written onto a record", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, "L4021"],
+  ["refusals: a callable then written onto a record, computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, "L4021"],
+  ["refusals: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, "L4021"],
+  ["refusals: a callable then, then a later reference to the record", 'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);', {}, "L4021"],
+  ["refusals: a scope branch named then", 'await parallel({ then: async () => 1 }, { name: "p" });', {}, "L4021"],
+  ["refusals: a race branch named then, where one arm is enough", 'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });', {}, "L4021"],
   // AND THE FREEZE, which stands AHEAD of the member rule (H measured the order on the walker; this
   // is the shape that shows it as a program). A record handed to a host effect is frozen from then
   // on, and after that BOTH writes are L2031: the member the array does not have, which was L4014
@@ -575,15 +594,6 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // rather than asserts. Pinned to both answers, so whichever way the issue is settled this reds.
   ["ruling 1c / issue 647: `len` of a program function", "log(len((x) => x));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
   ["ruling 1c / issue 647: `len` of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
-  // THE VALUE LAW THROUGH `set`, measured on both arms each in its own process. Writing a callable
-  // `then` onto a record COMPLETES on the walker - it has no gate on the way in - where the engine
-  // refuses L4018 at `set`, because a record that can be awaited is the class this language refuses
-  // to mint. Ruling 1a quarantined the programs that KILL the walker; these do not, so they are
-  // comparable and belong here. Both spellings, plain and computed, because the member key is the
-  // one thing a reader would expect to change the answer and it does not.
-  ["the value law through `set`: a callable then, written plainly", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, 'logs [["after"]] shapes [["string"]]', "L4018"],
-  ["the value law through `set`: a callable then, written computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, 'logs [["after"]] shapes [["string"]]', "L4018"],
-  ["the value law through `set`: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, 'logs [] shapes []', "L4018"],
   // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
   // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
   // even clone one - measured, it died on a host DataCloneError with the emitted module body in the
@@ -708,55 +718,42 @@ const HELD: readonly (readonly [string, string, object, readonly string[], HeldA
   console.log(`  (${HELD.length} program(s) held out of the corpus, each pinned to both arms' answers)`);
 }
 
-// ---- what the ORACLE's own process does not survive ----------------------------------------------
+// ---- what the ORACLE's own process used to not survive -------------------------------------------
 
 /**
- * A program held out of BOTH lists because the walker's process dies on it.
+ * The three programs ruling 1a quarantined, checked from OUTSIDE the suite for the opposite fact.
  *
- * Ruling 1a's quarantine, mechanized rather than remembered. The failure is an unhandled rejection
- * inside the interpreter's own await - not a throw an arm can catch - so it cannot be measured from
- * inside this suite at all: it would take the suite down with it. The only place the fact is
- * observable is a child process's exit code, which is what this asserts. The engine's answer is
- * measured here too, so the record says what the pair WOULD compare as if the oracle survived.
+ * The quarantine is empty: #657 gave the walker its record-member rule, and all three now refuse
+ * L4021 to their caller instead of taking the interpreter's own process down - so they are corpus
+ * rows above, compared arm against arm like anything else. This section is what replaces the
+ * quarantine rather than what is left of it, and it is NOT symmetry: a corpus row runs its program
+ * IN THIS PROCESS, and the three ways these used to fail are all ways that a corpus row cannot
+ * report. Measured, at the sha before the walker's rule landed: the set door died on an uncaught
+ * RuntimeFault that escaped the caller's `try` and killed the process, and BOTH branch-name doors
+ * never settled at all - a branch called `then` makes the scope's result record awaitable, so the
+ * interpreter's await waits on a promise nothing resolves. Two of those hang this suite forever
+ * and the third takes it down mid-run; none of them reds a cell. A child process's exit code is
+ * still the only place the fact is observable, so the mechanism stays and the assertion inverts.
+ *
+ * Two clauses, both load-bearing. The exit code says the process SURVIVED. The printed refusal says
+ * the failure reached the caller as a catchable throw carrying the ruled code - which is the part a
+ * surviving process does not prove on its own, and the part the corpus rows depend on.
  */
-const QUARANTINE: readonly (readonly [string, string, string, string])[] = [
-  [
-    "issue 642 through the set door: a callable then, then any later reference to the record",
-    'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);',
-    "L4011",
-    "L4018",
-  ],
-  // AND THE BRANCH-NAME DOOR, which fails a THIRD way: the walker neither completes nor rejects, it
-  // never settles - a branch named `then` makes the scope's own result record awaitable, so the
-  // interpreter's await hands it the arm and waits on a promise nothing resolves. The child exits 13
-  // on an unsettled top-level await, which is why the marker below is that sentence and not a code.
-  [
-    "issue 642 through the branch-name door: a scope branch named then",
-    'await parallel({ then: async () => 1 }, { name: "p" });',
-    "unsettled top-level await",
-    "L4018",
-  ],
-  [
-    "the same door on a race, where one arm is enough",
-    'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });',
-    "unsettled top-level await",
-    "L4018",
-  ],
+const SURVIVED: readonly (readonly [string, string])[] = [
+  ["issue 642 through the set door: a callable then, then any later reference to the record", 'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);'],
+  ["issue 642 through the branch-name door: a scope branch named then", 'await parallel({ then: async () => 1 }, { name: "p" });'],
+  ["the same door on a race, where one arm is enough", 'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });'],
 ];
 {
   const child = new URL("./walker-child.ts", import.meta.url).pathname;
-  for (const [name, source, walkerKills, engineAnswer] of QUARANTINE) {
+  for (const [name, source] of SURVIVED) {
     const run = spawnSync(process.execPath, ["--import", "tsx", child, source], { encoding: "utf8" });
     const out = `${run.stdout}${run.stderr}`;
-    // THREE THINGS, and the third is the one that makes it a quarantine rather than a refusal: the
-    // child neither completed nor reported a caught refusal, so the failure escaped the caller.
-    ok(`quarantined, and the walker's own process still does not survive it: ${name}`,
-      run.status !== 0 && out.includes(walkerKills) && !out.includes("COMPLETED") && !out.includes("REFUSED"),
+    ok(`the oracle's own process survives it, and hands the refusal back to its caller: ${name}`,
+      run.status === 0 && out.includes("REFUSED L4021"),
       { status: run.status, out: out.slice(0, 160) });
-    const e = await arm("engine", source, {});
-    ok(`and the engine answers it cleanly, which is what makes the gap a coverage cap: ${name}`, answer(e) === engineAnswer, { engine: answer(e), expected: engineAnswer });
   }
-  console.log(`  (${QUARANTINE.length} program(s) quarantined: the oracle's process dies, so no arm can compare them)`);
+  console.log(`  (${SURVIVED.length} program(s) the oracle used to die on, checked in a child because a regression HANGS this suite rather than reding it)`);
 }
 
 // ---- one journal, either engine: each arm resumes from the other's ------------------------------
@@ -957,7 +954,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // its options as the SECOND argument and a `notify` fact is a bounded decision record, so two
   // corpus entries were refused by the validator identically on the walker and on the engine, and
   // their cells were green over nothing. The validator is the corpus's own gate now.
-  const every = [...CORPUS, ...DIVERGENT.map(([n, src, sc]) => [n, src, sc] as const), ...HELD.map(([n, src, sc]) => [n, src, sc] as const), ...QUARANTINE.map(([n, src]) => [n, src, {}] as const), ...RESUMABLE];
+  const every = [...CORPUS, ...DIVERGENT.map(([n, src, sc]) => [n, src, sc] as const), ...HELD.map(([n, src, sc]) => [n, src, sc] as const), ...RESUMABLE];
   const invalid: string[] = [];
   for (const [name, source] of every) {
     try {
@@ -967,7 +964,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     }
   }
   ok("every program in every list is one the validator admits", invalid.length === 0, invalid);
-  console.log(`  (${every.length} programs validated across the corpus, the divergences, the holds, the quarantine and the crossings)`);
+  console.log(`  (${every.length} programs validated across the corpus, the divergences, the holds and the crossings)`);
 
   // AND EACH ONE IS OBSERVABLE. A program that logs nothing, journals nothing and refuses nothing
   // compares equal for the same reason an invalid one does.
