@@ -17,7 +17,12 @@
  * declared with three, and the differential found it rather than the surface. `transform.smoke`
  * checks every emitted call site against this range in both directions - no site outside it, and no
  * bound without a site that reaches it - and `engine.smoke` checks the host's `ctx` against the same
- * table, names by set-equality and each implementation's required parameters at or below the minimum.
+ * table: names by set-equality, and `ctx[name].length === max` for each. That last is the ruled
+ * spelling, and it is `max` rather than `min` for a measured reason: a TypeScript optional parameter
+ * is a plain parameter after erasure and still counts toward `Function.length`, so a `<= min` rule
+ * would be vacuous on every fixed member and false on all four variadic ones. The MIN end cannot be
+ * read from a function at all - erasure has discarded which parameters were optional - so it is
+ * behavioural on the host's side: each variadic member has a cell calling it in its shortest form.
  *
  * `fuel` is the step check (budget L4013 + yield); `get`/`set`/`call` are the member law
  * (L4014/L4018/L4020, curated tables, birth depth L2032, freeze L2031); `born` stamps a literal;

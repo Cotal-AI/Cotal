@@ -594,6 +594,22 @@ const QUARANTINE: readonly (readonly [string, string, string, string])[] = [
     "L4011",
     "L4018",
   ],
+  // AND THE BRANCH-NAME DOOR, which fails a THIRD way: the walker neither completes nor rejects, it
+  // never settles - a branch named `then` makes the scope's own result record awaitable, so the
+  // interpreter's await hands it the arm and waits on a promise nothing resolves. The child exits 13
+  // on an unsettled top-level await, which is why the marker below is that sentence and not a code.
+  [
+    "issue 642 through the branch-name door: a scope branch named then",
+    'await parallel({ then: async () => 1 }, { name: "p" });',
+    "unsettled top-level await",
+    "L4018",
+  ],
+  [
+    "the same door on a race, where one arm is enough",
+    'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });',
+    "unsettled top-level await",
+    "L4018",
+  ],
 ];
 {
   const child = new URL("./walker-child.ts", import.meta.url).pathname;
