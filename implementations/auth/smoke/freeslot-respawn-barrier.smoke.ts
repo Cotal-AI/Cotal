@@ -24,6 +24,15 @@
  *      at-least-once world: crash recovery, redelivery, reconciliation retry) must leave the
  *      live replacement's footprint untouched. Today it silently destroys it (RED).
  *
+ * MEASURED at the time of writing, and it is NOT one of the three reds above. Phase D, the POSITIVE
+ * case after retirement has completed, fails too: `startAgent` on the still-reserved alias mints
+ * `worker-2`, and the auth plane refuses that name, `invalid owner/actor token "worker-2"`, because
+ * `-` is the reserved principal name-form separator. The retry loop cannot stop the stray sibling
+ * for the same reason, so the run ends eight cells in. Tracked as #693 and #667. That cell was
+ * green at 7942856d, on a tree that predates the SecretStore seam; at this branch's merge-base the
+ * suite threw before its first cell, so the red is newly VISIBLE rather than newly caused. The
+ * suite is NOT in bin/smoke/ci-suites.txt, so no CI shard runs it.
+ *
  * All three flip green under the full P2 slice (alias reservation + lifecycle-keyed resources +
  * `(principal, lifecycleUid)`-pinned cleanup). The CONTRACT asserts need no edits for that; only
  * a mechanical rename is expected if P2 restructures the private `deprovisionBroker` seam this

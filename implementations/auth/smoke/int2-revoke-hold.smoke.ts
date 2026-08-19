@@ -12,7 +12,13 @@
  * FINDING: on the current tree the copied token's exchange is blocked by the DEEPER auth-plane gate
  * retirement (terminally-retired issuance gate), so the ledger-hold is a defense-in-depth belt over
  * the surviving row; "copied token mints" only reproduces if the RAIL retirement also fails.
- * GREEN on the current tree (fix present); pristine f6115a6 would free the name (RED). READ+RUN only.
+ * MEASURED on the current tree: 19 passed, 1 failed, and the suite is NOT in bin/smoke/ci-suites.txt,
+ * so no CI shard runs it. Phase C is green throughout (the hold, standingAuthorityLive, the operator
+ * copy, the refused respawn, the copied token blocked by the retired gate). Phase D's last cell, a
+ * same-name spawn takes the EXACT alias after recovery, reds with an empty roster: the manager mints a
+ * suffixed successor its own auth plane then refuses. Tracked as #694, same mechanism as #693 and #667.
+ * Until the store wiring was repaired this suite threw before its first cell, so that red is newly
+ * VISIBLE rather than newly caused. Pristine f6115a6 would free the name (RED). READ+RUN only.
  *
  * PHASES: A/B spawn a user-mode agent and capture a copied actor token; C chmod the managed-actor
  * ledger dir read-only so revokeAgent's rmSync throws EACCES, despawn, and assert the name stays HELD
