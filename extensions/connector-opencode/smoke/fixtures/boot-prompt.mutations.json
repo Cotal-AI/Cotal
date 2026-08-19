@@ -2,7 +2,7 @@
   "suite": "extensions/connector-opencode/smoke/boot-prompt.smoke.ts",
   "guard": "a seat spawned with an initial prompt submits it as its first turn, exactly once",
   "command": "pnpm smoke:opencode-boot-prompt",
-  "completionMarker": "OPENCODE BOOT-PROMPT TEST PASSED",
+  "completionMarker": "OPENCODE BOOT-PROMPT TEST",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/fixtures/boot-prompt.mutations.json",
   "why": [
     "The shipped defect had a shape that reads as working code: the launch spec was built, the seat",
@@ -41,7 +41,12 @@
     "readiness event into a second boot turn.",
     "",
     "B3 REMOVES THE RETRY RATHER THAN THE KEEP. Holding the text is only half the repair, since",
-    "something has to come back for it; with the predicate dead the text survives and is never carried."
+    "something has to come back for it; with the predicate dead the text survives and is never carried.",
+    "",
+    "THE COMPLETION MARKER IS THE PART COMMON TO BOTH EXITS, deliberately. It used to be the PASSED",
+    "line, so a mutated run that failed correctly printed FAILED, the marker never matched, and every",
+    "mutation here graded INCONCLUSIVE rather than KILLED. A marker that only appears on success cannot",
+    "distinguish a suite that caught the defect from a suite that died before reaching the cell."
   ],
   "mutations": [
     {
