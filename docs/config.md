@@ -278,8 +278,10 @@ not these). Running `cotal up`, or any command that seeds, from a tree that is n
 re-seeds `seed/store/<version>` with that tree's packages under the same version key, so every later
 mesh on the machine materializes those bytes while `cotal ext ls` still reports the published version.
 To keep the machine-wide store untouched when running from a non-released checkout, point
-`$XDG_CONFIG_HOME` at an isolated dir. The reconcile names the store path it writes on stderr, so a
-machine-wide re-seed is visible when it happens.
+`$XDG_CONFIG_HOME` at an isolated dir (on Windows, `%APPDATA%` relocates them). The reconcile names on
+stderr both the store payloads it writes and any old generation it removes, so a machine-wide re-seed
+or cleanup is visible when it happens. Those lines are provenance output: a run whose stderr is closed
+or redirected away keeps the write and loses the line.
 
 For how `cotal setup` populates the machine state and the plugin, and how the built-in connectors are
 seeded as removable extensions, see [setup internals](setup-internals.md).

@@ -42,6 +42,14 @@ export function stageSeedPayload(generation: string, name: string, opts: { force
   // checkout silently makes those bytes the machine-wide payload for that generation key; naming the
   // path here lets the line read as the machine-wide action it is. Only on a real materialization: the
   // idempotent early return above (an intact prior copy) writes nothing and stays silent.
+  //
+  // THE BOUND, stated where the claim is made: this announce is AFTER the commit and rides the
+  // provenance channel, which is a plain stderr write with no failure policy. If stderr is closed or
+  // erroring, the payload is still written and the line is lost, so the guarantee is "a materialization
+  // that reaches a working stderr is named", not "no materialization is ever unannounced". Announcing
+  // BEFORE the rename would trade that for a worse lie (a named write that then failed), and throwing
+  // on a lost line would fail a seed for a disclosure fault. The channel-wide fix belongs to the
+  // provenance layer rather than to this call site.
   provenance.wrote(`operator-global seed store payload (${name})`, dest);
   return dest;
 }
@@ -59,6 +67,12 @@ export function gcSeedStore(keepGeneration: string, referencedSpecs: readonly st
     if (gen === keepGeneration) continue;
     const genDir = join(root, gen);
     const referenced = referencedSpecs.some((spec) => spec === genDir || spec.startsWith(genDir + sep));
-    if (!referenced) rmSync(genDir, { recursive: true, force: true });
+    if (referenced) continue;
+    rmSync(genDir, { recursive: true, force: true });
+    // Announce the DELETE for the same reason the write above is announced: this store is
+    // operator-global, so dropping a generation from it is a machine-wide act performed by a command
+    // the operator ran for a local reason. It is announced AFTER the removal, so the line reports
+    // what happened rather than what was intended.
+    provenance.removed(`operator-global seed store generation (${gen})`, genDir);
   }
 }
