@@ -332,6 +332,45 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     (sim, held, s) => sim.ask({ agent: { agent: "a", persona: "p" }, schema: {} }, held(s.nextEffect("ask", "q"))));
   await settlesOnlyAfterItsBind("a checkpoint",
     (sim, held, s) => sim.checkpoint({ prompt: "ok?" }, held(s.nextEffect("checkpoint", "gate"))));
+
+  // ...and a bind that FAILS has to take the effect down with it. A held bind that eventually
+  // SUCCEEDS proves the effect waits; it cannot see an effect that waits and then throws the result
+  // away. Measured: `await ctx.bind(...).catch(() => {})` left all 36 cells above green while the
+  // effect settled with no durable fact recorded, which is the same crash-recovery hole reached by
+  // swallowing rather than by skipping. A rejected bind is the realistic case, since the durable
+  // write is what fails.
+  const failsWithItsBind = async (
+    name: string,
+    start: (sim: SimHandler, failing: (k: StepKey) => EffectContext, s: KeyScope) => Promise<unknown>,
+  ) => {
+    const sim = new SimHandler({
+      turns: { build: { status: "done", at: 0 } },
+      asks: { q: 3 },
+      checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
+    });
+    const s = new KeyScope();
+    const boom = new Error("durable bind failed");
+    const failing = (k: StepKey): EffectContext => ({
+      ...ctxFor(k),
+      bind: async () => { throw boom; },
+    });
+    let settled = false;
+    let caught: unknown;
+    try { await start(sim, failing, s); settled = true; } catch (e) { caught = e; }
+    // Identity, not just "it threw": the effect must surface THAT failure rather than replace it
+    // with one of its own, or a caller cannot tell a failed durable write from anything else.
+    ok(`${name} does not settle when its bind REJECTS, and surfaces that failure unchanged`,
+      !settled && caught === boom, { settled, caught: caught instanceof Error ? caught.message : caught });
+  };
+
+  await failsWithItsBind("spawn",
+    (sim, failing, s) => sim.spawn({ persona: "builder" }, failing(s.nextEffect("spawn", ""))));
+  await failsWithItsBind("a turn",
+    (sim, failing, s) => sim.turn({ agent: { agent: "a", persona: "p" } }, failing(s.nextEffect("turn", "build"))));
+  await failsWithItsBind("an ask",
+    (sim, failing, s) => sim.ask({ agent: { agent: "a", persona: "p" }, schema: {} }, failing(s.nextEffect("ask", "q"))));
+  await failsWithItsBind("a checkpoint",
+    (sim, failing, s) => sim.checkpoint({ prompt: "ok?" }, failing(s.nextEffect("checkpoint", "gate"))));
 }
 
 // ---- 9) unused script entries are reported --------------------------------------------------------------
