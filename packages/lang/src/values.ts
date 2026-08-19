@@ -77,6 +77,32 @@ export class NotCrossable extends TypeError {
 }
 
 /**
+ * A log line is DATA for a human reading the trace, and code never crosses to it: a function anywhere
+ * inside a logged value is refused before the line leaves the run, naming the value and the path.
+ * Measured before the rule: the walker handed its host a live closure (a program function in a host
+ * callback, whose arity even showed which engine wrote it), and the worker thread died on the host's
+ * own DataCloneError, whose message carried the emitted module body verbatim. Everything else a program
+ * can build crosses to a trace as it is - `undefined` and a non-finite number included, because the
+ * trace is not the journal and a human wants to see them - so this is deliberately NOT `assertCrossable`.
+ * `seen` marks everything visited: a second visit answers the same question, and a cycle terminates.
+ */
+export function assertNoCode(value: unknown, path: string, seen = new Set<object>()): void {
+  if (typeof value === "function") {
+    throw new NotCrossable(
+      "function",
+      `${path} is a function. A log line is data for a human reading the trace, and code does not cross to it; log what it computes instead`,
+    );
+  }
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) assertNoCode(value[i], `${path}[${i}]`, seen);
+    return;
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) assertNoCode(v, `${path}.${k}`, seen);
+}
+
+/**
  * A value that cannot canonicalize cannot be journalled, and a value that cannot be journalled
  * cannot be replayed. Catching it at the boundary is strictly better than discovering it at
  * digest time, because here we still know which argument it was.

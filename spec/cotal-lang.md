@@ -286,14 +286,16 @@ that wants concurrency says so with `parallel` or `fanOut` (§7).
 | arrays | `len(xs)`, `map(xs, f)`, `filter(xs, f)`, `find(xs, f)` (→ `null` when absent), `some(xs, f)`, `every(xs, f)`, `sort(xs, keyFn?)`, `slice(xs, start, end?)`, `concat(xs, ys)`, `join(xs, sep)`, `reverse(xs)`, `unique(xs)`, `range(n)`, `sum(xs)` |
 | strings | `split(s, sep)`, `trim(s)`, `lower(s)`, `upper(s)`, `startsWith(s, p)`, `endsWith(s, p)`, `contains(s, p)`, `replace(s, from, to)` (**every** occurrence) |
 | numbers | `min(...xs)`, `max(...xs)`, `abs(n)`, `floor(n)`, `ceil(n)`, `round(n)`, `parseNumber(text)` (`Number(text)`) |
-| data and control | `json.parse(text)` (refuses a `"__proto__"` key, L4016), `json.stringify(value)` (the RFC 8785 canonical form; a value that cannot cross an effect boundary cannot stringify, L4016), `assert(cond, message?)` (L4012 when false), `log(...values)` |
+| data and control | `json.parse(text)` (refuses a `"__proto__"` key, L4016), `json.stringify(value)` (the RFC 8785 canonical form; a value that cannot cross an effect boundary cannot stringify, L4016), `assert(cond, message?)` (L4012 when false), `log(...values)` (a value carrying a function anywhere inside is refused, L4016, naming the value and the path: the trace is data) |
 | tamed nondeterminism | `random()`, `randomInt(n)`, `pick(xs)` (§8.2), `now()` (§8.1), `duration(text)` (§4.6) |
 
 `f` in `map`, `filter`, `find`, `some`, `every` receives `(item, index)`. `sort` returns a new
 array ordered by a **total order** (§5.3) over `keyFn(item, index)` when given, else over the
 items; a returned array or record is a fresh value the calling frame owns. `log` is not journalled
 and MUST NOT influence control flow: it exists for a human reading the trace, and each line carries
-the scope path it was written from.
+the scope path it was written from. A logged value MUST NOT carry a function anywhere inside it
+(L4016, naming the value and the path): the trace is data, and code never crosses to it. The trace is
+not the journal, so `undefined` and a non-finite number are logged as they are.
 
 ### 5.2 Methods
 
@@ -965,3 +967,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-18 | First normative reference, language version `1`, alongside SPEC.md v0.5 §14. |
 | 2026-08-18 | Review folds, same revision: the PRNG separator is U+0000 (§8.2, the earlier text said a space and was wrong; the code never changed); `any`/`all` are no longer reserved (§3); `xs.length = n` truncates only, L4017 (§4.3); the L2013 rule states where the validator can see (§2.3); `fanOut` fails like `parallel` (§7.4); L5022 is a walk refusal, not a resume stop (§11.1); no lineage on a fork's child (§11.3); `schema` is opaque and concurrent turns on one handle are the handler's (§6.5); the checkpoint entry's `attempts` chain (§6.5). |
 | 2026-08-18 | Language-lane folds, same revision: operators, computed member keys and the library's primitive parameters coerce primitives only, an array, record or function operand is refused (L4018, §4.5, §5.4); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
+| 2026-08-19 | A logged value carries no function: `log` refuses one anywhere inside a value (L4016, naming the value and the path), and `undefined` and a non-finite number still log as they are (§5.1). |

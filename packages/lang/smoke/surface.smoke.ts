@@ -296,6 +296,25 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
     await logsOf("log(json.stringify({ b: 1, a: undefined }));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes(".a"))
       && await logsOf("log(json.stringify([undefined, 1]));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
       && await logsOf("log(json.stringify(0 / 0));").then(() => false, (e: Error) => e.message.startsWith("L4016")));
+  // A log line is DATA for a human reading the trace: code never crosses to it. Measured before the
+  // rule: the walker handed its host callback a live program closure, and the worker thread died on
+  // the host's DataCloneError with the emitted module body in the message. The rule is held ONCE, in
+  // the shared `log` builtin, so both engines and every transport answer the same refusal.
+  ok("`log` refuses a function value (L4016) and names it",
+    await logsOf("log((x) => x);").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("log: value 1 is a function")));
+  ok("and a function nested in a logged record or array, naming the path",
+    await logsOf('log("v", { g: (x) => x });').then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("log: value 2.g is a function"))
+      && await logsOf("log([[1, (x) => x]]);").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("log: value 1[0][1] is a function"))
+      && await logsOf("log(json);").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("log: value 1.")));
+  ok("the refusal is the program's to catch", JSON.stringify(await logsOf('try { log((x) => x); } catch (e) { log("caught", e.code); }')) === '[["caught","L4016"]]');
+  // Deliberately NOT the crossing rule: the trace is not the journal, and a human wants to see these.
+  {
+    const raw: unknown[][] = [];
+    // Caught, so a fence that widens (the mutant) fails THIS cell by name instead of killing the suite.
+    const outcome = await run("const o = { a: 1 }; log(o.b, 0 / 0, 1 / 0, [1, [2, { b: 3 }]], null);", { runId: "surf", handler: new SimHandler({}), onLog: (l) => raw.push([...l.values]) }).then(() => "ran", (e: Error) => e.message);
+    ok("and `undefined`, a non-finite number and plain data cross to the trace as they are",
+      outcome === "ran" && raw.length === 1 && raw[0][0] === undefined && Number.isNaN(raw[0][1]) && raw[0][2] === Infinity && JSON.stringify(raw[0][3]) === "[1,[2,{\"b\":3}]]" && raw[0][4] === null, { outcome, raw });
+  }
   // JSON can spell an OWN field named __proto__, which the literal (L1028) and the member write
   // (L4014) both refuse — a parse that minted one was a bypass around both (measured).
   ok("`json.parse` refuses a \"__proto__\" key (L4016), exactly as the literal refuses it",

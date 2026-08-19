@@ -1,0 +1,38 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "A log line is data: `log` refuses a value carrying a function anywhere inside it (L4016 naming the value and the path), once, in the shared builtin, and lets undefined, non-finite numbers and plain data cross to the trace as they are. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/log-data.json",
+  "mutations": [
+    {
+      "name": "log hands code to the host again",
+      "file": "packages/lang/src/library.ts",
+      "find": "        a.forEach((v, i) => {\n          try {\n            assertNoCode(v, `log: value ${i + 1}`);\n          } catch (e) {\n            if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n            throw e;\n          }\n        });\n",
+      "replace": "",
+      "expectRed": "`log` refuses a function value (L4016) and names it",
+      "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
+      "cell": "`log` refuses a function value (L4016) and names it",
+      "note": "The pre-rule shape, measured: the walker's onLog received a live closure and the worker thread died on the host's DataCloneError naming the emitted module body."
+    },
+    {
+      "name": "the walk stops at the top level of a record",
+      "file": "packages/lang/src/values.ts",
+      "find": "  for (const [k, v] of Object.entries(value as Record<string, unknown>)) assertNoCode(v, `${path}.${k}`, seen);\n",
+      "replace": "",
+      "expectRed": "and a function nested in a logged record or array, naming the path",
+      "completionMarker": "ok `log` refuses a function value (L4016) and names it",
+      "cell": "and a function nested in a logged record or array, naming the path",
+      "note": "A top-level function still refuses, so the first cell stays green and only the nested cell notices; a record carrying a closure (the `json` namespace is one) would cross again."
+    },
+    {
+      "name": "the fence widens to the crossing rule and refuses undefined",
+      "file": "packages/lang/src/values.ts",
+      "find": "  if (typeof value === \"function\") {\n    throw new NotCrossable(",
+      "replace": "  if (typeof value === \"function\" || value === undefined) {\n    throw new NotCrossable(",
+      "expectRed": "and `undefined`, a non-finite number and plain data cross to the trace as they are",
+      "completionMarker": "ok the refusal is the program's to catch",
+      "cell": "and `undefined`, a non-finite number and plain data cross to the trace as they are",
+      "note": "The over-fence control: `log(o.missing)` is a realistic program and the trace is not the journal, so the deliberate looseness is pinned, not merely the refusal."
+    }
+  ]
+}
