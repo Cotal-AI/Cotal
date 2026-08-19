@@ -440,7 +440,7 @@ try {
 
   // ---------- C. retirement barrier: despawn with the broker cleanup held, probe the alias ----------
   console.log("C) despawn with the broker cleanup held; the alias must not be reassignable");
-  // Hold the predecessor's broker teardown on a gate — deprovisionBroker ONLY, so the local half of
+  // Hold the predecessor's broker teardown on a gate, deprovisionBroker ONLY, so the local half of
   // the teardown (creds/secret shred + the AWAITED ledger revoke) runs untouched at despawn time
   // exactly as in production, and only the phase that follows it is held. Instance-level wrap of the private method (runtime-visible; the repo's
   // smokes already reach into manager privates): the FIRST broker teardown for this agent name
@@ -474,8 +474,8 @@ try {
   const stopReply = await mAny.opStop({ name: AGENT, graceful: false }, mAny.ep.ref().id, true);
   check("despawn reply ok", stopReply.ok === true, stopReply);
   // The broker phase engages after freeSlot, with the creds/secret shred and the AWAITED ledger
-  // revoke ahead of it in the same chain, so the delay is a real await and not a microtask hop —
-  // poll for the gate to be taken.
+  // revoke ahead of it in the same chain, so the delay is a real await and not a microtask hop.
+  // Poll for the gate to be taken.
   for (let i = 0; i < 100 && !gatedRun; i++) await wait(20);
   check("the detached teardown reached its broker cleanup and is held on the gate",
     gatedRun !== undefined && predArg !== undefined);
