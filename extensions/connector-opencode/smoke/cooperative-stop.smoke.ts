@@ -250,7 +250,10 @@ try {
   writeFileSync(late, "go\n");
   let reversed: string | undefined;
   let knocked = false;
-  for (let i = 0; i < 25 && reversed === undefined; i++) {
+  // 3s of sampling, inside a drain that is three slow reads long, because both this and the control
+  // below are read from the same loop: too short a window and a loaded box reports the knock as
+  // undelivered, which reddens the control rather than the claim and grades nothing either way.
+  for (let i = 0; i < 50 && reversed === undefined; i++) {
     await wait(60);
     knocked = knocked || existsSync(lateFired);
     const s = watcher.getRoster().find((p) => p.card.name === "Otto")?.status;
