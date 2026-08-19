@@ -87,6 +87,24 @@
       "note": "Only fires where the path is nested, so the outermost-run cell cannot see it: the claim about the scope path has to hold at every depth."
     },
     {
+      "name": "the bind normalises the NAME of every scope frame, so two differently named scopes collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const dropFrameNames = (s: string): string => {\n      const cut = s.lastIndexOf(\"/\");\n      const path = s.slice(0, cut).split(\"/\").map((part) => (/#\\d+$/.test(part) ? part.replace(/^([^:]+):[^#]*(#\\d+)$/, \"$1$2\") : part)).join(\"/\");\n      return path + s.slice(cut);\n    };\n    const hit = [...this.byKey.entries()].find(([kk]) => dropFrameNames(kk) === dropFrameNames(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the scope whose NAME asked for it, and the scope beside it sharing every other frame field is untouched",
+      "cell": "the bind lands in the scope whose NAME asked for it, and the scope beside it sharing every other frame field is untouched",
+      "note": "Every scope cell above runs its two rows under one `parallel:review` frame, so a key that keeps a frame's kind, occurrence and branch and drops its name satisfies all of them."
+    },
+    {
+      "name": "the bind normalises the KIND of every scope frame, so a parallel and a race sharing a name collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const dropFrameKinds = (s: string): string => {\n      const cut = s.lastIndexOf(\"/\");\n      const path = s.slice(0, cut).split(\"/\").map((part) => (/#\\d+$/.test(part) ? part.replace(/^[^:]+:/, \"\") : part)).join(\"/\");\n      return path + s.slice(cut);\n    };\n    const hit = [...this.byKey.entries()].find(([kk]) => dropFrameKinds(kk) === dropFrameKinds(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the scope whose KIND asked for it, and the scope sharing its name, occurrence and branch is untouched",
+      "cell": "the bind lands in the scope whose KIND asked for it, and the scope sharing its name, occurrence and branch is untouched",
+      "note": "`nextScope` counts per kind:name tag, so a parallel and a race opened under one name are both #0; the frame-name row keeps the name and cannot see this."
+    },
+    {
       "name": "the RECOVERY arm says attempt 0 resolved when the only path to attempt 1 is its expiry",
       "file": "packages/lang/src/interpret.ts",
       "find": "                  { attempt: 0, requestId: attemptId(0), settled: \"expired\" },\n",

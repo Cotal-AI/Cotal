@@ -317,6 +317,79 @@ const H = (v: unknown) => digest(v);
   );
 }
 
+// ---- 3h) ...and the NAME of a frame in that path, which every cell above holds constant -------
+//
+// 3c varies the branch, 3f the scope's run index and 3g an inner run index, and all three build
+// their two rows under one `parallel:review` frame. So a journal key that read a frame's kind,
+// occurrence and branch but dropped its NAME satisfies every one of them. Two differently named
+// scopes are the ordinary shape, not an edge case: a program that runs `parallel("review")` and
+// then `parallel("audit")` gets occurrence 0 for each, because `nextScope` counts per
+// `${kind}:${name}` tag, so the frame name is the only field that tells their steps apart.
+// Measured by a review, not argued: with `Journal.keyOf` normalising every frame name away, cells
+// 1 through 3g all stayed green while the second scope's bind landed on the first scope's settled
+// row, so recovery resumes a pending branch with no external and re-creates the resource.
+{
+  const j = new Journal({ run: "r-3h" });
+  const rows = (s: KeyScope) => ({
+    review: s.branch("parallel", "review", s.nextScope("parallel", "review"), "left").nextEffect("turn", "build"),
+    audit: s.branch("parallel", "audit", s.nextScope("parallel", "audit"), "left").nextEffect("turn", "build"),
+  });
+  const keys = rows(new KeyScope());
+  const h = H({ agent: "builder" });
+  await j.begin(keys.review, h, 1000);
+  await j.settle(keys.review, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.begin(keys.audit, h, 1200);
+  await j.bind(keys.audit, { goalId: "g-audit" });
+
+  const resumed = new Journal({ run: "r-3h", entries: j.entries() });
+  const keys2 = rows(new KeyScope());
+  const vReview = resumed.lookup(keys2.review, h);
+  const vAudit = resumed.lookup(keys2.audit, h);
+  const reviewExternal = vReview.verdict === "replay" ? vReview.entry.external : "not replayable";
+  ok(
+    "the bind lands in the scope whose NAME asked for it, and the scope beside it sharing every other frame field is untouched",
+    vAudit.verdict === "pending"
+      && (vAudit.entry.external as { goalId?: string } | undefined)?.goalId === "g-audit"
+      && vReview.verdict === "replay" && reviewExternal === undefined,
+    JSON.stringify(resumed.entries().map((e) => ({ scope: e.scope, external: e.external }))),
+  );
+}
+
+// ---- 3i) ...and the KIND of that frame, which its name does not imply --------------------------
+//
+// 3h severs the frame's name, so a key that kept the name and dropped the frame's KIND satisfies
+// 3h and every cell above it. The collision is one namespace opening two different combinators
+// under the same name: `nextScope` counts per `${kind}:${name}` tag, so `parallel:review` and
+// `race:review` are both #0, and with the same branch key their steps differ in nothing else. A
+// kind-blind key lands the race branch's reference on the settled parallel branch, which is the
+// durable loss 3d and 3e describe, reached through the one frame field 3h leaves open.
+{
+  const j = new Journal({ run: "r-3i" });
+  const rows = (s: KeyScope) => ({
+    par: s.branch("parallel", "review", s.nextScope("parallel", "review"), "left").nextEffect("turn", "build"),
+    race: s.branch("race", "review", s.nextScope("race", "review"), "left").nextEffect("turn", "build"),
+  });
+  const keys = rows(new KeyScope());
+  const h = H({ agent: "builder" });
+  await j.begin(keys.par, h, 1000);
+  await j.settle(keys.par, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.begin(keys.race, h, 1200);
+  await j.bind(keys.race, { goalId: "g-race" });
+
+  const resumed = new Journal({ run: "r-3i", entries: j.entries() });
+  const keys2 = rows(new KeyScope());
+  const vPar = resumed.lookup(keys2.par, h);
+  const vRace = resumed.lookup(keys2.race, h);
+  const parExternal = vPar.verdict === "replay" ? vPar.entry.external : "not replayable";
+  ok(
+    "the bind lands in the scope whose KIND asked for it, and the scope sharing its name, occurrence and branch is untouched",
+    vRace.verdict === "pending"
+      && (vRace.entry.external as { goalId?: string } | undefined)?.goalId === "g-race"
+      && vPar.verdict === "replay" && parExternal === undefined,
+    JSON.stringify(resumed.entries().map((e) => ({ scope: e.scope, external: e.external }))),
+  );
+}
+
 // ---- 4) failures and cancellations replay as themselves ---------------------------------------
 
 {
