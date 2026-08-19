@@ -625,6 +625,13 @@ const reachedKinds = new Set<string>();
   // zero below is a statement about those five call sites rather than about a boundary, and this
   // sweep is the only thing in the repo watching them.
   //
+  // AND THIS IS THE ONE CELL HERE THAT IS NOT A COMPARISON, WHICH IS WHY IT IS NEEDED. Both arms
+  // reach `Journal.bind` through the same two call sites in `perform.ts` — the engine has no bind
+  // wiring of its own — so a handler that binds a `Date` binds it identically on both, and
+  // `differences` reports two arms in perfect agreement. A gate built out of two arms cannot see a
+  // defect on the path they share, by construction. So this sweep INSPECTS entries rather than
+  // comparing them, and that is the reason it belongs in the file whose every other cell compares.
+  //
   // AND THERE IT IS NOT A COMPARISON ARTEFACT. The durable record is encoded with
   // `JSON.stringify`, and a started-but-unsettled entry resumes by RE-BINDING to `entry.external`,
   // so a bound `Date` would come back from a restart as a string. The guard, if one is wanted,
