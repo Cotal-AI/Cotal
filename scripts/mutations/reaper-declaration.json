@@ -2,7 +2,7 @@
   "grades": "bin/smoke/reaper.smoke.ts",
   "guard": "the reaper's hand written declaration file agrees with the module it describes, in both directions",
   "command": "pnpm smoke:reaper",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "completionMarker": "cells ran)",
   "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its types live in a hand written .d.mts beside it. A declaration file is believed, not checked: the typecheck gate cannot tell that it describes the module it sits next to. These mutations break the agreement from BOTH sides, because the drift can start in either artifact: the module changing without the declaration following, and the declaration changing without the module following. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching these cells grades INCONCLUSIVE rather than passing as a kill.",
   "mutations": [
@@ -49,6 +49,24 @@
       "expectRed": "a real ReapReport carries every field the declaration gives it",
       "cell": "a real ReapReport carries every field the declaration gives it",
       "note": "supported is the field that lets a caller tell \"nothing leaked\" from \"nothing was looked at\", so a report that silently stops carrying it turns an unenumerable platform into a clean bill of health. A later scenario cell also reads it, but these cells run first, so the named cell is the one that moves first."
+    },
+    {
+      "name": "a REQUIRED parameter whose TYPE is an arrow is added to the declaration and the module does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.d.mts",
+      "find": "export declare function reportReaped(label: string, result: ReapReport): void;",
+      "replace": "export declare function reportReaped(label: string, result: ReapReport, onDone: () => void): void;",
+      "expectRed": "reportReaped takes the number of required parameters the declaration gives it",
+      "cell": "reportReaped takes the number of required parameters the declaration gives it",
+      "note": "The same drift as the mutation above it, written in the shape that broke the first version of this guard. That version counted required parameters by splitting the parameter text on top level commas and treating any part containing an `=` as defaulted, so the `=>` inside a parameter's own type read as a default and the parameter was not counted: against this exact mutant it printed `declared 2, module 2` and PASSED. Five mutations were green against that parser and none of them said so, because every one of them was written in a shape it could read. An instrument cannot verify its own boundary, so the boundary gets a mutant of its own."
+    },
+    {
+      "name": "a declared function is written as a value, so the arity loop stops covering it",
+      "file": "bin/smoke/reap-smoke-brokers.d.mts",
+      "find": "export declare function listNatsServers(): NatsServerRow[] | undefined;",
+      "replace": "export declare const listNatsServers: () => NatsServerRow[] | undefined;",
+      "expectRed": "the arity loop covers every function the module exports",
+      "cell": "the arity loop covers every function the module exports",
+      "note": "This is the PARTIAL emptiness case, and it is the reason a cell exists for it. The name is still exported and still on the module, so both set cells stay green and nothing looks wrong; only the arity loop's input has quietly lost a function, and its parameters stop being compared at all. The three parser cells cannot see it either, because they ask whether the parser found SOMETHING and it did. A cell that only asks whether an instrument returned a non-empty answer cannot tell a complete read from a short one, so the cover is asserted against the module's own function valued exports."
     }
   ]
 }
