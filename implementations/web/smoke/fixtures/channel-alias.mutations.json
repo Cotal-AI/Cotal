@@ -1,0 +1,34 @@
+{
+  "command": "pnpm smoke:web-channel-alias",
+  "progressPattern": "^[0-9]\\. ",
+  "mutations": [
+    {
+      "name": "A1 the history route stops asking whether the name is the one the wire uses, so a bidi-altered name reads the channel it aliases onto and the dashboard reports back the name that was typed",
+      "file": "implementations/web/src/web.ts",
+      "find": "  return canonicalChannel(name);",
+      "replace": "  return name;",
+      "expectRed": "2.1 a name the wire would rewrite is REFUSED at the history route, rather than quietly reading the channel it aliases onto"
+    },
+    {
+      "name": "A2 the DESTRUCTIVE route stops asking, so a caller names one channel and a different channel is purged: the finding this suite exists for, and the one a read-only cell cannot see",
+      "file": "implementations/web/src/web.ts",
+      "find": "      canonicalChannel(channel);",
+      "replace": "      void 0;",
+      "expectRed": "3.2 ...and the channel it would have aliased onto still holds its message: the refusal happened BEFORE the purge, not after"
+    },
+    {
+      "name": "A3 the name check is tightened into no-wildcards-either, which looks free until the delete route's own wildcard refusal stops being the thing that answers a wildcard",
+      "file": "implementations/web/src/web.ts",
+      "find": "    return assertValidChannel(name);",
+      "replace": "    if (name.includes(\"*\") || name.includes(\">\")) throw new Error(\"wildcard\");\n    return assertValidChannel(name);",
+      "expectRed": "3.4 CONTROL: a WILDCARD is still refused by the delete route's own wildcard message, not swallowed by the name check"
+    },
+    {
+      "name": "A4 the refusal names the rejected channel with `JSON.stringify` again, so the one message whose whole job is to show an operator which codepoint was in the name echoes that codepoint invisibly",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BadRequest(\n      `channel name ${quoteForOperator(name)} is not a channel: dotted segments of [A-Za-z0-9_-], ` +\n        `and a name the wire would rewrite would address a different channel than it names`,\n    );",
+      "replace": "    throw new BadRequest(\n      `channel name ${JSON.stringify(name)} is not a channel: dotted segments of [A-Za-z0-9_-], ` +\n        `and a name the wire would rewrite would address a different channel than it names`,\n    );",
+      "expectRed": "2.2 ...and that refusal carries no RAW class member, so an operator reading it sees which codepoint was in the name"
+    }
+  ]
+}

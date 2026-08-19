@@ -26,6 +26,14 @@
  * through. The fix escapes that class at the QUOTING site rather than at the two exits, because the
  * untrusted thing is the value and the message is derived from it.
  *
+ * THE FIRST VERSION OF THE FIX WROTE THAT CLASS AS A HAND LIST AND THE LIST WAS WRONG. Review
+ * measured U+061C, U+2060, the variation selectors and the tag characters arriving raw through the
+ * same route: every one of them is the thing the list said it closed. The class is now the Unicode
+ * properties `Bidi_Control` and `Default_Ignorable_Code_Point`, plus DEL, the C1 controls and
+ * U+2028/U+2029, which no property covers. A list is a claim about a set nobody maintains. The
+ * codepoints below are named individually anyway, because a failure should say WHICH one, and the
+ * nine after the BOM are the ones the list missed.
+ *
  * WHAT IS DELIBERATELY NOT ESCAPED, and section 0 proves it: ordinary text, and non-ASCII LETTERS.
  * A quoter that escaped every byte over 0x7f would render a refusal about an accented channel name
  * unreadable, which is the same defect pointed the other way.
@@ -64,13 +72,22 @@ const freePort = async (): Promise<number> => new Promise((res) => {
  *  them is a suite whose own source cannot be reviewed by eye. */
 const cp = (n: number): string => String.fromCodePoint(n);
 const hex4 = (n: number): string => n.toString(16).padStart(4, "0");
-/** The escaped form the quoter must emit for a codepoint, spelled the way JSON spells it. */
-const escaped = (n: number): string => "\\u" + hex4(n);
+/** The escaped form the quoter must emit for a codepoint, spelled the way JSON spells it: one
+ *  `\uXXXX` per UTF-16 unit, so an ASTRAL codepoint is a surrogate PAIR and not the five-hex form
+ *  `codePointAt` would hand you, which is not a JSON escape at all. */
+const escaped = (n: number): string =>
+  Array.from({ length: cp(n).length }, (_, i) => "\\u" + hex4(cp(n).charCodeAt(i))).join("");
 /** Percent-encode one codepoint's UTF-8 bytes, so it can ride a query string. */
 const pct = (n: number): string =>
   [...Buffer.from(cp(n), "utf8")].map((b) => "%" + b.toString(16).toUpperCase().padStart(2, "0")).join("");
 
-/** THE CLASS, by name, so a failure says which codepoint rather than which index. */
+/** THE CLASS, by name, so a failure says which codepoint rather than which index.
+ *
+ *  The nine entries after the BOM are the ones the FIRST version of this file's hand list did not
+ *  have, found by the security lens on this change and by widening to the Unicode properties: the
+ *  Arabic letter mark reorders exactly like the RLM beside it, the word joiner and the fillers
+ *  render as nothing exactly like the zero-width characters, and the last four are ASTRAL, which
+ *  the old `\uXXXX` emitter could not have spelled as valid JSON even if the class had caught them. */
 const CLASS: [string, number][] = [
   ["DEL", 0x7f],
   ["NEL U+0085", 0x85],
@@ -88,20 +105,38 @@ const CLASS: [string, number][] = [
   ["LRI U+2066", 0x2066],
   ["PDI U+2069", 0x2069],
   ["BOM U+FEFF", 0xfeff],
+  ["CGJ U+034F", 0x34f],
+  ["ALM U+061C", 0x61c],
+  ["HANGUL CHOSEONG FILLER U+115F", 0x115f],
+  ["MVS U+180E", 0x180e],
+  ["WJ U+2060", 0x2060],
+  ["HANGUL FILLER U+3164", 0x3164],
+  ["VS1 U+FE00", 0xfe00],
+  ["VS16 U+FE0F", 0xfe0f],
+  ["HALFWIDTH HANGUL FILLER U+FFA0", 0xffa0],
+  ["SHORTHAND FORMAT U+1BCA0, astral", 0x1bca0],
+  ["MUSICAL U+1D173, astral", 0x1d173],
+  ["TAG U+E0001, astral", 0xe0001],
+  ["VARIATION SELECTOR U+E0100, astral", 0xe0100],
 ];
 
 /** Both sides of every range in the class. A cell that only tests the middle of a range cannot tell
  *  a correct bound from one that is a codepoint too wide or too narrow at either end. */
 const OUTSIDE: [string, number][] = [
   ["tilde U+007E, just below DEL", 0x7e],
-  ["NBSP U+00A0, just above C1", 0xa0],
+  ["NBSP U+00A0, just above the C1 range", 0xa0],
+  ["U+061B, just below the ALM", 0x61b],
   ["hair space U+200A, just below ZWSP", 0x200a],
   ["hyphen U+2010, just above RLM", 0x2010],
   ["U+2027, just below LS", 0x2027],
   ["NNBSP U+202F, just above RLO", 0x202f],
-  ["U+2065, just below LRI", 0x2065],
-  ["U+206A, just above PDI", 0x206a],
+  ["U+2070, just above the word-joiner block", 0x2070],
+  ["U+3163, just below the Hangul filler", 0x3163],
+  ["U+FE10, just above the variation selectors", 0xfe10],
   ["U+FEFE, just below the BOM", 0xfefe],
+  ["U+1BCA4, just above the shorthand controls", 0x1bca4],
+  ["U+1D17B, just above the musical controls", 0x1d17b],
+  ["U+E1000, just above the tag block", 0xe1000],
 ];
 
 // ---- 0. the quoter, directly ------------------------------------------------------------------
@@ -151,6 +186,42 @@ ok("0.3 CONTROL: what `JSON.stringify` already closed stays closed - every C0 co
   try { parsed = JSON.parse(quoteForOperator(all)); } catch { parsed = "(not valid JSON)"; }
   ok("0.7 the quoted form is still valid JSON and round-trips to the ORIGINAL value",
     parsed === all, { round: parsed === all, quoted: quoteForOperator(all).slice(0, 80) });
+}
+
+// ASTRAL, ON ITS OWN, because 0.4 and 0.7 would both pass a quoter that emitted `\u1d173`: that
+// form reads fine on a terminal and is not a JSON escape, so the body a caller receives stops
+// parsing. The pair is what JSON has, and the only way to say a codepoint above the BMP in it.
+{
+  const astral = [0x1bca0, 0x1d173, 0xe0001, 0xe0100];
+  const wrong = astral.filter((n) => quoteForOperator(cp(n)) !== '"' + escaped(n) + '"');
+  const broken = astral.filter((n) => {
+    try { return JSON.parse(quoteForOperator(cp(n))) !== cp(n); } catch { return true; }
+  });
+  ok("0.8 an ASTRAL class member leaves as its two-unit SURROGATE PAIR and still parses back to the codepoint it was",
+    wrong.length === 0 && broken.length === 0,
+    { wrong: wrong.map((n) => quoteForOperator(cp(n))), broken: broken.map((n) => n.toString(16)) });
+}
+
+// The two codepoints in the class that NO Unicode property carries. They are line and paragraph
+// SEPARATORS, not format characters, so a class written as properties alone drops them silently and
+// every other cell here stays green while `U+2028` goes back to arriving raw.
+{
+  const raw = [0x2028, 0x2029].filter((n) => quoteForOperator(cp(n)) !== '"' + escaped(n) + '"');
+  ok("0.9 the LINE and PARAGRAPH separators are escaped, and they are in the class by NAME because no property covers them",
+    raw.length === 0, raw.map((n) => quoteForOperator(cp(n))));
+}
+
+// The reordering family, pinned by hand. The class reaches these THROUGH
+// `Default_Ignorable_Code_Point` rather than by naming `Bidi_Control`, because on this runtime
+// every one of the twelve is default-ignorable and naming both properties would be two names for
+// one set. That is a measurement about a Unicode version, not a law, so it is asserted here: a
+// version that separated them would fail this cell instead of quietly leaving a reordering
+// character raw, which is the sharpest case in the whole issue.
+{
+  const BIDI = [0x61c, 0x200e, 0x200f, 0x202a, 0x202b, 0x202c, 0x202d, 0x202e, 0x2066, 0x2067, 0x2068, 0x2069];
+  const raw = BIDI.filter((n) => quoteForOperator(cp(n)) !== '"' + escaped(n) + '"');
+  ok("0.10 every BIDI CONTROL is escaped, including U+061C and the isolates, which the shipped hand list did not have",
+    raw.length === 0, raw.map((n) => n.toString(16)));
 }
 
 // ---- the live server --------------------------------------------------------------------------
@@ -221,7 +292,7 @@ try {
       if (r.status !== 400) { rawInBody.push(name + " (status " + r.status + ")"); continue; }
       if (r.body.includes(Buffer.from(cp(n), "utf8"))) rawInBody.push(name);
       if (Buffer.from(segment(r.line), "utf8").includes(Buffer.from(cp(n), "utf8"))) rawInLine.push(name);
-      if (!r.body.toString("utf8").includes(escaped(n).replace("\\", "\\\\"))) notEscaped.push(name);
+      if (!r.body.toString("utf8").includes(escaped(n).replaceAll("\\", "\\\\"))) notEscaped.push(name);
     }
     ok("1.2 the 400 BODY the caller receives carries no raw codepoint from the class",
       rawInBody.length === 0, rawInBody);
@@ -311,13 +382,13 @@ try {
     ok("2.2 a RAW byte in the request target never reaches the handler: Node's parser refuses it with a bare 400 and no line is ever written, so `req.url` cannot carry one",
       offenders.length === 0, offenders);
   }
-  console.log("3. the third quoting site, and an honest statement of what reaches it");
-  // `channelNameFromPath` uses the same quoter, and this class CANNOT reach it today. It quotes the
-  // path segment as RECEIVED, still percent-encoded, and only when `decodeURIComponent` throws; a
-  // malformed escape is ASCII, and 2.2 shows a raw byte never gets past Node's parser. So the third
-  // site is consistency, not coverage: no mutation can prove it, because no input can exercise it.
-  // Stated here rather than left for a reader to discover, and the route is still exercised so the
-  // refusal itself cannot rot.
+  console.log("3. the third quoting site, which is reachable now that the name is validated");
+  // An earlier version of this file said the class could NOT reach `channelNameFromPath`, because
+  // that site only quoted a segment `decodeURIComponent` had refused, and a malformed escape is
+  // ASCII. That is still true of the decode refusal, and 3.1 covers it. It stopped being the whole
+  // story when the same function started refusing a name the wire would REWRITE (see
+  // `channel-alias.smoke.ts`): a percent-encoded class member decodes perfectly well and is then
+  // refused by name, so the third site has a real input and 3.3 is that input.
   {
     log = "";
     const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/%zz/history`);
@@ -328,6 +399,23 @@ try {
       { status: res.status, body: body.slice(0, 120) });
     ok("3.2 CONTROL: a well-formed name that simply does not exist is NOT a 400, so 3.1 is about the decode",
       (await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/nosuchchannel/history`)).status === 200);
+  }
+
+  {
+    const raw: string[] = [];
+    const unnamed: string[] = [];
+    for (const [name, n] of [["RLO U+202E", 0x202e], ["ALM U+061C", 0x61c], ["TAG U+E0001", 0xe0001]] as [string, number][]) {
+      log = "";
+      const res = await fetch(`http://127.0.0.1:${WEB_PORT}/api/channels/abc${pct(n)}/history`);
+      const body = Buffer.from(await res.arrayBuffer());
+      await wait(150);
+      if (res.status !== 400 || body.includes(Buffer.from(cp(n), "utf8"))) raw.push(name + " (status " + res.status + ")");
+      if (!body.toString("utf8").includes(escaped(n).replaceAll("\\", "\\\\"))) unnamed.push(name);
+    }
+    ok("3.3 a channel name that DECODES but the wire would rewrite is refused 400 with the offending codepoint escaped, never raw",
+      raw.length === 0, raw);
+    ok("3.4 ...and that refusal says WHICH codepoint, as a JSON unicode escape, so the third quoting site has a real input rather than being consistency alone",
+      unnamed.length === 0, unnamed);
   }
 
 } finally {

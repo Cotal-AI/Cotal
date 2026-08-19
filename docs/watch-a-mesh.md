@@ -139,6 +139,12 @@ would otherwise be invisible or would rearrange the text around them come back a
 (`\u007f`, `\u2028`) in both the response and the line printed in the terminal, so what you read is
 what was actually sent. Ordinary text, accents and non-Latin scripts included, is left alone.
 
+A channel name has to be the name the mesh actually uses: dotted segments of letters, digits, `_`
+and `-`. Anything else is refused rather than quietly rewritten, because the wire rewrites what it
+cannot use and two different names would then be one channel. That matters most on the delete
+button: a name that had to be rewritten would have purged a channel you did not name, while the
+answer showed you the name you typed.
+
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
 raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines

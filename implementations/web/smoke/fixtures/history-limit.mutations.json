@@ -53,8 +53,8 @@
     {
       "name": "H11 the channel name goes back to a bare decode, so a percent escape the decoder cannot read reaches the request frame as a URIError rather than a bad request and a caller's typo is reported as the server having broken",
       "file": "implementations/web/src/web.ts",
-      "find": "  try {\n    return decodeURIComponent(raw);\n  } catch {\n    throw new BadRequest(`channel name ${quoteForOperator(raw)} is not valid percent-encoded text`);\n  }",
-      "replace": "  return decodeURIComponent(raw);",
+      "find": "  let name: string;\n  try {\n    name = decodeURIComponent(raw);\n  } catch {\n    throw new BadRequest(`channel name ${quoteForOperator(raw)} is not valid percent-encoded text`);\n  }\n  return canonicalChannel(name);",
+      "replace": "  return canonicalChannel(decodeURIComponent(raw));",
       "expectRed": "1.8 a channel name that cannot be percent-decoded is the CALLER's error, so 400 and not 500"
     }
   ],

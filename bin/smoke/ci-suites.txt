@@ -359,3 +359,4 @@ smoke:web-history-limit
 smoke:core-history-limit
 smoke:web-graph-boot
 smoke:web-echo-escaping
+smoke:web-channel-alias

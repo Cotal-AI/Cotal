@@ -438,6 +438,7 @@
     "smoke:presence-watch-rebuild:auth": "tsx packages/core/smoke/presence-watch-rebuild.smoke.ts",
     "smoke:web-history-limit": "tsx implementations/web/smoke/history-limit.smoke.ts",
     "smoke:web-echo-escaping": "tsx implementations/web/smoke/echo-escaping.smoke.ts",
+    "smoke:web-channel-alias": "tsx implementations/web/smoke/channel-alias.smoke.ts",
     "smoke:core-history-limit": "tsx packages/core/smoke/history-limit.smoke.ts",
     "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts"
   },
