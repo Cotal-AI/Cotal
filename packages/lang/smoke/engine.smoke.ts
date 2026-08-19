@@ -36,6 +36,7 @@ import { runInWorker } from "../src/engine/worker.js";
 import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { run as walkerRun } from "../src/interpret.js";
+import { SEAM_MEMBERS, transform } from "../src/transform/index.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
 
 let pass = 0;
@@ -281,6 +282,64 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     "writing a NON-callable into `then` stays legal",
     (await h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", 1))) === 1,
   );
+
+  // ---- WHERE THE GATE STANDS IN `set`'S ORDER, taken from the oracle and not from the code -------
+  //
+  // The gate is a rule about the VALUE, and it is the last thing `set` asks. The walker's order,
+  // measured on it here rather than transcribed: what kind of thing is being written (L4010), is it
+  // frozen (L2031), does that kind have this member (L4014/L4017/L4019) - and only then the value.
+  // A gate placed before the member rule answers the value's sentence for a receiver that never had
+  // the member, and `keys({a:1}).then = () => 1` came back L4018 where the walker says L4014.
+  {
+    const onWalker = async (src: string): Promise<string> => {
+      try {
+        await walkerRun(src, { runId: `so-${src.length}`, handler: new SimHandler({ asks: { q: { okay: true } } }) });
+        return "completed";
+      } catch (e) {
+        return `refused ${codeOf(e)}`;
+      }
+    };
+    // 1) THE RECEIVER'S KIND FIRST. A string and a number have no fields at all, and that is the
+    // sentence, whatever the value is.
+    ok("the walker answers a string receiver with L4010", (await onWalker(`let s = "x";\ns.then = () => 1;\n`)) === "refused L4010");
+    ok("and so does the engine, for a string", codeOf(await caught(() => h.inFrame(() => h.ctx.set("x", "then", () => 1)))) === "L4010");
+    ok("the walker answers a number receiver with L4010", (await onWalker(`let n = 1;\nn.then = () => 1;\n`)) === "refused L4010");
+    ok("and so does the engine, for a number", codeOf(await caught(() => h.inFrame(() => h.ctx.set(1, "then", () => 1)))) === "L4010");
+
+    // 2) THEN THE MEMBER RULE OF THAT KIND. An array does not have `then` any more than it has
+    // `foo`, so both are the SAME refusal - which is the half that was wrong.
+    ok("the walker answers `then` on an array with L4014", (await onWalker(`let a = keys({ a: 1 });\na.then = () => 1;\n`)) === "refused L4014");
+    const arrThen = await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([1]), "then", () => 1)));
+    ok("and so does the engine, not the value's rule", codeOf(arrThen) === "L4014", String(arrThen).slice(0, 80));
+    ok("with the array member sentence, the same one `foo` gets", (arrThen as Error).message.includes("is not a member of an array"), (arrThen as Error).message.slice(0, 70));
+    ok("the walker answers `foo` on an array with L4014 too", (await onWalker(`let a = keys({ a: 1 });\na.foo = 1;\n`)) === "refused L4014");
+    ok("and the engine agrees on the control", codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([1]), "foo", 1)))) === "L4014");
+    // The control that says the array path is not simply refusing everything: `length` completes.
+    ok("the walker completes `length` on an array", (await onWalker(`let a = keys({ a: 1 });\na.length = 0;\nlog("n", a.length);\n`)) === "completed");
+    const shrunk = await h.inFrame(() => h.ctx.born([1, 2]));
+    ok("and so does the engine, truncating rather than refusing", (await h.inFrame(() => h.ctx.set(shrunk, "length", 0))) === 0 && (shrunk as unknown[]).length === 0);
+    // A computed key does not move the array through a different door either.
+    ok("the walker answers a COMPUTED `then` on an array with L4014", (await onWalker(`let a = keys({ a: 1 });\nlet k = "th" + "en";\na[k] = () => 1;\n`)) === "refused L4014");
+    ok("and so does the engine, through the computed key too", codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([1]), "th" + "en", () => 1)))) === "L4014");
+
+    // 3) FREEZE STANDS AHEAD OF THE MEMBER RULE, measured: a frozen array written with a member it
+    // does not have answers L2031, not L4014. So the gate cannot move ahead of that either.
+    ok(
+      "the walker answers a frozen array's bad member with L2031",
+      (await onWalker(`const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs.foo = 1;\n`)) === "refused L2031",
+    );
+    const frozenArr = Object.freeze(await h.inFrame(() => h.ctx.born([1])));
+    ok("and so does the engine, freeze ahead of the member rule", codeOf(await caught(() => h.inFrame(() => h.ctx.set(frozenArr, "foo", 1)))) === "L2031");
+    ok("including for `then`, where the value's rule never gets asked", codeOf(await caught(() => h.inFrame(() => h.ctx.set(frozenArr, "then", () => 1)))) === "L2031");
+
+    // 4) AND ONLY THEN THE VALUE. This is the one place the two engines differ, and it is the
+    // declared divergence, not an accident: the walker refuses NOTHING for a callable `then` on a
+    // record and takes its process down later (#642), which is why these programs are quarantined
+    // from the corpus. The pin is the walker's MEASURED answer, so the day #657 lands and it becomes
+    // L4021, this cell says so.
+    ok("the walker completes a callable `then` on a RECORD, which is the defect", (await onWalker(`let r = { x: 1 };\nr.then = () => 1;\n`)) === "completed");
+    ok("while the engine refuses it L4018, at the last of the four rules", codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4018");
+  }
   // The third door, and the one that proves the gate runs BEFORE the host: if `await` reached the
   // value first, `then` would already have been called.
   {
@@ -1341,7 +1400,10 @@ await parallel({
 // necessarily get the loader its parent has: on node 22 it measurably does not, so a `.ts` entry
 // dies on its own `../journal.js` there while answering fine on 26. The entry is therefore an INPUT
 // (`worker.ts` derives nothing), this suite hands it the artifact, and `smoke:lang-engine` builds
-// before it runs. The leg grades what SHIPS rather than a second copy of it, and it grades the same
+// before it runs - EMIT ONLY (`build:emit`, `tsc --noCheck`), because a mutation is a deliberate
+// break and a type-checking build turns one into a failed command instead of a failed assertion.
+// Measured: the emit is byte-identical with and without the check, and `pnpm typecheck` is the gate
+// that grades types. The leg grades what SHIPS rather than a second copy of it, and it grades the same
 // thing on every node instead of on whichever one has a loader that reaches threads.
 
 /** The built entry. Named, not derived: the derivation is exactly what `worker.ts` refuses to do. */
@@ -1811,6 +1873,40 @@ log("out", out);
   });
 }
 
+// ---- 18b) 1b's REACHABILITY half: no program can build the input ---------------------------------
+//
+// The predicate above says no builtin HANDS OUT a record carrying a callable `then`. That is one of
+// two claims, and the other is the one a reader assumes open: can a program WRITE one anywhere the
+// entry doors do not stand? The branch-name shape is the door that looks open, because a scope's
+// branches are a record whose VALUES are functions by construction, so a branch called `then` is a
+// record with a callable `then` written in ordinary source with no builtin involved.
+//
+// It closes at the ARGUMENT LITERAL: the transform emits the branches record through `born`, so the
+// refusal lands before the scope is entered. That is asserted as a PROGRAM, from source through the
+// transform onto the engine, because the claim is about what a program can reach - a `ctx.born` call
+// written here would be assuming the emission this cell exists to check. The journal is the second
+// half: a refusal AFTER the scope opened would leave a scope entry behind and a resume would read
+// it, so "no entry" is what says the closure is at the literal and not at the result.
+//
+// The walker takes its process down on this program (#642), so it cannot be a corpus row until the
+// L4021 fix lands; it is on lane T's quarantine list and lives here in the meantime.
+//
+// WHAT GRADES WHAT, since these four cells have no mutant of their own: the refusal's mechanism is
+// the birth gate, and that is graded where it lives (section 4's first cell, and the mutant that
+// drops it). What is graded HERE and nowhere else is the EMISSION - that the branches record
+// reaches `born` before the scope call - which is lane T's to break and this suite's to notice.
+{
+  for (const [scope, name] of [["parallel", "p"], ["race", "r"]] as const) {
+    const source = `await ${scope}({ then: async () => 1, b: async () => 2 }, { name: "${name}" });\n`;
+    const journal = new Journal({ run: `1b-${scope}` });
+    const refused = await caught(() =>
+      runOnEngine(source, transform(source).module, { runId: `1b-${scope}`, handler: new SimHandler({}), evaluate: plainly, journal }),
+    );
+    ok(`a branch named \`then\` in ${scope} refuses L4018`, codeOf(refused) === "L4018", String(refused).slice(0, 110));
+    ok(`and the ${scope} scope was never entered: no journal entry at all`, journal.entries().length === 0, journal.entries().map((e) => e.kind));
+  }
+}
+
 // ---- 19) F7: the cell read, and the ReferenceError that is never the program's -------------------
 //
 // A binding the transform classifies as a CELL is emitted as `born({})` hoisted to the top of its
@@ -2045,6 +2141,57 @@ let n = 1;
   // program through `runOnEngine`, so the boundary check is reached on every one of them. The mutant
   // that raises the floor past every version that exists reds the first of them.
   ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
+}
+
+// ---- 21) the seam ARITY TABLE, from the other side ----------------------------------------------
+//
+// `SEAM_MEMBERS` is the contract both lanes hold: member name -> [min, max] ARGUMENT COUNTS the
+// emitter may pass. Lane T checks every emitted call site against it; this half checks the
+// IMPLEMENTATION, and the two together are what make the table a contract rather than a comment on
+// one side of a seam.
+//
+// THE CHECK IS `length === max`, AND THE REASON IS MEASURED, not chosen. A TypeScript optional
+// parameter (`binding?: string`) is a plain parameter after erasure - only a default or a rest stops
+// the count - so `Function.length` reports the FULL declared count, and a `<= min` rule would be
+// vacuous on the ten fixed members and false on all four variadic ones. `=== max` catches both
+// directions that matter: a member declaring FEWER than max silently drops the argument the emitter
+// passes, with no type error at either call site since the seam type is what both halves agree on;
+// a member declaring MORE has invented a widening.
+//
+// THE MIN END CANNOT COME FROM A FUNCTION'S SHAPE at all - erasure has already thrown away which
+// parameters were optional - so it is BEHAVIOURAL, and the four variadic members are each called
+// here in their shortest form. The named cells that hold the same thing where their law lives:
+// "without a binding name, an absent field is still just undefined" (get), "without a binding name,
+// a first write to an empty cell just writes" (set), "a name outside that table is L4014" (call),
+// "a free builtin READ as a value is the program's view of it" (free).
+
+{
+  const h = harness();
+  const ctx = h.ctx as unknown as Record<string, (...a: unknown[]) => unknown>;
+  const declared = Object.keys(SEAM_MEMBERS).sort();
+  const implemented = Object.keys(h.ctx).sort();
+  ok(`the seam declares ${declared.length} members and the host implements ${implemented.length}`, declared.length === implemented.length, { declared: declared.length, implemented: implemented.length });
+  ok("and they are the SAME names, by set equality in both directions", JSON.stringify(declared) === JSON.stringify(implemented), { declared, implemented });
+
+  let checked = 0;
+  const wrong: string[] = [];
+  for (const name of declared) {
+    const max = SEAM_MEMBERS[name]?.[1] as number;
+    checked += 1;
+    if (typeof ctx[name] !== "function" || ctx[name].length !== max) wrong.push(`${name}: declared max ${max}, implemented ${typeof ctx[name] === "function" ? ctx[name].length : typeof ctx[name]}`);
+  }
+  ok(`every member's declared MAX is its implemented parameter count (${checked} checked)`, wrong.length === 0 && checked === declared.length, wrong);
+
+  // THE MIN END, behaviourally: each variadic member called with the FEWEST arguments the table
+  // permits, and answering rather than refusing. `fuel` is the degenerate case and is in the count.
+  await h.inFrame(async () => {
+    ok("get in its 2-argument form answers the field", h.ctx.get(h.ctx.born({ a: 1 }), "a") === 1);
+    ok("set in its 3-argument form writes and answers the value", h.ctx.set(h.ctx.born({}), "a", 1) === 1);
+    ok("call in its 3-argument form calls the member", (await h.ctx.call("ab", "toUpperCase", [])) === "AB");
+    ok("free in its 1-argument form reads the builtin as a value", typeof h.ctx.free("json") === "object");
+    ok("fuel takes none, and its declared range says so", SEAM_MEMBERS.fuel?.[0] === 0 && SEAM_MEMBERS.fuel?.[1] === 0);
+    return undefined;
+  });
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);
