@@ -1,15 +1,22 @@
 /**
  * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate). It proves by EXECUTION the
- * despawn/respawn race that had previously only been established by code-read:
+ * despawn/respawn contract that had previously only been established by code-read.
  *
- *   `freeSlot` frees the agent's name synchronously, then fires `deprovision` DETACHED. The
- *   teardown's LOCAL half (creds/secret shred + ledger revoke) completes in the detached call's
- *   synchronous prefix — on the same event-loop tick as `freeSlot` — so no same-name respawn can
- *   ever observe it mid-flight. Its BROKER half (`deprovisionBroker`: the dm_/dlv_ durables and
- *   the read-ACL row, all keyed by (owner, actor-name)) runs after the first await, across a cred
- *   mint plus a fresh broker connection plus JS-API deletes. A same-name respawn that provisions
- *   inside that window hands the REPLACEMENT's freshly minted broker footprint to the stale
- *   teardown: its durables and ACL row are deleted while the manager keeps listing it as live.
+ * THE RACE IT WAS WRITTEN AGAINST, described in the PAST tense because this tree no longer has it:
+ *
+ *   `freeSlot` freed the agent's name synchronously, then fired `deprovision` DETACHED. Its BROKER
+ *   half (`deprovisionBroker`: the dm_/dlv_ durables and the read-ACL row, all keyed by (owner,
+ *   actor-name)) ran after the first await, across a cred mint plus a fresh broker connection plus
+ *   JS-API deletes. A same-name respawn that provisioned inside that window handed the
+ *   REPLACEMENT's freshly minted broker footprint to the stale teardown, which deleted its durables
+ *   and ACL row while the manager kept listing it as live.
+ *
+ * WHAT THIS TREE DOES INSTEAD, which is what the cells below execute. The name is NOT freed while
+ * any teardown phase is in flight: the hold clears only after the standing-authority revoke and the
+ * lifecycle retirement both confirm. The broker deletes are lifecycle-uid-pinned, so a stale or
+ * replayed teardown for a retired incarnation is broker-denied against a same-name successor, whose
+ * resource names embed a different uid (`Manager.deprovisionBroker`, SPEC 13.1). The three barrier
+ * contracts below are what say so, by running.
  *
  * The BARRIER CONTRACT is the spec/plan acceptance timeline for terminal despawn (retire before
  * alias release; cleanup pinned to the retired lifecycle; detached cleanup = idempotent
@@ -432,7 +439,8 @@ try {
   // smokes already reach into manager privates): the FIRST broker teardown for this agent name
   // parks until released; everything else passes through and is recorded so every deleter in play
   // stays attributable. The gated call's ARG is captured — section E replays it, modeling the
-  // at-least-once redelivery of a retired lifecycle's cleanup that the fix must make harmless.
+  // at-least-once redelivery of a retired lifecycle's cleanup that the lifecycle pinning makes
+  // harmless.
   type DeprovArg = { id: string; name: string };
   type DeprovBroker = (a: DeprovArg) => Promise<void>;
   type Handle = import("@cotal-ai/core").AgentHandle;
@@ -485,17 +493,21 @@ try {
   check("BARRIER: the refusal reads as the operator face (reserved pending retirement + despawn→retirement bridge + retry NEXT)",
     probe.ok === false && /reserved pending retirement/i.test(probe.error ?? "")
     && /despawn started/i.test(probe.error ?? "") && /retry/i.test(probe.error ?? ""), probe);
-  // Clear whatever the probe created (today: a live exact-alias agent; under the fix: possibly an
-  // auto-numbered sibling) and let its own cleanup fully settle so it cannot confound section E.
+  // Clear whatever the probe created and let its own cleanup fully settle so it cannot confound
+  // section E. On this tree the probe is refused outright and creates nothing, so probeDelta is
+  // empty and this loop is a no-op; it stays as a guard, because a tree that DID hand out a live
+  // agent or an auto-numbered sibling here would otherwise carry it into section E.
   for (const n of probeDelta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
   await Promise.allSettled(brokerCalls.filter((c) => !c.gated).map((c) => c.done.catch(() => {})));
 
-  // Release: let the predecessor's retirement complete, as the fix does before freeing the alias.
+  // Release: let the predecessor's retirement complete, which is what the manager does before it
+  // frees the alias.
   releaseGate();
   await gatedRun!.catch(() => {});
   // Witness (leak direction): the predecessor's broker footprint must be fully retired before the
-  // alias is handed to a replacement — true today (the name-keyed deletes take everything) and
-  // required under the fix (retire-before-free).
+  // alias is handed to a replacement, the retire-before-free half of the contract. The deletes are
+  // lifecycle-uid-pinned rather than name-keyed, so this asserts the PREDECESSOR's own footprint is
+  // gone, not that a name sweep took everything under the alias.
   const fpRetired = await footprint();
   check("witness: the predecessor's broker footprint is fully retired before the alias frees",
     fpRetired.dm.length === 0 && fpRetired.dlv.length === 0 && fpRetired.acl.length === 0, fpRetired);
@@ -581,7 +593,7 @@ try {
 
   // ---------- E. THE REPLAY ----------
   // Deliver the predecessor's captured broker cleanup AGAIN, now that the replacement is live —
-  // the at-least-once world the fix must survive: detached cleanup is idempotent reconciliation
+  // the at-least-once world this has to survive: detached cleanup is idempotent reconciliation
   // against the RETIRED lifecycle and can never resolve through the current alias occupant.
   // Holds on this tree: the cleanup is pinned to the retired lifecycle, so the replay leaves the
   // live replacement's footprint intact. Proven non-vacuous rather than assumed: repointing the
@@ -611,11 +623,13 @@ try {
   check("witness: no manager-driven broker cleanup fired between respawn and replay (single deleter)",
     brokerCalls.length === callsBeforeReplay,
     brokerCalls.map(({ name, gated }) => ({ name, gated })));
-  // Witnesses (green today AND under the fix): the replay is broker-only — it never touches the
-  // ledger or the secret files, so the replacement's mint authority stays intact and its child
-  // stays connected. The damage above is therefore SILENT split-brain: the manager lists a live,
-  // authenticated agent that can no longer be delivered to (durables gone) and whose reads are no
-  // longer authorized (ACL row gone).
+  // Witnesses: the replay is broker-only. It never touches the ledger or the secret files, so the
+  // replacement's mint authority stays intact and its child stays connected either way. That is
+  // what makes the barrier cells above the whole story, and it is why their failure mode would be
+  // SILENT split-brain rather than a visible outage: a tree whose replay reached the successor
+  // would leave the manager listing a live, authenticated agent that could no longer be delivered
+  // to (durables gone) and whose reads were no longer authorized (ACL row gone), with nothing
+  // failing loudly. On this tree the replay is lifecycle-pinned and those cells pass.
   check("witness: replacement ledger row survives the replay (broker cleanup owns no local state)", fpPost.row, fpPost);
   check("witness: replacement row still carries the replacement's tokenHash", rowHash(OWNER) === hash2, { want: hash2, got: rowHash(OWNER) });
   const ex = await agentExchange(AGENT, replacementToken, OWNER);
