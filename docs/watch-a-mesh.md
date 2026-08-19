@@ -109,7 +109,9 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   open mode; the graph then degrades to traffic-derived spokes), or *unreadable* — the last
   meaning the read itself did not answer, which is a fact about the viewer rather than about the
   mesh, and is kept distinct from *traffic-only* for exactly that reason. A **hide-offline** control
-  collapses durable-but-away members. Broker-sourced membership needs the delivery daemon (auth
+  collapses durable-but-away members. The live feed opens as the page loads rather than after it, so
+  the pill reports the connection honestly from the first moment instead of reading `disconnected`
+  for as long as the first read takes. Broker-sourced membership needs the delivery daemon (auth
   mode) and is provisioned on a fresh `cotal up`.
 
 **When a read does not land.** A poll that fails never blanks the page. The dashboard keeps the

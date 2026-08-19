@@ -765,9 +765,17 @@
 
   resize();
   setInterval(setFeed, 5000); // age "live" → "stale" even without new events
-  // `connect()` runs whatever `load()` reported. It used to be gated behind `load()` resolving, so a
-  // single refused read left the page permanently disconnected with nothing on it; the live feed is
-  // exactly what a page showing stale data needs most.
-  load().catch((err) => console.error(err)).then(connect);
+  // THE FEED IS NOT GATED ON THE BOOTSTRAP, IN EITHER SENSE. It was once chained behind `load()`
+  // RESOLVING, so a single refused read left the page permanently disconnected with nothing on it.
+  // That was fixed by making `load()` never reject, which guaranteed `connect()` would RUN but not
+  // that it would run SOON: chained with `.then`, it still waited for the whole bootstrap, and that
+  // bootstrap reads `/api/activity?limit=400` and `/api/dms?limit=400`, both bounded by the
+  // aggregation deadline. On a slow link the page therefore read `disconnected` for the entire load
+  // window. Observed across a WAN link as "always showing disconnected, and taking long to show the
+  // graph". The live feed is exactly what a page showing stale data needs most, so it opens FIRST
+  // and the bootstrap fills in around it. The Monitor page has always done this: `app.js` ends with
+  // `refresh(); connect();`, concurrent, not chained.
+  connect();
+  load().catch((err) => console.error(err));
   requestAnimationFrame(frame);
 })();

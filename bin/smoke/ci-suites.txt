@@ -355,3 +355,4 @@ smoke:codex-events-lifecycle
 smoke:web-snapshot
 smoke:web-bounded-aggregation
 smoke:presence-watch-rebuild:auth
+smoke:web-graph-boot
