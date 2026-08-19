@@ -86,7 +86,14 @@
     "as one call does, and settleWithin counts any settlement including a rejection as done, so a single",
     "failure released departure while another call was still parked. Every one of C10 through C13 passed",
     "against that, because each of them parks exactly one caller and a set of one cannot show the",
-    "difference. It took a second call that FAILS, in the same seat, to make the distinction visible."
+    "difference. It took a second call that FAILS, in the same seat, to make the distinction visible.",
+    "",
+    "C14 AND C15 BREAK THE SAME LINE AND NAME DIFFERENT CELLS, on purpose. The algorithm is symmetric,",
+    "since Promise.all short-circuits on the first rejection to OCCUR rather than on a slot, so the two",
+    "arms are not two ways for the defect to appear. What the pair pins is that the ABSORPTION covers",
+    "both ends of the set: one arm has the failing call at the tail, the other at the head, and a fix",
+    "that wrapped only part of the set would satisfy one and fail the other. Grading only one arm would",
+    "leave the cells of the other ungraded, which is the shape this suite has already shipped twice."
   ],
   "mutations": [
     {
@@ -186,6 +193,13 @@
       "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
       "replace": "    const admitted = [...inFlight];\n",
       "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
+    },
+    {
+      "name": "C15 the same lost absorption seen from the other end: the failing call is at the HEAD of the set rather than its tail, and departure still goes out while the call behind it is parked",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
+      "replace": "    const admitted = [...inFlight];\n",
+      "expectRed": "mirror-seat: departure was still unpublished while admitted work was in flight"
     }
   ]
 }

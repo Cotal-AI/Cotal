@@ -51,7 +51,7 @@ const late = process.env.COOP_LATE?.trim() || undefined;
 // resumed. Removing the tracking from one path then changes nothing observable and the mutation for
 // it survives. Measured, not predicted: that is exactly how C11 and C12 survived. There is one
 // teardown per process, so each door needs its own seat.
-const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool" | "model"
+const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool" | "model" | "mirror"
 const crossArm = process.env.COOP_CROSS_ARM?.trim() || undefined;
 const crossParked = process.env.COOP_CROSS_PARKED?.trim() || undefined;
 const crossRelease = process.env.COOP_CROSS_RELEASE?.trim() || undefined;
@@ -230,6 +230,15 @@ if (cross) {
       void (
         hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
       ).tool.cotal_status.execute({ activity: "crossing-tool" });
+    // THE SAME PAIR AS THE HOOK SEAT WITH THE ORDER REVERSED: the call that FAILS is admitted first
+    // and the one that parks second. The algorithm is symmetric, since Promise.all short-circuits on
+    // the first rejection to occur rather than on a slot, so this is not a second way for the defect
+    // to appear. What it pins is that the absorption reaches the head of the set and not only its
+    // tail, which the other seat cannot show because there the failing call is never at the front.
+    else if (cross === "mirror") {
+      void fireTool("ses_coop", "crossing-reject");
+      void fireTool("ses_coop", "crossing-mirror");
+    }
     // The session named here is the one the plugin adopted at boot, so the ownership check passes
     // and the hook actually reaches its model publish rather than returning early.
     else if (cross === "model")

@@ -109,6 +109,7 @@ let watcher: CotalEndpoint | undefined;
 let probe: ReturnType<typeof spawn> | undefined;
 let toolProbe: ReturnType<typeof spawn> | undefined;
 let modelProbe: ReturnType<typeof spawn> | undefined;
+let mirrorProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -490,6 +491,73 @@ try {
     modelBeforeRelease !== undefined && modelBeforeRelease !== "offline", { modelBeforeRelease });
   writeFileSync(modelRelease, "go\n");
   await awaitExit(modelProbe, 15_000);
+
+  // ---- THE SAME REJECTION CASE WITH THE TWO CALLS SWAPPED. The hook seat admits the parked call
+  // first and the failing one second; this one reverses that, so the failure is at the head of the
+  // set. Promise.all short-circuits on the first rejection to OCCUR rather than on a slot, so this
+  // is not a second way for the defect to show itself; what it pins is that the absorption covers
+  // the head of the set and not only its tail, which the other seat cannot demonstrate. Its own
+  // process, because one process has one teardown and shared state would carry between the two.
+  const nellId = newIdentity();
+  const nellUid = mintLifecycleUid();
+  const nellCreds = await provisionAgent(mgr, auth, nellId, { ...acl, role: "worker", lifecycleUid: nellUid });
+  const nellCredsFile = join(dir, "nell.creds");
+  writeFileSync(nellCredsFile, nellCreds);
+  const mirrorSpec = opencodeConnector.buildLaunch({
+    space, name: "Nell", role: "worker", id: nellId.id, lifecycleUid: nellUid, creds: nellCredsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const mirrorEp = mirrorSpec.control!;
+  const mirrorArm = join(dir, "mirror-arm");
+  const mirrorParked = join(dir, "mirror-parked");
+  const mirrorRelease = join(dir, "mirror-release");
+  const mirrorRejectParked = join(dir, "mirror-reject-parked");
+  const mirrorRejectRelease = join(dir, "mirror-reject-release");
+  mkdirSync(join(dir, "ws-mirror"), { recursive: true });
+  mirrorProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...mirrorSpec.env,
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-mirror"),
+      COOP_CROSS: "mirror",
+      COOP_CROSS_ARM: mirrorArm,
+      COOP_CROSS_PARKED: mirrorParked,
+      COOP_CROSS_RELEASE: mirrorRelease,
+      COOP_REJECT_PARKED: mirrorRejectParked,
+      COOP_REJECT_RELEASE: mirrorRejectRelease,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  let nellLive = false;
+  for (let i = 0; i < 100 && !nellLive; i++) {
+    await wait(100);
+    const nell = watcher.getRoster().find((pr) => pr.card.name === "Nell");
+    nellLive = nell !== undefined && nell.status !== "offline";
+  }
+  check("mirror-seat: the fourth seat came online, so this leg grades a live one", nellLive);
+
+  writeFileSync(mirrorArm, "go\n");
+  let mirrorBothIn = false;
+  for (let i = 0; i < 60 && !mirrorBothIn; i++) {
+    await wait(50);
+    mirrorBothIn = existsSync(mirrorRejectParked) && existsSync(mirrorParked);
+  }
+  // Both preconditions, and in this seat the FAILING one was admitted first.
+  check("mirror-seat: the failing call was admitted first and a second call parked behind it",
+    mirrorBothIn, { mirrorRejectParked, mirrorParked });
+
+  const mirrorReply = await sendShutdown(mirrorEp.path, mirrorEp.token);
+  check("mirror-seat: control server acked the shutdown", mirrorReply.trim() === JSON.stringify({ ok: true }), mirrorReply);
+
+  await wait(100);
+  writeFileSync(mirrorRejectRelease, "go\n");
+  await wait(200);
+  const mirrorBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Nell")?.status;
+  check("mirror-seat: departure was still unpublished while admitted work was in flight",
+    mirrorBeforeRelease !== undefined && mirrorBeforeRelease !== "offline", { mirrorBeforeRelease });
+  writeFileSync(mirrorRelease, "go\n");
+  await awaitExit(mirrorProbe, 15_000);
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
@@ -498,6 +566,7 @@ try {
     if (probe && probe.exitCode === null) probe.kill("SIGKILL");
     if (toolProbe && toolProbe.exitCode === null) toolProbe.kill("SIGKILL");
     if (modelProbe && modelProbe.exitCode === null) modelProbe.kill("SIGKILL");
+    if (mirrorProbe && mirrorProbe.exitCode === null) mirrorProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }
