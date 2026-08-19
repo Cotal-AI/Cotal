@@ -145,13 +145,23 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   // produce": with both cells on `clock.start` 500 and the default 1m, a `checkpoint()` that ignored
   // the clock entirely and returned that fixture's own 60500 satisfied both and the suite stayed
   // green. Two clocks, neither of them the old one, and no constant satisfies both.
-  const resolved = await simFrom(scriptWith("resolved", { start: 1_500, checkpoint: "3m" }))
+  // The returned VALUE is not the property either, and a second survivor proved it. An
+  // implementation can compute the right number without moving the clock it claims to read:
+  // `const at = this.virtualNow + parseDuration(...)` with no `advance` returns 181_500 while
+  // `now()` stays at 1_500, and because the timebase is SHARED, every later sleep, turn or journal
+  // stamp then starts from the stale time. Both cells stayed green under exactly that. So each one
+  // reads the clock AFTER the call and requires it to have moved to where the stamp says it is.
+  const resolvedSim = simFrom(scriptWith("resolved", { start: 1_500, checkpoint: "3m" }));
+  const resolved = await resolvedSim
     .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
-  ok("a scripted `at` is discarded on the RESOLVED path, which stamps virtual time", resolved.at === 1_500 + 3 * MINUTE, resolved);
+  ok("a scripted `at` is discarded on the RESOLVED path, which stamps the shared clock it has moved",
+    resolved.at === 1_500 + 3 * MINUTE && resolvedSim.now() === resolved.at, { ...resolved, now: resolvedSim.now() });
 
-  const expired = await simFrom(scriptWith("expired", { start: 7_000, checkpoint: "2m" }))
+  const expiredSim = simFrom(scriptWith("expired", { start: 7_000, checkpoint: "2m" }));
+  const expired = await expiredSim
     .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
-  ok("a scripted `at` is discarded on the EXPIRED path too, which is the other return", expired.at === 7_000 + 2 * MINUTE, expired);
+  ok("a scripted `at` is discarded on the EXPIRED path too, which is the other return",
+    expired.at === 7_000 + 2 * MINUTE && expiredSim.now() === expired.at, { ...expired, now: expiredSim.now() });
 }
 
 // ---- 6) a scripted timeout is a choice, and costs its full budget ------------------------------------
