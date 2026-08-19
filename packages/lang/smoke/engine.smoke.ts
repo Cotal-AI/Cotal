@@ -1230,14 +1230,24 @@ await parallel({
   ok("the walker swallows a DEEP chain too", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x.y);\n`)) === 'ok [["r",null]] []');
   ok("and a trailing CALL", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().trim());\n`)) === 'ok [["r",null]] []');
 
+  // CAPTURED: with the chain unguarded it runs against undefined and throws L4010, which awaited
+  // into the assertion would leave the block and kill the suite anonymously.
   let continued = 0;
-  const chained = await h.inFrame(() =>
-    h.ctx.call(h.ctx.born({ a: 1 }), "z", () => [], true, (v) => {
-      continued += 1;
-      return h.ctx.get(v, "x");
-    }),
-  );
-  ok("the engine short-circuits the chain and never runs it", chained === undefined && continued === 0, { chained, continued });
+  let chained: unknown;
+  try {
+    chained = await h.inFrame(() =>
+      h.ctx.call(h.ctx.born({ a: 1 }), "z", () => [], true, (v) => {
+        continued += 1;
+        return h.ctx.get(v, "x");
+      }),
+    );
+  } catch (e) {
+    chained = e;
+  }
+  ok("the engine short-circuits the chain and never runs it", chained === undefined && continued === 0, {
+    chained: String(chained),
+    continued,
+  });
 
   let refused: unknown;
   try {
