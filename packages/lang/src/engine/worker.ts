@@ -88,13 +88,29 @@ export interface WorkerRun {
   stop(reason: string): void;
 }
 
+/**
+ * What a stop with nothing to say arrives as.
+ *
+ * The length is the publish signal, so a zero-length reason would be no stop at all; the previous
+ * spelling floored it at 1 and the run read the one byte that happened to be there. MEASURED through
+ * the real thread: `stop("")` ended the run with a sentence whose last character was a NUL. A stop is
+ * an operator's act and it may not arrive as a control character, so a reason with no bytes is given
+ * this one - a sentence, and true.
+ */
+const NO_REASON = "the operator asked this run to stop and gave no reason";
+
 /** Write a stop reason into shared memory: the bytes first, then the length that publishes them. */
 function publishStop(buffer: SharedArrayBuffer, reason: string): void {
-  const bytes = new TextEncoder().encode(reason).subarray(0, STOP_CAPACITY);
-  new Uint8Array(buffer, STOP_HEADER).set(bytes);
+  // `encodeInto`, NOT encode-then-slice: it fills the room with WHOLE code points and reports how
+  // many bytes that took, so a reason too long for the buffer is cut BETWEEN characters instead of
+  // through one. Measured through the real thread before the change: a three-byte character
+  // straddling the last byte of the buffer reached the run as U+FFFD, the replacement character, on
+  // the end of the operator's own sentence.
+  const room = new Uint8Array(buffer, STOP_HEADER, STOP_CAPACITY);
+  const { written } = new TextEncoder().encodeInto(reason === "" ? NO_REASON : reason, room);
   // LENGTH LAST, and with Atomics: it is what makes the bytes visible, so a reader can never see a
   // length that promises bytes the writer has not finished writing.
-  Atomics.store(new Int32Array(buffer, 0, 1), 0, Math.max(bytes.length, 1));
+  Atomics.store(new Int32Array(buffer, 0, 1), 0, written);
 }
 
 /**
