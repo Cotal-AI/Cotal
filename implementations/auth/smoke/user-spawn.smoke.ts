@@ -246,6 +246,35 @@ const e2eQuietCon: Connector = {
 };
 registry.register(e2eQuietCon);
 
+// A connector whose child joins the mesh normally and then, on SIGUSR1, publishes presence
+// `offline` and keeps running. That is the third mesh state a managed row can carry, and the only
+// one that is neither the default a joined seat starts in nor the sentinel for no roster row at
+// all. Flipping on a signal rather than on a timer keeps the state change ordered against the
+// assertions instead of racing the manager's readiness wait.
+const CHILD_OFFLINE = CHILD.replace(
+  "setInterval(()=>{},1000);",
+  "setInterval(()=>{},1000);process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});",
+);
+const e2eOfflineCon: Connector = {
+  kind: "connector",
+  name: "e2e-offline",
+  requires: ["node"],
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: process.execPath,
+    args: ["-e", CHILD_OFFLINE],
+    env: {
+      ...launchEnv(),
+      ...userAuthEnv(o),
+      CORE_DIST: coreDist,
+      COTAL_SPACE: o.space,
+      COTAL_NAME: o.name,
+      COTAL_SERVERS: o.servers ?? "",
+      ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
+    },
+  }),
+};
+registry.register(e2eOfflineCon);
+
 
 // ---------- the real Better Auth IdP (device-code, auto-approved) ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
@@ -370,9 +399,10 @@ try {
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   // Personas (identity + file ACL) for the two spawns.
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
-  // `iota` is the never-joining seat the ps-projection cell needs, and it is spawned through the
-  // same persona path as any other, so its row differs from the rest in one way only: no mesh join.
-  for (const n of ["alpha", "beta", "delta", "iota"])
+  // `iota` is the never-joining seat the ps-projection cell needs, and `kappa` the one that joins
+  // and then goes offline while its process stays alive. Both are spawned through the same persona
+  // path as any other, so each row differs from the rest in exactly one way: its mesh state.
+  for (const n of ["alpha", "beta", "delta", "iota", "kappa"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
   // `epsilon` and `zeta` carry NO role on purpose: section E asks what a peer may delegate on the EVENT
   // PLANE, and a role is itself a delegated capability, so a `role: worker` persona would be
@@ -482,6 +512,23 @@ try {
     listed?.id === alphaPrincipal && PRESENCE_STATUSES.includes(mesh) && mesh !== "offline",
     { listed, mesh },
   );
+  // The offline seat. `alpha` is `idle` and `iota` has no roster row at all, so both of those rows
+  // are satisfied by a projection that passes `idle` and `absent` through while rewriting only
+  // `offline` to `idle`, which is the direction that matters: it renders an unavailable principal
+  // live in an operator's view. A security review measured exactly that severing green here.
+  // `kappa` joins like any other seat and then publishes `offline` on a signal, so its row stays
+  // managed with its process alive while its roster status is the one value neither other row can
+  // carry. Signalling rather than timing keeps the flip ordered after the manager's readiness wait
+  // instead of racing it.
+  const offlineReply: ControlReply = await manager.startAgent({ name: "kappa", agent: "e2e-offline", owner: OWNER });
+  const offlinePid = psList(mgr).find((a) => a.name === "kappa")?.pid;
+  if (offlinePid) process.kill(offlinePid, "SIGUSR1");
+  const offlineSeen = await until(() => rosterOf("kappa") === "offline");
+  check(
+    "a seat that joins and then goes offline is still a managed row, and the manager's roster says offline",
+    offlineReply.ok === true && offlinePid !== undefined && offlineSeen,
+    { ok: offlineReply.ok, pid: offlinePid, roster: rosterOf("kappa") },
+  );
   const projection = psList(manager).map((a) => ({ name: a.name, mesh: a.mesh, expected: rosterOf(a.name) }));
   check(
     "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
@@ -489,9 +536,11 @@ try {
     JSON.stringify(projection),
   );
   check(
-    "and the two rows really do carry different values, so no constant can satisfy both",
-    meshOf("alpha") !== "absent" && meshOf("iota") === "absent",
-    { alpha: meshOf("alpha"), iota: meshOf("iota") },
+    "and the three rows carry three different values, so neither a constant nor a rewrite of one status can satisfy all of them",
+    meshOf("alpha") !== "absent" && meshOf("alpha") !== "offline"
+      && meshOf("kappa") === "offline"
+      && meshOf("iota") === "absent",
+    { alpha: meshOf("alpha"), kappa: meshOf("kappa"), iota: meshOf("iota") },
   );
   const quietPid = (psList(manager).find((a) => a.name === "iota"))?.pid;
   if (quietPid) process.kill(quietPid, "SIGKILL");
