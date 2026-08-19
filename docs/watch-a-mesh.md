@@ -126,6 +126,14 @@ many sources answered out of how many were asked and names the ones that did not
 complete one are never the same bytes. On a link too slow to finish anything the honest answer is
 zero sources answered, and you keep looking at the last good data with the marker up.
 
+The open channel's own history read is bounded by the same deadline. It is a single read, so there
+is no short page to serve: it either produced the messages or it refuses, naming the channel and the
+bound it exceeded, and the view keeps the messages it already had rather than emptying. Every one of
+these routes takes an optional `limit`, and a value that is not a whole number is refused outright
+rather than guessed at. The same holds for the channel name in the URL: an escape the decoder cannot
+read is the caller's typo, not a broken server. Either way a malformed request is answered as a bad
+request and never as the dashboard having broken.
+
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
 raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines

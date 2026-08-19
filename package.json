@@ -436,6 +436,8 @@
     "smoke:codex-rollout-path": "tsx extensions/connector-codex/smoke/rollout-path.smoke.ts",
     "smoke:codex-events-lifecycle": "tsx extensions/connector-codex/smoke/events-lifecycle.smoke.ts",
     "smoke:presence-watch-rebuild:auth": "tsx packages/core/smoke/presence-watch-rebuild.smoke.ts",
+    "smoke:web-history-limit": "tsx implementations/web/smoke/history-limit.smoke.ts",
+    "smoke:core-history-limit": "tsx packages/core/smoke/history-limit.smoke.ts",
     "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts"
   },
   "dependencies": {
