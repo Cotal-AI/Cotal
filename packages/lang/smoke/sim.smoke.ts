@@ -284,6 +284,56 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     { seen, t2, now: sim.now() });
 }
 
+// ---- 8c) and none of them SETTLES while its own bind is still in flight -------------------------
+//
+// 8b pins each bind's VALUE and its place against the clock. Neither survives as evidence that the
+// effect WAITED for the bind, because both are invisible to a bind that resolves immediately: an
+// effect that awaited it and one that fired it and walked away record the same fact at the same
+// clock. Measured: turning `await ctx.bind(...)` into `void ctx.bind(...)` left all 28 cells above
+// green. A real bind is a durable write, so an effect that settles while its own binding is still
+// in flight is precisely the crash-recovery hole these cells exist to close: a crash in that gap
+// loses the reference the record was supposed to make recoverable. The bind below therefore does
+// NOT settle on its own, so the only way for the effect to finish is to await it.
+
+{
+  const settlesOnlyAfterItsBind = async (
+    name: string,
+    start: (sim: SimHandler, held: (k: StepKey) => EffectContext, s: KeyScope) => Promise<unknown>,
+  ) => {
+    const sim = new SimHandler({
+      turns: { build: { status: "done", at: 0 } },
+      asks: { q: 3 },
+      checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
+    });
+    const s = new KeyScope();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const st = { entered: false, settled: false };
+    const held = (k: StepKey): EffectContext => ({
+      ...ctxFor(k),
+      bind: async () => { st.entered = true; await gate; },
+    });
+    const running = start(sim, held, s).then(() => { st.settled = true; });
+    // Several macrotask turns, not one microtask drain: an effect that dropped the await would have
+    // advanced its clock and returned many times over by now.
+    for (let i = 0; i < 5; i++) await new Promise((r) => setTimeout(r, 0));
+    ok(`${name} reaches its bind and does NOT settle while that bind is in flight`,
+      st.entered && !st.settled, { ...st });
+    release();
+    await running;
+    ok(`${name} settles once its bind has completed`, st.settled, { ...st });
+  };
+
+  await settlesOnlyAfterItsBind("spawn",
+    (sim, held, s) => sim.spawn({ persona: "builder" }, held(s.nextEffect("spawn", ""))));
+  await settlesOnlyAfterItsBind("a turn",
+    (sim, held, s) => sim.turn({ agent: { agent: "a", persona: "p" } }, held(s.nextEffect("turn", "build"))));
+  await settlesOnlyAfterItsBind("an ask",
+    (sim, held, s) => sim.ask({ agent: { agent: "a", persona: "p" }, schema: {} }, held(s.nextEffect("ask", "q"))));
+  await settlesOnlyAfterItsBind("a checkpoint",
+    (sim, held, s) => sim.checkpoint({ prompt: "ok?" }, held(s.nextEffect("checkpoint", "gate"))));
+}
+
 // ---- 9) unused script entries are reported --------------------------------------------------------------
 
 {
