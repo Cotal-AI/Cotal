@@ -30,6 +30,11 @@
  * A quoter that escaped every byte over 0x7f would render a refusal about an accented channel name
  * unreadable, which is the same defect pointed the other way.
  *
+ * A BOUND THAT IS NOT THIS CHANGE'S, recorded so it is not read as one: a query value long
+ * enough to push the request line past Node's header limit is refused by the PARSER with a
+ * 431 and a non-JSON body, before any route runs. Measured at 4000 repetitions of U+2028.
+ * That is the same bound any long URL meets and it predates this file.
+ *
  * Needs nats-server on PATH. Run: pnpm smoke:web-echo-escaping
  */
 import { spawn } from "node:child_process";
@@ -234,6 +239,36 @@ try {
     const segmentHasEsc = segment(r.line).includes(cp(0x1b));
     ok("1.4 INSTRUMENT: the whole line DOES contain a raw ESC (its colour framing) while the echoed segment does not, which is why 1.3 reads the segment",
       wholeLineHasEsc && !segmentHasEsc, { wholeLineHasEsc, segmentHasEsc });
+  }
+
+  // ONE VALUE CARRYING BOTH KINDS. 0.2 and 0.4 test the two halves separately, and a quoter can pass
+  // both while still being all-or-nothing per string. This is the shape a real refusal has: a name
+  // someone typed with something nasty folded into it.
+  {
+    const mixed = "a" + cp(0x202e) + cp(0x7f) + cp(0x1f4a9) + "z";
+    const r = await refuse([...Buffer.from(mixed, "utf8")].map((b) => "%" + b.toString(16).toUpperCase().padStart(2, "0")).join(""));
+    const body = r.body.toString("utf8");
+    const err = (() => { try { return (JSON.parse(body) as { error?: string }).error ?? ""; } catch { return "(not JSON)"; } })();
+    ok("1.6 a MIXED value escapes only the class members and leaves the rest alone, including an astral emoji whose surrogate PAIR the class must not touch",
+      err.includes('"a' + escaped(0x202e) + escaped(0x7f) + cp(0x1f4a9) + 'z"'), err);
+  }
+
+  // What a security lens asks next, answered by execution rather than by reasoning: percent escapes
+  // that are not valid UTF-8. `URLSearchParams` turns each bad byte into U+FFFD, which is a VISIBLE
+  // character, so the refusal stays readable and the body stays JSON. The failure this rules out is
+  // a decode that throws on the refusal path, which would turn a caller's typo into a 500 or worse.
+  {
+    const bad: string[] = [];
+    for (const [name, q] of [["lone surrogate", "%ED%A0%80"], ["overlong NUL", "%C0%80"],
+                             ["bare FF", "%FF"], ["truncated 3-byte", "%E2%80"]] as [string, string][]) {
+      const r = await refuse(q);
+      const body = r.body.toString("utf8");
+      let err = "(not JSON)";
+      try { err = (JSON.parse(body) as { error?: string }).error ?? "(no error key)"; } catch { /* keep */ }
+      if (r.status !== 400 || !err.includes(cp(0xfffd))) bad.push(name + " -> " + r.status + " " + JSON.stringify(err.slice(0, 60)));
+    }
+    ok("1.7 percent escapes that are not valid UTF-8 refuse 400 with a readable U+FFFD and a body that still parses, rather than throwing on the refusal path",
+      bad.length === 0, bad);
   }
 
   console.log("2. the other caller-controlled thing on that same line");

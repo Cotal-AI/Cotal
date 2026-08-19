@@ -35,6 +35,13 @@
       "find": "const INVISIBLE_AFTER_JSON = /[\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
       "replace": "const INVISIBLE_AFTER_JSON = /[\\u007e-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
       "expectRed": "0.6 the bounds are exact: the codepoint on each side of every range is left alone"
+    },
+    {
+      "name": "E6 the global flag is dropped, so only the FIRST class member in a value is escaped and every one after it still arrives raw: the classic regex slip, invisible to any cell whose input carries a single codepoint",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/;",
+      "expectRed": "1.6 a MIXED value escapes only the class members and leaves the rest alone, including an astral emoji whose surrogate PAIR the class must not touch"
     }
   ],
   "progressPattern": "^[0-9]\\. "
