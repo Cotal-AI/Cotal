@@ -2787,6 +2787,61 @@ let n = 1;
   );
 }
 
+// ---- 22d) and the absence exemption follows the scope's KIND, not its shape --------------------
+//
+// The exemption above is POSITIONAL: `undefined` in a BRANCH SLOT is a branch that answered nothing.
+// `parallel`, `fanOut` and `race` settle an interpreter assembly, so level one is slots. A
+// `conclave` settles the BODY'S OWN VALUE, so level one is already the program's record fields, and
+// the first version of this rule handed them the slot exemption. Measured before this cell: a
+// conclave body returning `{ x: e.missing }` COMPLETED, the store wrote the field away as `{}` with
+// nothing raised, and a replay handed the program `keys(r) == []` where the live run had `["x"]`.
+// The same silent false replay, with `undefined` in the place of a function.
+{
+  const conclaveRefuses = `const a = await spawn("a", { name: "a" });\nconst e = { present: 1 };\nconst out = await conclave([a], async (ch) => {\n  return { x: e.missing };\n}, { name: "huddle", channel: "war-room" });\n`;
+  const conclaveModule = transform(conclaveRefuses).module;
+  const said = (e: unknown) => ({ name: (e as Error)?.name, message: String((e as Error)?.message ?? e) });
+
+  const w = await walkerRun(conclaveRefuses, { runId: "cv-w", handler: new SimHandler({}), journal: new Journal({ run: "cv-w" }) } as never)
+    .then(() => null, (e: Error) => said(e));
+  const en = await runOnEngine(conclaveRefuses, conclaveModule, { runId: "cv-e", handler: new SimHandler({}), journal: new Journal({ run: "cv-e" }), evaluate: plainly } as never)
+    .then(() => null, (e: Error) => said(e));
+  const t = await runInWorker(
+    { source: conclaveRefuses, module: conclaveModule, runId: "cv-t", handler: { module: SIM_HANDLER, config: {} } },
+    { entry: WORKER_ENTRY },
+  ).done.then((a) => a as { ok?: boolean; name?: string; message?: string }, (e: Error) => ({ ok: false, ...said(e) }));
+
+  ok(
+    "a CONCLAVE body's own record field is not a branch slot, so an absent field in it is refused like any other recorded value",
+    w !== null && en !== null && t.ok === false && w.name === "NotCrossable" && en.name === "NotCrossable" && t.name === "NotCrossable",
+    { walker: w?.name, engine: en?.name, worker: t.name },
+  );
+  ok(
+    "and all three name the field, in the scope's own coordinates, with the same words",
+    w !== null && en !== null && /conclave:huddle#0\.x/.test(w.message) && w.message === en.message && en.message === t.message,
+    { message: String(w?.message).slice(0, 110), same: w?.message === t.message },
+  );
+
+  // THE TWO CONTROLS, because a rule that refused every conclave would satisfy the cells above.
+  const conclaveCompletes = `const a = await spawn("a", { name: "a" });\nawait conclave([a], async (ch) => {\n  log("in");\n}, { name: "huddle", channel: "war-room" });\nlog("done");\n`;
+  const cLogs: unknown[][] = [];
+  const completed = await walkerRun(conclaveCompletes, { runId: "cv-ok", handler: new SimHandler({}), journal: new Journal({ run: "cv-ok" }), onLog: (l: { values: readonly unknown[] }) => cLogs.push([...l.values]) } as never)
+    .then(() => true, () => false);
+  ok(
+    "while a conclave whose body ends in a STATEMENT still completes, because producing no value at all is still absence",
+    completed && JSON.stringify(cLogs) === '[["in"],["done"]]',
+    { completed, logs: cLogs },
+  );
+  const parallelSlot = `const p = await parallel({ a: async () => { log("branch"); } }, { name: "p" });\nlog("done");\n`;
+  const pLogs: unknown[][] = [];
+  const slotOk = await walkerRun(parallelSlot, { runId: "cv-p", handler: new SimHandler({}), journal: new Journal({ run: "cv-p" }), onLog: (l: { values: readonly unknown[] }) => pLogs.push([...l.values]) } as never)
+    .then(() => true, () => false);
+  ok(
+    "and a parallel BRANCH that answered nothing still completes, which is the exemption this kind keeps",
+    slotOk && JSON.stringify(pLogs) === '[["branch"],["done"]]',
+    { completed: slotOk, logs: pLogs },
+  );
+}
+
 // ---- 23) the mutation config, audited against this suite's own cells -----------------------------
 //
 // A mutation config is an instrument, and this one had four failure modes that all LOOK like a

@@ -927,7 +927,7 @@ export async function performScope(
   // travel with the failure, because a cancel intent this scope issued is owed whether or not its
   // value could be written.
   try {
-    assertScopeValueCrossable(outcome.value, `the value of ${stepKeyString(scopeKey)}`);
+    assertScopeValueCrossable(outcome.value, `the value of ${stepKeyString(scopeKey)}`, scopeKey.kind);
   } catch (e) {
     if (!(e instanceof NotCrossable)) throw e;
     await host.journal.settle(

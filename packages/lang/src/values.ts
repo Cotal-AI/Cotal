@@ -207,27 +207,40 @@ export class Prng {
 }
 
 /**
- * The value rule over a SCOPE's assembled value, with one narrow exemption: ABSENCE.
+ * The value rule over a SCOPE's settled value. The exemption it carries is ABSENCE, and it is
+ * POSITIONAL, so it has to follow the scope's KIND rather than its shape.
  *
- * A scope's value is not the program's, it is the interpreter's assembly of its branches: a record
- * or array of branch values for `parallel` and `fanOut`, `{ index, value }` for `race`, and the
- * body's own value for `conclave`. A branch or body whose last line is a statement produced NO
- * VALUE, which is legal and ordinary, so `undefined` in that position is ABSENCE and not a value
- * that failed the rule. Measured, before this exemption existed: fencing the assembled value whole
- * refused ordinary `parallel` scopes whose branch merely ended in a statement, on both the write
- * side and the load side.
+ * `parallel`, `fanOut` and `race` settle an INTERPRETER ASSEMBLY: a record or array of branch
+ * values, or `{ index, value }` for a race. A branch whose last line is a statement produced no
+ * value, which is legal and ordinary, so `undefined` in a branch SLOT is absence rather than a value
+ * that failed the rule. That is the exemption, and it is exactly one level deep, where the assembly
+ * puts branch outcomes. A branch that returns `{ x: undefined }` is refused exactly as an effect
+ * result carrying the same record is: that `undefined` is a field the PROGRAM wrote.
  *
- * THE EXEMPTION IS EXACTLY ONE LEVEL DEEP, where the assembly puts branch outcomes, and nowhere
- * else. A branch that returns `{ x: undefined }` is refused exactly as an effect result carrying
- * the same record is: that `undefined` is a field the program wrote, not a branch that answered
- * nothing, and the effect path has always refused it.
+ * `conclave` HAS NO ASSEMBLY. Its settled value is the body's own value, so level one is already the
+ * program's own record fields, and giving them the slot exemption hands it to exactly the values it
+ * was never meant to cover. Measured, on the rule's first version: a conclave body returning
+ * `{ x: e.missing }` completed, the durable store wrote the field away as `{}` with nothing raised,
+ * and a replay handed the program `keys(r) == []` where the live run had `["x"]`. The same silent
+ * false replay the rule exists to stop, with `undefined` in the place of a function. So a conclave
+ * exempts only a body that produced NO VALUE AT ALL, and everything inside a value it did produce
+ * answers to the effect door's rule.
+ *
+ * UNKNOWN KINDS TAKE THE STRICTER READING, because a kind this function has not been taught about
+ * is one nobody has decided the shape of, and the wrong default there is the silent one.
  *
  * It lives here rather than beside either caller because BOTH doors need the same rule: the write
- * fence in `perform.ts` and the load scan in `journal.ts`. Two copies of a rule this fiddly is how
- * the two ends stop agreeing.
+ * fence in `perform.ts` and the load scan in `journal.ts`. Two copies of a rule this positional is
+ * how the two ends stop agreeing.
  */
-export function assertScopeValueCrossable(value: unknown, where: string): void {
+const ASSEMBLING_SCOPES: ReadonlySet<string> = new Set(["parallel", "race", "fanOut"]);
+
+export function assertScopeValueCrossable(value: unknown, where: string, scopeKind: string): void {
   if (value === undefined) return;
+  if (!ASSEMBLING_SCOPES.has(scopeKind)) {
+    assertCrossable(value, where);
+    return;
+  }
   if (Array.isArray(value)) {
     value.forEach((el, i) => {
       if (el !== undefined) assertCrossable(el, `${where}[${i}]`);

@@ -346,7 +346,7 @@ export class Journal {
           if (SCOPE_KINDS.has(e.kind)) {
             const assembled = e.result as { readonly branches?: unknown; readonly value?: unknown };
             if (assembled.branches !== undefined) assertCrossable(assembled.branches, "the recorded branch list");
-            assertScopeValueCrossable(assembled.value, "the recorded result.value");
+            assertScopeValueCrossable(assembled.value, "the recorded result.value", e.kind);
           } else {
             assertCrossable(e.result, LABEL_OF.result);
           }
