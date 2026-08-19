@@ -1148,10 +1148,16 @@ await parallel({
   const h = harness({ script: {} });
 
   ok("the walker short-circuits an absent member", (await onWalker(`const o = { a: 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",null]] []');
-  ok(
-    "and so does the engine, with nothing called",
-    (await h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", () => [], true))) === undefined,
-  );
+  // CAPTURED, not awaited into the assertion: without the short-circuit this call THROWS L4011, and
+  // written the other way the throw left the block and killed the suite anonymously instead of
+  // failing the cell that names the rule.
+  let absent: unknown;
+  try {
+    absent = await h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", () => [], true));
+  } catch (e) {
+    absent = e;
+  }
+  ok("and so does the engine, with nothing called", absent === undefined, String(absent));
 
   ok("the walker invokes a member that IS a function", (await onWalker(`const o = { m: () => 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",1]] []');
   ok(
