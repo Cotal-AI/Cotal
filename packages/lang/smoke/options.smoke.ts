@@ -60,7 +60,7 @@ const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<st
     monitor: wrap("monitor", inner.monitor),
     openConclave: wrap("openConclave", inner.openConclave),
     closeConclave: wrap("closeConclave", inner.closeConclave),
-  } as unknown as EffectHandler;
+  } satisfies EffectHandler;
   return { handler, seen };
 };
 

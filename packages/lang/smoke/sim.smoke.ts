@@ -113,6 +113,33 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ok("a checkpoint answer is injected without a human", r.outcome === "resolved" && (r as { value?: unknown }).value === true, r);
 }
 
+// ---- 5b) `at` is stamped from virtual time on BOTH paths, whatever a script says ---------------
+//
+// `SimScript.checkpoints` refuses `at`, and the TYPE is the only thing that refuses it. A script
+// whose type is inferred and then passed by name, a cast, or a parameter declared `unknown` all
+// reach the handler with the field intact, and the three runtime consumers use exactly that last
+// route. So the promise the type makes is a promise about the implementation, and until this cell
+// existed nothing held the implementation to it: both return paths could start honouring a scripted
+// `at` and every check in this package stayed green.
+//
+// `simFrom` takes `unknown` on purpose. It is the escape the prose names, written the way the real
+// consumer writes it, so this cell drives the same route a caller can actually reach.
+{
+  const simFrom = (script: unknown) => new SimHandler(script as never);
+  const scriptWith = (status: string) => ({
+    checkpoints: { gate: { status, value: true, at: 999_999 } },
+    clock: { start: 500 },
+  });
+
+  const resolved = await simFrom(scriptWith("resolved"))
+    .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
+  ok("a scripted `at` is discarded on the RESOLVED path, which stamps virtual time", resolved.at === 60_500, resolved);
+
+  const expired = await simFrom(scriptWith("expired"))
+    .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
+  ok("a scripted `at` is discarded on the EXPIRED path too, which is the other return", expired.at === 60_500, expired);
+}
+
 // ---- 6) a scripted timeout is a choice, and costs its full budget ------------------------------------
 
 {
