@@ -37,11 +37,11 @@
       "expectRed": "2.11 all three reads are in flight together"
     },
     {
-      "name": "W6 the graph page goes back to gating its live feed behind a clean boot, so one refused read leaves it permanently disconnected with nothing on it - the measured wipe",
+      "name": "the graph page's boot is chained again, so the live feed is guaranteed to run but not to run soon",
       "file": "implementations/web/src/web/graph.js",
-      "find": "  load().catch((err) => console.error(err)).then(connect);",
-      "replace": "  load().then(connect).catch((err) => { console.error(err); setConn(false); });",
-      "expectRed": "3.11 the graph page connects whatever the boot reported"
+      "find": "  connect();\n  load().catch((err) => console.error(err));",
+      "replace": "  load().catch((err) => console.error(err)).then(connect);",
+      "expectRed": "3.11 the graph page opens the live feed WITHOUT waiting for the boot"
     },
     {
       "name": "W7 the stale marker stops naming anything, so the page keeps its data and the reader is never told which half of it is old",

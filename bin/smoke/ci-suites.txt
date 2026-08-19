@@ -357,6 +357,7 @@ smoke:web-bounded-aggregation
 smoke:presence-watch-rebuild:auth
 smoke:web-history-limit
 smoke:core-history-limit
+smoke:web-graph-boot
 # The engine host (engine wave, lane H): the seam the transformed module is handed, the worker that
 # runs it under lockdown in a Compartment with zero endowments, and the laws the walker enforces
 # inline enforced here at one boundary instead.
