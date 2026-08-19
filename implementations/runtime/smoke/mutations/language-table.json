@@ -42,15 +42,6 @@
       "note": "The outcome SHAPE as its own fact. `drive` declares `Promise<DriveOutcome>`, and a rejection is a shape the signature does not admit -- the caller that branches on `status` never sees it. The suite's own `attempt` helper turns a throw into a third observable status precisely so this grades as a named red instead of killing the run."
     },
     {
-      "name": "a fresh run is stamped with something other than its engine's version",
-      "file": "implementations/runtime/src/run-driver.ts",
-      "find": "      req.handler.now(),\n      engine.version,",
-      "replace": "      req.handler.now(),\n      \"9\",",
-      "expectRed": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
-      "cell": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
-      "note": "WIDER THAN ITS CELL, stated rather than discovered: every resume in this file binds the stamped version against the walker's and refuses, so several earlier cells redden too. It is graded on the stamp cell because that is the one whose SENTENCE is about this line. The literal is \"9\" rather than the current language constant because this module no longer imports one -- deleting that import is part of the same repair, and a mutation may not quietly restore it."
-    },
-    {
       "name": "the table refuses everything, not only what it does not serve",
       "file": "implementations/runtime/src/run-driver.ts",
       "find": "    const served = ENGINES.find((e) => e.version === pins.languageVersion);",
@@ -85,6 +76,15 @@
       "expectRed": "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
       "cell": "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
       "note": "POSITION, mutated as its own fact. Every other mutation here grades WHAT the refusal says; this one grades WHERE it happens. Deleting the guard lets the drive reach `activateRun`, which takes the lease and writes a second activation into the run's subject - so the record has been touched by a build that cannot run it, and \"refused\" would describe the message and not the effect. It is distinct from the fallback mutation: that one substitutes an engine and runs the program under the wrong semantics, this one takes the run and then dies with no engine at all."
+    },
+    {
+      "name": "a fresh run is stamped with something other than its engine's version",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "      req.handler.now(),\n      engine.version,",
+      "replace": "      req.handler.now(),\n      \"9\",",
+      "expectRed": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
+      "cell": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
+      "note": "THE DRIVER'S CHOICE OF ARGUMENT, which is the half of the stamping rule that only this suite can grade: that a resolver stamps the version it was HANDED is graded at the unit in packages/lang/smoke/mutations/language-split.json, but WHICH version this driver hands it is a fact about the table and is only visible from here. Carried in `unkillable` until 2026-08-19 because it reported WRONG-RED: every fresh run in the file is stamped by this one line, so the run died before section 12 and no cell of section 12 could be reached under any mutation of it. WHAT MADE IT GRADABLE, and the count is the correction: not the six unguarded `await startRun(...)` calls this note used to name, but NINE call sites. Wrapping the six left it WRONG-RED, measured, dying on an uncaught PinMismatch out of a start that is not one of them. Three sites hold a start promise unawaited across a 300ms window while a second holder takes the run, and a promise that lives unheld must carry its handler FROM BIRTH: a rejection landing before anyone listens takes the process down whatever the eventual await is wrapped in. Moving `attempt` to those three call sites, changing nothing else, turned WRONG-RED into KILLED, which is what attributes the mechanism."
     }
   ],
   "unkillable": [

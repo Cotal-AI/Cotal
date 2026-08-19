@@ -11,11 +11,26 @@
  * fails without saying which pin disagreed is a failure an author cannot act on.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { run, resume } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal } from "../src/journal.js";
 import { CATALOG } from "../src/errors.js";
 import { ENGINE_LANGUAGE_VERSION, LANGUAGE_VERSION, PIN_DEFAULTS, PinMismatch, WALKER_LANGUAGE_VERSION, bindPins, resolvePins } from "../src/pins.js";
+
+/**
+ * A default as the LANGUAGE REFERENCE prints it, from the pins table in spec/cotal-lang.md.
+ *
+ * It REFUSES rather than skipping when the row is absent: a reader that quietly returns nothing when
+ * it cannot find what it came for turns its cell into one that passes hardest exactly when the
+ * document it was watching has been renamed or restructured.
+ */
+const documentedDefault = (pin: string): number => {
+  const spec = readFileSync(new URL("../../../spec/cotal-lang.md", import.meta.url), "utf8");
+  const row = new RegExp(`^\\| \`${pin}\` \\|[^|]*\\| ([0-9 ]+) \\|$`, "m").exec(spec);
+  if (row === null) throw new Error(`spec/cotal-lang.md prints no default for \`${pin}\` in its pins table`);
+  return Number((row[1] as string).replace(/ /g, ""));
+};
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -42,6 +57,31 @@ const sink = (line: { scope: string; values: readonly unknown[] }) => {
     pins.yieldEvery === PIN_DEFAULTS.yieldEvery
     && pins.stepBudget === PIN_DEFAULTS.stepBudget
     && pins.effectCeiling === PIN_DEFAULTS.effectCeiling);
+  // AND THE VALUES THEMSELVES. The cell above compares `resolvePins` to `PIN_DEFAULTS`, so it
+  // witnesses the resolver FILLING from the table and cannot witness the table MOVING: both of its
+  // sides move together. MEASURED, and the gap was wider than that one cell -- a realistic edit to
+  // any of the three (`yieldEvery` 1024 -> 2048, `stepBudget` 1e6 -> 2e6, `effectCeiling` 10_000 ->
+  // 20_000) redded nothing anywhere in the lang suites. `effectCeiling` is the sharpest: it has no
+  // witness at ANY value, because no program in the corpus dispatches enough effects to approach it,
+  // and the ceiling is live -- a twelve-effect program refuses L4009 at a ceiling of seven.
+  //
+  // THE NUMBERS ARE WRITTEN HERE AS LITERALS ON PURPOSE. Deriving the expected side from anything in
+  // `src` would rebuild the common source this cell exists to break, and a constant compared against
+  // itself passes hardest exactly when it is wrong.
+  ok("and those three defaults are these exact numbers, not merely whatever the table happens to say",
+    PIN_DEFAULTS.yieldEvery === 1_024
+    && PIN_DEFAULTS.stepBudget === 1_000_000
+    && PIN_DEFAULTS.effectCeiling === 10_000,
+    PIN_DEFAULTS);
+  // THE OTHER COPY. These three numbers are written twice, once in `src` and once in the language
+  // reference, and MEASURED the reference was as free to drift as the code: editing its table row
+  // redded nothing, `smoke:docs` included. Anchoring both cells on the same literals holds all three
+  // together, so a default may only change by an edit that says so in every place it is published.
+  ok("and the language reference prints the same three, so the code and the document cannot drift apart",
+    documentedDefault("yieldEvery") === 1_024
+    && documentedDefault("stepBudget") === 1_000_000
+    && documentedDefault("effectCeiling") === 10_000,
+    { yieldEvery: documentedDefault("yieldEvery"), stepBudget: documentedDefault("stepBudget"), effectCeiling: documentedDefault("effectCeiling") });
   ok("and the language version is stamped, by the ENGINE that resolved them", pins.languageVersion === WALKER_LANGUAGE_VERSION);
 
   const supplied = resolvePins({ runId: "r-1", seed: "s-9", startedAt: 42, effectCeiling: 7 }, 1_000, WALKER_LANGUAGE_VERSION);
