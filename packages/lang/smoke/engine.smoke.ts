@@ -1767,6 +1767,47 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
   );
 }
 
+{
+  // THE LOAD DOOR, AT THE DOOR THAT CAN ACTUALLY BITE. L5024 refuses a recorded value with no
+  // canonical form in the Journal constructor, and the engine path meets that constructor TWICE: in
+  // the driver's process, and again here inside the thread. Measured, and the reason both doors
+  // exist rather than one: the durable store encodes with `JSON.stringify`, and every value
+  // `JSON.parse` can produce is one the rule ADMITS, `-0` included - so the driver's door cannot
+  // fire on entries from today's store. `workerData` is a STRUCTURED CLONE, which preserves Date,
+  // NaN, -0, an own `undefined` key and a Map. This is the only door at which those can arrive.
+  //
+  // It is also the cell for the thread's reporting path. Before the repair beside it, a failure
+  // raised while ANSWERING died as an unhandled rejection and the thread exited 0 saying nothing,
+  // so the host could report only that it had exited - the wrong cause every time. What this asserts
+  // is that the thread ANSWERS, with the language's own code, rather than going quiet.
+  const spoiled = [
+    {
+      v: 1, seq: 0, run: "l5024-w", scope: "", kind: "spawn", name: "b", occurrence: 0,
+      inputHash: "sha256:0", state: "settled", status: "done", external: { when: new Date(0) },
+    },
+  ] as unknown as Parameters<typeof runInWorker>[0]["entries"];
+  const answer = await runInWorker({
+    source: SOURCE,
+    module: MODULE,
+    runId: "l5024-w",
+    handler: { module: SIM_HANDLER, config: SCRIPT },
+    entries: spoiled,
+  }, { entry: WORKER_ENTRY }).done;
+  // NOT THE DISCRIMINATING HALF, and labelled so nobody grades on it: a hand-built entry also fails
+  // its input-hash comparison, so "the run did not complete" is what a DIVERGENCE looks like too.
+  // Measured, by aiming a mutation at this line and watching it stay green while the door was gone.
+  ok("a journal carrying a value with no canonical form does not complete INSIDE the thread", answer.ok === false, JSON.stringify(answer).slice(0, 200));
+  const refused = answer as Extract<typeof answer, { ok: false }>;
+  // THIS is the half that names the door. Only the code separates "refused on load" from "diverged
+  // on replay", and only the absence of the host's own "exited" wording separates an ANSWER from a
+  // thread that died and left the host to guess.
+  ok(
+    "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
+    refused.code === "L5024" && !/exited/.test(refused.message),
+    { code: refused.code, message: refused.message.slice(0, 120) },
+  );
+}
+
 // ---- 17) the concurrency scopes -----------------------------------------------------------------
 //
 // The engine calls the SAME `performScope` and `runScope` the walker calls, with the same arguments

@@ -61,6 +61,39 @@ export function option(bag: unknown, key: string): unknown {
  * Everything durable happens here. A handler is called only in the `miss` and `pending` cases,
  * and in `pending` it is told to re-bind rather than re-issue.
  */
+/**
+ * An `EffectError`'s `detail` is a RECORDED VALUE, and until this function it was the last one with
+ * no domain check on it.
+ *
+ * Measured, with the binding guard already in place: a handler throwing
+ * `new EffectError("L6002", …, { cb: () => 1 })` from a step the program CATCHES leaves a run that
+ * SUCCEEDS while its journal carries a function. In-process that is merely wrong; through the worker
+ * the whole journal is structured-cloned back to the host, so the same run dies on a DataCloneError.
+ * A failing run never posts its entries — the worker hand-builds `{ok,code,name,message}` on that
+ * path — so a caught failure on the success path is the route, and it is a real program, not a
+ * contrived one.
+ *
+ * WHAT A REFUSAL COSTS, said out loud because it is a real cost: the handler's own classification is
+ * dropped. An error whose report cannot be recorded is recorded as what it is — a fault of the
+ * handler's, L4000, naming both the original message and why the detail could not be kept. Keeping
+ * `code` while silently dropping `detail` was the other option and it is the fallback this repo does
+ * not do: the program would catch an L6002 whose recorded form is missing the field the handler sent
+ * it to explain itself.
+ */
+function recordableError(e: EffectError, kind: string): { readonly error: EntryError; readonly faithful: boolean } {
+  if (e.detail === undefined) return { error: { code: e.code, kind: e.kind, message: e.message }, faithful: true };
+  try {
+    assertCrossable(e.detail, "the detail of this failure");
+    return { error: { code: e.code, kind: e.kind, message: e.message, detail: e.detail }, faithful: true };
+  } catch (cause) {
+    if (!(cause instanceof NotCrossable)) throw cause;
+    return {
+      error: { code: "L4000", kind, message: `${e.message} (and its detail could not be recorded: ${cause.message})` },
+      faithful: false,
+    };
+  }
+}
+
 export async function performEffect(
   host: EffectHost,
   kind: EffectKind,
@@ -156,7 +189,23 @@ export async function performEffect(
     requestId: reqId,
     attempt,
     ...(resume !== undefined ? { resume } : {}),
+    // THE THIRD PATH INTO AN ENTRY, and until this line the only one with no rule. The other two sit
+    // a few lines apart — the RESULT at the settle below, the ARGUMENTS in `dispatchPrimitive` — and
+    // a handler's own `ctx.bind` reached `journal.bind` with nothing in between. Measured before this
+    // line, on both engines: a handler binding `{ when: new Date(0), n: -0, bad: NaN, gone: undefined }`
+    // recorded all four, and the durable store gives them back as a string, `0`, `null` and an absent
+    // key — so the value a resume RE-BINDS to was not the value that was bound.
+    //
+    // CANONICAL, NOT ROUND-TRIP-EXACT, and the difference matters to whoever reads this next. `-0` is
+    // the one value this rule ADMITS that JSON still flattens, and the step key's own input hash
+    // equates it with `0` (`digest({n:-0}) === digest({n:0})`; the 1-vs-2 and -1-vs-1 controls
+    // differ). The promise here is that a binding HAS a canonical form, not that it survives a store
+    // byte for byte.
+    //
+    // Inside the handler's dispatch `try` by construction, so a refusal settles the entry FAILED
+    // through the existing L4000 handler-fault family and needs no code of its own.
     bind: async (external) => {
+      assertCrossable(external, `the binding of ${stepKeyString(key)}`);
       await host.journal.bind(key, external);
     },
   };
@@ -191,13 +240,17 @@ export async function performEffect(
     // `.code` or `.message` off `null` would replace its failure with the recorder's own.
     const raised = (e as { code?: unknown } | null | undefined)?.code;
     const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
+    const recorded = e instanceof EffectError ? recordableError(e, "handler-fault") : undefined;
     const error: EntryError =
-      e instanceof EffectError
-        ? { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }
+      recorded !== undefined
+        ? recorded.error
         : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
     await host.journal.settle(key, { status: "failed", error }, endedAt);
     frame.clock.advance(endedAt);
-    throw e instanceof EffectError ? e : new EffectError(error.code, error.kind, error.message);
+    // THE CALLER AND THE RECORD SAY THE SAME THING. Rethrowing the handler's own error unchanged is
+    // right whenever the record kept it; when the detail forced a downgrade it is not, because the
+    // program would then catch an L6002 the journal has no L6002 for.
+    throw recorded?.faithful === true ? e : new EffectError(error.code, error.kind, error.message);
   }
 
   const endedAt = host.options.handler.now();
@@ -795,7 +848,13 @@ export async function performScope(
     requestId: reqId,
     attempt: recorded?.attempt ?? 0,
     ...(resume !== undefined ? { resume } : {}),
+    // BOTH WRAPPERS OR NEITHER — see {@link performEffect}'s bind for the rule and for why it is
+    // canonical rather than round-trip-exact. Guarding the effect path alone is the half-fence: that
+    // one is reached by everything (measured across the lang suites: 275 reaches, every one from the
+    // simulator's own binds) and THIS one was executed by nothing at all, in either direction, until
+    // the cell below it existed. A guard no run has executed is indistinguishable from a deleted one.
     bind: async (external) => {
+      assertCrossable(external, `the binding of ${stepKeyString(scopeKey)}`);
       await host.journal.bind(scopeKey, external);
     },
   };
@@ -825,14 +884,14 @@ export async function performScope(
       await host.journal.settle(scopeKey, { status: "cancelled" }, endedAt, facts);
       throw reason;
     }
+    // Same rule as the effect path's. The RETHROW below is deliberately left alone: this scope
+    // rethrows the raw reason, so a program catching a scope fault sees no language code where the
+    // effect path hands it one. That asymmetry predates this rule — measured with a plain throw on
+    // both paths — and it is recorded as a finding rather than repaired here, because repairing it
+    // moves the spec, the walker and the engine together.
     const err: EntryError =
       reason instanceof EffectError
-        ? {
-            code: reason.code,
-            kind: reason.kind,
-            message: reason.message,
-            ...(reason.detail !== undefined ? { detail: reason.detail } : {}),
-          }
+        ? recordableError(reason, "scope-fault").error
         : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
     // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
     // carries the intent too — and a conclave that closed says so even when its body failed.

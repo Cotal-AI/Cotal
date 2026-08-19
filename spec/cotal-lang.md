@@ -770,6 +770,25 @@ after; a reader folds by key and the last write wins. `result` and `error` are e
 is present only on a failed scope, because a successful one carries them inside `result`. Unknown
 fields MUST be ignored.
 
+`external` and `error.detail` are **values that crossed an effect boundary** and answer to the same
+rule as `result` and an effect's arguments (§4.4): a host MUST refuse either one if it is not
+crossable, where it is written, and a resume MUST refuse a journal whose recorded `external` or
+`error.detail` is not crossable, with **L5024**. The refusal on load names the entry AND which of
+the two fields, because "this journal cannot load" is otherwise not actionable. A value refused
+where it is written is a failure of the handler's own dispatch and carries `L4000` with kind
+`handler-fault` (or `scope-fault` inside a scope); it is not a catalog code of its own, because the
+catalog already says exactly that. A failure whose `detail` is refused is recorded under `L4000`
+rather than under the code the handler chose, and the recorded message MUST say that the detail
+could not be kept: dropping the field while keeping the code would hand a program a classified
+failure whose recorded form is missing the field sent to explain it.
+
+The rule makes a binding **canonical, not round-trip-exact**, and the difference is a property of
+the store rather than of the language. A crossable value has a canonical form (§10.3), but a store
+is free to encode in a way that loses distinctions the canonical form keeps: JSON, the encoding this
+repo's durable store uses, writes `-0` as `0` while `JSON.parse` can still produce `-0`, and the
+step key's own input hash equates the two. So a host MUST NOT read this rule as a promise that
+`external` survives a round trip byte for byte.
+
 ### 10.2 Keys
 
 A step is keyed by **where** it is, never by when: `(scope path, kind, name, occurrence)`, with the
@@ -1006,6 +1025,7 @@ time, L5xxx durability, L6xxx simulation.
 | L5021 | Resume over a journal without the run's pins |
 | L5022 | A recorded branch is not in the migrated source |
 | L5023 | No engine in this build serves this record's language version |
+| L5024 | A recorded binding has no canonical form |
 | L6001 | Unscripted effect in simulation |
 | L6002 | Simulation script entry unused |
 
@@ -1027,3 +1047,5 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-18 | Language-lane folds, same revision: operators, computed member keys and the library's primitive parameters coerce primitives only, an array, record or function operand is refused (L4018, §4.5, §5.4); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
 | 2026-08-19 | A record may not carry a callable `then`, on a literal, a spread, a rest pattern or a member write alike, literal key or computed (L4021, §4.3): an object with a callable `then` is a thenable, the host's promise machinery adopts it in place of the value the program built, and its failure escaped the run as an unowned rejection that killed the host. |
 | 2026-08-19 | Language version `2`, the compiled engine, alongside version `1`, the tree-walker (§8.4): a step is the engine's own unit and budgets are not comparable across versions (§8.3, §12); `log` is data under version 2 and refuses code (L4016); an engine stamps and compares its own version, so a record binds only under the engine that wrote it (L5008); and a build that dispatches to engines refuses a version none of its engines serves, naming what it does serve, leaving the run untouched (L5023, §11.1). |
+| 2026-08-19 | A binding is a value and answers to the value rule (§10.1): a host refuses a binding that is not crossable at the bind, carrying `L4000` with the dispatch's own kind rather than a code of its own, and a resume refuses a journal whose recorded `external` is not crossable, naming the entry and the field (L5024). Stated as canonical and NOT round-trip-exact, because a store may lose distinctions the canonical form keeps: JSON writes `-0` as `0`. |
+| 2026-08-19 | The same rule reaches a failure's `detail` (§10.1): it is a value the handler chose and the record keeps, so it is refused where it is written and on load, and a failure whose detail is refused is recorded under `L4000` with the reason rather than under the handler's own code with the field quietly missing. Reachable because a program that CATCHES an effect failure still completes, so a successful run can carry a settled failure. |

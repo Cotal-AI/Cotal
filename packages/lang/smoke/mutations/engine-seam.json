@@ -74,7 +74,7 @@
       "expectRed": "a literal with an own callable `then` refuses at birth (L4021)",
       "completionMarker": "ok writing a member of null is L4010",
       "cell": "a literal with an own callable `then` refuses at birth (L4021)",
-      "note": "Measured: returning such a value out of any async function runs its `then` with the host's settlement functions as arguments, outside the run's frame. Birth is one of the two doors that close the whole value graph. The cell captures the outcome instead of returning the value through its own async boundary: written the other way, this mutant made the suite HANG rather than fail (the assimilated `then` ignores resolve, so the promise never settles, exit 13) \u2014 the hazard demonstrating itself inside the cell meant to grade it."
+      "note": "Measured: returning such a value out of any async function runs its `then` with the host's settlement functions as arguments, outside the run's frame. Birth is one of the two doors that close the whole value graph. The cell captures the outcome instead of returning the value through its own async boundary: written the other way, this mutant made the suite HANG rather than fail (the assimilated `then` ignores resolve, so the promise never settles, exit 13) — the hazard demonstrating itself inside the cell meant to grade it."
     },
     {
       "name": "the thenable gate at a field write is dropped, so a record acquires one after birth",
@@ -134,7 +134,7 @@
       "expectRed": "and a member call through the seam agrees",
       "completionMarker": "ok a record-shaped builtin hands out program-convention members",
       "cell": "and a member call through the seam agrees",
-      "note": "This is the defect the cell was written from, not one invented for the config: collapsing the table path and the own-field path adapted twice, passed the frame in as the first argument, and shifted every real argument along by a position \u2014 `json.stringify([1,2])` refused its own array as an illegal second argument, a convention mismatch wearing a coercion error's name."
+      "note": "This is the defect the cell was written from, not one invented for the config: collapsing the table path and the own-field path adapted twice, passed the frame in as the first argument, and shifted every real argument along by a position — `json.stringify([1,2])` refused its own array as an illegal second argument, a convention mismatch wearing a coercion error's name."
     },
     {
       "name": "a seam call with no frame invents one instead of failing",
@@ -944,6 +944,16 @@
       "cell": "a name that is a substring of one cell but is not that cell passes the tool's rule and fails the exact-match half",
       "completionMarker": "ok a run spliced in above the guard is caught by the audit",
       "note": "Weakened to the TOOL's own substring rule, which is the reading that nearly collapsed the two name checks into one and deleted this half. It is a real loss in the audit, not a stylistic one: a substring aim then goes unreported, `indexOf` still answers -1 for it, and the ordering check below silently skips that mutation."
+    },
+    {
+      "name": "the load door stops looking, so the thread's own door is the one that goes quiet",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail]] as const) {",
+      "replace": "      for (const [field, value] of [] as [string, unknown][]) {",
+      "expectRed": "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
+      "cell": "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
+      "completionMarker": "and its journal is the first run's, entry for entry",
+      "note": "The lang suite proves the door DEPENDS on the value; this proves the THREAD reaches it. They are different claims and the second is the one that matters here, because workerData is a structured clone and preserves Date, NaN, -0, an own `undefined` key and a Map - so the thread's door is the only one of the two that can fire on today's store. Aimed at the CODE cell, not at the completes/does-not-complete one: measured, the latter stays green with the door deleted, because a hand-built entry fails its input-hash comparison too and a divergence looks the same from outside."
     }
   ]
 }
