@@ -142,8 +142,10 @@ export type InboxScope = "all" | "automatic" | "pull-only";
 
 export interface ExactDrainResult {
   items: InboxItem[];
-  missingIds: string[];
+  missingKeys: string[];
 }
+
+import { randomUUID } from "node:crypto";
 
 function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
@@ -223,15 +225,14 @@ export class MeshAgent extends EventEmitter {
    *  published after it ("since you entered focus"). Undefined unless in focus. */
   private focusSince?: number;
   private enteringFocus = false;
-  /** IDs received under quiet/muted while focused must never reappear through stream recall after a
-   *  mode toggle. If this bounded exclusion history fills, recall for the affected channel fails
-   *  closed and reports the channel as incomplete. */
+  /** The receive-key namespace secret (#624): a per-session random value minted at construction,
+   *  never written to any wire or log. Minted receive keys are `${secret}.${seq}`, so they are
+   *  DISJOINT from wire ids by construction: an attacker-chosen wire id cannot equal one, so one
+   *  verdict can never select two entries through a forged collision. Recognition is FUNCTIONAL
+   * (the key starts with the secret), so it cannot saturate the way a bounded set would: every
+   * minted key stays recognizable for the session's life, with nothing to expire or overflow. */
+  private readonly recvKeySecret = randomUUID().replace(/-/g, "");
   private recvKeySeq = 0;
-  /** Receive keys this session minted for id-less deliveries (#624). Not authority: a lookup set,
-   *  so an exact-drain request can be told apart from a wire id and never recorded as handled-authority
-   *  for an id it does not own. Bounded; past the bound a minted key is simply not recognized, which
-   *  degrades to the at-least-once stance instead of to a wrong authority. */
-  private mintedRecvKeys = new Set<string>();
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
   private stopping = false;
@@ -442,7 +443,6 @@ export class MeshAgent extends EventEmitter {
   }
 
   private buffer(item: InboxItem, ack: () => void, pullOnly: boolean): void {
-    if (item.id === "" && this.mintedRecvKeys.size < 4096) this.mintedRecvKeys.add(item.recvKey);
     this.inbox.push({ item, ack, pullOnly });
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow remains
@@ -472,7 +472,7 @@ export class MeshAgent extends EventEmitter {
         // surfaced batch is made of, so without this an arrival can ack a message a host is still
         // trying to hand to its runtime. Evicting bounds memory; acking is what makes it
         // unrecoverable — gone from the buffer, never marked handled, no longer redeliverable. Left
-        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxIds} marks the
+        // un-acked it redelivers; and if the delivery does succeed, {@link drainInboxDeliveries} marks the
         // now-missing id handled so that redelivery is silently acked.
         //
         // A directed message is never acked on overflow: leaving it un-acked lets JetStream redeliver
@@ -569,7 +569,7 @@ export class MeshAgent extends EventEmitter {
       // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
       // an empty id is never a dedup key, so it is never an address either; but the delivery still
       // needs to be individually drainable/ackable, or it can never clear and never commit).
-      recvKey: m.id !== "" ? m.id : `rx${++this.recvKeySeq}`,
+      recvKey: m.id !== "" ? m.id : `${this.recvKeySecret}.${++this.recvKeySeq}`,
       ts: m.ts,
       fromId: m.from.id,
       fromName: m.from.name,
@@ -643,20 +643,23 @@ export class MeshAgent extends EventEmitter {
     const eligible = this.inbox.filter((p) => this.inScope(p, scope));
     const n = limit && limit > 0 ? Math.min(limit, eligible.length) : eligible.length;
     const selected = eligible.slice(0, n);
-    const ids = new Set(selected.map((p) => p.item.id));
-    this.inbox = this.inbox.filter((p) => !ids.has(p.item.id));
+    // Remove by OBJECT IDENTITY, not by a set of wire ids (#624): the id-less entries share "", so
+    // an id set would remove every id-less neighbor beyond the limit and outside the scope while
+    // acking only the selected — silent loss by selection. Identity removes exactly what was taken.
+    const taken = new Set(selected);
+    this.inbox = this.inbox.filter((p) => !taken.has(p));
     return this.commitPending(selected);
   }
 
   /** Ack exact surfaced deliveries without assuming they still form the physical inbox prefix.
    *  Takes RECEIVE keys ({@link InboxItem.recvKey}): the wire id for real messages, a minted key
-   *  for id-less ones: and selects by them, so a host that surfaced one empty-id item drains THAT
+   *  for id-less ones, and selects by them, so a host that surfaced one empty-id item drains THAT
    *  delivery, never its neighbors: the sweep the raw id produced (every pending empty-id item
    *  acked and marked handled in one call) is closed by construction, not by filtering. Every
    *  requested key whose item is present is acked and (for a real id) marked handled, including an
    *  item overflow-evicted during the turn. */
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
-    const requested = [...new Set(ids)];
+  drainInboxDeliveries(keys: readonly string[]): ExactDrainResult {
+    const requested = [...new Set(keys)];
     const wanted = new Set(requested);
     const selected = this.inbox.filter((p) => wanted.has(p.item.recvKey));
     const present = new Set(selected.map((p) => p.item.recvKey));
@@ -672,7 +675,7 @@ export class MeshAgent extends EventEmitter {
       // markHandled already refuses, so skipping it here is the same at-least-once stance rather
       // than a new one. Recording the minted key itself would pollute handledIds with a string a
       // future REAL id could legitimately equal, arming the exact suppression this change removes.
-      if (!present.has(id) && !this.mintedRecvKeys.has(id)) {
+      if (!present.has(id) && !id.startsWith(`${this.recvKeySecret}.`)) {
         this.markHandled(id, pullOnly.get(id) ?? false);
         this.evictedClassifications.delete(id);
       }
@@ -681,7 +684,7 @@ export class MeshAgent extends EventEmitter {
       // history toward the give-up cap. Keyed on the receive key, like the tally itself.
       this.overflowEvictions.delete(id);
     }
-    return { items, missingIds: requested.filter((id) => !present.has(id)) };
+    return { items, missingKeys: requested.filter((key) => !present.has(key)) };
   }
 
   private commitPending(taken: Pending[]): InboxItem[] {

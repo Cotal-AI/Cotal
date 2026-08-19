@@ -650,7 +650,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // The response exists before anything is acked: an ack is a claim that these messages were
           // handed over, so nothing may be cleared while the handing-over is still hypothetical. And
           // it is the ASSEMBLED response that decides, so what is acked is what a caller was handed.
-          if (!peek) agent.drainInboxIds(shown.map((i) => i.recvKey));
+          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.recvKey));
           void held;
           return ok(text);
         }
@@ -723,7 +723,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // Render first, ack second, and only ever ids from the buffered lane: acking a recall id
         // would mark it handled, so a later live copy of that channel message would be dropped.
         if (!peek) {
-          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));
+          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.recvKey)).map((i) => i.recvKey));
           // THE MARK MOVES OVER AN UNBROKEN PREFIX, and stops at the first thing this reply did not
           // carry. Two recall items can share a millisecond, so the mark is a (timestamp, id) pair:
           // a timestamp alone either strands the twin, if it moves past both, or re-serves the one

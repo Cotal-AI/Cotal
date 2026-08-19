@@ -1033,7 +1033,7 @@ export const cotal: Plugin = async () => {
    *  confirmed delivery handled while only acking entries still present. */
   function ackSurfaced(): void {
     if (surfaced.length === 0) return;
-    agent.drainInboxIds(surfaced);
+    agent.drainInboxDeliveries(surfaced);
     surfaced = [];
   }
 

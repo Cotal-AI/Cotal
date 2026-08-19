@@ -196,7 +196,7 @@ try {
   // ── 6) FOCUS: the response carries two lanes, and only one of them is destructive ──────────────
   //
   // In focus mode the reply mixes the live buffer (DMs/anycast, clearable) with read-only channel
-  // recall pulled back from the stream. Passing a recall id to drainInboxIds would not merely be
+  // recall pulled back from the stream. Passing a recall id to drainInboxDeliveries would not merely be
   // untidy: ids are marked HANDLED there, so a later live copy of that message would be dropped as
   // a duplicate: mail lost by a read that never owned it.
   //

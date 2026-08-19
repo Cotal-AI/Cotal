@@ -291,7 +291,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     }
     for (const id of ids) unconfirmed.delete(id);
     try {
-      agent.drainInboxIds(ids);
+      agent.drainInboxDeliveries(ids);
     } catch {
       // The ack itself failed — a JetStream ack publishes, so a closed connection throws. Whatever
       // did not ack is also not marked handled, so JetStream redelivers it and nothing is lost. But

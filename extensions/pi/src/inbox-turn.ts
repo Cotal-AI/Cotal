@@ -3,7 +3,7 @@ import type { ExactDrainResult, InboxItem, InboxScope } from "./inbox-types.js";
 export interface InboxSource {
   peekInbox(scope?: InboxScope): InboxItem[];
   drainInbox(limit?: number): InboxItem[];
-  drainInboxIds(ids: readonly string[]): ExactDrainResult;
+  drainInboxDeliveries(keys: readonly string[]): ExactDrainResult;
 }
 
 export interface CommitResult {
@@ -34,14 +34,14 @@ export class InboxTurn {
    *  other inside a turn. */
   discardTombstoned(): number {
     const ids = this.source.peekInbox().filter((item) => this.hasTombstone(item.recvKey)).map((item) => item.recvKey);
-    if (ids.length) this.source.drainInboxIds(ids);
+    if (ids.length) this.source.drainInboxDeliveries(ids);
     return ids.length;
   }
 
   /** Exact discard for adapter-local traffic such as own echoes, even behind pull-only items. */
   discardMatching(match: (item: InboxItem) => boolean): number {
     const ids = this.source.peekInbox().filter(match).map((item) => item.recvKey);
-    if (ids.length) this.source.drainInboxIds(ids);
+    if (ids.length) this.source.drainInboxDeliveries(ids);
     return ids.length;
   }
 
@@ -61,9 +61,9 @@ export class InboxTurn {
     if (ids.length === 0) return { drained: 0, tombstoned: 0 };
 
     this.discardTombstoned();
-    const result = this.source.drainInboxIds(ids);
-    for (const id of result.missingIds) this.addTombstone(id);
-    return { drained: result.items.length, tombstoned: result.missingIds.length };
+    const result = this.source.drainInboxDeliveries(ids);
+    for (const key of result.missingKeys) this.addTombstone(key);
+    return { drained: result.items.length, tombstoned: result.missingKeys.length };
   }
 
   private hasTombstone(id: string): boolean {

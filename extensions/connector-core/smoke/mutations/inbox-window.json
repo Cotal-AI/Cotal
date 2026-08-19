@@ -110,7 +110,7 @@
     {
       "name": "K2 clear the whole scope up front, the order the defect was written in",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));",
+      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.id));",
       "replace": "          if (!peek) agent.drainInbox(undefined, inboxScope);",
       "expectRed": "what did not fit was NOT consumed: the buffer still holds the rest",
       "cell": "what did not fit was NOT consumed: the buffer still holds the rest",
@@ -128,8 +128,8 @@
     {
       "name": "K4 peek clears what it shows",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          if (!peek) agent.drainInboxIds(shown.map((i) => i.id));",
-      "replace": "          agent.drainInboxIds(shown.map((i) => i.id));",
+      "find": "          if (!peek) agent.drainInboxDeliveries(shown.map((i) => i.id));",
+      "replace": "          agent.drainInboxDeliveries(shown.map((i) => i.id));",
       "expectRed": "peek clears nothing at all",
       "cell": "peek clears nothing at all",
       "note": "peek is the documented workaround for this very defect, so a peek that clears is the worst possible regression here."
@@ -146,17 +146,17 @@
     {
       "name": "K6 the focus drain acks every id in the reply, recall included",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
-      "replace": "          agent.drainInboxIds(all.map((i) => i.id));",
+      "find": "          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "replace": "          agent.drainInboxDeliveries(all.map((i) => i.id));",
       "expectRed": "focus: a recall id was NOT marked handled",
       "cell": "focus: a recall id was NOT marked handled, so a later live copy of it still buffers",
-      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxIds marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned."
+      "note": "The filter reads like defensive noise: the reply carries both lanes, so acking 'what the reply carried' is the obvious simplification. It is not - drainInboxDeliveries marks an absent id HANDLED, so a later live copy of that channel message is dropped as a duplicate, and the read loses mail it never owned."
     },
     {
       "name": "K7 the focus drain stops honouring peek",
       "file": "extensions/connector-core/src/tool-specs.ts",
-      "find": "        if (!peek) {\n          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
-      "replace": "        if (true) {\n          agent.drainInboxIds(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "find": "        if (!peek) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
+      "replace": "        if (true) {\n          agent.drainInboxDeliveries(all.filter((i) => bufferedIds.has(i.id)).map((i) => i.id));",
       "cell": "focus + peek: the buffered lane is NOT cleared",
       "expectRed": "focus + peek: the buffered lane is NOT cleared",
       "note": "K4 covers the same slip on the ordinary path only. Without this one a focus reply could clear while peeking, and peek is the workaround this whole change exists to retire, so it has to hold on both paths."

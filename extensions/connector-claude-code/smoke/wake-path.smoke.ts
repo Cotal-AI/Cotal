@@ -383,7 +383,7 @@ try {
   await fireHook({ hook_event_name: "Stop" });
 
   // ---- 5. the ack ITSELF fails — the branch that runs when the commit does not ------------------
-  // A JetStream ack publishes, so a closed connection throws. `drainInboxIds` removes the batch from
+  // A JetStream ack publishes, so a closed connection throws. `drainInboxDeliveries` removes the batch from
   // the in-memory buffer BEFORE acking, so a throw part-way through leaves the remainder neither
   // acked nor marked handled. That is the safe direction — JetStream still owns it — but it is the
   // branch nobody exercises, and it is safe ONLY because `commitPending` acks before it marks

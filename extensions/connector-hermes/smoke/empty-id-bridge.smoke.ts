@@ -17,7 +17,7 @@
  * same shape bridge-quiet.smoke.ts uses), and asserts, for an empty-id delivery:
  *   1. the pump surfaces it (no starvation before the wedge would even fire);
  *   2. the sidecar-style ack with recvKey (and empty wire id) CLEARS the hold and retires the
- *      delivery (drainInboxIds by receive key);
+ *      delivery (drainInboxDeliveries by receive key);
  *   3. a SECOND empty-id message is then pumped and retired in turn: the wedge is gone, not
  *      one-shot-unwedged;
  *   4. the pre-fix ack shape (wire id "", the falsy one) is NOT what the bridge keys on anymore.
@@ -43,13 +43,13 @@ class FakeAgent {
   peekInbox(scope: InboxScope = "all"): InboxItem[] {
     return this.items.filter((item) => scope === "all" || (scope === "pull-only") === false);
   }
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
+  drainInboxDeliveries(ids: readonly string[]): ExactDrainResult {
     const wanted = new Set(ids);
     const items = this.items.filter((item) => wanted.has(item.recvKey));
     this.items = this.items.filter((item) => !wanted.has(item.recvKey));
     this.drained.push(...items.map((item) => item.recvKey));
     const present = new Set(items.map((item) => item.recvKey));
-    return { items, missingIds: [...wanted].filter((key) => !present.has(key)) };
+    return { items, missingKeys: [...wanted].filter((key) => !present.has(key)) };
   }
   inboxCount(scope: InboxScope = "all"): number { return this.peekInbox(scope).length; }
   recallAmbient(): Promise<{ items: InboxItem[]; droppedChannels: string[] }> {

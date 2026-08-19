@@ -164,7 +164,7 @@ export function startBridgeServer(agent: MeshAgent, config: AgentConfig, socketP
           // long turn can already have evicted our in-flight item; draining the front then would
           // mis-ack a newer, unsurfaced message (losing it). If the front is no longer ours, the
           // overflow already acked it — just resync and let pump() surface the new front.
-          agent.drainInboxIds([awaitingId]);
+          agent.drainInboxDeliveries([awaitingId]);
           awaitingId = undefined;
           pump();
         }

@@ -3827,6 +3827,11 @@ export class CotalEndpoint extends EventEmitter {
         // server policed who could publish. The payload `from` is advisory — it must match,
         // and a missing `from` or an unparseable subject on a delivery is itself an anomaly.
         // Reject (term — a spoof is permanently invalid, never redeliver) BEFORE any handler.
+        if (!isUsableMessageId(msg.id)) {
+          m.term(); // malformed envelope (SPEC sec 5): absent/non-string id — permanently invalid
+          this.emit("error", new Error(`dropped message on ${m.subject}: absent or non-string id`));
+          continue;
+        }
         const parsed = parseSubject(m.subject);
         if (!parsed || !msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) {
           m.term();
@@ -3921,6 +3926,7 @@ export class CotalEndpoint extends EventEmitter {
           this.emit("error", e as Error);
           return;
         }
+        if (!isUsableMessageId(msg.id)) return; // malformed envelope (SPEC sec 5) — live is at-most-once: drop
         if (!msg.from || msg.from.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner)) return; // spoof/malformed/old-shape-alias — drop (at-most-once)
         if (msg.from.id === this.card.id) return; // our own echo
         const delivery: Delivery = { ack: () => {}, nak: () => {}, durable: false }; // live = at-most-once, not acked
@@ -4124,6 +4130,7 @@ export class CotalEndpoint extends EventEmitter {
         continue; // skip undecodable
       }
       // Same authenticity guard as the tail; skip our own echoes in history.
+      if (!isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — history skips
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       // Backfill only ever reads the chat stream, so the authenticated class is always "channel".
@@ -4170,6 +4177,7 @@ export class CotalEndpoint extends EventEmitter {
         continue; // skip undecodable
       }
       // Same authenticity guard as the tail/backfill; skip our own echoes.
+      if (!isUsableMessageId(msg.id)) continue; // malformed envelope (SPEC sec 5) — recall skips
       const parsed = parseSubject(sm.subject);
       if (!parsed || msg.from?.id !== parsed.sender || !isPrincipalOwnerToken(parsed.owner) || msg.from.id === this.card.id) continue;
       collected.push(authenticatedMessage(msg, parsed));
@@ -4391,6 +4399,14 @@ export class CotalEndpoint extends EventEmitter {
 /** Map an authenticated parsed-subject kind to the message class surfaced to "message" listeners.
  *  Throws on `ctl` (control-plane is request/reply, never a "message") — per repo convention, no
  *  silent default: an unexpected delivering kind is a bug, not something to swallow. */
+/** A usable delivery-message id (#624): a string, possibly empty (the never-a-key case), but
+ *  never absent and never a non-string. An absent or non-string id is a malformed envelope under
+ *  SPEC sec 5; each delivery pump handles it per its own class (durable term, live drop, history
+ *  skip) so it never reaches the receiver's id-keyed machinery as `undefined`. */
+function isUsableMessageId(id: unknown): id is string {
+  return typeof id === "string";
+}
+
 function kindFromParsed(kind: ParsedSubject["kind"]): MessageMeta["kind"] {
   switch (kind) {
     case "chat":

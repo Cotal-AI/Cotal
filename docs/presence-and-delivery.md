@@ -88,10 +88,11 @@ Channel delivery has two wire-observable classes, fixed per channel
   acked. At-least-once for current members, within the channel's retention window. The
   machinery behind the backstop is the [delivery daemon](delivery-daemon.md).
 
-A message delivered both ways is one logical delivery; receivers dedupe by `id`. An
-`id` of the empty string is never a dedup key: distinct messages that carry it are delivered,
-not collapsed, and may surface more than once. An absent `id` is a malformed envelope (SPEC
-§5), not this case. The
+A message delivered both ways is one logical delivery; receivers dedupe by `id`, and
+receiver deduplication MUST NOT use the empty string as a key: distinct messages that carry
+`id: ""` are not coalesced by the receiver. Duplicate surfacing is disclosed only where the
+path is already at-least-once (live is at-most-once). The publisher obligation to supply a
+unique string id (SPEC §5) is unchanged; an absent or non-string id is a malformed envelope. The
 space default class is set at creation from the deployment profile (local/self-hosted ⇒
 `durable`); a channel can override it.
 

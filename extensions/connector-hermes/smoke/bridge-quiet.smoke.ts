@@ -32,7 +32,7 @@ class FakeAgent extends EventEmitter {
     return this.remove(selected.map((item) => item.id)).items;
   }
 
-  drainInboxIds(ids: readonly string[]): ExactDrainResult {
+  drainInboxDeliveries(ids: readonly string[]): ExactDrainResult {
     return this.remove(ids);
   }
 
@@ -50,7 +50,7 @@ class FakeAgent extends EventEmitter {
     const items = this.items.filter((item) => wanted.has(item.recvKey));
     this.items = this.items.filter((item) => !wanted.has(item.recvKey));
     const present = new Set(items.map((item) => item.recvKey));
-    return { items, missingIds: [...wanted].filter((key) => !present.has(key)) };
+    return { items, missingKeys: [...wanted].filter((key) => !present.has(key)) };
   }
 }
 

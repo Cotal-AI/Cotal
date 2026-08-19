@@ -38,10 +38,10 @@ export interface InboxItem {
   contextId?: string;
 }
 
-/** An exact-id drain: the items found plus the ids that were not present. */
+/** An exact-key drain: the items found plus the receive keys that were not present. */
 export interface ExactDrainResult {
   items: InboxItem[];
-  missingIds: string[];
+  missingKeys: string[];
 }
 
 // --- drift guard (build-only; not shipped) ---

@@ -11,7 +11,7 @@
  *    model replies itself via cotal_send / cotal_dm — and, because the app-server is the MCP
  *    client, they work on a turn someone typed into the attached TUI just as well as on a
  *    mesh-driven one;
- *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxIds-acked
+ *  • ack-on-completion with EXACT ids: a turn's surfaced messages are drainInboxDeliveries-acked
  *    ONLY when the turn reaches `completed`. A `failed` turn (transient model/upstream error)
  *    leaves them un-acked and retries with bounded backoff; an `interrupted` turn leaves them
  *    for redelivery — matching the OpenCode connector's semantics — and an app-server CRASH
@@ -627,7 +627,7 @@ export async function runCodexHost(): Promise<void> {
       awaitingTurnEnd = false;
       const ids = surfaced;
       surfaced = [];
-      if (wasOpen && ids.length > 0 && status === "completed") agent.drainInboxIds(ids); // the sole ack site
+      if (wasOpen && ids.length > 0 && status === "completed") agent.drainInboxDeliveries(ids); // the sole ack site
       if (status === "failed") scheduleErrorRetry();
       else clearErrorRetry(true);
       void (async () => {
