@@ -22,6 +22,8 @@ import { resume as walkResume, run as walk } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
+import { BUILTINS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
+import { parse } from "acorn";
 
 let pass = 0;
 const failures: string[] = [];
@@ -212,6 +214,27 @@ log("rounds", rounds, r.status);`,
   ["array methods", "const xs = [3, 1, 2]; log(xs.filter((x) => x > 1), xs.join(\"-\"), xs.at(0), [[1], [2]].flat(), await xs.reduce((a, b) => a + b, 0));", {}],
   ["number edge cases", "log(1 / 0, 0 / 0, -0, 2 ** 53 + 1, (2.5).round(), (2.4).floor());", {}],
   ["a json round trip", "log(json.parse(json.stringify({ a: [1, { b: null }] })));", {}],
+  // THE FREE SURFACE, so the coverage cell at the bottom has something to be satisfied by. The pure
+  // draws are the sharpest of these: `random`, `randomInt` and `pick` derive from the run seed AND
+  // the frame's key PATH, so they agree across engines only if the frames agree about where in the
+  // program they are.
+  ['the record builtins', 'const o = { a: 1, b: 2 }; log(keys(o), values(o), entries(o), has(o, "a"), merge(o, { c: 3 }));', {}],
+  [
+    "the array builtins",
+    "const xs = [3, 1, 2, 1]; log(find(xs, (x) => x > 2), some(xs, (x) => x > 2), every(xs, (x) => x > 0), reverse(xs), unique(xs), range(3), sum(xs), concat(xs, [9]));",
+    {},
+  ],
+  ["the string builtins", 'log(startsWith("abc", "a"), endsWith("abc", "c"), contains("abc", "b"), upper("ab"));', {}],
+  ["the number builtins", 'log(min(1, 2), max(1, 2), abs(-3), ceil(1.2), parseNumber("42"));', {}],
+  ["assert, refusing and passing", 'try { assert(false, "nope"); } catch (e) { log(e.code); } assert(true, "fine"); log("past");', {}],
+  ["the seeded pure draws", 'log(random(), randomInt(10), pick([1, 2, 3]), duration("1m"));', {}],
+  ["a pure draw inside a function, twice", "const d = () => random(); log(await d(), await d());", {}],
+  ["this run's own metadata", "const r = run(); log(r.startedAt > 0, len(r.programHash) > 0);", {}],
+  [
+    "the event constructors",
+    'const a = await spawn("one"); const c = channel("t"); log(message(c), idle(a), down(a), replied(a));',
+    {},
+  ],
   // A RECORD HAS NO PROTOTYPE TO REACH, so these three are undefined rather than refused - measured,
   // because the cell that assumed a refusal here was the one a mutation walked straight past.
   ["a record has no prototype to reach", "const o = { a: 1 }; log(o.constructor, o.toString, o.__proto__);", {}],
@@ -378,6 +401,20 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
     "the same F7, in the shape that shows what a program actually sees: L2004/runtime on the walker, L4000/host on the engine",
   ],
   [
+    "a fan-out over one agent",
+    'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });\nlog("done");',
+    { turns: { t: { status: "done", at: 0 } } },
+    ["error", "entry count"],
+    "the same loud refusal of every scope-opener",
+  ],
+  [
+    "a conclave",
+    'const a = await spawn("one");\nawait conclave([a], async (c) => { await notify([a], { decision: "join", outcome: "done" }); return c; }, { name: "k" });\nlog("done");',
+    {},
+    ["logs", "error", "entry count"],
+    "the same loud refusal of every scope-opener, and the one whose identity hashes its member list",
+  ],
+  [
     "a race, whose losers are digested",
     'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);',
     {},
@@ -536,6 +573,34 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     if (w.logs.length === 0 && w.entries.length === 0 && w.error === null) silent.push(name);
   }
   ok("every corpus program logs, journals or refuses something", silent.length === 0, silent);
+}
+
+// ---- the free surface, counted against its own table --------------------------------------------
+
+{
+  // THE UNIVERSE COMES FROM THE TABLE, NOT FROM THE CORPUS. A coverage claim whose universe is the
+  // thing being covered is always complete. So the set is `primitives.ts`'s own, and a name added
+  // there reds this cell until a program reaches it on both engines.
+  //
+  // Names are collected as identifiers the source spells. That over-counts a program that declares
+  // a local of the same name, which none of these do — and the direction of the error is the one
+  // that matters here: it can only make the cell pass, so the list below is checked to empty rather
+  // than trusted to be right.
+  const spelled = new Set<string>();
+  const collect = (n: unknown): void => {
+    if (Array.isArray(n)) return void n.forEach(collect);
+    if (n === null || typeof n !== "object") return;
+    const node = n as Record<string, unknown>;
+    if (node.type === "Identifier" && typeof node.name === "string") spelled.add(node.name);
+    for (const [k, v] of Object.entries(node)) if (k !== "type") collect(v);
+  };
+  for (const [, source] of [...CORPUS, ...HELD.map(([n, src]) => [n, src] as const)]) {
+    collect(parse(source, { ecmaVersion: 2023, sourceType: "module", allowAwaitOutsideFunction: true }));
+  }
+  const table = [...BUILTINS, ...Object.keys(PURE_PRIMITIVES), ...Object.keys(EVENT_CONSTRUCTORS), ...Object.keys(PRIMITIVES)];
+  const missing = table.filter((n) => !spelled.has(n)).sort();
+  ok("every free name the language has is reached by a program in the corpus", missing.length === 0, missing);
+  console.log(`  (${table.length} free names in the table, ${table.length - missing.length} reached)`);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);
