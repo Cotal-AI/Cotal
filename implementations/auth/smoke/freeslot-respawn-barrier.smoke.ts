@@ -37,7 +37,9 @@
  * #667: for those few seconds the manager mints a name its own auth plane rejects, rather than the
  * reserved-pending-retirement face it gives in the first second. This suite no longer waits on it.
  * At this branch's merge-base the suite threw before its first cell, so its cells are newly VISIBLE
- * rather than newly caused. The suite is NOT in bin/smoke/ci-suites.txt, so no CI shard runs it.
+ * rather than newly caused. The suite is now GATED: it is in bin/smoke/ci-suites.txt, so a CI shard
+ * runs it on every push. It was ungated for the month it could not start, which is how the retry
+ * budget and the presence TTL drifted past each other with nothing to report it.
  *
  * All three are green under the landed P2 slice (alias reservation + lifecycle-keyed resources +
  * `(principal, lifecycleUid)`-pinned cleanup). The CONTRACT asserts need no edits for that; only
@@ -469,8 +471,9 @@ try {
 
   // BARRIER 1 — while the predecessor's cleanup is pending, the alias must stay RESERVED: a
   // same-name spawn must not yield a NEW live agent under the exact alias (refusing loudly or
-  // auto-numbering both satisfy it). Today the name frees the instant the slot empties, so this
-  // spawn succeeds as the exact alias — the enabling condition of the whole race.
+  // auto-numbering both satisfy it). Holds on this tree: the spawn is refused, and the companion
+  // cell below pins that refusal to the reserved-pending-retirement operator face rather than to
+  // the incidental numbered-name refusal that follows once the reservation releases.
   rmSync(join(root, "child-connected"), { force: true });
   const namesBeforeProbe = listNames();
   const probe: ControlReply = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
@@ -568,19 +571,23 @@ try {
   const replacementToken = readFileSync(agentLifecycleSecretFilePaths(root, AGENT, succUid).actorToken, "utf8").trim();
   // BARRIER 2 — lifecycle keying: the replacement's broker resources must be DISTINCT names from
   // the predecessor's, or any stale/replayed cleanup for the retired lifecycle can resolve to the
-  // replacement's rows. Today the names collide exactly.
+  // replacement's rows. Holds on this tree: the successor's resources are lifecycle-keyed and
+  // disjoint from the predecessor's.
   const distinct = (pre: string[], succ: string[]): boolean => succ.length > 0 && succ.every((n) => !pre.includes(n));
   check("BARRIER: the replacement's broker resources are lifecycle-distinct from the predecessor's",
     distinct(fp1.dm, fpS.dm) && distinct(fp1.dlv, fpS.dlv) && distinct(fp1.acl, fpS.acl),
     { predecessor: { dm: fp1.dm, dlv: fp1.dlv, acl: fp1.acl }, successor: { dm: fpS.dm, dlv: fpS.dlv, acl: fpS.acl } });
   const callsBeforeReplay = brokerCalls.length;
 
-  // ---------- E. THE REPLAY (red on current code) ----------
+  // ---------- E. THE REPLAY ----------
   // Deliver the predecessor's captured broker cleanup AGAIN, now that the replacement is live —
   // the at-least-once world the fix must survive: detached cleanup is idempotent reconciliation
   // against the RETIRED lifecycle and can never resolve through the current alias occupant.
-  // Today the cleanup is keyed by (owner, actor-name) alone, so the replay lands on the
-  // replacement's freshly minted footprint and silently destroys it.
+  // Holds on this tree: the cleanup is pinned to the retired lifecycle, so the replay leaves the
+  // live replacement's footprint intact. Proven non-vacuous rather than assumed: repointing the
+  // replayed cleanup at the SUCCESSOR's lifecycle uid deletes its resources and reds exactly the
+  // three named BARRIER cells (dm durable, dlv durable, read-ACL), so these cells are not green
+  // merely because an unobserved no-op ran.
   console.log("E) replay the retired predecessor's broker cleanup against the live replacement");
   replayAtMs = Date.now();
   await origBroker(predArg!).catch(() => { /* a conforming retired-lifecycle no-op may also throw */ });

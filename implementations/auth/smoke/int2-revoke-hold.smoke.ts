@@ -12,17 +12,18 @@
  * FINDING: on the current tree the copied token's exchange is blocked by the DEEPER auth-plane gate
  * retirement (terminally-retired issuance gate), so the ledger-hold is a defense-in-depth belt over
  * the surviving row; "copied token mints" only reproduces if the RAIL retirement also fails.
- * MEASURED on the current tree: 20 passed, 0 failed, and the suite is NOT in bin/smoke/ci-suites.txt,
- * so no CI shard runs it. Phase C is green throughout (the hold, standingAuthorityLive, the operator
- * copy, the refused respawn, the copied token blocked by the retired gate). Phase D's last cell, a
- * same-name spawn takes the EXACT alias after recovery, had been reading RED because it spawned once:
- * after the recovery nudge the reservation clears within ~1s, but the predecessor's advisory presence
- * row keeps uniqueName numbering the successor until that record's TTL plus one sweep tick expires
- * (endpoint.ts: ttlMs 6000, sweep every ttlMs/3), and the auth plane refuses the numbered name-form.
- * The single shot landed inside that window, so the cell now retries to a deadline past its ceiling.
- * The numbered-name refusal is itself real and is tracked as #694, same mechanism as #693 and #667.
- * Until the store wiring was repaired this suite threw before its first cell, so its cells are newly
- * VISIBLE rather than newly caused. Pristine f6115a6 would free the name (RED). READ+RUN only.
+ * MEASURED on the current tree: 20 passed, 0 failed, and the suite is now GATED: it is in
+ * bin/smoke/ci-suites.txt, so a CI shard runs it. Phase C is green throughout (the hold,
+ * standingAuthorityLive, the operator copy, the refused respawn, the copied token blocked by the
+ * retired gate). Phase D's last cell, a same-name spawn takes the EXACT alias after recovery, had
+ * been reading RED because it spawned once: after the recovery nudge the reservation clears within
+ * ~1s, but the predecessor's advisory presence row keeps uniqueName numbering the successor until
+ * that record's TTL plus one sweep tick expires (endpoint.ts: ttlMs 6000, sweep every ttlMs/3), and
+ * the auth plane refuses the numbered name-form. The single shot landed inside that window, so the
+ * cell now retries to a deadline past its ceiling. The numbered-name refusal is itself real and is
+ * tracked as #694, same mechanism as #693 and #667. Until the store wiring was repaired this suite
+ * threw before its first cell, so its cells are newly VISIBLE rather than newly caused. Pristine
+ * f6115a6 would free the name (RED). READ+RUN only.
  *
  * PHASES: A/B spawn a user-mode agent and capture a copied actor token; C chmod the managed-actor
  * ledger dir read-only so revokeAgent's rmSync throws EACCES, despawn, and assert the name stays HELD
@@ -543,8 +544,15 @@ try {
   // alias, so a numbered stand-in can never satisfy it, and it shows up in the failure payload.
   const aliasDeadline = Date.now() + 30_000;
   while (!psList(manager!).some((a) => a.name === AGENT) && Date.now() < aliasDeadline) {
+    const before = listNames();
     await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
     if (psList(manager!).some((a) => a.name === AGENT)) break;
+    // Stop anything the attempt DID create under another name, the way the freeslot suite does.
+    // On this tree the numbered attempt is refused outright and leaves nothing behind, so this
+    // never fires; it is here so that a future change admitting a live numbered sibling cannot
+    // leave one running for the cells below to trip over.
+    for (const stray of listNames().filter((x) => !before.includes(x) && x !== AGENT))
+      await mAny.opStop({ name: stray, graceful: false }, mAny.ep.ref().id, true);
     await wait(250);
   }
   check("GREEN: a same-name spawn takes the EXACT alias after recovery (no suffix, no lingering reservation)",
