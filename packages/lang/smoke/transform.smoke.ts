@@ -493,6 +493,26 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   console.log(`  (${subsets.length} loser sets digested on both sides)`);
 }
 
+// ---- 11b) the scope body that must not be evaluated at the call --------------------------------
+
+{
+  // `fanOut` and `conclave` take their body at index 1, and the walker evaluates it INSIDE the
+  // scope, after the entry has begun: measured on both engines, `fanOut(xs, await choose(), {...})`
+  // journals `fanOut:f` BEFORE the `sleep` inside `choose`, while the same effect in the options bag
+  // journals before the scope. An eager body has journalled in the wrong place, and the host refuses
+  // one that is not a thunk (L1000).
+  const fan = transform('const a = await spawn("one"); await fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: (m) => m.agent });').module;
+  ok('a fan-out\'s body travels unevaluated', /effect\("fanOut", \[.*, async \(\) => \(async \(\.\.\./.test(fan), fan.slice(-320));
+  const con = transform('const a = await spawn("one"); await conclave([a], async (c) => c, { name: "k" });').module;
+  ok("a conclave's body travels unevaluated", /effect\("conclave", \[.*, async \(\) => \(async \(\.\.\./.test(con), con.slice(-320));
+
+  // AND THE COMBINATORS THAT HAVE NO DEFERRED ARGUMENT KEEP THEIR BAG. `parallel` and `race` take
+  // branches, not a body; wrapping that bag would hand the host a thunk it refuses as an engine
+  // fault. Which primitives defer comes from the table, so this is the other half of that read.
+  const par = transform('await parallel({ one: () => sleep("1m", { name: "one" }) }, { name: "both" });').module;
+  ok("a combinator with no deferred argument hands its branches over as they are", /effect\("parallel", \[__ctx\.born\(\{/.test(par), par.slice(-320));
+}
+
 // ---- 12) the chain the host has to finish, and what the walker answers there --------------------
 
 {

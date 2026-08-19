@@ -203,6 +203,26 @@
       "completionMarker": "ok an object literal's keys are emitted computed",
       "cell": "a `?.` after the optional call is guarded inside the continuation, where the call answered",
       "note": "A link written after the optional call is guarded only where the call answered. Collecting its guards and never applying them emits the body with a temp the guard never assigned, so `o.m?.()?.x` reads a member of undefined instead of short-circuiting."
+    },
+    {
+      "name": "a scope-opener's body is evaluated at the call instead of inside the scope",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = false;",
+      "expectRed": "a fan-out's body travels unevaluated",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a fan-out's body travels unevaluated",
+      "note": "The walker evaluates the body INSIDE the scope, after the entry has begun. Eager, the host's `deferredBody` calls the body function itself with no arguments (measured before the fix: `fanOut` answered L3041 `argument 1 of turn is undefined`, and `conclave` ran its body's `notify` and then died on `fn is not a function`), so the body runs once, outside its scope, and journals where the walker's run never did."
+    },
+    {
+      "name": "the branch bag of a combinator with no deferred argument is wrapped in a thunk",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = spec !== undefined && spec.opensScope;",
+      "expectRed": "a combinator with no deferred argument hands its branches over as they are",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a combinator with no deferred argument hands its branches over as they are",
+      "note": "The mirror, and it is not symmetric: `parallel` and `race` take a bag of branches at index 0 and have NO deferred argument, so a thunk in position 1 is the options bag wrapped - the host answers L1000 for asking a combinator for a deferred body it does not have."
     }
   ]
 }

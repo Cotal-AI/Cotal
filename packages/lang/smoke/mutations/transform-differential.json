@@ -84,6 +84,15 @@
       "expectRed": "every corpus program completes, or refuses the code it declares",
       "cell": "every corpus program completes, or refuses the code it declares",
       "note": "The defect this cell was written for, restored: `lower` and `round` are free builtins and not method names, so the program refuses L4014 on BOTH arms before its first log. `identical on both engines` stays green - two arms agreeing on a refusal neither program was written to produce - which is exactly how the string and number tables came to have no passing cell. This is a fixture-discipline cell, so its mutant is in the fixture."
+    },
+    {
+      "name": "a scope body evaluated at the call, so its effects journal outside the scope",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = false;",
+      "expectRed": "identical on both engines: a fan-out whose body is awaited",
+      "cell": "identical on both engines: a fan-out whose body is awaited",
+      "note": "The behavioural half of the same rule: both arms journal `fanOut:f` BEFORE the `sleep` inside the body, because the body is evaluated inside the scope. Evaluated at the call, the engine journals the sleep first - a journal the walker's run never wrote, which a resume would then replay against."
     }
   ],
   "completionMarker": "differential.smoke:"

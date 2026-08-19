@@ -745,14 +745,18 @@ class Emitter {
     }
     if (node.type === "CallExpression") {
       const callee = node.callee as AnyNode;
-      const args = this.args(node);
 
-      if (callee.type === "Identifier" && this.binding(callee) === undefined) {
+      // A primitive is dispatched by NAME, never by value: the validator forbids shadowing one, so a
+      // call spelled `turn` is always the effect. It is emitted BEFORE the ordinary argument list is
+      // built, because a primitive that defers its body hands that argument over differently.
+      if (callee.type === "Identifier" && this.binding(callee) === undefined && PRIMITIVES[callee.name as string] !== undefined) {
         const name = callee.name as string;
-        // A primitive is dispatched by NAME, never by value: the validator forbids shadowing one, so
-        // a call spelled `turn` is always the effect.
-        if (PRIMITIVES[name] !== undefined) return done(`(await ${this.seam("effect", `${q(name)}, [${args}], ${this.site(name, node)}`)})`, guards);
-        if (FREE_VALUES.has(name)) return done(`(await ${this.seam("free", `${q(name)}, [${args}]`)})`, guards);
+        return done(`(await ${this.seam("effect", `${q(name)}, [${this.effectArgs(name, node)}], ${this.site(name, node)}`)})`, guards);
+      }
+
+      const args = this.args(node);
+      if (callee.type === "Identifier" && this.binding(callee) === undefined && FREE_VALUES.has(callee.name as string)) {
+        return done(`(await ${this.seam("free", `${q(callee.name as string)}, [${args}]`)})`, guards);
       }
 
       if (callee.type === "MemberExpression") {
@@ -804,6 +808,31 @@ class Emitter {
     const t = this.temp();
     guards.push(`(${t} = ${code}) === null || ${t} === ${VOID}`);
     return t;
+  }
+
+  /**
+   * A primitive's arguments, with the DEFERRED BODY handed over unevaluated.
+   *
+   * `fanOut` and `conclave` take their body at index 1, and the walker evaluates it INSIDE the
+   * scope, after the entry has begun — measured on the oracle: the same awaited effect journals
+   * after the scope entry in the body position and before it in the options bag. A body handed over
+   * already evaluated has journalled its effects in the wrong place, and a resume would replay a
+   * step the walker's run never recorded; it is the same rule as the optional call's arguments, and
+   * the host refuses a body that is not a thunk (L1000).
+   *
+   * WHICH primitives defer comes from the table — a scope-opener whose options sit at 2 — rather
+   * than from a list of names spelled here, so a fifth combinator cannot arrive with its body
+   * silently eager.
+   */
+  private effectArgs(name: string, node: AnyNode): string {
+    const spec = PRIMITIVES[name];
+    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;
+    return ((node.arguments as AnyNode[]) ?? [])
+      .map((a, i) => {
+        const code = a.type === "SpreadElement" ? `...${this.seam("iter", this.expr(a.argument as AnyNode))}` : this.expr(a);
+        return defers && i === 1 ? `async () => (${code})` : code;
+      })
+      .join(", ");
   }
 
   private args(node: AnyNode): string {

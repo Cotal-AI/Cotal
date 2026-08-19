@@ -24,8 +24,10 @@ import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, ty
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { Prng, birthDepth, born as stampBirth, deepFreeze, setOwn } from "../values.js";
+import type { AgentHandleValue } from "../effects.js";
+import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
-import { dispatchPrimitive, freeConstructors, type EffectHost } from "../perform.js";
+import { dispatchPrimitive, freeConstructors, option, performScope, runScope, type EffectHost, type Frame as ScopeFrame } from "../perform.js";
 import { PRIMITIVES } from "../primitives.js";
 import type { RunOptions } from "../interpret.js";
 
@@ -54,8 +56,26 @@ export interface EngineCtx {
   get(o: unknown, k: unknown): unknown;
   /** Write a member: L2031, L2032, L4014, L4017, L4019. Answers `v`, as an assignment does. */
   set(o: unknown, k: unknown, v: unknown): unknown;
-  /** Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else. */
-  call(o: unknown, k: unknown, args: unknown[]): Promise<unknown>;
+  /**
+   * Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else.
+   *
+   * `optional` is `o.m?.()` (F6, ruled 1d as a flag rather than a fifteenth member). It guards a
+   * NULLISH MEMBER and nothing else — measured on the walker, `?.` softens neither L4014 nor L4011 —
+   * and a short-circuited call evaluates NO ARGUMENT, which is why the optional form takes a thunk.
+   *
+   * `chain` is EVERYTHING WRITTEN AFTER the optional call, as a closure. A short-circuit swallows the
+   * whole rest of the chain, and only the host knows a short-circuit happened: measured, `o.z?.().x`
+   * on an absent member is `undefined` while `o.m?.().x` on a member that RETURNS undefined is L4010,
+   * and a guard on the returned value cannot tell those apart, so it would drop a refusal in silence.
+   * Handing the continuation here lets the one place that made the decision apply it.
+   */
+  call(
+    o: unknown,
+    k: unknown,
+    args: unknown[] | (() => unknown[]),
+    optional?: boolean,
+    chain?: (value: unknown) => unknown,
+  ): Promise<unknown>;
   /** Stamp a freshly built container with this frame's depth (L2032's runtime half). */
   born<T>(v: T): T;
   /** A journalled primitive. */
@@ -338,6 +358,139 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     return out;
   };
 
+  // ---- the concurrency scopes ------------------------------------------------------------------
+  //
+  // The SAME two functions the walker calls, with the same arguments in the same order:
+  // `performScope` owns the journal entry and the replay, `runScope` owns what a scope means. None
+  // of a race's winner rule, a fanOut's key rule or a conclave's close lives on this side, because
+  // a second copy of that logic would be a second answer to what a scope IS.
+  //
+  // What this side owns is the two things the engine has that the walker does not: the CALLING
+  // CONVENTION (arms arrive as the program's own closures, and the scope machinery calls them
+  // `(frame, args)`) and the MISSING AST (a settled race's `branchDigest` is a function of the
+  // source, so it arrives as the call site's static payload instead).
+
+  /** An arm, as the scope machinery calls one. A non-function is passed through so the engine fails where the walker fails. */
+  const asArm = (v: unknown): unknown => (typeof v === "function" ? toWalker(v as (...a: unknown[]) => unknown) : v);
+
+  /** `parallel`/`race` take a record or an array OF ARMS; the other two take data in that position. */
+  const branchesOf = (name: string, first: unknown): unknown => {
+    if (name !== "parallel" && name !== "race") return first;
+    if (Array.isArray(first)) return first.map(asArm);
+    if (first === null || typeof first !== "object") return first;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(first as Record<string, unknown>)) setOwn(out, k, asArm(v));
+    return out;
+  };
+
+  /** `fanOut`'s `key` is called by the scope machinery too. The copy never reaches the program. */
+  const bagWithKey = (bag: unknown): unknown => {
+    const key = option(bag, "key");
+    if (typeof key !== "function") return bag;
+    const out: Record<string, unknown> = {};
+    for (const [k, v] of Object.entries(bag as Record<string, unknown>)) setOwn(out, k, v);
+    setOwn(out, "key", asArm(key));
+    return out;
+  };
+
+  /**
+   * The second argument, DEFERRED - and it must be, measured on the walker rather than argued:
+   *
+   *   fanOut(xs, await choose(), { name: "f", key })       journal ["fanOut:f", "sleep:warm"]
+   *   conclave([a], await choose(), { name: "c" })         journal ["spawn:hire", "conclave:c", "sleep:warm"]
+   *   fanOut(xs, fn, { name: "f", key: await choose() })   journal ["sleep:warm", "fanOut:f"]
+   *
+   * The body is evaluated INSIDE the scope, after its entry has begun; the options bag is evaluated
+   * before it. So the emitted call hands the body over as a thunk, for the same reason the optional
+   * call hands over its arguments as one: an argument that was already evaluated has already
+   * journalled its effects in the wrong place, and a resume would replay a step the walker's run
+   * never recorded. `parallel` and `race` have no deferred argument - their second is the bag.
+   */
+  const deferredBody = (name: string, args: unknown[]): (() => Promise<unknown>) => async () => {
+    if (name === "parallel" || name === "race") {
+      throw new RuntimeFault("L1000", `\`${name}\` has no deferred argument; asking for one is an engine fault`);
+    }
+    const thunk = args[1];
+    if (typeof thunk !== "function") {
+      throw new RuntimeFault(
+        "L1000",
+        `\`${name}\` takes its body UNEVALUATED, as a thunk: the walker evaluates it AFTER the scope's entry has begun (measured: an effect in that position journals inside the scope, one in the options bag journals before it), so a body handed over already evaluated has journalled its effects in the wrong place.`,
+      );
+    }
+    return asArm(await (thunk as () => unknown)());
+  };
+
+  /**
+   * The `branchDigest`, rebuilt from the call site's payload with the walker's own `digest`.
+   *
+   * The walker digests `[...losers].sort().map((n) => [n, bodies.get(n) ?? null])` over the arm
+   * bodies with positions stripped, and a name the site does not carry digests as `null` — an arm
+   * that was RENAMED is exactly the case this has to notice. Absent `branchDigests` means the arms
+   * were not written as an object literal at the call, which is where the walker also answers
+   * undefined, so the field's presence is the whole decision.
+   */
+  const digesterFor = (site: Site | undefined): ((losers: readonly string[]) => string | undefined) | undefined => {
+    const bodies = site?.branchDigests;
+    if (bodies === undefined) return undefined;
+    return (losers) =>
+      digest(
+        [...losers]
+          .sort()
+          .map((n) => [n, Object.prototype.hasOwnProperty.call(bodies, n) ? bodies[n] : null]),
+      );
+  };
+
+  const openScope = async (
+    name: string,
+    spec: NonNullable<(typeof PRIMITIVES)[string]>,
+    args: unknown[],
+    site: Site | undefined,
+  ): Promise<unknown> => {
+    const frame = currentFrame();
+    const scopeKind = name as ScopeKind;
+    const first = args[0];
+    const bag = args[spec.optionsAt];
+    const scopeName = (option(bag, "name") as string | undefined) ?? null;
+    // Allocated HERE, synchronously, exactly as the walker allocates it: the occurrence is what
+    // makes two textually identical scopes different steps, and a counter read after an await is a
+    // counter two scopes can race for.
+    const occurrence = frame.keys.nextScope(scopeKind, scopeName);
+    const scopeKey = frame.keys.scopeKey(scopeKind, scopeName, occurrence);
+
+    // `conclave` is the one scope whose identity includes a SUBJECT: the members are what the
+    // sub-team IS, so editing the member list diverges rather than resuming into a different room.
+    const subject = spec.hashesSubject
+      ? {
+          members: (first as AgentHandleValue[]).map((m) => m.agent),
+          channel: (option(bag, "channel") as string | undefined) ?? null,
+        }
+      : undefined;
+
+    return await performScope(
+      host,
+      scopeKey,
+      frame,
+      async (ctx, only) =>
+        await runScope(
+          host,
+          name,
+          scopeKind,
+          scopeName,
+          occurrence,
+          branchesOf(name, first),
+          deferredBody(name, args),
+          bagWithKey(bag),
+          frame as ScopeFrame,
+          ctx,
+          only,
+        ),
+      subject,
+      // `race` alone, as on the walker: `parallel` and `fanOut` have no losers, and a `conclave`
+      // cannot be walked into at all.
+      name === "race" ? digesterFor(site) : undefined,
+    );
+  };
+
   // ---- fuel ------------------------------------------------------------------------------------
   //
   // The unit CHANGES from the walker's: the walker charges one dispatch per node it walks, the
@@ -519,19 +672,50 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       return v;
     },
 
-    async call(o, k, args) {
+    async call(o, k, args, optional, chain) {
+      // THE LOOKUP HAPPENS FIRST, AND `?.` DOES NOT SOFTEN IT. Measured on the walker: `xs.nope?.()`
+      // is L4014 exactly as `xs.nope()` is, and a member that resolves to a non-function is L4011.
+      // The only thing an optional call guards is a member that is null or undefined.
       const found = lookup(o, keyOf(k), true);
+
+      // AN OPTIONAL CALL EVALUATES NO ARGUMENT WHEN IT SHORT-CIRCUITS, which is why the optional
+      // form takes a thunk: the transform evaluates arguments before it can call anything, so an
+      // array here would already have run them. Measured: the walker's short-circuit journalled
+      // nothing where the same argument on a present method journalled a `sleep`.
+      // A continuation without a short-circuit to guard is an emitter mistake: an ordinary call's
+      // chain is written natively, because nothing in it depends on a decision only the host made.
+      if (chain !== undefined && optional !== true) {
+        throw new RuntimeFault("L1000", "a call continuation belongs to an OPTIONAL call: there is nothing else for it to be skipped by");
+      }
+      if (optional === true && typeof args !== "function") {
+        throw new RuntimeFault(
+          "L1000",
+          "an optional call must be handed its arguments as a thunk: it may not evaluate them at all, and an array is a list that has already been evaluated",
+        );
+      }
+      // Nothing runs: not the arguments, and not the rest of the chain. Measured on the walker, the
+      // short-circuit swallows a deep chain (`o.z?.().x.y`) and a trailing call alike.
+      if (found.from === "own" && (found.value === null || found.value === undefined) && optional === true) {
+        return undefined;
+      }
+      // AWAITED, because the thunk is `async`: every argument the transform emits may itself contain
+      // an `await`, so a sync arrow could not hold one. Measured without the await: an ordinary
+      // `o.m?.(1)` died on `Spread syntax requires ...iterable`, and `xs.map?.(f)` reached the
+      // curated method with a Promise where its argument list should be.
+      const list = typeof args === "function" ? await args() : args;
+      let answer: unknown;
       if (found.from === "table") {
         // A curated method: the walker's convention, and the ONE argument this method calls is
         // adapted into it on the way in. Every other argument crosses untouched — see the invariant.
-        return await found.fn(currentFrame(), adaptArgs(found.key, args));
-      }
-      if (typeof found.value !== "function") {
+        answer = await found.fn(currentFrame(), adaptArgs(found.key, list));
+      } else if (typeof found.value !== "function") {
         throw new RuntimeFault("L4011", "this value is not a function, so it cannot be called");
+      } else {
+        // An own field holds a program-convention closure. Adapting here would pass the frame in as
+        // the first argument and shift every real one along by a position.
+        answer = await (found.value as (...a: unknown[]) => unknown)(...list);
       }
-      // An own field holds a program-convention closure. Adapting here would pass the frame in as
-      // the first argument and shift every real one along by a position.
-      return await (found.value as (...a: unknown[]) => unknown)(...args);
+      return chain === undefined ? answer : await chain(answer);
     },
 
     born(v) {
@@ -539,17 +723,10 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       return stampBirth(v, currentFrame().depth);
     },
 
-    async effect(name, args, _site) {
+    async effect(name, args, site) {
       const spec = PRIMITIVES[name];
       if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
-      if (spec.opensScope) {
-        // Loud, not a fallback. A silent sequential `parallel` would journal a scope nobody opened
-        // and pass a differential comparator on every program that does not race.
-        throw new RuntimeFault(
-          "L1000",
-          `\`${name}\` opens a concurrency scope, and the engine's scope machinery is not landed yet. Run this program on the walker.`,
-        );
-      }
+      if (spec.opensScope) return await openScope(name, spec, args, site);
       return await dispatchPrimitive(host, name, args, currentFrame());
     },
 

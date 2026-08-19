@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/engine.smoke.ts",
-  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), and the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
   "why": [
@@ -14,7 +14,19 @@
     "every table with a marker and compares the positions the library ACTUALLY calls to the ones the",
     "seam adapts. It is declaration-independent by construction, so mutating the seam's list cannot red",
     "it - the two mutants that grade that list are the ones on `adaptArgs` and on the read form. Its own",
-    "failure mode, finding nothing at all, is graded by the count cell beside it."
+    "failure mode, finding nothing at all, is graded by the count cell beside it.",
+    "",
+    "THE COLD-START CELL HAS NO MUTANT EITHER, and for the same kind of reason as the drift alarm above:",
+    "it REPORTS the number in its own name and bounds it only loosely, because a tight bound on a shared",
+    "machine is a flaky cell rather than a rule. What the worker must actually do is graded by the eleven",
+    "mutants below it, every one of which leaves a run that still answers.",
+    "",
+    "THE TWO DIVERGENCE CELLS IN THE SCOPE SECTION HAVE NO MUTANT HERE, and the reason is worth writing",
+    "down rather than leaving as a gap. `an edit inside a LOSING arm diverges on resume` grades the",
+    "COMPARISON, which lives in perform.ts and belongs to the shared machinery's own ledger. What this",
+    "file owns is that the digest handed to it is the walker's, and any mutation of that is caught one",
+    "cell earlier, as a journal difference on the live run - which is why both digest mutants below",
+    "name the journal cell rather than the divergence cell they would also break."
   ],
   "mutations": [
     {
@@ -110,8 +122,8 @@
     {
       "name": "an own-field function is adapted as if it spoke the walker's convention",
       "file": "packages/lang/src/engine/ctx.ts",
-      "find": "      return await (found.value as (...a: unknown[]) => unknown)(...args);",
-      "replace": "      return await (found.value as unknown as Callable)(currentFrame(), adaptArgs(args));",
+      "find": "        answer = await (found.value as (...a: unknown[]) => unknown)(...list);",
+      "replace": "        answer = await (found.value as unknown as Callable)(currentFrame(), adaptArgs(found.key, list));",
       "expectRed": "and a member call through the seam agrees",
       "completionMarker": "ok a record-shaped builtin hands out program-convention members",
       "cell": "and a member call through the seam agrees",
@@ -326,6 +338,246 @@
       "completionMarker": "ok and the ESCALATION reaches an already-cancelled child",
       "cell": "the reason stays the FIRST one, because that is what cancelled the branch",
       "note": "The reason is what the Cancelled error carries out of the branch and into the trace. An escalation is not a new reason for stopping - the branch stopped when it lost - so overwriting it makes every cut arm report the escalation instead of the loss."
+    },
+    {
+      "name": "an optional call does not short-circuit a nullish member",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true) {",
+      "replace": "      if (false) {",
+      "expectRed": "and so does the engine, with nothing called",
+      "completionMarker": "ok the walker short-circuits an absent member",
+      "cell": "and so does the engine, with nothing called",
+      "note": "The whole of F6's flag. Without it `o.m?.()` on an absent member is L4011 - the answer the walker gives for a member that is PRESENT and not a function, so the program is refused for a reason that is not true of it."
+    },
+    {
+      "name": "an optional call evaluates its arguments before deciding to short-circuit",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true) {",
+      "replace": "      if (((typeof args === \"function\" ? args() : args), found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true)) {",
+      "expectRed": "and the engine's short-circuit never asks for its arguments",
+      "completionMarker": "ok while the same argument on a PRESENT method journals its effect",
+      "cell": "and the engine's short-circuit never asks for its arguments",
+      "note": "The reason the optional form takes a thunk at all: measured on the walker, a short-circuited call journals NOTHING while the same argument on a present method journals a `sleep`. The mutant asks the thunk for the arguments before it decides, so their effects land in the journal and a resume of that entry replays a step the walker's run never recorded. It shares its find-string with the mutant that removes the short-circuit outright; the two replaces grade different halves of the same line."
+    },
+    {
+      "name": "an optional call accepts an argument list that has already been evaluated",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (optional === true && typeof args !== \"function\") {",
+      "replace": "      if (false) {",
+      "expectRed": "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+      "completionMarker": "ok while a present member does ask, exactly once",
+      "cell": "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+      "note": "No silent acceptance: an array reaching this parameter means the arguments ran before the seam was entered, so the short-circuit that follows would be a lie - it returns undefined having already performed whatever the arguments performed. The refusal is loud because the emitter, not the program, is what got it wrong."
+    },
+    {
+      "name": "a short-circuited optional call still runs the chain written after it",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        return undefined;",
+      "replace": "        return chain === undefined ? undefined : await chain(undefined);",
+      "expectRed": "the engine short-circuits the chain and never runs it",
+      "completionMarker": "ok and a trailing CALL",
+      "cell": "the engine short-circuits the chain and never runs it",
+      "note": "`o.z?.().x` answers undefined and `o.m?.().x` on a member that RETURNED undefined refuses L4010, and both give undefined to any guard written outside the host - which is why the continuation comes here at all. Under the mutant the short-circuit runs the chain against undefined, so the first shape refuses L4010 too and a program that reads a field off an absent optional call is refused where the walker answers."
+    },
+    {
+      "name": "a call continuation is accepted without the optional flag",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (chain !== undefined && optional !== true) {",
+      "replace": "      if (false) {",
+      "expectRed": "a continuation without the optional flag is refused, not silently run",
+      "completionMarker": "ok and a record answers the field through the chain",
+      "cell": "a continuation without the optional flag is refused, not silently run",
+      "note": "An ordinary call's chain is written natively, because nothing in it depends on a decision only the host made. A continuation arriving without the flag is an emitter mistake, and running it anyway would hide the mistake behind an answer that happens to be right for the shapes that do not short-circuit."
+    },
+    {
+      "name": "the optional call's thunk is not awaited",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      const list = typeof args === \"function\" ? await args() : args;",
+      "replace": "      const list = typeof args === \"function\" ? args() : args;",
+      "expectRed": "and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise",
+      "completionMarker": "ok the walker calls a present member with a plain argument",
+      "cell": "and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise",
+      "note": "The thunk is `async` because any argument the transform emits may itself hold an `await`, so a sync arrow could not carry one. Unawaited, the spread that follows receives a Promise: an ordinary `o.m?.(1)` dies on \"Spread syntax requires ...iterable\" and `xs.map?.(f)` reaches the curated method with a Promise where its argument list should be. The shapes that stayed clean are exactly the two that never call the thunk, which is why a sync-thunk fixture cannot see this."
+    },
+    {
+      "name": "the module is evaluated outside the Compartment",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  const factory = compartment.evaluate(module) as unknown;",
+      "replace": "  const factory = (0, eval)(module) as unknown;",
+      "expectRed": "inside the Compartment `Date.now()` throws",
+      "completionMarker": "ok the confinement probe ran",
+      "cell": "inside the Compartment `Date.now()` throws",
+      "note": "Turning the module string into a function is exactly where confinement is applied or lost. Under the mutant the module still runs and still answers, and every other cell in the suite stays green: only the cells that ask the program what it can REACH can tell the difference, which is why they are asked from inside the real worker rather than from a probe beside it."
+    },
+    {
+      "name": "the realm is never locked down",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "lockdown();",
+      "replace": "void 0;",
+      "expectRed": "inside the Compartment `Date.now()` throws",
+      "completionMarker": "ok the confinement probe ran",
+      "cell": "inside the Compartment `Date.now()` throws",
+      "note": "`lockdown()` is irreversible and realm-wide, which is why the run gets a thread of its own to spend it in. MEASURED under the mutant rather than assumed: the Compartment is still BUILT and the program still runs - what a Compartment gives you without lockdown is a fresh global object, not tamed intrinsics - so `Date.now()` answers inside it and the run has a clock the journal never saw."
+    },
+    {
+      "name": "a run with no value is put through the rule about values",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  if (result.value !== undefined) assertCrossable(result.value, \"the value this run returned\");",
+      "replace": "  assertCrossable(result.value, \"the value this run returned\");",
+      "expectRed": "a run completes in its own locked-down thread",
+      "completionMarker": "ok a continuation without the optional flag is refused, not silently run",
+      "cell": "a run completes in its own locked-down thread",
+      "note": "A program whose last line is a statement ends with NO value, and the walker reports exactly that. `assertCrossable` refuses undefined by design - it is a rule about values crossing an effect boundary, and absence is not a value - so applying it here refuses the ordinary case. Measured before the guard existed: the first worker cell written refused its own fixture."
+    },
+    {
+      "name": "a value that cannot cross is left to the structured-clone algorithm",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  if (result.value !== undefined) assertCrossable(result.value, \"the value this run returned\");",
+      "replace": "  void result.value;",
+      "expectRed": "a run that returns a function is refused by the crossing rule",
+      "completionMarker": "ok and it carries the reason the host wrote into shared memory",
+      "cell": "a run that returns a function is refused by the crossing rule",
+      "note": "Unrefused, a function reaches `postMessage` and the thread dies on a DataCloneError with nothing left to answer with: the caller is told the worker exited, which names a host algorithm for something the language already has a word for. The cell captures the outcome rather than awaiting it into its assertion, so this mutant fails the cell that names the rule instead of killing the suite anonymously."
+    },
+    {
+      "name": "the run never reads the stop flag",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  return n > 0 ? new TextDecoder().decode(stopBytes.slice(0, n)) : undefined;",
+      "replace": "  return undefined;",
+      "expectRed": "a stopped run ends through its own cancellation path",
+      "completionMarker": "ok while `({}).constructor === Object` still holds, which is the model",
+      "cell": "a stopped run ends through its own cancellation path",
+      "note": "Shared memory rather than a message because `shouldStop` is read SYNCHRONOUSLY, between effects. Under the mutant nothing crashes and no error appears: the run simply finishes work its host asked it to abandon, which is the failure this whole mechanism exists to prevent and the reason there is no wall-clock timeout beside it."
+    },
+    {
+      "name": "the stop reason's length is never published",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "  Atomics.store(new Int32Array(buffer, 0, 1), 0, Math.max(bytes.length, 1));",
+      "replace": "  void bytes;",
+      "expectRed": "a stopped run ends through its own cancellation path",
+      "completionMarker": "ok while `({}).constructor === Object` still holds, which is the model",
+      "cell": "a stopped run ends through its own cancellation path",
+      "note": "The bytes are written first and the LENGTH is what publishes them, so a reader can never see a length promising bytes the writer has not finished writing. Drop the store and the reader's atomic load answers 0 forever: the reason is in memory the run will never look at."
+    },
+    {
+      "name": "the journal does not cross back out of the thread",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    entries: result.journal.entries(),",
+      "replace": "    entries: [],",
+      "expectRed": "the journal it brings back is the WALKER'S, entry for entry",
+      "completionMarker": "ok and its log lines reached the host",
+      "cell": "the journal it brings back is the WALKER'S, entry for entry",
+      "note": "The run happens inside the thread, so the journal is written there and the host only ever sees what crosses back. A run that answers with a value and an empty journal looks successful and is unresumable."
+    },
+    {
+      "name": "a resumed run's pins are left behind at the boundary",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    ...(request.pins !== undefined ? { pins: request.pins } : {}),",
+      "replace": "    ...{},",
+      "expectRed": "the resume completes against an EMPTY script",
+      "completionMarker": "ok the first run recorded its steps",
+      "cell": "the resume completes against an EMPTY script",
+      "note": "The pins decide the run's logical epoch and its seed, so a resume that loses them is a different run wearing the same journal. `runOnEngine` already refuses that (L5021) - this mutant proves the refusal is REACHED through the thread boundary, rather than that it exists."
+    },
+    {
+      "name": "the request's named handler export is ignored",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  const name = request.handler.export ?? \"createHandler\";",
+      "replace": "  const name = \"createHandler\";",
+      "expectRed": "a request naming an export that is not there is refused",
+      "completionMarker": "ok and the refusal names the language's rule, not a clone algorithm",
+      "cell": "a request naming an export that is not there is refused",
+      "note": "A handler is not serialisable, so the request names a module and an export and the thread builds the handler there. Ignoring the named export silently builds a DIFFERENT handler than the one the request asked for, which for a run means a different set of effects against a different broker."
+    },
+    {
+      "name": "log lines never leave the thread",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
+      "replace": "    onLog: () => {},",
+      "expectRed": "and its log lines reached the host",
+      "completionMarker": "ok a run completes in its own locked-down thread",
+      "cell": "and its log lines reached the host",
+      "note": "`log` is a free builtin: it is not journalled, so a line that does not cross while the run is alive is a line nobody ever sees. The run still answers, still with the right journal and the right value."
+    },
+    {
+      "name": "an arm is called without being adapted to the scope machinery's convention",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (name !== \"parallel\" && name !== \"race\") return first;",
+      "replace": "    return first;",
+      "expectRed": "parallel: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok and its journal is the first run's, entry for entry",
+      "cell": "parallel: the journals are IDENTICAL, entry for entry",
+      "note": "The scope machinery calls an arm `(frame, args)`; the program's arms are its own closures. Unadapted, an arm still RUNS - it ignores the arguments it was handed - but it runs outside its branch frame, so every effect inside it is keyed under the scope's parent instead of under the branch. The value is right and the journal is a different run's."
+    },
+    {
+      "name": "a scope body handed over already evaluated is accepted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (typeof thunk !== \"function\") {",
+      "replace": "    if (false) {",
+      "expectRed": "a scope body handed over already evaluated is refused",
+      "completionMarker": "ok and the ambient frame is what a framed call reads",
+      "cell": "a scope body handed over already evaluated is refused",
+      "note": "The refusal is what stops a wrong emission from becoming a wrong journal quietly. Without it the seam calls whatever it was handed, and what a reader gets is a host TypeError from inside the scope machinery rather than a sentence saying which argument arrived in the wrong shape."
+    },
+    {
+      "name": "the scope body is not deferred at all",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    return asArm(await (thunk as () => unknown)());",
+      "replace": "    return asArm(thunk);",
+      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
+      "note": "Measured on the walker: `fanOut(xs, await choose(), bag)` journals `[fanOut, sleep]` and `fanOut(xs, fn, { key: await choose() })` journals `[sleep, fanOut]`. The body is evaluated INSIDE the scope and the bag before it, so the body arrives as a thunk and the seam is what calls it there."
+    },
+    {
+      "name": "fanOut's key function is not adapted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    setOwn(out, \"key\", asArm(key));",
+      "replace": "    setOwn(out, \"key\", key);",
+      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
+      "note": "`key` is called by the scope machinery too, and by the same convention as an arm. Unadapted it receives the FRAME where the program wrote its item, so a branch key is computed from the host's own object - and branch keys are journal namespaces, not decoration."
+    },
+    {
+      "name": "a settled race records no branchDigest",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (bodies === undefined) return undefined;",
+      "replace": "    return undefined;",
+      "expectRed": "race: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok parallel: the log is the same",
+      "cell": "race: the journals are IDENTICAL, entry for entry",
+      "note": "The engine has no AST, so the one journal field that is a function of the source arrives as the call site's static payload. Drop it and the entry is missing a field the walker's has, which is a journal difference before it is ever a divergence question."
+    },
+    {
+      "name": "the branch digest is over the arm NAMES and not their bodies",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          .map((n) => [n, Object.prototype.hasOwnProperty.call(bodies, n) ? bodies[n] : null]),",
+      "replace": "          .map((n) => [n, null]),",
+      "expectRed": "race: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok parallel: the log is the same",
+      "cell": "race: the journals are IDENTICAL, entry for entry",
+      "note": "A digest over the names alone is green for every edit anyone would make INSIDE a losing arm, which is the only thing it exists to catch. It is graded here as a journal difference because the digest is compared against the walker's own, byte for byte, on a race that settled."
+    },
+    {
+      "name": "a conclave's identity leaves out its members",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const subject = spec.hashesSubject",
+      "replace": "    const subject = false",
+      "expectRed": "conclave: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok fanOut: the log is the same",
+      "cell": "conclave: the journals are IDENTICAL, entry for entry",
+      "note": "A conclave is the one scope whose identity includes a SUBJECT: the members are what the sub-team IS. Without it, editing the member list resumes into a different room rather than diverging, and the entry's inputHash stops matching the walker's on the very first run."
+    },
+    {
+      "name": "the options bag is read at a fixed argument position",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const bag = args[spec.optionsAt];",
+      "replace": "    const bag = args[1];",
+      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
+      "note": "`parallel` and `race` take their bag second, `fanOut` and `conclave` third, and the position is declared in primitives.ts rather than remembered here. Read at a fixed position, a fanOut's bag is its body: the scope loses its name (so its step key changes) and its `key` function (so it refuses L3021)."
     }
   ]
 }

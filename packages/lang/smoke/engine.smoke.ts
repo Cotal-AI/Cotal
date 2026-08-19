@@ -20,15 +20,18 @@
 import { Journal, RunClock } from "../src/journal.js";
 import { KeyScope, programHashOf, stepKeyString } from "../src/keys.js";
 import { resolvePins } from "../src/pins.js";
-import { RuntimeFault } from "../src/errors.js";
+import { RuntimeFault, RunDivergence } from "../src/errors.js";
 import { Cancelled } from "../src/effects.js";
 import { LangErrors } from "../src/errors.js";
 import { SimHandler } from "../src/sim.js";
 import { arrayMethods, numberMethods, stringMethods } from "../src/library.js";
+import { parse } from "acorn";
+import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
 import { Prng } from "../src/values.js";
-import { createCtx, createEngine, type EngineCtx, type EngineRun } from "../src/engine/ctx.js";
-import { runOnEngine } from "../src/engine/host.js";
+import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
+import { runOnEngine, resumeOnEngine } from "../src/engine/host.js";
+import { runInWorker } from "../src/engine/worker.js";
 import { run as walkerRun } from "../src/interpret.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
 
@@ -705,17 +708,22 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   ok("and the ambient frame is what a framed call reads", (await h.inFrame(() => currentFrame())) === h.frame);
 }
 
-// ---- 10) the scope-openers refuse loudly until they are landed -----------------------------------
+// ---- 10) the scope-openers' emission contract ----------------------------------------------------
+//
+// `fanOut` and `conclave` take their body UNEVALUATED. The walker evaluates that argument INSIDE the
+// scope, after its entry has begun (measured; see `deferredBody`), so an emission that hands over an
+// already-evaluated body has journalled its effects in the wrong place and a resume would replay a
+// step the walker's run never recorded. The seam refuses rather than accepting the wrong shape.
 
 {
   const h = harness();
-  const e = await caught(() => h.inFrame(() => h.ctx.effect("parallel", [{}])));
-  ok(
-    "a concurrency combinator refuses rather than silently running sequentially",
-    codeOf(e) === "L1000" && (e as Error).message.includes("not landed yet"),
-    String(e),
-  );
-  ok("and no journal entry was written for it", h.run.journal.entries().length === 0, h.run.journal.entries().length);
+  const e = await caught(() => h.inFrame(() => h.ctx.effect("fanOut", [[], 5, h.ctx.born({ name: "f" })])));
+  ok("a scope body handed over already evaluated is refused", codeOf(e) === "L1000" && (e as Error).message.includes("UNEVALUATED"), String(e));
+  ok("and the refusal says what the order costs", (e as Error).message.includes("journalled its effects in the wrong place"), String(e).slice(0, 200));
+  // The entry HAS begun by then, and settles failed: the refusal happens inside the scope, which is
+  // exactly where the walker evaluates that argument.
+  const entries = h.run.journal.entries();
+  ok("the scope's entry was begun and settled failed, not skipped", entries.length === 1 && entries[0]?.kind === "fanOut" && entries[0]?.status === "failed", entries.map((x) => `${x.kind}/${x.status}`));
 }
 
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
@@ -1125,6 +1133,557 @@ await parallel({
     cutPure: late.cutPure,
   });
   ok("with the reason it inherited", late.reason === "a sibling branch won the race", late.reason);
+}
+
+// ---- 15) the optional call: `o.m?.()` ------------------------------------------------------------
+//
+// Seam member 4 gains a flag (F6, ruled 1d), not a fifteenth member. Every answer below was MEASURED
+// on the walker first and is compared against it here, because two of them are not what "optional"
+// suggests: `?.` guards a NULLISH MEMBER and nothing else - it softens neither L4014 nor L4011 - and
+// a short-circuited call evaluates NO ARGUMENT AT ALL.
+
+{
+  /** The same program on the oracle: what it logged, what it journalled, or what it refused. */
+  const onWalker = async (src: string): Promise<string> => {
+    const logs: unknown[][] = [];
+    try {
+      const r = await walkerRun(src, { runId: "f6", handler: new SimHandler({}), onLog: (l) => logs.push([...l.values]) });
+      return `ok ${JSON.stringify(logs)} ${JSON.stringify(r.journal.entries().map((e) => e.kind))}`;
+    } catch (e) {
+      return `refused ${codeOf(e)}`;
+    }
+  };
+  const h = harness({ script: {} });
+
+  ok("the walker short-circuits an absent member", (await onWalker(`const o = { a: 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",null]] []');
+  // CAPTURED, not awaited into the assertion: without the short-circuit this call THROWS L4011, and
+  // written the other way the throw left the block and killed the suite anonymously instead of
+  // failing the cell that names the rule.
+  let absent: unknown;
+  try {
+    absent = await h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", () => [], true));
+  } catch (e) {
+    absent = e;
+  }
+  ok("and so does the engine, with nothing called", absent === undefined, String(absent));
+
+  ok("the walker invokes a member that IS a function", (await onWalker(`const o = { m: () => 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",1]] []');
+  ok(
+    "and so does the engine",
+    (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", () => [], true))) === 1,
+  );
+
+  ok("the walker refuses a member that is NOT a function, optional or not", (await onWalker(`const o = { m: 5 };\nconst r = o.m?.();\nlog("r", r);\n`)) === "refused L4011");
+  ok(
+    "and so does the engine: `?.` does not soften L4011",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: 5 }), "m", () => [], true)))) === "L4011",
+  );
+
+  ok("the walker refuses a name the curated table does not have, optional or not", (await onWalker(`const xs = [1, 2];\nconst r = xs.nope?.();\nlog("r", r);\n`)) === "refused L4014");
+  ok(
+    "and so does the engine: `?.` does not soften L4014 either",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "nope", () => [], true)))) === "L4014",
+  );
+
+  // A curated method is never nullish, so the optional form reaches the table path unchanged.
+  const mapped = await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", () => [async (x: unknown) => (x as number) * 3], true));
+  ok("an optional call on a curated method is just the call", JSON.stringify(mapped) === "[3,6]", mapped);
+
+  // THE ONE THAT DECIDES THE SHAPE. The walker checks the member BEFORE it evaluates arguments, so a
+  // short-circuited call performs nothing; the control beside it proves the argument would otherwise
+  // have run. That is why the optional form takes a thunk: an array would already have been evaluated.
+  ok(
+    "a short-circuited call on the walker journals NOTHING",
+    (await onWalker(`const o = { a: 1 };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] []',
+  );
+  ok(
+    "while the same argument on a PRESENT method journals its effect",
+    (await onWalker(`const o = { m: (x) => x };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] ["sleep"]',
+  );
+  let evaluated = 0;
+  const short = await h.inFrame(() =>
+    h.ctx.call(h.ctx.born({ a: 1 }), "m", () => {
+      evaluated += 1;
+      return [];
+    }, true),
+  );
+  ok("and the engine's short-circuit never asks for its arguments", short === undefined && evaluated === 0, evaluated);
+  let ran = 0;
+  await h.inFrame(() =>
+    h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", () => {
+      ran += 1;
+      return [];
+    }, true),
+  );
+  ok("while a present member does ask, exactly once", ran === 1, ran);
+
+  // THE THUNK IS `async`, because any argument the transform emits may itself hold an `await` - so it
+  // is AWAITED here. Lane T found this against my e7819fe3 and I reproduced it before touching the
+  // line: unawaited, `args()` handed the spread a Promise, so an ordinary `o.m?.(1)` died on "Spread
+  // syntax requires ...iterable" and `xs.map?.(f)` reached the curated method with a Promise where
+  // its argument list should be. Both shapes are below, each against the oracle.
+  ok("the walker calls a present member with a plain argument", (await onWalker(`const o = { m: (x) => x };\nlog("r", o.m?.(1));\n`)) === 'ok [["r",1]] []');
+  // CAPTURED, like every other cell here whose subject is a refusal or a throw: unawaited the thunk
+  // hands the spread a Promise, and that TypeError would leave the block and kill the suite
+  // anonymously rather than failing the cell that names the rule.
+  let plainArg: unknown;
+  try {
+    plainArg = await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async (x: unknown) => x }), "m", async () => [1], true));
+  } catch (e) {
+    plainArg = e;
+  }
+  ok("and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise", plainArg === 1, String(plainArg));
+  const held = harness({ script: {} });
+  try {
+    await held.inFrame(() =>
+      held.ctx.call(held.ctx.born({ m: async (x: unknown) => x }), "m", async () => [await held.ctx.effect("sleep", ["1s"])], true),
+    );
+  } catch {
+    // The journal below is the assertion; how the call ended is the cell above's business.
+  }
+  ok(
+    "an effect INSIDE the argument reaches the journal, matching the walker cell above",
+    JSON.stringify(held.run.journal.entries().map((e) => e.kind)) === '["sleep"]',
+    held.run.journal.entries().map((e) => e.kind),
+  );
+  ok("the walker runs a curated method through the optional form", (await onWalker(`const xs = [1, 2];\nlog("r", xs.map?.((x) => x * 3));\n`)) === 'ok [["r",[3,6]]] []');
+  let curated: unknown;
+  try {
+    curated = await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", async () => [async (x: unknown) => (x as number) * 3], true));
+  } catch (e) {
+    curated = e;
+  }
+  ok("and the engine's curated path reads that same awaited list", JSON.stringify(curated) === "[3,6]", String(curated));
+
+  // No silent acceptance of an already-evaluated list on the optional path: the short-circuit would
+  // be a lie, because the arguments ran before the seam was reached.
+  ok(
+    "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", [], true)))) === "L1000",
+  );
+  ok(
+    "and an ordinary call still takes a plain array",
+    (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async (x: unknown) => x }), "m", ["z"]))) === "z",
+  );
+
+  // THE CHAIN AFTER THE CALL. `o.m?.().x` cannot be guarded on the returned value: measured, an
+  // absent member answers undefined and a member that RETURNS undefined refuses L4010, and both
+  // give undefined to any guard written outside. Only the host knows which happened, so the rest of
+  // the chain comes here as a closure and the host applies its own decision.
+  ok("the walker short-circuits the whole chain after an absent member", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x);\n`)) === 'ok [["r",null]] []');
+  ok("and refuses L4010 when the member was PRESENT and returned undefined", (await onWalker(`const o = { m: () => undefined };\nlog("r", o.m?.().x);\n`)) === "refused L4010");
+  ok("and reads the field when it returned a record", (await onWalker(`const o = { m: () => ({ x: 7 }) };\nlog("r", o.m?.().x);\n`)) === 'ok [["r",7]] []');
+  ok("the walker swallows a DEEP chain too", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x.y);\n`)) === 'ok [["r",null]] []');
+  ok("and a trailing CALL", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().trim());\n`)) === 'ok [["r",null]] []');
+
+  // CAPTURED: with the chain unguarded it runs against undefined and throws L4010, which awaited
+  // into the assertion would leave the block and kill the suite anonymously.
+  let continued = 0;
+  let chained: unknown;
+  try {
+    chained = await h.inFrame(() =>
+      h.ctx.call(h.ctx.born({ a: 1 }), "z", () => [], true, (v) => {
+        continued += 1;
+        return h.ctx.get(v, "x");
+      }),
+    );
+  } catch (e) {
+    chained = e;
+  }
+  ok("the engine short-circuits the chain and never runs it", chained === undefined && continued === 0, {
+    chained: String(chained),
+    continued,
+  });
+
+  let refused: unknown;
+  try {
+    refused = await h.inFrame(() =>
+      h.ctx.call(h.ctx.born({ m: async () => undefined }), "m", () => [], true, (v) => h.ctx.get(v, "x")),
+    );
+  } catch (e) {
+    refused = e;
+  }
+  ok("but a member that RETURNED undefined reaches the chain, and it refuses L4010", codeOf(refused) === "L4010", String(refused));
+
+  const read = await h.inFrame(() =>
+    h.ctx.call(h.ctx.born({ m: async () => h.ctx.born({ x: 7 }) }), "m", () => [], true, (v) => h.ctx.get(v, "x")),
+  );
+  ok("and a record answers the field through the chain", read === 7, read);
+
+  ok(
+    "a continuation without the optional flag is refused, not silently run",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", [], false, (v) => v)))) === "L1000",
+  );
+}
+
+// ---- 16) the worker: one locked-down thread per run ---------------------------------------------
+//
+// `lockdown()` is irreversible and realm-wide, so a run gets its own realm to harden and the host
+// keeps an isolate whose intrinsics it still owns. The whole run happens inside that thread - the
+// seam, the journal, the effect path and the handler - because `handler.now()` and every journal
+// call in the effect path are SYNCHRONOUS and a proxy over a message port is not.
+
+{
+  const HANDLER = { module: new URL("./_sim-handler.ts", import.meta.url).href, config: SCRIPT };
+
+  const started = Date.now();
+  const logs: unknown[][] = [];
+  const run = runInWorker(
+    { source: SOURCE, module: MODULE, runId: "host-1", handler: HANDLER },
+    { onLog: (l) => logs.push([...l.values]) },
+  );
+  const answer = await run.done;
+  const coldMs = Date.now() - started;
+
+  ok("a run completes in its own locked-down thread", answer.ok === true, JSON.stringify(answer).slice(0, 200));
+  const got = answer as Extract<typeof answer, { ok: true }>;
+  ok("and its log lines reached the host", JSON.stringify(logs) === '[["status","done"]]', logs);
+
+  // THE COMPARISON THAT MATTERS: the same program on the oracle, in this process, with nothing
+  // between them but a thread boundary and a Compartment.
+  const walker = await walkerRun(SOURCE, { runId: "host-1", handler: new SimHandler(SCRIPT) });
+  ok(
+    "the journal it brings back is the WALKER'S, entry for entry",
+    JSON.stringify(got.entries) === JSON.stringify(walker.journal.entries()),
+    { worker: got.entries.map((e) => `${e.kind}#${e.occurrence}/${e.status}`), walker: walker.journal.entries().map((e) => `${e.kind}#${e.occurrence}/${e.status}`) },
+  );
+  ok("and there were entries to compare", got.entries.length === 2, got.entries.length);
+  ok("the pins crossed intact", JSON.stringify(got.pins) === JSON.stringify(walker.pins), { worker: got.pins, walker: walker.pins });
+  ok("and the hash is the source's, as it is in this process", got.programHash === walker.programHash);
+  // Reported rather than bounded tightly: the number is the point, and a tight bound on a shared
+  // machine is a flaky cell. Measured on this floor at 22.8-26.4ms for the thread alone.
+  ok(`a cold worker run took ${coldMs}ms, thread and lockdown included`, coldMs < 30_000, coldMs);
+}
+
+{
+  // THE CONFINEMENT, MEASURED THROUGH THE REAL WORKER rather than in a probe beside it. What the
+  // program can reach is the whole security claim, so it is asked from inside the Compartment the
+  // shipping path builds.
+  const PROBE = `(ctx) => async () => {
+    await ctx.fuel();
+    const probe = (f) => { try { f(); return "ran"; } catch (e) { return "threw"; } };
+    return ctx.born({
+      dateNow: probe(() => Date.now()),
+      mathRandom: probe(() => Math.random()),
+      processIs: typeof process,
+      ownGlobals: Object.keys(globalThis).length,
+      sharesIntrinsics: ({}).constructor === Object,
+      functionEscape: probe(() => (function () {}).constructor("return typeof process")()),
+    });
+  }`;
+  const answer = await runInWorker({
+    source: `log("x", 1);`,
+    module: PROBE,
+    runId: "confine-1",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+  }).done;
+  ok("the confinement probe ran", answer.ok === true, JSON.stringify(answer).slice(0, 200));
+  const seen = (answer as Extract<typeof answer, { ok: true }>).value as Record<string, unknown>;
+  ok("inside the Compartment `Date.now()` throws", seen.dateNow === "threw", seen.dateNow);
+  ok("and so does `Math.random()`", seen.mathRandom === "threw", seen.mathRandom);
+  ok("`process` is not there at all", seen.processIs === "undefined", seen.processIs);
+  ok("and `globalThis` has no own keys: the seam is the CALL ARGUMENT, never a global", seen.ownGlobals === 0, seen.ownGlobals);
+  ok("the Function-constructor escape is refused", seen.functionEscape === "threw", seen.functionEscape);
+  // CONFINEMENT, NOT HIDING, and it is asserted rather than left as a footnote: the program shares
+  // the realm's intrinsics and simply cannot reach out of it. A cell that expected otherwise would
+  // be testing a different security model than the one this host actually has.
+  ok("while `({}).constructor === Object` still holds, which is the model", seen.sharesIntrinsics === true, seen.sharesIntrinsics);
+}
+
+{
+  // CANCELLATION IS THE ONLY THING THAT CROSSES DURING A RUN, and it crosses through shared memory
+  // because `shouldStop` is read synchronously between effects. No wall-clock timeout and no
+  // terminate() on a deadline: a thread killed mid-effect leaves a step pending with nothing able
+  // to settle it.
+  const SPIN = `(ctx) => async () => {
+    for (let i = 0; i < 50; i += 1) {
+      await ctx.fuel();
+      await ctx.effect("sleep", ["1s"]);
+    }
+    return "finished";
+  }`;
+  const run = runInWorker({
+    source: `await sleep("1s");`,
+    module: SPIN,
+    runId: "stop-1",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+  });
+  run.stop("the operator asked this run to stop");
+  const answer = await run.done;
+  ok("a stopped run ends through its own cancellation path", answer.ok === false, JSON.stringify(answer).slice(0, 160));
+  const failed = answer as Extract<typeof answer, { ok: false }>;
+  ok("and it carries the reason the host wrote into shared memory", failed.message.includes("the operator asked this run to stop"), failed.message.slice(0, 120));
+}
+
+{
+  // A run whose value cannot cross answers to the LANGUAGE's crossing rule, not to the structured
+  // clone algorithm's: a DataCloneError would name a host algorithm for something the language
+  // already has a word for.
+  // CAPTURED rather than awaited into the assertion: unrefused, a function reaches `postMessage` and
+  // the thread dies on a DataCloneError with nothing to answer with, which awaited here would kill
+  // the suite anonymously instead of failing the cell that names the rule.
+  let answer: Awaited<ReturnType<typeof runInWorker>["done"]> | unknown;
+  try {
+    answer = await runInWorker({
+      source: `log("x", 1);`,
+      module: `(ctx) => async () => { await ctx.fuel(); return () => 1; }`,
+      runId: "cross-1",
+      handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+    }).done;
+  } catch (e) {
+    answer = e;
+  }
+  const failed = answer as { ok?: boolean; name?: string; message?: string };
+  ok("a run that returns a function is refused by the crossing rule", failed.ok === false, JSON.stringify(answer).slice(0, 160));
+  ok("and the refusal names the language's rule, not a clone algorithm", failed.name === "NotCrossable", { name: failed.name, message: String(failed.message).slice(0, 100) });
+}
+
+{
+  // A HANDLER IS NOT SERIALISABLE - it holds sockets, a client and a clock - so the request names a
+  // module and the thread builds the handler there. A module that cannot build one says so by name.
+  const answer = await runInWorker({
+    source: `log("x", 1);`,
+    module: `(ctx) => async () => { await ctx.fuel(); return 1; }`,
+    runId: "nohandler-1",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, export: "nothingHere", config: {} },
+  }).done;
+  ok("a request naming an export that is not there is refused", answer.ok === false, JSON.stringify(answer).slice(0, 160));
+  const missing = answer as Extract<typeof answer, { ok: false }>;
+  ok("and the refusal names the export it looked for", missing.message.includes("nothingHere"), missing.message.slice(0, 140));
+}
+
+{
+  // A RESUME THROUGH THE THREAD: the recorded entries go in, the recorded results come back, and
+  // the handler is never asked. The journal is not a transcript - it is what a resumed run reads
+  // INSTEAD of dispatching - so this is the shape that says the boundary preserved it.
+  const first = await runInWorker({
+    source: SOURCE,
+    module: MODULE,
+    runId: "resume-w",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: SCRIPT },
+  }).done;
+  ok("the first run recorded its steps", first.ok === true && first.entries.length === 2, JSON.stringify(first).slice(0, 160));
+  const recorded = (first as Extract<typeof first, { ok: true }>);
+  const again = await runInWorker({
+    source: SOURCE,
+    module: MODULE,
+    runId: "resume-w",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+    pins: recorded.pins,
+    entries: recorded.entries,
+  }).done;
+  ok("the resume completes against an EMPTY script", again.ok === true, JSON.stringify(again).slice(0, 200));
+  const back = again as Extract<typeof again, { ok: true }>;
+  ok(
+    "and its journal is the first run's, entry for entry",
+    JSON.stringify(back.entries) === JSON.stringify(recorded.entries),
+    { first: recorded.entries.length, again: back.entries.length },
+  );
+}
+
+// ---- 17) the concurrency scopes -----------------------------------------------------------------
+//
+// The engine calls the SAME `performScope` and `runScope` the walker calls, with the same arguments
+// in the same order. So these cells are comparisons, not re-derivations: what they have to show is
+// that the two things this side owns - the calling convention and the missing AST - leave the
+// journal byte-identical.
+
+{
+  /**
+   * The call site's static payload, computed the way the emitter will compute it: the arm bodies
+   * with positions stripped, keyed by branch name. Parsed from the SOURCE here rather than written
+   * out by hand, because a hand-written copy of a stripped AST is a second answer to what the
+   * walker digests.
+   */
+  const siteFor = (source: string, combinator: string): Site | undefined => {
+    const program = parse(source, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true }) as unknown as Record<string, unknown>;
+    let arms: Record<string, unknown> | undefined;
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const c of node) walk(c);
+        return;
+      }
+      const n = node as Record<string, unknown>;
+      if (n.type === "CallExpression" && (n.callee as { name?: string } | undefined)?.name === combinator) {
+        const first = (n.arguments as unknown[])[0] as Record<string, unknown> | undefined;
+        if (first?.type === "ObjectExpression") {
+          const out: Record<string, unknown> = {};
+          for (const prop of first.properties as Record<string, unknown>[]) {
+            const key = prop.key as { name?: string; value?: string } | undefined;
+            const named = key?.name ?? key?.value;
+            if (named !== undefined) out[named] = stripPositions(prop.value);
+          }
+          arms = out;
+        }
+      }
+      for (const v of Object.values(n)) walk(v);
+    };
+    walk(program);
+    return arms === undefined ? undefined : { branchDigests: arms };
+  };
+
+  /** The site as the emitter writes it INTO the module: a literal, because the engine has no AST. */
+  const siteLiteral = (source: string, combinator: string): string => JSON.stringify(siteFor(source, combinator) ?? {});
+
+  /** One program on both engines, compared on what a run IS: its value, its log, and its journal. */
+  const both = async (
+    label: string,
+    source: string,
+    module: string,
+    script: ConstructorParameters<typeof SimHandler>[0] = {},
+  ): Promise<{ walker: Awaited<ReturnType<typeof walkerRun>>; engine: Awaited<ReturnType<typeof runOnEngine>> }> => {
+    const wLogs: unknown[][] = [];
+    const eLogs: unknown[][] = [];
+    const walker = await walkerRun(source, { runId: "scope-1", handler: new SimHandler(script), onLog: (l) => wLogs.push([...l.values]) });
+    const engine = await runOnEngine(source, module, {
+      runId: "scope-1",
+      handler: new SimHandler(script),
+      evaluate: plainly,
+      onLog: (l) => eLogs.push([...l.values]),
+    });
+    ok(`${label}: the journals are IDENTICAL, entry for entry`, JSON.stringify(walker.journal.entries()) === JSON.stringify(engine.journal.entries()), {
+      walker: walker.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+      engine: engine.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+    });
+    ok(`${label}: and the scope was actually journalled`, engine.journal.entries().length > 1, engine.journal.entries().length);
+    ok(`${label}: the log is the same`, JSON.stringify(wLogs) === JSON.stringify(eLogs), { walker: wLogs, engine: eLogs });
+    return { walker, engine };
+  };
+
+  // ---- parallel ---------------------------------------------------------------------------------
+  const PARALLEL = `
+const r = await parallel({
+  a: async () => { await sleep("1s", { name: "s" }); return 1; },
+  b: async () => { await sleep("2s", { name: "t" }); return 2; },
+}, { name: "both" });
+log("a", r.a);
+`;
+  await both(
+    "parallel",
+    PARALLEL,
+    `(ctx) => async () => {
+      await ctx.fuel();
+      const r = await ctx.effect("parallel", [
+        ctx.born({
+          a: async () => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "s" })]); return 1; },
+          b: async () => { await ctx.fuel(); await ctx.effect("sleep", ["2s", ctx.born({ name: "t" })]); return 2; },
+        }),
+        ctx.born({ name: "both" }),
+      ]);
+      await ctx.free("log", ["a", ctx.get(r, "a")]);
+    }`,
+  );
+
+  // ---- race, and the digest the engine has no AST to compute --------------------------------------
+  const RACE = `
+const r = await race({
+  quick: async () => { await sleep("1s", { name: "q" }); return "quick"; },
+  slow: async () => { await sleep("9s", { name: "w" }); return "slow"; },
+}, { name: "first" });
+log("won", r.index);
+`;
+  const RACE_MODULE = `(ctx) => async () => {
+      await ctx.fuel();
+      const r = await ctx.effect("race", [
+        ctx.born({
+          quick: async () => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "q" })]); return "quick"; },
+          slow: async () => { await ctx.fuel(); await ctx.effect("sleep", ["9s", ctx.born({ name: "w" })]); return "slow"; },
+        }),
+        ctx.born({ name: "first" }),
+      ], ${siteLiteral(RACE, "race")});
+      await ctx.free("log", ["won", ctx.get(r, "index")]);
+    }`;
+  const raced = await both("race", RACE, RACE_MODULE);
+  const scopeEntry = raced.engine.journal.entries().find((e) => e.kind === "race");
+  ok("a settled race records a branchDigest over its unwalked arms", typeof scopeEntry?.branchDigest === "string", scopeEntry?.branchDigest);
+  ok(
+    "and it is the WALKER'S digest, computed from the site rather than from an AST",
+    scopeEntry?.branchDigest === raced.walker.journal.entries().find((e) => e.kind === "race")?.branchDigest,
+    { engine: scopeEntry?.branchDigest, walker: raced.walker.journal.entries().find((e) => e.kind === "race")?.branchDigest },
+  );
+
+  // THE DIGEST'S ONLY JOB, and it is asserted rather than assumed from the entry's presence: a
+  // settled race is delivered from its entry WITHOUT entering a branch, so an edit inside a losing
+  // arm reaches nothing that could notice it. The winner needs no digest - its arm is walked entry
+  // by entry and an edit there diverges at the step it broke, which is a better error than this one.
+  const EDITED = RACE.replace('return "slow";', 'return "slower, by a lot";');
+  const editedModule = RACE_MODULE.replace(siteLiteral(RACE, "race"), siteLiteral(EDITED, "race"));
+  ok("the edited arm really did change the site", editedModule !== RACE_MODULE);
+  const diverged = await caught(() =>
+    resumeOnEngine(RACE, editedModule, raced.engine.journal, {
+      runId: "scope-1",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+      pins: raced.engine.pins,
+    }),
+  );
+  ok("an edit inside a LOSING arm diverges on resume", diverged instanceof RunDivergence, String(diverged));
+  // The control: the same site resumes clean, so the cell above is grading the edit and not the
+  // resume itself.
+  const clean = await resumeOnEngine(RACE, RACE_MODULE, raced.engine.journal, {
+    runId: "scope-1",
+    handler: new SimHandler({}),
+    evaluate: plainly,
+    pins: raced.engine.pins,
+  });
+  ok("while the unedited race resumes clean", JSON.stringify(clean.journal.entries()) === JSON.stringify(raced.walker.journal.entries()));
+  // A RENAMED loser is an edit too: the site no longer carries that name, and the walker digests a
+  // name it cannot find as `null`, so the two answers differ.
+  const renamedModule = RACE_MODULE.replace(siteLiteral(RACE, "race"), siteLiteral(RACE.replace(/slow:/g, "sluggish:"), "race"));
+  const renamed = await caught(() =>
+    resumeOnEngine(RACE, renamedModule, raced.engine.journal, {
+      runId: "scope-1",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+      pins: raced.engine.pins,
+    }),
+  );
+  ok("a RENAMED losing arm diverges too", renamed instanceof RunDivergence, String(renamed));
+
+  // ---- fanOut ------------------------------------------------------------------------------------
+  const FANOUT = `
+const xs = [{ id: "a" }, { id: "b" }];
+const out = await fanOut(xs, async (item) => { await sleep("1s", { name: "each" }); return item.id; }, { name: "f", key: (i) => i.id });
+log("out", out);
+`;
+  await both(
+    "fanOut",
+    FANOUT,
+    `(ctx) => async () => {
+      await ctx.fuel();
+      const xs = ctx.born([ctx.born({ id: "a" }), ctx.born({ id: "b" })]);
+      const out = await ctx.effect("fanOut", [
+        xs,
+        // THE BODY, UNEVALUATED. See \`deferredBody\`: the walker evaluates this argument after the
+        // scope's entry has begun, so an already-evaluated one journals its effects in the wrong place.
+        async () => async (item) => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "each" })]); return ctx.get(item, "id"); },
+        ctx.born({ name: "f", key: (i) => ctx.get(i, "id") }),
+      ]);
+      await ctx.free("log", ["out", out]);
+    }`,
+  );
+
+  // ---- conclave ----------------------------------------------------------------------------------
+  const CONCLAVE = `
+const a = await spawn("a", { name: "hire" });
+const out = await conclave([a], async (room) => { await sleep("1s", { name: "in" }); return 1; }, { name: "c" });
+log("out", out);
+`;
+  await both(
+    "conclave",
+    CONCLAVE,
+    `(ctx) => async () => {
+      await ctx.fuel();
+      const a = await ctx.effect("spawn", ["a", ctx.born({ name: "hire" })]);
+      const out = await ctx.effect("conclave", [
+        ctx.born([a]),
+        async () => async (room) => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "in" })]); return 1; },
+        ctx.born({ name: "c" }),
+      ]);
+      await ctx.free("log", ["out", out]);
+    }`,
+  );
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);

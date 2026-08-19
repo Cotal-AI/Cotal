@@ -262,6 +262,52 @@ log("rounds", rounds, r.status);`,
   ["the seeded pure draws", 'log(random(), randomInt(10), pick([1, 2, 3]), duration("1m"));', {}],
   ["a pure draw inside a function, twice", "const d = () => random(); log(await d(), await d());", {}],
   ["this run's own metadata", "const r = run(); log(r.startedAt > 0, len(r.programHash) > 0);", {}],
+  // F6, ALL OF IT, held out of this corpus until lane H's host landed (d556c504) and moved up here
+  // in the same change: the flag, the chain the host finishes, and the argument that must not run.
+  ["an optional call on a member", "const o = { m: () => 1 }; log(await o.m?.(), await o.z?.());", {}],
+  [
+    "an optional call's chain, finished by the host",
+    'const o = { m: () => ({ x: { y: 2 } }) }; const z = {}; log(o.m?.().x.y, z.q?.().x.y, o.m?.()?.x, z.q?.().trim());',
+    {},
+  ],
+  // THE JOURNAL IS THE EVIDENCE HERE, not the log: the short-circuited call's argument never runs,
+  // so this program journals ONE sleep and not two. An eager argument list would journal both, and
+  // a resume would replay a step the walker's run never wrote.
+  [
+    "an optional call evaluates no argument when it short-circuits",
+    'const o = { m: (v) => v }; const z = {}; log(await o.m?.(await sleep("1s", { name: "s" })), await z.q?.(await sleep("2s", { name: "t" })));',
+    {},
+  ],
+  ["an optional call on a member that returns undefined", "const o = { m: () => undefined }; try { log(o.m?.().x); } catch (e) { log(e.code); }", {}],
+  // THE CONCURRENCY SCOPES, held until the engine's scope call path landed (d556c504). The keyed
+  // fan-out is the one that fans out: without `key` the walker refuses L3021 before it reaches the
+  // scope at all, which is the refusing-fixture class and is carried as its own declared refusal.
+  [
+    "a fan-out over one agent",
+    'const a = await spawn("one");\nconst rs = await fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: (m) => m.agent });\nlog(len(rs));',
+    { turns: { t: { status: "done", at: 0 } } },
+  ],
+  ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done", at: 0 } } }, "L3021"],
+  // AND THE BODY IS EVALUATED INSIDE THE SCOPE. Both arms journal `fanOut:f` BEFORE `sleep:warm`,
+  // which is what says the body travelled unevaluated: an eager one would have journalled its sleep
+  // before the scope entry it belongs inside.
+  [
+    "a fan-out whose body is awaited",
+    'const a = await spawn("one");\nconst choose = async () => { await sleep("1m", { name: "warm" }); return (m) => turn(m, { name: "t" }); };\nawait fanOut([a], await choose(), { name: "f", key: (m) => m.agent });\nlog("done");',
+    { turns: { t: { status: "done", at: 0 } } },
+  ],
+  [
+    "a conclave",
+    'const a = await spawn("one");\nawait conclave([a], async (c) => { await notify([a], { decision: "join", outcome: "done" }); return c; }, { name: "k" });\nlog("done");',
+    {},
+  ],
+  [
+    "a conclave whose body is awaited",
+    'const a = await spawn("one");\nconst body = async (c) => { await notify([a], { decision: "join", outcome: "done" }); return c; };\nawait conclave([a], await (async () => { await sleep("1m", { name: "warm" }); return body; })(), { name: "k" });\nlog("done");',
+    {},
+  ],
+  ["a race, whose losers are digested", 'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);', {}],
+  ["a scope combinator", 'await parallel({ one: () => sleep("1m", { name: "one" }), two: () => sleep("2m", { name: "two" }) }, { name: "both" });', {}],
   // The identical half of issue 647 below: `len` of a FREE builtin is 0 on both arms, so only a
   // program-defined function diverges. Without this the divergence reads as "len of a function",
   // which is wider than what was measured.
@@ -458,14 +504,6 @@ interface HeldAnswers {
  */
 const HELD: readonly (readonly [string, string, object, readonly string[], HeldAnswers, string])[] = [
   [
-    "an optional call on a member",
-    "const o = { m: () => 1 }; log(await o.m?.(), await o.z?.());",
-    {},
-    ["logs", "error"],
-    { walker: "logs [[1,null]]", engine: "TypeError: Spread syntax requires ...iterable[Symbol.iterator] to be a function" },
-    "F6 is granted (ruling 1d) as an optional flag on the ruled `call`, and the emitter passes it; until the host reads that flag it resolves the name unconditionally, so `o.z?.()` refuses instead of short-circuiting to undefined",
-  ],
-  [
     "a temporal dead zone",
     "const f = () => x; const r = f(); const x = 1; log(r);",
     {},
@@ -480,38 +518,6 @@ const HELD: readonly (readonly [string, string, object, readonly string[], HeldA
     ["logs"],
     { walker: "logs [[\"L2004\",\"runtime\"]]", engine: "logs [[\"L4000\",\"host\"]]" },
     "the same F7, in the shape that shows what a program actually sees: L2004/runtime on the walker, L4000/host on the engine",
-  ],
-  [
-    "a fan-out over one agent",
-    'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });\nlog("done");',
-    { turns: { t: { status: "done", at: 0 } } },
-    ["error", "entry count"],
-    { walker: "L3021", engine: "L1000" },
-    "the same loud refusal of every scope-opener",
-  ],
-  [
-    "a conclave",
-    'const a = await spawn("one");\nawait conclave([a], async (c) => { await notify([a], { decision: "join", outcome: "done" }); return c; }, { name: "k" });\nlog("done");',
-    {},
-    ["logs", "error", "entry count"],
-    { walker: "logs [[\"done\"]]", engine: "L1000" },
-    "the same loud refusal of every scope-opener, and the one whose identity hashes its member list",
-  ],
-  [
-    "a race, whose losers are digested",
-    'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);',
-    {},
-    ["logs", "error", "entry count"],
-    { walker: "logs [[\"a\"]]", engine: "L1000" },
-    "the engine refuses every scope-opener loudly (L1000) until its scope machinery lands; the transform ships the race's branch payload already",
-  ],
-  [
-    "a scope combinator",
-    'await parallel({ one: () => sleep("1m", { name: "one" }), two: () => sleep("2m", { name: "two" }) }, { name: "both" });',
-    {},
-    ["error", "entry count"],
-    { walker: "logs []", engine: "L1000" },
-    "the same loud refusal of every scope-opener",
   ],
 ];
 {
