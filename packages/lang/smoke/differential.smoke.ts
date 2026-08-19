@@ -23,7 +23,8 @@ import { SimHandler } from "../src/sim.js";
 import { resolvePins } from "../src/pins.js";
 import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
-import { BUILTINS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
+import { BUILTINS, EFFECT_KINDS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
+import { ADMITTED_NODES } from "../src/syntax.js";
 import { parse } from "acorn";
 import { spawnSync } from "node:child_process";
 
@@ -295,6 +296,10 @@ log("rounds", rounds, r.status);`,
   // law on a non-record - and neither is reachable from a read.
   ["refusals: a curated key on the write path", 'const o = {}; o.__proto__ = { a: 1 }; log("after");', {}, "L4014"],
   ["refusals: a member written onto a non-record", 'const s = "ab"; s.x = 1; log("after");', {}, "L4010"],
+  // The one admitted node type the gate never spelled, found by the coverage cell below rather than
+  // by reading the corpus. An unbraced body is L1009, so a stray `;` between statements is the only
+  // spelling the validator admits, and it is what the emitter has to carry through unchanged.
+  ["an empty statement", "; let i = 0; while (i < 2) { i = i + 1; }; log(i);", {}],
   // F7 RETIRED, both halves landed: the transform classifies the dead zone as a cell and reads it by
   // name, the host answers L2004 for an absent own `v`. Held until 93bab769, compared from here on.
   ["a temporal dead zone", "const f = () => x; const r = f(); const x = 1; log(r);", {}, "L2004"],
@@ -348,6 +353,9 @@ log("rounds", rounds, r.status);`,
   ["refusals: not iterable", "const o = {}; log([...o]);", {}, "L4015"],
 ];
 
+/** Every journal kind an ENGINE run of a corpus program actually wrote, for the coverage cell. */
+const reachedKinds = new Set<string>();
+
 {
   let identical = 0;
   let completes = 0;
@@ -367,6 +375,7 @@ log("rounds", rounds, r.status);`,
     } else if (w.error !== refuses || e.error !== refuses) {
       wrong.push(`${name}: declared ${refuses}, got ${w.error} / ${e.error}`);
     }
+    for (const entry of e.entries) reachedKinds.add(entry.kind);
     if (w.value !== undefined || e.value !== undefined) valued.push(`${name}: ${j(w.value)} / ${j(e.value)}`);
     identical += 1;
   }
@@ -839,6 +848,33 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const missing = table.filter((n) => !spelled.has(n)).sort();
   ok("every free name the language has is reached by a program in the corpus", missing.length === 0, missing);
   console.log(`  (${table.length} free names in the table, ${table.length - missing.length} reached)`);
+}
+
+// ---- the gate's own coverage, derived from the tables rather than remembered ---------------------
+
+{
+  // WHAT THIS GATE DOES NOT REACH, MECHANIZED. `transform.smoke` derives its universe from
+  // `syntax.ts` and reds on an unreached node type; this suite imported neither table, so its own
+  // coverage was a number somebody had measured once. Both halves are derived here, and the second
+  // is the stronger one: a kind counts as reached only when an ENGINE run of a corpus program
+  // actually WROTE it to the journal, which spelling a primitive's name in a program that never
+  // reaches the call does not do.
+  const spelledTypes = new Set<string>();
+  const types = (n: unknown): void => {
+    if (Array.isArray(n)) return void n.forEach(types);
+    if (n === null || typeof n !== "object") return;
+    const node = n as Record<string, unknown>;
+    if (typeof node.type === "string") spelledTypes.add(node.type);
+    for (const [k, v] of Object.entries(node)) if (k !== "type" && k !== "start" && k !== "end") types(v);
+  };
+  for (const [, source] of CORPUS) types(parse(source, { ecmaVersion: 2023, sourceType: "module", allowAwaitOutsideFunction: true }));
+  const missingTypes = [...ADMITTED_NODES].filter((t) => !spelledTypes.has(t));
+  ok("the corpus reaches every node type the validator admits", missingTypes.length === 0, missingTypes);
+
+  const kinds = [...new Set([...EFFECT_KINDS, ...Object.entries(PRIMITIVES).filter(([, spec]) => spec.opensScope === true).map(([n]) => n)])];
+  const missingKinds = kinds.filter((k) => !reachedKinds.has(k));
+  ok("and a corpus program journals every kind the engine can write", missingKinds.length === 0, missingKinds);
+  console.log(`  (${ADMITTED_NODES.size} admitted node types and ${kinds.length} journal kinds, each reached by a corpus program the engine ran)`);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);
