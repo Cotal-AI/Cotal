@@ -1016,4 +1016,115 @@ log("shapes", [c, run(), replied(a), message(c, { from: a, matches: "hi" }), idl
   ok("a constructor read as a VALUE is a function, not L2001", read.value === "function", read.value);
 }
 
+// ---- 14) branch semantics: the key namespace, the depth, and the two degrees of cancellation ----
+//
+// The scope machinery itself is private to interpret.ts and is being extracted; what is gradeable
+// TODAY is the part the engine owns either way - what a branch frame IS. It is the part most likely
+// to be subtly wrong, because it decides where every step under a scope lands in the journal.
+
+{
+  // THE KEY ALLOCATION IS THE WALKER'S, and it is COMPARED rather than asserted: the same named
+  // `parallel` with the same two arms is run on the oracle, and the engine's frames are asked for
+  // the same keys. A step key that differs by one character is a step the resume cannot find.
+  const SRC = `
+await parallel({
+  a: async () => { await sleep("1s"); },
+  b: async () => { await sleep("2s"); },
+}, { name: "both" });
+`;
+  const walker = await walkerRun(SRC, { runId: "branch-1", handler: new SimHandler({}) });
+  const walkerKeys = walker.journal
+    .entries()
+    .map((e) => `${(e as unknown as { scope: string }).scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`);
+
+  const root = new EngineFrame(new KeyScope(), new RunClock(0), new Signal());
+  const occurrence = root.keys.nextScope("parallel", "both");
+  const engineKeys = [
+    stepKeyString(root.keys.scopeKey("parallel", "both", occurrence)),
+    ...["a", "b"].map((k) => stepKeyString(root.branch("parallel", "both", occurrence, k).keys.nextEffect("sleep"))),
+  ];
+  ok("a branch frame allocates the walker's own step keys", JSON.stringify(engineKeys) === JSON.stringify(walkerKeys), {
+    walker: walkerKeys,
+    engine: engineKeys,
+  });
+  ok("and the two arms landed in DIFFERENT namespaces", new Set(walkerKeys).size === 3, walkerKeys);
+}
+
+{
+  const root = new EngineFrame(new KeyScope(), new RunClock(100), new Signal());
+  const occurrence = root.keys.nextScope("parallel", null);
+  const arm = root.branch("parallel", null, occurrence, "a");
+
+  ok("a concurrent branch raises the depth", arm.depth === root.depth + 1, { root: root.depth, arm: arm.depth });
+  // `conclave` opens a scope but not a race: one body, nothing running beside it, so a write from
+  // inside it is as ordered as a write anywhere else (interpret.ts, Frame.branch).
+  const room = root.branch("conclave", null, root.keys.nextScope("conclave", null), "0");
+  ok("and a conclave body does NOT, because it has no sibling to race", room.depth === root.depth, room.depth);
+
+  // A branch inherits the clock it forked from and then moves on its own. Sharing one clock would
+  // let a sibling's effect decide a race the recorded clocks should decide.
+  ok("a branch inherits the clock at the fork", arm.clock.now() === 100);
+  arm.clock.advance(500);
+  ok("and moves without moving the parent's", root.clock.now() === 100 && arm.clock.now() === 500, {
+    root: root.clock.now(),
+    arm: arm.clock.now(),
+  });
+  root.clock.join([arm.clock]);
+  ok("the join takes the branch's history", root.clock.now() === 500, root.clock.now());
+
+  // A branch's cancellation is its own. Sharing the parent's signal would make one arm's loss the
+  // whole run's, which is the opposite of what a scope cancelling its losers means.
+  arm.signal.cancel("this arm lost");
+  ok("cancelling a branch does not cancel the run it branched from", !root.signal.cancelled && arm.signal.cancelled);
+}
+
+{
+  // L2032's runtime half, through the depth a branch frame carries. The static walk refuses a
+  // BINDING written inside a branch; this is the value that got there by an alias it cannot see.
+  const h = harness();
+  const root = new EngineFrame(new KeyScope(), new RunClock(0), new Signal());
+  const outer = (await withFrame(root, () => h.ctx.born({ n: 0 }))) as Record<string, number>;
+  const occurrence = root.keys.nextScope("parallel", null);
+  const arm = root.branch("parallel", null, occurrence, "a");
+  const room = root.branch("conclave", null, root.keys.nextScope("conclave", null), "0");
+
+  const inArm = await caught(() => withFrame(arm, () => h.ctx.set(outer, "n", 1)));
+  ok("a value born outside a concurrent branch refuses a write inside it", codeOf(inArm) === "L2032", String(inArm));
+  const inRoom = await caught(() => withFrame(room, () => h.ctx.set(outer, "n", 2)));
+  ok("and the same write inside a conclave body is allowed, because the depth did not move", inRoom === undefined, String(inRoom));
+  ok("and it actually landed", outer.n === 2, outer.n);
+}
+
+{
+  // THE TWO DEGREES. `cancelled` is the law - a cancelled branch performs no NEW effect. `cutPure`
+  // is the stronger cut a scope applies to an arm that can no longer win, and it is observed only
+  // at a fuel yield. A signal cancelled softly can be ESCALATED afterwards, which is the case a
+  // race re-decides when a cancelled arm's own clock lands past the frontier.
+  const parent = new Signal();
+  const child = parent.child();
+  ok("a child of a live signal starts live", !child.cancelled && !child.cutPure);
+
+  const heard: string[] = [];
+  child.onCancel((reason, cut) => heard.push(`${reason}/${cut}`));
+  parent.cancel("a sibling branch won the race", { cutPure: false });
+  ok("a parent's cancellation reaches the child", child.cancelled && child.reason === "a sibling branch won the race");
+  ok("softly, when the parent cancelled softly", !child.cutPure);
+
+  parent.cancel("landed past the frontier", { cutPure: true });
+  ok("and the ESCALATION reaches an already-cancelled child", child.cutPure);
+  ok("the reason stays the FIRST one, because that is what cancelled the branch", child.reason === "a sibling branch won the race", child.reason);
+  ok("the listener heard the cancel and the escalation, and nothing else", heard.length === 2, heard);
+
+  parent.cancel("again", { cutPure: true });
+  ok("a repeated cancellation is not a third event", heard.length === 2, heard);
+
+  // A branch launched AFTER its parent was cut starts cut: it cannot win either.
+  const late = parent.child();
+  ok("a child made after the cut starts cancelled AND cut", late.cancelled && late.cutPure, {
+    cancelled: late.cancelled,
+    cutPure: late.cutPure,
+  });
+  ok("with the reason it inherited", late.reason === "a sibling branch won the race", late.reason);
+}
+
 console.log(`engine.smoke: ${pass} checks passed`);

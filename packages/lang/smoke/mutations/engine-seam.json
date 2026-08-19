@@ -246,6 +246,86 @@
       "completionMarker": "ok a function callee passes through as itself",
       "cell": "calling a record is L4011",
       "note": "Seam member 14, granted in ruling 1c. It is the whole of the member: the transform emits it behind a `typeof`, so nothing but the refusal ever reaches it, and a `callee` that refuses nothing is a callee that is not there."
+    },
+    {
+      "name": "a branch shares its parent's key namespace instead of opening its own",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      this.keys.branch(kind, name, occurrence, branchKey),",
+      "replace": "      this.keys,",
+      "expectRed": "a branch frame allocates the walker's own step keys",
+      "completionMarker": "ok a constructor read as a VALUE is a function, not L2001",
+      "cell": "a branch frame allocates the walker's own step keys",
+      "note": "Two branches running the same named effect would race for one occurrence counter, so which arm finished first would decide which step key each got - the journal would record a different pair of keys on every run and no resume could find either. The cell compares against the oracle's own keys for the same program rather than asserting a spelling."
+    },
+    {
+      "name": "a branch shares its parent's clock",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      this.clock.fork(),",
+      "replace": "      this.clock,",
+      "expectRed": "and moves without moving the parent's",
+      "completionMarker": "ok a branch inherits the clock at the fork",
+      "cell": "and moves without moving the parent's",
+      "note": "The recorded clocks are what decide a race: an arm advances its own past the frontier and proves it cannot win. On one shared clock a sibling's effect moves every arm, so the frontier is whatever landed last and the winner is whoever the host scheduled."
+    },
+    {
+      "name": "a branch shares its parent's cancellation signal",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      this.signal.child(),",
+      "replace": "      this.signal,",
+      "expectRed": "cancelling a branch does not cancel the run it branched from",
+      "completionMarker": "ok the join takes the branch's history",
+      "cell": "cancelling a branch does not cancel the run it branched from",
+      "note": "A scope cancels its LOSERS. On a shared signal the first loser cancels the run that is still waiting for the winner, so a race would end every program that used one."
+    },
+    {
+      "name": "a conclave body raises the depth like a racing branch",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      kind === \"conclave\" ? this.depth : this.depth + 1,",
+      "replace": "      this.depth + 1,",
+      "expectRed": "and a conclave body does NOT, because it has no sibling to race",
+      "completionMarker": "ok a concurrent branch raises the depth",
+      "cell": "and a conclave body does NOT, because it has no sibling to race",
+      "note": "A conclave opens a scope but not a race: one body, nothing running beside it, so a write from inside it is as ordered as a write anywhere else. Under the mutant L2032 refuses writes that the walker allows, and the refusal names a nondeterminism that cannot occur."
+    },
+    {
+      "name": "a child signal does not inherit a parent that is already cancelled",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    if (this.cancelled) s.cancel(this.reason ?? \"parent cancelled\", { cutPure: this.cutPure });",
+      "replace": "",
+      "expectRed": "a child made after the cut starts cancelled AND cut",
+      "completionMarker": "ok a repeated cancellation is not a third event",
+      "cell": "a child made after the cut starts cancelled AND cut",
+      "note": "A nested branch launched after its parent was cut is a branch that cannot win either, and it would otherwise run - and perform - with no cancellation at all, because the parent's cancel already fired before it subscribed."
+    },
+    {
+      "name": "a child signal never subscribes to its parent",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    this.onCancel((r, cut) => s.cancel(r, { cutPure: cut }));",
+      "replace": "",
+      "expectRed": "a parent's cancellation reaches the child",
+      "completionMarker": "ok a child of a live signal starts live",
+      "cell": "a parent's cancellation reaches the child",
+      "note": "Cancellation flows down or it does nothing: a scope cancels the arm, and the arm's own nested branches keep running and keep performing against the world."
+    },
+    {
+      "name": "a soft cancellation can never be escalated to the cut",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    const escalated = cut && !this.cutPure;",
+      "replace": "    const escalated = false;",
+      "expectRed": "and the ESCALATION reaches an already-cancelled child",
+      "completionMarker": "ok softly, when the parent cancelled softly",
+      "cell": "and the ESCALATION reaches an already-cancelled child",
+      "note": "The walker re-decides the cut when a cancelled arm's own clock lands past the frontier - measured there as an infinite pure tail burning the whole step budget and killing a run whose race had already settled ok, while a resume of the same journal returned the winner. Without the escalation the engine cannot re-decide it either."
+    },
+    {
+      "name": "a later cancellation overwrites the reason the branch was cancelled for",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    if (first) {\n      this.cancelled = true;\n      this.reason = reason;\n    }",
+      "replace": "    this.cancelled = true;\n    this.reason = reason;",
+      "expectRed": "the reason stays the FIRST one, because that is what cancelled the branch",
+      "completionMarker": "ok and the ESCALATION reaches an already-cancelled child",
+      "cell": "the reason stays the FIRST one, because that is what cancelled the branch",
+      "note": "The reason is what the Cancelled error carries out of the branch and into the trace. An escalation is not a new reason for stopping - the branch stopped when it lost - so overwriting it makes every cut arm report the escalation instead of the loss."
     }
   ]
 }
