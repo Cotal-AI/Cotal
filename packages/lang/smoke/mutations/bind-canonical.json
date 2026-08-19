@@ -28,12 +28,12 @@
     {
       "name": "a journal already carrying an unreadable binding loads anyway",
       "file": "packages/lang/src/journal.ts",
-      "find": "          assertCrossable(e.external, \"the recorded binding\");",
-      "replace": "          void e.external;",
+      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail]] as const) {",
+      "replace": "      for (const [field, value] of [[\"error.detail\", e.error?.detail]] as const) {",
       "expectRed": "a journal already carrying such a binding is refused ON LOAD, by name",
       "completionMarker": "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
       "cell": "a journal already carrying such a binding is refused ON LOAD, by name",
-      "note": "The write guards fence every SHIPPED caller - there are exactly two, both in perform.ts - but they fence by enumeration and a record written before this rule is behind them either way. This is the door such a record cannot go around."
+      "note": "The write guards fence every SHIPPED caller - there are exactly two, both in perform.ts - but they fence by enumeration and a record written before this rule is behind them either way. This is the door such a record cannot go around. Re-aimed when the door grew a second field: the earlier anchor was the single-field call and the refactor left it DEAD, which the fixtures walk caught in the same commit that moved it."
     }
   ]
 }

@@ -765,13 +765,17 @@ after; a reader folds by key and the last write wins. `result` and `error` are e
 is present only on a failed scope, because a successful one carries them inside `result`. Unknown
 fields MUST be ignored.
 
-`external` is a **value that crossed an effect boundary** and answers to the same rule as `result`
-and an effect's arguments (§4.4): a host MUST refuse a binding that is not crossable, at the bind,
-and a resume MUST refuse a journal whose recorded `external` is not crossable, with **L5024**. The
-refusal on load names the entry and the field, because "this journal cannot load" is otherwise not
-actionable. A binding refused at the bind is a failure of the handler's own dispatch and carries
-`L4000` with kind `handler-fault` (or `scope-fault` for a scope's binding); it is not a catalog code
-of its own, because the catalog already says exactly that.
+`external` and `error.detail` are **values that crossed an effect boundary** and answer to the same
+rule as `result` and an effect's arguments (§4.4): a host MUST refuse either one if it is not
+crossable, where it is written, and a resume MUST refuse a journal whose recorded `external` or
+`error.detail` is not crossable, with **L5024**. The refusal on load names the entry AND which of
+the two fields, because "this journal cannot load" is otherwise not actionable. A value refused
+where it is written is a failure of the handler's own dispatch and carries `L4000` with kind
+`handler-fault` (or `scope-fault` inside a scope); it is not a catalog code of its own, because the
+catalog already says exactly that. A failure whose `detail` is refused is recorded under `L4000`
+rather than under the code the handler chose, and the recorded message MUST say that the detail
+could not be kept: dropping the field while keeping the code would hand a program a classified
+failure whose recorded form is missing the field sent to explain it.
 
 The rule makes a binding **canonical, not round-trip-exact**, and the difference is a property of
 the store rather than of the language. A crossable value has a canonical form (§10.3), but a store
@@ -1039,3 +1043,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-19 | A record may not carry a callable `then`, on a literal, a spread, a rest pattern or a member write alike, literal key or computed (L4021, §4.3): an object with a callable `then` is a thenable, the host's promise machinery adopts it in place of the value the program built, and its failure escaped the run as an unowned rejection that killed the host. |
 | 2026-08-19 | Language version `2`, the compiled engine, alongside version `1`, the tree-walker (§8.4): a step is the engine's own unit and budgets are not comparable across versions (§8.3, §12); `log` is data under version 2 and refuses code (L4016); an engine stamps and compares its own version, so a record binds only under the engine that wrote it (L5008); and a build that dispatches to engines refuses a version none of its engines serves, naming what it does serve, leaving the run untouched (L5023, §11.1). |
 | 2026-08-19 | A binding is a value and answers to the value rule (§10.1): a host refuses a binding that is not crossable at the bind, carrying `L4000` with the dispatch's own kind rather than a code of its own, and a resume refuses a journal whose recorded `external` is not crossable, naming the entry and the field (L5024). Stated as canonical and NOT round-trip-exact, because a store may lose distinctions the canonical form keeps: JSON writes `-0` as `0`. |
+| 2026-08-19 | The same rule reaches a failure's `detail` (§10.1): it is a value the handler chose and the record keeps, so it is refused where it is written and on load, and a failure whose detail is refused is recorded under `L4000` with the reason rather than under the handler's own code with the field quietly missing. Reachable because a program that CATCHES an effect failure still completes, so a successful run can carry a settled failure. |

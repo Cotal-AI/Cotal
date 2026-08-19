@@ -244,16 +244,16 @@ export function journalEntryKeyString(entry: JournalEntry): string {
  * WORKER's door is the one that can catch something today: `workerData` is a structured clone, which
  * preserves `Date`, `NaN`, `-0`, an own `undefined` key and a `Map`.
  */
-function bindingWithoutCanonicalForm(entry: JournalEntry, cause: NotCrossable): RuntimeFault {
+function bindingWithoutCanonicalForm(entry: JournalEntry, field: "external" | "error.detail", cause: NotCrossable): RuntimeFault {
   const step = `${entry.scope}/${entry.name === "" ? entry.kind : `${entry.kind}:${entry.name}`}#${entry.occurrence}`;
   return new RuntimeFault(
     "L5024",
-    `A recorded binding has no canonical form\n\n  entry seq ${entry.seq}   ${entry.kind}   BINDING UNREADABLE\n`
+    `A recorded binding has no canonical form\n\n  entry seq ${entry.seq}   ${entry.kind}   \`${field}\` UNREADABLE\n`
       + `        step      ${step}\n        cause     ${cause.message}\n\n`
       + "`external` is what a resume re-binds the handler's own record to, so a value the language cannot express is one "
       + "this run would hand back to the program as if it had been recorded. The entry cannot be read, and reading it as "
       + `anything else would invent a fact.\n\nOptions\n  repair the entry at seq ${entry.seq} in the store, so its `
-      + `binding is a value an effect boundary can carry\n  fork(run, "${step}")   start again from before this step`,
+      + `\`${field}\` is a value an effect boundary can carry\n  fork(run, "${step}")   start again from before this step`,
   );
 }
 
@@ -294,12 +294,19 @@ export class Journal {
       // `performEffect` and `performScope`. Those fence every shipped caller — there are exactly two,
       // both in perform.ts — but they fence it by ENUMERATION, and a record already written is behind
       // them either way. This door is the one a loaded journal cannot go around.
-      if (e.external !== undefined) {
+      // TWO FIELDS, ONE RULE. `external` is what a resume re-binds to; `error.detail` is what a
+      // failed step reports itself with. Both are values a handler chose and both reached the record
+      // with no domain check until the guards in `performEffect` and `performScope`. `detail` is the
+      // second one and it is not hypothetical: a program that CATCHES an effect failure succeeds,
+      // so a run can complete with an unreadable value sitting in a settled entry — measured, and
+      // through the worker that run dies on a structured-clone error naming a host algorithm.
+      for (const [field, value] of [["external", e.external], ["error.detail", e.error?.detail]] as const) {
+        if (value === undefined) continue;
         try {
-          assertCrossable(e.external, "the recorded binding");
+          assertCrossable(value, field === "external" ? "the recorded binding" : "the recorded failure detail");
         } catch (cause) {
           if (!(cause instanceof NotCrossable)) throw cause;
-          throw bindingWithoutCanonicalForm(e, cause);
+          throw bindingWithoutCanonicalForm(e, field, cause);
         }
       }
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;

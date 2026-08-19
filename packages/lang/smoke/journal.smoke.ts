@@ -13,7 +13,7 @@ import { resume, run } from "../src/interpret.js";
 import { readFileSync } from "node:fs";
 import { SimHandler } from "../src/sim.js";
 import { assertNoCode } from "../src/values.js";
-import type { EffectHandler } from "../src/effects.js";
+import { EffectError, type EffectHandler } from "../src/effects.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -818,6 +818,114 @@ await sleep("3h", { name: "after-the-catch" });
     "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
     loaded.entries().length === 1 && (loaded.entries()[0]?.external as { simAgent?: string })?.simAgent === "sim.b",
     loaded.entries().map((e) => e.external),
+  );
+}
+
+// ---- and so is a failure's DETAIL, which a run can succeed while carrying -----------------------
+
+/**
+ * The second field a handler chooses and the record keeps. It is reachable in a way `external` is
+ * not: a FAILING run never hands its entries anywhere — the worker host builds a small
+ * `{ok, code, name, message}` on that path — so `detail` only matters when the run SUCCEEDS, which
+ * it does whenever the program catches the failure. Measured before this rule: such a run completed
+ * in-process with a function sitting in a settled entry, and died through the worker on a
+ * structured-clone error naming a host algorithm rather than the language.
+ */
+{
+  // THE EFFECT SITE, on the real path: the program catches, so the run succeeds and the entry is
+  // the only place the unreadable value could have survived.
+  const sim = new SimHandler({});
+  const thrower = Object.create(sim) as EffectHandler;
+  thrower.turn = async () => {
+    throw new EffectError("L6002", "handler-fault", "the handler refused", { cb: () => 1 });
+  };
+  const journal = new Journal({ run: "r-det-w" });
+  let threw: unknown;
+  try {
+    await run(
+      'const b = await spawn("b");\nlet caught = null;\ntry {\n  await turn(b, { name: "build" });\n} catch (e) {\n  caught = "caught";\n}\ncaught;',
+      { runId: "r-det-w", journal, handler: thrower },
+    );
+  } catch (e) {
+    threw = e;
+  }
+  // COMPLETION is the claim, not the program's value: a program whose last line is a statement ends
+  // with no value at all, and it is the run REACHING ITS END that leaves the failed entry behind for
+  // a loader to meet.
+  ok("a program that catches an effect failure still COMPLETES, which is what makes the detail reachable at all",
+    threw === undefined, threw === undefined ? "completed" : String((threw as Error).message).slice(0, 80));
+  const failed = journal.entries().find((e) => e.status === "failed");
+  ok(
+    "a failure whose detail has no canonical form is recorded as the handler fault it is, not with the code the handler chose",
+    failed?.error?.code === "L4000" && failed?.error?.kind === "handler-fault",
+    failed?.error,
+  );
+  ok(
+    "...and the unreadable detail is not recorded at all, with the record saying why rather than dropping it silently",
+    failed?.error?.detail === undefined && /could not be recorded/.test(String(failed?.error?.message)) && /the handler refused/.test(String(failed?.error?.message)),
+    failed?.error?.message,
+  );
+}
+
+{
+  // THE SCOPE SITE. Its own guard, because a fix at the effect site alone leaves this one open —
+  // the same half-fence the two bind wrappers had.
+  const sim = new SimHandler({ turns: { huddle: { status: "done", at: 0 } } });
+  const thrower = Object.create(sim) as EffectHandler;
+  thrower.openConclave = async () => {
+    throw new EffectError("L6002", "handler-fault", "the room refused", { cb: () => 1 });
+  };
+  const journal = new Journal({ run: "r-det-s" });
+  try {
+    await run(
+      'const a = await spawn("a");\nconst b = await spawn("b");\nawait conclave([a, b], () => turn(a, { name: "huddle" }), { name: "triage" });',
+      { runId: "r-det-s", journal, handler: thrower },
+    );
+  } catch {
+    // The scope path rethrows its raw reason, which is the parked asymmetry; the record is the subject here.
+  }
+  const scoped = journal.entries().find((e) => e.kind === "conclave");
+  ok(
+    "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",
+    scoped?.error?.code === "L4000" && scoped?.error?.kind === "scope-fault" && scoped?.error?.detail === undefined,
+    scoped?.error,
+  );
+}
+
+{
+  // THE LOAD DOOR, for the second field. Hand-built for the same reason the binding's load cell is:
+  // with the write guards in place nothing shipped can produce such an entry.
+  const bad = [
+    {
+      v: 1, seq: 0, run: "r-det-l", scope: "", kind: "turn", name: "build", occurrence: 0,
+      inputHash: H({ name: "build" }), state: "settled", status: "failed",
+      error: { code: "L6002", kind: "handler-fault", message: "refused", detail: { when: new Date(0) } },
+    },
+  ] as unknown as readonly JournalEntry[];
+  let caught: unknown;
+  try {
+    new Journal({ run: "r-det-l", entries: bad });
+  } catch (e) {
+    caught = e;
+  }
+  ok(
+    "a recorded failure detail with no canonical form is refused on load by the same door, naming the FIELD",
+    (caught as { code?: string })?.code === "L5024" && /error\.detail/.test(String((caught as Error)?.message)),
+    String((caught as Error)?.message).slice(0, 130),
+  );
+  // THE MIRROR, so the door is not satisfied by refusing every failure that carries a detail.
+  const fine = [
+    {
+      v: 1, seq: 0, run: "r-det-m", scope: "", kind: "turn", name: "build", occurrence: 0,
+      inputHash: H({ name: "build" }), state: "settled", status: "failed",
+      error: { code: "L6002", kind: "handler-fault", message: "refused", detail: { why: "no capacity", after: 3 } },
+    },
+  ] as unknown as readonly JournalEntry[];
+  const loaded = new Journal({ run: "r-det-m", entries: fine });
+  ok(
+    "an ordinary failure detail still loads, so the door reads the value rather than the field's presence",
+    (loaded.entries()[0]?.error?.detail as { why?: string })?.why === "no capacity",
+    loaded.entries()[0]?.error,
   );
 }
 
