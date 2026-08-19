@@ -253,7 +253,7 @@ registry.register(e2eQuietCon);
 // assertions instead of racing the manager's readiness wait.
 const CHILD_OFFLINE = CHILD.replace(
   "setInterval(()=>{},1000);",
-  "setInterval(()=>{},1000);process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});",
+  "setInterval(()=>{},1000);const seq=['working','waiting'];let phase=0;process.on('SIGUSR2',()=>{ep.setStatus(seq[Math.min(phase++,seq.length-1)]).catch(()=>{});});process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});",
 );
 const e2eOfflineCon: Connector = {
   kind: "connector",
@@ -486,7 +486,18 @@ try {
   // joined, which must carry the roster's own status, and a seat that launches and stays alive
   // without ever joining the mesh, which must carry `absent`. One literal cannot be both, whichever
   // literal it is, and a lookup rekeyed off the name renders `absent` for the joined row.
-  const PRESENCE_STATUSES: readonly string[] = ["idle", "waiting", "working", "offline"];
+  // The tie to the enum, not a copy of it: `Record<PresenceStatus, ...>` is missing a property the
+  // moment a member is added to the union, and this file is typechecked by the root config, which is
+  // the gate this branch exists to close. So the coverage below cannot silently fall behind the set
+  // of values a row can carry, and the list is derived from it rather than written out twice.
+  type PresenceStatus = import("@cotal-ai/core").PresenceStatus;
+  const STATUS_COVERAGE: Record<PresenceStatus, string> = {
+    idle: "alpha, the default a joined seat starts in",
+    working: "kappa, signalled",
+    waiting: "kappa, signalled",
+    offline: "kappa, signalled",
+  };
+  const PRESENCE_STATUSES: readonly string[] = Object.keys(STATUS_COVERAGE);
   type RosterEntry = { card: { name: string }; status: string };
   // The manager's OWN roster, keyed the way `Manager.list` keys it (`new Map(...)` by card NAME, so
   // a later entry for a name wins). Deriving the expected value any other way measures this oracle's
@@ -521,13 +532,22 @@ try {
   // carry. Signalling rather than timing keeps the flip ordered after the manager's readiness wait
   // instead of racing it.
   const offlineReply: ControlReply = await manager.startAgent({ name: "kappa", agent: "e2e-offline", owner: OWNER });
-  const offlinePid = psList(mgr).find((a) => a.name === "kappa")?.pid;
-  if (offlinePid) process.kill(offlinePid, "SIGUSR1");
-  const offlineSeen = await until(() => rosterOf("kappa") === "offline");
+  const signalPid = psList(mgr).find((a) => a.name === "kappa")?.pid;
+  // One row walks the rest of the union. A review found the hole at `offline`, having found an
+  // earlier one at `idle`, and the shape of both is the same: a rewrite of a status no row carries
+  // is invisible. So rather than add the one value that was named, this walks EVERY member of
+  // `PresenceStatus` that a joined row can reach and records what the projection carried for it.
+  const carried: Record<string, string> = { idle: meshOf("alpha") };
+  for (const want of ["working", "waiting", "offline"] as const) {
+    if (signalPid) process.kill(signalPid, want === "offline" ? "SIGUSR1" : "SIGUSR2");
+    const reached = await until(() => rosterOf("kappa") === want);
+    carried[want] = reached ? meshOf("kappa") : `the roster never reached ${want} (it says ${rosterOf("kappa")})`;
+  }
   check(
-    "a seat that joins and then goes offline is still a managed row, and the manager's roster says offline",
-    offlineReply.ok === true && offlinePid !== undefined && offlineSeen,
-    { ok: offlineReply.ok, pid: offlinePid, roster: rosterOf("kappa") },
+    "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+    offlineReply.ok === true && signalPid !== undefined
+      && (["working", "waiting", "offline"] as const).every((st) => carried[st] === st),
+    JSON.stringify(carried),
   );
   const projection = psList(manager).map((a) => ({ name: a.name, mesh: a.mesh, expected: rosterOf(a.name) }));
   check(
@@ -535,12 +555,15 @@ try {
     quietListed && projection.length > 0 && projection.every((r) => r.mesh === r.expected),
     JSON.stringify(projection),
   );
+  // The closure this cell claims: every member of the union was observed on a row, plus the sentinel
+  // for a row with no roster entry at all, and the values are distinct. No constant satisfies that,
+  // and neither does a rewrite of any single status, whichever member it targets.
+  const observed = new Set([...Object.values(carried), meshOf("iota")]);
+  const uncovered = Object.keys(STATUS_COVERAGE).filter((st) => !observed.has(st));
   check(
-    "and the three rows carry three different values, so neither a constant nor a rewrite of one status can satisfy all of them",
-    meshOf("alpha") !== "absent" && meshOf("alpha") !== "offline"
-      && meshOf("kappa") === "offline"
-      && meshOf("iota") === "absent",
-    { alpha: meshOf("alpha"), kappa: meshOf("kappa"), iota: meshOf("iota") },
+    "the fixture carries every status the union can hold plus the absent sentinel, so no rewrite of any single status can hide in a value no row exercises",
+    uncovered.length === 0 && observed.has("absent") && observed.size === Object.keys(STATUS_COVERAGE).length + 1,
+    JSON.stringify({ observed: [...observed], uncovered }),
   );
   const quietPid = (psList(manager).find((a) => a.name === "iota"))?.pid;
   if (quietPid) process.kill(quietPid, "SIGKILL");
