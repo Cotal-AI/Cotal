@@ -119,9 +119,16 @@ check(
     : `${MODULE_PATH} emitted a declaration over a string assigned to a \`number\`, so its JSDoc is not being read; it must carry \`// @ts-check\` and no \`// @ts-nocheck\``,
 );
 // The control on that zero: the same override path, with the module's own text and nothing added,
-// must emit exactly what reading the file emits. Without this, a probe that refused for any other
-// reason (an unresolved import, a bad host, a path that never matched) would read as the guard
-// holding.
+// must emit exactly what reading the file emits. What it covers is a probe that refuses for a
+// reason that is not the injected error, which is the way this guard could go green while proving
+// nothing: an environment where the module ITSELF stops typechecking refuses either text, and the
+// probe cannot tell that refusal from the one it is asking for.
+//
+// It does NOT cover an override that never reaches the module, and a review was right to say so.
+// Measured: with the path test forced to `false` the probe RED and this control GREEN, because a
+// probe whose injected error never reached the compiler emits a declaration and reds on that. So
+// the two cells cover different halves, no bypass leaves both green, and this comment used to
+// claim the wrong half.
 let controlEmitted: string | undefined;
 let controlError = "";
 try { controlEmitted = renderReaperDeclaration(moduleSource); } catch (e) { controlError = (e as Error).message; }
