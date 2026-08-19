@@ -222,6 +222,39 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   ok("a second spawn of the same persona is a distinct agent", h2.agent !== h.agent, h2.agent);
 }
 
+// ---- 8b) and so does every OTHER effect that binds, each with its own fact -----------------------------
+//
+// `spawn` was the only bound effect any cell read. A security review deleted `checkpoint`'s
+// `await ctx.bind(...)` and all fifteen lang suites stayed green; the same deletion in `turn` (line
+// 207) and in `ask` (line 214) is green too. So three durable external writes had nothing holding
+// them to being written, and the effect they exist for is crash recovery: a settled effect whose
+// binding never landed is replayed against state the journal cannot see.
+//
+// The bound KEY is the property, not the fact that something was bound. `turn` and `ask` bind
+// `simGoal` and `checkpoint` binds `simCheckpoint`, so a checkpoint that bound the goal fact would
+// be indistinguishable from a turn to anything reading the journal. Each cell names its own key and
+// the checkpoint cell refuses the other one.
+{
+  bound.length = 0;
+  const sim = new SimHandler({
+    turns: { build: { status: "done", at: 0 } },
+    asks: { q: 3 },
+    checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
+  });
+  const s = new KeyScope();
+  const agent = { agent: "a", persona: "p" };
+
+  await sim.turn({ agent }, ctxFor(s.nextEffect("turn", "build")));
+  ok("a turn binds its goal fact before settling", bound.length === 1 && "simGoal" in (bound[0] ?? {}), bound);
+
+  await sim.ask({ agent, schema: {} }, ctxFor(s.nextEffect("ask", "q")));
+  ok("an ask binds its goal fact too", bound.length === 2 && "simGoal" in (bound[1] ?? {}), bound);
+
+  await sim.checkpoint({ prompt: "ok?" }, ctxFor(s.nextEffect("checkpoint", "gate")));
+  ok("a checkpoint binds its OWN fact, which is not the goal fact",
+    bound.length === 3 && "simCheckpoint" in (bound[2] ?? {}) && !("simGoal" in (bound[2] ?? {})), bound);
+}
+
 // ---- 9) unused script entries are reported --------------------------------------------------------------
 
 {
