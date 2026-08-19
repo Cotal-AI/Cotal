@@ -64,9 +64,12 @@ function stubEl() {
   return el;
 }
 
+console.log("0. the harness is the page, not a subset of it");
 async function main() {
   const openedAt: number[] = [];
   const fetchedAt: number[] = [];
+  let feed: { listeners: Record<string, (e: { data: string }) => void> } | null = null;
+  const thrown: string[] = [];
 
   const payload = (u: string) => {
     if (u.includes("/api/meta")) return { space: "s" };
@@ -91,8 +94,9 @@ async function main() {
     // THE FEED. Constructing it is exactly what turns the pill from `disconnected` to live.
     EventSource: class {
       onopen: unknown; onerror: unknown;
-      constructor(_url: string) { openedAt.push(Date.now() - t0); }
-      addEventListener() {}
+      constructor(_url: string) { openedAt.push(Date.now() - t0); feed = this as never; }
+      listeners: Record<string, (e: { data: string }) => void> = {};
+      addEventListener(kind: string, fn: (e: { data: string }) => void) { this.listeners[kind] = fn; }
     },
   };
   sandbox.addEventListener = () => {};
@@ -105,9 +109,18 @@ async function main() {
     querySelector: () => stubEl(), querySelectorAll: () => [], title: "" };
   sandbox.devicePixelRatio = 1;
 
+  // LOAD WHAT THE PAGE LOADS, IN THE PAGE'S ORDER, read out of graph.html rather than listed here,
+  // so a script added to the page cannot silently go missing from this harness. An earlier draft
+  // loaded only snapshot.js and graph.js; the page also loads harness.js, parts.js and
+  // agui-frame.js, and the gap surfaced as `window.COTAL_PARTS` being undefined when a message
+  // event was handled. That was the harness failing to be the page, not the page failing.
+  const html = readFileSync(join(web, "graph.html"), "utf8");
+  const scripts = [...html.matchAll(/<script src="\/([^"]+\.js)"><\/script>/g)].map((m) => m[1]);
+  ok("0.1 the harness loads every script the page loads, discovered from graph.html not hardcoded",
+    scripts.length >= 4 && scripts.includes("graph.js"), { scripts });
   const ctx = vm.createContext(sandbox);
-  vm.runInContext(readFileSync(join(web, "snapshot.js"), "utf8"), ctx, { filename: "snapshot.js" });
-  vm.runInContext(readFileSync(join(web, "graph.js"), "utf8"), ctx, { filename: "graph.js" });
+  for (const s of scripts)
+    vm.runInContext(readFileSync(join(web, s), "utf8"), ctx, { filename: s });
 
   console.log("1. the feed opens without waiting for the bootstrap read");
   await new Promise((r) => setTimeout(r, CONCURRENT_MS));
@@ -116,6 +129,30 @@ async function main() {
     openedEarly, { openedAt, fetchedSoFar: fetchedAt.length, waitedMs: CONCURRENT_MS, readTakesMs: READ_MS });
   ok("1.2 and it opened BEFORE any bootstrap read had answered, not merely early",
     openedEarly && fetchedAt.length === 0, { openedAt, fetchedAt });
+
+  // ── 2. OPENING FIRST MUST NOT BREAK WHAT OPENING LAST PROTECTED ──────────────────────────────
+  //
+  // Connecting BEFORE the bootstrap means live events can now arrive while the structures they
+  // mutate are still empty, which the chained boot made impossible by construction. That is the
+  // hazard this change introduces, so it gets a cell rather than a reading of the source: drive a
+  // roster, a membership and a message event in while every REST read is still in flight, and
+  // require the page to survive all three.
+  console.log("2. a live event that arrives before the bootstrap finishes does not break the page");
+  const early = { roster: '[{"card":{"id":"local.X","name":"a","kind":"agent"},"status":"working"}]',
+                  membership: '{"members":[{"id":"local.X","live":["general"],"durable":[]}]}',
+                  message: '{"mode":"chat","channel":"general","msg":{"id":"m","ts":1,"from":{"id":"local.X","name":"a"},"parts":[{"kind":"text","text":"hi"}]}}' };
+  for (const [kind, data] of Object.entries(early)) {
+    const fn = feed?.listeners[kind];
+    if (!fn) { thrown.push(`${kind}: no listener registered`); continue; }
+    try { fn({ data }); } catch (e) { thrown.push(`${kind}: ${e instanceof Error ? e.message : String(e)}`); }
+  }
+  ok("2.1 a roster, membership and message event delivered BEFORE any read answered are all survived",
+    thrown.length === 0, thrown);
+  ok("2.2 and the feed had registered a handler for each of them, so 2.1 is not vacuous",
+    Object.keys(early).every((k) => !!feed?.listeners[k]),
+    { registered: Object.keys(feed?.listeners ?? {}) });
+  ok("2.3 the reads were still in flight while those events were handled, which is the whole point",
+    fetchedAt.length === 0, { fetchedAt });
 
   // POSITIVE CONTROL: the arm has to be able to observe a feed that opens at all, or 1.1 would pass
   // vacuously on a page that never connects. Wait past the read and confirm the reads did land, so
