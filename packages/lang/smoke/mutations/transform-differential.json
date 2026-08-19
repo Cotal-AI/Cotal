@@ -266,12 +266,12 @@
       "note": "The index's whole reason for being checked instead of written down. A citation is a copy of a sentence that lives somewhere else, and a copy drifts: here the row's text loses two characters, exactly the way a reworded cell leaves its index entry behind. Nothing else in the suite notices - the cell it names still runs and still passes under its new name - so this cell is the only thing between the matrix and a row list that describes a suite that has moved on."
     },
     {
-      "name": "a matrix row cites a driver cell the runtime suite does not have, and the cross-package half stops being checked",
+      "name": "a matrix row cites a sentence the runtime suite's list does not carry, and the cross-package half stops being checked",
       "file": "packages/lang/smoke/differential.smoke.ts",
       "find": "\"and it is stamped with the version of the ENGINE that ran it, not with the current language\",",
       "replace": "\"and it is stamped with the version of the engine that ran it, not with the current language\",",
-      "expectRed": "every row the dispatcher owns names a cell the runtime suite still has",
-      "cell": "every row the dispatcher owns names a cell the runtime suite still has",
+      "expectRed": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",
+      "cell": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",
       "note": "The same drift across the package line, where it is likelier and worse: the dispatcher rows are asserted in implementations/runtime, which cannot be reached from a lang suite except by reading its source, and a lang author has no reason to look there. One word loses its capitals and the citation resolves to nothing. If this cell did not exist, the matrix would keep claiming eight rows while three of them named sentences no suite anywhere prints."
     },
     {
@@ -282,6 +282,24 @@
       "expectRed": "the index carries all eight rows, in order, and none of them can be dropped quietly",
       "cell": "the index carries all eight rows, in order, and none of them can be dropped quietly",
       "note": "The failure the two citation cells are both blind to, because both quantify over the rows that are THERE: an empty matrix satisfies them perfectly. The row removed here is the one only this package can own - a v2 record forced onto the walker's own entry point - so its loss is the loss of the arm observation itself, and without the ordinals it costs nothing. This is why the labels carry numbers."
+    },
+    {
+      "name": "a row's citation is deleted, so the runtime suite lists a cell no row indexes",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "\"and the refusal says the record names none, rather than interpolating the missing value\",\n    ]],",
+      "replace": "    ]],",
+      "expectRed": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",
+      "cell": "the dispatcher rows and that suite's own list name the same sentences, each exactly once",
+      "note": "THE DIRECTION THE OTHER SUITE'S OWN CELL CANNOT SEE, and the reason this half is set equality rather than containment. That suite asserts every sentence in its list executed; it cannot know whether any row here still cites them. Drop one citation and its cell stays green while the row it belonged to quietly indexes one fact fewer. Only the uncited direction catches it, and a matrix that silently loses a citation is the failure the whole index exists to prevent."
+    },
+    {
+      "name": "the seam file is written for another suite, and this matrix indexes it anyway",
+      "file": "implementations/runtime/smoke/indexed-cells.json",
+      "find": "\"suite\": \"implementations/runtime/smoke/run-driver.smoke.ts\"",
+      "replace": "\"suite\": \"implementations/runtime/smoke/journal-store.smoke.ts\"",
+      "expectRed": "the seam file this half trusts is the one the dispatcher's own suite writes",
+      "cell": "the seam file this half trusts is the one the dispatcher's own suite writes",
+      "note": "A seam is only a seam while both ends agree which subject it is about. This half now trusts a FILE rather than the other suite's source, so it must check the file is that suite's - otherwise a list written for any suite in the repo would satisfy the equality and the rows would index cells that never ran here. The runtime suite grades the same field from its own end; this grades it from the end that consumes it, which is the end that would be silently wrong."
     }
   ],
   "completionMarker": "differential.smoke:"

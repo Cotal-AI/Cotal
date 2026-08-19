@@ -1202,11 +1202,33 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const missingHere = mine.filter((c) => !CELLS.includes(c));
   ok("every row this suite owns is a sentence this suite printed", missingHere.length === 0, missingHere);
 
-  const driverSuite = readFileSync(new URL("../../../implementations/runtime/smoke/run-driver.smoke.ts", import.meta.url), "utf8");
+  // THE DISPATCHER HALF READS A SEAM FILE, NOT THE OTHER SUITE'S SOURCE. Containment in source text
+  // was satisfied by a sentence that merely APPEARS: a commented-out call, a cell behind a dead
+  // condition, or the sentence quoted in a comment all passed it. Measured rather than reasoned - a
+  // cited call commented out left this cell green while printing that every row resolved. So the two
+  // halves asked different questions: `CELLS` records EXECUTION, source text records spelling.
+  //
+  // The division now: the runtime suite owns "every sentence in this list is a cell THIS RUN
+  // executed, exactly once", which is the half only that process can see. This file owns "the list
+  // and my rows name the same sentences" - SET EQUALITY, both directions, because containment either
+  // way leaves a hole and the one the other side cannot see is a row added HERE whose sentence never
+  // reached the list. Neither cell can be satisfied by a quotation, and the seam is a parsed artefact
+  // rather than a regex over someone else's TypeScript.
+  const seam = JSON.parse(readFileSync(new URL("../../../implementations/runtime/smoke/indexed-cells.json", import.meta.url), "utf8")) as {
+    suite: string;
+    cells: readonly string[];
+  };
+  ok("the seam file this half trusts is the one the dispatcher's own suite writes", seam.suite.endsWith("run-driver.smoke.ts"), seam.suite);
   const theirs = MATRIX.filter(([, where]) => where === DRIVER).flatMap(([, , cells]) => cells);
-  const missingThere = theirs.filter((c) => !driverSuite.includes(c));
-  ok("every row the dispatcher owns names a cell the runtime suite still has", missingThere.length === 0, missingThere);
-  console.log(`  (${MATRIX.length} matrix rows: ${mine.length} cells here, ${theirs.length} in the runtime suite, every one resolved by name)`);
+  const twice = theirs.filter((c, i) => theirs.indexOf(c) !== i);
+  const unlisted = theirs.filter((c) => !seam.cells.includes(c));
+  const uncited = seam.cells.filter((c) => !theirs.includes(c));
+  ok("the dispatcher rows and that suite's own list name the same sentences, each exactly once", twice.length === 0 && unlisted.length === 0 && uncited.length === 0, {
+    twice,
+    unlisted,
+    uncited,
+  });
+  console.log(`  (${MATRIX.length} matrix rows: ${mine.length} cells here, ${theirs.length} matched to the runtime suite's list of ${seam.cells.length}, set-equal)`);
 }
 
 // ---- every program in every list is a program, and does something -------------------------------
