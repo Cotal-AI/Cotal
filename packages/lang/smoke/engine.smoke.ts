@@ -1536,19 +1536,30 @@ await parallel({
     const wLogs: unknown[][] = [];
     const eLogs: unknown[][] = [];
     const walker = await walkerRun(source, { runId: "scope-1", handler: new SimHandler(script), onLog: (l) => wLogs.push([...l.values]) });
-    const engine = await runOnEngine(source, module, {
-      runId: "scope-1",
-      handler: new SimHandler(script),
-      evaluate: plainly,
-      onLog: (l) => eLogs.push([...l.values]),
-    });
-    ok(`${label}: the journals are IDENTICAL, entry for entry`, JSON.stringify(walker.journal.entries()) === JSON.stringify(engine.journal.entries()), {
+    // The journal is handed IN, so a refusal still leaves this side something to compare - and so a
+    // refusal fails the cell that names it rather than leaving the block and killing the suite.
+    const journal = new Journal({ run: "scope-1" });
+    let engine: Awaited<ReturnType<typeof runOnEngine>> | undefined;
+    let refused: unknown;
+    try {
+      engine = await runOnEngine(source, module, {
+        runId: "scope-1",
+        handler: new SimHandler(script),
+        evaluate: plainly,
+        journal,
+        onLog: (l) => eLogs.push([...l.values]),
+      });
+    } catch (e) {
+      refused = e;
+    }
+    ok(`${label}: the engine ran a program the walker ran, rather than refusing it`, refused === undefined, String(refused));
+    ok(`${label}: the journals are IDENTICAL, entry for entry`, JSON.stringify(walker.journal.entries()) === JSON.stringify(journal.entries()), {
       walker: walker.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
-      engine: engine.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+      engine: journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
     });
-    ok(`${label}: and the scope was actually journalled`, engine.journal.entries().length > 1, engine.journal.entries().length);
+    ok(`${label}: and the scope was actually journalled`, journal.entries().length > 1, journal.entries().length);
     ok(`${label}: the log is the same`, JSON.stringify(wLogs) === JSON.stringify(eLogs), { walker: wLogs, engine: eLogs });
-    return { walker, engine };
+    return { walker, engine: engine as Awaited<ReturnType<typeof runOnEngine>> };
   };
 
   // ---- parallel ---------------------------------------------------------------------------------

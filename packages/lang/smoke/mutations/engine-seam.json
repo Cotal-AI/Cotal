@@ -534,10 +534,10 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "    setOwn(out, \"key\", asArm(key));",
       "replace": "    setOwn(out, \"key\", key);",
-      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "expectRed": "fanOut: the engine ran a program the walker ran, rather than refusing it",
       "completionMarker": "ok a RENAMED losing arm diverges too",
-      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
-      "note": "`key` is called by the scope machinery too, and by the same convention as an arm. Unadapted it receives the FRAME where the program wrote its item, so a branch key is computed from the host's own object - and branch keys are journal namespaces, not decoration."
+      "cell": "fanOut: the engine ran a program the walker ran, rather than refusing it",
+      "note": "`key` is called by the scope machinery too, and by the same convention as an arm. Unadapted it receives the FRAME where the program wrote its item, so the branch key is computed from the host's own object - measured under the mutant, the read refuses and the whole fanOut fails, which is why the comparison hands its journal IN and grades a refusal as its own named cell."
     },
     {
       "name": "a settled race records no branchDigest",
