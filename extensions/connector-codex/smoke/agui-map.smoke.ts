@@ -12,8 +12,10 @@
  * PROVENANCE IS PRINTED PER CELL, because the ledger is a grading input and a suite that hides it
  * is worse than one that has no cells at all:
  *   `live:`   asserted against the derived real-thread fixture.
- *   `shape:`  asserted against a record built from the MEASURED key-shape census of 34 394 corpus
- *             records (field names, types and presence counts). The shapes are measured; the
+ *   `shape:`  asserted against a record built from the MEASURED key-shape census of the 34 394
+ *             `response_item` records this mapper reads, message, reasoning, and the two
+ *             tool-call families with their outputs, out of 74 031 records across 288 threads
+ *             (field names, types and presence counts). The shapes are measured; the
  *             particular record is not real. An exhausted model quota on this account is why, and the
  *             connector live end-to-end proof supersedes every one of these.
  *
@@ -243,7 +245,8 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   c("shape:toolCallId is the NATIVE call_id, not a synthesized key", res.toolCallId === "call-9", { toolCallId: res.toolCallId });
   c("shape:TOOL_CALL_RESULT carries the messageId every connector owes, derived from the call id", res.messageId === "res:call-9", { messageId: res.messageId });
 
-  // THE UNION. `output` is a string on 6 353 corpus records and a list on 380. A mapper that
+  // THE UNION. `output` is a string on 6 353 `function_call_output` records and a list on 380, and
+  // the other output family leans the other way, 664 string against 1 660 list. A mapper that
   // assumes one throws on the other, and a thrown mapper is a dead event plane, not a dropped record.
   const listOutput = replay([
     start,
