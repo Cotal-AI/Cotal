@@ -16,19 +16,25 @@
  */
 
 import { validate } from "./grammar.js";
-import { LangError, LangErrors } from "./errors.js";
-import { KeyScope, digest, requestId, scopePathString, stepKeyString, type ScopeKind } from "./keys.js";
-import { Journal, RunClock, type EntryError } from "./journal.js";
-import { Prng, assertCrossable, deepFreeze } from "./values.js";
+import { LangError, LangErrors, RuntimeFault,} from "./errors.js";
+export { RuntimeFault } from "./errors.js";
+import { KeyScope, digest, programHashOf, requestId, scopePathString, stepKeyString, type ScopeKind, type StepKey } from "./keys.js";
+import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
+import { NotCrossable, Prng, assertCrossable, birthDepth, born, deepFreeze, setOwn } from "./values.js";
 import { parseDuration } from "./duration.js";
-import { PRIMITIVES, type EffectKind } from "./primitives.js";
+import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
+import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
+import { notifyFactViolation } from "./notify-fact.js";
+import { bindPins, resolvePins, type RunPins } from "./pins.js";
 import {
   Cancelled,
+  RunReleased,
   EffectError,
   applyCheckpointPolicy,
   type AgentHandleValue,
   type CancelSignal,
   type ChannelHandleValue,
+  type ConclaveRequest,
   type EffectContext,
   type EffectHandler,
   type CheckpointRaw,
@@ -36,6 +42,36 @@ import {
 } from "./effects.js";
 
 type AnyNode = Record<string, unknown> & { type: string };
+
+/**
+ * What a concurrency scope produces, before it is journalled.
+ *
+ * `branches` is what the scope launched, `value` is what the program sees, and `cancel` is the
+ * intent a cancelling scope owes its losers — durable WITH the outcome, because a process dies
+ * between instructions and two appends are two network operations however few keywords separate
+ * them.
+ */
+interface ScopeOutcome {
+  readonly branches: readonly string[];
+  readonly value: unknown;
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  /** A `conclave`'s membership disposition. See {@link JournalEntry.closed}. */
+  readonly closed?: boolean;
+}
+
+/**
+ * A `conclave` whose close did not acknowledge.
+ *
+ * It exists so the scope is NOT settled: the pending entry is the durable record that a close is
+ * still owed, and re-entry retries it. Settling on a close rejection would have the journal state a
+ * disposition the world never confirmed, which is the one thing this entry is for.
+ */
+class CloseOwed extends Error {
+  constructor(readonly reason: unknown) {
+    super(`conclave close did not acknowledge: ${(reason as Error)?.message ?? String(reason)}`);
+    this.name = "CloseOwed";
+  }
+}
 
 // ---- environments ------------------------------------------------------------------------------
 
@@ -46,12 +82,49 @@ class Binding {
   ) {}
 }
 
+/**
+ * The value a `let`/`const` binding holds between the top of its block and its declaration: the
+ * temporal dead zone, materialized. The validator refuses every straight-line reference into it
+ * (L2004), so the only way here at run time is a function called before the declaration executed —
+ * which JavaScript answers with a ReferenceError, and this language answers with the same code the
+ * static refusal carries.
+ */
+const TDZ: unique symbol = Symbol("cotal-lang temporal dead zone");
+
 class Env {
   private readonly names = new Map<string, Binding>();
-  constructor(readonly parent: Env | null) {}
+
+  /**
+   * How many CONCURRENT scopes deep this environment was created.
+   *
+   * L2032's runtime half rests on this. The static rule follows named and inline branches, but a
+   * branch the validator cannot resolve to a function node — one that arrives through a parameter
+   * or a computed record — is not proven, and banning that shape outright would cost more than the
+   * hazard. So the depth travels with the binding: a write from inside a concurrent branch to a
+   * binding declared OUTSIDE it is refused where it happens. `conclave` does not raise the depth,
+   * because its single body has nothing to race.
+   */
+  constructor(
+    readonly parent: Env | null,
+    readonly depth: number = parent?.depth ?? 0,
+  ) {}
 
   declare(name: string, value: unknown, mutable: boolean): void {
     this.names.set(name, new Binding(value, mutable));
+  }
+
+  /**
+   * A fresh environment holding copies of `names` at their current values: JavaScript's
+   * per-iteration bindings for a `for (let ...)` loop, so a closure made in one iteration keeps
+   * that iteration's value rather than watching the counter move.
+   */
+  perIteration(names: readonly string[]): Env {
+    const next = new Env(this.parent, this.depth);
+    for (const n of names) {
+      const b = this.names.get(n);
+      if (b !== undefined) next.declare(n, b.value, b.mutable);
+    }
+    return next;
   }
 
   private find(name: string): Binding | undefined {
@@ -62,9 +135,22 @@ class Env {
     return undefined;
   }
 
+  private owner(name: string): Env | undefined {
+    for (let e: Env | null = this; e !== null; e = e.parent) {
+      if (e.names.has(name)) return e;
+    }
+    return undefined;
+  }
+
   get(name: string): unknown {
     const b = this.find(name);
     if (b === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
+    if (b.value === TDZ) {
+      throw new RuntimeFault(
+        "L2004",
+        `${name} is used before its declaration was reached: the binding exists for the whole block, but it holds no value until the \`let\`/\`const\` line runs. Call this function after the declaration, or move the declaration up.`,
+      );
+    }
     return b.value;
   }
 
@@ -72,24 +158,130 @@ class Env {
     return this.find(name) !== undefined;
   }
 
-  set(name: string, value: unknown): void {
-    const b = this.find(name);
-    if (b === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
+  set(name: string, value: unknown, atDepth: number): void {
+    const owner = this.owner(name);
+    if (owner === undefined) throw new RuntimeFault("L2001", `${name} is not defined`);
+    const b = owner.names.get(name) as Binding;
+    if (b.value === TDZ) {
+      throw new RuntimeFault(
+        "L2004",
+        `${name} is assigned before its declaration was reached: the binding exists for the whole block, but it holds no value until the \`let\`/\`const\` line runs.`,
+      );
+    }
     if (!b.mutable) throw new RuntimeFault("L2003", `${name} is declared const`);
+    if (owner.depth < atDepth) {
+      throw new RuntimeFault(
+        "L2032",
+        `${name} is declared outside this concurrent branch and written inside it. Live, the branches write in completion order; on resume the recorded effects return instantly and they write in launch order, so ${name} holds a different value and the run takes a path it never recorded, with no divergence raised. Return the value from the branch and read it out of the combinator's result, or use race, which yields its winner.`,
+      );
+    }
     b.value = value;
   }
 }
 
-/** A fault the interpreter itself raises, as opposed to one an effect handler reported. */
-export class RuntimeFault extends Error {
+/** What the interpreter knows about a failing scope, beside whatever the program threw. */
+interface ScopeFacts {
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  readonly closed?: boolean;
+  /**
+   * The scope's ARM NAMES, carried as a fact rather than left inside the result.
+   *
+   * A successful scope records `result: { branches, value }`, and `settle` writes `result` only for
+   * `status: "ok"` — result and error are exclusive, correctly. So a scope that FAILED recorded no
+   * branch list at all, and a migration reconstructed an EMPTY winner set from it, entered nothing,
+   * and awaited `Promise.race([])`, which never settles. The branch names are not a result; they
+   * are what the scope was, and a scope that failed was still made of arms.
+   */
+  readonly branches?: readonly string[];
+}
+
+/**
+ * A scope's failure, carrying the interpreter's OWN facts about it.
+ *
+ * Attaching them to the thrown value with `Object.assign` works exactly as long as every program
+ * throws an object. `throw null` is valid, and `Object.assign(null, …)` is a TypeError, so a
+ * conclave whose body throws a primitive loses its closure fact AND hands the caller a manufactured
+ * type error in place of the body's failure, while the entry records
+ * `closed: undefined` for a room the handler had in fact closed. The facts belong to the
+ * interpreter, so they travel in the interpreter's own envelope and the program's value rides
+ * untouched inside it. Nothing outside `performScope` ever sees this class: it unwraps before it
+ * rethrows.
+ */
+class ScopeFailed extends Error {
   constructor(
-    readonly code: string,
-    message: string,
+    readonly reason: unknown,
+    readonly facts: ScopeFacts,
   ) {
-    super(`${code} ${message}`);
-    this.name = "RuntimeFault";
+    super(`scope failed: ${messageOf(reason)}`);
+    this.name = "ScopeFailed";
   }
 }
+
+function unwrapScope(e: unknown): { reason: unknown; facts: ScopeFacts } {
+  return e instanceof ScopeFailed ? { reason: e.reason, facts: e.facts } : { reason: e, facts: {} };
+}
+
+/**
+ * The message of an arbitrary thrown value.
+ *
+ * Reading `.message` off `null` throws, and a thrown primitive is legal in a language with `throw`,
+ * so every place that has to describe a failure it did not construct goes through here. A recorded
+ * entry saying "Cannot read properties of null" describes the recorder, not the run.
+ */
+/**
+ * The digest fact, written wherever the loser set is — a race that FAILED owes its losers exactly
+ * as a winning one does, so it carries the digest too, and `replay-failed` compares it.
+ */
+function digestFacts(
+  of: ((losers: readonly string[]) => string | undefined) | undefined,
+  losers: readonly string[] | undefined,
+): { branchDigest?: string } {
+  if (of === undefined || losers === undefined) return {};
+  const d = of(losers);
+  return d === undefined ? {} : { branchDigest: d };
+}
+
+/** An AST subtree with its source offsets removed: what the code IS, not where it sits. */
+function stripPositions(node: unknown): unknown {
+  if (Array.isArray(node)) return node.map(stripPositions);
+  if (node === null || typeof node !== "object") return node;
+  const out: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+    if (k === "start" || k === "end" || k === "loc" || k === "range") continue;
+    out[k] = stripPositions(v);
+  }
+  return out;
+}
+
+function messageOf(v: unknown): string {
+  if (v instanceof Error) return v.message;
+  const m = (v as { message?: unknown } | null | undefined)?.message;
+  return typeof m === "string" ? m : String(v);
+}
+
+/** A fault the interpreter itself raises, as opposed to one an effect handler reported. */
+/**
+ * A migration's walk reached a settled scope it cannot enter.
+ *
+ * A `conclave` is the case that exists today: its channel handle is HANDLER-DERIVED — the mint
+ * returns it and nothing journals it — so a walk cannot re-enter the body without inventing a
+ * handle, and an invented one would re-hash every step inside that used the channel into a
+ * divergence the run never had. Refusing is the honest exit. Consuming the subtree instead would
+ * hide exactly the orphans a migration exists to find, which is a silent wrong answer in place of
+ * a loud refusal.
+ */
+export class UnwalkableScope extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly why: string,
+  ) {
+    super(
+      `a migration cannot walk inside the settled ${why} at ${scopeKey}: its handle is handler-derived and was never journalled, so the walk would have to invent one. Fork from this step instead, or migrate a run that does not contain it.`,
+    );
+    this.name = "UnwalkableScope";
+  }
+}
+
 
 // ---- statement completion ------------------------------------------------------------------------
 
@@ -103,26 +295,42 @@ const NORMAL: Completion = { type: "normal" };
 
 // ---- per-branch execution state ---------------------------------------------------------------------
 
+/**
+ * A branch's cancellation, in two degrees.
+ *
+ * `cancelled` is the cancellation LAW: a cancelled branch performs no new effect, and every effect
+ * boundary refuses it. `cutPure` is the stronger cut a scope applies to an arm that CANNOT WIN any
+ * more: its pure work is also abandoned, at the next yield. An arm that could still win keeps
+ * running its pure work to a settle, because cutting it there would let the scheduler, and through
+ * it the `yieldEvery` pin, decide a race the recorded clocks should decide (see `runScope`).
+ * Both degrees flow to child signals, and a signal already cancelled softly can be escalated.
+ */
 class Signal implements CancelSignal {
   cancelled = false;
+  cutPure = false;
   reason?: string;
-  private readonly listeners: ((reason: string) => void)[] = [];
+  private readonly listeners: ((reason: string, cutPure: boolean) => void)[] = [];
 
-  onCancel(fn: (reason: string) => void): void {
+  onCancel(fn: (reason: string, cutPure: boolean) => void): void {
     this.listeners.push(fn);
   }
 
-  cancel(reason: string): void {
-    if (this.cancelled) return;
-    this.cancelled = true;
-    this.reason = reason;
-    for (const l of this.listeners) l(reason);
+  cancel(reason: string, opts?: { readonly cutPure: boolean }): void {
+    const cut = opts?.cutPure ?? true;
+    const first = !this.cancelled;
+    if (first) {
+      this.cancelled = true;
+      this.reason = reason;
+    }
+    const escalated = cut && !this.cutPure;
+    if (escalated) this.cutPure = true;
+    if (first || escalated) for (const l of this.listeners) l(reason, this.cutPure);
   }
 
   child(): Signal {
     const s = new Signal();
-    if (this.cancelled) s.cancel(this.reason ?? "parent cancelled");
-    else this.onCancel((r) => s.cancel(r));
+    if (this.cancelled) s.cancel(this.reason ?? "parent cancelled", { cutPure: this.cutPure });
+    this.onCancel((r, cut) => s.cancel(r, { cutPure: cut }));
     return s;
   }
 }
@@ -138,6 +346,8 @@ class Frame {
     readonly keys: KeyScope,
     readonly clock: RunClock,
     readonly signal: Signal,
+    /** How many CONCURRENT scopes deep. See {@link Env.depth}: this is L2032's runtime half. */
+    readonly depth: number = 0,
   ) {}
 
   branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): Frame {
@@ -145,6 +355,9 @@ class Frame {
       this.keys.branch(kind, name, occurrence, branchKey),
       this.clock.fork(),
       this.signal.child(),
+      // `conclave` opens a scope but not a RACE: one body, nothing running beside it, so a write
+      // from inside it is as ordered as a write anywhere else and the depth does not move.
+      kind === "conclave" ? this.depth : this.depth + 1,
     );
   }
 }
@@ -156,10 +369,53 @@ export interface RunOptions {
   readonly handler: EffectHandler;
   /** An existing journal resumes the run; omit it to start fresh. */
   readonly journal?: Journal;
+  /**
+   * The pins recorded when this run STARTED, read back from the run record.
+   *
+   * Present on a resume, absent on a fresh run. When present they are authoritative: every loose
+   * option below must either agree with them or be absent, and a caller value that differs is
+   * refused (L5009) rather than honoured, because a pin selects which effects run and honouring the
+   * override would make this a different run against a journal that was not written for it.
+   */
+  readonly pins?: RunPins;
   readonly seed?: string;
+  /**
+   * The run's logical epoch. Resolved from the host clock on a fresh run and read from the pins on
+   * a resume; `now()` derives from it, so the resuming host's clock never moves a replayed program.
+   */
+  readonly startedAt?: number;
   readonly file?: string;
   /** Fail loud rather than spinning forever when a loop does not terminate. */
   readonly effectCeiling?: number;
+  /**
+   * The HOST's stop, asked before every effect that has not already been recorded.
+   *
+   * Return a reason to stop the run where it stands; return `undefined` to carry on. The interpreter
+   * raises {@link RunReleased} itself rather than accepting an error from the caller — a driver that
+   * could throw the class could also throw something a workflow's `try` would swallow, and then the
+   * guarantee would be the caller's to keep.
+   *
+   * This exists because a driver's reasons to stop are not the program's business and must not be
+   * recorded as its outcome: an absolute work horizon reached, a pause requested by an operator.
+   * Asked here, nothing is half-done — no entry begun, no handler dispatched — so the run is exactly
+   * where its journal says it is and the next driver resumes from there.
+   */
+  readonly shouldStop?: () => string | undefined;
+  /**
+   * This walk is a MIGRATION's dry replay, not a resume.
+   *
+   * The two differ in exactly one place and it is a concurrency scope. A resume delivers a settled
+   * scope from its own entry and accounts for the whole subtree without entering a branch, which is
+   * correct: the program hash is unchanged, so nothing beneath it can have been removed and the
+   * branches were decided rather than deleted. A migration runs EDITED source against that journal,
+   * so the same short-circuit would account for entries the new source no longer reaches — and an
+   * orphan that is never reported is an effect nobody is told about, which for a resolved human
+   * checkpoint means a decision silently discarded with L5004 never firing.
+   *
+   * Set here rather than inferred, because "the source changed" is not something the interpreter
+   * can see: it is handed a program and a journal and both are what the caller says they are.
+   */
+  readonly migration?: boolean;
   /**
    * Fail loud on a loop the effect ceiling cannot see, counted in walker dispatches (L4013).
    *
@@ -189,6 +445,11 @@ export interface RunResult {
   readonly journal: Journal;
   readonly programHash: string;
   /**
+   * The pins this attempt ran under, resolved. A fresh run's driver writes these onto the run
+   * record; a resumed run's are the ones it was handed back, unchanged.
+   */
+  readonly pins: RunPins;
+  /**
    * Walker dispatches charged against the step budget.
    *
    * Reported rather than merely counted, so a host can see how close a program runs to the ceiling
@@ -211,27 +472,251 @@ export class RunDivergence extends Error {
   }
 }
 
+/**
+ * A migration's walk was sent into a recorded branch the new source does not have.
+ *
+ * Its own code rather than `RunDivergence`, for the reason the L5005/L5006/L5007 collision in the
+ * orphan table bought: `RunDivergence` is a HASH comparison and says so in both its fields and its
+ * message, and putting branch NAMES in fields called `recordedHash`/`programHash` would be a lie in
+ * the payload a repair loop reads. The author's repair differs too — this one is fixed by looking at
+ * an arm's NAME, not at its body.
+ */
+export class ScopeBranchMissing extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly scope: string,
+    readonly missing: readonly string[],
+    readonly recorded: readonly string[],
+    readonly source: readonly string[],
+  ) {
+    super(recorded.length === 0
+      // THE EMPTY CASE IS NOT THE SAME SENTENCE. "A recorded branch is not in the source" is false
+      // here: no branch was recorded at all, and saying "missing: " with nothing after it would
+      // send a reader looking through their source for an arm that was never named. The cause is
+      // the entry, not the edit, and the repair is different too.
+      ? `L5022 A settled scope recorded no branch names\n\n  step  ${scopeKey}   BRANCH NAMES ABSENT\n`
+        + `        source    ${source.join(", ")}\n\n`
+        + `This ${scope} settled before scopes recorded their arm names on failure, so the walk has `
+        + `nothing to tell it which arm ran. It cannot enter one, and entering none would wait `
+        + `forever on a scope with no branches in it.\n\nOptions\n  resume(run)   replay it rather `
+        + `than walking it\n  fork(run, "${scopeKey}")   re-run this scope on the current arms`
+      : `L5022 A recorded branch is not in the migrated source\n\n  step  ${scopeKey}   BRANCH MISSING\n`
+        + `        recorded  ${recorded.join(", ")}\n        source    ${source.join(", ")}\n`
+        + `        missing   ${missing.join(", ")}\n\n`
+        + `This ${scope} settled on ${missing.length === 1 ? "a branch" : "branches"} the new source no longer declares, so the walk `
+        + `cannot enter ${missing.length === 1 ? "it" : "them"} to check what ran inside. Migrating anyway would hand the program a `
+        + `result produced by an arm it does not have.\n\nOptions\n  restore the branch ${missing.map((k) => `\`${k}\``).join(", ")}   `
+        + `keep the recorded result\n  fork(run, "${scopeKey}")   re-run this scope on the new arms`,
+    );
+    this.name = "ScopeBranchMissing";
+  }
+}
+
 class Interpreter {
   readonly journal: Journal;
   readonly prng: Prng;
-  private effectCount = 0;
+  private effectCount: number;
   private readonly ceiling: number;
   private steps = 0;
   private nextYield: number;
   private readonly stepBudget: number;
   private readonly yieldEvery: number;
+  /** The curated method tables (library.ts). Built once: they close over this interpreter's write check. */
+  private readonly methods: {
+    readonly array: Readonly<Record<string, Method>>;
+    readonly string: Readonly<Record<string, Method>>;
+    readonly number: Readonly<Record<string, Method>>;
+  };
 
   constructor(
     readonly ast: AnyNode,
     readonly options: RunOptions,
     readonly programHash: string,
+    readonly pins: RunPins,
   ) {
+    // The journal and the run must be the same run. Request ids derive from `options.runId` while
+    // recorded results come from the journal, so a mismatch would submit work under one identity and
+    // resolve it against another's history.
+    if (options.journal !== undefined && options.journal.run !== options.runId)
+      throw new RuntimeFault(
+        "L5011",
+        `this run is ${options.runId} but it was handed the journal of run ${options.journal.run}; a run resumes only from its own journal`,
+      );
     this.journal = options.journal ?? new Journal({ run: options.runId });
-    this.prng = new Prng(options.seed ?? options.runId);
-    this.ceiling = options.effectCeiling ?? 10_000;
-    this.stepBudget = options.stepBudget ?? 1_000_000;
-    this.yieldEvery = options.yieldEvery ?? 1_024;
+    // EVERY limit comes from the pins, never from a default applied here. A default resolved a
+    // second time is a default resolved by whichever interpreter happens to be resuming, which is
+    // exactly what pinning exists to stop.
+    // THE CEILING IS A RUN BOUND, SO THE COUNT STARTS WHERE THE RUN LEFT OFF. L4009 is named "Run
+    // effect ceiling reached" and the run record pins the ceiling — a pin is only worth
+    // refusing a mismatch on (L5009) if the thing it pins is enforced. Starting at 0 gave every
+    // activation a full allowance, so a runaway loop of effects that crashed or was released
+    // periodically never reached the ceiling however much it performed against the world, and the
+    // fault text claimed a run-scoped fact from an activation-scoped counter.
+    this.prng = new Prng(pins.seed);
+    this.effectCount = this.journal.dispatchedEffects();
+    this.ceiling = pins.effectCeiling;
+    this.stepBudget = pins.stepBudget;
+    this.yieldEvery = pins.yieldEvery;
     this.nextYield = this.yieldEvery;
+    this.methods = {
+      array: arrayMethods(this.libraryContext()),
+      string: stringMethods(),
+      number: numberMethods(),
+    };
+  }
+
+  /** What the library sees of this interpreter. */
+  libraryContext(): Parameters<typeof builtins>[0] {
+    return {
+      runId: this.options.runId,
+      programHash: this.programHash,
+      startedAt: this.pins.startedAt,
+      prng: this.prng,
+      ...(this.options.onLog !== undefined ? { onLog: this.options.onLog } : {}),
+      assertWritable: (target, frame) => this.assertWritable(target, frame),
+    };
+  }
+
+  // ---- values: reads and writes ---------------------------------------------------------------
+
+  /**
+   * May this frame write into this container? Two refusals, and they are the whole of the value
+   * half of freeze-on-share (design D4, §3.4 rule 4):
+   *
+   * - a FROZEN value crossed an effect boundary, and what crossed is what was recorded (L2031);
+   * - a value born OUTSIDE this concurrent branch and written inside it is L2032's defect reached
+   *   through a value instead of a binding, and just as silent on resume.
+   */
+  assertWritable(target: object, frame: { readonly depth: number }): void {
+    if (Object.isFrozen(target)) {
+      throw new RuntimeFault(
+        "L2031",
+        "this value crossed an effect boundary and is frozen: what crossed is what the journal recorded, so it cannot change afterwards. Build a new value instead: `{ ...record, field: value }` or `[...list, item]`.",
+      );
+    }
+    if (birthDepth(target) < frame.depth) {
+      throw new RuntimeFault(
+        "L2032",
+        "this value was built outside this concurrent branch and is written inside it. Two branches writing one value is nondeterministic, and it is silent: live they write in completion order, on resume the recorded effects return instantly and they write in launch order, so the value differs and the run takes a path it never recorded. Build the value inside the branch and return it, and read it out of the combinator's result.",
+      );
+    }
+  }
+
+  /** The property key a member expression names, as JavaScript would spell it. A computed key is
+   *  held to the same no-implicit-conversion law as every other coercion site (L4018): `String(k)`
+   *  on a record would enter the host's ToPrimitive, which calls the value's own `toString` — a
+   *  program closure invoked without a Frame. Measured before the refusal: the closure's rejection
+   *  escaped as an unhandled host TypeError AFTER the run returned, and `o[{}] = 1` silently minted
+   *  the own field `"[object Object]"`. Primitives keep JavaScript's spelling (`o[1]`, `o[true]`). */
+  private async memberKey(node: AnyNode, env: Env, frame: Frame): Promise<string> {
+    if (node.computed !== true) return (node.property as AnyNode).name as string;
+    const k = await this.evaluate(node.property as AnyNode, env, frame);
+    if (typeof k === "string") return k;
+    refuseCoercion("[...]", k);
+    return String(k);
+  }
+
+  /**
+   * Read a member. Records answer their own fields and `undefined` for anything else, so a host
+   * prototype is never reached (`o.constructor`, `o.toString` are `undefined`); strings, arrays and
+   * numbers answer `length`, an index, or an entry of their method table, and refuse anything else
+   * (L4014). Functions and booleans have no members.
+   */
+  memberOf(obj: unknown, prop: string, asCallee = false): unknown {
+    switch (typeof obj) {
+      case "string": {
+        if (prop === "length") return obj.length;
+        const i = arrayIndex(prop);
+        if (i !== undefined) return obj[i];
+        return this.method(this.methods.string, obj, prop, "a string", asCallee);
+      }
+      case "number":
+        return this.method(this.methods.number, obj, prop, "a number", asCallee);
+      case "object": {
+        if (obj === null) throw new RuntimeFault("L4010", `cannot read \`${prop}\` of null`);
+        if (Array.isArray(obj)) {
+          if (prop === "length") return obj.length;
+          const i = arrayIndex(prop);
+          if (i !== undefined) return obj[i];
+          return this.method(this.methods.array, obj, prop, "an array", asCallee);
+        }
+        return Object.prototype.hasOwnProperty.call(obj, prop) ? (obj as Record<string, unknown>)[prop] : undefined;
+      }
+      case "undefined":
+        throw new RuntimeFault("L4010", `cannot read \`${prop}\` of undefined`);
+      default:
+        throw new RuntimeFault("L4014", `\`${prop}\` is not a member: a ${typeof obj} has no members`);
+    }
+  }
+
+  private method(
+    table: Readonly<Record<string, Method>>,
+    receiver: unknown,
+    prop: string,
+    kind: string,
+    asCallee: boolean,
+  ): Callable {
+    const m = table[prop];
+    if (m === undefined) {
+      throw new RuntimeFault(
+        "L4014",
+        `\`${prop}\` is not a member of ${kind}. The members are: length, an index, ${Object.keys(table).join(", ")}.`,
+      );
+    }
+    // A method is looked up at the call and exists nowhere else — a declared difference from
+    // JavaScript, where `xs.map` is a value. Handing one out produced everything a bound-function
+    // factory produces (measured): `xs.map === xs.map` was false where JavaScript says true, and
+    // an extracted `push` wrote to its receiver where strict JavaScript throws. Refusing the read
+    // is honest on both counts.
+    if (!asCallee) {
+      throw new RuntimeFault(
+        "L4020",
+        `\`${prop}\` is a method of ${kind}, and a method is not a value here: it is looked up at the call, so it cannot be extracted, compared, or passed. Call it — \`.${prop}(...)\` — or wrap it: \`(...args) => value.${prop}(...args)\`.`,
+      );
+    }
+    return async (frame, args) => await m(frame, receiver as never, args);
+  }
+
+  /** Write a member: `o.a = v`, `xs[i] = v`. Records take any own field; arrays take an index or `length`. */
+  writeMember(obj: unknown, prop: string, value: unknown, frame: Frame): void {
+    if (obj === null || obj === undefined || typeof obj !== "object") {
+      throw new RuntimeFault("L4010", `cannot write \`${prop}\` of ${obj === null ? "null" : typeof obj === "undefined" ? "undefined" : `a ${typeof obj}`}`);
+    }
+    this.assertWritable(obj, frame);
+    if (Array.isArray(obj)) {
+      if (prop === "length") {
+        // `xs.length = n` truncates, as in JavaScript. A LONGER length is refused: JavaScript would
+        // fill the gap with holes, and a hole is a value class this language does not have (its
+        // methods do not skip holes, so a program with holes would read differently here and on a
+        // real engine). Push what you need instead. `length` is not an own data property that
+        // `setOwn` can define, so the write goes to the array itself.
+        if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > obj.length) {
+          throw new RuntimeFault(
+            "L4017",
+            `\`length\` can only be set to an integer between 0 and the array's current length (${obj.length}), got ${typeof value === "number" ? value : typeof value}: a longer length would create holes, which this language does not have; push the elements instead`,
+          );
+        }
+        obj.length = value;
+        return;
+      }
+      const i = arrayIndex(prop);
+      if (i === undefined) {
+        throw new RuntimeFault("L4014", `\`${prop}\` is not a member of an array: an array takes an index or \`length\``);
+      }
+      // Contiguous or refused: JavaScript would fill the gap with holes, and a hole is a value
+      // class this language does not have (measured before the refusal: `xs[2] = 1` on an empty
+      // array built a sparse array whose holes then crossed an effect boundary as silent nulls).
+      // Writing AT the length appends, which is `push` by another spelling and makes no hole.
+      if (i > obj.length) {
+        throw new RuntimeFault(
+          "L4019",
+          `index ${i} is past the end of this array (length ${obj.length}), and JavaScript would fill the gap with holes, which this language does not have. Write at an existing index, at the length to append, or use \`push\`.`,
+        );
+      }
+    } else if (prop === "__proto__") {
+      throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
+    }
+    setOwn(obj, prop, value);
   }
 
   // ---- the fuel ceiling -----------------------------------------------------------------------
@@ -248,7 +733,7 @@ class Interpreter {
     if (this.steps > this.stepBudget) {
       throw new RuntimeFault(
         "L4013",
-        `this run has taken more than ${this.stepBudget} interpreter steps without finishing, which means a loop that performs no effect is not terminating. The effect ceiling cannot see such a loop, because it performs nothing to count. Add an exit condition, or raise stepBudget if the program legitimately does this much work.`,
+        `this walk has taken more than ${this.stepBudget} interpreter steps without finishing, which means a loop that performs no effect is not terminating. The effect ceiling cannot see such a loop, because it performs nothing to count. Add an exit condition, or raise stepBudget if the program legitimately does this much work. (stepBudget bounds ONE WALK, not the run: steps are not recorded, so a resume cannot recover a count the way the effect ceiling can.)`,
       );
     }
     if (this.steps < this.nextYield) return null;
@@ -256,25 +741,29 @@ class Interpreter {
     return this.breathe(frame);
   }
 
-  /**
-   * Hand the macrotask queue back, then notice if this branch was cancelled while we were away.
-   *
-   * The cancellation check is deliberately HERE and not on every dispatch. Cancellation is
-   * otherwise observed only at effect boundaries (see {@link Interpreter.performEffect}), so a race
-   * loser that spins without performing an effect never learns it lost and spins forever. Checking
-   * at the yield boundary reaches exactly that case and no other: a branch that runs fewer than
-   * `yieldEvery` dispatches between two effects never crosses this line, so the cancellation law
-   * for ordinary programs is unchanged.
-   */
   get stepCount(): number {
     return this.steps;
   }
 
+  /**
+   * Hand the macrotask queue back, then abandon this branch's pure work IF IT CAN NO LONGER MATTER.
+   *
+   * Cancellation is otherwise observed only at effect boundaries (see {@link Interpreter.performEffect}).
+   * This line used to cut every cancelled branch, so a `race` loser in a pure tail was abandoned at
+   * its next yield, and whether an arm that had already performed its last effect got to settle
+   * depended on how many dispatches its tail took against `yieldEvery`: the winner of a live race
+   * was a function of a host tuning knob (design §3.4, measured). The cut is now the scope's call
+   * (`Signal.cutPure`): an arm that cannot win any more is abandoned here, and an arm that could
+   * still win runs its pure work to a settle, so the winner is the recorded clocks and declaration
+   * order and nothing else (see `runScope`). An arm that could still win and spins forever is a
+   * pure infinite loop, and it ends the way every pure infinite loop ends: on the step budget
+   * (L4013), loudly, which is the run's answer rather than the scheduler's.
+   */
   private async breathe(frame: Frame): Promise<void> {
     await new Promise<void>((resolve) => {
       setTimeout(resolve, 0);
     });
-    if (frame.signal.cancelled) throw new Cancelled(frame.signal.reason ?? "cancelled");
+    if (frame.signal.cutPure) throw new Cancelled(frame.signal.reason ?? "cancelled");
   }
 
   // ---- the effect seam ------------------------------------------------------------------------
@@ -320,6 +809,18 @@ class Interpreter {
       throw new Cancelled(frame.signal.reason ?? "cancelled");
     }
 
+    // THE HOST'S STOP, asked before anything is begun and after every replay has been served. A
+    // driver holds its run under an absolute work horizon and may be asked to hand it back, and
+    // neither is a fact about the program — so the place to stop is here, where no entry has been
+    // written and no handler dispatched. One step later would mean a pending entry for work nobody
+    // performed; inside the handler would mean settling a failure for work that really happened.
+    // Replays above are deliberately unaffected: replaying a recorded prefix performs nothing, and
+    // a run that stopped mid-journal has to be able to walk back to where it stopped.
+    const stop = this.options.shouldStop?.();
+    if (stop !== undefined) {
+      throw new RunReleased(stop);
+    }
+
     this.effectCount += 1;
     if (this.effectCount > this.ceiling) {
       throw new RuntimeFault(
@@ -342,7 +843,20 @@ class Interpreter {
     // is for every effect that never hops.
     const attempt = recorded?.attempt ?? 0;
     if (verdict.verdict === "miss") {
-      this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
+      // AWAITED, and the await is the point: the request id the handler is about to submit under
+      // has to be durable BEFORE the work is issued, or a crash in the gap leaves real work that
+      // nothing in the journal names.
+      await this.journal.begin(key, inputHash, this.options.handler.now(), reqId);
+      // THE AWAIT ABOVE IS A GAP, and the cancellation law has to hold on both sides of it. The
+      // check before `begin` sees the world as it was when this step started; while the append was
+      // in flight a sibling can settle the race and cancel this branch. Measured before this line:
+      // the loser's effect was still dispatched, performed against the world, and recorded `ok` —
+      // a NEW effect by a cancelled branch, which is the one thing the law forbids. The pending
+      // entry is real (the append happened), so it settles as what this branch now is: cancelled.
+      if (frame.signal.cancelled) {
+        await this.journal.settle(key, { status: "cancelled" }, this.options.handler.now());
+        throw new Cancelled(frame.signal.reason ?? "cancelled");
+      }
     }
 
     const ctx: EffectContext = {
@@ -355,21 +869,29 @@ class Interpreter {
       attempt,
       ...(resume !== undefined ? { resume } : {}),
       bind: async (external) => {
-        this.journal.bind(key, external);
+        await this.journal.bind(key, external);
       },
     };
 
+    // TWO FAILURE DOMAINS, AND THE TERMINAL APPEND IS NOT IN THE HANDLER'S.
+    //
+    // One `try` around both the dispatch and the settle produces the worst bug a journal can have:
+    // the handler completes, the store refuses the settling append, the catch below records that
+    // refusal as a handler fault, and the durable sequence becomes `[pending, settled:failed]` for
+    // work the world actually did, so every later replay reports failure for a real success. The
+    // handler's outcome is decided first, alone, and the append that records it happens outside,
+    // where a rejection is a durability failure that travels as itself and settles nothing.
+    let result: unknown;
     try {
-      const result = await perform(ctx, inputHash);
+      result = await perform(ctx, inputHash);
       assertCrossable(result, `the result of ${stepKeyString(key)}`);
-      const endedAt = this.options.handler.now();
-      this.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
-      frame.clock.advance(endedAt);
-      return result;
     } catch (e) {
       const endedAt = this.options.handler.now();
+      // A journal that just refused an append cannot be asked to record why. It leaves by its own
+      // door, unwrapped, before anything tries to settle on top of it.
+      if (e instanceof JournalAppendRejected) throw e;
       if (e instanceof Cancelled) {
-        this.journal.settle(key, { status: "cancelled" }, endedAt);
+        await this.journal.settle(key, { status: "cancelled" }, endedAt);
         throw e;
       }
       // A handler may raise a language code directly, and it survives. The simulator's "unscripted
@@ -377,18 +899,23 @@ class Interpreter {
       // on `code` that the handler broke, when what actually happened is that their script is
       // incomplete. Only the L-code shape is honoured: anything else a thrown object happens to
       // call `code` (an errno, an HTTP status) is a handler fault and is recorded as one.
-      const raised = (e as { code?: unknown }).code;
+      // Read defensively: a handler is other people's code and may throw a primitive, and reading
+      // `.code` or `.message` off `null` would replace its failure with the recorder's own.
+      const raised = (e as { code?: unknown } | null | undefined)?.code;
       const carried = typeof raised === "string" && /^L\d{4}$/.test(raised) ? raised : null;
       const error: EntryError =
         e instanceof EffectError
           ? { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }
-          : carried !== null
-            ? { code: carried, kind: "handler-fault", message: (e as Error).message }
-            : { code: "L4000", kind: "handler-fault", message: (e as Error).message };
-      this.journal.settle(key, { status: "failed", error }, endedAt);
+          : { code: carried ?? "L4000", kind: "handler-fault", message: messageOf(e) };
+      await this.journal.settle(key, { status: "failed", error }, endedAt);
       frame.clock.advance(endedAt);
       throw e instanceof EffectError ? e : new EffectError(error.code, error.kind, error.message);
     }
+
+    const endedAt = this.options.handler.now();
+    await this.journal.settle(key, { status: "ok", result: deepFreeze(result) }, endedAt);
+    frame.clock.advance(endedAt);
+    return result;
   }
 
   // ---- expressions ------------------------------------------------------------------------------
@@ -407,45 +934,58 @@ class Interpreter {
         let out = "";
         for (let i = 0; i < quasis.length; i += 1) {
           out += ((quasis[i] as AnyNode).value as { cooked: string }).cooked;
-          if (i < exprs.length) out += String(await this.evaluate(exprs[i] as AnyNode, env, frame));
+          if (i < exprs.length) {
+            // Primitives interpolate as JavaScript interpolates them; a container or a function is
+            // refused (L4018). Measured before the refusal: `${o}` on a record with its own
+            // `toString` crashed in the host's ToPrimitive, and `${f}` on a function PRINTED THE
+            // INTERPRETER'S OWN COMPILED CLOSURE — an implementation detail leaking into a value.
+            const v = await this.evaluate(exprs[i] as AnyNode, env, frame);
+            refuseCoercion("${...}", v);
+            out += String(v);
+          }
         }
         return out;
       }
       case "ArrayExpression": {
         const out: unknown[] = [];
         for (const el of (node.elements as AnyNode[]) ?? []) {
-          if (el.type === "SpreadElement") {
-            const spread = await this.evaluate(el.argument as AnyNode, env, frame);
-            out.push(...(spread as unknown[]));
-          } else {
-            out.push(await this.evaluate(el, env, frame));
-          }
+          if (el.type === "SpreadElement") out.push(...this.spreadable(await this.evaluate(el.argument as AnyNode, env, frame)));
+          else out.push(await this.evaluate(el, env, frame));
         }
-        return out;
+        return born(out, frame.depth);
       }
       case "ObjectExpression": {
         const out: Record<string, unknown> = {};
         for (const p of (node.properties as AnyNode[]) ?? []) {
           if (p.type === "SpreadElement") {
-            Object.assign(out, await this.evaluate(p.argument as AnyNode, env, frame));
+            const src = await this.evaluate(p.argument as AnyNode, env, frame);
+            if (src !== null && src !== undefined) {
+              for (const [k, v] of Object.entries(src as Record<string, unknown>)) setOwn(out, k, v);
+            }
             continue;
           }
           const key = p.key as AnyNode;
           const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
-          out[name] = await this.evaluate(p.value as AnyNode, env, frame);
+          setOwn(out, name, await this.evaluate(p.value as AnyNode, env, frame));
         }
-        return out;
+        return born(out, frame.depth);
       }
       case "MemberExpression": {
         const obj = await this.evaluate(node.object as AnyNode, env, frame);
-        if (obj === null || obj === undefined) {
-          if (node.optional === true) return undefined;
-          throw new RuntimeFault("L4010", `cannot read a field of ${String(obj)}`);
+        if ((obj === null || obj === undefined) && node.optional === true) throw SHORT_CIRCUIT;
+        return this.memberOf(obj, await this.memberKey(node, env, frame));
+      }
+      case "ChainExpression": {
+        // `a?.b.c(d)`: a nullish `a` ends the WHOLE chain with `undefined`, and nothing after the
+        // `?.` is evaluated. The short-circuit travels as a private sentinel that only this case
+        // catches; a program's `try` cannot see it, because a chain is an expression and a `try`
+        // wraps statements.
+        try {
+          return await this.evaluate(node.expression as AnyNode, env, frame);
+        } catch (e) {
+          if (e === SHORT_CIRCUIT) return undefined;
+          throw e;
         }
-        const prop = node.computed === true
-          ? String(await this.evaluate(node.property as AnyNode, env, frame))
-          : ((node.property as AnyNode).name as string);
-        return (obj as Record<string, unknown>)[prop];
       }
       case "UnaryExpression": {
         const v = await this.evaluate(node.argument as AnyNode, env, frame);
@@ -453,14 +993,39 @@ class Interpreter {
           case "!":
             return !v;
           case "-":
+            refuseCoercion("-", v);
             return -(v as number);
           case "+":
+            refuseCoercion("+", v);
             return +(v as number);
+          case "~":
+            refuseCoercion("~", v);
+            return ~(v as number);
           case "typeof":
             return typeof v;
           default:
             throw new RuntimeFault("L1000", `unsupported unary operator ${String(node.operator)}`);
         }
+      }
+      case "UpdateExpression": {
+        // `x++`, `--o.count`: JavaScript's meaning, with the write going through the same two doors
+        // as an assignment (a binding's depth, a value's writability).
+        const delta = node.operator === "++" ? 1 : -1;
+        const prefix = node.prefix === true;
+        const arg = node.argument as AnyNode;
+        if (arg.type === "Identifier") {
+          const name = arg.name as string;
+          const old = Number(env.get(name));
+          const next = old + delta;
+          env.set(name, next, frame.depth);
+          return prefix ? next : old;
+        }
+        const obj = await this.evaluate(arg.object as AnyNode, env, frame);
+        const key = await this.memberKey(arg, env, frame);
+        const old = Number(this.memberOf(obj, key));
+        const next = old + delta;
+        this.writeMember(obj, key, next, frame);
+        return prefix ? next : old;
       }
       case "BinaryExpression": {
         const l = await this.evaluate(node.left as AnyNode, env, frame);
@@ -488,15 +1053,8 @@ class Interpreter {
         return (await this.evaluate(node.test as AnyNode, env, frame))
           ? await this.evaluate(node.consequent as AnyNode, env, frame)
           : await this.evaluate(node.alternate as AnyNode, env, frame);
-      case "AssignmentExpression": {
-        const value = await this.evaluate(node.right as AnyNode, env, frame);
-        const left = node.left as AnyNode;
-        if (left.type !== "Identifier") {
-          throw new RuntimeFault("L2031", "only a plain binding can be assigned to");
-        }
-        env.set(left.name as string, value);
-        return value;
-      }
+      case "AssignmentExpression":
+        return await this.assign(node, env, frame);
       case "AwaitExpression":
         return await this.evaluate(node.argument as AnyNode, env, frame);
       case "ArrowFunctionExpression":
@@ -509,69 +1067,152 @@ class Interpreter {
     }
   }
 
+  /**
+   * Every assignment operator, on a binding or a member: `x = v`, `x += v`, `o.a ??= v`,
+   * `[a, b] = [b, a]`. The operator's meaning is JavaScript's; the write goes through the binding's
+   * depth check ({@link Env.set}) or the value's writability check ({@link Interpreter.writeMember}).
+   */
+  private async assign(node: AnyNode, env: Env, frame: Frame): Promise<unknown> {
+    const op = node.operator as string;
+    const left = node.left as AnyNode;
+
+    if (left.type === "ObjectPattern" || left.type === "ArrayPattern") {
+      const value = await this.evaluate(node.right as AnyNode, env, frame);
+      await this.bindPattern(left, value, env, frame, "assign");
+      return value;
+    }
+
+    const read =
+      left.type === "Identifier"
+        ? { get: (): unknown => env.get(left.name as string), set: (v: unknown): void => env.set(left.name as string, v, frame.depth) }
+        : await (async () => {
+            const obj = await this.evaluate(left.object as AnyNode, env, frame);
+            const key = await this.memberKey(left, env, frame);
+            return { get: (): unknown => this.memberOf(obj, key), set: (v: unknown): void => this.writeMember(obj, key, v, frame) };
+          })();
+
+    if (op === "=") {
+      const v = await this.evaluate(node.right as AnyNode, env, frame);
+      read.set(v);
+      return v;
+    }
+    if (op === "&&=" || op === "||=" || op === "??=") {
+      const cur = read.get();
+      const proceed = op === "&&=" ? Boolean(cur) : op === "||=" ? !cur : cur === null || cur === undefined;
+      if (!proceed) return cur;
+      const v = await this.evaluate(node.right as AnyNode, env, frame);
+      read.set(v);
+      return v;
+    }
+    const cur = read.get();
+    const r = await this.evaluate(node.right as AnyNode, env, frame);
+    const v = applyBinary(op.slice(0, -1), cur, r);
+    read.set(v);
+    return v;
+  }
+
+  /** What `...x` and `for (const v of x)` may iterate: an array or a string, and nothing else (L4015). */
+  private spreadable(v: unknown): unknown[] {
+    if (Array.isArray(v)) return v;
+    if (typeof v === "string") return [...v];
+    throw new RuntimeFault(
+      "L4015",
+      `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,
+    );
+  }
+
   makeFunction(node: AnyNode, closure: Env): (frame: Frame, args: unknown[]) => Promise<unknown> {
     const params = (node.params as AnyNode[]) ?? [];
     const body = node.body as AnyNode;
     const isExpressionBody = body.type !== "BlockStatement";
-    return async (frame: Frame, args: unknown[]): Promise<unknown> => {
-      const env = new Env(closure);
+    const self = async (frame: Frame, args: unknown[]): Promise<unknown> => {
+      // The calling FRAME decides the depth, not the closure: a helper declared at the top level
+      // and called from inside a branch is executing concurrently, whatever scope it was written in.
+      const env = new Env(closure, frame.depth);
+      // A named function expression sees its own name: `const f = function walk(n) { ... walk() }`.
+      if (node.type === "FunctionExpression" && node.id !== null && node.id !== undefined) {
+        env.declare((node.id as AnyNode).name as string, self, false);
+      }
       for (let i = 0; i < params.length; i += 1) {
-        await this.bindPattern(params[i] as AnyNode, args[i], env, frame, true);
+        const param = params[i] as AnyNode;
+        if (param.type === "RestElement") {
+          await this.bindPattern(param.argument as AnyNode, born(args.slice(i), frame.depth), env, frame, "let");
+          break;
+        }
+        await this.bindPattern(param, args[i], env, frame, "let");
       }
       if (isExpressionBody) return await this.evaluate(body, env, frame);
       const c = await this.executeBlock(body, env, frame);
       return c.type === "return" ? c.value : undefined;
     };
+    return self;
   }
 
+  /**
+   * Bind a pattern: declare its names (`const`/`let`, including parameters, which are `let`) or
+   * assign to bindings that already exist (`assign`, for `[a, b] = [b, a]`).
+   */
   async bindPattern(
     pattern: AnyNode,
     value: unknown,
     env: Env,
     frame: Frame,
-    mutable: boolean,
+    mode: "const" | "let" | "assign",
   ): Promise<void> {
     switch (pattern.type) {
       case "Identifier":
-        env.declare(pattern.name as string, value, mutable);
+        if (mode === "assign") env.set(pattern.name as string, value, frame.depth);
+        else env.declare(pattern.name as string, value, mode === "let");
         return;
+      case "MemberExpression": {
+        // Only reachable in `assign` mode: `[o.a, o.b] = pair`.
+        const obj = await this.evaluate(pattern.object as AnyNode, env, frame);
+        this.writeMember(obj, await this.memberKey(pattern, env, frame), value, frame);
+        return;
+      }
       case "AssignmentPattern":
         await this.bindPattern(
           pattern.left as AnyNode,
           value === undefined ? await this.evaluate(pattern.right as AnyNode, env, frame) : value,
           env,
           frame,
-          mutable,
+          mode,
         );
         return;
       case "ObjectPattern": {
-        const src = (value ?? {}) as Record<string, unknown>;
+        if (value === null || value === undefined) {
+          throw new RuntimeFault("L4010", `cannot destructure ${String(value)}: there are no fields to take`);
+        }
+        const src = value as Record<string, unknown>;
         const taken: string[] = [];
         for (const p of pattern.properties as AnyNode[]) {
           if (p.type === "RestElement") {
             const rest: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) rest[k] = v;
-            await this.bindPattern(p.argument as AnyNode, rest, env, frame, mutable);
+            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) setOwn(rest, k, v);
+            await this.bindPattern(p.argument as AnyNode, born(rest, frame.depth), env, frame, mode);
             continue;
           }
           const key = p.key as AnyNode;
           const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
           taken.push(name);
-          await this.bindPattern(p.value as AnyNode, src[name], env, frame, mutable);
+          await this.bindPattern(p.value as AnyNode, this.memberOf(src, name), env, frame, mode);
         }
         return;
       }
       case "ArrayPattern": {
-        const src = (value ?? []) as unknown[];
+        if (value === null || value === undefined) {
+          throw new RuntimeFault("L4010", `cannot destructure ${String(value)}: there are no elements to take`);
+        }
+        const src = this.spreadable(value);
         const els = pattern.elements as (AnyNode | null)[];
         for (let i = 0; i < els.length; i += 1) {
           const el = els[i];
           if (el === null || el === undefined) continue;
           if (el.type === "RestElement") {
-            await this.bindPattern(el.argument as AnyNode, src.slice(i), env, frame, mutable);
+            await this.bindPattern(el.argument as AnyNode, born(src.slice(i), frame.depth), env, frame, mode);
             break;
           }
-          await this.bindPattern(el, src[i], env, frame, mutable);
+          await this.bindPattern(el, src[i], env, frame, mode);
         }
         return;
       }
@@ -593,10 +1234,20 @@ class Interpreter {
       return await this.callPrimitive(callee.name as string, argNodes, env, frame);
     }
 
-    const fn = await this.evaluate(callee, env, frame);
+    let fn: unknown;
+    if (callee.type === "MemberExpression") {
+      // The one place a method NAME may appear: as the callee. Resolving it here, with the flag,
+      // is what lets `memberOf` refuse the same name everywhere else (L4020).
+      const obj = await this.evaluate(callee.object as AnyNode, env, frame);
+      if ((obj === null || obj === undefined) && callee.optional === true) throw SHORT_CIRCUIT;
+      fn = this.memberOf(obj, await this.memberKey(callee, env, frame), true);
+    } else {
+      fn = await this.evaluate(callee, env, frame);
+    }
+    if ((fn === null || fn === undefined) && node.optional === true) throw SHORT_CIRCUIT;
     const args: unknown[] = [];
     for (const a of argNodes) {
-      if (a.type === "SpreadElement") args.push(...((await this.evaluate(a.argument as AnyNode, env, frame)) as unknown[]));
+      if (a.type === "SpreadElement") args.push(...this.spreadable(await this.evaluate(a.argument as AnyNode, env, frame)));
       else args.push(await this.evaluate(a, env, frame));
     }
     if (typeof fn !== "function") {
@@ -619,6 +1270,24 @@ class Interpreter {
 
     const args: unknown[] = [];
     for (const a of argNodes) args.push(await this.evaluate(a, env, frame));
+    // Every argument crosses the effect boundary: it is hashed, recorded, or handed to the handler,
+    // and a value with no canonical form can be none of those. Refused HERE, before any entry is
+    // written, with the argument named: `undefined`, a non-finite number and an opaque object are
+    // L3041, a function is L3042. The result of the effect is held to the same rule in
+    // {@link Interpreter.performEffect}.
+    args.forEach((arg, i) => {
+      try {
+        assertCrossable(arg, `argument ${i + 1} of \`${name}\``);
+      } catch (e) {
+        if (e instanceof NotCrossable) throw new RuntimeFault(e.why === "function" ? "L3042" : "L3041", e.message);
+        throw e;
+      }
+    });
+    // FREEZE ON SHARE, at the share. What crossed is what was hashed and recorded, so the program
+    // mutating it afterwards — or the HANDLER mutating it on its side — would make the run's own
+    // value disagree with its recorded form (measured before this line: `schema.deep.x = 2` after
+    // an `ask` succeeded, no L2031, and a handler's write to `req.schema` reached the program).
+    for (const arg of args) deepFreeze(arg);
     const bag = args[spec.optionsAt];
     const stepName = (name === "checkpoint" ? args[0] : this.option(bag, "name")) as string | undefined;
     const handler = this.options.handler;
@@ -796,7 +1465,7 @@ class Interpreter {
             //
             // Name the open attempt on the pending row BEFORE issuing it, index and all.
             const nextId = attemptId(1);
-            this.journal.reissueAs(ctx.key, nextId, 1);
+            await this.journal.reissueAs(ctx.key, nextId, 1);
             const second = await handler.checkpoint(finalReq, { ...ctx, requestId: nextId, attempt: 1 });
             // ONE HOP. An escalation that can escalate again never terminates, so a second expiry
             // settles as expired and the program decides, exactly as `proceed` would.
@@ -848,6 +1517,13 @@ class Interpreter {
       case "notify": {
         const agents = deepFreeze(args[0]) as AgentHandleValue[];
         const fact = deepFreeze(args[1]) as { decision: string; outcome: string };
+        // THE BOUND, WHERE THE VALUE EXISTS. The validator checks a literal fact exactly and says
+        // so about the computed one; this is the computed one. It is checked BEFORE the entry is
+        // written, so a fact that breaks the bound never reaches a journal, a record, or a
+        // handler — an out-of-bound notice recorded as performed would be laundered bytes with a
+        // durable receipt. An error, never a truncation: a shortened notice still delivers.
+        const violation = notifyFactViolation(fact);
+        if (violation !== null) throw new RuntimeFault("L3043", violation);
         return await this.performEffect(
           "notify",
           stepName ?? "",
@@ -872,6 +1548,37 @@ class Interpreter {
   }
 
   /**
+   * The `branchDigest`, over the arms a settled `race` will never be walked into.
+   *
+   * STRUCTURE, NOT TEXT AND NOT POSITION. Acorn nodes carry `start`/`end`, and an edit anywhere
+   * earlier in the file moves every offset after it — a digest over those would diverge on a run
+   * whose race nobody touched, which is the false positive that teaches people to bypass a check.
+   * Digesting the source SLICE instead would diverge on reindentation for the same reason. What is
+   * hashed is the branch body's shape with positions stripped, so a reformat is silent and an edit
+   * is not.
+   *
+   * Only the LOSERS, because only they are unwalked. The winner's arm is walked entry by entry and
+   * an edit inside it already diverges on the ordinary hash check with the step it broke named —
+   * a strictly better error than "some branch changed". Digesting the winner too would replace that
+   * error with this one, so it does not.
+   */
+  private branchDigester(branchesNode: AnyNode | undefined): ((losers: readonly string[]) => string | undefined) | undefined {
+    if (branchesNode?.type !== "ObjectExpression") return undefined;
+    const bodies = new Map<string, unknown>();
+    for (const p of (branchesNode.properties as AnyNode[] | undefined) ?? []) {
+      const key = p.key as AnyNode | undefined;
+      const named = (key?.name as string | undefined) ?? (key?.value as string | undefined);
+      if (named !== undefined) bodies.set(named, stripPositions(p.value));
+    }
+    return (losers) =>
+      digest(
+        [...losers]
+          .sort()
+          .map((n) => [n, bodies.has(n) ? bodies.get(n) : null]),
+      );
+  }
+
+  /**
    * The concurrency combinators.
    *
    * Each pushes a scope frame whose occurrence is allocated HERE, synchronously, in code that is
@@ -889,41 +1596,433 @@ class Interpreter {
     const bag = bagNode === undefined ? undefined : await this.evaluate(bagNode, env, frame);
     const scopeName = (this.option(bag, "name") as string | undefined) ?? null;
     const occurrence = frame.keys.nextScope(scopeKind, scopeName);
+    const scopeKey = frame.keys.scopeKey(scopeKind, scopeName, occurrence);
 
+    // `conclave` is the one scope whose identity includes a SUBJECT (`hashesSubject`): the
+    // members are what the sub-team IS, so editing the member list has to diverge rather than
+    // resume into a different room. The other three are identified by kind, name and occurrence.
+    const subject = spec.hashesSubject
+      ? {
+          members: (first as AgentHandleValue[]).map((m) => m.agent),
+          channel: (this.option(bag, "channel") as string | undefined) ?? null,
+        }
+      : undefined;
+
+    return await this.performScope(
+      scopeKey,
+      frame,
+      async (ctx, only) =>
+        await this.runScope(name, scopeKind, scopeName, occurrence, first, argNodes, bag, env, frame, ctx, only),
+      subject,
+      // `race` alone. `parallel` and `fanOut` have no losers — every branch is a winner and the
+      // walk enters all of them — and a `conclave` cannot be walked into at all, so a digest there
+      // would bind arms nothing was ever going to miss.
+      name === "race" ? this.branchDigester(argNodes[0]) : undefined,
+    );
+  }
+
+  /**
+   * A concurrency scope's own journal entry, and what replay does with it.
+   *
+   * The scope is journalled as ONE durable record carrying its outcome, and for a cancelling scope
+   * the intent to cancel its siblings. Without it a replayed `race` re-races: both branches may have
+   * settled before the cancellation reached the loser, so the journal holds two successful branches
+   * and nothing saying which one won, and a replayed run can take the other path and reach a step
+   * that was never recorded.
+   *
+   * A settled scope therefore ENTERS NO BRANCH, and the order below is normative rather than
+   * convenient: account for the subtree first, then discharge the cancellation, and only then
+   * deliver the outcome. Leading with the delivery is the defect — the next program step can share
+   * a worktree with a loser that is still writing.
+   */
+  private async performScope(
+    scopeKey: StepKey,
+    frame: Frame,
+    body: (ctx: EffectContext, only?: ReadonlySet<string>) => Promise<ScopeOutcome>,
+    subject?: unknown,
+    /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
+    branchDigest?: (losers: readonly string[]) => string | undefined,
+  ): Promise<unknown> {
+    const inputHash = digest(
+      subject === undefined
+        ? { kind: scopeKey.kind, name: scopeKey.name }
+        : { kind: scopeKey.kind, name: scopeKey.name, subject },
+    );
+    const verdict = this.journal.lookup(scopeKey, inputHash);
+
+    if (verdict.verdict === "diverged") {
+      throw new RunDivergence(stepKeyString(scopeKey), verdict.recordedHash, verdict.programHash);
+    }
+    if (verdict.verdict === "replay" || verdict.verdict === "replay-failed") {
+      const entry = verdict.entry;
+      const endedAt = entry.endedAt ?? this.options.handler.now();
+
+      // The comparison: `branchDigest` is checked whenever the entry carries one. The scope's own
+      // `inputHash` is `{kind, name}` — an arm's body is not in it — and a settled race is
+      // delivered from this entry without entering a branch, so without this comparison an edit
+      // inside a LOSING arm reaches nothing that could notice it. Both replay paths, not the
+      // migration path alone: a resume of edited source is exactly the case a divergence exists to
+      // make loud, and the run record carries no program hash to have refused it earlier.
+      if (entry.branchDigest !== undefined && branchDigest !== undefined) {
+        const now = branchDigest(entry.cancel?.losers ?? []);
+        if (now !== undefined && now !== entry.branchDigest) {
+          throw new RunDivergence(stepKeyString(scopeKey), entry.branchDigest, now);
+        }
+      }
+
+      // A MIGRATION MUST NOT TAKE THE SHORT-CIRCUIT ABOVE.
+      //
+      // Consuming the subtree wholesale is right for a resume — the program hash is unchanged, so
+      // nothing under this scope can have been removed, and the branches were DECIDED rather than
+      // deleted. Under a migration the source HAS changed, and marking every entry beneath the
+      // scope accounted for means an effect the new source removed never reaches `orphans()`: a
+      // resolved human checkpoint inside the winning branch disappears and L5004 never fires. A
+      // silent disappearance whose log line never fires is invisible in the artifact AND in the
+      // trace, which is the worst available failure.
+      //
+      // So the walk enters the RECORDED WINNING branches and runs the ordinary hash and orphan
+      // checks inside them, while the losers — decided, not removed — are accounted for as before.
+      if (this.options.migration === true) {
+        if (subject !== undefined) throw new UnwalkableScope(stepKeyString(scopeKey), "conclave");
+        // A SETTLED SCOPE CARRIES ITS ARM NAMES IN ONE OF TWO PLACES, and reading only the first
+        // is what made a failed scope look like a scope with no arms. `result` holds them when the
+        // scope succeeded; the `branches` FACT holds them when it failed, because `settle` writes
+        // no `result` for a failure.
+        const recorded = entry.result as { branches?: readonly string[] } | undefined;
+        const branches = recorded?.branches ?? entry.branches ?? [];
+        const losers = new Set(entry.cancel?.losers ?? []);
+        await this.journal.consumeScope(stepKeyString(scopeKey), endedAt, losers);
+        try {
+          await body(
+            {
+              key: scopeKey,
+              signal: frame.signal,
+              requestId: entry.requestId ?? requestId(this.options.runId, scopeKey, inputHash),
+              attempt: entry.attempt ?? 0,
+              bind: async () => {
+                throw new UnwalkableScope(stepKeyString(scopeKey), "bind");
+              },
+            },
+            new Set(branches.filter((b) => !losers.has(b))),
+          );
+        } catch (e) {
+          // UNWRAPPED, because the caller of a migration wants the step that diverged and not the
+          // scope that carried it. A live scope wraps a branch's failure so it can record the
+          // cancellation intent with it; a walk records nothing and cancels nobody, so the wrapper
+          // would only hide a `RunDivergence` behind a generic scope fault.
+          throw unwrapScope(e).reason;
+        }
+        if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
+        if (verdict.verdict === "replay-failed") {
+          const e = entry.error as EntryError;
+          throw new EffectError(e.code, e.kind, e.message, e.detail);
+        }
+        return (entry.result as { value: unknown }).value;
+      }
+
+      // (1) account for the subtree, settling any loser still pending as cancelled;
+      await this.journal.consumeScope(stepKeyString(scopeKey), endedAt);
+      // (2) the cancellation intent is the driver's to discharge against the world; a journal write
+      //     cancels nothing by itself, so an undischarged intent stays visible rather than silently
+      //     reading as done.
+      // (3) only now, the outcome.
+      if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
+      if (verdict.verdict === "replay-failed") {
+        const e = entry.error as EntryError;
+        throw new EffectError(e.code, e.kind, e.message, e.detail);
+      }
+      return (entry.result as { value: unknown }).value;
+    }
+    if (verdict.verdict === "replay-cancelled") {
+      throw new Cancelled("this scope was cancelled on the recorded run");
+    }
+
+    // `miss` and `pending` alike RE-ENTER the scope: there is no recorded outcome to return, and a
+    // pending scope's losers were never durably cancelled. Settling is idempotent, so the arm that
+    // finishes first wins again — except where the journal already knows better, which is what
+    // `runScope`'s replayed-branch tie-break is for.
+    // A scope that CALLS THE HANDLER owes a durable request id exactly as an effect does, and for
+    // the same reason: a crash between issuing the work and recording who issued it leaves real
+    // work — for `conclave`, a live channel with members joined — that nothing in the journal
+    // names. `subject` marks that scope, because `conclave` is the only one that dispatches from
+    // this path; the other three launch thunks and touch no handler of their own.
+    const dispatches = subject !== undefined;
+    const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
+    const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
+    const reqId = recorded?.requestId ?? requestId(this.options.runId, scopeKey, inputHash);
+    if (verdict.verdict === "miss") {
+      await this.journal.begin(scopeKey, inputHash, this.options.handler.now(), dispatches ? reqId : undefined);
+      // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a
+      // conclave cancelled while its begin was in flight must not open a channel and join members.
+      // The non-dispatching scopes launch no work of their own — each branch effect re-checks its
+      // own signal — so only the dispatching path re-checks here.
+      if (dispatches && frame.signal.cancelled) {
+        await this.journal.settle(scopeKey, { status: "cancelled" }, frame.clock.now());
+        throw new Cancelled(frame.signal.reason ?? "cancelled");
+      }
+    }
+    const ctx: EffectContext = {
+      key: scopeKey,
+      signal: frame.signal,
+      requestId: reqId,
+      attempt: recorded?.attempt ?? 0,
+      ...(resume !== undefined ? { resume } : {}),
+      bind: async (external) => {
+        await this.journal.bind(scopeKey, external);
+      },
+    };
+    // The same two domains as {@link Interpreter.performEffect}, for the same reason: a scope whose
+    // branches all succeeded and whose settling append was refused must not be recorded as failed.
+    let outcome: ScopeOutcome;
+    try {
+      outcome = await body(ctx);
+    } catch (raw) {
+      // The interpreter's facts come out of the envelope; the program's thrown value comes out
+      // whole, and is what the caller sees. A value the program threw is never written on.
+      const { reason, facts } = unwrapScope(raw);
+      // THE SCOPE'S CLOCK AT SETTLE, not the host's clock at append. `runScope` joins the branch
+      // clocks before the outcome leaves it, so `frame.clock.now()` here is the greatest `endedAt`
+      // the scope's branches awaited — which is what `now()` answers after the scope, live. Replay
+      // advances the parent clock from this stamp and enters no branch, so stamping anything else
+      // (measured: the handler's clock at append time) makes live and replay disagree on `now()`
+      // after every scope whose last-to-land effect was not the handler's last stamp, and a program
+      // that branches on `now()` takes a path on resume that the live run never took.
+      const endedAt = frame.clock.now();
+      if (reason instanceof JournalAppendRejected) throw reason;
+      // A close that did not acknowledge settles NOTHING. The entry stays pending, which is exactly
+      // what "a close is still owed" looks like in a journal, and the underlying handler error is
+      // what the caller sees.
+      if (reason instanceof CloseOwed) throw reason.reason;
+      if (reason instanceof Cancelled) {
+        await this.journal.settle(scopeKey, { status: "cancelled" }, endedAt, facts);
+        throw reason;
+      }
+      const err: EntryError =
+        reason instanceof EffectError
+          ? {
+              code: reason.code,
+              kind: reason.kind,
+              message: reason.message,
+              ...(reason.detail !== undefined ? { detail: reason.detail } : {}),
+            }
+          : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
+      // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
+      // carries the intent too — and a conclave that closed says so even when its body failed.
+      await this.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
+        ...facts,
+        ...digestFacts(branchDigest, facts.cancel?.losers),
+      });
+      throw reason;
+    }
+
+    await this.journal.settle(
+      scopeKey,
+      { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+      // The joined branch clock, for the same reason as the failure path above: this is the value
+      // `now()` answers after the scope, and the stamp replay hands back must be that value.
+      frame.clock.now(),
+      {
+        ...(outcome.cancel !== undefined ? { cancel: outcome.cancel } : {}),
+        ...(outcome.closed !== undefined ? { closed: outcome.closed } : {}),
+        ...digestFacts(branchDigest, outcome.cancel?.losers),
+      },
+    );
+    return outcome.value;
+  }
+
+  private async runScope(
+    name: string,
+    scopeKind: ScopeKind,
+    scopeName: string | null,
+    occurrence: number,
+    first: unknown,
+    argNodes: AnyNode[],
+    bag: unknown,
+    env: Env,
+    frame: Frame,
+    ctx: EffectContext,
+    /** A migration's walk: enter exactly these branches, the ones the recorded run WON with. */
+    only?: ReadonlySet<string>,
+  ): Promise<ScopeOutcome> {
     if (name === "parallel" || name === "race") {
-      const entries: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
+      const all: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
         ? (first as ((f: Frame, a: unknown[]) => Promise<unknown>)[]).map((fn, i) => [String(i), fn])
         : Object.entries(first as Record<string, (f: Frame, a: unknown[]) => Promise<unknown>>);
+      const entries = only === undefined ? all : all.filter(([k]) => only.has(k));
+
+      // THE WALK MUST FIND EVERY ARM IT WAS SENT TO ENTER.
+      //
+      // `only` is the set of RECORDED WINNING branch keys, and the whole "losers only" digest rule
+      // rests on the walk entering the winner: an edit there is supposed to diverge at the step it
+      // broke, which is a strictly better error than "some arm of this race changed". A RENAME
+      // removes the arm, so there is no step left to diverge at and the argument silently stops
+      // holding. What happened instead was worse than a silent pass. `entries` came back empty,
+      // `running` with it, and `Promise.race([])` NEVER SETTLES — a migration or a fork over a
+      // renamed winning arm hung rather than returning any verdict at all. `parallel` did not hang,
+      // because `Promise.all([])` resolves, and handed the program back the recorded value keyed by
+      // the arm the source no longer has.
+      //
+      // Narrow on purpose, and every neighbouring shape already has an answer: a renamed or deleted
+      // LOSER diverges through the branch digest, and an ADDED arm is not an edit to anything
+      // recorded, so neither reaches this.
+      if (only !== undefined) {
+        const present = new Set(all.map(([k]) => k));
+        const missing = [...only].filter((k) => !present.has(k));
+        if (missing.length > 0) {
+          throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);
+        }
+        // AND THE EMPTY CASE, which the check above cannot see: with no recorded branches at all,
+        // "every recorded branch is present" is vacuously true, so the guard passed and the walk
+        // still entered nothing and still hung. A guard over an empty set grades nothing and is
+        // green forever. Journals written before scopes recorded their arm names on failure are
+        // exactly that shape, so this refuses them by name instead of hanging on them. It cannot
+        // fire on a scope that has no arms in the source either, because `all` is empty then too.
+        if (only.size === 0 && all.length > 0) {
+          throw new ScopeBranchMissing(stepKeyString(ctx.key), name, [], [], all.map(([k]) => k));
+        }
+      }
 
       const frames = entries.map(([k]) => frame.branch(scopeKind, scopeName, occurrence, k));
       const running = entries.map(([, fn], i) => fn(frames[i] as Frame, []));
 
+      const branches = entries.map(([k]) => k);
+
       if (name === "parallel") {
+        let failed: string | null = null;
+        const tracked = running.map((p, i) =>
+          p.catch((e: unknown) => {
+            if (failed === null) failed = entries[i]?.[0] as string;
+            throw e;
+          }),
+        );
         try {
-          const results = await Promise.all(running);
+          const results = await Promise.all(tracked);
           frame.clock.join(frames.map((f) => f.clock));
-          return Array.isArray(first)
-            ? results
-            : Object.fromEntries(entries.map(([k], i) => [k, results[i]]));
+          return {
+            branches,
+            value: Array.isArray(first) ? results : Object.fromEntries(entries.map(([k], i) => [k, results[i]])),
+          };
         } catch (e) {
-          // The first rejection cancels the rest, then rethrows.
+          // The first rejection cancels the rest, then rethrows. The intent travels WITH the
+          // failure, because a rejecting branch cancels its siblings and can crash before they
+          // hear it, so a failed scope owes its losers exactly as a winning one does.
           for (const f of frames) f.signal.cancel("a sibling branch failed");
           await Promise.allSettled(running);
           frame.clock.join(frames.map((f) => f.clock));
-          throw e;
+          const losers = branches.filter((k) => k !== failed);
+          throw new ScopeFailed(e, { branches, cancel: { losers, issued: false } });
         }
       }
 
-      // race: first to settle wins, and the losers are cancelled BY SEMANTICS, not by an API the
-      // program calls. A cancelled branch performs no new effects; an agent reply already in
+      // race: the earliest to settle wins, and the losers are cancelled BY SEMANTICS, not by an API
+      // the program calls. A cancelled branch performs no new effects; an agent reply already in
       // flight completes and is ignored, which is the documented answer rather than an accident.
-      const winner = await Promise.race(
-        running.map((p, i) => p.then((value) => ({ index: entries[i]?.[0] as string, value }))),
-      );
+      // THE WINNER IS THE EARLIEST BRANCH, NOT THE FIRST ONE SCHEDULING HAPPENED TO WAKE.
+      //
+      // An arm's logical settlement time is its branch clock: the max endedAt of the effects it
+      // awaited (the scope's entry clock if it awaited none), which is recorded. The winner is the
+      // least clock among the arms that settled; equal clocks fall to declaration order, which is
+      // recorded too. So the same journal resolves the same arm on every re-entry.
+      //
+      // AND LIVE, NO SCHEDULER AND NO `yieldEvery` VALUE CAN CHOOSE. When an arm settles, every
+      // sibling is cancelled (no new effects, the cancellation law), and each sibling is CUT, pure
+      // work included, only if it can no longer win: its clock is later, or equal and it is declared
+      // later. A sibling that could still win runs its pure work to a settle, and a sibling that
+      // reaches a new effect is cut there, having proven it would end after the settled arm's clock.
+      // Which arms settle is therefore a function of their effects and the declaration order, and
+      // so is the winner. A later settle with an earlier clock re-decides the cut for the rest.
+      // A FAILURE IS A SETTLE, so a rejecting arm is a candidate to win — it just wins by failing
+      // the scope. What is NOT a candidate is a branch that rejected with `Cancelled`, because that
+      // is not an outcome the branch reached, it is what losing did to it. Counting those would let
+      // a loser cut short at an early step outrank the winner that ran longer.
+      // The FRONTIER: the least clock among the arms that have settled as candidates, ties to the
+      // earlier declaration. The cut compares against it in both places below, because it is the
+      // bar an unsettled arm actually has to beat.
+      let bestAt = -1;
+      let bestIndex = -1;
+      const behindFrontier = (j: number): boolean => {
+        const other = (frames[j] as Frame).clock.now();
+        return !(other < bestAt || (other === bestAt && j < bestIndex));
+      };
+      const onSettle = (i: number, wasCancelled: boolean): void => {
+        if (wasCancelled) return;
+        const at = (frames[i] as Frame).clock.now();
+        if (bestIndex === -1 || at < bestAt || (at === bestAt && i < bestIndex)) {
+          bestAt = at;
+          bestIndex = i;
+        }
+        for (let j = 0; j < frames.length; j += 1) {
+          if (j === i) continue;
+          (frames[j] as Frame).signal.cancel("a sibling branch won the race", { cutPure: behindFrontier(j) });
+        }
+      };
+      running.forEach((p, i) => {
+        p.then(
+          () => onSettle(i, false),
+          (e: unknown) => onSettle(i, e instanceof Cancelled),
+        );
+      });
+      // AND THE CUT IS RE-DECIDED WHEN AN ARM'S OWN CLOCK MOVES. A cancelled arm with an effect
+      // already in flight is allowed to see it land — the work was issued before the cancellation
+      // — but landing advances the arm's clock, and an arm that lands PAST the frontier has just
+      // proven it cannot win. Deciding only at settles left that arm running its pure tail on a
+      // verdict reached from its old clock: measured, an infinite pure tail burned the whole step
+      // budget and killed a run whose race had already settled `ok`, while a resume of the same
+      // journal returned the winner — live and replay disagreeing on the run's outcome. An arm
+      // that lands BEFORE the frontier keeps running, because it can still win (its own cell).
+      frames.forEach((f, j) => {
+        f.clock.onAdvance(() => {
+          if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {
+            f.signal.cancel("a sibling branch won the race", { cutPure: true });
+          }
+        });
+      });
+      // BOTH HANDLERS, and the rejection handler is the whole point. `p.then(() => undefined)`
+      // propagates a rejection, so the first arm to FAIL threw straight out of this await: past the
+      // cancellation, past `allSettled`, and into a scope entry recorded as failed with no losers on
+      // it. The run terminated while a sibling was still performing effects, which is the exact
+      // defect the scope entry exists to prevent. A rejection is a settle.
+      await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
+      const settled = await Promise.allSettled(running);
+      // Every arm has settled, so whatever cut it did not get earlier no longer matters; the
+      // signal still says cancelled, which is what a nested branch that outlives this line reads.
       for (const f of frames) f.signal.cancel("a sibling branch won the race");
-      await Promise.allSettled(running);
       frame.clock.join(frames.map((f) => f.clock));
-      return winner;
+
+      let winnerAt = -1;
+      let winnerIndex = -1;
+      for (let i = 0; i < settled.length; i += 1) {
+        const r = settled[i] as PromiseSettledResult<unknown>;
+        if (r.status === "rejected" && r.reason instanceof Cancelled) continue;
+        const at = (frames[i] as Frame).clock.now();
+        if (winnerIndex === -1 || at < winnerAt) {
+          winnerAt = at;
+          winnerIndex = i;
+        }
+      }
+      if (winnerIndex === -1) {
+        // Every arm was cancelled, so the race itself was: nothing here decided anything.
+        const first = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+        throw first === undefined ? new Cancelled("every branch was cancelled") : (first.reason as Error);
+      }
+      const index = entries[winnerIndex]?.[0] as string;
+      const won = settled[winnerIndex] as PromiseSettledResult<unknown>;
+      if (won.status === "rejected") {
+        // The earliest branch to settle FAILED. The scope fails with it, carrying the siblings it
+        // cancelled — a losing arm can crash before the cancellation reaches it, so the intent has
+        // to travel with the outcome exactly as it does for a winning race.
+        throw new ScopeFailed(won.reason, {
+          branches,
+          cancel: { losers: branches.filter((k) => k !== index), issued: false },
+        });
+      }
+      return {
+        branches,
+        // BOTH the index and the value. The index alone is not enough: an edit to an arm's returned
+        // expression would resume as the new value with no divergence raised.
+        value: { index, value: (settled[winnerIndex] as PromiseFulfilledResult<unknown>).value },
+        cancel: { losers: branches.filter((k) => k !== index), issued: false },
+      };
     }
 
     if (name === "fanOut") {
@@ -957,9 +2056,101 @@ class Interpreter {
       }
 
       const frames = branchKeys.map((k) => frame.branch(scopeKind, scopeName, occurrence, k));
-      const results = await Promise.all(items.map((item, i) => fn(frames[i] as Frame, [item, i])));
-      frame.clock.join(frames.map((f) => f.clock));
-      return results;
+      // A fanOut has no losers: every branch is a winner, so a migration's walk enters the ones the
+      // recorded run actually had. A branch the new source no longer produces is simply not walked,
+      // and its entries surface as orphans — which is the whole point of walking rather than
+      // consuming.
+      const walk = items
+        .map((item, i) => [item, i] as const)
+        .filter(([, i]) => only === undefined || only.has(branchKeys[i] as string));
+      // The same failure law as `parallel`: the first rejection cancels the siblings and the scope
+      // fails with it, carrying the losers. Measured before this block: a rejecting branch threw out
+      // of `Promise.all` alone, and every sibling went on performing effects against a scope whose
+      // entry had already settled failed.
+      let failed: string | null = null;
+      const launched = walk.map(([item, i]) =>
+        fn(frames[i] as Frame, [item, i]).catch((e: unknown) => {
+          if (failed === null) failed = branchKeys[i] as string;
+          throw e;
+        }),
+      );
+      try {
+        const results = await Promise.all(launched);
+        frame.clock.join(frames.map((f) => f.clock));
+        return { branches: branchKeys, value: results };
+      } catch (e) {
+        for (const f of frames) f.signal.cancel("a sibling branch failed");
+        await Promise.allSettled(launched);
+        frame.clock.join(frames.map((f) => f.clock));
+        const losers = branchKeys.filter((k) => k !== failed);
+        throw new ScopeFailed(e, { branches: branchKeys, cancel: { losers, issued: false } });
+      }
+    }
+
+    if (name === "conclave") {
+      // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`, carrying
+      // the durable answer to "is this sub-team still live". That answer is the explicit `closed`
+      // FACT, not the entry's state: a body that failed after a clean close settles `failed`
+      // exactly like one whose close never acknowledged, and only the fact separates them. Pending
+      // means a close is still owed. The migrate table reads that fact — an orphaned conclave is
+      // rejected unless the scope closed — so a second entry for the close would be a second thing
+      // to keep in agreement with the first, and nothing needs it.
+      const members = deepFreeze(first) as AgentHandleValue[];
+      const fn = (await this.evaluate(argNodes[1] as AnyNode, env, frame)) as (
+        f: Frame,
+        a: unknown[],
+      ) => Promise<unknown>;
+      const channel = this.option(bag, "channel") as string | undefined;
+      const req: ConclaveRequest = { members, ...(channel !== undefined ? { channel } : {}) };
+      const handler = this.options.handler;
+      const handle = deepFreeze(await handler.openConclave(req, ctx)) as ChannelHandleValue;
+
+      // One body, one branch, and the branch key is the fixed literal `in` rather than the channel
+      // name. The channel is HANDLER-DERIVED — the simulator and the mesh mint different ones — so
+      // keying the journal namespace by it would make a journal replayable only under the handler
+      // that wrote it, which is the one thing the effect seam exists to prevent.
+      // ONE constant, used for both the namespace and the recorded branch list, so the entry cannot
+      // claim a key the body's steps were not actually filed under.
+      const branchKey = "in";
+      const branch = frame.branch(scopeKind, scopeName, occurrence, branchKey);
+
+      // The body's outcome is decided FIRST, alone. The close is a separate act with a separate
+      // failure mode, and folding it into this try is what made a close rejection retry itself and
+      // then settle as an ordinary body failure — a `failed` entry indistinguishable from "the body
+      // failed and the room closed cleanly", which an orphan walk reads as closed while the members
+      // are still joined.
+      // `threw` is a separate flag rather than `bodyError !== undefined`, because `throw undefined`
+      // is a thing a program may do and "the body failed" must not depend on what it failed WITH.
+      let bodyError: unknown;
+      let threw = false;
+      let value: unknown;
+      try {
+        value = await fn(branch, [handle]);
+      } catch (e) {
+        bodyError = e;
+        threw = true;
+      }
+      frame.clock.join([branch.clock]);
+
+      // A CANCELLED branch performs no new effects, so a cancelled conclave does not close
+      // itself: releasing the membership travels the same recovery path as every other branch-local
+      // resource a race loser took. A conclave whose body merely FAILED is not cancelled —
+      // this process is live and the world is reachable — and walking away from live membership on
+      // an ordinary error would be the `spawn` leak in another shape.
+      if (bodyError instanceof Cancelled) throw new ScopeFailed(bodyError, { closed: false });
+
+      try {
+        await handler.closeConclave(req, ctx);
+      } catch (e) {
+        // THE CLOSE DID NOT ACKNOWLEDGE, so the scope does not settle at all. A pending entry IS
+        // the durable "a close is still owed" — re-entry retries it — and settling anything here
+        // would be the journal claiming a disposition the world never confirmed. The body's own
+        // error, if there was one, is subordinate: it did not leave members joined; this did.
+        throw new CloseOwed(e);
+      }
+
+      if (threw) throw new ScopeFailed(bodyError, { closed: true });
+      return { branches: [branchKey], value, closed: true };
     }
 
     throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);
@@ -973,6 +2164,15 @@ class Interpreter {
     for (const s of body) {
       if (s.type === "FunctionDeclaration") {
         inner.declare(((s.id as AnyNode).name as string), this.makeFunction(s, inner), false);
+      }
+    }
+    // `let`/`const` bind the whole block, holding the dead-zone marker until their line runs, so a
+    // closure called early finds "declared, not yet initialized" (L2004) rather than an outer
+    // binding of the same name — which is what JavaScript does, minus the host error class.
+    for (const s of body) {
+      if (s.type !== "VariableDeclaration") continue;
+      for (const d of (s.declarations as AnyNode[]) ?? []) {
+        for (const n of declaredNames(d.id as AnyNode)) inner.declare(n, TDZ, s.kind === "let");
       }
     }
     for (const s of body) {
@@ -990,10 +2190,10 @@ class Interpreter {
         await this.evaluate(node.expression as AnyNode, env, frame);
         return NORMAL;
       case "VariableDeclaration": {
-        const mutable = node.kind === "let";
+        const mode = node.kind === "let" ? "let" : "const";
         for (const d of node.declarations as AnyNode[]) {
           const init = d.init === null || d.init === undefined ? undefined : await this.evaluate(d.init as AnyNode, env, frame);
-          await this.bindPattern(d.id as AnyNode, init, env, frame, mutable);
+          await this.bindPattern(d.id as AnyNode, init, env, frame, mode);
         }
         return NORMAL;
       }
@@ -1016,8 +2216,19 @@ class Interpreter {
           if (c.type === "return") return c;
         }
       case "ForStatement": {
-        const loopEnv = new Env(env);
-        if (node.init !== null && node.init !== undefined) await this.execute(node.init as AnyNode, loopEnv, frame);
+        let loopEnv = new Env(env);
+        const init = node.init as AnyNode | null | undefined;
+        if (init !== null && init !== undefined) {
+          if (init.type === "VariableDeclaration") await this.execute(init, loopEnv, frame);
+          else await this.evaluate(init, loopEnv, frame);
+        }
+        // `for (let i ...)` gives EACH ITERATION its own `i`, as JavaScript does: a closure made in
+        // one iteration keeps that iteration's value. The copy happens after the body and before the
+        // update, which is where the specification puts it.
+        const perIteration: string[] = [];
+        if (init?.type === "VariableDeclaration" && init.kind === "let") {
+          for (const d of init.declarations as AnyNode[]) collectNames(d.id as AnyNode, perIteration);
+        }
         for (;;) {
           if (node.test !== null && node.test !== undefined && !(await this.evaluate(node.test as AnyNode, loopEnv, frame))) {
             return NORMAL;
@@ -1025,16 +2236,21 @@ class Interpreter {
           const c = await this.execute(node.body as AnyNode, loopEnv, frame);
           if (c.type === "break") return NORMAL;
           if (c.type === "return") return c;
+          if (perIteration.length > 0) loopEnv = loopEnv.perIteration(perIteration);
           if (node.update !== null && node.update !== undefined) await this.evaluate(node.update as AnyNode, loopEnv, frame);
         }
       }
       case "ForOfStatement": {
-        const iterable = (await this.evaluate(node.right as AnyNode, env, frame)) as unknown[];
+        const iterable = this.spreadable(await this.evaluate(node.right as AnyNode, env, frame));
+        const decl = node.left as AnyNode;
         for (const item of iterable) {
           const loopEnv = new Env(env);
-          const decl = node.left as AnyNode;
-          const target = decl.type === "VariableDeclaration" ? ((decl.declarations as AnyNode[])[0] as AnyNode).id as AnyNode : decl;
-          await this.bindPattern(target, item, loopEnv, frame, decl.kind === "let");
+          if (decl.type === "VariableDeclaration") {
+            const target = ((decl.declarations as AnyNode[])[0] as AnyNode).id as AnyNode;
+            await this.bindPattern(target, item, loopEnv, frame, decl.kind === "let" ? "let" : "const");
+          } else {
+            await this.bindPattern(decl, item, loopEnv, frame, "assign");
+          }
           const c = await this.execute(node.body as AnyNode, loopEnv, frame);
           if (c.type === "break") return NORMAL;
           if (c.type === "return") return c;
@@ -1053,40 +2269,99 @@ class Interpreter {
       case "ThrowStatement":
         throw await this.evaluate(node.argument as AnyNode, env, frame);
       case "TryStatement": {
+        // What a `catch` may not have: none of these is a program error, and none is this
+        // program's to handle. Three kinds, six classes.
+        //
+        // A cancellation is the scope being unwound, and swallowing it would keep a branch
+        // working after it lost a race.
+        //
+        // A durability failure is the JOURNAL refusing to record: the run losing its ability to
+        // have a result at all. A program that catches one goes on performing effects against the
+        // world with nothing recorded from the refusal onward, so those effects exist only in the
+        // world and a resume performs them again. An unrecordable run must stop, and no `catch`
+        // may decide otherwise.
+        //
+        // And a DIVERGENCE, or a migration walk's refusal to enter a scope, is the journal saying
+        // this program is not the one that wrote it. Measured before this line existed: a resume
+        // whose edited `sleep` diverged inside a `try` caught `{ code: "L4000", kind: "host" }`,
+        // logged past it, and performed a NEW effect against the journal it had just diverged
+        // from; a migration's dry walk would have reported the same program clean.
+        //
+        // AND `finally` IS BOUND BY THE SAME LAW. A finalizer runs on the way out, so an
+        // unconditional one handed the program a landing past every class above: measured, a
+        // `finally` performed a NEW effect after a RunReleased and after a store rejection, and a
+        // `finally { throw ... }` REPLACED a divergence, which an outer catch then swallowed as an
+        // ordinary error. An uncatchable fault now unwinds past the finalizer too: the run's
+        // continuation is forfeit, and that includes its cleanup — the world-side recovery belongs
+        // to the driver and the journal, not to the program that just lost the right to run.
+        const uncatchable = (e: unknown): boolean =>
+          e instanceof Cancelled ||
+          e instanceof JournalAppendRejected ||
+          e instanceof RunReleased ||
+          e instanceof RunDivergence ||
+          e instanceof ScopeBranchMissing ||
+          e instanceof UnwalkableScope;
+        // JavaScript's completion semantics, which the one-`try` shape this replaced could not
+        // express (measured: `try { return 1; } finally { return 2; }` returned 1): the finalizer
+        // always runs for ordinary completions, and an ABRUPT finalizer completion — a return, a
+        // break, a throw — replaces whatever the try or catch had decided.
+        let completion: Completion = NORMAL;
+        let pendingThrow: unknown;
+        let hasThrow = false;
         try {
-          const c = await this.execute(node.block as AnyNode, env, frame);
-          if (c.type !== "normal") return c;
+          completion = await this.execute(node.block as AnyNode, env, frame);
         } catch (e) {
-          // A cancellation is not a program error: it is the scope being unwound, and a catch
-          // block must not be able to swallow it and keep working in a branch that lost a race.
-          if (e instanceof Cancelled) throw e;
+          if (uncatchable(e)) throw e;
           const handlerNode = node.handler as AnyNode | null;
-          if (handlerNode === null || handlerNode === undefined) throw e;
-          const catchEnv = new Env(env);
-          if (handlerNode.param !== null && handlerNode.param !== undefined) {
-            await this.bindPattern(handlerNode.param as AnyNode, toProgramError(e), catchEnv, frame, false);
-          }
-          const c = await this.executeBlock(handlerNode.body as AnyNode, catchEnv, frame);
-          if (c.type !== "normal") return c;
-        } finally {
-          if (node.finalizer !== null && node.finalizer !== undefined) {
-            await this.execute(node.finalizer as AnyNode, env, frame);
+          if (handlerNode === null || handlerNode === undefined) {
+            hasThrow = true;
+            pendingThrow = e;
+          } else {
+            try {
+              const catchEnv = new Env(env);
+              if (handlerNode.param !== null && handlerNode.param !== undefined) {
+                await this.bindPattern(handlerNode.param as AnyNode, toProgramError(e), catchEnv, frame, "const");
+              }
+              completion = await this.executeBlock(handlerNode.body as AnyNode, catchEnv, frame);
+            } catch (ce) {
+              if (uncatchable(ce)) throw ce;
+              hasThrow = true;
+              pendingThrow = ce;
+            }
           }
         }
-        return NORMAL;
+        if (node.finalizer !== null && node.finalizer !== undefined) {
+          // A throw inside the finalizer — its own, or an uncatchable — propagates from here,
+          // replacing any pending completion, exactly as JavaScript replaces it.
+          const f = await this.execute(node.finalizer as AnyNode, env, frame);
+          if (f.type !== "normal") return f;
+        }
+        if (hasThrow) throw pendingThrow;
+        return completion;
       }
       case "SwitchStatement": {
+        // JavaScript's selection: the case tests are tried in source order, the `default` clause's
+        // position is skipped during matching, and `default` is entered only when NO case matched.
+        // The one-pass walk this replaced treated `default` as an immediate match, so a `default`
+        // written above a matching case shadowed it (measured: `default` ran, `case 2` did not).
+        // Execution then falls through from the selected clause in source order, `default`
+        // included, exactly as JavaScript falls.
         const disc = await this.evaluate(node.discriminant as AnyNode, env, frame);
         const cases = node.cases as AnyNode[];
         const switchEnv = new Env(env);
-        let matched = false;
-        for (const c of cases) {
-          if (!matched) {
-            if (c.test === null || c.test === undefined) matched = true;
-            else if (Object.is(await this.evaluate(c.test as AnyNode, switchEnv, frame), disc)) matched = true;
+        let start = -1;
+        for (let i = 0; i < cases.length; i += 1) {
+          const c = cases[i] as AnyNode;
+          if (c.test === null || c.test === undefined) continue;
+          if ((await this.evaluate(c.test as AnyNode, switchEnv, frame)) === disc) {
+            start = i;
+            break;
           }
-          if (!matched) continue;
-          for (const s of (c.consequent as AnyNode[]) ?? []) {
+        }
+        if (start === -1) start = cases.findIndex((c) => (c as AnyNode).test === null || (c as AnyNode).test === undefined);
+        if (start === -1) return NORMAL;
+        for (let i = start; i < cases.length; i += 1) {
+          for (const s of ((cases[i] as AnyNode).consequent as AnyNode[]) ?? []) {
             const comp = await this.execute(s, switchEnv, frame);
             if (comp.type === "break") return NORMAL;
             if (comp.type !== "normal") return comp;
@@ -1104,45 +2379,154 @@ class Interpreter {
 
 // ---- helpers -------------------------------------------------------------------------------------
 
+/** The names a declaration's pattern introduces, for the dead-zone pre-pass. */
+function declaredNames(pattern: AnyNode): string[] {
+  const out: string[] = [];
+  const walk = (n: AnyNode | null | undefined): void => {
+    if (n === null || n === undefined) return;
+    switch (n.type) {
+      case "Identifier":
+        out.push(n.name as string);
+        return;
+      case "ObjectPattern":
+        for (const p of (n.properties as AnyNode[]) ?? []) walk((p.type === "RestElement" ? p.argument : p.value) as AnyNode);
+        return;
+      case "ArrayPattern":
+        for (const el of (n.elements as (AnyNode | null)[]) ?? []) walk(el);
+        return;
+      case "AssignmentPattern":
+        walk(n.left as AnyNode);
+        return;
+      case "RestElement":
+        walk(n.argument as AnyNode);
+        return;
+      default:
+        return;
+    }
+  };
+  walk(pattern);
+  return out;
+}
+
+/**
+ * The binary operators, with JavaScript's meaning ON PRIMITIVES. `"a" + 1`, `true + 1` and
+ * `null + 1` mean here exactly what they mean in JavaScript — primitive coercion is pure and
+ * deterministic. A record, an array or a function operand is refused (L4018), a declared
+ * difference: JavaScript would reach for the host's ToPrimitive machinery, which reads `valueOf`/
+ * `toString` off the value — own fields a program can set to its OWN closures. Measured before the
+ * refusal: `o + 1` invoked such a closure without an interpreter frame and crashed with a raw host
+ * TypeError, and without one it silently produced `"[object Object]1"`. `==` and `!=` never reach
+ * this function: the validator refuses them (L1025). `===`/`!==` compare identity and take any
+ * operands.
+ */
+/** Refuse a container or function where a primitive is needed: there is no implicit conversion. */
+function refuseCoercion(where: string, v: unknown): void {
+  if (v !== null && (typeof v === "object" || typeof v === "function")) {
+    const kind = typeof v === "function" ? "a function" : Array.isArray(v) ? "an array" : "a record";
+    throw new RuntimeFault(
+      "L4018",
+      `\`${where}\` cannot take ${kind}: there is no implicit conversion here, because converting would read \`valueOf\`/\`toString\` off the value — host machinery this language does not have. Convert explicitly: \`json.stringify(value)\` for text, or read the field you mean.`,
+    );
+  }
+}
+
 function applyBinary(op: string, l: unknown, r: unknown): unknown {
+  const a = l as number;
+  const b = r as number;
   switch (op) {
     case "===":
-      return Object.is(l, r) || l === r;
+      return l === r;
     case "!==":
-      return !(l === r);
+      return l !== r;
+    default:
+      break;
+  }
+  refuseCoercion(op, l);
+  refuseCoercion(op, r);
+  switch (op) {
     case "<":
-      return (l as number) < (r as number);
+      return a < b;
     case "<=":
-      return (l as number) <= (r as number);
+      return a <= b;
     case ">":
-      return (l as number) > (r as number);
+      return a > b;
     case ">=":
-      return (l as number) >= (r as number);
+      return a >= b;
     case "+":
-      return typeof l === "string" || typeof r === "string"
-        ? String(l) + String(r)
-        : (l as number) + (r as number);
+      return a + b;
     case "-":
-      return (l as number) - (r as number);
+      return a - b;
     case "*":
-      return (l as number) * (r as number);
+      return a * b;
     case "/":
-      return (l as number) / (r as number);
+      return a / b;
     case "%":
-      return (l as number) % (r as number);
+      return a % b;
+    case "**":
+      return a ** b;
+    case "&":
+      return a & b;
+    case "|":
+      return a | b;
+    case "^":
+      return a ^ b;
+    case "<<":
+      return a << b;
+    case ">>":
+      return a >> b;
+    case ">>>":
+      return a >>> b;
     default:
       throw new RuntimeFault("L1000", `unsupported operator ${op}`);
   }
 }
 
-/** What a `catch` block sees: a plain record, because programs branch on data, not on classes. */
-function toProgramError(e: unknown): Record<string, unknown> {
+/** A canonical array index (`"0"`, `"12"`), as a number, or nothing. */
+function arrayIndex(prop: string): number | undefined {
+  if (!/^(0|[1-9][0-9]*)$/.test(prop)) return undefined;
+  const n = Number(prop);
+  return n <= 4294967294 ? n : undefined;
+}
+
+/** The names a binding pattern introduces. */
+function collectNames(pattern: AnyNode, out: string[]): void {
+  switch (pattern.type) {
+    case "Identifier":
+      out.push(pattern.name as string);
+      return;
+    case "AssignmentPattern":
+      collectNames(pattern.left as AnyNode, out);
+      return;
+    case "RestElement":
+      collectNames(pattern.argument as AnyNode, out);
+      return;
+    case "ObjectPattern":
+      for (const p of pattern.properties as AnyNode[]) collectNames((p.type === "RestElement" ? p.argument : p.value) as AnyNode, out);
+      return;
+    case "ArrayPattern":
+      for (const el of pattern.elements as (AnyNode | null)[]) if (el !== null && el !== undefined) collectNames(el, out);
+      return;
+    default:
+      return;
+  }
+}
+
+/** The optional-chain short-circuit. Private to `evaluate`; see the `ChainExpression` case. */
+const SHORT_CIRCUIT: unique symbol = Symbol("cotal-lang short circuit");
+
+/**
+ * What a `catch` block sees. A failure the RUNTIME raised (an effect's error, an interpreter fault)
+ * arrives as a plain record carrying its code, because programs branch on data, not on classes; a
+ * value the PROGRAM threw arrives as itself, whatever it is, exactly as JavaScript delivers it. A
+ * program cannot construct an `Error`, so anything that is one came from the runtime or the host.
+ */
+function toProgramError(e: unknown): unknown {
   if (e instanceof EffectError) {
     return deepFreeze({ code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) });
   }
   if (e instanceof RuntimeFault) return deepFreeze({ code: e.code, kind: "runtime", message: e.message });
-  if (e !== null && typeof e === "object") return e as Record<string, unknown>;
-  return deepFreeze({ code: "L4000", kind: "thrown", message: String(e) });
+  if (e instanceof Error) return deepFreeze({ code: "L4000", kind: "host", message: e.message });
+  return e;
 }
 
 // ---- the public entry point -------------------------------------------------------------------------
@@ -1155,18 +2539,45 @@ function toProgramError(e: unknown): Record<string, unknown> {
  */
 export async function run(source: string, options: RunOptions): Promise<RunResult> {
   const { ast } = validate(source, options.file);
-  const programHash = digest({ source });
-  const interp = new Interpreter(ast as AnyNode, options, programHash);
+  const programHash = programHashOf(source);
+  // A resume is handed the pins the run STARTED under and binds to them; a fresh run resolves them
+  // once, here, and hands them back for the run record.
+  //
+  // AND A RESUME MAY NOT DECLINE TO SAY WHICH RUN IT IS RESUMING. Re-resolving the pins for a run
+  // handed history but none is not a smaller version of the right behaviour: it is a different run
+  // wearing the same journal. The clock moves to the RESUMING host and the seed falls back to the
+  // runId default, so both the logical epoch and every pure draw change, and nothing refuses,
+  // because nothing can. Pure draws are not journalled and the epoch is not a recorded fact, so
+  // there is no divergence for the replay to catch.
+  //
+  // A journal with NO entries is a different thing and stays allowed: that is a FRESH run being
+  // handed a journal for its store, not a resume.
+  if (options.pins === undefined && options.journal !== undefined && options.journal.entries().length > 0) {
+    throw new RuntimeFault(
+      "L5021",
+      `run ${options.runId} was handed a journal with ${options.journal.entries().length} recorded step(s) but no pins. The pins are what decide `
+        + `the run's logical epoch and its seed, so resolving them again here would make this a different run against a journal that was not `
+        + `written for it — silently, because neither the clock nor a pure draw is a recorded fact the replay could diverge on.\n\n`
+        + `Options\n  pass the pins from the run record\n  start a fresh run instead of resuming this journal`,
+    );
+  }
+  const pins =
+    options.pins !== undefined ? bindPins(options.pins, options) : resolvePins(options, options.handler.now());
+  const interp = new Interpreter(ast as AnyNode, options, programHash, pins);
 
-  const frame = new Frame(new KeyScope(), new RunClock(options.handler.now()), new Signal());
+  // The run clock starts at the run's LOGICAL epoch, not at this host's clock: a run resumed on
+  // another machine hours later must see the same `now()` before its first effect as the run that
+  // wrote the journal, or the branch it takes is a property of when it was resumed.
+  const frame = new Frame(new KeyScope(), new RunClock(pins.startedAt), new Signal());
   const env = new Env(null);
-  installGlobals(env, interp, frame);
+  installGlobals(env, interp);
 
   const completion = await interp.executeBlock(ast as AnyNode, env, frame);
   return {
     value: completion.type === "return" ? completion.value : undefined,
     journal: interp.journal,
     programHash,
+    pins,
     steps: interp.stepCount,
   };
 }
@@ -1181,151 +2592,49 @@ export async function resume(
   return await run(source, { ...options, journal });
 }
 
-function installGlobals(env: Env, interp: Interpreter, rootFrame: Frame): void {
+function installGlobals(env: Env, interp: Interpreter): void {
   const fn =
     (impl: (frame: Frame, args: unknown[]) => unknown) =>
     async (frame: Frame, args: unknown[]): Promise<unknown> =>
       impl(frame, args);
 
+  // The value names. `undefined` is a value the runtime produces, so a program can name it.
+  for (const name of VALUE_NAMES) env.declare(name, undefined, false);
+
   // Pure primitives: a channel name is a name, so naming one costs nothing and journals nothing.
-  env.declare("channel", fn((_f, a) => ({ channel: a[0] as string })), false);
-  env.declare("run", fn(() => ({ id: interp.options.runId, programHash: interp.programHash })), false);
+  // Handles are opaque frozen records the runtime mints (design §4).
+  env.declare("channel", fn((_f, a) => deepFreeze({ channel: a[0] as string })), false);
+  env.declare(
+    "run",
+    fn(() => deepFreeze({ id: interp.options.runId, programHash: interp.programHash, startedAt: interp.pins.startedAt })),
+    false,
+  );
 
   // Event constructors are pure descriptors; awaiting them is `wait`.
-  env.declare("replied", fn((_f, a) => ({ event: "replied", agent: (a[0] as AgentHandleValue).agent })), false);
+  env.declare("replied", fn((_f, a) => deepFreeze({ event: "replied", agent: (a[0] as AgentHandleValue).agent })), false);
   env.declare(
     "message",
     fn((_f, a) => {
       const ch = (a[0] as ChannelHandleValue).channel;
       const opts = (a[1] ?? {}) as Record<string, unknown>;
-      return {
+      return deepFreeze({
         event: "message",
         channel: ch,
         ...(opts.from !== undefined ? { from: (opts.from as AgentHandleValue).agent } : {}),
         ...(opts.matches !== undefined ? { matches: opts.matches as string } : {}),
-      };
+      });
     }),
     false,
   );
-  env.declare("idle", fn((_f, a) => ({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })), false);
-  env.declare("down", fn((_f, a) => ({ event: "down", agent: (a[0] as AgentHandleValue).agent })), false);
+  env.declare(
+    "idle",
+    fn((_f, a) => deepFreeze({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })),
+    false,
+  );
+  env.declare("down", fn((_f, a) => deepFreeze({ event: "down", agent: (a[0] as AgentHandleValue).agent })), false);
 
-  // Time and randomness, tamed. `now()` reads the branch's own run clock, which is the maximum
-  // endedAt over the effects this point actually awaited: time advances at effect boundaries as a
-  // property of the design rather than a rule anyone has to follow.
-  env.declare("now", fn((frame) => frame.clock.now()), false);
-  env.declare("random", fn((frame) => interp.prng.next(frame.keys.path)), false);
-  env.declare("randomInt", fn((frame, a) => Math.floor(interp.prng.next(frame.keys.path) * (a[0] as number))), false);
-  env.declare(
-    "pick",
-    fn((frame, a) => {
-      const list = a[0] as unknown[];
-      return list[Math.floor(interp.prng.next(frame.keys.path) * list.length)];
-    }),
-    false,
-  );
-  env.declare("duration", fn((_f, a) => parseDuration(a[0] as string)), false);
-
-  // Records and arrays. Iteration order is insertion order, which is deterministic; sorting for
-  // a hash is a separate concern and happens in canonicalization, not here.
-  env.declare("keys", fn((_f, a) => Object.keys(a[0] as object)), false);
-  env.declare("values", fn((_f, a) => Object.values(a[0] as object)), false);
-  env.declare("entries", fn((_f, a) => Object.entries(a[0] as object)), false);
-  env.declare("has", fn((_f, a) => Object.prototype.hasOwnProperty.call(a[0] as object, a[1] as string)), false);
-  env.declare("merge", fn((_f, a) => ({ ...(a[0] as object), ...(a[1] as object) })), false);
-  env.declare("len", fn((_f, a) => (a[0] as { length: number }).length), false);
-  env.declare("range", fn((_f, a) => Array.from({ length: a[0] as number }, (_, i) => i)), false);
-  env.declare("sum", fn((_f, a) => (a[0] as number[]).reduce((x, y) => x + y, 0)), false);
-  env.declare("concat", fn((_f, a) => (a[0] as unknown[]).concat(a[1] as unknown[])), false);
-  env.declare("slice", fn((_f, a) => (a[0] as unknown[]).slice(a[1] as number, a[2] as number | undefined)), false);
-  env.declare("reverse", fn((_f, a) => [...(a[0] as unknown[])].reverse()), false);
-  env.declare("unique", fn((_f, a) => [...new Set(a[0] as unknown[])]), false);
-  env.declare("join", fn((_f, a) => (a[0] as unknown[]).join(a[1] as string)), false);
-
-  // Higher-order builtins take an interpreter function, so they have to await it.
-  const higher =
-    (impl: (frame: Frame, list: unknown[], f: (frame: Frame, args: unknown[]) => Promise<unknown>) => Promise<unknown>) =>
-    async (frame: Frame, args: unknown[]): Promise<unknown> =>
-      await impl(frame, args[0] as unknown[], args[1] as (frame: Frame, args: unknown[]) => Promise<unknown>);
-
-  env.declare(
-    "map",
-    higher(async (frame, list, f) => {
-      const out: unknown[] = [];
-      for (let i = 0; i < list.length; i += 1) out.push(await f(frame, [list[i], i]));
-      return out;
-    }),
-    false,
-  );
-  env.declare(
-    "filter",
-    higher(async (frame, list, f) => {
-      const out: unknown[] = [];
-      for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) out.push(list[i]);
-      return out;
-    }),
-    false,
-  );
-  env.declare(
-    "find",
-    higher(async (frame, list, f) => {
-      for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return list[i];
-      return null;
-    }),
-    false,
-  );
-  env.declare(
-    "some",
-    higher(async (frame, list, f) => {
-      for (let i = 0; i < list.length; i += 1) if (await f(frame, [list[i], i])) return true;
-      return false;
-    }),
-    false,
-  );
-  env.declare(
-    "every",
-    higher(async (frame, list, f) => {
-      for (let i = 0; i < list.length; i += 1) if (!(await f(frame, [list[i], i]))) return false;
-      return true;
-    }),
-    false,
-  );
-
-  // Strings and numbers.
-  env.declare("split", fn((_f, a) => (a[0] as string).split(a[1] as string)), false);
-  env.declare("trim", fn((_f, a) => (a[0] as string).trim()), false);
-  env.declare("lower", fn((_f, a) => (a[0] as string).toLowerCase()), false);
-  env.declare("upper", fn((_f, a) => (a[0] as string).toUpperCase()), false);
-  env.declare("startsWith", fn((_f, a) => (a[0] as string).startsWith(a[1] as string)), false);
-  env.declare("endsWith", fn((_f, a) => (a[0] as string).endsWith(a[1] as string)), false);
-  env.declare("contains", fn((_f, a) => (a[0] as string).includes(a[1] as string)), false);
-  env.declare("replace", fn((_f, a) => (a[0] as string).split(a[1] as string).join(a[2] as string)), false);
-  env.declare("min", fn((_f, a) => Math.min(...(a as number[]))), false);
-  env.declare("max", fn((_f, a) => Math.max(...(a as number[]))), false);
-  env.declare("abs", fn((_f, a) => Math.abs(a[0] as number)), false);
-  env.declare("floor", fn((_f, a) => Math.floor(a[0] as number)), false);
-  env.declare("ceil", fn((_f, a) => Math.ceil(a[0] as number)), false);
-  env.declare("round", fn((_f, a) => Math.round(a[0] as number)), false);
-  env.declare("parseNumber", fn((_f, a) => Number(a[0] as string)), false);
-
-  env.declare(
-    "assert",
-    fn((_f, a) => {
-      if (!a[0]) throw new RuntimeFault("L4012", String(a[1] ?? "assertion failed"));
-      return null;
-    }),
-    false,
-  );
-  env.declare(
-    "log",
-    fn((frame, a) => {
-      interp.options.onLog?.({ scope: scopePathString(frame.keys.path), values: a });
-      return null;
-    }),
-    false,
-  );
-
-  void rootFrame;
+  // The builtin library (design §4), one table in library.ts.
+  for (const [name, value] of builtins(interp.libraryContext())) env.declare(name, value, false);
 }
 
 export { LangError, LangErrors };

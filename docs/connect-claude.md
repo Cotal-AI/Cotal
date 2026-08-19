@@ -179,6 +179,14 @@ Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, 
 connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
 `@mention` remains automatic and injects normally.
 
+A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
+receivable window (direct messages and role requests first, then channel traffic, replayed history
+last); whatever does not fit stays buffered, is named in the reply, and comes back on the next call.
+A message too large for one whole response is never consumed at all: it is named with its sender and
+size and left buffered, because clearing what cannot be delivered is the loss this bound exists to stop.
+That matters most on the path where it is easiest to lose mail: reconnecting brings a channel-history
+replay with it, so the largest payload and the least expendable message arrive in the same read.
+
 The local inbox is bounded. On pathological overflow it evicts pull-only items before automatic
 traffic. If the bounded live/durable classification guard also fills, the connector fails closed:
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
@@ -225,6 +233,10 @@ did: run boundaries per turn, assistant text, reasoning, and each tool call with
 its end, and its result. Not prose about the work, the work itself, in a vocabulary a program can
 read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
 with the plugin installed publishes nothing.
+
+Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
+make the stream safe to widen: anything a tool reads or prints, including a secret in a command line
+or in the contents of a file, reaches every reader of the channel.
 
 The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
 half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh

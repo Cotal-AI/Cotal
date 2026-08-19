@@ -23,6 +23,7 @@ import {
   createEndpointStreams, registerRecordKind, RECORD_KINDS,
   epjStreamName, epfStreamName, epeStreamName, eptReqStreamName, eptStreamName,
   eprStreamName, epwStreamName, epcStreamName, epAuthBucket, recordsBucket, recordsKvStreamName,
+  wfjStreamName, wfjSubject, runJournalConsumerConfig, runDriverJournalGrants,
   EPJ_DUPLICATE_WINDOW_MS,
   canonDurable, poolDurable, timerWriterDurable, recordWriterDurable, effectsDurable,
   decisionReaderDurable, goalReaderDurable, eventReaderDurable, recordReaderDurable,
@@ -66,6 +67,8 @@ c("stream names are the §13.12 forms",
   && eptStreamName(SPACE) === "EPT_epbind" && eprStreamName(SPACE) === "EPR_epbind"
   && epwStreamName(SPACE) === "EPW_epbind" && epcStreamName(SPACE) === "EPC_epbind"
   && recordsBucket(SPACE) === "cotal_records_epbind" && epAuthBucket(SPACE) === "cotal_auth_epbind");
+c("the step-journal stream is named outside the ep* plane letters, because it is a runtime layer, not the §13 control surface",
+  wfjStreamName(SPACE) === "WFJ_epbind");
 c("the §13.9 consumer-name grammar builds its documented forms",
   canonDurable("manager") === "canon_manager"
   && poolDurable("manager", "builds") === "pool_manager_builds"
@@ -267,6 +270,62 @@ c("the canonicalizer POOL-ROUTE grants are exactly the matrix rows (enqueue publ
     "cotal.epbind.epw.manager.>",
     "$JS.API.STREAM.MSG.GET.EPW_epbind",
   ]));
+// ── the run driver's journal rows (per RUN, never per space) ──
+c("a run's journal subject is the RUN, not the entry: one appender, one fence coordinate",
+  wfjSubject(SPACE, "r-1") === "cotal.epbind.wfj.r-1");
+c("and a runId that is not an id token is refused rather than tokenized into someone else's subject",
+  (() => { try { wfjSubject(SPACE, "r/1"); return false; } catch { return true; } })());
+c("the run-driver journal grants are the run's own subject and ONE takeover's replay durable, create through DELETE",
+  JSON.stringify(runDriverJournalGrants(SPACE, "r-1", "tk1")) === JSON.stringify([
+    "cotal.epbind.wfj.r-1",
+    "$JS.API.CONSUMER.CREATE.WFJ_epbind.wfj_r-1_tk1.cotal.epbind.wfj.r-1",
+    "$JS.API.CONSUMER.INFO.WFJ_epbind.wfj_r-1_tk1",
+    "$JS.API.CONSUMER.MSG.NEXT.WFJ_epbind.wfj_r-1_tk1",
+    "$JS.ACK.WFJ_epbind.wfj_r-1_tk1.>",
+    "$JS.API.CONSUMER.DELETE.WFJ_epbind.wfj_r-1_tk1",
+  ]), runDriverJournalGrants(SPACE, "r-1", "tk1"));
+// The durable is per-TAKEOVER, and the takeover id is therefore part of the CREDENTIAL rather than
+// something the driver picks afterwards. A row like `wfj_r-1_*` reads as a family of names and is
+// not one: NATS expands `*` as a WHOLE dot-delimited token, so it is a literal string matching no
+// consumer any driver would create. The rows below are literals on purpose;
+// `run-journal-auth.smoke.ts` proves they work on a broker that actually enforces them, which is
+// the only place that difference is visible.
+c("no row carries a star inside a name token, which reads like a pattern and is a literal",
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !/[A-Za-z0-9_-]\*/.test(r)),
+  runDriverJournalGrants(SPACE, "r-1", "tk1"));
+c("the create row embeds this run's subject as the filter, so the consumer is pinned to it (§13.9)",
+  runDriverJournalGrants(SPACE, "r-1", "tk1")
+    .filter((r) => r.includes(".CONSUMER.CREATE."))
+    .every((r) => r.endsWith(".cotal.epbind.wfj.r-1")));
+c("and no row is a bare star over every consumer on the stream",
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !r.includes(".WFJ_epbind.*")));
+c("two takeovers of the same run get DISJOINT consumer rows: neither can bind or delete the other's",
+  runDriverJournalGrants(SPACE, "r-1", "tk1")
+    .filter((r) => r.includes("CONSUMER") || r.includes("$JS.ACK"))
+    .every((r) => !runDriverJournalGrants(SPACE, "r-1", "tk2").includes(r)));
+c("a takeover id that is not an id token is refused rather than tokenized into a broader grant",
+  (() => { try { runDriverJournalGrants(SPACE, "r-1", "tk*"); return false; } catch { return true; } })());
+// The barrier's expectation is the last sequence the driver REPLAYED, so it needs no read of the
+// subject's current one — and granting that read would invite exactly the read-then-publish shape
+// the barrier exists to remove.
+c("and no row reads the stream's state: the expectation comes from the replay, never from a fresh read",
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !r.includes("STREAM.INFO") && !r.includes("STREAM.MSG.GET")),
+  runDriverJournalGrants(SPACE, "r-1", "tk1"));
+// The confinement that matters. A driver holding `wfj.>` could append to ANOTHER run's journal,
+// which is not a read leak but a corruption: that run would replay a step it never took. And the
+// activation barrier assumes one authoritative appender per run subject, which a cross-run grant
+// simply is not.
+c("no run-driver row reaches another run, and no SUBJECT row is a wildcard",
+  runDriverJournalGrants(SPACE, "r-1", "tk1").every((r) => !r.includes("wfj.>") && !r.includes("wfj.*")
+    && (!r.startsWith("cotal.") || r === "cotal.epbind.wfj.r-1")),
+  runDriverJournalGrants(SPACE, "r-1", "tk1"));
+c("the replay durable is filtered to ONE run: a journal entry carries what an agent said",
+  runJournalConsumerConfig(SPACE, "r-1", "t1").filter_subject === "cotal.epbind.wfj.r-1");
+c("and every takeover names its OWN durable, so two contenders cannot inherit or delete each other's",
+  runJournalConsumerConfig(SPACE, "r-1", "t1").durable_name === "wfj_r-1_t1"
+  && runJournalConsumerConfig(SPACE, "r-1", "t2").durable_name === "wfj_r-1_t2");
+c("a takeover token that is not an id token is refused rather than tokenized into a broader name",
+  (() => { try { runJournalConsumerConfig(SPACE, "r-1", "t*"); return false; } catch { return true; } })());
 c("the EPW leader read is TRUSTED-CANONICALIZER-ONLY: no pool-owner, effects, or EPJ fragment carries it",
   [...poolOwnerBindGrants(SPACE, "manager", "builds"), ...effectsBindGrants(SPACE, "manager"), ...canonicalizerGrants(SPACE, "manager")]
     .every((r) => !r.includes("STREAM.MSG.GET")));
@@ -605,6 +664,17 @@ try {
     try { await jsm.streams.purge(epcStreamName(SPACE)); purged = true; } catch { /* refused by the broker — the probe's expectation */ }
     c("a purge against EPC is refused BY THE BROKER (permanence is not configured-by-omission)", !purged);
   }
+  const wfj = await cfg(wfjStreamName(SPACE));
+  // Both of these are load-bearing rather than tidy. A max_age would evict a sleeping run's journal
+  // prefix, and an evicted prefix is not a shorter journal — it is a run that re-performs effects it
+  // already performed. And Direct Get is follower-servable, so a resume reading its predecessor's
+  // last appends through it could get a stale miss, which reads as "this step never ran".
+  c("WFJ has no age eviction: a run that sleeps for a month still resumes by re-reading its journal",
+    wfj.max_age === 0, wfj.max_age);
+  c("WFJ has NO Direct Get, so a resume cannot read a follower's stale view of its own prefix",
+    wfj.allow_direct === false);
+  c("WFJ captures one subject per run, not one per entry (a choice: per-entry subjects CAN be fenced)",
+    JSON.stringify(wfj.subjects) === JSON.stringify([`cotal.${SPACE}.wfj.*`]), wfj.subjects);
   c("records KV serves Direct Get", (await cfg(`KV_${recordsBucket(SPACE)}`)).allow_direct === true);
   const auth = await cfg(`KV_${epAuthBucket(SPACE)}`);
   c("auth KV is leader-served ONLY (allow_direct=false; fences need read-your-writes)", auth.allow_direct === false);

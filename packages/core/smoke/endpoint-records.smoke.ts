@@ -13,7 +13,7 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import {
   isReachable, EpEnvelopeError,
-  RECORD_KINDS, LIFECYCLE_HEAD, registerRecordKind,
+  RECORD_KINDS, LIFECYCLE_HEAD, registerRecordKind, callerReadableRecordKind,
   recordSpecKey, recordStatusKey, recordAtomicKey, parseRecordKey,
   createRecordEntry, updateRecordEntry, assertStatusValue,
   readRecord, readAtomicRecord, watchRecord, openRecordsBucket,
@@ -45,6 +45,23 @@ c("lease key is the acceptance identity",
   recordSpecKey(RECORD_KINDS.lease, ["manager", "builds", "u_abc", "cli", UID, "req-9"]) === `lease.manager.builds.u_abc.cli.${UID}.req-9.spec`);
 c("the lifecycle head is one atomic key", recordAtomicKey(LIFECYCLE_HEAD, ["u_abc", "worker"]) === "lifecycle.u_abc.worker");
 c("a dotted endpoint tokenizes in the key", recordSpecKey(RECORD_KINDS.contracts, ["com.acme.deploy"]) === "contracts.com_acme_deploy.spec");
+// The WORKFLOW RUN record: the last-value-wins state beside the append-only step journal. The
+// journal says what happened; this says what the run IS — the lease holder, the state, and the pin
+// set resolved once at run start. Split, because the pins and the program hash are spec (they are
+// decided at start and never move) while the lease and the state are status (they move constantly),
+// and a single atomic key would make every lease renewal rewrite the pins.
+c("`run` is a CORE kind, not a registration: single-label names are core-reserved",
+  RECORD_KINDS.run?.kind === "run" && RECORD_KINDS.run.mediation === "mediated");
+// Asserted BEFORE the key cell, because an unsplit kind makes `recordSpecKey` throw and the suite
+// would die outside every assertion rather than reddening on the claim that was actually broken.
+c("and it is SPLIT, so a lease renewal does not rewrite the pins it sits beside",
+  RECORD_KINDS.run?.split === true);
+c("a run record keys by its hosting endpoint then its run id",
+  recordSpecKey(RECORD_KINDS.run, ["manager", "r-1"]) === "run.manager.r-1.spec"
+  && recordStatusKey(RECORD_KINDS.run, ["manager", "r-1"]) === "run.manager.r-1.status");
+c("and it is caller-readable, unlike the authority-control kinds", callerReadableRecordKind("run") === true);
+throws("a runId that is not an id token is refused rather than tokenized into another run's key",
+  () => recordSpecKey(RECORD_KINDS.run, ["manager", "r/1"]));
 throws("the head has no .spec key", () => recordSpecKey(LIFECYCLE_HEAD, ["u_abc", "worker"]));
 throws("a split kind has no atomic key", () => recordAtomicKey(RECORD_KINDS.svc, ["manager", IID]));
 throws("wrong qualifier arity throws", () => recordSpecKey(RECORD_KINDS.svc, ["manager"]));

@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -108,6 +108,17 @@ export const opencodeConnector: Connector = {
   requires: ["opencode"],
   supportsModelVariant: true,
   listModels: listOpenCodeModels,
+  // DECLARING THIS IS WHAT MAKES `--events` REACHABLE. Both the CLI and the manager refuse an armed
+  // launch whose connector does not implement it, before anything is provisioned, rather than mint a
+  // grant nothing will ever publish to. A connector that emits and does not say so here is refused
+  // at the door with its emitter complete and untouched.
+  //
+  // It is core's own derivation and is not re-derived here, so the channel the manager mints the
+  // grant for and the subject the session publishes to come from ONE function. A second derivation
+  // would be a second place the subject is decided, and the two would drift the first time either
+  // changed. It takes the PRINCIPAL: a display name is not an identity on this mesh, and a
+  // name-keyed channel would fuse two principals' streams onto one subject.
+  eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     // Resuming an existing session isn't wired for opencode: the connector runs `opencode serve` +
     // a plugin that CREATES its own session then attaches a TUI, so a fork must plumb into
@@ -141,6 +152,28 @@ export const opencodeConnector: Connector = {
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
+    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // publish grant on a channel is not a request to publish to it, so an agent file that can write
+    // `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by doing so.
+    // `COTAL_WORKSPACE_ROOT` rides with it because the emitter's write-ahead log has to live
+    // somewhere a LATER start will look, and there is no safe default: a log written under the
+    // launch cwd is invisible to the next start, which then reads an already-published thread as
+    // virgin and republishes sequences the stream has already seen. Sent only when events are on.
+    //
+    // This is deliberately NOT folded into `COTAL_OPENCODE_HOME` below, which falls back to the
+    // process cwd. That fallback is safe for a SQLite file and a pidfile, which only ever have to be
+    // found by the process that wrote them. It is not safe for the log, which exists to be found by
+    // a process that has not started yet.
+    if (opts.events === true) {
+      env.COTAL_EVENTS = "1";
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "opencode connector: events were requested but the launch carries no workspaceRoot, so the " +
+            "event write-ahead log has nowhere to live that a later start would look. Refusing rather " +
+            "than defaulting to the working directory.",
+        );
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;

@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/lang",
   "description": "cotal-lang: the restricted-JS workflow language. Parser and validator, the effect interface, the step journal, the interpreter, and the simulation handler. Depends on nothing else in the repo.",
-  "version": "0.23.0",
+  "version": "0.24.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -20,7 +20,7 @@
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json",
-    "test": "tsx smoke/grammar.smoke.ts && tsx smoke/keys.smoke.ts && tsx smoke/journal.smoke.ts && tsx smoke/sim.smoke.ts && tsx smoke/interpret.smoke.ts && tsx smoke/fuel.smoke.ts && tsx smoke/dryrun.smoke.ts && tsx smoke/examples.smoke.ts && tsx smoke/options.smoke.ts",
+    "test": "tsx smoke/grammar.smoke.ts && tsx smoke/keys.smoke.ts && tsx smoke/journal.smoke.ts && tsx smoke/pins.smoke.ts && tsx smoke/scopes.smoke.ts && tsx smoke/sim.smoke.ts && tsx smoke/interpret.smoke.ts && tsx smoke/fuel.smoke.ts && tsx smoke/dryrun.smoke.ts && tsx smoke/examples.smoke.ts && tsx smoke/options.smoke.ts && tsx smoke/notify-fact.smoke.ts && tsx smoke/migrate.smoke.ts && tsx smoke/semantics.smoke.ts && tsx smoke/surface.smoke.ts",
     "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
