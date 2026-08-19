@@ -21,6 +21,7 @@ import { Journal, type JournalEntry } from "../src/journal.js";
 import { resume as walkResume, run as walk } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { transform } from "../src/transform/index.js";
+import { validate } from "../src/grammar.js";
 
 let pass = 0;
 const failures: string[] = [];
@@ -140,6 +141,33 @@ log("rounds", rounds, r.status);`,
   ["an effect in a loop", 'for (const n of ["a", "b", "c"]) { await sleep("1m", { name: n }); } log(now());', {}],
   ["an effect with no name of its own", 'await sleep("1m"); await sleep("2m"); log(now());', {}],
   ["an effect inside a function, called twice", 'const step = async (n) => { await sleep("1m", { name: n }); return now(); }; log(await step("one"), await step("two"));', {}],
+  // EVERY EFFECT KIND THAT JOURNALS, because a step key carries the kind and a corpus of sleeps
+  // compares one row of the table. `notify` and `monitor` return nothing and still journal.
+  [
+    "ask, wait and a timed-out wait",
+    'const a = await spawn("one");\nconst answer = await ask(a, { name: "q", schema: { days: "number" } });\nconst got = await wait(replied(a), { name: "w", timeout: "5m" });\nconst missed = await wait(replied(a), { name: "w2", timeout: "5m" });\nlog(answer, got, missed);',
+    { asks: { q: { value: { days: 2 }, at: 0 } }, events: { w: { value: { ok: true }, at: 0 }, w2: { value: null, at: 0 } } },
+  ],
+  [
+    "notify and monitor, which journal and answer nothing",
+    'const a = await spawn("one");\nawait notify([a], { decision: "build", outcome: "blocked" });\nawait monitor([a], { name: "m" });\nlog("done");',
+    {},
+  ],
+  [
+    "a checkpoint that expires",
+    'const c = await checkpoint("go", "Go?", { timeout: "1m", onExpiry: "proceed" });\nlog(c.status);',
+    { checkpoints: { go: { status: "expired", at: 0 } } },
+  ],
+  [
+    "an effect the handler faults",
+    'try { const a = await spawn("one"); await turn(a, { name: "t" }); } catch (e) { log(e.code, e.kind); }',
+    { turns: { t: { status: "done", at: 0 } }, faults: [{ at: "turn:t#0", kind: "agent", code: "E_AGENT" }] },
+  ],
+  [
+    "effects before a refusal, so the journal is a prefix",
+    'const a = await spawn("one");\nawait sleep("1m", { name: "s" });\nconst o = {};\nlog(o + 1);',
+    {},
+  ],
   ["literals and names", 'const a = 1; const b = "t"; const c = true; const d = null; log(a, b, c, d);', {}],
   ["template interpolation", "const n = 2; log(`n=${n}!`);", {}],
   ["array and object literals", "const xs = [1, 2]; const o = { a: 1, b: xs }; log(o, xs);", {}],
@@ -255,6 +283,58 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
     });
   }
   console.log(`  (${DIVERGENT.length} declared divergence(s))`);
+}
+
+// ---- the step budget counts a different thing on each engine ------------------------------------
+
+{
+  // languageVersion 2's pin-unit change, held by measurement rather than by a sentence. `stepBudget`
+  // bounds ONE WALK and is not journalled, so the walker counts its own dispatches while the engine
+  // counts transformed-site hits — the same program, two numbers, neither wrong. What must be true
+  // is that the difference NEVER REACHES THE JOURNAL, and that a budget between the two numbers is a
+  // divergence that is declared rather than discovered.
+  const source = "let n = 0; while (n < 20) { n = n + 1; } log(n);";
+  const both = async (stepBudget?: number) => {
+    const out: { steps: number; error: string | null; entries: number; logs: unknown[][] }[] = [];
+    for (const kind of ["walker", "engine"] as const) {
+      const logs: unknown[][] = [];
+      const options = {
+        runId: "b",
+        handler: new SimHandler({}),
+        journal: new Journal({ run: "b" }),
+        seed: SEED,
+        startedAt: AT,
+        onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]),
+        ...(stepBudget !== undefined ? { stepBudget } : {}),
+      };
+      try {
+        const r = kind === "walker" ? await walk(source, options) : await runOnEngine(source, transform(source).module, { ...options, evaluate });
+        out.push({ steps: r.steps, error: null, entries: r.journal.entries().length, logs });
+      } catch (e) {
+        out.push({ steps: -1, error: (e as { code?: string }).code ?? "?", entries: 0, logs });
+      }
+    }
+    return out as [(typeof out)[0], (typeof out)[0]];
+  };
+
+  const [w, e] = await both();
+  ok("both engines finish the program at the default budget", w.error === null && e.error === null, { walker: w.error, engine: e.error });
+  ok("and the unit difference does not reach the journal or the log", j(w.logs) === j(e.logs) && w.entries === e.entries, {
+    logs: [w.logs, e.logs],
+    entries: [w.entries, e.entries],
+  });
+  ok("the two engines charge the same program different numbers of steps", w.steps !== e.steps, { walker: w.steps, engine: e.steps });
+  console.log(`  (the same program: ${w.steps} walker dispatches, ${e.steps} transformed-site hits)`);
+
+  // A budget strictly between the two counts. Declared, and pinned to BOTH answers: if the units
+  // ever converge this cell reds and the divergence is retired rather than remembered.
+  const between = Math.floor((Math.min(w.steps, e.steps) + Math.max(w.steps, e.steps)) / 2);
+  const [wb, eb] = await both(between);
+  ok("declared divergence: a budget between the two counts refuses on one engine and not the other", wb.error === "L4013" && eb.error === null, {
+    budget: between,
+    walker: wb.error,
+    engine: eb.error ?? `finished in ${eb.steps}`,
+  });
 }
 
 // ---- what the engine cannot run yet --------------------------------------------------------------
@@ -404,6 +484,35 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     }
   }
   console.log(`  (${crossings} journal crossings, each resumed against a handler that refuses every dispatch)`);
+}
+
+// ---- every program in every list is a program, and does something -------------------------------
+
+{
+  // AN INVALID PROGRAM AGREES PERFECTLY ON BOTH ARMS. Two of these were caught this way: `ask` takes
+  // its options as the SECOND argument and a `notify` fact is a bounded decision record, so two
+  // corpus entries were refused by the validator identically on the walker and on the engine, and
+  // their cells were green over nothing. The validator is the corpus's own gate now.
+  const every = [...CORPUS, ...DIVERGENT.map(([n, src, sc]) => [n, src, sc] as const), ...HELD.map(([n, src, sc]) => [n, src, sc] as const), ...RESUMABLE];
+  const invalid: string[] = [];
+  for (const [name, source] of every) {
+    try {
+      validate(source);
+    } catch (e) {
+      invalid.push(`${name}: ${((e as { errors?: { code: string }[] }).errors ?? []).map((x) => x.code).join(",") || String(e).slice(0, 60)}`);
+    }
+  }
+  ok("every program in every list is one the validator admits", invalid.length === 0, invalid);
+  console.log(`  (${every.length} programs validated across the corpus, the divergences, the holds and the crossings)`);
+
+  // AND EACH ONE IS OBSERVABLE. A program that logs nothing, journals nothing and refuses nothing
+  // compares equal for the same reason an invalid one does.
+  const silent: string[] = [];
+  for (const [name, source, script] of CORPUS) {
+    const w = await arm("walker", source, script);
+    if (w.logs.length === 0 && w.entries.length === 0 && w.error === null) silent.push(name);
+  }
+  ok("every corpus program logs, journals or refuses something", silent.length === 0, silent);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);
