@@ -85,6 +85,15 @@
       "expectRed": "the committed declaration is what the compiler emits from the module",
       "cell": "the committed declaration is what the compiler emits from the module",
       "note": "The generator's OWN configuration is a boundary, and an instrument does not verify its own boundary, so the boundary gets a mutant. An earlier version of this generator hand listed target ESNext while the consumers are checked at target ES2022 and lib ES2023. Under that pairing this exact line emitted PromiseWithResolvers<any>, the repository's skipLibCheck let a consumer swallow the unresolved type as any, and a consumer could then be compiled green against operations the runtime does not have: the declaration certified a lie and the suite stayed at 21 passed. The generator now reads the root tsconfig.json, the project that actually typechecks those consumers, so the same line fails loud instead: Property 'withResolvers' does not exist on type 'PromiseConstructor'. This mutation is what stops a future edit from restating the options and reopening it."
+    },
+    {
+      "name": "the module's type checking is turned OFF, which every row above silently depends on",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "import { execFileSync } from \"node:child_process\";",
+      "replace": "// @ts-nocheck\nimport { execFileSync } from \"node:child_process\";",
+      "expectRed": "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
+      "cell": "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
+      "note": "Three rows above are killed by the module's JSDoc rather than by the emitted bytes, so they all rest on the module being checked, and until this row nothing mutated that. It could not: the check was asserted by reading `// @ts-check` off line 1, an anchor on it is prose, and smoke:mutation-fixtures refuses a find that spans a comment. The guard is now behavioural, so the anchor can be code. `// @ts-nocheck` above the import is still leading trivia and still disables the file, while `// @ts-check` stays on line 1 and the old read stayed GREEN through exactly this. Measured on this tree: the declaration cell stays GREEN here and only this cell reds, which is the point, since the drift rows are the ones this protects."
     }
   ]
 }
