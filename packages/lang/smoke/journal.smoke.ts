@@ -277,6 +277,46 @@ const H = (v: unknown) => digest(v);
   );
 }
 
+// ---- 3g) ...at every depth, because the path carries a run index per frame --------------------
+//
+// 3f varies the run of the OUTERMOST frame, which a lookup that normalised an INNER frame's `#n`
+// while leaving the outer one alone still satisfies. Scopes nest: a parallel inside a parallel
+// branch gives `/parallel:review#0/b:left/parallel:pair#N/b:l/turn:build#0`, and the two runs of
+// the inner block differ only at that inner index. This is the same hole one level down, so the
+// claim about the scope path is stated at every depth rather than only at the top.
+{
+  const j = new Journal({ run: "r-3g" });
+  const nested = (s: KeyScope) => {
+    const outer = s.nextScope("parallel", "review");
+    const branch = s.branch("parallel", "review", outer, "left");
+    const firstRun = branch.nextScope("parallel", "pair");
+    const secondRun = branch.nextScope("parallel", "pair");
+    return {
+      first: branch.branch("parallel", "pair", firstRun, "l").nextEffect("turn", "build"),
+      second: branch.branch("parallel", "pair", secondRun, "l").nextEffect("turn", "build"),
+    };
+  };
+  const keys = nested(new KeyScope());
+  const h = H({ agent: "builder" });
+  await j.begin(keys.first, h, 1000);
+  await j.settle(keys.first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.begin(keys.second, h, 1200);
+  await j.bind(keys.second, { goalId: "g-inner-second" });
+
+  const resumed = new Journal({ run: "r-3g", entries: j.entries() });
+  const keys2 = nested(new KeyScope());
+  const vFirst = resumed.lookup(keys2.first, h);
+  const vSecond = resumed.lookup(keys2.second, h);
+  const firstExternal = vFirst.verdict === "replay" ? vFirst.entry.external : "not replayable";
+  ok(
+    "the bind lands in the run of the INNER scope that asked for it, with the outer run identical on both rows",
+    vSecond.verdict === "pending"
+      && (vSecond.entry.external as { goalId?: string } | undefined)?.goalId === "g-inner-second"
+      && vFirst.verdict === "replay" && firstExternal === undefined,
+    JSON.stringify(resumed.entries().map((e) => ({ scope: e.scope, external: e.external }))),
+  );
+}
+
 // ---- 4) failures and cancellations replay as themselves ---------------------------------------
 
 {

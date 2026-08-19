@@ -76,6 +76,42 @@
       "expectRed": "each attempt records what it settled as, and the escalation records who it went to",
       "cell": "each attempt records what it settled as, and the escalation records who it went to",
       "note": "A record of an escalation with no recipient is the half that a future consumer would trust."
+    },
+    {
+      "name": "the bind normalises the run index of an INNER scope frame, so two runs of a nested block collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const flattenInner = (s: string): string => {\n      const cut = s.lastIndexOf(\"/\");\n      const parts = s.slice(0, cut).split(\"/\");\n      const carry = parts.map((part, i) => (/#\\d+$/.test(part) ? i : -1)).filter((i) => i >= 0);\n      if (carry.length >= 2) {\n        const last = carry[carry.length - 1];\n        parts[last] = parts[last].replace(/#\\d+$/, \"\");\n      }\n      return parts.join(\"/\") + s.slice(cut);\n    };\n    const hit = [...this.byKey.entries()].find(([kk]) => flattenInner(kk) === flattenInner(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the run of the INNER scope that asked for it, with the outer run identical on both rows",
+      "cell": "the bind lands in the run of the INNER scope that asked for it, with the outer run identical on both rows",
+      "note": "Only fires where the path is nested, so the outermost-run cell cannot see it: the claim about the scope path has to hold at every depth."
+    },
+    {
+      "name": "the RECOVERY arm says attempt 0 resolved when the only path to attempt 1 is its expiry",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "                  { attempt: 0, requestId: attemptId(0), settled: \"expired\" },\n",
+      "replace": "                  { attempt: 0, requestId: attemptId(0), settled: \"resolved\" },\n",
+      "expectRed": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "cell": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "note": "A different write site from the live chain: the resumed run is exactly when nobody is left to remember what happened."
+    },
+    {
+      "name": "the RECOVERY arm drops who the escalation went to",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "                  { attempt: ctx.attempt, requestId: ctx.requestId, to: cpTo ?? null, settled: raw.outcome },\n",
+      "replace": "                  { attempt: ctx.attempt, requestId: ctx.requestId, settled: raw.outcome },\n",
+      "expectRed": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "cell": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
+      "note": "The recipient was asserted on the live chain only, so dropping it on recovery stayed green."
+    },
+    {
+      "name": "the NON-ESCALATING record says expired whatever the checkpoint settled as",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "              return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: first.outcome }] };\n",
+      "replace": "              return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: \"expired\" }] };\n",
+      "expectRed": "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
+      "cell": "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
+      "note": "The most travelled of the three write sites and the one no cell read."
     }
   ]
 }

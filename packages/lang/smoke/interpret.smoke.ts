@@ -589,6 +589,30 @@ if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
   ok("editing onExpiry to fail makes the resume throw", (threw as { code?: string })?.code === "L4007", String(threw).slice(0, 60));
 }
 
+// ---- 14b) the record EVERY non-escalating checkpoint writes ------------------------------------
+//
+// Three sites write an `attempts` array: the live escalation, the recovery of an open hop, and this
+// one, which every checkpoint that does not escalate takes. An engineering review severed this
+// third site, writing `settled: "expired"` in place of the outcome, and all fifteen suites stayed
+// green, because the outcome was only ever read on the escalating chain. It is the most travelled
+// of the three and it was the unguarded one.
+{
+  const PLAIN = `
+const c = await checkpoint("gate", "ok?", { timeout: "1m" });
+log(c.status);
+`;
+  const r = await run(PLAIN, {
+    runId: "r-14b",
+    handler: new SimHandler({ checkpoints: { gate: { status: "resolved", value: true, by: "d" } }, clock: { start: 0 } }),
+  });
+  const rec = (r.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string; settled?: string; to?: string | null }[] })?.attempts ?? [];
+  ok(
+    "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
+    rec.length === 1 && rec[0]?.attempt === 0 && rec[0]?.settled === "resolved" && rec[0]?.to === undefined,
+    rec,
+  );
+}
+
 // ---- 15) escalation: one entry, two identities -------------------------------------------------
 
 /**
@@ -906,10 +930,20 @@ log(c.status);
     ok(`recovering an open hop that ${label} calls the handler exactly once`, seen.length === 1, seen);
     ok(`and submits under the RECORDED attempt-1 id`, seen[0] === id1, { saw: seen[0], expected: id1 });
 
-    const rec = (r.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string }[] })?.attempts ?? [];
+    const rec = (r.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string; settled?: string; to?: string | null }[] })?.attempts ?? [];
     ok(`and the recovered chain still records both attempts`, rec.length === 2, rec);
     ok(`and attempt 1 stays numbered 1 rather than being relabelled the first`, rec[1]?.attempt === 1 && rec[1]?.requestId === id1, rec);
     ok(`and attempt 0 keeps its own identity in the record`, rec[0]?.requestId === id0 && rec[0]?.requestId !== rec[1]?.requestId, rec);
+    // The RECOVERY arm writes its own attempts array, and it is a different write site from the live
+    // escalation the cell above section 16 reads. An engineering review severed this one, flipping
+    // attempt 0 to `resolved` and dropping attempt 1's recipient, and every suite stayed green: the
+    // outcome and the recipient were asserted on the live chain only. A resumed run is precisely
+    // when nobody is left to remember what happened, so the record has to carry it here too.
+    ok(
+      `and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to`,
+      rec[0]?.settled === "expired" && rec[1]?.settled === expected && rec[1]?.to === "david",
+      rec,
+    );
     ok(`and the program sees ${expected}`, logs[0] === expected, logs);
   }
 }
