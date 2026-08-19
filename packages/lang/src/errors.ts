@@ -158,6 +158,14 @@ export const CATALOG = {
   // engine whose version differs, where the repair is to run it on the engine that matches. Here
   // there is no such engine to name, so the repair is a different sentence and gets its own code.
   L5023: "No engine in this build serves this record's language version",
+  // Allocated from THIS FILE, same rule as the three above. A fact about a RECORD, so L5xxx: the
+  // entry's `external` is a value the language cannot express, which is different from the record
+  // disagreeing with the source (L5001) or with this build (L5023) — nothing here disagrees with
+  // anything, the field simply cannot be read back. Its write-side sibling is deliberately NOT a new
+  // code: a handler that binds such a value fails inside its own dispatch, where L4000 handler-fault
+  // already says exactly that, and a second name for one fact is the defect the L5017..L5020 note
+  // above was written about.
+  L5024: "A recorded binding has no canonical form",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",

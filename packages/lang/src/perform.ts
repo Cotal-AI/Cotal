@@ -156,7 +156,23 @@ export async function performEffect(
     requestId: reqId,
     attempt,
     ...(resume !== undefined ? { resume } : {}),
+    // THE THIRD PATH INTO AN ENTRY, and until this line the only one with no rule. The other two sit
+    // a few lines apart — the RESULT at the settle below, the ARGUMENTS in `dispatchPrimitive` — and
+    // a handler's own `ctx.bind` reached `journal.bind` with nothing in between. Measured before this
+    // line, on both engines: a handler binding `{ when: new Date(0), n: -0, bad: NaN, gone: undefined }`
+    // recorded all four, and the durable store gives them back as a string, `0`, `null` and an absent
+    // key — so the value a resume RE-BINDS to was not the value that was bound.
+    //
+    // CANONICAL, NOT ROUND-TRIP-EXACT, and the difference matters to whoever reads this next. `-0` is
+    // the one value this rule ADMITS that JSON still flattens, and the step key's own input hash
+    // equates it with `0` (`digest({n:-0}) === digest({n:0})`; the 1-vs-2 and -1-vs-1 controls
+    // differ). The promise here is that a binding HAS a canonical form, not that it survives a store
+    // byte for byte.
+    //
+    // Inside the handler's dispatch `try` by construction, so a refusal settles the entry FAILED
+    // through the existing L4000 handler-fault family and needs no code of its own.
     bind: async (external) => {
+      assertCrossable(external, `the binding of ${stepKeyString(key)}`);
       await host.journal.bind(key, external);
     },
   };
@@ -795,7 +811,13 @@ export async function performScope(
     requestId: reqId,
     attempt: recorded?.attempt ?? 0,
     ...(resume !== undefined ? { resume } : {}),
+    // BOTH WRAPPERS OR NEITHER — see {@link performEffect}'s bind for the rule and for why it is
+    // canonical rather than round-trip-exact. Guarding the effect path alone is the half-fence: that
+    // one is reached by everything (measured across the lang suites: 275 reaches, every one from the
+    // simulator's own binds) and THIS one was executed by nothing at all, in either direction, until
+    // the cell below it existed. A guard no run has executed is indistinguishable from a deleted one.
     bind: async (external) => {
+      assertCrossable(external, `the binding of ${stepKeyString(scopeKey)}`);
       await host.journal.bind(scopeKey, external);
     },
   };

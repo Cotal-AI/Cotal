@@ -12,7 +12,8 @@
  * miss that quietly re-runs the effect and lets two versions of the truth coexist.
  */
 
-import { deepFreeze } from "./values.js";
+import { NotCrossable, assertCrossable, deepFreeze } from "./values.js";
+import { RuntimeFault } from "./errors.js";
 import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 
@@ -228,6 +229,34 @@ export function journalEntryKeyString(entry: JournalEntry): string {
   return `${entry.scope}/${named}#${entry.occurrence}`;
 }
 
+/**
+ * L5024, raised at the door every loader comes through.
+ *
+ * A binding is the one recorded field that was written with no domain check on it, so a journal from
+ * before this rule — or from a store that is not this repo's — can carry an `external` the language
+ * cannot express. Refusing it here rather than where it is re-bound is the no-fallbacks reading: a
+ * corrupt entry that stays silent until a resume walks into it fails somewhere that cannot say why.
+ *
+ * WHICH DOOR CAN ACTUALLY FIRE, measured rather than assumed. The durable store encodes with
+ * `JSON.stringify`, and every value `JSON.parse` can produce is one this rule ADMITS — including
+ * `-0`, which survives `JSON.parse("-0")` even though `JSON.stringify` never writes it. So the
+ * driver's door is insurance against a future store and against a hand-written journal, and the
+ * WORKER's door is the one that can catch something today: `workerData` is a structured clone, which
+ * preserves `Date`, `NaN`, `-0`, an own `undefined` key and a `Map`.
+ */
+function bindingWithoutCanonicalForm(entry: JournalEntry, cause: NotCrossable): RuntimeFault {
+  const step = `${entry.scope}/${entry.name === "" ? entry.kind : `${entry.kind}:${entry.name}`}#${entry.occurrence}`;
+  return new RuntimeFault(
+    "L5024",
+    `A recorded binding has no canonical form\n\n  entry seq ${entry.seq}   ${entry.kind}   BINDING UNREADABLE\n`
+      + `        step      ${step}\n        cause     ${cause.message}\n\n`
+      + "`external` is what a resume re-binds the handler's own record to, so a value the language cannot express is one "
+      + "this run would hand back to the program as if it had been recorded. The entry cannot be read, and reading it as "
+      + `anything else would invent a fact.\n\nOptions\n  repair the entry at seq ${entry.seq} in the store, so its `
+      + `binding is a value an effect boundary can carry\n  fork(run, "${step}")   start again from before this step`,
+  );
+}
+
 export class Journal {
   readonly run: string;
   readonly readOnly: boolean;
@@ -259,6 +288,20 @@ export class Journal {
         throw new Error(`journal for run ${this.run} was seeded with an entry from run ${e.run}; a run resumes only from its own journal`);
       // The stored `scope` string is authoritative: it is what makes a journal readable back
       // without re-running the program that produced it.
+      // THE BINDING IS THE FIELD WITH NO WRITE-SIDE HISTORY. `result` crossed `assertCrossable` when
+      // it settled and the arguments crossed it when they dispatched; `external` reached the record
+      // through {@link Journal.bind} with nothing between it and the store until the guards in
+      // `performEffect` and `performScope`. Those fence every shipped caller — there are exactly two,
+      // both in perform.ts — but they fence it by ENUMERATION, and a record already written is behind
+      // them either way. This door is the one a loaded journal cannot go around.
+      if (e.external !== undefined) {
+        try {
+          assertCrossable(e.external, "the recorded binding");
+        } catch (cause) {
+          if (!(cause instanceof NotCrossable)) throw cause;
+          throw bindingWithoutCanonicalForm(e, cause);
+        }
+      }
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;
       // FROZEN ON THE WAY IN, because replay returns `entry.result` to the program as a value that
       // already crossed an effect boundary. The LIVE path freezes the result before it settles, but

@@ -1,0 +1,39 @@
+{
+  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "guard": "A recorded binding is a value and answers to the value rule: refused at BOTH write wrappers, and refused on LOAD by name (L5024). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-journal",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/bind-canonical.json",
+  "why": "Three assertions, three mutations, because the three fail in different directions. The two write wrappers are the half-fence case - guarding the effect path alone leaves the scope path open, and the scope path is the one nothing in the corpus executed until its cell existed (measured: 275 reaches of the effect wrapper across the lang suites, 0 of the scope one). The load scan is the third: it is the only one a journal written before this rule has to pass.",
+  "mutations": [
+    {
+      "name": "the effect wrapper records a binding again, with no domain check",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      assertCrossable(external, `the binding of ${stepKeyString(key)}`);\n      await host.journal.bind(key, external);",
+      "replace": "      await host.journal.bind(key, external);",
+      "expectRed": "a handler that binds a value with no canonical form is refused AT the bind",
+      "completionMarker": "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
+      "cell": "a handler that binds a value with no canonical form is refused AT the bind",
+      "note": "Without it a handler's ctx.bind reaches the record with nothing in between - the measured pre-fix behaviour, where a Date, a NaN, a -0 and an own `undefined` all recorded and came back from the store as a string, null, 0 and an absent key."
+    },
+    {
+      "name": "only the effect wrapper is guarded, and the scope wrapper is left open",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      assertCrossable(external, `the binding of ${stepKeyString(scopeKey)}`);\n      await host.journal.bind(scopeKey, external);",
+      "replace": "      await host.journal.bind(scopeKey, external);",
+      "expectRed": "the scope wrapper is guarded too, on a real conclave, and the refusal is recorded against the scope",
+      "completionMarker": "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
+      "cell": "the scope wrapper is guarded too, on a real conclave, and the refusal is recorded against the scope",
+      "note": "This is the half-fence mutation and it is the reason the scope cell exists at all. With zero corpus reaches of that wrapper before the cell, this mutant could only ever have come back SURVIVED - which reads as a broken config rather than as missing coverage."
+    },
+    {
+      "name": "a journal already carrying an unreadable binding loads anyway",
+      "file": "packages/lang/src/journal.ts",
+      "find": "          assertCrossable(e.external, \"the recorded binding\");",
+      "replace": "          void e.external;",
+      "expectRed": "a journal already carrying such a binding is refused ON LOAD, by name",
+      "completionMarker": "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
+      "cell": "a journal already carrying such a binding is refused ON LOAD, by name",
+      "note": "The write guards fence every SHIPPED caller - there are exactly two, both in perform.ts - but they fence by enumeration and a record written before this rule is behind them either way. This is the door such a record cannot go around."
+    }
+  ]
+}

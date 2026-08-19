@@ -549,6 +549,45 @@ try {
     noHook.status === "completed", why(noHook));
 }
 
+// ── 11) THE LOAD DOOR IS REACHED BY THIS DRIVER, WITH A BINDING ACTUALLY IN THE PREFIX ────────
+//
+// The language refuses a recorded binding with no canonical form (L5024) in the Journal
+// CONSTRUCTOR, and this driver builds one at `new Journal({ run, entries: resumed, store })`. The
+// lang suite's load cell hands that constructor a hand-built entry: once the write guards exist
+// nothing shipped can PRODUCE such an entry, so that cell proves the scan depends on the value and
+// cannot prove any entry point reaches it. This is the half that can — a real takeover, through
+// this driver, over a prefix that carries a binding.
+//
+// IT HAD TO BE A NEW PROGRAM. Every other run in this file only sleeps, and `sleep` binds nothing,
+// so a takeover of PROGRAM reaches the door with every `external` absent and the scan looks at
+// nothing at all. A spawn is what makes the simulator bind, so this one spawns first.
+{
+  const BOUND = `
+const a = await spawn("a");
+await sleep("1h", { name: "first" });
+`;
+  const fresh = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-bind", source: BOUND, lease: lease("b1", 1, takeovers += 1), handler: new CountingHandler(),
+  }));
+  c("the run that binds completes", fresh.status === "completed", why(fresh));
+
+  let prefix: readonly JournalEntry[] = [];
+  const taken = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-bind", source: BOUND, lease: lease("b2", 2, takeovers += 1), handler: new CountingHandler(),
+    onActivated: async (entries) => { prefix = entries; },
+  }));
+  // The completion IS the assertion about the door: the scan runs on the way in, so a takeover that
+  // completes is one whose recorded bindings were read and accepted. A refusal would have come back
+  // through `attempt` as a reason rather than a completion.
+  c("a takeover over a journal that carries a binding still loads and completes", taken.status === "completed", why(taken));
+  // AND THE PREFIX ACTUALLY CARRIED ONE, which is the part that keeps the cell above from being
+  // green for the same reason the sleep-only takeovers are: a door walked over nothing.
+  const bound = prefix.filter((e) => e.external !== undefined);
+  c("...over a prefix that really did carry one, so the scan looked at a value rather than at nothing",
+    bound.length > 0 && (bound[0]!.external as { simAgent?: string }).simAgent === "sim.a",
+    { entries: prefix.length, withBinding: bound.length, first: bound[0]?.external });
+}
+
 // ── 12) WHICH ENGINE RUNS THIS: the capability table, and the record it refuses ────────────────
 //
 // The driver hosts a SET of language versions, and that set is a fact about this build rather than
