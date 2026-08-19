@@ -262,15 +262,15 @@
     {
       "name": "C18 the phase recheck after session creation is dropped, so a drive that passed the guard and parked in the server round trip resumes after teardown and submits a turn the seat had already announced it would not start",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "      if (phaseClosed()) return;\n",
+      "find": "      if (phaseClosed()) {\n        pendingOverride = carried;\n        return;\n      }\n",
       "replace": "",
       "expectRed": "resume-seat: a drive already past the guard submitted no turn after teardown began"
     },
     {
       "name": "C19 the phase refusal consumes the batch on its way out, so a message refused mid-cutover is acked and never driven: refused becomes dropped",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    if (phaseClosed() || driving || busy) return;\n",
-      "replace": "    if (driving || busy) return;\n    if (phaseClosed()) { surfaced = agent.peekInbox(\"automatic\").map((i) => i.id); ackSurfaced(); return; }\n",
+      "find": "    if (phaseClosed() || driving || busy) {\n      if (override !== undefined) pendingOverride = override;\n      return;\n    }\n",
+      "replace": "    if (driving || busy) {\n      if (override !== undefined) pendingOverride = override;\n      return;\n    }\n    if (phaseClosed()) {\n      if (override !== undefined) pendingOverride = override;\n      surfaced = agent.peekInbox(\"automatic\").map((i) => i.id);\n      ackSurfaced();\n      return;\n    }\n",
       "expectRed": "carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed"
     },
     {

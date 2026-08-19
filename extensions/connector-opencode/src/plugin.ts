@@ -677,7 +677,7 @@ export const cotal: Plugin = async () => {
       const id = await ensureSession();
       if (!id) {
         pendingOverride = carried;
-        return; // no visible session yet — retry on the next event/wake
+        return; // no visible session yet, retry on the next event/wake
       }
       // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
       // creation is a server round trip, so a drive admitted while the seat was running can park
