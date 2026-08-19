@@ -235,6 +235,43 @@ async function within<T>(p: Promise<T>, until: Promise<typeof LATE>): Promise<T 
   return Promise.race([p, until]);
 }
 
+/** A request the CALLER got wrong, so the frame answers 400 rather than the 500 it gives a server
+ *  fault. Without this every malformed query reads, in the log and in the body, exactly like the
+ *  dashboard breaking. */
+export class BadRequest extends Error {}
+
+/** THE LIMIT, PARSED ONCE, because three routes each re-deriving
+ *  `query.get("limit") ? Number(...) : N` is how they came to disagree about the same parameter.
+ *
+ *  MEASURED ON THE SHIPPED ROUTES, against a real broker, before this existed:
+ *    ?limit=abc       `Number("abc")` is NaN and every comparison against NaN is false, so core's
+ *                     `limit <= 0` guard does not fire and the widening search's two exits can
+ *                     never be true. No answer after 30s, and the ABANDONED request kept consuming
+ *                     half a core with its caller long gone, invisible because the process keeps
+ *                     serving everything else.
+ *    ?limit=Infinity  passes the same guard, and `slice(-Infinity)` is the whole array: a channel's
+ *                     entire retained history from a one word request. `1e999` is the same value.
+ *    ?limit=2.5       silently truncated to 2.
+ *    ?limit=" 5"      accepted as 5, because `Number()` trims whitespace.
+ *
+ *  So the accepted form is the narrow one: a plain run of digits naming a safe integer. `0` keeps
+ *  meaning zero, which is what it already did and what a caller expects; an absent or empty
+ *  parameter keeps meaning the route's own default, the one shape the old parse got right.
+ *
+ *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
+ *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
+ *  asked for. */
+export function historyLimit(query: URLSearchParams, fallback: number): number {
+  const raw = query.get("limit");
+  if (raw === null || raw === "") return fallback;
+  if (!/^[0-9]+$/.test(raw))
+    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);
+  const n = Number(raw);
+  if (!Number.isSafeInteger(n))
+    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);
+  return n;
+}
+
 /** One aggregated page, and what it is missing. `partial` and the counts are ALWAYS present, so a
  *  page that ran out of time cannot be mistaken for a complete one by omission. The shape that made
  *  `{"error":"timeout"}` indistinguishable from data is exactly this mistake one layer up. */
@@ -572,7 +609,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       // fetched message is still at or above it, until none can extend above the cutoff. That is
       // worth doing, with a test encoding the counterexample above, and it is not this change.
       // Correctness first: fetch a full page per channel and merge.
-      const limit = query.get("limit") ? Number(query.get("limit")) : 200;
+      const limit = historyLimit(query, 200);
       const page = await activityBackfill(ep, limit);
       // A partial page is worth SAYING on the server too: the operator watching this log is the one
       // who can tell a slow link from a broken channel, and the browser's marker never reaches them.
@@ -588,7 +625,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       // produced nothing. Measured across a 160ms link it took 16.59s, which is a 200 nobody is still
       // waiting for. A named 503 at the deadline lets the browser keep the DM list it already has and
       // say it is stale, which is strictly more than a page that arrives after the reader gave up.
-      const limit = query.get("limit") ? Number(query.get("limit")) : 500;
+      const limit = historyLimit(query, 500);
       const clock = deadline(AGGREGATION_DEADLINE_MS);
       try {
         const dms = await within(ep.dmHistory({ limit }), clock.until);
@@ -601,8 +638,23 @@ export async function web(args: ParsedArgs): Promise<void> {
     }
     if (path.startsWith("/api/channels/") && path.endsWith("/history")) {
       const name = decodeURIComponent(path.slice("/api/channels/".length, -"/history".length));
-      const limit = query.get("limit") ? Number(query.get("limit")) : 200;
-      return json(res, await ep.channelHistory(name, { limit }));
+      const limit = historyLimit(query, 200);
+      // BOUNDED LIKE ITS SIBLINGS, and deliberately the SAME bound rather than a new one. This is
+      // one read of one channel, so like `/api/dms` it has no subset to serve when it runs long: a
+      // named 503 lets the open channel keep the messages it already has and say they are stale,
+      // which beats a page that arrives after the reader gave up. Measured on a modelled link
+      // before this existed: 11360ms here, on a link where `/api/dms` already refused at 8005ms.
+      // The console page re-reads this route on every poll, so an unbounded read here is one slow
+      // channel holding the view open indefinitely.
+      const clock = deadline(AGGREGATION_DEADLINE_MS);
+      try {
+        const page = await within(ep.channelHistory(name, { limit }), clock.until);
+        if (page === LATE)
+          return json(res, { error: `#${name}: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);
+        return json(res, page);
+      } finally {
+        clock.done();
+      }
     }
     // Delete a channel and its content. The only write path on this otherwise read-only
     // dashboard, so it's POST-gated and guarded by a confirm in the UI. Uses the manager cred
@@ -653,9 +705,12 @@ export async function web(args: ParsedArgs): Promise<void> {
   const httpServer = createServer((req, res) => {
     void handleRequest(req, res).catch((e: unknown) => {
       const why = e instanceof Error ? e.message : String(e);
-      console.error(c.red(`! ${req.method ?? "GET"} ${req.url ?? "/"} failed: ${why}`));
+      // A caller error and a server fault are different facts and must not share a status. Before
+      // this split, a malformed query read in the log exactly like the dashboard breaking.
+      const status = e instanceof BadRequest ? 400 : 500;
+      console.error(c[status === 400 ? "yellow" : "red"](`${status === 400 ? "~" : "!"} ${req.method ?? "GET"} ${req.url ?? "/"} ${status === 400 ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
-      res.writeHead(500, { "content-type": "application/json" });
+      res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
     });
   });

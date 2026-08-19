@@ -2190,6 +2190,19 @@ export class CotalEndpoint extends EventEmitter {
     before?: number,
   ): Promise<CotalMessage[]> {
     if (!this.nc) throw new Error("endpoint not started");
+    // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
+    // Every comparison against NaN is false, so `limit <= 0` does not fire for one, and neither of
+    // the widening loop's exits can ever be true either: `page.length >= NaN` is false forever and
+    // `start === 1` compares against a `start` that is itself NaN. The loop does not return
+    // everything, it never returns. Measured through the dashboard on a real broker: no answer
+    // after 30s, and the abandoned read still consuming half a core fifteen seconds after its
+    // caller had gone, while the process kept serving every other route so nothing announced it.
+    // `Infinity` reaches the other end of the same hole: it passes the guard, `start` collapses to
+    // 1, and `slice(-Infinity)` is the subject's whole retained set.
+    // A caller that computed a limit it cannot state is told so, rather than handed a process that
+    // quietly spins. `0` and negatives keep their existing meaning, an empty page.
+    if (!Number.isFinite(limit))
+      throw new Error(`history limit must be a finite number, received ${limit}`);
     if (limit <= 0) return [];
     const js = jetstream(this.nc);
     try {
