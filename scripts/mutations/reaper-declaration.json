@@ -75,7 +75,7 @@
       "replace": "export function reportReaped(label: string, result: ReapReport, onDone: () => void): void;",
       "expectRed": "the committed declaration is what the compiler emits from the module",
       "cell": "the committed declaration is what the compiler emits from the module",
-      "note": "The mirror direction, and the more dangerous one: it compiles a call the module cannot honour. The file carries a do-not-edit banner, and this is what makes the banner enforceable rather than advisory."
+      "note": "The mirror direction. The generated file carries a do-not-edit banner, and this is what makes that banner enforceable rather than advisory. What the edit buys is a declaration promising a parameter the module does not have: a `.ts` consumer writing reportReaped(cmd, after, done) compiles, and `done` is then silently dropped and never called. Nothing throws, exactly as nothing throws in the row above, so this row promises a silent wrong result and not a crash. The cell reads no shapes out of the declaration, so the hand edit is caught as bytes that are not what the compiler emits."
     },
     {
       "name": "the module uses a library feature BEYOND the consumers' lib, which a looser generator would emit as any",

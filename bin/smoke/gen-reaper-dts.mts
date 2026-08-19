@@ -30,7 +30,7 @@ import { dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
-const MODULE_PATH = fileURLToPath(new URL("./reap-smoke-brokers.mjs", import.meta.url));
+export const MODULE_PATH = fileURLToPath(new URL("./reap-smoke-brokers.mjs", import.meta.url));
 export const DECLARATION_PATH = fileURLToPath(new URL("./reap-smoke-brokers.d.mts", import.meta.url));
 
 const BANNER = `// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mjs. Do not edit: run \`pnpm gen:reaper-dts\`.

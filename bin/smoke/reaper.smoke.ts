@@ -20,13 +20,13 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
-import { DECLARATION_PATH, readCommittedDeclaration, renderReaperDeclaration } from "./gen-reaper-dts.mjs";
+import { DECLARATION_PATH, MODULE_PATH, readCommittedDeclaration, renderReaperDeclaration } from "./gen-reaper-dts.mjs";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -85,6 +85,25 @@ check(
     : committed === undefined
       ? `${DECLARATION_PATH} is missing; run \`pnpm gen:reaper-dts\``
       : `run \`pnpm gen:reaper-dts\`; first difference at byte ${[...emitted].findIndex((c, i) => committed[i] !== c)}`,
+);
+
+// That cell defends the module's JSDoc only while the module is CHECKED, and until this line nothing
+// kept it checked: the generator's options set `allowJs` and never set `checkJs`, so the entire type
+// path hangs on one comment on line 1 of the module. Measured on this tree. Delete `// @ts-check`
+// alone and the suite is 21 passed, 0 failed, a clean survivor. Delete it together with a `pid` that
+// drifts to a string, and the generator stops refusing (exit 0), the emitted declaration is byte
+// identical because those types are read from the JSDoc, and the cell above goes GREEN while the
+// module contradicts the declaration committed beside it. Two behavioural cells still red on that
+// particular drift, which is why the survivor is the pragma on its own and not the pair.
+//
+// No mutation row deletes it, and that is the fixtures rule rather than an omission: an anchor for
+// this one is a comment, and `pnpm smoke:mutation-fixtures` refuses a `find` that spans prose,
+// because a comment-only commit cannot announce that it disabled a guard. The read below is the
+// guard instead, and it is direct.
+check(
+  "the module still carries `// @ts-check`, so the emit refuses over a type error rather than guessing",
+  readFileSync(MODULE_PATH, "utf8").replace(/\r\n/g, "\n").startsWith("// @ts-check\n"),
+  `${MODULE_PATH} must open with \`// @ts-check\`; without it the compiler stops reading its JSDoc against its own implementation`,
 );
 
 const dirs: string[] = [];
