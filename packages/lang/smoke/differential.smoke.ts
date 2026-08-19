@@ -626,15 +626,14 @@ const reachedKinds = new Set<string>();
   // cell reds the day that boundary moves. (`surface.smoke` holds the boundary itself as L3041 and
   // L3042; this holds the consequence the journal comparison depends on.)
   //
-  // THE THIRD IS `external`, AND NOTHING GUARDS IT. `ctx.bind` reaches `Journal.bind`, which
-  // spreads the record into the entry with no crossing check — the only `assertCrossable` call
-  // sites in the package are the two above, the run's return value, and `json.stringify`. Measured
-  // rather than read: a handler that binds a `Date`, a `-0`, a NaN and an absent field puts all
-  // four into an entry ALIVE on both arms, where this comparison draws them as an ISO string, 0,
-  // null, and a key that is simply gone. It does not fire today because every shipped bind is
-  // JSON-faithful — four strings in `sim.ts`, one number in the mesh handler — so on this path the
-  // zero below is a statement about those five call sites rather than about a boundary, and this
-  // sweep is the only thing in the repo watching them.
+  // THE THIRD IS `external`, AND AS OF THE BIND GUARD IT IS GUARDED TOO. `ctx.bind` reaches
+  // `Journal.bind` through both wrappers in `perform.ts`, and a record that is not plain data is
+  // refused there — BEFORE the write, so a refused bind leaves the entry holding the last good one
+  // rather than the bad one sitting beside an error. It was not always so, and the way it stopped
+  // being so is recorded rather than forgotten: this file carried a tripwire pinned to a NaN still
+  // reaching an entry through that path, and that cell reding is what retired it. So the sweep
+  // below is no longer the only thing watching this path. It is a second and independent witness,
+  // which is what it should have been from the start.
   //
   // AND THIS IS THE ONE CELL HERE THAT IS NOT A COMPARISON, WHICH IS WHY IT IS NEEDED. Both arms
   // reach `Journal.bind` through the same two call sites in `perform.ts` — the engine has no bind
@@ -664,11 +663,11 @@ const reachedKinds = new Set<string>();
   });
   // AND THE SWEEP REACHES THE UNGUARDED FIELD, which the paragraph above claims and nothing else
   // asserts. `external` is reached here only because entries are swept WHOLE — strip it on the way
-  // in, the way one would to quiet a noisy diff, and the zero above survives while the one path
-  // with no crossing rule in front of it stops being watched at all.
+  // in, the way one would to quiet a noisy diff, and the zero above survives while the field that
+  // arrives by its own path stops being watched at all.
   const bound = entries.filter((e) => (e as { external?: unknown }).external !== undefined);
-  ok("and the corpus binds, so the sweep covers the one field no crossing rule guards", bound.length > 0, bound.length);
-  console.log(`  (${bound.length} of them carry a bound \`external\`, the field nothing checks on the way in)`);
+  ok("and the corpus binds, so the sweep covers the bound field and not only the effect's own values", bound.length > 0, bound.length);
+  console.log(`  (${bound.length} of them carry a bound \`external\`, the field that reaches an entry by its own path)`);
   console.log(`  (${identical} programs identical on both engines: ${completes} complete, ${identical - completes} refuse a declared code)`);
   console.log(`  (${entries.length} journal entries swept across both arms of all ${identical} programs, ${blind.length} carrying a value JSON cannot draw)`);
 }
@@ -739,76 +738,6 @@ const reachedKinds = new Set<string>();
   const flattened = jsonBlind(planted, "entry");
   ok("the sweep behind that premise finds everything a rendering flattens, nested where an entry would carry it", flattened.length === 12, flattened);
   ok("and finds nothing in an entry JSON draws faithfully", jsonBlind({ kind: "turn", key: "k", result: { a: 0, b: [1, "s", null], c: { d: true }, e: Object.create(null) as object } }, "entry").length === 0);
-}
-
-// ---- the one path into an entry that has no crossing rule, pinned so it cannot go stale quietly ----
-
-{
-  // A RESIDUAL, WRITTEN THE WAY THIS FILE WRITES A DIVERGENCE: pinned to the answer it gives TODAY,
-  // so the day it is fixed this cell reds and the sentences around it are corrected in the same
-  // change rather than left as folklore. Two cells above call `external` "the one field no crossing
-  // rule guards"; a guard at the bind seam is proposed and, when it lands, both of those sentences
-  // become false with nothing to say so. This is what says so.
-  //
-  // It asserts a DEFECT PERSISTS, which is only honest when the assertion names its own remedy: if
-  // this reds, the bind guard has landed — retire this block and rewrite the sentences it names, do
-  // not "fix" it by loosening the pin.
-  //
-  // AND THE REMEDY IS SPELLED OUT HERE RATHER THAN KEPT IN SOMEONE'S NOTES, because a repair that
-  // lives outside the tree is gone the day its author is. Four edits, and which of them the machine
-  // would catch was MEASURED on a copy at this commit rather than assumed:
-  //   1. delete this block. Miss it and two independent instruments red: `smoke:mutation-fixtures`
-  //      on a dead anchor, and this suite's own expectRed audit naming the orphaned mutation.
-  //   2. drop the mutation underneath this block's probe — that is the same dead anchor.
-  //   3. rename the cell ending "the one field no crossing rule guards" and follow it in the
-  //      mutation config. Miss the config half and the audit reds alone; fixtures stay green,
-  //      because no anchor happens to contain that name.
-  //   4. rewrite the three sentences that still say the path is unguarded: the paragraph heading the
-  //      entry sweep, the `console.log` detail beside the bind count, and the comment above that
-  //      cell. NOTHING CHECKS THESE — with the first three done and these three left stale the
-  //      suite is 206/206 green, 40 anchors, tsc clean, and the file simply lies.
-  // So a retirement cannot half-land, except in exactly the half that is prose. Which is the half
-  // that survives to be read.
-  class BindsUncrossable extends SimHandler {
-    override async spawn(req: Parameters<SimHandler["spawn"]>[0], ctx: Parameters<SimHandler["spawn"]>[1]) {
-      const handle = await super.spawn(req, ctx);
-      await ctx.bind({ n: Number.NaN });
-      return handle;
-    }
-  }
-
-  const externalOf = async (kind: "walker" | "engine"): Promise<unknown> => {
-    const source = 'const a = await spawn("one"); log(a.agent);';
-    const journal = new Journal({ run: "r" });
-    const options = { runId: "r", handler: new BindsUncrossable({}), journal, seed: SEED, startedAt: AT, onLog: () => {} };
-    try {
-      const r = kind === "walker" ? await walk(source, options) : await runOnEngine(source, transform(source).module, { ...options, evaluate });
-      const bound = r.journal.entries().find((e) => (e as { external?: unknown }).external !== undefined) as { external?: Record<string, unknown> } | undefined;
-      return bound?.external?.n;
-    } catch (e) {
-      return `refused ${(e as { code?: string }).code ?? (e as Error).message.slice(0, 40)}`;
-    }
-  };
-
-  // A RED HERE HAS THREE SHAPES AND ONLY ONE OF THEM IS THE GOOD NEWS, so the cell says which is
-  // which rather than leaving the next reader to infer it from two words. Measured on a prototype
-  // of the guard before it landed: the refusing shape is what a working guard looks like, and it
-  // refuses BEFORE the write — the entry keeps the earlier good bind and the bad one never lands.
-  const [wn, en] = [await externalOf("walker"), await externalOf("engine")];
-  const shapeOfRed =
-    typeof wn === "string" && typeof en === "string"
-      ? "the guard landed and refuses at the bind: retire this block by the four edits above, and do not stop at the three the machine would have caught"
-      : wn === undefined && en === undefined
-        ? "NOT the guard working: nothing carried the value at all. Either this probe stopped binding — check that first, it is the cheaper fault and it has its own mutation — or the bind DROPPED the value silently, which is worse than no guard. Either way, do not retire this block"
-        : "the two arms answered differently on a path they share, which neither a guard nor its absence explains. A finding: stop and measure before touching anything";
-  ok("a NaN still reaches a journal entry through `bind`, on both arms, because nothing checks that path", Number.isNaN(wn) && Number.isNaN(en), {
-    walker: String(wn),
-    engine: String(en),
-    ifThisRed: shapeOfRed,
-  });
-  // AND IT IS THE SHARED PATH RATHER THAN AN ENGINE DIVERGENCE, which is why the gate's own
-  // two-arm comparison can never be the thing that catches it: both arms answer the same.
-  ok("and both arms answer the same, so no comparison of the two could ever report it", j(wn) === j(en), { walker: String(wn), engine: String(en) });
 }
 
 // ---- what a ruling made different, on purpose ----------------------------------------------------
