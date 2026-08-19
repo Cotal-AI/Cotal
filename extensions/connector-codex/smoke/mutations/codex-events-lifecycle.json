@@ -58,14 +58,14 @@
       "expectRed": "restart-late:the successor thread PUBLISHES once its file appears"
     },
     {
-      "name": "L10 the bind's boundary is written into the log before the emitter starts, so a start that then fails leaves a resume behind and the next bind republishes what the seat did while it was cut off",
+      "name": "L9 the bind's boundary is written into the log before the emitter starts, so a start that then fails leaves a resume behind and the next bind republishes what the seat did while it was cut off",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });",
       "replace": "        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });\n        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);",
       "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
     },
     {
-      "name": "L11 the bind's boundary is substituted on EVERY read rather than only on a log with no cursor, so the stream restarts from it and republishes what it has already sent",
+      "name": "L10 the bind's boundary is substituted on EVERY read rather than only on a log with no cursor, so the stream restarts from it and republishes what it has already sent",
       "file": "extensions/connector-codex/src/host.ts",
       "find": "    return this.inner.read(cursor ?? this.start);",
       "replace": "    return this.inner.read(this.start);",
