@@ -33,13 +33,13 @@ import ts from "typescript";
 export const MODULE_PATH = fileURLToPath(new URL("./reap-smoke-brokers.mjs", import.meta.url));
 export const DECLARATION_PATH = fileURLToPath(new URL("./reap-smoke-brokers.d.mts", import.meta.url));
 
-const BANNER = `// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mjs. Do not edit: run \`pnpm gen:reaper-dts\`.
+const BANNER = `// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mts. Do not edit: run \`pnpm gen:reaper-dts\`.
 // The module is the only source of truth for these types; \`pnpm smoke:reaper\` fails if they drift.
 
 `;
 
 /**
- * The compiler options the emit runs under: the repository's own shared base config, plus the four
+ * The compiler options the emit runs under: the repository's own shared base config, plus the five
  * that make this an emit rather than a check.
  *
  * They are READ rather than restated on purpose, and read from the ROOT config, because that is the

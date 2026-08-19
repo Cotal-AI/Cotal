@@ -99,13 +99,21 @@ check(
 //
 // So the property is checked instead of the spelling: a deliberate type error is put into the
 // module's text and the emit must REFUSE it. That refusal exists only while the JSDoc is being read,
-// so this reds for `// @ts-nocheck` anywhere, for a deleted `// @ts-check`, and for any later way of
-// turning the check off, none of which it needs to know about. The probe is content-only, at the
-// module's own path, and writes nothing.
+// so this reds wherever the check is actually turned off: a deleted `// @ts-check`, a
+// `// @ts-nocheck` in the module's LEADING TRIVIA, and any later way of disabling it, none of which
+// it needs to know about. Leading trivia is the whole of it, and measured rather than assumed: a
+// `// @ts-nocheck` ABOVE the import reds this cell, while one AFTER the import or at EOF leaves the
+// suite 23 of 23. That is correct rather than a hole, because TypeScript ignores the pragma in
+// those positions too, so checking is still ON and there is nothing to catch. An earlier version of
+// this sentence said "anywhere", which was wrong; two reviews executed the positions.
+// The probe is content-only, at the module's own path, and writes nothing.
 //
-// No mutation row deletes it: an anchor for a comment-driven guard is prose, and
-// `pnpm smoke:mutation-fixtures` refuses a `find` that spans prose. The control cell below is what
-// makes the refusal attributable, since a probe that refuses everything proves nothing.
+// A mutation row DOES reach this now, which is the point of making the guard behavioural: the
+// textual read it replaced could only be anchored on a comment, and `pnpm smoke:mutation-fixtures`
+// refuses a `find` that spans prose, so no row could announce that someone had disabled it. The
+// anchor is code, the module's `import` line, and the row is in `reaper-declaration.json`. The
+// control cell below is what makes the refusal attributable, since a probe that refuses everything
+// proves nothing.
 const moduleSource = readFileSync(MODULE_PATH, "utf8").replace(/\r\n/g, "\n");
 const TYPE_ERROR = '\n/** @type {number} */\nconst __checkProbe = "not a number";\nvoid __checkProbe;\n';
 let probeEmitted: string | undefined;

@@ -1,4 +1,4 @@
-// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mjs. Do not edit: run `pnpm gen:reaper-dts`.
+// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mts. Do not edit: run `pnpm gen:reaper-dts`.
 // The module is the only source of truth for these types; `pnpm smoke:reaper` fails if they drift.
 
 /**
