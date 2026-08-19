@@ -12,6 +12,7 @@
  * program contains, rather than trusting a hand-kept list.
  */
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { parse } from "acorn";
 import { transform } from "../src/transform/index.js";
 import { SEAM_MEMBERS, SEAM_PROPOSED, SEAM_RULED } from "../src/transform/seam.js";
@@ -738,7 +739,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
  * not an invariant. This is the half that the engine suite's equivalent had and mine did not.
  */
 {
-  const here = new URL(import.meta.url).pathname;
+  const here = fileURLToPath(import.meta.url);
   const src = readFileSync(here, "utf8");
   const guardAt = src.indexOf("// ---- 0) the FIRST transform in this file");
   const guardCell = src.indexOf("the transform emits, and a fault in the emitter has a cell to land on", guardAt + 1);

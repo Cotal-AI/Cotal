@@ -67,6 +67,7 @@ import { assertNoCode } from "../src/values.js";
 import { parseModule, unbound } from "./_module-shape.js";
 import { parse } from "acorn";
 import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 
 let pass = 0;
@@ -982,7 +983,7 @@ const SURVIVED: readonly (readonly [string, string])[] = [
   ["the same door on a race, where one arm is enough", "refusals: a race branch named then, where one arm is enough"],
 ];
 {
-  const child = new URL("./walker-child.ts", import.meta.url).pathname;
+  const child = fileURLToPath(new URL("./walker-child.ts", import.meta.url));
   for (const [name, row] of SURVIVED) {
     // THE SECOND ELEMENT IS A CORPUS ROW'S NAME, NOT A PROGRAM. Written out as a literal it was a
     // second copy of the same source, and nothing made the copies stay equal, so an edit to the
