@@ -157,22 +157,22 @@
     {
       "name": "every method call carries the optional flag, so a missing method stops refusing",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, [${args}]`)})`;",
-      "replace": "        return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, [${args}], true`)})`;",
+      "find": "          if (node.optional !== true) return done(`(await ${this.seam(\"call\", `${obj}, ${key}, [${args}]`)})`, g);",
+      "replace": "          if (node.optional !== true) return done(`(await ${this.seam(\"call\", `${obj}, ${key}, [${args}], true`)})`, g);",
       "expectRed": "an ordinary method call carries no flag",
       "completionMarker": "ok a tail optional call is emitted through the ruled flag",
       "cell": "an ordinary method call carries no flag",
       "note": "The mirror. `xs.nope()` is L4020 on the walker; flagged optional it would quietly answer undefined, which turns a refusal into a value the program carries on with."
     },
     {
-      "name": "an optional call with a chain after it is emitted instead of refused",
+      "name": "an optional call keeps the rest of its chain to itself",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        if (node.optional === true && !tail) {",
-      "replace": "        if (false) {",
-      "expectRed": "every program the seam cannot yet express refuses loudly, and is listed",
+      "find": "          const cont = rest === undefined ? \"\" : `, ${this.continuation(rest)}`;",
+      "replace": "          const cont = \"\";",
+      "expectRed": "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
       "completionMarker": "ok an object literal's keys are emitted computed",
-      "cell": "every program the seam cannot yet express refuses loudly, and is listed",
-      "note": "The host makes the short-circuit decision and cannot tell the transform it made one. Measured on the walker: `o.z?.().x` on an absent member is undefined, `o.m?.().x` on a member returning undefined is L4010 - so emitting the continuation would answer undefined for both and silently drop a refusal."
+      "cell": "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
+      "note": "Only the host knows an optional call short-circuited: measured on the walker, `o.z?.().x` on an absent member is undefined while `o.m?.().x` on a member that returns undefined is L4010. Dropping the fifth argument drops the rest of the chain, so `.x` is never read at all."
     },
     {
       "name": "an optional call hands over an evaluated argument list, so a short-circuit runs its arguments anyway",
@@ -183,6 +183,26 @@
       "completionMarker": "ok a tail optional call is emitted through the ruled flag",
       "cell": "an optional call hands its arguments over as a thunk",
       "note": "The walker checks the member BEFORE evaluating the argument list, so `o.m?.(await sleep(\"1s\"))` on an absent member journals nothing while the same argument on a present method journals a sleep. An array here has already run them, and a resume of that entry replays a step the walker's run never recorded."
+    },
+    {
+      "name": "a tail optional call is handed a continuation it has nothing to continue",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          const cont = rest === undefined ? \"\" : `, ${this.continuation(rest)}`;",
+      "replace": "          const cont = `, ${this.continuation(rest ?? ((v) => v))}`;",
+      "expectRed": "a tail optional call carries no continuation",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a tail optional call carries no continuation: there is nothing written after it",
+      "note": "The mirror. The fifth argument only ever accompanies the fourth, and the host refuses a continuation on a call that is not optional (L1000); one on a tail call is an emitter mistake wearing a valid shape."
+    },
+    {
+      "name": "the continuation's guards leak out into the chain's",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `async (${value}) => ${this.short(body, guards)}`;",
+      "replace": "    return `async (${value}) => ${body}`;",
+      "expectRed": "a `?.` after the optional call is guarded inside the continuation",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a `?.` after the optional call is guarded inside the continuation, where the call answered",
+      "note": "A link written after the optional call is guarded only where the call answered. Collecting its guards and never applying them emits the body with a temp the guard never assigned, so `o.m?.()?.x` reads a member of undefined instead of short-circuiting."
     }
   ]
 }
