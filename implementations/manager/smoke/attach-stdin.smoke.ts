@@ -725,11 +725,15 @@ try {
     // the retry exists for, so a nonce that is MISSING stays legal; a byte nobody typed does not.
     // Stripped from the END, newest first, and only as a suffix. Removing a bare nonce ANYWHERE
     // could absorb a byte the cell is asserting never arrived, if a payload were ever shaped like
-    // one; anchoring to the tail cannot. Run against the previous form over the same tails, that
-    // absorption is the ONLY case where the two disagree on the VERDICT: a leak whose bytes match a
-    // nonce the control typed passed there and fails here. Where the leak lands AFTER the dating
+    // one; anchoring to the tail cannot. Run against the previous form over the same tails, the two
+    // disagree on the VERDICT in three shapes, and only ONE of them is this form catching more: a
+    // leak whose bytes match a nonce the control typed passed there and fails here. The other two
+    // are the dating nonces themselves landing out of the order they were typed, with two or with
+    // three; this form reds those and the previous one passed them. That is FALSE RED, and it is
+    // the price of anchoring rather than a gain from it. Where the leak lands AFTER the dating
     // nonce both forms fail and only the residue text differs, so that case is better diagnostics
-    // and not a stronger check. Spelled out because the reverse was claimed here first.
+    // and not a stronger check. Spelled out at this length because two shorter versions were
+    // claimed here before it and both were false.
     let residue = sink().subarray(mark).toString("utf8");
     const tail = residue;
     for (const n of [...typed].reverse()) {
