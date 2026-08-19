@@ -259,9 +259,9 @@
       "file": "packages/lang/src/transform/emit.ts",
       "find": "          if (b?.deadZone !== true || this.hoisted.has(b)) continue;",
       "replace": "          if (b?.cell !== true || this.hoisted.has(b)) continue;",
-      "expectRed": "a cell for the write rule alone is still built where it is declared",
+      "expectRed": "a cell for the write rule alone is not hoisted",
       "completionMarker": "ok the resolver names a free identifier when one exists",
-      "cell": "a cell for the write rule alone is still built where it is declared",
+      "cell": "a cell for the write rule alone is not hoisted",
       "note": "The two cell classes are kept apart on purpose: hoisting the write-rule class costs a second seam call on a path that runs. Hoisting it turns its one `born({ v: init })` into a `born({})` plus a second `set`, which is what the site-count cell reads."
     },
     {

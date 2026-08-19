@@ -457,7 +457,10 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // AND THE TWO CELL CLASSES STAY APART. A binding that is a cell for the WRITE rule alone cannot be
   // read early, so its record is still built where it is declared, with its value already in it.
   const write = transform("let seen = 0; const bump = () => { seen = seen + 1; }; bump(); log(seen);").module;
-  ok("a cell for the write rule alone is still built where it is declared", write.includes("born({ v: 0 })") && !write.includes("born({})"), write.slice(0, 200));
+  // ONLY THE HOISTING HALF, on purpose: whether that program has a cell at all is section 8's claim,
+  // and asserting it here too would make this cell the first to red for every mutation about the
+  // write rule — a true red that names the wrong rule.
+  ok("a cell for the write rule alone is not hoisted", !write.includes("born({})"), write.slice(0, 220));
 
   // AND THE ORACLE SAYS SO, for every clause: measured, not quoted. Each dead-zone program refuses
   // L2004 on the walker and each native one answers its value, which is what the classification is
