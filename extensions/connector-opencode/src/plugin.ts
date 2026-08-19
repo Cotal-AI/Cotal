@@ -661,16 +661,18 @@ export const cotal: Plugin = async () => {
       if (override !== undefined) pendingOverride = override;
       return;
     }
-    // THE BOOT TURN GOES FIRST AND IS RETRIED HERE. While it is pending an ordinary batch waits;
-    // once its preconditions are met, whichever wake reaches this line carries it, so one early
-    // return no longer decides whether the operator's prompt is ever submitted.
+    // THE BOOT TURN GOES FIRST AND IS RETRIED HERE. While it is pending, other work waits; once its
+    // preconditions are met, whichever wake reaches this line carries it, so one early return no
+    // longer decides whether the operator's prompt is ever submitted. "Other work" is not only an
+    // inbox batch: a focus @mention arrives as a nudge with no inbox entry behind it, so calling
+    // this a batch was wrong and the line that waits has to hold the nudge rather than discard it.
     // CARRIED, not just passed: a nudge handed to an earlier call that could not run is picked up
     // here rather than dropped, and a nudge this call cannot submit is put back before returning.
     const carried = override ?? pendingOverride;
     const boot = carried === undefined && bootPending() ? bootPrompt : undefined;
     if (bootPrompt !== undefined && boot === undefined) {
       pendingOverride = carried;
-      return; // this batch waits for the boot turn
+      return; // whatever this call was carrying waits for the boot turn, and is held, not dropped
     }
     driving = true;
     try {
