@@ -108,6 +108,18 @@ export const cotal: Plugin = async () => {
    *  later swap and take the event plane down permanently. */
   let swapChain: Promise<void> = Promise.resolve();
   /**
+   * A cutover is in progress. Read by `drive`, which is the ONE place a turn can start, so every
+   * door is covered by this rather than each door carrying its own guard.
+   *
+   * Gating the drive inside `adoptSession` was not enough and that is the lesson here: adopting
+   * also clears `busy` and `driving`, and the inbox, wake and mention-wake handlers all start a
+   * turn on `!busy`. So closing the one door inside the adopt left three open beside it, and an
+   * ordinary inbound message during a cutover would prompt the new session while its replacement
+   * holder was not installed yet. Found by review, and it is the same shape as the defect this
+   * whole change exists for: a window closed at one consumer rather than at the thing they share.
+   */
+  let swapping = false;
+  /**
    * ONE HOLDER PER SESSION, built on demand rather than once per process.
    *
    * A holder binds to one thread for the life of its emitter and refuses a second, terminally: the
@@ -388,16 +400,19 @@ export const cotal: Plugin = async () => {
   }
 
   /**
-   * `drivePending` exists because a swap must not prompt into the new session halfway through its
-   * own cutover. `drive()` is a TURN SUBMISSION rather than an event-plane consumer, so routing by
-   * the holder's binding does not reach it: fired from here during a swap it runs against the new
-   * id while the replacement holder is not installed yet, and the records it produces can land
-   * before that holder adopts. A fresh adopt takes the position of the END of the store, so
-   * anything written in between is passed over rather than published. The swap therefore drives
-   * after its cutover completes. Boot and first-event adoption keep driving at once, because
-   * neither has a cutover to be halfway through.
+   * A swap must not prompt into the new session halfway through its own cutover. `drive` is a TURN
+   * SUBMISSION rather than an event-plane consumer, so routing by the holder's binding does not
+   * reach it: started mid-cutover it runs against the new id while the replacement holder is not
+   * installed yet, and the records it produces can land before that holder adopts. A fresh adopt
+   * takes the position of the END of the store, so anything written in between is passed over
+   * rather than published.
+   *
+   * The guard for that is `swapping`, inside `drive`, NOT a parameter here. An earlier version took
+   * a `drivePending` flag so the swap could ask this function not to drive, which closed this door
+   * and left the inbox, wake and mention-wake doors open beside it, because adopting also clears
+   * `busy`. One guard where the turn actually starts covers all of them.
    */
-  function adoptSession(id: string, reason: string, drivePending = true): void {
+  function adoptSession(id: string, reason: string): void {
     if (sessionID === id) return;
     const previous = sessionID;
     sessionID = id;
@@ -412,7 +427,7 @@ export const cotal: Plugin = async () => {
     clearErrorRetry(true);
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
-      if (drivePending && pendingForWake() > 0) void drive();
+      if (pendingForWake() > 0) void drive();
     }
   }
 
@@ -449,7 +464,7 @@ export const cotal: Plugin = async () => {
    *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
    *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
   async function drive(override?: string): Promise<void> {
-    if (driving || busy) return;
+    if (driving || busy || swapping) return; // `swapping`: no turn may start mid-cutover, whoever asks
     if (bootPrompt !== undefined) return; // the boot turn goes first; this batch waits in the inbox
     driving = true;
     try {
@@ -635,13 +650,15 @@ export const cotal: Plugin = async () => {
           // swap is what actually closes the window, because each swap then reads a holder that is
           // already settled rather than one mid-retirement.
           const swap = swapChain.then(async () => {
+            swapping = true;
+            try {
             // The id is adopted here, ahead of the drain, so status and prompt work follow the new
             // session at once. It is deliberately NOT paired with the holder install below, and does
             // not need to be: the event plane routes on the holder's OWN binding, so an event landing
             // in this window reaches a holder only if that holder is already bound to its thread.
             // Ordering these two flips against each other was the earlier attempt; it only ever moved
             // the gap, because two variables cannot be made one by sequencing them.
-            adoptSession(created, "top-level session create", false);
+            adoptSession(created, "top-level session create");
             const previous = events;
             if (previous && previous.path !== undefined && previous.path !== created) {
               // DRAIN, THEN SWAP. Flush first so the session being left publishes what it settled,
@@ -666,10 +683,13 @@ export const cotal: Plugin = async () => {
             // Adopt READS FROM HERE. A resumed session must not republish its history, and the
             // source's fresh adopt returns the position of the end for exactly that reason.
             eventsFor(created)?.adopt(created);
-            // THE DEFERRED DRIVE, and it belongs here rather than in the adopt above. The cutover is
-            // complete at this line: the predecessor is drained and settled and the replacement holder
-            // is installed and bound, so a turn started now produces records the holder publishes
-            // rather than records it adopted past.
+            } finally {
+              swapping = false;
+            }
+            // THE DEFERRED DRIVE, and it is outside the `finally` on purpose. The cutover is complete
+            // at this line: the predecessor is drained and settled, the replacement holder is
+            // installed and bound, and `swapping` is already clear, so this turn is allowed to start
+            // and produces records the holder publishes rather than records it adopted past.
             if (pendingForWake() > 0) void drive();
           });
           // The chain carries the SUCCESSFUL tail only: a rejected swap is absorbed so the next one
