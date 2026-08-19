@@ -94,6 +94,15 @@
       "expectRed": "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
       "cell": "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
       "note": "Three rows above are killed by the module's JSDoc rather than by the emitted bytes, so they all rest on the module being checked, and until this row nothing mutated that. It could not: the check was asserted by reading `// @ts-check` off line 1, an anchor on it is prose, and smoke:mutation-fixtures refuses a find that spans a comment. The guard is now behavioural, so the anchor can be code. `// @ts-nocheck` above the import is still leading trivia and still disables the file, while `// @ts-check` stays on line 1 and the old read stayed GREEN through exactly this. Measured on this tree: the declaration cell stays GREEN here and only this cell reds, which is the point, since the drift rows are the ones this protects."
+    },
+    {
+      "name": "the RUNTIME drifts under a declaration that still reads as true",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {\n  if (!result.supported) {",
+      "replace": "export function reportReaped(label, result) {\n  void (/** @type {any} */ (label)).toFixed(2);\n  if (!result.supported) {",
+      "expectRed": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "cell": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "note": "Every row above ties the declaration to the module's JSDoc, and a double cast is the one thing `// @ts-check` cannot see through, so a JSDoc that lies about its own implementation emits a declaration that lies too. A security review built exactly that (`@param {number} label` plus a cast back to string before a string-only use) and the suite stayed at 23 of 23. This row is the mirror: the declaration still promises a string and the code now demands a number of it, which no comparison of bytes or of comments can see. Only the executed consumer can, and it is the cell that reds."
     }
   ]
 }

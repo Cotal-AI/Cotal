@@ -19,14 +19,14 @@
  * exact case the teardown helper cannot cover and the only case the reaper may act on.
  */
 import { strict as assert } from "node:assert";
-import { spawn, type ChildProcess } from "node:child_process";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
-import { DECLARATION_PATH, MODULE_PATH, readCommittedDeclaration, renderReaperDeclaration } from "./gen-reaper-dts.mjs";
+import { DECLARATION_PATH, MODULE_PATH, checkDeclarationConsumer, readCommittedDeclaration, renderReaperDeclaration, transpileConsumer } from "./gen-reaper-dts.mjs";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -146,6 +146,58 @@ check(
   controlEmitted === undefined
     ? `the override path refused the module's own text, so the cell above proves nothing: ${controlError}`
     : "the override path emitted a different declaration from the file read, so the probe is not running against this module",
+);
+
+// ---- and the declaration is honest about the RUNTIME, not only about the module's own JSDoc -----
+//
+// Everything above ties the declaration to the module's JSDoc and proves that JSDoc is checked.
+// Neither says the promise is TRUE of the running code, and a security review built the bypass that
+// lives in the gap: change `reportReaped`'s `@param {string} label` to `{number}`, and defeat the
+// check locally with `/** @type {string} */ (/** @type {unknown} */ (label))` before a string-only
+// use. `pnpm gen:reaper-dts` exits 0, the committed declaration becomes
+// `reportReaped(label: number, ...)`, and this suite stayed at 23 of 23 while a consumer passing
+// the declared `number` compiled and then threw `printableLabel.slice is not a function` at
+// runtime. Reproduced first-party at 23 of 23 before these two cells existed. A double cast is the
+// one thing `// @ts-check` cannot see through, so no amount of checking the module against itself
+// closes this; only the runtime can answer it.
+//
+// So one consumer text is used twice. It calls every export the way the declaration says they may
+// be called, and it is both COMPILED against the declaration alone (`allowJs` off, so the module's
+// text is not a resolution target) and EXECUTED against the real module. The bypass above reds the
+// first cell, because a consumer written to a `string` label no longer typechecks. Drift in the
+// other direction, a declaration that stays honest-looking while the runtime moves under it, reds
+// the second, and that is the one a mutation row drives: `reaper-declaration.json` makes
+// `reportReaped` demand a number of a value the declaration still promises as a string.
+const CONSUMER = `import type { NatsServerRow, ReapReport, ReapedBroker } from "./reap-smoke-brokers.mjs";
+import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
+
+const rows: NatsServerRow[] | undefined = listNatsServers();
+const report: ReapReport = reapSmokeBrokers({ dryRun: true });
+const owners: number[] = report.reaped.map((r: ReapedBroker) => r.owner);
+const label: string = \`contract probe \${SMOKE_BROKER_PREFIX}\`;
+reportReaped(label, report);
+console.log(\`__CONSUMER_RAN__ rows=\${rows === undefined ? "none" : rows.length} inspected=\${report.inspected} owners=\${owners.length}\`);
+`;
+const consumerDiagnostics = checkDeclarationConsumer(CONSUMER);
+check(
+  "a consumer written to what the declaration promises compiles against the declaration alone",
+  consumerDiagnostics.length === 0,
+  consumerDiagnostics.slice(0, 3).join(" | "),
+);
+// `dryRun` so the executed half claims nothing: it enumerates and reports, and signals no process.
+const ranPath = join(dirname(MODULE_PATH), `.declaration-consumer.${process.pid}.mjs`);
+let ran = { status: -1, output: "" };
+try {
+  writeFileSync(ranPath, transpileConsumer(CONSUMER));
+  const r = spawnSync(process.execPath, [ranPath], { encoding: "utf8" });
+  ran = { status: r.status ?? -1, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+} finally {
+  rmSync(ranPath, { force: true });
+}
+check(
+  "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+  ran.status === 0 && ran.output.includes("__CONSUMER_RAN__"),
+  `exit ${ran.status}: ${ran.output.split("\n").find((l) => /Error/.test(l)) ?? ran.output.trim().slice(-200)}`,
 );
 
 const dirs: string[] = [];

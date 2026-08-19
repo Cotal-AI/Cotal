@@ -75,6 +75,56 @@ function emitOptions(): ts.CompilerOptions {
 }
 
 /**
+ * Typecheck `source` as a `.mts` consumer sitting beside the module, and hand back its diagnostics.
+ *
+ * The point is WHICH file answers `./reap-smoke-brokers.mjs` for it. `allowJs` is off here, so the
+ * module's own text is not a resolution target and the only route to those names is the committed
+ * declaration. A consumer that compiles under this compiled against the declaration alone.
+ *
+ * Nothing is written to disk: the consumer's path exists only to place it in the module's directory,
+ * where its relative import resolves the way a real consumer's would.
+ */
+export function checkDeclarationConsumer(source: string): readonly string[] {
+  const consumerPath = fileURLToPath(new URL("./declaration-consumer.mts", import.meta.url));
+  const options: ts.CompilerOptions = {
+    ...emitOptions(),
+    allowJs: false,
+    checkJs: false,
+    declaration: false,
+    emitDeclarationOnly: false,
+    noEmit: true,
+  };
+  const host = ts.createCompilerHost(options);
+  const isConsumer = (fileName: string) => ts.sys.resolvePath(fileName) === ts.sys.resolvePath(consumerPath);
+  const readFile = host.readFile.bind(host);
+  const fileExists = host.fileExists.bind(host);
+  const getSourceFile = host.getSourceFile.bind(host);
+  host.readFile = (fileName) => (isConsumer(fileName) ? source : readFile(fileName));
+  host.fileExists = (fileName) => isConsumer(fileName) || fileExists(fileName);
+  host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
+    isConsumer(fileName)
+      ? ts.createSourceFile(fileName, source, languageVersion, true)
+      : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
+  const program = ts.createProgram({ rootNames: [consumerPath], options, host });
+  return ts.getPreEmitDiagnostics(program)
+    .map((d) => `TS${d.code}: ${ts.flattenDiagnosticMessageText(d.messageText, " ")}`);
+}
+
+/**
+ * The same consumer text as runnable JavaScript, so one source can be both checked and executed.
+ *
+ * `fileName` is not decoration: under `NodeNext` the emitted module format is decided by the file
+ * the text claims to be, and with no name the compiler assumes CommonJS and writes `exports.` into
+ * something node then loads as ESM.
+ */
+export function transpileConsumer(source: string): string {
+  return ts.transpileModule(source, {
+    fileName: fileURLToPath(new URL("./declaration-consumer.mts", import.meta.url)),
+    compilerOptions: { ...emitOptions(), module: ts.ModuleKind.NodeNext, declaration: false, emitDeclarationOnly: false },
+  }).outputText;
+}
+
+/**
  * The declaration the compiler emits for the reaper today, banner included.
  *
  * Throws rather than returning a weaker declaration when the module does not typecheck, because a
