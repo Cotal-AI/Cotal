@@ -25,6 +25,7 @@ import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
 import { BUILTINS, EFFECT_KINDS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
 import { ADMITTED_NODES } from "../src/syntax.js";
+import { parseModule, unbound } from "./_module-shape.js";
 import { parse } from "acorn";
 import { spawnSync } from "node:child_process";
 
@@ -300,6 +301,17 @@ log("rounds", rounds, r.status);`,
   // arms L4010, so the receiver law is decided before the thenable law and the order is not a
   // divergence here. It is one line above, where the receiver IS a record.
   ["refusals: a callable then written onto a non-record", '"x".then = () => 1; log("after");', {}, "L4010"],
+  // A LOG LINE IS DATA (oracle-side, 59b5d6bd): `log` refuses a value carrying a function anywhere
+  // inside it, L4016 naming the value and the path, because the walker's onLog held a live closure
+  // where the worker died on a host DataCloneError. Both arms answer it from the one place in
+  // library.ts. The three doors are the value itself, a function nested in a record, and a
+  // namespace, which is a record of them.
+  ["refusals: a log line carrying a function", "log((x) => x);", {}, "L4016"],
+  ["refusals: a log line whose record carries a function", 'log("v", { g: (x) => x });', {}, "L4016"],
+  ["refusals: a log line carrying a namespace", "log(json);", {}, "L4016"],
+  // AND THE MIRROR, so the refusal is not read as "log refuses whatever is unusual": absence and NaN
+  // are values, not functions, and they still log as they are. The trace is not the journal.
+  ["absence and NaN are data, and still log", "const o = { a: 1 }; log(o.b, 0 / 0);", {}],
   // AND THE SAME QUESTION WHERE THE RECEIVER IS AN ARRAY, which was the divergence this row was
   // written as: the walker answered L4014 and the engine L4018, because the engine asked the value's
   // rule before the member rule. Ruled - target-kind, then the freeze, then that kind's member rule,
@@ -903,6 +915,28 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const missingKinds = kinds.filter((k) => !reachedKinds.has(k));
   ok("and a corpus program journals every kind the engine can write", missingKinds.length === 0, missingKinds);
   console.log(`  (${ADMITTED_NODES.size} admitted node types and ${kinds.length} journal kinds, each reached by a corpus program the engine ran)`);
+}
+
+// ---- and the surface that holds the compartment closed, over THIS corpus ------------------------
+
+{
+  // MEASURED BY LANE H, and it changes what this is worth: inside the shipped SES compartment an
+  // unbound READ evaluates to `undefined` and throws nothing - the scope proxy answers `has` for
+  // every name - while an unbound WRITE still refuses. So the host's loud free-identifier clause is
+  // a backstop for the write half only, and what holds the read half closed is that the emitted
+  // module has no free identifier to begin with.
+  //
+  // `transform.smoke` asserts that over ITS corpus, which is a list written to reach every node
+  // type. This one is the list of programs the gate actually RUNS, and it is five times the size;
+  // a shape that only lives here would have had nothing checking it. The resolver is shared with
+  // that suite, where a positive control requires it to name a free name that does exist.
+  const open: string[] = [];
+  for (const [name, source] of CORPUS) {
+    const free = unbound(parseModule(transform(source).module));
+    if (free.length > 0) open.push(`${name}: ${free.join(",")}`);
+  }
+  ok("every corpus program emits a module with no free identifier, which is what the compartment cannot catch", open.length === 0, open);
+  console.log(`  (${CORPUS.length} emitted modules resolved, ${open.length} with a free identifier)`);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);

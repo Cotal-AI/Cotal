@@ -138,6 +138,15 @@
       "expectRed": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door",
       "cell": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door: a callable then, then any later reference to the record",
       "note": "A quarantine-discipline cell, so its mutant is in the fixture. Drop the later reference and the walker COMPLETES: the child prints it, and the cell that would otherwise be a comment saying 'we left this out' reds. This is the direction that matters - a list of exclusions nobody re-measures is how a program stays outside the gate after the reason expires."
+    },
+    {
+      "name": "`undefined` is emitted as the global name, so a module the gate runs is no longer closed",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    if (VALUE_NAMES.includes(name)) return VOID;",
+      "replace": "    if (VALUE_NAMES.includes(name)) return name;",
+      "expectRed": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
+      "cell": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
+      "note": "Measured: NOT ONE behavioural cell in this suite reds. The free name resolves to the real global in the harness's evaluator, and lane H measured that inside the shipped SES compartment an unbound READ answers `undefined` and throws nothing either - so both arms agree, every journal matches, and the only thing that notices is the resolver over the emitted text. That is the whole argument for running it over the corpus this gate actually executes."
     }
   ],
   "completionMarker": "differential.smoke:"
