@@ -2,10 +2,10 @@
   "command": "pnpm smoke:web-history-limit",
   "mutations": [
     {
-      "name": "H1 the single parse is reverted to the truthy per-route one that shipped: `limit=abc` becomes NaN again, skips core's guard, and the widening search never terminates, so the request that used to burn half a core forever is back",
+      "name": "H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it",
       "file": "implementations/web/src/web.ts",
-      "find": "  if (!/^[0-9]+$/.test(raw))\n    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);",
-      "replace": "  if (false)\n    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);",
+      "find": "  const raw = query.get(\"limit\");\n  if (raw === null || raw === \"\") return fallback;\n  if (!/^[0-9]+$/.test(raw))\n    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);\n  const n = Number(raw);\n  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);\n  return n;",
+      "replace": "  const raw = query.get(\"limit\");\n  return raw ? Number(raw) : fallback;",
       "expectRed": "1.1 ?limit=\"abc\" is refused by ALL THREE routes, and every one of them ANSWERS"
     },
     {
@@ -30,27 +30,6 @@
       "expectRed": "1.7 a malformed request is a 400, NEVER the 500 that means the dashboard broke"
     },
     {
-      "name": "H5 core's finite guard is dropped: a NaN limit reaches the widening search, whose two exits are both permanently false for NaN, so the read never returns and its caller is never told",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "replace": "    if (false)\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "expectRed": "2.1 a NaN limit is REFUSED, naming what it received, rather than never returning"
-    },
-    {
-      "name": "H6 core's guard stops refusing and silently returns an empty page instead, which is the fallback shape: a caller that asked an unanswerable question is told the channel is empty",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "replace": "    if (!Number.isFinite(limit))\n      return [];",
-      "expectRed": "2.1 a NaN limit is REFUSED, naming what it received, rather than never returning"
-    },
-    {
-      "name": "H7 core's guard widens and swallows the working cases too: zero and negatives start throwing instead of returning an empty page, changing a contract this change was not supposed to touch",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a finite number, received ${limit}`);\n    if (limit <= 0) return [];",
-      "replace": "    if (!Number.isFinite(limit) || limit <= 0)\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "expectRed": "2.3 zero and negatives keep their existing meaning, an empty page, not a throw"
-    },
-    {
       "name": "H8 the single-channel read loses the deadline it was given, so on a slow link it runs to completion however long that takes while the console page re-reads it every poll",
       "file": "implementations/web/src/web.ts",
       "find": "        const page = await within(ep.channelHistory(name, { limit }), clock.until);\n        if (page === LATE)",
@@ -63,6 +42,14 @@
       "find": "          return json(res, { error: `#${name}: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);",
       "replace": "          return json(res, { error: `the read did not finish` }, 503);",
       "expectRed": "3.3 and the refusal NAMES the channel and the deadline it exceeded, not just a status"
+    },
+    {
+      "name": "H10 the safe-integer check is dropped, so a run of digits too large for a double to count exactly is accepted and silently becomes a different number than the caller wrote",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);",
+      "replace": "  if (false)\n    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);",
+      "expectRed": "1.1 ?limit=\"99999999999999999999\" is refused by ALL THREE routes, and every one of them ANSWERS"
     }
-  ]
+  ],
+  "progressPattern": "^[0-9]\\. "
 }

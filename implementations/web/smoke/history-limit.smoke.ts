@@ -110,7 +110,6 @@ const broker = spawn("nats-server", ["-p", String(PORT), "-js", "-sd", store, "-
 const release = teardownOnSignal(broker, store);
 let link: { close(): void } | undefined;
 let fastWeb: ReturnType<typeof spawn> | undefined, slowWeb: ReturnType<typeof spawn> | undefined;
-let probe: CotalEndpoint | undefined;
 try {
   let up = false;
   for (let i = 0; i < 80; i++) { if (await isReachable(SERVER)) { up = true; break; } await wait(150); }
@@ -141,7 +140,10 @@ try {
   // ── 1. ONE PARSE, AND ALL THREE ROUTES OBEY IT ───────────────────────────────────────────────
   console.log("1. the limit is parsed once, and a value that is not a whole number is refused");
   const ROUTES = ["/api/activity", "/api/dms", "/api/channels/ch0/history"];
-  const BAD = ["abc", "Infinity", "1e999", "2.5", "-3", " 5", "5abc", "1e3"];
+  // "99999999999999999999" is the one value here that reaches the SAFE INTEGER check: it is all
+  // digits, so the shape test passes it through, and it exceeds what a double counts exactly.
+  // Without it that branch has no cell and a mutation of it cannot be graded.
+  const BAD = ["abc", "Infinity", "1e999", "2.5", "-3", " 5", "5abc", "1e3", "99999999999999999999"];
   for (const bad of BAD) {
     const answers = await Promise.all(ROUTES.map((r) => get(`${F}${r}?limit=${encodeURIComponent(bad)}`, CEILING_MS)));
     ok(`1.1 ?limit=${JSON.stringify(bad)} is refused by ALL THREE routes, and every one of them ANSWERS`,
@@ -164,35 +166,10 @@ try {
   ok("1.7 a malformed request is a 400, NEVER the 500 that means the dashboard broke",
     (await get(`${F}/api/dms?limit=abc`, CEILING_MS))?.status === 400);
 
-  // ── 2. THE RULE WHERE IT LIVES, not only where it is called ──────────────────────────────────
-  // The routes now refuse a bad limit, so nothing THEY send can reach the loop. That makes the
-  // core guard untestable through the routes, and it is the guard that protects every other caller.
-  console.log("2. core refuses a limit it cannot answer, instead of searching forever");
-  probe = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [], consume: false,
-    registerPresence: false, card: { id: newIdentity().id, name: "probe", kind: "endpoint" } });
-  probe.on("error", () => {});
-  await probe.start();
-  const threw = async (limit: number): Promise<string | null> => {
-    // Bounded for the same reason as the HTTP cells: with the guard mutated away this call NEVER
-    // returns, and a hang is an unknown rather than a red on the assertion below.
-    const race = await Promise.race([
-      probe!.channelHistory("ch0", { limit }).then(() => "returned instead of throwing").catch((e: Error) => e.message),
-      wait(CEILING_MS).then(() => null),
-    ]);
-    return race as string | null;
-  };
-  const nan = await threw(Number.NaN);
-  ok("2.1 a NaN limit is REFUSED, naming what it received, rather than never returning",
-    typeof nan === "string" && nan.includes("finite") && nan.includes("NaN"), nan ?? "never returned");
-  const inf = await threw(Number.POSITIVE_INFINITY);
-  ok("2.2 an Infinite limit is refused too, which is the other end of the same hole",
-    typeof inf === "string" && inf.includes("finite"), inf ?? "never returned");
-  const zeroCore = await probe.channelHistory("ch0", { limit: 0 });
-  ok("2.3 zero and negatives keep their existing meaning, an empty page, not a throw",
-    zeroCore.length === 0 && (await probe.channelHistory("ch0", { limit: -3 })).length === 0);
-  // POSITIVE CONTROL: the guard must refuse the unanswerable without breaking the answerable.
-  ok("2.4 control: a valid limit still reads the page, so 2.1 is a refusal and not a broken read",
-    (await probe.channelHistory("ch0", { limit: 7 })).length === 7);
+  // The core guard that protects every OTHER caller is graded in `smoke:core-history-limit`.
+  // It cannot be graded here: the routes above refuse a malformed limit before it can reach
+  // core, and this package resolves core through `dist`, where a mutation of core's source has
+  // no effect at all. A cell here would have been green either way.
 
   // ── 3. THE SINGLE-CHANNEL READ IS BOUNDED LIKE ITS SIBLINGS ──────────────────────────────────
   console.log("3. the single-channel read answers within the same deadline the aggregates use");
@@ -227,7 +204,6 @@ try {
   ok("3.4 control: the identical read with no link cost returns the full page, so 3.3 is the link",
     fastRead?.status === 200 && len(fastRead) === PER, { status: fastRead?.status, n: len(fastRead) });
 } finally {
-  await probe?.stop().catch(() => {});
   fastWeb?.kill("SIGKILL"); slowWeb?.kill("SIGKILL");
   link?.close(); release(); broker.kill("SIGKILL");
   rmSync(store, { recursive: true, force: true });
