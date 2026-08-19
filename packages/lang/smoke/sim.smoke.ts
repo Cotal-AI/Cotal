@@ -298,7 +298,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 {
   const settlesOnlyAfterItsBind = async (
     name: string,
-    start: (sim: SimHandler, held: (k: StepKey) => EffectContext, s: KeyScope) => Promise<unknown>,
+    start: (sim: SimHandler, held: (k: StepKey, attempt?: number) => EffectContext, s: KeyScope) => Promise<unknown>,
   ) => {
     const sim = new SimHandler({
       turns: { build: { status: "done", at: 0 } },
@@ -309,8 +309,8 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     let release!: () => void;
     const gate = new Promise<void>((r) => { release = r; });
     const st = { entered: false, settled: false };
-    const held = (k: StepKey): EffectContext => ({
-      ...ctxFor(k),
+    const held = (k: StepKey, attempt = 0): EffectContext => ({
+      ...ctxFor(k, attempt),
       bind: async () => { st.entered = true; await gate; },
     });
     const running = start(sim, held, s).then(() => { st.settled = true; });
@@ -332,6 +332,16 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     (sim, held, s) => sim.ask({ agent: { agent: "a", persona: "p" }, schema: {} }, held(s.nextEffect("ask", "q"))));
   await settlesOnlyAfterItsBind("a checkpoint",
     (sim, held, s) => sim.checkpoint({ prompt: "ok?" }, held(s.nextEffect("checkpoint", "gate"))));
+  // ...and the SECOND attempt, which is the only context in this system whose `attempt` is not 0.
+  // `interpret.ts` escalates a checkpoint exactly once, calling the handler again with
+  // `{ ...ctx, requestId: nextId, attempt: 1 }`, so the escalation is a real reachable path and not
+  // a shape invented here. Every arm above builds its context at attempt 0, and a review showed
+  // what that costs: `if (ctx.attempt === 0) await ctx.bind(...)` at the checkpoint bind site left
+  // ALL 40 cells green while the escalated checkpoint settled carrying the FIRST attempt's stale
+  // fact, so a crash with attempt 1 open had nothing to rebind from. Reproduced on this tree at
+  // 40 of 40 before this pair was written.
+  await settlesOnlyAfterItsBind("a checkpoint on its escalation attempt",
+    (sim, held, s) => sim.checkpoint({ prompt: "ok?" }, held(s.nextEffect("checkpoint", "gate"), 1)));
 
   // ...and a bind that FAILS has to take the effect down with it. A held bind that eventually
   // SUCCEEDS proves the effect waits; it cannot see an effect that waits and then throws the result
@@ -341,7 +351,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   // write is what fails.
   const failsWithItsBind = async (
     name: string,
-    start: (sim: SimHandler, failing: (k: StepKey) => EffectContext, s: KeyScope) => Promise<unknown>,
+    start: (sim: SimHandler, failing: (k: StepKey, attempt?: number) => EffectContext, s: KeyScope) => Promise<unknown>,
   ) => {
     const sim = new SimHandler({
       turns: { build: { status: "done", at: 0 } },
@@ -350,8 +360,8 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     });
     const s = new KeyScope();
     const boom = new Error("durable bind failed");
-    const failing = (k: StepKey): EffectContext => ({
-      ...ctxFor(k),
+    const failing = (k: StepKey, attempt = 0): EffectContext => ({
+      ...ctxFor(k, attempt),
       bind: async () => { throw boom; },
     });
     let settled = false;
@@ -371,6 +381,8 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     (sim, failing, s) => sim.ask({ agent: { agent: "a", persona: "p" }, schema: {} }, failing(s.nextEffect("ask", "q"))));
   await failsWithItsBind("a checkpoint",
     (sim, failing, s) => sim.checkpoint({ prompt: "ok?" }, failing(s.nextEffect("checkpoint", "gate"))));
+  await failsWithItsBind("a checkpoint on its escalation attempt",
+    (sim, failing, s) => sim.checkpoint({ prompt: "ok?" }, failing(s.nextEffect("checkpoint", "gate"), 1)));
 }
 
 // ---- 9) unused script entries are reported --------------------------------------------------------------
