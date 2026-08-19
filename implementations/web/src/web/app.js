@@ -1008,8 +1008,9 @@ async function refresh() {
     // machine that this function had armed and would never settle, and none of them reached the feed.
     // Switching back to all activity showed a feed that had never received them, and the next refresh
     // replaced the machine and took the buffer with it. A `finally` is the only placement that
-    // survives all four branches plus a throw from any of the fetches above, and an unguarded
-    // `/api/roster` was one of those throws.
+    // survives all four branches plus a throw from anything between the arm and here. The source
+    // reads no longer supply that throw, because a refusal is reported rather than propagated; the
+    // renders below the reads still can, and the cost of missing it is the same.
     activity = batch;
     // Same trust rule as the live feed: the backfill is tagged with the channel the SERVER
     // requested, so the payload claim is overwritten at ingress rather than downstream.

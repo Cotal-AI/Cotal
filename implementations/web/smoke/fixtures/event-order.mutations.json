@@ -93,11 +93,11 @@
       "expectRed": "14.1 the boundary passes with a channel open"
     },
     {
-      "name": "O14 the settle moves off the failure path and back into the normal tail, so a throw from any request before the backfill leaves the boundary unpassed: the roster read was one of those, and no failure arm around the backfill covers it",
+      "name": "O14 the settle moves off the failure path and back into the normal tail, so a throw between the arm and the settle leaves the boundary unpassed and every frame held during the poll stranded for the life of the page",
       "file": "implementations/web/src/web/app.js",
       "find": "\n  } finally {\n",
       "replace": "\n  } catch (__e) {\n    throw __e;\n  }\n  {\n",
-      "expectRed": "14.7 a throw from the FIRST request still settles the boundary"
+      "expectRed": "14.7 a throw between the arm and the settle still settles the boundary"
     },
     {
       "name": "O15 the retained range is no longer audited, only its ends, so a batch whose middle is missing reads healthy forever: the baseline is right, the frontier is right, every later frame follows contiguously, and nothing on the live path can ever reveal it",

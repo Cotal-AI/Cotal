@@ -555,7 +555,7 @@ console.log("event-order smoke");
   // inside the `selected === "*"` branch. So for a reader sitting on a channel, a DM or an agent
   // drill-down, every live frame was held by a machine that would never settle: absent from the feed,
   // then discarded wholesale by the next poll's re-arm. A `finally` is the only placement that covers
-  // all four branches AND a throw from any earlier request.
+  // all four branches AND a throw from anything the function calls between the arm and the settle.
   for (const branch of ["channel", "dm", "agent"] as const) {
     const ctx = page("resolve");
     if (branch === "channel") ctx.selected = "team.backend";
@@ -566,8 +566,27 @@ console.log("event-order smoke");
     ok(`14.${branch === "channel" ? 2 : branch === "dm" ? 4 : 6} and the held frame is not stranded`, ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
   }
   {
-    // An EARLIER request throwing, which the failure arm around `/api/activity` never covered:
-    // `/api/roster` is the first fetch in the function and it was unguarded.
+    // A THROW BETWEEN THE ARM AND THE SETTLE. This cell used to drive it by rejecting `/api/roster`,
+    // the function's first fetch, which was unguarded. Every source read now goes through the
+    // keep-last-good helper, which REPORTS a refusal instead of propagating it, so that stimulus no
+    // longer throws at all and the cell it fed became vacuous: it passed whether the settle ran on
+    // every path or only on the normal tail. That is not a reason to drop the rule, because the
+    // renders this function calls once its reads are in can still throw, and the consequence is
+    // unchanged: the frames held during the poll are stranded for the life of the page. So the
+    // stimulus moves to a throw that the current code can actually produce, and 14.7b proves the
+    // stimulus fired rather than leaving the cell to pass on a call that never happened.
+    const ctx = page("resolve");
+    let threw = false;
+    (ctx as Record<string, unknown>).renderSidebarNav = () => { threw = true; throw new Error("render blew up"); };
+    await drive(ctx, "refresh()", frame(9));
+    ok("14.7 a throw between the arm and the settle still settles the boundary", ctx.feedOrder.settled === true);
+    ok("14.7b CONTROL: the stimulus really threw (a cell whose throw never fires grades nothing)", threw === true);
+    ok("14.8 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+  }
+  {
+    // THE PATH THAT REPLACED IT, kept as its own cells because it is a DIFFERENT claim: a source read
+    // that refuses is absorbed and reported, and the boundary still passes. Nothing throws here, so
+    // this pair cannot stand in for 14.7 and is not written as though it could.
     const ctx = page("resolve");
     (ctx as Record<string, unknown>).fetch = async (u: string) => {
       if (u.includes("/api/roster")) throw new Error("network down");
@@ -576,8 +595,8 @@ console.log("event-order smoke");
       return { ok: true, json: async () => [] };
     };
     await drive(ctx, "refresh()", frame(9));
-    ok("14.7 a throw from the FIRST request still settles the boundary", ctx.feedOrder.settled === true);
-    ok("14.8 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+    ok("14.9 a REFUSED source read still settles the boundary", ctx.feedOrder.settled === true);
+    ok("14.10 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
   }
 
   // ── 15. THE NOTES ARE DRAWN, which is a different claim from computing them ─────────────────────
