@@ -642,7 +642,7 @@
       "find": "      if (e instanceof ReferenceError) throw new EngineFault(e);",
       "replace": "      void 0;",
       "expectRed": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
-      "completionMarker": "ok and the engine's catch head answers the same record",
+      "completionMarker": "ok and the engine's catch head answers that same record for the read",
       "cell": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
       "note": "The emitted module has zero free identifiers, so a ReferenceError can only be a binding the transform did not classify as a cell or an emitter temporary read before it was bound. Converted, a compiler bug arrives at the program as an ordinary catchable error and the program handles it - which is how a missed classification ships."
     },
@@ -884,6 +884,16 @@
       "completionMarker": "ok and an array of absence against an array carrying code, which come free",
       "cell": "zero and negative zero, which an ordinary division reaches",
       "note": "JSON draws -0 as 0 and `0 / -1` is an ordinary program, so this is a hazard a run can reach rather than a curiosity. Unnamed, -0 falls through to `typeof` and reads 'number' exactly as 0 does, and the control that separates them reds."
+    },
+    {
+      "name": "the name audit accepts a name that matches several cells",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "    return matches.length === 1 ? [] : [",
+      "replace": "    return matches.length >= 1 ? [] : [",
+      "expectRed": "a name that is a substring of a sibling's is reported, not passed as present",
+      "completionMarker": "ok while a search for one entry point alone calls that resume guarded, which is why the needle matches both",
+      "cell": "a name that is a substring of a sibling's is reported, not passed as present",
+      "note": "The audit this replaced, restored exactly: `present` rather than `exactly one`. The tool matches a named assertion by SUBSTRING over the transcript, so a name that is also a substring of a sibling's name is found on whichever line prints first - measured live in this config, a marker matched a cell three positions EARLIER than the one it named, which would have graded a run that died in between instead of reporting it never reached the check. THE SUBJECT IS SYNTHETIC ON PURPOSE: the real ambiguity was fixed in the same commit that added the audit, so the only thing left able to produce this fault is a list built to contain it. A guard whose subject cannot fail the way it claims is a cell-shaped comment - lane T shipped one and its ledger found it, which is why the controls here hand the predicate its own failing input. The zero-match arm below stays green under this mutant, since `>= 1` still reports a name nothing prints."
     }
   ]
 }
