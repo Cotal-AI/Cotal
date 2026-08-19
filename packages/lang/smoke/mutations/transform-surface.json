@@ -273,6 +273,26 @@
       "completionMarker": "ok the resolver names a free identifier when one exists",
       "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
       "note": "The name is what lets the host answer L2004 FOR THAT BINDING when the record's `v` is absent. Without it an absent field is just undefined, and the dead zone becomes a value the program carries on with."
+    },
+    {
+      "name": "the declared arity stops covering the argument F7 added, so a site sits outside the table",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "  get: [2, 3],",
+      "replace": "  get: [2, 2],",
+      "expectRed": "every seam call site passes an argument count the contract declares",
+      "cell": "every seam call site passes an argument count the contract declares",
+      "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
+      "note": "The names-only check cannot see this: every site still reaches `get`. Only the argument COUNT says the emitter and the contract have drifted, which is the drift that produced the eager-argument divergence."
+    },
+    {
+      "name": "the declared arity is widened past every site, granting a shape no ruling covers",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "  call: [3, 5],",
+      "replace": "  call: [3, 6],",
+      "expectRed": "and no declared range is wider than the emission that justifies it",
+      "cell": "and no declared range is wider than the emission that justifies it",
+      "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
+      "note": "The other direction, and the one a table alone would never notice: a bound nothing reaches is a permission for a future emission with no ruling behind it, and every site stays inside it forever."
     }
   ]
 }
