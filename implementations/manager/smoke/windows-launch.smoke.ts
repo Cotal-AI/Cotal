@@ -173,7 +173,10 @@ function launchCapture(command: string, args: string[], env: NodeJS.ProcessEnv, 
   return new Promise((resolve) => {
     let h: ReturnType<ReturnType<typeof createRuntime>["spawn"]>;
     try {
-      h = createRuntime("pty", "winsmoke").spawn("winsmoke", { command, args, env }, cwd);
+      // `process.env` values are `string | undefined`; a LaunchSpec carries only the defined ones,
+      // which is also what the child would receive, since node drops an undefined entry.
+      const defined = Object.fromEntries(Object.entries(env).filter((e): e is [string, string] => e[1] !== undefined));
+      h = createRuntime("pty", "winsmoke").spawn("winsmoke", { command, args, env: defined }, cwd);
     } catch (e) {
       resolve(`THREW:${(e as Error).message}`);
       return;

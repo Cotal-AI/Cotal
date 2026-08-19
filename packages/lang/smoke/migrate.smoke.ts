@@ -18,7 +18,7 @@
 import { run, RuntimeFault, ScopeBranchMissing, UnwalkableScope } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
-import { LANGUAGE_VERSION } from "../src/pins.js";
+import { WALKER_LANGUAGE_VERSION } from "../src/pins.js";
 import { stepKeyString } from "../src/keys.js";
 import type { EffectContext } from "../src/effects.js";
 import { journalEntryKeyString } from "../src/journal.js";
@@ -522,7 +522,7 @@ await parallel({
     return outcome === "HUNG" ? new Error(`HUNG: ${label} did not return within ${ms}ms`) : outcome;
   };
   const PINS6 = { seed: "s6", startedAt: 1_700_000_000_000, yieldEvery: 1000, stepBudget: 100_000,
-    effectCeiling: 1000, languageVersion: LANGUAGE_VERSION, runId: "r6" } as never;
+    effectCeiling: 1000, languageVersion: WALKER_LANGUAGE_VERSION, runId: "r6" } as never;
 
   const record = async (runId: string, src: string) => {
     const j6 = new Journal({ run: runId });

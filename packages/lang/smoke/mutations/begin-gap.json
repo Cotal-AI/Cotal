@@ -6,9 +6,9 @@
   "mutations": [
     {
       "name": "the boundary never re-checks cancellation on the far side of the begin append",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      if (frame.signal.cancelled) {\n        await this.journal.settle(key, { status: \"cancelled\" }, this.options.handler.now());\n        throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n      }\n    }\n\n    const ctx: EffectContext = {",
-      "replace": "    }\n\n    const ctx: EffectContext = {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (frame.signal.cancelled) {\n      await host.journal.settle(key, { status: \"cancelled\" }, host.options.handler.now());\n      throw new Cancelled(frame.signal.reason ?? \"cancelled\");\n    }\n  }\n\n  const ctx: EffectContext = {",
+      "replace": "  }\n\n  const ctx: EffectContext = {",
       "expectRed": "the handler is never asked for the effect a cancellation overtook inside `begin`",
       "completionMarker": "ok an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",
       "cell": "the handler is never asked for the effect a cancellation overtook inside `begin`",

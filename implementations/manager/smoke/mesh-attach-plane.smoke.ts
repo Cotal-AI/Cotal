@@ -221,6 +221,7 @@ rail3.send({ k: "ready" } satisfies TerminalFrame);
 rail3.send(encodeTerminalData(Buffer.from("ALIVE3\n", "utf8")));
 c("the caller is live (echo confirms the pty is alive before the kill)", await until(() => Buffer.concat(rx3).toString("utf8").includes("ALIVE3")));
 // Kill the child DIRECTLY (bypass endForTarget + handle.stop) — the agent process exits on its own.
+if (h3.pid === undefined) throw new Error("the pty handle reported no pid; there is nothing to kill");
 process.kill(h3.pid, "SIGKILL");
 c("a natural pty exit surfaces `process-exit` to the live caller (NO zombie session)", await until(() => end3 === "process-exit"), { end3, handleStatus: h3.status() });
 c("the plane drops the naturally-exited session", await until(() => plane.liveSessions === 0));
@@ -258,6 +259,7 @@ h4.stop({ graceful: false });
 // onExit must too).
 console.log("H. establishing over an already-dead pty surfaces `process-exit` (no zombie)");
 const h5 = createRuntime("pty", "mesh-plane-smoke5").spawn("worker-5", ECHO_CHILD, process.cwd());
+if (h5.pid === undefined) throw new Error("the pty handle reported no pid; there is nothing to kill");
 process.kill(h5.pid, "SIGKILL");
 await until(() => h5.status() === "exited");
 const s5 = h5.attach(); // attach over the DEAD pty

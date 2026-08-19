@@ -1,0 +1,62 @@
+{
+  "command": "pnpm smoke:web-history-limit",
+  "mutations": [
+    {
+      "name": "H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const raw = query.get(\"limit\");\n  if (raw === null || raw === \"\") return fallback;\n  if (!/^[0-9]+$/.test(raw))\n    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);\n  const n = Number(raw);\n  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);\n  return n;",
+      "replace": "  const raw = query.get(\"limit\");\n  return raw ? Number(raw) : fallback;",
+      "expectRed": "1.1 ?limit=\"abc\" is refused by ALL THREE routes, and every one of them ANSWERS"
+    },
+    {
+      "name": "H2 the refusal stops naming the value it received, leaving a caller who wrote a malformed limit told only that something was wrong with a request they cannot see",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);",
+      "replace": "    throw new BadRequest(`limit must be a whole number of messages`);",
+      "expectRed": "1.2 the refusal of \"abc\" NAMES the parameter and the value it received"
+    },
+    {
+      "name": "H3 an empty limit stops meaning the route default: `?limit=` is refused instead, breaking the one shape the old parse got right",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (raw === null || raw === \"\") return fallback;",
+      "replace": "  if (raw === null) return fallback;",
+      "expectRed": "1.6 an absent limit is the route's own default, and an EMPTY limit is the same as absent"
+    },
+    {
+      "name": "H4 a caller error is reported as a server fault again: the malformed request answers 500, so a typo in a query string reads in the log and in the body exactly like the dashboard breaking",
+      "file": "implementations/web/src/web.ts",
+      "find": "      const status = e instanceof BadRequest ? 400 : 500;",
+      "replace": "      const status = 500;",
+      "expectRed": "1.7 a malformed request is a 400, NEVER the 500 that means the dashboard broke"
+    },
+    {
+      "name": "H8 the single-channel read loses the deadline it was given, so on a slow link it runs to completion however long that takes while the console page re-reads it every poll",
+      "file": "implementations/web/src/web.ts",
+      "find": "        const page = await within(ep.channelHistory(name, { limit }), clock.until);\n        if (page === LATE)",
+      "replace": "        const page = await ep.channelHistory(name, { limit });\n        if (false)",
+      "expectRed": "3.2 THE DEADLINE FIRED: a read that cannot finish in time refuses instead of running on"
+    },
+    {
+      "name": "H9 the single-channel refusal stops naming the channel and the deadline, leaving a status where an operator needs to know WHICH channel was too slow and by what bound",
+      "file": "implementations/web/src/web.ts",
+      "find": "          return json(res, { error: `#${name}: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);",
+      "replace": "          return json(res, { error: `the read did not finish` }, 503);",
+      "expectRed": "3.3 and the refusal NAMES the channel and the deadline it exceeded, not just a status"
+    },
+    {
+      "name": "H10 the safe-integer check is dropped, so a run of digits too large for a double to count exactly is accepted and silently becomes a different number than the caller wrote",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);",
+      "replace": "  if (false)\n    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);",
+      "expectRed": "1.1 ?limit=\"99999999999999999999\" is refused by ALL THREE routes, and every one of them ANSWERS"
+    },
+    {
+      "name": "H11 the channel name goes back to a bare decode, so a percent escape the decoder cannot read reaches the request frame as a URIError rather than a bad request and a caller's typo is reported as the server having broken",
+      "file": "implementations/web/src/web.ts",
+      "find": "  let name: string;\n  try {\n    name = decodeURIComponent(raw);\n  } catch {\n    throw new BadRequest(`channel name ${quoteForOperator(raw)} is not valid percent-encoded text`);\n  }\n  return canonicalChannel(name);",
+      "replace": "  return canonicalChannel(decodeURIComponent(raw));",
+      "expectRed": "1.8 a channel name that cannot be percent-decoded is the CALLER's error, so 400 and not 500"
+    }
+  ],
+  "progressPattern": "^[0-9]\\. "
+}

@@ -50,6 +50,7 @@ import {
   isRepeatSafeCommand, MANAGER_ADMIN_COMMANDS, parseEpSubject,
   type EpCaller,
   type ResolvedService,
+  type EpError,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth, recordMesh } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -143,7 +144,7 @@ const requestsSent = (ep: CotalEndpoint): ((endpoint: string, command: string) =
  * reply); a lost effect reported as success breaks it; a refusal after the handler ran breaks it.
  */
 const dispositionAgrees = (
-  reply: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } | undefined,
+  reply: { ok?: boolean; error?: EpError } | undefined,
   ranDelta: number,
 ): boolean => ranDelta === (replyRefusedBeforeEffect(reply?.error) ? 0 : 1);
 
@@ -469,7 +470,7 @@ try {
       const readSplitsBefore = ep.splitRecoveryCount;
       const psBefore = totalRuns("ps");
       let readThrew: unknown;
-      let readLanded: { reply?: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } } | undefined;
+      let readLanded: { reply?: { ok?: boolean; error?: EpError } } | undefined;
       try { readLanded = await ep.invokeService(MANAGER_ENDPOINT, "ps"); } catch (e) { readThrew = e; }
       const afterRead = cache.get(MANAGER_ENDPOINT)?.responder.instanceId;
       check("a READ with the same forced split self-heals inside ONE call: the guard did not widen",
@@ -584,7 +585,7 @@ try {
       // reports a correctly repaired call and a duplicated one identically. It is replaced by a
       // count taken where the effect is applied, which is the property itself rather than a proxy
       // for it.
-      const purgeReply = (returned as { reply?: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } } | undefined)?.reply;
+      const purgeReply = (returned as { reply?: { ok?: boolean; error?: EpError } } | undefined)?.reply;
       check("a DESTRUCTIVE non-creating command is NEVER purged twice across the split (handler entries, not publishes)",
         totalRuns("purge") - purgedBefore <= 1, { ran: totalRuns("purge") - purgedBefore, threw });
       check("...and its disposition matches its effect: refused ⇒ nothing was purged, answered ⇒ purged once",
@@ -791,7 +792,7 @@ try {
         // the fence the re-issue is the repair and the publish count can no longer separate a
         // repaired call from a duplicated one — only the handler-entry count can.
         const delta = totalRuns(command) - ranBefore;
-        const reply = (res as { reply?: { ok?: boolean; error?: { code?: string; details?: { kind: string }[] } } } | undefined)?.reply;
+        const reply = (res as { reply?: { ok?: boolean; error?: EpError } } | undefined)?.reply;
         const refused = replyRefusedBeforeEffect(reply?.error)
           || (err instanceof EpEnvelopeError && replyRefusedBeforeEffect(err.toEpError()));
         // REACHED means the request got as far as a responder: it either ran, or came back refused

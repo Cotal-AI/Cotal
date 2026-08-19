@@ -64,9 +64,11 @@ export {
 export { NotCrossable, Prng, assertCrossable, deepFreeze } from "./values.js";
 
 export {
+  ENGINE_LANGUAGE_VERSION,
   LANGUAGE_VERSION,
   PIN_DEFAULTS,
   PinMismatch,
+  WALKER_LANGUAGE_VERSION,
   bindPins,
   resolvePins,
   type PinnableOptions,

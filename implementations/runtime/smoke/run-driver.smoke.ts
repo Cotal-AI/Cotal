@@ -14,14 +14,14 @@
  * Run: pnpm smoke:runtime-run-driver   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, RunJournalTailTruncated } from "@cotal-ai/core";
-import { SimHandler, type JournalEntry } from "@cotal-ai/lang";
+import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, RunJournalTailTruncated } from "@cotal-ai/core";
+import { ENGINE_LANGUAGE_VERSION, LANGUAGE_VERSION, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -32,7 +32,9 @@ const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a",
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;
-const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
+/** Every cell this run EXECUTED, in order, passed or failed. The seam check at the bottom reads it. */
+const EXECUTED: string[] = [];
+const c = (n: string, v: boolean, extra?: unknown) => { EXECUTED.push(n); if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });
@@ -85,11 +87,10 @@ await sleep("2h", { name: "second" });
 // ── 1) a run driven start to finish ───────────────────────────────────────────────────────────
 {
   const handler = new CountingHandler();
-  const out = await startRun(js, jsm, {
+  const out = await attempt(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-1", source: PROGRAM, lease: lease("m1", 1, 1), handler,
-  });
-  c("a started run completes", out.status === "completed",
-    out.status === "released" ? out.reason.name : out.status);
+  }));
+  c("a started run completes", out.status === "completed", why(out));
   // Two logical entries, four durable records: the journal is keyed by STEP and each step is
   // written twice, pending then settled. The broker count below is the other half of that fact.
   c("its journal holds one entry per step, not one per append",
@@ -110,11 +111,10 @@ await sleep("2h", { name: "second" });
 // merely looks right proves nothing here — the handler counts what it actually did.
 {
   const second = new CountingHandler();
-  const taken = await driveRun(js, jsm, {
+  const taken = await attempt(driveRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-1", source: PROGRAM, lease: lease("m2", 2, 2), handler: second,
-  });
-  c("a successor resumes a fully-journalled run to completion", taken.status === "completed",
-    taken.status === "released" ? taken.reason.name : taken.status);
+  }));
+  c("a successor resumes a fully-journalled run to completion", taken.status === "completed", why(taken));
   c("and performs NOTHING again: every effect came back from the journal",
     second.effects.length === 0, second.effects);
   const back = await replayRunJournal(js, jsm, SPACE, "d-1", `r${(takeovers += 1)}`);
@@ -141,15 +141,15 @@ await sleep("2h", { name: "second" });
     }
   }
   const blocked = new Blocking();
-  const started = startRun(js, jsm, {
+  const started = attempt(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-2", source: PROGRAM, lease: lease("m1", 1, 1), handler: blocked,
-  });
+  }));
   await wait(300);
   const usurper = await activateRun(js, jsm, {
     space: SPACE, runId: "d-2", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
-  const firstOut = await attempt(started);
+  const firstOut = await started;
   c("the superseded driver is RELEASED, not completed and not thrown", firstOut.status === "released",
     why(firstOut));
   c("and it says so as a durability failure, which is what the journal actually reported",
@@ -162,7 +162,10 @@ await sleep("2h", { name: "second" });
 {
   const handler = new CountingHandler();
   const req = { space: SPACE, endpoint: EP, kv, runId: "d-3", source: PROGRAM, handler };
-  await startRun(js, jsm, { ...req, lease: lease("m1", 1, 5) });
+  // NOT A BARE CALL. Every refusal below refuses a run that already exists, so if this start
+  // stopped being one the four cells would go on passing about a run nobody started.
+  const seeded = await attempt(startRun(js, jsm, { ...req, lease: lease("m1", 1, 5) }));
+  c("the run these four refusals refuse was really started", seeded.status === "completed", why(seeded));
 
   const restart = await attempt(startRun(js, jsm, { ...req, lease: lease("m1", 1, 6) }));
   c("starting a run that already has a journal is released, not silently re-run",
@@ -223,15 +226,15 @@ await sleep("3h", { name: "after-the-catch" });
     }
   }
   const handler2 = new Held();
-  const started = startRun(js, jsm, {
+  const started = attempt(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-5", source: CATCHER, lease: lease("m1", 1, 1), handler: handler2,
-  });
+  }));
   await wait(300);
   await activateRun(js, jsm, {
     space: SPACE, runId: "d-5", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   release();
-  const lost = await attempt(started);
+  const lost = await started;
   c("but a run that LOSES its journal is released, not caught and carried on", lost.status === "released",
     why(lost));
   c("and it stopped at the refusal rather than performing the catch block's effects",
@@ -257,15 +260,15 @@ try {
     }
   }
   const quiet = new HeldOnce();
-  const running = startRun(js, jsm, {
+  const running = attempt(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-5b", source: QUIET, lease: lease("m1", 1, 1), handler: quiet,
-  });
+  }));
   await wait(300);
   await activateRun(js, jsm, {
     space: SPACE, runId: "d-5b", holder: "m2", fencingToken: 2, epoch: 2, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "existing",
   });
   letGo();
-  const quietOut = await attempt(running);
+  const quietOut = await running;
   c("a run whose catch block is EMPTY still cannot report success over a journal it lost",
     quietOut.status === "released", why(quietOut));
 }
@@ -490,23 +493,22 @@ try {
   }
 
   const first = new AdoptingCounter();
-  const startedFresh = await startRun(js, jsm, {
+  const startedFresh = await attempt(startRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m1", 1, takeovers += 1), handler: first,
-  });
+  }));
   // THE CONTROL, and it is the half that makes the next cell mean anything: a FRESH run is an
   // activation too. If `adopted` fired on every activation regardless, a successor calling it would
   // prove nothing about takeover — and re-arming timers for a run with no recorded prefix is work
   // over an empty list, which is not wrong, only uninformative.
-  c("the fresh run completes", startedFresh.status === "completed",
-    startedFresh.status === "released" ? startedFresh.reason.name : startedFresh.status);
+  c("the fresh run completes", startedFresh.status === "completed", why(startedFresh));
   c("a fresh run's activation calls it with the empty prefix it actually resumed",
     first.seen.length === 1 && first.seen[0]!.length === 0, first.seen.map((e) => e.length).join(","));
 
   const second = new AdoptingCounter();
-  const taken = await driveRun(js, jsm, {
+  const taken = await attempt(driveRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m2", 2, takeovers += 1), handler: second,
-  });
-  c("a takeover completes", taken.status === "completed", taken.status === "released" ? taken.reason.name : taken.status);
+  }));
+  c("a takeover completes", taken.status === "completed", why(taken));
   c("REPAIRED: a successor repairs the previous holder's state WITHOUT any callback being wired",
     second.seen.length === 1, second.seen.length);
   // WITH THE PREFIX, not merely called. A repair handed nothing cannot re-arm anything, so "it was
@@ -523,10 +525,14 @@ try {
   // THE OVERRIDE still wins, or the callback has quietly become dead surface.
   const third = new AdoptingCounter();
   let viaCallback = -1;
-  await driveRun(js, jsm, {
+  const overridden = await attempt(driveRun(js, jsm, {
     space: SPACE, endpoint: EP, kv, runId: "d-adopt", source: PROGRAM, lease: lease("m3", 3, takeovers += 1), handler: third,
     onActivated: async (entries) => { viaCallback = entries.length; },
-  });
+  }));
+  // The same reason as the seeded start above: `viaCallback` holding -1 is what a drive that never
+  // ran looks like, and that is indistinguishable from a callback the driver declined to call.
+  c("the overriding drive completes, so viaCallback is reporting a drive that happened",
+    overridden.status === "completed", why(overridden));
   c("an explicit onActivated still wins: the default is a fallback, not a replacement",
     viaCallback === 4 && third.seen.length === 0, { viaCallback, adopted: third.seen.length });
 
@@ -542,6 +548,203 @@ try {
   c("and a handler that owns no external state needs no method: the takeover still completes",
     noHook.status === "completed", why(noHook));
 }
+
+// ── 11) THE LOAD DOOR IS REACHED BY THIS DRIVER, WITH A BINDING ACTUALLY IN THE PREFIX ────────
+//
+// The language refuses a recorded binding with no canonical form (L5024) in the Journal
+// CONSTRUCTOR, and this driver builds one at `new Journal({ run, entries: resumed, store })`. The
+// lang suite's load cell hands that constructor a hand-built entry: once the write guards exist
+// nothing shipped can PRODUCE such an entry, so that cell proves the scan depends on the value and
+// cannot prove any entry point reaches it. This is the half that can: a real takeover, through
+// this driver, over a prefix that carries a binding.
+//
+// IT HAD TO BE A NEW PROGRAM. Every other run in this file only sleeps, and `sleep` binds nothing,
+// so a takeover of PROGRAM reaches the door with every `external` absent and the scan looks at
+// nothing at all. A spawn is what makes the simulator bind, so this one spawns first.
+{
+  const BOUND = `
+const a = await spawn("a");
+await sleep("1h", { name: "first" });
+`;
+  const fresh = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-bind", source: BOUND, lease: lease("b1", 1, takeovers += 1), handler: new CountingHandler(),
+  }));
+  c("the run that binds completes", fresh.status === "completed", why(fresh));
+
+  let prefix: readonly JournalEntry[] = [];
+  const taken = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-bind", source: BOUND, lease: lease("b2", 2, takeovers += 1), handler: new CountingHandler(),
+    onActivated: async (entries) => { prefix = entries; },
+  }));
+  // The completion IS the assertion about the door: the scan runs on the way in, so a takeover that
+  // completes is one whose recorded bindings were read and accepted. A refusal would have come back
+  // through `attempt` as a reason rather than a completion.
+  c("a takeover over a journal that carries a binding still loads and completes", taken.status === "completed", why(taken));
+  // AND THE PREFIX ACTUALLY CARRIED ONE, which is the part that keeps the cell above from being
+  // green for the same reason the sleep-only takeovers are: a door walked over nothing.
+  const bound = prefix.filter((e) => e.external !== undefined);
+  c("...over a prefix that really did carry one, so the scan looked at a value rather than at nothing",
+    bound.length > 0 && (bound[0]!.external as { simAgent?: string }).simAgent === "sim.a",
+    { entries: prefix.length, withBinding: bound.length, first: bound[0]?.external });
+}
+
+// ── 12) WHICH ENGINE RUNS THIS: the capability table, and the record it refuses ────────────────
+//
+// The driver hosts a SET of language versions, and that set is a fact about this build rather than
+// about the language. Two claims live here and they pull in opposite directions, which is why both
+// are needed: a FRESH run must be stamped with the version of the engine that will actually execute
+// it, and a RECORD whose version no engine here serves must be refused by name instead of walked by
+// whichever engine happens to be present - which would run a program under semantics it was never
+// recorded under, silently, because no recorded fact would disagree.
+{
+  const out = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v-fresh", source: PROGRAM, lease: lease("m1", 1, 1),
+    handler: new CountingHandler(),
+  }));
+  c("a fresh run completes on the engine this build serves", out.status === "completed", why(out));
+  const pinned = (await readRunRecord(kv, EP, "d-v-fresh"))!.spec.value.pins;
+  // THE STAMP IS THE ENGINE'S, NOT THE LANGUAGE'S, and the second half of this cell is what makes
+  // the first half mean anything: with one shared constant both sides read the same and a driver
+  // stamping the current language would pass. MEASURED before the split existed: a driver stamping
+  // the current language and then calling the only engine it hosts refuses its own fresh runs,
+  // `driver stamps "2" -> walker: REFUSED L5008`.
+  c("and it is stamped with the version of the ENGINE that ran it, not with the current language",
+    pinned.languageVersion !== LANGUAGE_VERSION && pinned.languageVersion === WALKER_LANGUAGE_VERSION,
+    { stamped: pinned.languageVersion, engine: WALKER_LANGUAGE_VERSION, language: LANGUAGE_VERSION });
+
+  // A RECORD FROM A BUILD THAT SERVES MORE THAN THIS ONE. Written directly, because that is exactly
+  // what the driver will meet: a spec some other build's dispatcher stamped.
+  const foreign = { ...resolvePins({ runId: "d-v9" }, 1_000, WALKER_LANGUAGE_VERSION), languageVersion: "9" };
+  await createRunSpec(kv, EP, "d-v9", { pins: foreign, createdAt: 1_000 });
+  const refused = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v9", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a record no engine here serves is RELEASED, not failed and not thrown",
+    refused.status === "released", why(refused));
+  c("and it is refused by name, L5023",
+    refused.status === "released" && (refused.reason as { code?: string }).code === "L5023",
+    refused.status === "released" ? (refused.reason as { code?: string }).code : why(refused));
+  c("and the refusal names both the version it met and the set this build serves",
+    refused.status === "released" && /language version 9/.test(refused.reason.message)
+    && refused.reason.message.includes(`this build serves ${WALKER_LANGUAGE_VERSION}`),
+    refused.status === "released" ? refused.reason.message.slice(0, 120) : why(refused));
+  // THE TEETH, AND THEY NEEDED A REAL JOURNAL TO HAVE ANY. A refusal that had already activated the
+  // run would have taken the lease and written the activation, and "refused" would then describe the
+  // message and not the effect. Asserted on `d-v9` alone that claim was OVERDETERMINED: that run has
+  // no journal, so an activation would have been refused as not-resumable whatever the dispatcher
+  // did, and no mutation of the dispatch could ever have redded it. So this record is built the way
+  // one really arrives - activated once by a first holder and carrying a step - and what the cell
+  // watches is whether the SECOND holder took it.
+  const first = await activateRun(js, jsm, {
+    space: SPACE, runId: "d-v9j", holder: "m1", fencingToken: 1, epoch: 1, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "new",
+  });
+  await new RunJournalStore(first).append({
+    v: 1, seq: 0, run: "d-v9j", scope: "", kind: "sleep", name: "first", occurrence: 0,
+    inputHash: "h", state: "settled", startedAt: 1, endedAt: 2, result: null,
+  } as never);
+  await createRunSpec(kv, EP, "d-v9j", { pins: foreign, createdAt: 1_000 });
+  const held = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v9j", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a foreign-version record WITH a journal is refused the same way",
+    held.status === "released" && (held.reason as { code?: string }).code === "L5023",
+    held.status === "released" ? (held.reason as { code?: string }).code : why(held));
+  // WATCHED ON THE JOURNAL, not on the record: `activateRun` writes an activation RECORD into the
+  // run's subject and does not write the run record's status - measured, the first attempt at this
+  // cell asked for a status that is written by `startRun` and read back `undefined`, so it failed
+  // for a reason that had nothing to do with the claim. A second holder taking this run would leave
+  // a SECOND activation behind it, and that is the mark this cell looks for.
+  const after = await replayRunJournal(js, jsm, SPACE, "d-v9j", `r${(takeovers += 1)}`);
+  const activations = after.records.filter((r) => r.record.kind === "activation").length;
+  c("and the run was not touched: the refusal came before the activation, so only the first holder's is there",
+    activations === 1, after.records.map((r) => r.record.kind));
+
+  // The narrow original, kept: a record with NO journal is refused without being activated either.
+  const untouched = await readRunRecord(kv, EP, "d-v9");
+  c("and a record with no journal is refused with no status written at all",
+    untouched?.status === undefined, untouched?.status?.value);
+
+  // THE RECORD THIS BUILD WILL ACTUALLY MEET, as opposed to a version nobody wrote: one stamped by
+  // the ENGINE. It takes the same branch as the unserved number above and it is not the same claim -
+  // that one says the table refuses what it does not list, this one says the version the other
+  // engine really writes is on the far side of that line today. It is also the cell that must be
+  // revisited rather than silently kept the day the engine joins the table: it will red, and the
+  // red is the point, because on that day the dispatcher's answer for a v2 record changes.
+  const v2 = { ...resolvePins({ runId: "d-v2" }, 1_000, WALKER_LANGUAGE_VERSION), languageVersion: ENGINE_LANGUAGE_VERSION };
+  await createRunSpec(kv, EP, "d-v2", { pins: v2, createdAt: 1_000 });
+  const engineRecord = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v2", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+    engineRecord.status === "released"
+    && (engineRecord.reason as { code?: string }).code === "L5023"
+    && engineRecord.reason.message.includes(`language version ${ENGINE_LANGUAGE_VERSION}`),
+    engineRecord.status === "released" ? engineRecord.reason.message.slice(0, 120) : why(engineRecord));
+
+  // A RECORD FROM BEFORE THE FIELD EXISTED. It reaches the same branch by a different route: not a
+  // version this build does not serve, but no version at all, which `find` also fails to match. The
+  // sentence is the whole cell - an operator reads it, and a refusal that interpolates a missing
+  // value tells them the record says "undefined" when what happened is that it says nothing.
+  const { languageVersion: _dropped, ...versionless } = foreign;
+  await createRunSpec(kv, EP, "d-v-absent", { pins: versionless as typeof foreign, createdAt: 1_000 });
+  const absent = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v-absent", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a record that names no language version at all is refused the same way",
+    absent.status === "released" && (absent.reason as { code?: string }).code === "L5023",
+    absent.status === "released" ? (absent.reason as { code?: string }).code : why(absent));
+  c("and the refusal says the record names none, rather than interpolating the missing value",
+    absent.status === "released" && !/undefined/.test(absent.reason.message)
+    && absent.reason.message.includes(`this build serves ${WALKER_LANGUAGE_VERSION}`),
+    absent.status === "released" ? absent.reason.message.slice(0, 140) : why(absent));
+
+  // THE CONTROL, and without it the three cells above are satisfied by a driver that refuses every
+  // hand-written spec. Same construction, same absent journal, ONE character different.
+  const served = { ...foreign, languageVersion: WALKER_LANGUAGE_VERSION };
+  await createRunSpec(kv, EP, "d-v1", { pins: served, createdAt: 1_000 });
+  const other = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v1", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("while the same spec at a version this build DOES serve gets past the table",
+    other.status !== "released" || (other.reason as { code?: string }).code !== "L5023",
+    other.status === "released" ? `${other.reason.name}: ${(other.reason as { code?: string }).code ?? ""}` : why(other));
+  // And the defaults are the ones the record carried, which is what a hand-written spec is for here.
+  c("and the hand-written spec is a real one: its limits are the language's own defaults",
+    served.yieldEvery === PIN_DEFAULTS.yieldEvery && served.stepBudget === PIN_DEFAULTS.stepBudget,
+    served);
+}
+
+// ---- the cross-package index seam, answered by EXECUTION rather than by source text -------------
+//
+// `indexed-cells.json` beside this file lists the cells of this suite that the language package's
+// version-split matrix cites. This half asserts every one of them RAN. The other half, in
+// packages/lang/smoke/differential.smoke.ts, asserts set equality between that list and the matrix's
+// driver rows, so between the two nothing in the index can be satisfied by a quotation.
+//
+// WHY THE LIST IS A DATA FILE AND NOT A CONST HERE. Put these sentences in this file as source text
+// and a check that asks whether this file CONTAINS them becomes unconditionally true -- not a weaker
+// check, one that cannot fail. Measured from both sides: comment out a cited call and containment
+// still passes, because grep finds the sentence twice, once in the dead call and once in the list.
+// A separate artefact leaves the containment answer honest and gives the other side something to
+// PARSE rather than scrape out of TypeScript, which matters when a cell name carries an apostrophe.
+//
+// EXACTLY ONCE, not merely present: a sentence matching two executed cells leaves the row ambiguous
+// about which cell carries it, and this file already has one name it uses twice.
+const seam = JSON.parse(readFileSync(new URL("./indexed-cells.json", import.meta.url), "utf8")) as {
+  suite: string;
+  cells: string[];
+};
+c("the cited-cells file names this suite, so it is this file's seam and not another's",
+  seam.suite.endsWith("run-driver.smoke.ts"), seam.suite);
+const unrun = seam.cells.map((s) => ({ s, hits: EXECUTED.filter((e) => e === s).length })).filter(({ hits }) => hits !== 1);
+c("every cell the language package's matrix cites from this file is one THIS RUN executed, exactly once",
+  unrun.length === 0, unrun.map(({ s, hits }) => `${hits} execution(s): ${s}`));
+console.log(`  (${seam.cells.length} cited cells checked against ${EXECUTED.length} executed)`);
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
 done();

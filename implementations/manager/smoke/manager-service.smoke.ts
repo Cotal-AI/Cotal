@@ -39,7 +39,7 @@ import {
   epcredFamilyPrefix, parseLedgerRow, rawDigest, recordSpecKey, RECORD_KINDS,
   epCall, epRequestSubject, epCallerReplyFilter, EpEnvelopeError,
   serveIssuanceGateKv,
-  type EpServeLedgerRow,
+  type CredentialLedgerRow,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -103,8 +103,10 @@ try {
   const recKv = await kvm.open(recordsBucket(space));
   const gateKey = epgateKey(MANAGER_ENDPOINT, iid);
   const readGate = async () => parseEndpointGate((await authKv.get(gateKey))!.value, gateKey);
-  const credRows = async (): Promise<EpServeLedgerRow[]> => {
-    const rows: EpServeLedgerRow[] = [];
+  // `parseLedgerRow` returns a CredentialLedgerRow; the annotation named the serve-grant row type,
+  // which is a different shape.
+  const credRows = async (): Promise<CredentialLedgerRow[]> => {
+    const rows: CredentialLedgerRow[] = [];
     const it = await authKv.keys(`${epcredFamilyPrefix(MANAGER_ENDPOINT, iid)}.>`);
     for await (const k of it) rows.push(parseLedgerRow((await authKv.get(k))!.value, k));
     return rows;
@@ -177,7 +179,7 @@ try {
   {
     const replies: unknown[] = [];
     const sub = callerNc.subscribe(epCallerReplyFilter(space, caller), {
-      callback: (_e, m) => replies.push(JSON.parse(dec.decode(m.data))),
+      callback: (_e, m) => { replies.push(JSON.parse(dec.decode(m.data))); },
     });
     const n = `n${String(Date.now()).padStart(23, "0")}`;
     const subj = epRequestSubject(space, { route: { mode: "one" }, endpoint: MANAGER_ENDPOINT, command: "describe", caller, nonce: n });

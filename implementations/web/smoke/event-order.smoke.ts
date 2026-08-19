@@ -402,11 +402,16 @@ console.log("event-order smoke");
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
   const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml"]);
+  // `markStale` and `renderStale` join the set because `select()` now reports a refused channel
+  // history through them. Extracted rather than stubbed: a stub would let these cells keep passing
+  // against a version that stopped reporting, which is the failure this lane already hit once.
+  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml", "setStale", "markStale", "renderStale"]);
   // The single-flight state the shipped functions read. TAKEN FROM THE FILE, not restated: a
   // hand-written `let refreshing = null` here would let the harness keep passing after the real
   // declaration changed, and a bootstrap that coalesces is the whole of blocker 1.
-  const wantedState = new Set(["refreshing", "selecting"]);
+  // `shownChannel` and `staleNow` are the state those two read. TAKEN FROM THE FILE for the same
+  // reason as the rest: a hand-written copy here would drift from what ships.
+  const wantedState = new Set(["refreshing", "selecting", "shownChannel", "staleNow"]);
   const fns: string[] = [];
   const state: string[] = [];
   sf.forEachChild((n) => {
@@ -416,8 +421,8 @@ console.log("event-order smoke");
         if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
   });
   // Pinned first: a short extraction would make every cell below vacuous.
-  ok("12.1 all five shipped functions are extractable", fns.length === 5, fns.length);
-  ok("12.1b and the in-flight state they coalesce on", state.length === 2, state);
+  ok("12.1 all eight shipped functions are extractable", fns.length === 8, fns.length);
+  ok("12.1b and the in-flight state they coalesce on, plus the marker state", state.length === 4, state.length);
 
   type Ctx = Record<string, unknown> & {
     activity: unknown[];
@@ -435,8 +440,25 @@ console.log("event-order smoke");
       fetch: async (u: string) => {
         const isBackfill = u.includes("/api/activity") || u.includes("/history");
         if (isBackfill && mode === "reject") throw new Error("network down");
+        // The channel history read is gated on status now, like every other read on this page, so the
+        // stub answers a Response shape rather than a bare body. `ok: true` is load-bearing: without
+        // it the gate refuses and these cells would be driving the refusal arm they do not test.
+        if (u.includes("/history")) return { ok: true, status: 200, json: async () => [] };
+        // `/api/activity` answers a BOUNDED PAGE, not a bare array, and the stub says so: a stub
+        // that still served the old shape would keep these cells green against a client that could
+        // no longer read what the server sends.
+        if (u.includes("/api/activity"))
+          return { ok: true, json: async () => ({ entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }) };
         return { ok: true, json: async () => [] };
       },
+      // The stale pill's element, so the shipped `setStale` runs rather than being stubbed out: it is
+      // on the same path as the note this section measures and a missing stub would throw there.
+      // `space` answers for the same reason: the poll reads the space name as a source now, and an
+      // apply that throws takes the whole poll with it, which would make every cell below measure a
+      // missing harness global instead of the rule it names.
+      $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => ({ textContent: "" }) }
+        : id === "space" ? { textContent: "" } : null),
+      document: { title: "" },
       refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, renderChannels() {},
       renderDMs() {}, renderRoster() {}, renderRail() {}, rosterRows: () => [],
       roster: [], channels: new Map(), dms: [], activity: [] as unknown[], agentSel: null,
@@ -448,6 +470,10 @@ console.log("event-order smoke");
     };
     const c = createContext(ctx);
     runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
+    // Keep-last-good + the refusal guard, READ OFF DISK like the order machine beside it: `refresh()`
+    // reads every source through it, so a restatement here would let these cells pass against a
+    // version that no longer ships.
+    runInContext(readFileSync(join(webSrc, "snapshot.js"), "utf8"), c, { filename: "snapshot.js" });
     runInContext("feedOrder = window.COTAL_EVENT_ORDER.create(); channelOrder = window.COTAL_EVENT_ORDER.create();", c);
     runInContext([...state, ...fns].join("\n"), c, { filename: "app.js" });
     (ctx as Record<string, unknown>).__ctx = c;
@@ -543,7 +569,7 @@ console.log("event-order smoke");
   // inside the `selected === "*"` branch. So for a reader sitting on a channel, a DM or an agent
   // drill-down, every live frame was held by a machine that would never settle: absent from the feed,
   // then discarded wholesale by the next poll's re-arm. A `finally` is the only placement that covers
-  // all four branches AND a throw from any earlier request.
+  // all four branches AND a throw from anything the function calls between the arm and the settle.
   for (const branch of ["channel", "dm", "agent"] as const) {
     const ctx = page("resolve");
     if (branch === "channel") ctx.selected = "team.backend";
@@ -554,16 +580,37 @@ console.log("event-order smoke");
     ok(`14.${branch === "channel" ? 2 : branch === "dm" ? 4 : 6} and the held frame is not stranded`, ctx.feedOrder.pendingCount === 0, ctx.feedOrder.pendingCount);
   }
   {
-    // An EARLIER request throwing, which the failure arm around `/api/activity` never covered:
-    // `/api/roster` is the first fetch in the function and it was unguarded.
+    // A THROW BETWEEN THE ARM AND THE SETTLE. This cell used to drive it by rejecting `/api/roster`,
+    // the function's first fetch, which was unguarded. Every source read now goes through the
+    // keep-last-good helper, which REPORTS a refusal instead of propagating it, so that stimulus no
+    // longer throws at all and the cell it fed became vacuous: it passed whether the settle ran on
+    // every path or only on the normal tail. That is not a reason to drop the rule, because the
+    // renders this function calls once its reads are in can still throw, and the consequence is
+    // unchanged: the frames held during the poll are stranded for the life of the page. So the
+    // stimulus moves to a throw that the current code can actually produce, and 14.7b proves the
+    // stimulus fired rather than leaving the cell to pass on a call that never happened.
+    const ctx = page("resolve");
+    let threw = false;
+    (ctx as Record<string, unknown>).renderSidebarNav = () => { threw = true; throw new Error("render blew up"); };
+    await drive(ctx, "refresh()", frame(9));
+    ok("14.7 a throw between the arm and the settle still settles the boundary", ctx.feedOrder.settled === true);
+    ok("14.7b CONTROL: the stimulus really threw (a cell whose throw never fires grades nothing)", threw === true);
+    ok("14.8 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+  }
+  {
+    // THE PATH THAT REPLACED IT, kept as its own cells because it is a DIFFERENT claim: a source read
+    // that refuses is absorbed and reported, and the boundary still passes. Nothing throws here, so
+    // this pair cannot stand in for 14.7 and is not written as though it could.
     const ctx = page("resolve");
     (ctx as Record<string, unknown>).fetch = async (u: string) => {
       if (u.includes("/api/roster")) throw new Error("network down");
+      if (u.includes("/api/activity"))
+        return { ok: true, json: async () => ({ entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }) };
       return { ok: true, json: async () => [] };
     };
     await drive(ctx, "refresh()", frame(9));
-    ok("14.7 a throw from the FIRST request still settles the boundary", ctx.feedOrder.settled === true);
-    ok("14.8 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
+    ok("14.9 a REFUSED source read still settles the boundary", ctx.feedOrder.settled === true);
+    ok("14.10 and the frame held during it still reaches the feed", ctx.activity.length === 1, seqsOf(ctx.activity));
   }
 
   // ── 15. THE NOTES ARE DRAWN, which is a different claim from computing them ─────────────────────

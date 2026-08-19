@@ -130,7 +130,7 @@ try {
   };
   const openGate = async (): Promise<void> => {
     const g = await readGate();
-    const { op: _op, ...rest } = g.row as Record<string, unknown>;
+    const { op: _op, ...rest } = g.row;
     void _op;
     await authKv.update(gateKey, enc.encode(JSON.stringify({ ...rest, state: "open" })), g.revision);
   };
@@ -141,7 +141,7 @@ try {
   const supersedeGate = async (): Promise<void> => {
     await freezeGate();
     const g = await readGate();
-    const { op: _op, ...rest } = g.row as Record<string, unknown>;
+    const { op: _op, ...rest } = g.row;
     void _op;
     await authKv.update(gateKey, enc.encode(JSON.stringify({ ...rest, state: "open", generation: g.row.generation + 1 })), g.revision);
   };
