@@ -953,9 +953,45 @@ const bindsPatternName = (n: ts.BindingName, name: string): boolean => {
   return out.has(name);
 };
 
-/** The structure a destructuring takes apart, when it is written out at the declaration. A freeze
- *  is that same structure with a call around it, and reading through the call is the twin of the
- *  admission rule the seam's own name folds by. */
+/** Is the thing being taken apart WRITTEN OUT here, wrapping calls included?
+ *
+ *  This is the question that decides refuse-versus-pass, so it is asked about the shape rather than
+ *  about a list of blessed function names. Freeze was deepened and `Object.assign` was then found
+ *  fail-open behind it, which is the same finding twice and would be the same finding a third time
+ *  for `structuredClone`. Any call carrying a written literal is text this reader is looking at, so
+ *  failing to read it is a refusal; a call carrying no literal, `build(cfg)`, is not written here at
+ *  all and is passed on the same terms every unreadable value is passed. */
+function writtenSource(init: ts.Expression): boolean {
+  const x = unwrap(init);
+  if (ts.isObjectLiteralExpression(x) || ts.isArrayLiteralExpression(x)) return true;
+  if (ts.isCallExpression(x)) return x.arguments.some((a) => writtenSource(a));
+  return false;
+}
+
+/** What the written source hands over for one key, through the wraps that do not change it and the
+ *  merge that does. */
+function sourceValue(init: ts.Expression, key: string, consts: Map<string, string>): Read {
+  const x = unwrap(init);
+  if (ts.isObjectLiteralExpression(x)) return propertyOf(x, key, consts);
+  if (ts.isCallExpression(x) && ts.isPropertyAccessExpression(x.expression)
+    && ts.isIdentifier(x.expression.expression) && x.expression.expression.text === "Object") {
+    const fn = x.expression.name.text;
+    if (FREEZERS.has(fn) && x.arguments.length === 1) return sourceValue(x.arguments[0], key, consts);
+    if (fn === "assign" && x.arguments.length > 0) {
+      // Later sources overwrite earlier ones, so the answer is the RIGHTMOST statement of the key,
+      // and an arm to the right of it that this file cannot read could be the one that wins.
+      for (let i = x.arguments.length - 1; i >= 0; i -= 1) {
+        const r = sourceValue(x.arguments[i], key, consts);
+        if (r.kind === "opaque" || r.kind === "declined") return DECLINED;
+        if (r.kind === "value") return r;
+      }
+      return { kind: "absent" }; // every arm readable, none of them states the key
+    }
+  }
+  return OPAQUE;
+}
+
+/** The ARRAY structure a destructuring takes apart, when it is written out at the declaration. */
 function writtenStructure(init: ts.Expression): ts.Expression | undefined {
   const x = unwrap(init);
   if (ts.isObjectLiteralExpression(x) || ts.isArrayLiteralExpression(x)) return x;
@@ -985,16 +1021,18 @@ function propertyOf(src: ts.ObjectLiteralExpression, key: string, consts: Map<st
 function patternValue(pattern: ts.BindingName, init: ts.Expression | undefined,
   name: string, consts: Map<string, string>): Read {
   if (!init) return OPAQUE;
+  if (!writtenSource(init)) return OPAQUE; // not written out here, so this file has nothing to read
   const src = writtenStructure(init);
-  if (!src) return OPAQUE; // not written out here, so this file has nothing to read
-  if (ts.isObjectBindingPattern(pattern) && ts.isObjectLiteralExpression(src)) {
+  if (ts.isObjectBindingPattern(pattern)) {
     for (const el of pattern.elements) {
       if (!bindsPatternName(el.name, name)) continue;
       if (el.dotDotDotToken) return DECLINED; // a rest holds what the other elements did not take
       const key = keyText(el.propertyName ?? el.name, consts);
       if (key === undefined) return DECLINED;
-      const got = propertyOf(src, key, consts);
-      if (got.kind === "declined" || got.kind === "opaque") return got;
+      const got = sourceValue(init, key, consts);
+      // Written here and not read is a REFUSAL, which is the whole difference between this and the
+      // value that simply is not written here at all.
+      if (got.kind === "declined" || got.kind === "opaque") return DECLINED;
       if (!ts.isIdentifier(el.name))
         return got.kind === "absent" ? DECLINED : patternValue(el.name, got.expr, name, consts);
       // A default runs only when the property is ABSENT, and is dead when it is there.
@@ -1003,7 +1041,7 @@ function patternValue(pattern: ts.BindingName, init: ts.Expression | undefined,
     }
     return DECLINED;
   }
-  if (ts.isArrayBindingPattern(pattern) && ts.isArrayLiteralExpression(src)) {
+  if (ts.isArrayBindingPattern(pattern) && src && ts.isArrayLiteralExpression(src)) {
     if (src.elements.some((e) => ts.isSpreadElement(e))) return DECLINED; // alignment is gone
     for (let i = 0; i < pattern.elements.length; i += 1) {
       const el = pattern.elements[i];
@@ -1821,6 +1859,23 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const { tls = false } = {} as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   // DECLINED is not the same as fine. A shape written out here that this reader does not take apart
   // is refused, because the six shapes it used to pass were each green while the call threw.
+  // A MERGE is a written source too, and its answer is the rightmost arm that states the key, which
+  // is what `Object.assign` does at runtime. Deepening freeze alone left this fail-open, and that is
+  // the same finding twice, so the rule is about the SHAPE rather than a list of blessed names.
+  check("a MERGE is read, and the value is the one the rightmost arm states",
+    one(`const { tls } = Object.assign({}, { tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...so a later real boolean wins over an earlier undefined, as the merge itself does",
+    one(`const { tls } = Object.assign({ tls: undefined as any }, { tls: false });\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a later undefined wins over an earlier real boolean, which is the direction that throws",
+    one(`const { tls } = Object.assign({ tls: false }, { tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...while an arm this file cannot read could be the one that wins, so the merge is refused",
+    one(`const { tls } = Object.assign({ tls: false }, cfg);\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  // ANY call carrying a written literal is text this reader is looking at, so not reading it is a
+  // refusal. Naming freeze and assign one at a time would have left the next wrapper fail-open.
+  check("another call wrapping a written literal is REFUSED, not passed, without being named here",
+    one(`const { tls } = structuredClone({ tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...while a call carrying no written literal is not written here at all, and still passes",
+    one(`const { tls } = build(cfg);\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("a GETTER in the source is refused, not passed, since reading it would mean running it",
     one(`const { tls } = { get tls() { return undefined; } } as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...and a SPREAD in the source is refused, since it can supply the key or hide it",
