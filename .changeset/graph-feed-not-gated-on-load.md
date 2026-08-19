@@ -6,8 +6,10 @@ Open the graph view's live feed as the page loads, not after it.
 
 The connection pill is driven by the `/feed` EventSource opening, and the page chained that behind
 its whole bootstrap. The bootstrap reads the activity and DM backfills, both bounded by the
-aggregation deadline, so on a slow link the graph read `disconnected` for the entire load window and
-only then went live. An earlier fix stopped the bootstrap from rejecting, which guaranteed the feed
+aggregation deadline, so on a slow link the graph's connection pill stayed down for the entire load
+window and only then went live. Measured in Chrome against a local broker behind an 80ms-each-way
+link with 40 channels: the pill first said `live` at 8052ms, tracking the slowest bootstrap read at
+8044ms. With the feed opened first it says `live` at 89ms while that read still runs to 8066ms. An earlier fix stopped the bootstrap from rejecting, which guaranteed the feed
 would be opened but not that it would be opened soon.
 
 The feed now opens first and the bootstrap fills in around it, which is what the Monitor page has

@@ -2,15 +2,24 @@
  * THE LIVE FEED IS NOT GATED BEHIND THE SLOW BOOTSTRAP READ.
  *
  * The graph page's connection pill is driven by ONE thing: `EventSource("/feed")` opening. Until it
- * does, the header reads `disconnected`. The page booted as
+ * does, the pill sits in its `down` state: `connecting` as the page ships it, and `disconnected`
+ * once an error has fired. The page booted as
  *
  *     load().catch((err) => console.error(err)).then(connect);
  *
  * so the feed was not opened until the ENTIRE bootstrap settled, and that bootstrap reads
  * `/api/activity?limit=400` and `/api/dms?limit=400`, both bounded by the aggregation deadline. On a
- * slow link the page therefore reads `disconnected` for the whole load window and only then goes
- * live. Reported from a real deployment observed across a WAN link: "always showing disconnected,
- * and taking long to show the graph".
+ * slow link the pill therefore stays down for the whole load window and only then goes live.
+ * Reported from a real deployment observed across a WAN link: "always showing disconnected, and
+ * taking long to show the graph".
+ *
+ * MEASURED IN A REAL BROWSER, both arms on one link and one corpus: Chrome, a local broker behind
+ * 80ms each way, 40 channels with history. Chained, the feed's `EventSource` was constructed at
+ * t=8050ms and open at 8052ms, which is when the pill first said `live`; the slowest bootstrap read
+ * answered at 8044ms, so the pill tracked the bootstrap exactly. Concurrent, it was constructed at
+ * t=62ms and open at 88ms, with the pill `live` at 89ms while that same read still ran to 8066ms.
+ * A reviewer noted that a browser can queue an `EventSource` behind six pending same-origin reads;
+ * it does not queue this one, because `connect()` runs before the reads are issued.
  *
  * An earlier fix made `load()` never REJECT, so `connect()` always RUNS, and its comment says
  * "Nothing here can prevent `connect()` from running". That is true and it is not the property
