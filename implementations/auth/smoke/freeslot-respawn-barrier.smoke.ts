@@ -52,7 +52,12 @@
  * `(principal, lifecycleUid)`-pinned cleanup). The CONTRACT asserts need no edits for that; only
  * a mechanical rename is expected if P2 restructures the private `deprovisionBroker` seam this
  * harness wraps. The teardown's LOCAL half (creds/secret shred + ledger revoke) is asserted GREEN
- * throughout: its synchronous prefix protects it, and the replay is broker-only.
+ * throughout. NOT because it is synchronous: the ledger revoke is AWAITED and production says so
+ * itself (`deprovisionBroker`'s doc: "the revoke is awaited and can be deliberately slow, so it is
+ * not merely a synchronous prefix"). What holds it is the ORDER of the single-flighted chain, the
+ * local half completing before the broker phase begins, plus `standingAuthorityLive`, which is set
+ * before the revoke is attempted and RETAINED when it fails so the hold can never free the name
+ * (`manager.ts` around the revoke; INT-2 runs that EACCES path). The replay is broker-only.
  *
  * The footprint checks ENUMERATE by principal prefix (via a harness-only inspector cred — no
  * production profile grants CONSUMER.LIST) and attribute predecessor/successor sets by TIMELINE:
@@ -435,9 +440,9 @@ try {
 
   // ---------- C. retirement barrier: despawn with the broker cleanup held, probe the alias ----------
   console.log("C) despawn with the broker cleanup held; the alias must not be reassignable");
-  // Hold the predecessor's broker teardown on a gate — deprovisionBroker ONLY, so the teardown's
-  // synchronous prefix (creds/secret shred + ledger revoke) runs untouched at despawn time exactly
-  // as in production. Instance-level wrap of the private method (runtime-visible; the repo's
+  // Hold the predecessor's broker teardown on a gate — deprovisionBroker ONLY, so the local half of
+  // the teardown (creds/secret shred + the AWAITED ledger revoke) runs untouched at despawn time
+  // exactly as in production, and only the phase that follows it is held. Instance-level wrap of the private method (runtime-visible; the repo's
   // smokes already reach into manager privates): the FIRST broker teardown for this agent name
   // parks until released; everything else passes through and is recorded so every deleter in play
   // stays attributable. The gated call's ARG is captured — section E replays it, modeling the
@@ -468,15 +473,18 @@ try {
 
   const stopReply = await mAny.opStop({ name: AGENT, graceful: false }, mAny.ep.ref().id, true);
   check("despawn reply ok", stopReply.ok === true, stopReply);
-  // The broker phase engages a few microtasks after freeSlot (the teardown's synchronous prefix +
-  // the ledger-revoke await sit before it) — poll briefly for the gate to be taken.
+  // The broker phase engages after freeSlot, with the creds/secret shred and the AWAITED ledger
+  // revoke ahead of it in the same chain, so the delay is a real await and not a microtask hop —
+  // poll for the gate to be taken.
   for (let i = 0; i < 100 && !gatedRun; i++) await wait(20);
   check("the detached teardown reached its broker cleanup and is held on the gate",
     gatedRun !== undefined && predArg !== undefined);
-  // The teardown's LOCAL half already ran in its synchronous prefix, exactly as in production: the
-  // predecessor's ledger row is gone at this point. Asserting it keeps the probe honest — the gate
-  // must not have deferred anything the real code does synchronously.
-  check("predecessor row already revoked by the synchronous prefix (gate held nothing local)",
+  // The teardown's LOCAL half has already completed here, exactly as in production, because the
+  // ledger revoke is AWAITED ahead of the broker phase rather than racing it. Asserting it keeps the
+  // probe honest: the gate must not have deferred anything the real chain finishes first. An earlier
+  // version of this comment and of the cell name below called that a "synchronous prefix", which is
+  // the wrong mechanism and contradicted production's own note; a review caught it.
+  check("predecessor row already revoked before the broker phase (gate held nothing local)",
     !existsSync(managedRowPath(OWNER)));
 
   // BARRIER 1 — while the predecessor's cleanup is pending, the alias must stay RESERVED: a
