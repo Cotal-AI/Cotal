@@ -1,0 +1,48 @@
+{
+  "command": "pnpm smoke:web-body-cap",
+  "progressPattern": "^[0-9]\\. ",
+  "mutations": [
+    {
+      "name": "C1 the streaming count stops refusing, so the cap holds only for a caller that honestly declares an oversized body and stops nothing for one that declares nothing at all",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, \"read\");\n",
+      "replace": "",
+      "expectRed": "5.2 a body with NO declared length is still refused, so the cap is enforced on the bytes as they arrive and not only on what the caller admits to"
+    },
+    {
+      "name": "C2 the declared size is no longer consulted, so an announced oversize is read until the streaming gate catches it instead of being refused before a body byte arrives",
+      "file": "implementations/web/src/web.ts",
+      "find": "  const declared = Number(req.headers[\"content-length\"]);\n  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");\n",
+      "replace": "",
+      "expectRed": "5.1 a DECLARED oversize is refused, and the caller is cut off having sent a small fraction of what it announced, so the read never ran to the end"
+    },
+    {
+      "name": "C3 the cap TRUNCATES instead of refusing, which is the failure this route can least afford: it turns an oversized body into a shortened one and acts on whatever that parses to, the same shape as a channel name the caller never sent",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, \"read\");\n    chunks.push(chunk as Buffer);",
+      "replace": "    if (seen > MAX_BODY_BYTES) { chunks.push((chunk as Buffer).subarray(0, (chunk as Buffer).length - (seen - MAX_BODY_BYTES))); break; }\n    chunks.push(chunk as Buffer);",
+      "expectRed": "4.2 ...and the refusal is about the size, never a complaint about a channel name, which is what a truncated parse would produce"
+    },
+    {
+      "name": "C4 the count is still exact and the refusal still says 413, but it is only consulted AFTER the loop, so the whole body is read before the server forms an opinion and the memory is already spent when the refusal is written",
+      "file": "implementations/web/src/web.ts",
+      "find": "  for await (const chunk of req) {\n    seen += (chunk as Buffer).length;",
+      "replace": "  for await (const chunk of req) {\n    seen += (chunk as Buffer).length;\n    if (true) { chunks.push(chunk as Buffer); continue; }",
+      "expectRed": "5.3 ...and the caller is cut off partway through an undeclared body, so the refusal happened AT the threshold rather than after reading to the end"
+    },
+    {
+      "name": "C5 the delete route swallows the size refusal back into an empty body, so an oversized request is answered with a complaint that a field is missing which the caller in fact sent, and the size is never mentioned",
+      "file": "implementations/web/src/web.ts",
+      "find": "        if (e instanceof PayloadTooLarge) throw e;\n",
+      "replace": "",
+      "expectRed": "3.1 a body over the cap is refused with 413, the status for a body this server declined to READ, not the 400 it gives a body it read and disliked"
+    },
+    {
+      "name": "C6 the cap is set far below any real body, which is the opposite failure to the one this change fixes: it refuses the dashboard's own deletes and would read as a working cap to anyone who only tested oversized bodies",
+      "file": "implementations/web/src/web.ts",
+      "find": "const MAX_BODY_BYTES = 8 * 1024;",
+      "replace": "const MAX_BODY_BYTES = 1024;",
+      "expectRed": "2.4 a body just UNDER the cap is processed normally, extra fields and all"
+    }
+  ]
+}
