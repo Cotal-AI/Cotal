@@ -1159,7 +1159,7 @@ function nestedWrites(scope: ts.Node, name: string): number {
 function resolveName(id: ts.Identifier, consts: Map<string, string>):
   { fact: NameFact; decl?: ts.VariableDeclaration; sole?: ts.Node; written: boolean } {
   for (let scope = scopeOf(id); scope; scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope)) {
-    const reads: Read[] = [];
+    const reads: Exclude<Read, { kind: "opaque" }>[] = []; // opaque is COUNTED, never collected
     const decls: ts.VariableDeclaration[] = [];
     const sites: ts.Node[] = [];
     let writes = 0, opaque = 0;

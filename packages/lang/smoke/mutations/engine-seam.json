@@ -71,9 +71,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "      refuseThenable(v, \"this value\");",
       "replace": "",
-      "expectRed": "a literal with an own callable `then` refuses at birth",
+      "expectRed": "a literal with an own callable `then` refuses at birth (L4021)",
       "completionMarker": "ok writing a member of null is L4010",
-      "cell": "a literal with an own callable `then` refuses at birth",
+      "cell": "a literal with an own callable `then` refuses at birth (L4021)",
       "note": "Measured: returning such a value out of any async function runs its `then` with the host's settlement functions as arguments, outside the run's frame. Birth is one of the two doors that close the whole value graph. The cell captures the outcome instead of returning the value through its own async boundary: written the other way, this mutant made the suite HANG rather than fail (the assimilated `then` ignores resolve, so the promise never settles, exit 13) — the hazard demonstrating itself inside the cell meant to grade it."
     },
     {
@@ -81,9 +81,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");",
       "replace": "",
-      "expectRed": "writing a callable into the field `then` refuses (L4018)",
+      "expectRed": "writing a callable into the field `then` refuses (L4021)",
       "completionMarker": "ok a FUNCTION carrying an own callable `then` refuses at birth too",
-      "cell": "writing a callable into the field `then` refuses (L4018)",
+      "cell": "writing a callable into the field `then` refuses (L4021)",
       "note": "The second door. Without it `x[\"th\" + \"en\"] = f` mints the hazard past any static spelling of the name, which is the shape no emitter-side check can see."
     },
     {
@@ -91,9 +91,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "      refuseThenable(v, \"this awaited value\");",
       "replace": "",
-      "expectRed": "awaiting an own-callable-`then` value is L4018",
+      "expectRed": "awaiting an own-callable-`then` value is L4021 as well",
       "completionMarker": "ok writing a NON-callable into `then` stays legal",
-      "cell": "awaiting an own-callable-`then` value is L4018",
+      "cell": "awaiting an own-callable-`then` value is L4021 as well",
       "note": "The cell's second conjunct is what this mutant really exposes: the gate has to run BEFORE the await, because once `await` has the value the host has already called its `then`."
     },
     {
@@ -459,12 +459,32 @@
     {
       "name": "the stop reason's length is never published",
       "file": "packages/lang/src/engine/worker.ts",
-      "find": "  Atomics.store(new Int32Array(buffer, 0, 1), 0, Math.max(bytes.length, 1));",
-      "replace": "  void bytes;",
+      "find": "  Atomics.store(new Int32Array(buffer, 0, 1), 0, written);",
+      "replace": "  void written;",
       "expectRed": "a stopped run ends through its own cancellation path",
       "completionMarker": "ok while `({}).constructor === Object` still holds, which is the model",
       "cell": "a stopped run ends through its own cancellation path",
       "note": "The bytes are written first and the LENGTH is what publishes them, so a reader can never see a length promising bytes the writer has not finished writing. Drop the store and the reader's atomic load answers 0 forever: the reason is in memory the run will never look at."
+    },
+    {
+      "name": "the reason is cut by bytes again, through a character",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "  const { written } = new TextEncoder().encodeInto(reason === \"\" ? NO_REASON : reason, room);",
+      "replace": "  const b = new TextEncoder().encode(reason === \"\" ? NO_REASON : reason).subarray(0, STOP_CAPACITY);\n  room.set(b);\n  const written = b.length;",
+      "expectRed": "a reason cut by the buffer is cut BETWEEN characters, never through one",
+      "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
+      "cell": "a reason cut by the buffer is cut BETWEEN characters, never through one",
+      "note": "The spelling this replaced, restored exactly. A UTF-8 character is one to four bytes and a cut placed by byte count alone lands inside one: measured through the real thread, a three-byte character straddling the buffer's last byte reached the run as U+FFFD on the end of the operator's sentence. `encodeInto` fills the room with whole code points and reports what that took. The truncation cell above stays green under this mutant - it only asks that a long reason is cut at all - which is why the cut's PLACE needs a cell and a mutant of its own."
+    },
+    {
+      "name": "an empty stop reason arrives as a byte again",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "reason === \"\" ? NO_REASON : reason, room);",
+      "replace": "reason, room);",
+      "expectRed": "a stop with an EMPTY reason still ends the run",
+      "completionMarker": "ok including a four-byte one, which a two-byte fix would still cut",
+      "cell": "a stop with an EMPTY reason still ends the run",
+      "note": "The length is what publishes the bytes, so a reason of no bytes is no stop at all: without the substitution `stop(\"\")` stores 0 and the run never reads a reason, so it runs to completion and the cell that says an empty stop still ends the run reds. The older spelling floored the length at 1 instead, which DID stop the run - and delivered whatever byte happened to be in shared memory, measured as a NUL on the end of the operator's sentence."
     },
     {
       "name": "the journal does not cross back out of the thread",
@@ -651,10 +671,10 @@
       "file": "packages/lang/src/engine/host.ts",
       "find": "export const NODE_FLOOR = 22;",
       "replace": "export const NODE_FLOOR = 999;",
-      "expectRed": "runOnEngine RAN this program rather than refusing it at the boundary",
-      "completionMarker": "ok and the ambient frame is what a framed call reads",
-      "cell": "runOnEngine RAN this program rather than refusing it at the boundary",
-      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal has to fire on the first program that goes through `runOnEngine`, and it does. That is the reachability half, and it is graded by a cell four sections before the floor's own."
+      "expectRed": "and on the engine, with the same value and the same shape",
+      "completionMarker": "ok while an IN-RANGE index write completes on the walker",
+      "cell": "and on the engine, with the same value and the same shape",
+      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal has to fire on the FIRST program that goes through `runOnEngine`, and it does. Which cell that is, is a POSITION and not a name, and it moved: the section-3 control that compares an in-range index write on both arms is now the first engine run in the file, so the refusal arrives there, four sections before the cell that used to name it. Measured after the insertion, not assumed - the first run of this ledger graded WRONG-RED and that is how the shift was found. The control captures its engine run for the same reason: awaited into the assertion, this mutant killed the block anonymously instead of failing a named cell. The floor's own section still states the rule; what this grades is that a real run reaches it."
     },
     {
       "name": "a node below the floor is allowed through",
@@ -752,7 +772,7 @@
       "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
       "replace": "      assertWritable(o, currentFrame());\n      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");\n      if (Array.isArray(o)) {",
       "expectRed": "and so does the engine, not the value's rule",
-      "completionMarker": "ok a literal with an own callable `then` refuses at birth",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth (L4021)",
       "cell": "and so does the engine, not the value's rule",
       "note": "Where this gate stood until the order was measured, and the reason a rule about the VALUE cannot be asked before the rule about the MEMBER: `keys({a:1}).then = () => 1` came back L4018 where the walker says L4014, the same sentence `.foo` gets, because an array does not have that member at all. Both engines refuse the program either way, which is why only a cell comparing the CODES against the oracle catches it."
     },
@@ -762,7 +782,7 @@
       "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
       "replace": "      if (!Array.isArray(o)) assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
       "expectRed": "and so does the engine, freeze ahead of the member rule",
-      "completionMarker": "ok a literal with an own callable `then` refuses at birth",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth (L4021)",
       "cell": "and so does the engine, freeze ahead of the member rule",
       "note": "The other end of the same order, and it is measured on the oracle too: a frozen array written with a member it does not have answers L2031, not L4014. A host that asked the member rule first would tell an author to fix the member name on a value no member name would have made writable."
     },
@@ -787,14 +807,24 @@
       "note": "The widening this whole surface exists to refuse, and the shape it would actually arrive in: not a member removed, which every behavioural cell would notice, but one ADDED - reachable from the program, invisible to every law cell, and outside the table both lanes hold. Set equality is checked in both directions for exactly this. First spelling of this cell put BOTH counts in its name, so under the mutant it renamed itself to '...implements 15' and the config could not name it: a clean red graded WRONG-RED. The name now carries only the side the mutant does not move."
     },
     {
-      "name": "a logged function reaches the transport",
+      "name": "the code predicate stops seeing a function",
       "file": "packages/lang/src/values.ts",
       "find": "  if (typeof value === \"function\") {\n    throw new NotCrossable(\n      \"function\",",
       "replace": "  if (false) {\n    throw new NotCrossable(\n      \"function\",",
-      "expectRed": "and it is L4016, the same code both in-process arms answer",
-      "completionMarker": "ok log lines cross out, values intact",
-      "cell": "and it is L4016, the same code both in-process arms answer",
-      "note": "The defect this crossing was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. Both in-process arms completed, so only a cell on the WORKER leg sees it. The rule itself is graded where it lives (log-data.json over surface.smoke); what this grades is that the worker leg notices. Aimed at the CODE cell, measured: unrefused, the function reaches `postMessage`, the thread's own run fails on the clone and the failure crosses as a fault - so `ok === false` is still true and the first cell stays green. What changes is the code, and the two cells after it."
+      "expectRed": "an empty record and one carrying a closure, which a shallow signature could not",
+      "completionMarker": "ok and the two infinities, which it draws alike as well",
+      "cell": "an empty record and one carrying a closure, which a shallow signature could not",
+      "note": "`assertNoCode` has TWO dependents now and this grades the predicate itself, which is why it moved twice. It was aimed at the worker leg, then at the engine's log sink when the fold moved the rule there (src/engine/ctx.ts became its only caller), and the rendering remedy then made the shape signature's `carriesCode` catch the SAME predicate on purpose - so that the signature and the log rule cannot drift apart. The cost of that choice is this mutant's aim: measured at 7f2cd1a2 it reds in section 15b, upstream of section 20b, because a shape control asks the predicate a question before any log line does. Re-aimed at the cell that actually reds first, and the log rule keeps a mutant of its own on the sink in ctx.ts, which nothing shadows. Marker is the control immediately above."
+    },
+    {
+      "name": "the engine's log sink stops asking whether a value carries code",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        assertNoCode(v, `log: value ${i + 1}`);",
+      "replace": "        void v;",
+      "expectRed": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "completionMarker": "ok an unreadable version is not refused on the strength of being unreadable",
+      "cell": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "note": "THE RULE, where it lives, with an anchor nothing else reads. The defect it was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. It is an ENGINE rule with NO ORACLE BEHIND IT: the walker replays runs recorded under language version 1 and hands a logged builtin to its host as it is, on purpose, so the differential declares it a divergence and there is no second arm to compare against. Aimed at section 20b's in-process cell, which runs a program through the transform onto the engine and reads the L4016 sentence; the worker leg in section 22 is NOT the aim, because unrefused the thread's own run fails on the clone and that failure still crosses as a fault, so its first cell stays green."
     },
     {
       "name": "the thread posts a kind the crossing table never cells",
@@ -815,6 +845,36 @@
       "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
       "cell": "an unknown message kind is refused, not read as the run's answer",
       "note": "The handler this branch replaced: one case for `log` and everything else read as the answer. A thread posting anything unexpected resolved the run with `undefined` - success, no value - and the real result arrived after nobody was listening. Found by a mutation that added a message kind, reproduced with a two-line worker entry the suite hands in, which is what the entry being an INPUT buys."
+    },
+    {
+      "name": "the shape leg is compared but never able to differ",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(b);",
+      "replace": "const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(a) && b !== null;",
+      "expectRed": "absence and a literal null render the same and are told apart",
+      "completionMarker": "ok and a trailing CALL",
+      "cell": "absence and a literal null render the same and are told apart",
+      "note": "The gate leg and the section-15b controls call ONE predicate, so this grades the predicate the gate actually uses rather than a second copy. Mutated to compare an arm against itself, every pair reads 'same' and the first control - the undefined/null pair, which is the distinction this wave leans on hardest - reds. Marker is the last cell of section 15, immediately above the controls."
+    },
+    {
+      "name": "the shape signature goes shallow again",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "          : typeof v === \"object\"\n            ? carriesCode(v)\n              ? \"object+code\"\n              : \"object\"\n            : typeof v;",
+      "replace": "          : typeof v;",
+      "expectRed": "an empty record and one carrying a closure, which a shallow signature could not",
+      "completionMarker": "ok and the two infinities, which it draws alike as well",
+      "cell": "an empty record and one carrying a closure, which a shallow signature could not",
+      "note": "The first spelling of this signature WAS shallow `typeof`, and shallow it fails the two rows it was added for: `{ g: (x) => x }` and `{}` both read 'object'. The four top-level pairs above survive shallow, which is exactly what made the first spelling look fine, so this reds only the two nesting controls and the nesting one comes first. `carriesCode` catches `assertNoCode` rather than re-implementing it, so this mutant also says the signature and the engine's log rule cannot drift apart."
+    },
+    {
+      "name": "negative zero stops being named",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "    : Object.is(v, -0)\n      ? \"-0\"\n",
+      "replace": "    : false\n      ? \"-0\"\n",
+      "expectRed": "zero and negative zero, which an ordinary division reaches",
+      "completionMarker": "ok and an array of absence against an array carrying code, which come free",
+      "cell": "zero and negative zero, which an ordinary division reaches",
+      "note": "JSON draws -0 as 0 and `0 / -1` is an ordinary program, so this is a hazard a run can reach rather than a curiosity. Unnamed, -0 falls through to `typeof` and reads 'number' exactly as 0 does, and the control that separates them reds."
     }
   ]
 }

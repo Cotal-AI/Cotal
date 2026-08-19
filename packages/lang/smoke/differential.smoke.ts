@@ -25,6 +25,7 @@ import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
 import { BUILTINS, EFFECT_KINDS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
 import { ADMITTED_NODES } from "../src/syntax.js";
+import { assertNoCode } from "../src/values.js";
 import { parseModule, unbound } from "./_module-shape.js";
 import { parse } from "acorn";
 import { spawnSync } from "node:child_process";
@@ -87,8 +88,63 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
 
 const j = (v: unknown) => JSON.stringify(v);
 
-/** What an arm answered, as one string: the refusal it raised, or the lines it logged. */
-const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)}`);
+/**
+ * What a logged value IS, where JSON cannot say.
+ *
+ * `JSON.stringify` draws `undefined`, `null`, a FUNCTION, NaN and both infinities all as `null`, so
+ * a comparison over the rendering answers "identical" for five different facts — including the one
+ * this wave cares about most, a live closure handed to a host where the other arm handed absence.
+ * Measured, not reasoned: `log((x) => x)` and `log(o.b)` both render `[[null]]` on the walker.
+ *
+ * Five decisions here, each on purpose, and the fourth and fifth were lane H's after they ran the
+ * first spelling against the pairs it has to separate. `null` is NAMED rather than left as
+ * "object", because undefined-versus-null is the distinction this wave leans on hardest (it is why
+ * `get`'s cell test is `hasOwn` and not truthiness). NaN and the infinities are named for the same
+ * reason they are the problem: JSON draws them as `null` too. NEGATIVE ZERO is named, because JSON
+ * draws it as `0` and `0 / -1` is an ordinary program. A container that CARRIES CODE anywhere
+ * inside it is named apart from one that does not — a shallow `typeof` drew `{ g: (x) => x }` and
+ * `{}` alike, which is the exact pair these rows exist to separate, and it is the NESTED closure
+ * rather than the bare one that killed the worker with a DataCloneError. Everything else is bare
+ * `typeof`: this stays a SHAPE, one bit per hazard, with no key names, depth or ordering in it, so
+ * it never becomes a second serializer with blind spots of its own to argue about.
+ *
+ * `carriesCode` CATCHES `assertNoCode` rather than re-implementing it, which is the load-bearing
+ * part: that predicate is what the log rule itself is built on, so the signature and the rule
+ * cannot drift apart. A hand-rolled walk here — which is what the first version of this file had —
+ * is a second answer to "does this carry code", and the first one to change is the one nobody
+ * re-reads. It carries its own `seen` set, so a cyclic value costs nothing extra, and arrays come
+ * along for free because `typeof []` is "object": `[fn]` and `[undefined]` both render `[null]`.
+ */
+const carriesCode = (v: unknown): boolean => {
+  try {
+    assertNoCode(v, "v");
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+const shapeOf = (v: unknown): string =>
+  v === null
+    ? "null"
+    : Object.is(v, -0)
+      ? "-0"
+      : typeof v === "number" && Number.isNaN(v)
+        ? "NaN"
+        : typeof v === "number" && !Number.isFinite(v)
+          ? v > 0
+            ? "Infinity"
+            : "-Infinity"
+          : typeof v === "object"
+            ? carriesCode(v)
+              ? "object+code"
+              : "object"
+            : typeof v;
+
+const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((line) => line.map(shapeOf)));
+
+/** What an arm answered, as one string: the refusal it raised, or the lines it logged AND their shapes. */
+const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)} shapes ${shapes(a.logs)}`);
 
 /** Where two arms differ, as the field names. Empty means identical. */
 const differences = (a: Arm, b: Arm): string[] => {
@@ -99,6 +155,10 @@ const differences = (a: Arm, b: Arm): string[] => {
   // reds and this line is live evidence again instead of a comparison nobody restored.
   if (j(a.value) !== j(b.value)) out.push("value");
   if (j(a.logs) !== j(b.logs)) out.push("logs");
+  // AND WHAT THE RENDERING CANNOT SAY, as its OWN label rather than folded into "logs": a shape-only
+  // divergence is one where the line above already answered "identical", so hiding it there would
+  // report the difference under a name that had just denied it.
+  if (shapes(a.logs) !== shapes(b.logs)) out.push("log shapes");
   if (a.error !== b.error) out.push("error");
   // ENTRY FOR ENTRY, in order. A journal that agreed as a set and disagreed on sequence would be a
   // replay that resumes into the wrong step, which is the failure this whole gate exists to catch.
@@ -306,6 +366,12 @@ log("rounds", rounds, r.status);`,
   // absence and NaN are values, not functions, and both arms log them as they are. The trace is
   // not the journal.
   ["absence and NaN are data, and still log", "const o = { a: 1 }; log(o.b, 0 / 0);", {}],
+  // AND THE VALUES JSON CANNOT DRAW, as programs rather than as hand-built control pairs. Measured
+  // on both arms: `0 / -1`, `-0` and `0 * -1` are all a true negative zero, and dividing into one
+  // gives -Infinity, so the shape leg has live evidence in the corpus and not only in its controls.
+  // Both render as `0` and `null`; only the shapes say which value crossed.
+  ["negative zero, three ways to reach it", "log(0 / -1, -0, 0 * -1);", {}],
+  ["and the sign it carries, read back out", "const n = 0 / -1; log(1 / n);", {}],
   // AND THE SAME QUESTION WHERE THE RECEIVER IS AN ARRAY, which was the divergence this row was
   // written as: the walker answered L4014 and the engine L4018, because the engine asked the value's
   // rule before the member rule. Ruled - target-kind, then the freeze, then that kind's member rule,
@@ -314,6 +380,43 @@ log("rounds", rounds, r.status);`,
   // than `foo` is, whatever is being written into it.
   ["refusals: a callable then written onto an array", 'keys({ a: 1 }).then = () => 1; log("after");', {}, "L4014"],
   ["refusals: a non-member written onto an array, the control", 'keys({ a: 1 }).foo = 1; log("after");', {}, "L4014"],
+  // AND THE VALUE LAW ON A RECORD, which is what all of the rows above are pointed at and what none
+  // of them could reach. These six were NOT COMPARABLE until #657. The walker had no gate on the way
+  // in, so writing a callable `then` onto a record completed there while the engine refused - three
+  // declared divergences - and the ones that went on to touch the record afterwards took the
+  // oracle's own PROCESS down, which is a third thing again and is why they sat in a quarantine
+  // instead of a list. #657 gave the walker the rule at its four record-member write sites and the
+  // engine adopted the walker's code, so all six now refuse L4021 on both arms. Measured before
+  // they were moved, and the part a shared code does not buy on its own: empty log and an EMPTY
+  // JOURNAL on both arms, so the prefixes are equal and not only the answers. Both spellings of the
+  // key, because it is the one thing a reader expects to change the answer and it does not; and the
+  // two branch names, because a branch called `then` makes the scope's own result record awaitable
+  // and the refusal has to land on the argument literal, ahead of the scope digest - one entry
+  // written there and these two rows would diverge on entry count with the same code on both arms.
+  ["refusals: a callable then written onto a record", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, "L4021"],
+  ["refusals: a callable then written onto a record, computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, "L4021"],
+  ["refusals: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, "L4021"],
+  ["refusals: a callable then, then a later reference to the record", 'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);', {}, "L4021"],
+  ["refusals: a scope branch named then", 'await parallel({ then: async () => 1 }, { name: "p" });', {}, "L4021"],
+  ["refusals: a race branch named then, where one arm is enough", 'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });', {}, "L4021"],
+  // AND THE FREEZE, which stands AHEAD of the member rule (H measured the order on the walker; this
+  // is the shape that shows it as a program). A record handed to a host effect is frozen from then
+  // on, and after that BOTH writes are L2031: the member the array does not have, which was L4014
+  // one line above, and the member it does have, which completed before it was shared. Without the
+  // last two rows "L2031" would just be L4014 wearing another code.
+  [
+    "refusals: a member written onto a record the host has seen",
+    'const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs.foo = 1;',
+    { asks: { q: { value: { days: 2 }, at: 0 } } },
+    "L2031",
+  ],
+  [
+    "refusals: even a member it HAS, once the host has seen it",
+    'const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs[0] = "z";',
+    { asks: { q: { value: { days: 2 }, at: 0 } } },
+    "L2031",
+  ],
+  ["the same member written before the host saw it, the control", 'const sch = { xs: keys({ a: 1 }) };\nsch.xs[0] = "z";\nlog(sch.xs[0]);', {}],
   // The one admitted node type the gate never spelled, found by the coverage cell below rather than
   // by reading the corpus. An unbraced body is L1009, so a stray `;` between statements is the only
   // spelling the validator admits, and it is what the emitter has to carry through unchanged.
@@ -439,6 +542,33 @@ const reachedKinds = new Set<string>();
   found("entry count", { ...base, entries: base.entries.slice(1) }, "entry count");
   found("entry order", { ...base, entries: [...base.entries].reverse() }, "entry 0");
   found("step key", { ...base, entries: [{ ...(base.entries[0] as JournalEntry), name: "perturbed" }, base.entries[1] as JournalEntry] }, "entry 0");
+
+  // AND THE LEG THAT ONLY EXISTS BECAUSE THE RENDERING LIES. These four pairs render IDENTICALLY —
+  // `JSON.stringify` draws undefined, null, a function, NaN and both infinities all as `null`, and
+  // a record carrying a function exactly as an empty one — so the `logs` leg says nothing and the
+  // whole difference has to be found by shape. Without this cell the new leg would be a claim about
+  // an empty set: every corpus row passes it today, which is precisely when a check cannot show it
+  // can fail. The pairs are the five values, and the nesting the shallow version could not see.
+  const shapeOnly = (label: string, left: unknown[][], right: unknown[][]) => {
+    const a = { ...base, logs: left };
+    const b = { ...base, logs: right };
+    const d = differences(a, b);
+    ok(`the comparator finds a difference the rendering cannot show: ${label}`, !d.includes("logs") && d.includes("log shapes"), {
+      rendered: [j(left), j(right)],
+      shapes: [shapes(left), shapes(right)],
+      differences: d,
+    });
+  };
+  shapeOnly("absence against a literal null", [[undefined]], [[null]]);
+  shapeOnly("absence against a live closure, which is the hazard the log rule exists for", [[undefined]], [[(x: number) => x]]);
+  shapeOnly("absence against NaN", [[undefined]], [[Number.NaN]]);
+  shapeOnly("NaN against Infinity", [[Number.NaN]], [[Number.POSITIVE_INFINITY]]);
+  shapeOnly("an empty record against one carrying a function, which is the nesting a shallow signature missed", [[{}]], [[{ g: (x: number) => x }]]);
+  shapeOnly("an array of absence against an array carrying code, which renders the same either way", [[[undefined]]], [[[(x: number) => x]]]);
+  shapeOnly("zero against negative zero, which `0 / -1` produces in an ordinary program", [[0]], [[-0]]);
+  // AND THE NEGATIVE HALF: the shape leg must not report a difference where there is none, or it
+  // would red every row in the suite and mean nothing.
+  ok("and reports no shape difference between two arms that logged the same values", !differences({ ...base, logs: [[1, "a", null]] }, { ...base, logs: [[1, "a", null]] }).includes("log shapes"));
 }
 
 // ---- what a ruling made different, on purpose ----------------------------------------------------
@@ -456,23 +586,14 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646 — and
   // when it lands the walker starts refusing, these cells red, and the divergence is retired here
   // rather than remembered.
-  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, "logs [[null]]", "L4018"],
-  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, "logs [[6]]", "L4018"],
+  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018"],
+  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018"],
   // Ruling 1c's second declared divergence, issue 647: `len` of a PROGRAM-DEFINED function. Neither
   // number is the program's arity — each arm reports the arity of its own closure wrapper, the
   // walker's `(frame, args)` pair and the engine's rest parameter — which the cell below measures
   // rather than asserts. Pinned to both answers, so whichever way the issue is settled this reds.
-  ["ruling 1c / issue 647: `len` of a program function", "log(len((x) => x));", {}, "logs [[2]]", "logs [[0]]"],
-  ["ruling 1c / issue 647: `len` of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, "logs [[2]]", "logs [[0]]"],
-  // THE VALUE LAW THROUGH `set`, measured on both arms each in its own process. Writing a callable
-  // `then` onto a record COMPLETES on the walker - it has no gate on the way in - where the engine
-  // refuses L4018 at `set`, because a record that can be awaited is the class this language refuses
-  // to mint. Ruling 1a quarantined the programs that KILL the walker; these do not, so they are
-  // comparable and belong here. Both spellings, plain and computed, because the member key is the
-  // one thing a reader would expect to change the answer and it does not.
-  ["the value law through `set`: a callable then, written plainly", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
-  ["the value law through `set`: a callable then, written computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
-  ["the value law through `set`: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, "logs []", "L4018"],
+  ["ruling 1c / issue 647: `len` of a program function", "log(len((x) => x));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
+  ["ruling 1c / issue 647: `len` of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
   // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
   // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
   // even clone one - measured, it died on a host DataCloneError with the emitted module body in the
@@ -482,9 +603,9 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // the engine, declared here with both answers - the walker's is what the comparator's JSON view
   // makes of a live closure. Three doors: the value itself, a function nested in a record, and a
   // namespace, which is a record of them.
-  ["a log line is data on the engine: a function value", "log((x) => x);", {}, "logs [[null]]", "L4016"],
-  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]]', "L4016"],
-  ["a log line is data on the engine: a namespace", "log(json);", {}, "logs [[{}]]", "L4016"],
+  ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016"],
+  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+code"]]', "L4016"],
+  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+code"]]', "L4016"],
 ];
 
 {
@@ -597,55 +718,42 @@ const HELD: readonly (readonly [string, string, object, readonly string[], HeldA
   console.log(`  (${HELD.length} program(s) held out of the corpus, each pinned to both arms' answers)`);
 }
 
-// ---- what the ORACLE's own process does not survive ----------------------------------------------
+// ---- what the ORACLE's own process used to not survive -------------------------------------------
 
 /**
- * A program held out of BOTH lists because the walker's process dies on it.
+ * The three programs ruling 1a quarantined, checked from OUTSIDE the suite for the opposite fact.
  *
- * Ruling 1a's quarantine, mechanized rather than remembered. The failure is an unhandled rejection
- * inside the interpreter's own await - not a throw an arm can catch - so it cannot be measured from
- * inside this suite at all: it would take the suite down with it. The only place the fact is
- * observable is a child process's exit code, which is what this asserts. The engine's answer is
- * measured here too, so the record says what the pair WOULD compare as if the oracle survived.
+ * The quarantine is empty: #657 gave the walker its record-member rule, and all three now refuse
+ * L4021 to their caller instead of taking the interpreter's own process down - so they are corpus
+ * rows above, compared arm against arm like anything else. This section is what replaces the
+ * quarantine rather than what is left of it, and it is NOT symmetry: a corpus row runs its program
+ * IN THIS PROCESS, and the three ways these used to fail are all ways that a corpus row cannot
+ * report. Measured, at the sha before the walker's rule landed: the set door died on an uncaught
+ * RuntimeFault that escaped the caller's `try` and killed the process, and BOTH branch-name doors
+ * never settled at all - a branch called `then` makes the scope's result record awaitable, so the
+ * interpreter's await waits on a promise nothing resolves. Two of those hang this suite forever
+ * and the third takes it down mid-run; none of them reds a cell. A child process's exit code is
+ * still the only place the fact is observable, so the mechanism stays and the assertion inverts.
+ *
+ * Two clauses, both load-bearing. The exit code says the process SURVIVED. The printed refusal says
+ * the failure reached the caller as a catchable throw carrying the ruled code - which is the part a
+ * surviving process does not prove on its own, and the part the corpus rows depend on.
  */
-const QUARANTINE: readonly (readonly [string, string, string, string])[] = [
-  [
-    "issue 642 through the set door: a callable then, then any later reference to the record",
-    'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);',
-    "L4011",
-    "L4018",
-  ],
-  // AND THE BRANCH-NAME DOOR, which fails a THIRD way: the walker neither completes nor rejects, it
-  // never settles - a branch named `then` makes the scope's own result record awaitable, so the
-  // interpreter's await hands it the arm and waits on a promise nothing resolves. The child exits 13
-  // on an unsettled top-level await, which is why the marker below is that sentence and not a code.
-  [
-    "issue 642 through the branch-name door: a scope branch named then",
-    'await parallel({ then: async () => 1 }, { name: "p" });',
-    "unsettled top-level await",
-    "L4018",
-  ],
-  [
-    "the same door on a race, where one arm is enough",
-    'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });',
-    "unsettled top-level await",
-    "L4018",
-  ],
+const SURVIVED: readonly (readonly [string, string])[] = [
+  ["issue 642 through the set door: a callable then, then any later reference to the record", 'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);'],
+  ["issue 642 through the branch-name door: a scope branch named then", 'await parallel({ then: async () => 1 }, { name: "p" });'],
+  ["the same door on a race, where one arm is enough", 'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });'],
 ];
 {
   const child = new URL("./walker-child.ts", import.meta.url).pathname;
-  for (const [name, source, walkerKills, engineAnswer] of QUARANTINE) {
+  for (const [name, source] of SURVIVED) {
     const run = spawnSync(process.execPath, ["--import", "tsx", child, source], { encoding: "utf8" });
     const out = `${run.stdout}${run.stderr}`;
-    // THREE THINGS, and the third is the one that makes it a quarantine rather than a refusal: the
-    // child neither completed nor reported a caught refusal, so the failure escaped the caller.
-    ok(`quarantined, and the walker's own process still does not survive it: ${name}`,
-      run.status !== 0 && out.includes(walkerKills) && !out.includes("COMPLETED") && !out.includes("REFUSED"),
+    ok(`the oracle's own process survives it, and hands the refusal back to its caller: ${name}`,
+      run.status === 0 && out.includes("REFUSED L4021"),
       { status: run.status, out: out.slice(0, 160) });
-    const e = await arm("engine", source, {});
-    ok(`and the engine answers it cleanly, which is what makes the gap a coverage cap: ${name}`, answer(e) === engineAnswer, { engine: answer(e), expected: engineAnswer });
   }
-  console.log(`  (${QUARANTINE.length} program(s) quarantined: the oracle's process dies, so no arm can compare them)`);
+  console.log(`  (${SURVIVED.length} program(s) the oracle used to die on, checked in a child because a regression HANGS this suite rather than reding it)`);
 }
 
 // ---- one journal, either engine: each arm resumes from the other's ------------------------------
@@ -846,7 +954,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // its options as the SECOND argument and a `notify` fact is a bounded decision record, so two
   // corpus entries were refused by the validator identically on the walker and on the engine, and
   // their cells were green over nothing. The validator is the corpus's own gate now.
-  const every = [...CORPUS, ...DIVERGENT.map(([n, src, sc]) => [n, src, sc] as const), ...HELD.map(([n, src, sc]) => [n, src, sc] as const), ...QUARANTINE.map(([n, src]) => [n, src, {}] as const), ...RESUMABLE];
+  const every = [...CORPUS, ...DIVERGENT.map(([n, src, sc]) => [n, src, sc] as const), ...HELD.map(([n, src, sc]) => [n, src, sc] as const), ...RESUMABLE];
   const invalid: string[] = [];
   for (const [name, source] of every) {
     try {
@@ -856,7 +964,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     }
   }
   ok("every program in every list is one the validator admits", invalid.length === 0, invalid);
-  console.log(`  (${every.length} programs validated across the corpus, the divergences, the holds, the quarantine and the crossings)`);
+  console.log(`  (${every.length} programs validated across the corpus, the divergences, the holds and the crossings)`);
 
   // AND EACH ONE IS OBSERVABLE. A program that logs nothing, journals nothing and refuses nothing
   // compares equal for the same reason an invalid one does.

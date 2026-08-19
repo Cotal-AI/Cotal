@@ -131,13 +131,22 @@
       "note": "The behavioural half of the surface cell: the walker answers a CATCHABLE L2004 and the program still reads the declared value afterwards, where the mutant's engine dies on an engine fault the program cannot see. Measured before it was aimed."
     },
     {
-      "name": "a quarantined program is one the walker actually survives, so the exclusion is a comment",
+      "name": "a program in the survival list is one that no longer refuses, so the check is a comment",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "    'const o = {}; o.then = (r) => { r(1); }; log(\"t\", typeof o.then);',\n    \"L4011\",",
-      "replace": "    'const o = {}; o.then = (r) => { r(1); }; log(\"after\");',\n    \"L4011\",",
-      "expectRed": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door",
-      "cell": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door: a callable then, then any later reference to the record",
-      "note": "A quarantine-discipline cell, so its mutant is in the fixture. Drop the later reference and the walker COMPLETES: the child prints it, and the cell that would otherwise be a comment saying 'we left this out' reds. This is the direction that matters - a list of exclusions nobody re-measures is how a program stays outside the gate after the reason expires."
+      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.then = (r) => { r(1); }; log(\"t\", typeof o.then);'],",
+      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.a = 1; log(\"t\", typeof o.a);'],",
+      "expectRed": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door",
+      "cell": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door: a callable then, then any later reference to the record",
+      "note": "The list this replaced was a QUARANTINE and its mutant asked whether the exclusion had expired; this is the mirror, and it is the one that matters now that these three are corpus rows. Swap the subject for a program that completes and the child prints COMPLETED with exit 0 - the process survives, so an assertion that only read the exit code would stay green over a list that had stopped measuring the value law at all. The cell reds because SURVIVING IS NOT THE CLAIM: the claim is that the failure comes back to the caller as the ruled refusal."
+    },
+    {
+      "name": "the child swallows a failure that escaped the caller, so an uncatchable refusal reads as a caught one",
+      "file": "packages/lang/smoke/walker-child.ts",
+      "find": "} catch (e) {\n  console.log(`REFUSED ${(e as { code?: string }).code ?? (e as Error).name}`);\n}",
+      "replace": "} catch (e) {\n  throw e;\n}",
+      "expectRed": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door",
+      "cell": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door: a callable then, then any later reference to the record",
+      "note": "The OTHER clause, and the one the whole section exists for. These three used to fail in ways a corpus row cannot report - one killed the interpreter's process outright, two never settled - so what the cell has to notice is a refusal that does NOT come back catchable. Break the child's catch and the failure escapes exactly as it used to: the process dies, nothing is printed, and the cell reds on the exit code. Without this mutant the survival clause is graded by nothing, because no program left in the language still kills the oracle."
     },
     {
       "name": "`undefined` is emitted as the global name, so a module the gate runs is no longer closed",
@@ -147,6 +156,33 @@
       "expectRed": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
       "cell": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
       "note": "Measured: NOT ONE behavioural cell in this suite reds. The free name resolves to the real global in the harness's evaluator, and lane H measured that inside the shipped SES compartment an unbound READ answers `undefined` and throws nothing either - so both arms agree, every journal matches, and the only thing that notices is the resolver over the emitted text. That is the whole argument for running it over the corpus this gate actually executes."
+    },
+    {
+      "name": "the shape leg is never compared, so the gate is back to comparing renderings",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  if (shapes(a.logs) !== shapes(b.logs)) out.push(\"log shapes\");",
+      "replace": "",
+      "expectRed": "the comparator finds a difference the rendering cannot show: absence against a literal null",
+      "cell": "the comparator finds a difference the rendering cannot show: absence against a literal null",
+      "note": "A comparator-discipline cell, so its mutant is in the comparator. Every corpus row still passes without this leg - that is the whole point, the blindness was latent - so only the hand-built pairs notice, which is what makes them the evidence that the leg can fail at all."
+    },
+    {
+      "name": "the shape signature goes shallow, so a record carrying a function reads as an empty one",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "          : typeof v === \"object\"\n            ? carriesCode(v)\n              ? \"object+code\"\n              : \"object\"\n            : typeof v;",
+      "replace": "          : typeof v;",
+      "expectRed": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function",
+      "cell": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function, which is the nesting a shallow signature missed",
+      "note": "The first spelling of this signature WAS shallow, and lane H measured that it failed the two rows it had been added for: `{ g: (x) => x }` and `{}` both read `object`, and it is the NESTED closure rather than the bare one that killed the worker with a DataCloneError. The top-level pairs still pass shallow, so only the nesting controls red."
+    },
+    {
+      "name": "negative zero loses its sign in the signature, so `0 / -1` reads as zero",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "    : Object.is(v, -0)\n      ? \"-0\"\n",
+      "replace": "",
+      "expectRed": "the comparator finds a difference the rendering cannot show: zero against negative zero",
+      "cell": "the comparator finds a difference the rendering cannot show: zero against negative zero, which `0 / -1` produces in an ordinary program",
+      "note": "Lane H's second hole in the first spelling. JSON draws -0 as `0` and so does a bare `typeof`, and `0 / -1`, `-0` and `0 * -1` are three ordinary programs that produce a true one, measured on both arms - they are corpus rows now, so this bit has live evidence and not only a control."
     }
   ],
   "completionMarker": "differential.smoke:"

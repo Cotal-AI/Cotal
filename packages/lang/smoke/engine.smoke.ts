@@ -28,7 +28,7 @@ import { arrayMethods, numberMethods, stringMethods } from "../src/library.js";
 import { parse } from "acorn";
 import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
-import { Prng } from "../src/values.js";
+import { Prng, assertNoCode } from "../src/values.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
 import { NODE_FLOOR, assertNodeFloor, runOnEngine, resumeOnEngine } from "../src/engine/host.js";
 import * as workerModule from "../src/engine/worker.js";
@@ -101,6 +101,69 @@ const caught = async (body: () => unknown): Promise<unknown> => {
   }
 };
 const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefined)?.code;
+
+/**
+ * THE SHAPE OF A LOGGED VALUE, beside its rendering, because the rendering is BLIND.
+ *
+ * Every cell in this file that compares log lines compares `JSON.stringify` of them, and that draws
+ * `undefined`, `null`, a function, NaN and both infinities ALL AS `null`, `-0` as `0`, and `{}` and
+ * `{ g: (x) => x }` alike. MEASURED HERE, not argued: two adjacent pins in section 15 both read
+ * `[["r",null]]`, and one of them is `undefined` (a short-circuited `o.m?.()`) while the other is a
+ * real `null` (`sleep` answering through a present method). The rendering could not tell them apart,
+ * so a change that swapped one for the other would have kept both cells green.
+ *
+ * This is the SAME SIGNATURE the differential suite compares its arms with, taken verbatim so a
+ * reader learns one word, and the label rule is the same too: a shape difference is reported under
+ * its OWN name, never folded into the rendering's, because a name that just denied a difference is
+ * the worst place to report one. `carriesCode` CATCHES `assertNoCode` rather than re-implementing
+ * it: that predicate is what the engine's log rule is built on (section 20b), so the signature and
+ * the rule cannot drift apart, it carries its own `seen` set so a cycle costs nothing, and arrays
+ * come free because `typeof []` is "object".
+ *
+ * ONE SPELLING ACROSS BOTH HARNESSES, and this is the agreed one: `object+code` for the nesting case
+ * and `Object.is(v, -0) ? "-0"` for negative zero, which `0 / -1` reaches in an ordinary program.
+ *
+ * Three of its four decisions are graded by a mutant each (the leg unable to differ, the signature
+ * gone shallow, `-0` unnamed). NAMING `null` IS NOT ONE OF THEM, and the honest reason is that a
+ * mutant for it has no cell to red: unnamed, `null` falls to `typeof` and reads "object" while
+ * absence still reads "undefined", so the pair this file cares about stays separated either way. It
+ * is kept because it says what the value IS rather than what class it belongs to, not because
+ * anything here would notice its removal.
+ */
+const carriesCode = (v: unknown): boolean => {
+  try {
+    assertNoCode(v, "v");
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+const shapeOf = (v: unknown): string =>
+  v === null
+    ? "null"
+    : Object.is(v, -0)
+      ? "-0"
+      : typeof v === "number" && Number.isNaN(v)
+        ? "NaN"
+        : typeof v === "number" && !Number.isFinite(v)
+          ? v > 0
+            ? "Infinity"
+            : "-Infinity"
+          : typeof v === "object"
+            ? carriesCode(v)
+              ? "object+code"
+              : "object"
+            : typeof v;
+
+/** The shapes of a run's log lines, in the same layout as their rendering. */
+const shapes = (logs: readonly (readonly unknown[])[]): string => JSON.stringify(logs.map((line) => line.map(shapeOf)));
+
+/**
+ * Do two arms' log lines have the same shapes? ONE function, so the controls in section 15b grade the
+ * predicate the gate leg actually calls rather than a second copy of it that can drift from it.
+ */
+const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(b);
 
 /** A plain evaluator. The confined path is the worker; this is a test process comparing two engines. */
 const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =>
@@ -219,6 +282,24 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     "a write past the end of an array is L4019, because a hole is not a value here",
     codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([]), "2", 1)))) === "L4019",
   );
+  // THE OTHER HALF, lane T's control row, as a PROGRAM on both arms rather than a seam call: an
+  // index that exists is an ordinary write, so the refusal above is a rule about holes and not the
+  // array path refusing writes. Both answers measured, not transcribed.
+  {
+    const src = `const sch = { xs: keys({ a: 1 }) };\nsch.xs[0] = "z";\nlog(sch.xs[0]);\n`;
+    const wLogs: unknown[][] = [];
+    const eLogs: unknown[][] = [];
+    await walkerRun(src, { runId: "idx", handler: new SimHandler({}), onLog: (l) => wLogs.push([...l.values]) });
+    // CAPTURED, not awaited into the assertion. This is the FIRST `runOnEngine` in the file, so any
+    // break that stops a run starting at all arrives here first - measured: the mutant that raises
+    // the node floor past every version that exists killed this block anonymously and the suite
+    // never printed a name. A cell has to be able to report its own failure.
+    const refused = await caught(async () => {
+      await runOnEngine(src, transform(src).module, { runId: "idx", handler: new SimHandler({}), evaluate: plainly, onLog: (l) => eLogs.push([...l.values]) });
+    });
+    ok("while an IN-RANGE index write completes on the walker", JSON.stringify(wLogs) === '[["z"]]', wLogs);
+    ok("and on the engine, with the same value and the same shape", refused === undefined && JSON.stringify(eLogs) === JSON.stringify(wLogs) && sameShapes(eLogs, wLogs), { refused: String(refused), engine: eLogs, shapes: shapes(eLogs) });
+  }
   ok(
     "a LONGER length is L4017 for the same reason",
     codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([1]), "length", 5)))) === "L4017",
@@ -228,13 +309,15 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   ok("writing a member of null is L4010", codeOf(await caught(() => h.inFrame(() => h.ctx.set(null, "a", 1)))) === "L4010");
 }
 
-// ---- 4) the thenable gate: the one rule the oracle cannot grade ----------------------------------
+// ---- 4) the thenable gate, and the code it now shares with the oracle ----------------------------
 //
 // A program value with an own CALLABLE `then` is assimilated by the host's await machinery, which
 // runs that closure with the host's own settlement functions as its arguments — measured at every
-// return of a program value out of an async function, and at every await. The walker cannot grade
-// this: the same program takes its process down as an unhandled rejection (a filed walker defect),
-// so these programs are QUARANTINED from the differential corpus and live here instead.
+// return of a program value out of an async function, and at every await. The oracle could not grade
+// this at all until #657: the same program took the walker's process down as an unhandled rejection.
+// It now REFUSES, with L4021, at its four record-member write sites, so this engine carries the
+// walker's code rather than its own — and the programs quarantined from the differential for taking
+// a process down are comparable rows again, which is lane T's to move.
 
 {
   const h = harness();
@@ -242,7 +325,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   // boundary assimilates it, its `then` never settles, and the cell hangs instead of failing. The
   // cell has to be able to report its own failure, which is what the mutation config grades.
   ok(
-    "a literal with an own callable `then` refuses at birth",
+    "a literal with an own callable `then` refuses at birth (L4021)",
     codeOf(
       await caught(() =>
         h.inFrame(() => {
@@ -250,7 +333,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
           return undefined;
         }),
       ),
-    ) === "L4018",
+    ) === "L4021",
   );
   // The boundary in the other direction: a NON-callable `then` is legal, and the walker settles it
   // clean. A gate that refused every own `then` would refuse a program the oracle accepts.
@@ -269,17 +352,17 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
           return undefined;
         }),
       ),
-    ) === "L4018",
+    ) === "L4021",
   );
   // The second door: a record can ACQUIRE the field after birth, and a computed key reaches it past
   // any static spelling of `then`.
   ok(
-    "writing a callable into the field `then` refuses (L4018)",
-    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4018",
+    "writing a callable into the field `then` refuses (L4021)",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4021",
   );
   ok(
     "including through a computed key no static analysis can read",
-    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "th" + "en", () => 1)))) === "L4018",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "th" + "en", () => 1)))) === "L4021",
   );
   ok(
     "writing a NON-callable into `then` stays legal",
@@ -292,7 +375,8 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   // measured on it here rather than transcribed: what kind of thing is being written (L4010), is it
   // frozen (L2031), does that kind have this member (L4014/L4017/L4019) - and only then the value.
   // A gate placed before the member rule answers the value's sentence for a receiver that never had
-  // the member, and `keys({a:1}).then = () => 1` came back L4018 where the walker says L4014.
+  // the member, and `keys({a:1}).then = () => 1` came back with the value's code where the walker
+  // says L4014.
   {
     const onWalker = async (src: string): Promise<string> => {
       try {
@@ -335,13 +419,20 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     ok("and so does the engine, freeze ahead of the member rule", codeOf(await caught(() => h.inFrame(() => h.ctx.set(frozenArr, "foo", 1)))) === "L2031");
     ok("including for `then`, where the value's rule never gets asked", codeOf(await caught(() => h.inFrame(() => h.ctx.set(frozenArr, "then", () => 1)))) === "L2031");
 
-    // 4) AND ONLY THEN THE VALUE. This is the one place the two engines differ, and it is the
-    // declared divergence, not an accident: the walker refuses NOTHING for a callable `then` on a
-    // record and takes its process down later (#642), which is why these programs are quarantined
-    // from the corpus. The pin is the walker's MEASURED answer, so the day #657 lands and it becomes
-    // L4021, this cell says so.
-    ok("the walker completes a callable `then` on a RECORD, which is the defect", (await onWalker(`let r = { x: 1 };\nr.then = () => 1;\n`)) === "completed");
-    ok("while the engine refuses it L4018, at the last of the four rules", codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4018");
+    // 4) AND ONLY THEN THE VALUE, which is where the two engines used to differ and no longer do.
+    // The walker refused NOTHING for a callable `then` on a record and took its process down later
+    // (#642); #657 gave it L4021 at the write, and this pin is its MEASURED answer, not the code
+    // transcribed from the fix. The position is unchanged and that is the point of the three rules
+    // above: the value is still the LAST thing asked, so an array or a string receiver keeps its own
+    // sentence.
+    ok("the walker refuses a callable `then` on a RECORD with L4021", (await onWalker(`let r = { x: 1 };\nr.then = () => 1;\n`)) === "refused L4021");
+    ok("and the engine answers the same code, at the last of the four rules", codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4021");
+    // AND THE ROUTES THE WALKER GAINED WITH IT, each one a program rather than a seam call: a
+    // literal, a computed write and a spread all reach the same code on the oracle.
+    ok("the walker refuses it in a LITERAL too", (await onWalker(`const r = { then: () => 1 };\n`)) === "refused L4021");
+    ok("and through a computed key", (await onWalker(`let r = { x: 1 };\nlet k = "th" + "en";\nr[k] = () => 1;\n`)) === "refused L4021");
+    ok("and through a spread into a literal", (await onWalker(`const a = { x: 1 };\nconst b = { ...a, then: () => 1 };\n`)) === "refused L4021");
+    ok("while a NON-callable `then` still completes on the oracle", (await onWalker(`let r = { x: 1 };\nr.then = 1;\nlog("n", r.then);\n`)) === "completed");
   }
   // The third door, and the one that proves the gate runs BEFORE the host: if `await` reached the
   // value first, `then` would already have been called.
@@ -349,7 +440,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     let fired = 0;
     const thenable = { then: (resolve: (v: unknown) => void): void => { fired += 1; resolve(9); } };
     const e = await caught(() => h.inFrame(() => h.ctx.await(thenable)));
-    ok("awaiting an own-callable-`then` value is L4018", codeOf(e) === "L4018");
+    ok("awaiting an own-callable-`then` value is L4021 as well", codeOf(e) === "L4021");
     ok("and the refusal happened BEFORE the host called it", fired === 0, fired);
   }
   // LANE T'S DOOR E, IN THE ENGINE'S SHAPE. On the walker, `merge({}, { then: f })` mints the hazard
@@ -364,7 +455,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
         return undefined;
       }),
     );
-    ok("a builtin ARGUMENT built as a literal is refused at birth, before the builtin runs", codeOf(e) === "L4018", String(e));
+    ok("a builtin ARGUMENT built as a literal is refused at birth, before the builtin runs", codeOf(e) === "L4021", String(e));
     ok("and the program closure never ran", ran === 0, ran);
   }
   // The other half of the same claim, so nobody reads the cell above as "merge refuses records":
@@ -1224,14 +1315,17 @@ await parallel({
     const logs: unknown[][] = [];
     try {
       const r = await walkerRun(src, { runId: "f6", handler: new SimHandler({}), onLog: (l) => logs.push([...l.values]) });
-      return `ok ${JSON.stringify(logs)} ${JSON.stringify(r.journal.entries().map((e) => e.kind))}`;
+      // SHAPES BESIDE THE RENDERING, under their own word. Measured: six of the pins below read
+      // `[["r",null]]` for an `undefined` and one reads it for a real `null`, and until this leg
+      // existed nothing here could tell those two answers apart.
+      return `ok ${JSON.stringify(logs)} shapes ${shapes(logs)} ${JSON.stringify(r.journal.entries().map((e) => e.kind))}`;
     } catch (e) {
       return `refused ${codeOf(e)}`;
     }
   };
   const h = harness({ script: {} });
 
-  ok("the walker short-circuits an absent member", (await onWalker(`const o = { a: 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",null]] []');
+  ok("the walker short-circuits an absent member", (await onWalker(`const o = { a: 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
   // CAPTURED, not awaited into the assertion: without the short-circuit this call THROWS L4011, and
   // written the other way the throw left the block and killed the suite anonymously instead of
   // failing the cell that names the rule.
@@ -1243,7 +1337,7 @@ await parallel({
   }
   ok("and so does the engine, with nothing called", absent === undefined, String(absent));
 
-  ok("the walker invokes a member that IS a function", (await onWalker(`const o = { m: () => 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",1]] []');
+  ok("the walker invokes a member that IS a function", (await onWalker(`const o = { m: () => 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",1]] shapes [["string","number"]] []');
   ok(
     "and so does the engine",
     (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", () => [], true))) === 1,
@@ -1270,11 +1364,11 @@ await parallel({
   // have run. That is why the optional form takes a thunk: an array would already have been evaluated.
   ok(
     "a short-circuited call on the walker journals NOTHING",
-    (await onWalker(`const o = { a: 1 };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] []',
+    (await onWalker(`const o = { a: 1 };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []',
   );
   ok(
     "while the same argument on a PRESENT method journals its effect",
-    (await onWalker(`const o = { m: (x) => x };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] ["sleep"]',
+    (await onWalker(`const o = { m: (x) => x };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] shapes [["string","null"]] ["sleep"]',
   );
   let evaluated = 0;
   const short = await h.inFrame(() =>
@@ -1298,7 +1392,7 @@ await parallel({
   // line: unawaited, `args()` handed the spread a Promise, so an ordinary `o.m?.(1)` died on "Spread
   // syntax requires ...iterable" and `xs.map?.(f)` reached the curated method with a Promise where
   // its argument list should be. Both shapes are below, each against the oracle.
-  ok("the walker calls a present member with a plain argument", (await onWalker(`const o = { m: (x) => x };\nlog("r", o.m?.(1));\n`)) === 'ok [["r",1]] []');
+  ok("the walker calls a present member with a plain argument", (await onWalker(`const o = { m: (x) => x };\nlog("r", o.m?.(1));\n`)) === 'ok [["r",1]] shapes [["string","number"]] []');
   // CAPTURED, like every other cell here whose subject is a refusal or a throw: unawaited the thunk
   // hands the spread a Promise, and that TypeError would leave the block and kill the suite
   // anonymously rather than failing the cell that names the rule.
@@ -1322,7 +1416,7 @@ await parallel({
     JSON.stringify(held.run.journal.entries().map((e) => e.kind)) === '["sleep"]',
     held.run.journal.entries().map((e) => e.kind),
   );
-  ok("the walker runs a curated method through the optional form", (await onWalker(`const xs = [1, 2];\nlog("r", xs.map?.((x) => x * 3));\n`)) === 'ok [["r",[3,6]]] []');
+  ok("the walker runs a curated method through the optional form", (await onWalker(`const xs = [1, 2];\nlog("r", xs.map?.((x) => x * 3));\n`)) === 'ok [["r",[3,6]]] shapes [["string","object"]] []');
   let curated: unknown;
   try {
     curated = await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", async () => [async (x: unknown) => (x as number) * 3], true));
@@ -1346,11 +1440,11 @@ await parallel({
   // absent member answers undefined and a member that RETURNS undefined refuses L4010, and both
   // give undefined to any guard written outside. Only the host knows which happened, so the rest of
   // the chain comes here as a closure and the host applies its own decision.
-  ok("the walker short-circuits the whole chain after an absent member", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x);\n`)) === 'ok [["r",null]] []');
+  ok("the walker short-circuits the whole chain after an absent member", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
   ok("and refuses L4010 when the member was PRESENT and returned undefined", (await onWalker(`const o = { m: () => undefined };\nlog("r", o.m?.().x);\n`)) === "refused L4010");
-  ok("and reads the field when it returned a record", (await onWalker(`const o = { m: () => ({ x: 7 }) };\nlog("r", o.m?.().x);\n`)) === 'ok [["r",7]] []');
-  ok("the walker swallows a DEEP chain too", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x.y);\n`)) === 'ok [["r",null]] []');
-  ok("and a trailing CALL", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().trim());\n`)) === 'ok [["r",null]] []');
+  ok("and reads the field when it returned a record", (await onWalker(`const o = { m: () => ({ x: 7 }) };\nlog("r", o.m?.().x);\n`)) === 'ok [["r",7]] shapes [["string","number"]] []');
+  ok("the walker swallows a DEEP chain too", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x.y);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
+  ok("and a trailing CALL", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().trim());\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
 
   // CAPTURED: with the chain unguarded it runs against undefined and throws L4010, which awaited
   // into the assertion would leave the block and kill the suite anonymously.
@@ -1390,6 +1484,44 @@ await parallel({
     "a continuation without the optional flag is refused, not silently run",
     codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", [], false, (v) => v)))) === "L1000",
   );
+}
+
+// ---- 15b) the shape signature, and the pairs the rendering cannot separate ------------------------
+//
+// EVERY CELL THAT USES THE SHAPE LEG PASSES TODAY, which is exactly when a check cannot show that it
+// can fail: no program compared in this file logs an ambiguous value on one arm and a different one
+// on the other. So the leg is graded against pairs built to render IDENTICALLY and mean different
+// things - the whole reason it exists - and against a negative half, because a signature that
+// reported a difference between two equal lines would red the corpus for nothing.
+//
+// The live evidence is in section 15: two of its pins read `[["r",null]]`, one for a short-circuited
+// `undefined` and one for a real `null` that `sleep` answered through a present method.
+
+{
+  const blind = (a: unknown, b: unknown): boolean => JSON.stringify([[a]]) === JSON.stringify([[b]]);
+  const separated = (a: unknown, b: unknown): boolean => blind(a, b) && !sameShapes([[a]], [[b]]);
+
+  ok("absence and a literal null render the same and are told apart", separated(undefined, null), { rendered: JSON.stringify([[undefined]]), a: shapes([[undefined]]), b: shapes([[null]]) });
+  ok("absence and a live function too, which is the shape that killed the thread", separated(undefined, (x: unknown) => x), shapes([[(x: unknown) => x]]));
+  ok("NaN and absence too", separated(undefined, NaN), shapes([[NaN]]));
+  ok("NaN and Infinity, which JSON draws alike", separated(NaN, Infinity), { nan: shapes([[NaN]]), inf: shapes([[Infinity]]) });
+  ok("and the two infinities, which it draws alike as well", separated(Infinity, -Infinity), shapes([[-Infinity]]));
+  // THE NESTING CASE. A shallow `typeof` reads both of these as "object" - the same conflation one
+  // level down - and it is the NESTED closure, not the bare one, that a transport actually chokes on.
+  ok("an empty record and one carrying a closure, which a shallow signature could not", separated({}, { g: (x: unknown) => x }), shapes([[{ g: (x: unknown) => x }]]));
+  ok("and an array of absence against an array carrying code, which come free", separated([undefined], [(x: unknown) => x]), { rendered: JSON.stringify([[[undefined]]]), code: shapes([[[(x: unknown) => x]]]) });
+  // NEGATIVE ZERO is not a curiosity: `0 / -1` is an ordinary program, and JSON draws it as `0`.
+  ok("zero and negative zero, which an ordinary division reaches", separated(0, -0), { rendered: JSON.stringify([[-0]]), a: shapes([[0]]), b: shapes([[-0]]) });
+  // THE NEGATIVE HALF. A signature that separated two equal lines would red every comparison here.
+  const same: unknown[][] = [["v", 1, null, { a: [2] }]];
+  ok("while two arms that logged the SAME values report no shape difference at all", sameShapes(same, JSON.parse(JSON.stringify(same)) as unknown[][]), shapes(same));
+  // AND IT STAYS A SHAPE: no key names, no depth, no ordering, so it never becomes a second
+  // serializer with blind spots of its own.
+  ok("and the signature carries no key names, depth or ordering to argue about", shapes([[{ a: 1, b: 2 }]]) === shapes([[{ z: [[[3]]] }]]), shapes([[{ a: 1, b: 2 }]]));
+  // A CYCLE COSTS NOTHING: `assertNoCode` carries its own `seen` set, so this terminates.
+  const cyclic: Record<string, unknown> = { a: 1 };
+  cyclic.self = cyclic;
+  ok("a cyclic value is a shape like any other, not a hang", shapes([[cyclic]]) === '[["object"]]', shapes([[cyclic]]));
 }
 
 // ---- 16) the worker: one locked-down thread per run, RUN FROM `dist` -----------------------------
@@ -1650,6 +1782,11 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     });
     ok(`${label}: and the scope was actually journalled`, journal.entries().length > 1, journal.entries().length);
     ok(`${label}: the log is the same`, JSON.stringify(wLogs) === JSON.stringify(eLogs), { walker: wLogs, engine: eLogs });
+    // UNDER ITS OWN NAME, never folded into the cell above: the rendering is what is blind here, so
+    // reporting a shape difference under the name that just said the logs match is the worst place
+    // for it. No program compared here logs an ambiguous value TODAY, which is exactly why the leg
+    // needs the controls below rather than the corpus to prove it can fail.
+    ok(`${label}: and so are the log SHAPES, which the rendering cannot show`, sameShapes(wLogs, eLogs), { walker: shapes(wLogs), engine: shapes(eLogs) });
     return { walker, engine: engine as Awaited<ReturnType<typeof runOnEngine>> };
   };
 
@@ -1860,8 +1997,8 @@ log("out", out);
     );
 
     // WHAT KEEPS THE DOOR SHUT, both halves measured. The program cannot build the input:
-    ok("born refuses a record with an own callable `then`", codeOf(await caught(() => h.ctx.born({ then: () => 1 }))) === "L4018");
-    ok("and set refuses writing one onto a born record", codeOf(await caught(() => h.ctx.set(h.ctx.born({ a: 1 }), "then", () => 1))) === "L4018");
+    ok("born refuses a record with an own callable `then`", codeOf(await caught(() => h.ctx.born({ then: () => 1 }))) === "L4021");
+    ok("and set refuses writing one onto a born record", codeOf(await caught(() => h.ctx.set(h.ctx.born({ a: 1 }), "then", () => 1))) === "L4021");
     // And a callable `then` that reaches a builtin from OUTSIDE the seam never comes back as a
     // record at all: library.ts's own `async` wrapper assimilates it one frame before any
     // return-path check could look. Measured - the call answers 7, the resolved value, not the
@@ -1891,8 +2028,8 @@ log("out", out);
 // half: a refusal AFTER the scope opened would leave a scope entry behind and a resume would read
 // it, so "no entry" is what says the closure is at the literal and not at the result.
 //
-// The walker takes its process down on this program (#642), so it cannot be a corpus row until the
-// L4021 fix lands; it is on lane T's quarantine list and lives here in the meantime.
+// The walker took its process down on this program (#642) and now refuses L4021 at the write, so it
+// is comparable again; moving it out of lane T's quarantine and into the corpus is theirs to measure.
 //
 // WHAT GRADES WHAT, since these four cells have no mutant of their own: the refusal's mechanism is
 // the birth gate, and that is graded where it lives (section 4's first cell, and the mutant that
@@ -1905,7 +2042,7 @@ log("out", out);
     const refused = await caught(() =>
       runOnEngine(source, transform(source).module, { runId: `1b-${scope}`, handler: new SimHandler({}), evaluate: plainly, journal }),
     );
-    ok(`a branch named \`then\` in ${scope} refuses L4018`, codeOf(refused) === "L4018", String(refused).slice(0, 110));
+    ok(`a branch named \`then\` in ${scope} refuses L4021`, codeOf(refused) === "L4021", String(refused).slice(0, 110));
     ok(`and the ${scope} scope was never entered: no journal entry at all`, journal.entries().length === 0, journal.entries().map((e) => e.kind));
   }
 }
@@ -2224,9 +2361,11 @@ let n = 1;
     ok("and so do the optional fields a resume adds: file, pins, entries", again.ok === true, JSON.stringify(again).slice(0, 140));
   }
 
-  // ---- crossing 2: LOG LINES, OUT. A log line is DATA. The rule is held once, in the shared `log`
-  // builtin, so both arms answer it and no transport ever sees code - which is what makes this a
-  // language refusal here rather than a structured-clone failure naming a host algorithm.
+  // ---- crossing 2: LOG LINES, OUT. A log line is DATA on this engine, and the rule is held once, in
+  // the engine's own log sink (section 20b grades it in-process), so no transport ever sees code -
+  // which is what makes this a language refusal here rather than a structured-clone failure naming a
+  // host algorithm. It is an ENGINE rule: the walker replays v1 recordings and does not hold it, so
+  // there is no oracle behind this cell and nothing on the other arm to compare it to.
   {
     const ordinary = `log("status", 1);\n`;
     const lines: unknown[][] = [];
@@ -2239,7 +2378,7 @@ let n = 1;
     const withCode = `log((x) => x);\n`;
     const answer = await runWorker(withCode, transform(withCode).module).done;
     ok("a logged FUNCTION is refused by the language, not by the transport", answer.ok === false, JSON.stringify(answer).slice(0, 160));
-    ok("and it is L4016, the same code both in-process arms answer", failed(answer).code === "L4016", failed(answer).code);
+    ok("and it is L4016, the code the engine's log sink answers in-process too", failed(answer).code === "L4016", failed(answer).code);
     // THE POINT OF THE CELL. Unrefused, this line reached `postMessage` and came back as a
     // DataCloneError whose message carried the emitted module body - a host algorithm's complaint
     // about a language rule, with the program's compiled source in it.
@@ -2321,6 +2460,36 @@ let n = 1;
     // only sent a short reason could not tell truncation from silence.
     const msg = String(failed(answer).message);
     ok("and a reason past the buffer is truncated, not dropped", msg.includes("the operator asked this run to stop") && !msg.includes("END"), msg.length);
+
+    // WHERE THE CUT FALLS. Truncation is a byte count against a buffer, and a UTF-8 character is
+    // one to four bytes, so a cut placed by bytes alone lands INSIDE one. Measured through this
+    // same path before the fix: a three-byte character straddling the buffer's last byte reached
+    // the run as U+FFFD on the end of the operator's sentence. `encodeInto` fills the room with
+    // whole code points and reports what that took, so the cut is between characters.
+    const split = runWorker(`await sleep("1s");\n`, SPIN);
+    split.stop(`${"x".repeat(510)}\u4e2d\u4e2d`);
+    const splitMsg = String(failed(await split.done).message);
+    ok("a reason cut by the buffer is cut BETWEEN characters, never through one", !splitMsg.includes("\uFFFD") && splitMsg.includes("x".repeat(64)), splitMsg.slice(-24));
+    // The same on a four-byte character, because a two-byte cut is the easy half of the same bug.
+    const emoji = runWorker(`await sleep("1s");\n`, SPIN);
+    emoji.stop(`${"y".repeat(511)}\u{1F600}`);
+    const emojiMsg = String(failed(await emoji.done).message);
+    ok("including a four-byte one, which a two-byte fix would still cut", !emojiMsg.includes("\uFFFD"), emojiMsg.slice(-24));
+
+    // AN EMPTY REASON IS STILL A STOP, and it may not arrive as a control character. The length is
+    // what publishes the bytes, so zero would be no stop at all; flooring it at 1 made the run read
+    // whatever byte was there, and measured, that was a NUL on the end of the sentence.
+    const empty = runWorker(`await sleep("1s");\n`, SPIN);
+    empty.stop("");
+    const emptyAnswer = await empty.done;
+    ok("a stop with an EMPTY reason still ends the run", emptyAnswer.ok === false, JSON.stringify(emptyAnswer).slice(0, 100));
+    const emptyMsg = String(failed(emptyAnswer).message);
+    ok("and says so in a sentence, never as a NUL byte", emptyMsg.includes("gave no reason") && !emptyMsg.includes("\u0000"), emptyMsg.slice(-40));
+    // THE CONTROL, so none of the three above can be read as "the reason is rewritten": an ordinary
+    // one crosses exactly as the operator wrote it.
+    const plain = runWorker(`await sleep("1s");\n`, SPIN);
+    plain.stop("the deploy was rolled back");
+    ok("while an ordinary reason crosses exactly as written", String(failed(await plain.done).message).includes("the deploy was rolled back"), String(failed(await plain.done).message).slice(-40));
   }
 
   // ---- AND THE SET EQUALITY, read off the two files rather than remembered. A crossing added to
