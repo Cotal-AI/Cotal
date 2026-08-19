@@ -1219,6 +1219,45 @@ await parallel({
     "and an ordinary call still takes a plain array",
     (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async (x: unknown) => x }), "m", ["z"]))) === "z",
   );
+
+  // THE CHAIN AFTER THE CALL. `o.m?.().x` cannot be guarded on the returned value: measured, an
+  // absent member answers undefined and a member that RETURNS undefined refuses L4010, and both
+  // give undefined to any guard written outside. Only the host knows which happened, so the rest of
+  // the chain comes here as a closure and the host applies its own decision.
+  ok("the walker short-circuits the whole chain after an absent member", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x);\n`)) === 'ok [["r",null]] []');
+  ok("and refuses L4010 when the member was PRESENT and returned undefined", (await onWalker(`const o = { m: () => undefined };\nlog("r", o.m?.().x);\n`)) === "refused L4010");
+  ok("and reads the field when it returned a record", (await onWalker(`const o = { m: () => ({ x: 7 }) };\nlog("r", o.m?.().x);\n`)) === 'ok [["r",7]] []');
+  ok("the walker swallows a DEEP chain too", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x.y);\n`)) === 'ok [["r",null]] []');
+  ok("and a trailing CALL", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().trim());\n`)) === 'ok [["r",null]] []');
+
+  let continued = 0;
+  const chained = await h.inFrame(() =>
+    h.ctx.call(h.ctx.born({ a: 1 }), "z", () => [], true, (v) => {
+      continued += 1;
+      return h.ctx.get(v, "x");
+    }),
+  );
+  ok("the engine short-circuits the chain and never runs it", chained === undefined && continued === 0, { chained, continued });
+
+  let refused: unknown;
+  try {
+    refused = await h.inFrame(() =>
+      h.ctx.call(h.ctx.born({ m: async () => undefined }), "m", () => [], true, (v) => h.ctx.get(v, "x")),
+    );
+  } catch (e) {
+    refused = e;
+  }
+  ok("but a member that RETURNED undefined reaches the chain, and it refuses L4010", codeOf(refused) === "L4010", String(refused));
+
+  const read = await h.inFrame(() =>
+    h.ctx.call(h.ctx.born({ m: async () => h.ctx.born({ x: 7 }) }), "m", () => [], true, (v) => h.ctx.get(v, "x")),
+  );
+  ok("and a record answers the field through the chain", read === 7, read);
+
+  ok(
+    "a continuation without the optional flag is refused, not silently run",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", [], false, (v) => v)))) === "L1000",
+  );
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);
