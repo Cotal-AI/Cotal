@@ -158,8 +158,10 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   finishes the old one first, publishing what it had and closing any run left open, then begins
   publishing the new thread under its own write-ahead log. A reader sees one stream end and another
   begin, never one stream silently continuing under a different thread. If the new thread's file is
-  slow to appear, the old stream still ends there and then, and the seat publishes nothing until the
-  new one binds; it does not keep reporting the dead thread's activity in the meantime.
+  slow to appear the order is the other way round: the seat spends its whole bounded look for the new
+  file first, and the old stream ends when that look gives up, not at the moment of the restart. From
+  the give-up on it publishes nothing until the new thread binds at a later turn boundary; it does not
+  keep reporting the dead thread's activity in the meantime.
 - **The stream starts where the seat binds to the file.** `thread/start` writes nothing to disk; the
   file appears when the thread is primed. The seat binds to it then, and publishes from that point
   forward. If the file is slow to appear the seat says so in its log and looks again at each turn

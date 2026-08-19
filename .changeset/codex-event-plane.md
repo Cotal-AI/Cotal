@@ -24,8 +24,10 @@ the peer messages injected into the thread, and the persona's developer instruct
 withheld, because the events channel carries a different read ACL from the channel you typed into.
 A restarted app-server is a new thread and gets a new stream: the seat finishes the old one, closing
 any run it left open, before it begins the new one. That holds even when the new thread's file is
-slow to appear, which is the case where the old one is closed and the seat then waits, publishing
-nothing, rather than continuing to report the dead thread's activity as if it were live. And Codex's own built-in tools, web search, tool
+slow to appear, though the order there is the other way round: the seat spends its whole bounded
+look for the successor first, and the old run is closed when that look gives up, not at the moment
+the restart happened. From the give-up on it publishes nothing until a later turn boundary binds
+the successor, rather than continuing to report the dead thread's activity as if it were live. And Codex's own built-in tools, web search, tool
 search and image generation, are not published, because their records carry an end with no start and
 no key that joins the halves.
 
