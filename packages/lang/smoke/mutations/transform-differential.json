@@ -27,18 +27,18 @@
       "file": "packages/lang/src/transform/emit.ts",
       "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
       "replace": "      return `${obj}[${this.memberKey(node)}]`;",
-      "expectRed": "identical on both engines: refusals: a host prototype is not a member",
-      "cell": "identical on both engines: refusals: a host prototype is not a member",
-      "note": "`o.constructor` is L4014 on the walker. A native index answers the host's Object constructor, which is a live capability inside a program that is supposed to have none."
+      "expectRed": "identical on both engines: refusals: a prototype member of a string",
+      "cell": "identical on both engines: refusals: a prototype member of a string",
+      "note": "A record has NO prototype to reach - `o.constructor` is undefined on both arms - so the cell that catches this is a string's, whose curated table refuses the name L4020. A native index answers the host String constructor there, which is a live capability inside a program that is supposed to have none."
     },
     {
       "name": "a catch binds the raw thrown value, so a program reads a different error record",
       "file": "packages/lang/src/transform/emit.ts",
       "find": "      const caught = this.seam(\"caught\", raw);",
       "replace": "      const caught = raw;",
-      "expectRed": "identical on both engines: try/catch/finally and completions",
-      "cell": "identical on both engines: try/catch/finally and completions",
-      "note": "`__ctx.caught` rethrows the six classes no program may catch and otherwise hands the walker's frozen {code, kind, message} record. A native binding also lets a program catch a host fault the walker never lets it see."
+      "expectRed": "identical on both engines: catching what a refusal throws",
+      "cell": "identical on both engines: catching what a refusal throws",
+      "note": "`__ctx.caught` rethrows the six classes no program may catch and otherwise hands the walker's frozen {code, kind, message}. `e.code` reads the same either way, which is why this survived until a program logged the WHOLE value: raw, the engine hands back {code, name} - a different record, and one carrying a host class name."
     },
     {
       "name": "a spread iterates natively, so a record stops being refused",
