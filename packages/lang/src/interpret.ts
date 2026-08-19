@@ -26,7 +26,7 @@ import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
 import { notifyFactViolation } from "./notify-fact.js";
 import { bindPins, resolvePins, type RunPins } from "./pins.js";
-import { dispatchPrimitive, performEffect, type EffectHost } from "./perform.js";
+import { dispatchPrimitive, freeConstructors, performEffect, type EffectHost } from "./perform.js";
 import {
   Cancelled,
   RunReleased,
@@ -243,7 +243,7 @@ function digestFacts(
 }
 
 /** An AST subtree with its source offsets removed: what the code IS, not where it sits. */
-function stripPositions(node: unknown): unknown {
+export function stripPositions(node: unknown): unknown {
   if (Array.isArray(node)) return node.map(stripPositions);
   if (node === null || typeof node !== "object") return node;
   const out: Record<string, unknown> = {};
@@ -2172,37 +2172,11 @@ function installGlobals(env: Env, interp: Interpreter): void {
   // The value names. `undefined` is a value the runtime produces, so a program can name it.
   for (const name of VALUE_NAMES) env.declare(name, undefined, false);
 
-  // Pure primitives: a channel name is a name, so naming one costs nothing and journals nothing.
-  // Handles are opaque frozen records the runtime mints (design §4).
-  env.declare("channel", fn((_f, a) => deepFreeze({ channel: a[0] as string })), false);
-  env.declare(
-    "run",
-    fn(() => deepFreeze({ id: interp.options.runId, programHash: interp.programHash, startedAt: interp.pins.startedAt })),
-    false,
-  );
-
-  // Event constructors are pure descriptors; awaiting them is `wait`.
-  env.declare("replied", fn((_f, a) => deepFreeze({ event: "replied", agent: (a[0] as AgentHandleValue).agent })), false);
-  env.declare(
-    "message",
-    fn((_f, a) => {
-      const ch = (a[0] as ChannelHandleValue).channel;
-      const opts = (a[1] ?? {}) as Record<string, unknown>;
-      return deepFreeze({
-        event: "message",
-        channel: ch,
-        ...(opts.from !== undefined ? { from: (opts.from as AgentHandleValue).agent } : {}),
-        ...(opts.matches !== undefined ? { matches: opts.matches as string } : {}),
-      });
-    }),
-    false,
-  );
-  env.declare(
-    "idle",
-    fn((_f, a) => deepFreeze({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })),
-    false,
-  );
-  env.declare("down", fn((_f, a) => deepFreeze({ event: "down", agent: (a[0] as AgentHandleValue).agent })), false);
+  // Pure primitives and event constructors: ONE shared table (perform.ts), wrapped into the
+  // walker's calling convention here. Handles are opaque frozen records the runtime mints
+  // (design §4); event constructors are pure descriptors, and awaiting one is `wait`.
+  for (const [name, impl] of freeConstructors({ runId: interp.options.runId, programHash: interp.programHash, startedAt: interp.pins.startedAt }))
+    env.declare(name, fn((_f, a) => impl(a)), false);
 
   // The builtin library (design §4), one table in library.ts.
   for (const [name, value] of builtins(interp.libraryContext())) env.declare(name, value, false);

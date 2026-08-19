@@ -489,3 +489,39 @@ export async function dispatchPrimitive(host: EffectHost, name: string, args: un
       throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);
   }
 }
+
+/** The identity of the run, for the `run` free constructor. */
+export interface RunIdentity {
+  readonly runId: string;
+  readonly programHash: string;
+  readonly startedAt: number;
+}
+
+/**
+ * The free VALUE constructors: the two pure primitives and the four event constructors, in
+ * program convention (plain args in, frozen descriptor out). The walker's installGlobals wraps
+ * them into its (frame, args) convention; the engine's `free()` serves them directly. One table,
+ * both engines — the shapes on the wire may not fork.
+ */
+export function freeConstructors(run: RunIdentity): ReadonlyArray<readonly [string, (args: unknown[]) => unknown]> {
+  return [
+    ["channel", (a) => deepFreeze({ channel: a[0] as string })],
+    ["run", () => deepFreeze({ id: run.runId, programHash: run.programHash, startedAt: run.startedAt })],
+    ["replied", (a) => deepFreeze({ event: "replied", agent: (a[0] as AgentHandleValue).agent })],
+    [
+      "message",
+      (a) => {
+        const ch = (a[0] as ChannelHandleValue).channel;
+        const opts = (a[1] ?? {}) as Record<string, unknown>;
+        return deepFreeze({
+          event: "message",
+          channel: ch,
+          ...(opts.from !== undefined ? { from: (opts.from as AgentHandleValue).agent } : {}),
+          ...(opts.matches !== undefined ? { matches: opts.matches as string } : {}),
+        });
+      },
+    ],
+    ["idle", (a) => deepFreeze({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })],
+    ["down", (a) => deepFreeze({ event: "down", agent: (a[0] as AgentHandleValue).agent })],
+  ];
+}
