@@ -2874,7 +2874,10 @@ let n = 1;
   const sourceOf = (file: string): string => {
     const cached = sources.get(file);
     if (cached !== undefined) return cached;
-    const text = readFileSync(`${root}${file}`, "utf8");
+    // Read with the repository's line endings: a checkout that rewrote them to CRLF (git's default
+    // on Windows) would otherwise turn every multi-line `find` into a zero-match, and the audit
+    // would be grading the checkout's line-ending policy rather than the config's aim.
+    const text = readFileSync(`${root}${file}`, "utf8").replace(/\r\n/g, "\n");
     sources.set(file, text);
     return text;
   };
