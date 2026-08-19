@@ -955,17 +955,33 @@ const bindsPatternName = (n: ts.BindingName, name: string): boolean => {
 
 /** Is the thing being taken apart WRITTEN OUT here, wrapping calls included?
  *
- *  This is the question that decides refuse-versus-pass, so it is asked about the shape rather than
- *  about a list of blessed function names. Freeze was deepened and `Object.assign` was then found
- *  fail-open behind it, which is the same finding twice and would be the same finding a third time
- *  for `structuredClone`. Any call carrying a written literal is text this reader is looking at, so
- *  failing to read it is a refusal; a call carrying no literal, `build(cfg)`, is not written here at
- *  all and is passed on the same terms every unreadable value is passed. */
+ *  This is the question that decides refuse-versus-pass, so it is asked about the TEXT rather than
+ *  about a route. Freeze was deepened and `Object.assign` was found fail-open behind it, so the rule
+ *  stopped naming functions and started asking whether a call carried a literal, and four more
+ *  routes were fail-open behind THAT: `new Wrapper({...})`, a ternary between two literals, `opts ??
+ *  {...}`, and a comma operator. Each time the rule named a route, the next route was the finding.
+ *  A literal anywhere in the initializer is text this reader is looking at, however it got there.
+ *
+ *  A literal inside a nested function body is deliberately not counted: it is a value that callback
+ *  produces, not the structure this declaration takes apart.
+ *
+ *  Stated consequence, since it is an asymmetry and not an oversight: where the initializer has
+ *  BRANCHES, `cond ? { tls: false } : { tls: undefined }`, this refuses rather than folding them,
+ *  while the ARGUMENT path does fold its alternatives. The two are answering different questions. An
+ *  argument's alternatives are folded to decide whether the key is STATED, and a branch that omits
+ *  it settles that. A source's branches hand over two different values, neither of which is the
+ *  value at the call, so folding them would mean picking one. */
 function writtenSource(init: ts.Expression): boolean {
-  const x = unwrap(init);
-  if (ts.isObjectLiteralExpression(x) || ts.isArrayLiteralExpression(x)) return true;
-  if (ts.isCallExpression(x)) return x.arguments.some((a) => writtenSource(a));
-  return false;
+  const root = unwrap(init);
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isObjectLiteralExpression(n) || ts.isArrayLiteralExpression(n)) { found = true; return; }
+    if (n !== root && ts.isFunctionLike(n)) return; // a callback's literal is not this source
+    ts.forEachChild(n, visit);
+  };
+  visit(root);
+  return found;
 }
 
 /** What the written source hands over for one key, through the wraps that do not change it and the
@@ -1874,6 +1890,23 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
   // refusal. Naming freeze and assign one at a time would have left the next wrapper fail-open.
   check("another call wrapping a written literal is REFUSED, not passed, without being named here",
     one(`const { tls } = structuredClone({ tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  // Naming the ROUTE was the defect one level up: a call carrying a literal was closed and four other
+  // routes to the same literal were still fail-open. The rule asks about the text now, not the route.
+  check("...and a NEW expression wrapping a literal is written here just as a call is",
+    one(`const { tls } = new Wrapper({ tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and BRANCHES are refused rather than folded, since neither branch is the value at the call",
+    one(`const { tls } = cond ? { tls: undefined as any } : { tls: false };\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and a literal reached through a nullish default is reached all the same",
+    one(`const { tls } = opts ?? { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and a comma operator hides nothing either",
+    one(`const { tls } = (0, { tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  // The literal must be found at DEPTH, not just as a direct child. Mutation caught every cell above
+  // sitting one level down, where the literal is a direct child of the initializer and a reader that
+  // never descends still sees it: the cells proved detection at depth one and claimed it anywhere.
+  check("...and a literal nested deeper than one level is still text this reader is looking at",
+    one(`const { tls } = new Wrapper(makeIt({ tls: undefined as any }));\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...while a literal inside a CALLBACK is that callback's value, not this declaration's source",
+    one(`const { tls } = build(cfg, () => ({ tls: false }));\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("...while a call carrying no written literal is not written here at all, and still passes",
     one(`const { tls } = build(cfg);\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("a GETTER in the source is refused, not passed, since reading it would mean running it",
