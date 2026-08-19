@@ -141,10 +141,11 @@ read is what was actually sent. Ordinary text, accents and non-Latin scripts inc
 alone: a character that renders as itself is left as itself.
 
 A channel name has to be the name the mesh actually uses: dotted segments of letters, digits, `_`
-and `-`. Anything else is refused rather than quietly rewritten, because the wire rewrites what it
-cannot use and two different names would then be one channel. That matters most on the delete
-button: a name that had to be rewritten would have purged a channel you did not name, while the
-answer showed you the name you typed.
+and `-`, or a `*` or `>` where the mesh reads a whole subtree. Anything else is refused rather than
+quietly rewritten, because the wire rewrites what it cannot use and two different names would then
+be one channel. That matters most on the delete button: a name that had to be rewritten would have
+purged a channel you did not name, while the answer showed you the name you typed. Delete takes no
+wildcard at all, so the one destructive control names exactly one channel.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
