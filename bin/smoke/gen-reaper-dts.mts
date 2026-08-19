@@ -98,10 +98,19 @@ const PRIMITIVES = new Set(["string", "number", "boolean", "undefined", "void", 
  * `supported` cannot see a declaration that lies about `supported`. Reading the surface OUT of the
  * declaration means a field or an export that nobody thought of is still covered, and a new one
  * shows up as a name the suite has not witnessed rather than as silence.
+ *
+ * PARAMETERS ARE READ FOR THE SAME REASON THE RETURN IS. Recording only the return left the other
+ * half of every signature unread: a security review widened `reportReaped`'s `@param {string}` to
+ * `{string | number}`, kept the body string-only behind a double cast, and this whole suite stayed
+ * at 34 of 34, because the consumer passes one string and a string still satisfies the wider
+ * declaration. A consumer written to the newly declared `number` arm then compiled with zero
+ * diagnostics and threw at runtime. A parameter domain nothing exercises is a promise nothing
+ * holds, so the arms come back here and the suite passes a value of each.
  */
 export function declaredModuleSurface(): {
   readonly exports: readonly string[];
   readonly returns: Readonly<Record<string, DeclaredShape>>;
+  readonly params: Readonly<Record<string, readonly DeclaredShape[]>>;
 } {
   const options: ts.CompilerOptions = {
     ...emitOptions(),
@@ -121,12 +130,32 @@ export function declaredModuleSurface(): {
   const shapeOf = (type: ts.Type, depth: number): DeclaredShape => {
     const text = checker.typeToString(type);
     if (PRIMITIVES.has(text)) return { kind: "primitive", name: text === "void" ? "undefined" : text };
+    // A LITERAL IS ITS BASE PRIMITIVE HERE. `boolean` is `true | false` to the checker, and neither
+    // arm's text is in the set above, so each was walked for properties and came back as an object
+    // whose `valueOf` is opaque: an optional `boolean` parameter would have reported two
+    // unverifiable leaves that no runtime value could ever fail. The literal carries no obligation
+    // a runtime value can be held to beyond its primitive, so it reduces to that.
+    if (type.flags & ts.TypeFlags.BooleanLiteral) return { kind: "primitive", name: "boolean" };
+    if (type.flags & ts.TypeFlags.StringLiteral) return { kind: "primitive", name: "string" };
+    if (type.flags & ts.TypeFlags.NumberLiteral) return { kind: "primitive", name: "number" };
     if (depth > 4) return { kind: "opaque", text };
     if (checker.isArrayType(type)) {
       const [element] = checker.getTypeArguments(type as ts.TypeReference);
       return element === undefined ? { kind: "opaque", text } : { kind: "array", of: shapeOf(element, depth + 1) };
     }
-    if (type.isUnion()) return { kind: "union", of: type.types.map((t) => shapeOf(t, depth + 1)) };
+    // Deduped, because reducing literals collapses arms that were distinct only as literals:
+    // `boolean` arrives as two arms that are now the same shape, and a union that repeats an arm
+    // says nothing more than one that does not.
+    if (type.isUnion()) {
+      const seen = new Map<string, DeclaredShape>();
+      for (const member of type.types) {
+        const shape = shapeOf(member, depth + 1);
+        const key = JSON.stringify(shape);
+        if (!seen.has(key)) seen.set(key, shape);
+      }
+      const of = [...seen.values()];
+      return of.length === 1 ? of[0]! : { kind: "union", of };
+    }
     const properties = type.getProperties();
     if (properties.length === 0) return { kind: "opaque", text };
     const props: Record<string, DeclaredShape> = {};
@@ -139,15 +168,19 @@ export function declaredModuleSurface(): {
 
   const exports: string[] = [];
   const returns: Record<string, DeclaredShape> = {};
+  const params: Record<string, DeclaredShape[]> = {};
   for (const exported of checker.getExportsOfModule(moduleSymbol)) {
     const name = exported.getName();
     exports.push(name);
     const declaration = exported.valueDeclaration ?? exported.declarations?.[0];
     if (declaration === undefined) continue;
     const [signature] = checker.getTypeOfSymbolAtLocation(exported, declaration).getCallSignatures();
-    if (signature !== undefined) returns[name] = shapeOf(signature.getReturnType(), 0);
+    if (signature === undefined) continue;
+    returns[name] = shapeOf(signature.getReturnType(), 0);
+    params[name] = signature.getParameters().map((parameter) =>
+      shapeOf(checker.getTypeOfSymbolAtLocation(parameter, parameter.valueDeclaration ?? declaration), 0));
   }
-  return { exports: exports.sort(), returns };
+  return { exports: exports.sort(), returns, params };
 }
 
 /**

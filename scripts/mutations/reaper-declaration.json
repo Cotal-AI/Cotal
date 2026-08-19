@@ -2,7 +2,7 @@
   "grades": "bin/smoke/reaper.smoke.ts",
   "guard": "the declaration beside the reaper is what the compiler emits from the reaper, so the two cannot describe different modules",
   "command": "pnpm smoke:reaper",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "completionMarker": "cells ran)",
   "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its .ts consumers need a declaration beside it. Two hand written guards over a hand written declaration each passed GREEN over real drift, because each was an enumeration of the shapes its author thought of. The declaration is now emitted from the module and compared byte for byte, so there is no shape to recognise. Mutations 1 through 9 are each a shape that beat one of those guards, or the mirror of one, and every one of those must move the SAME cell: that is the property, that the kind of change does not matter. Row 10 is deliberately not one of them and moves a different cell on purpose: it turns the module's type checking OFF, which the first nine all silently depend on, and it is named by the guard that reads the property rather than the one that compares bytes. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching the cell grades INCONCLUSIVE rather than passing as a kill.",
   "mutations": [
@@ -148,6 +148,17 @@
       "expectRed": "and the reporter's declared return is held to what the call actually gives back",
       "cell": "and the reporter's declared return is held to what the call actually gives back",
       "note": "Its declared return was read out of the declaration and then held to nothing, so the value it gives back could drift freely."
+    },
+    {
+      "name": "the declaration WIDENS a parameter the code never widened",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": " * @param {string} label\n * @param {ReapReport} result\n * @returns {void}\n */\nexport function reportReaped(label, result) {\n",
+      "replace": " * @param {string | number} label\n * @param {ReapReport} result\n * @returns {void}\n */\nexport function reportReaped(label, result) {\n  label = /** @type {string} */ (/** @type {unknown} */ (label)).slice(0);\n",
+      "expectRed": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "cell": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+      "note": "Row 11 is the runtime moving under a fixed declaration. This is the other direction and it beat the suite: the declaration grows an arm the code never accepted, and because the consumer still passes the arm it always passed, nothing ever calls the new one. A security review widened this to `string | number`, kept the body string-only behind a double cast, and the whole suite stayed at 34 of 34 while a consumer written to the `number` arm compiled with zero diagnostics and threw at runtime. The consumer's calls are now generated from the declared arms, so a widened parameter is called with a value of its new arm and this cell reds. Reproduced first-party at 34 of 34 before the generated calls existed. The row regenerates the declaration from the mutated module, because the point IS the declaration widening; `afterRestore` regenerates it again from the restored source, so the committed bytes come back.",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts"
     }
   ]
 }

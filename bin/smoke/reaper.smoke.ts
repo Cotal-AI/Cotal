@@ -173,6 +173,61 @@ check(
 // other direction, a declaration that stays honest-looking while the runtime moves under it, reds
 // the second, and that is the one a mutation row drives: `reaper-declaration.json` makes
 // `reportReaped` demand a number of a value the declaration still promises as a string.
+//
+// AND THE CALLS IT MAKES ARE BUILT FROM THE DECLARED PARAMETER ARMS, not written out by hand. A
+// hand-written call is an enumeration of ONE input, which is the same failure one level further in:
+// a security review widened `reportReaped`'s `@param {string}` to `{string | number}`, kept the body
+// string-only behind a double cast, regenerated, and this suite stayed at 34 of 34. The consumer
+// passed a string, a string still satisfies the wider declaration, and no cell ever passed the
+// `number` the declaration had begun to promise. A consumer written to that arm compiled with zero
+// diagnostics and threw `printableLabel.slice is not a function` at runtime. Reproduced first-party
+// at 34 of 34 before these cells existed. So every top-level arm of every parameter gets a call: a
+// primitive arm gets a sample of its own type, and an arm no sample can stand in for gets a value
+// named here, so an arm that arrives with neither is a finding rather than silence.
+const surface = declaredModuleSurface();
+const PRIMITIVE_SAMPLES: Readonly<Record<string, string>> = {
+  string: "`contract probe ${SMOKE_BROKER_PREFIX}`",
+  number: "42",
+  boolean: "true",
+  undefined: "undefined",
+  null: "null",
+};
+// The arms a primitive sample cannot stand in for, keyed by export, position and kind. These are
+// values, not types: `reapSmokeBrokers` is the one export here that DOES something, so its object
+// arm is pinned to a dry run rather than generated, and nothing in this file may generate a call
+// that reaps.
+const NAMED_ARMS: Readonly<Record<string, string>> = {
+  "reapSmokeBrokers#0#object": "{ dryRun: true }",
+  "reportReaped#1#object": "report",
+};
+const armsOf = (shape: DeclaredShape): readonly DeclaredShape[] => (shape.kind === "union" ? shape.of : [shape]);
+const expressionFor = (name: string, index: number, arm: DeclaredShape): string | undefined =>
+  arm.kind === "primitive" ? PRIMITIVE_SAMPLES[arm.name] : NAMED_ARMS[`${name}#${index}#${arm.kind}`];
+// One call per arm, varying a single parameter at a time and holding the others at their first arm,
+// so the call count is the number of arms rather than their product.
+const generatedCalls: string[] = [];
+const unexercisedArms: string[] = [];
+for (const [name, params] of Object.entries(surface.params)) {
+  if (params.length === 0) { generatedCalls.push(`${name}();`); continue; }
+  const first = params.map((shape, i) => expressionFor(name, i, armsOf(shape)[0]!));
+  params.forEach((shape, index) => {
+    for (const arm of armsOf(shape)) {
+      const expression = expressionFor(name, index, arm);
+      if (expression === undefined) {
+        unexercisedArms.push(`${name}(#${index}) admits ${arm.kind === "primitive" ? arm.name : arm.kind}, and nothing here passes one`);
+        continue;
+      }
+      const args = first.map((value, i) => (i === index ? expression : value));
+      if (args.some((value) => value === undefined)) continue;
+      generatedCalls.push(`${name}(${args.join(", ")});`);
+    }
+  });
+}
+check(
+  "every arm the declaration admits for a parameter is one this consumer passes a value of, so a widened parameter cannot arrive unexercised",
+  unexercisedArms.length === 0,
+  unexercisedArms.join(" | "),
+);
 const CONSUMER = `import type { NatsServerRow, ReapReport, ReapedBroker } from "./reap-smoke-brokers.mjs";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 
@@ -181,6 +236,7 @@ const report: ReapReport = reapSmokeBrokers({ dryRun: true });
 const owners: number[] = report.reaped.map((r: ReapedBroker) => r.owner);
 const label: string = \`contract probe \${SMOKE_BROKER_PREFIX}\`;
 reportReaped(label, report);
+${[...new Set(generatedCalls)].join("\n")}
 console.log(\`__CONSUMER_RAN__ rows=\${rows === undefined ? "none" : rows.length} inspected=\${report.inspected} owners=\${owners.length}\`);
 `;
 const consumerDiagnostics = checkDeclarationConsumer(CONSUMER);
@@ -220,7 +276,6 @@ check(
 // counted as satisfied, so an unchecked leaf shows up as unchecked. A field nobody thought of is
 // covered because nobody had to think of it, and a NEW export reds the completeness cell below
 // rather than passing in silence.
-const surface = declaredModuleSurface();
 // The three type names are exercised too, by the consumer's `import type` and its annotations: a
 // type that stopped being exported would fail that compile rather than pass unnoticed.
 const EXERCISED = [
