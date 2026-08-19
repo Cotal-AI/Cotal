@@ -1820,13 +1820,22 @@ log("out", out);
     h.ctx.set(c, "v", undefined);
     return c;
   });
-  ok("a cell holding `undefined` is INITIALISED, and reads as undefined", (await h.inFrame(() => h.ctx.get(initialised, "v", "x"))) === undefined);
+  // CAPTURED: a presence test written as truthiness REFUSES both of these, and the throw would leave
+  // the block and kill the suite instead of failing the cell that names the rule.
+  const readCell = async (c: unknown): Promise<unknown> => {
+    try {
+      return await h.inFrame(() => h.ctx.get(c, "v", "x"));
+    } catch (e) {
+      return e;
+    }
+  };
+  ok("a cell holding `undefined` is INITIALISED, and reads as undefined", (await readCell(initialised)) === undefined, String(await readCell(initialised)));
   const zero = await h.inFrame(() => {
     const c = h.ctx.born({});
     h.ctx.set(c, "v", 0);
     return c;
   });
-  ok("and so is one holding 0", (await h.inFrame(() => h.ctx.get(zero, "v", "x"))) === 0);
+  ok("and so is one holding 0", (await readCell(zero)) === 0, String(await readCell(zero)));
 
   // Without the argument, `get` is byte-unchanged: an absent field is undefined, as it always was.
   ok("without a binding name, an absent field is still just undefined", (await h.inFrame(() => h.ctx.get(cell, "v"))) === undefined);
