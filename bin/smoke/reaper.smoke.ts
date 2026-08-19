@@ -234,12 +234,15 @@ const generatedCalls: string[] = [];
 const executedCalls: string[] = [];
 const unexercisedArms: string[] = [];
 const declaredArmKeys = new Set<string>();
+const generatedFor = new Map<string, number>();
+const executedFor = new Map<string, number>();
 // The value the OTHER parameters are held at is never a compile-only arm, or holding one would carry
 // the call that cannot run into every other parameter's call as well.
 const holdArm = (name: string, index: number, shape: DeclaredShape): DeclaredShape =>
   armsOf(shape).find((arm) => COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) ?? armsOf(shape)[0]!;
 for (const [name, params] of Object.entries(surface.params)) {
-  if (params.length === 0) { generatedCalls.push(`${name}();`); executedCalls.push(`${name}();`); continue; }
+  const count = (into: Map<string, number>) => into.set(name, (into.get(name) ?? 0) + 1);
+  if (params.length === 0) { generatedCalls.push(`${name}();`); executedCalls.push(`${name}();`); count(generatedFor); count(executedFor); continue; }
   const first = params.map((shape, i) => expressionFor(name, i, holdArm(name, i, shape)));
   params.forEach((shape, index) => {
     for (const arm of armsOf(shape)) {
@@ -253,7 +256,8 @@ for (const [name, params] of Object.entries(surface.params)) {
       if (args.some((value) => value === undefined)) continue;
       const call = `${name}(${args.join(", ")});`;
       generatedCalls.push(call);
-      if (COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) executedCalls.push(call);
+      count(generatedFor);
+      if (COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) { executedCalls.push(call); count(executedFor); }
     }
   });
 }
@@ -308,12 +312,15 @@ check(
   liveReaps.length === 0,
   liveReaps.map((line) => line.trim()).join(" | "),
 );
-// And refusing to RUN an arm is bounded by what it may not empty: every callable the declaration
-// names is still called by the half that runs, so the refusal table cannot quietly grow until the
-// executed half proves nothing at all.
-const uncalled = Object.keys(surface.params).filter((name) => !new RegExp(`\\b${name}\\(`).test(EXECUTED_CONSUMER));
+// And refusing to RUN an arm is bounded by what it may not empty: a callable with generated calls
+// keeps at least one of them in the half that runs, so the refusal table cannot quietly grow until
+// the executed half proves nothing at all. Counted over the GENERATED calls rather than read off the
+// consumer text: the text carries a hand-written preamble naming all three callables, so a check
+// over the text passes with every generated call held back. It was written that way first, and a
+// by-hand control that made both arms of `reapSmokeBrokers` compile-only left the suite at 40 of 40.
+const uncalled = [...generatedFor.keys()].filter((name) => (executedFor.get(name) ?? 0) === 0);
 check(
-  "and every callable the declaration names is still called by the half that RUNS, so holding an arm back cannot empty it",
+  "and every callable with generated calls keeps one in the half that RUNS, so holding arms back cannot empty it",
   uncalled.length === 0,
   uncalled.join(" | "),
 );
