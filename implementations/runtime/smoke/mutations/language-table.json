@@ -10,9 +10,9 @@
       "file": "implementations/runtime/src/run-driver.ts",
       "find": "    const served = ENGINES.find((e) => e.version === pins.languageVersion);",
       "replace": "    const served = ENGINES.find((e) => e.version === pins.languageVersion) ?? ENGINES[0];",
-      "expectRed": "and it is refused by name, L5023",
-      "cell": "and it is refused by name, L5023",
-      "note": "The defect this whole table exists to prevent, in the one spelling a reviewer would wave through: a `??` that reads as robustness. It is the repo's no-fallbacks rule at its sharpest, because the fallback is SILENT and produces a plausible outcome -- the run is released, just for the wrong reason, by an engine that does not speak the record's language."
+      "expectRed": "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+      "cell": "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+      "note": "The defect this whole table exists to prevent, in the one spelling a reviewer would wave through: a `??` that reads as robustness. It is the repo's no-fallbacks rule at its sharpest, because the fallback is SILENT and produces a plausible outcome -- the run is released, just for the wrong reason, by an engine that does not speak the record's language. RE-AIMED at the engine-version record rather than the unserved number: this is the dispatch-deletion mutant, and the cell it is graded on is the one that says which arm the dispatcher takes for the record the OTHER engine really writes."
     },
     {
       "name": "the refusal is filed under L5008, the same disagreement one layer in",
@@ -26,11 +26,11 @@
     {
       "name": "the refusal says what it met but not what this build serves",
       "file": "implementations/runtime/src/run-driver.ts",
-      "find": "    `this run was recorded under language version ${version} and this build serves ${ENGINES.map((e) => e.version).join(\", \")}. `",
-      "replace": "    `this run was recorded under language version ${version} and this build cannot host it. `",
+      "find": "    `this run ${met} and this build serves ${ENGINES.map((e) => e.version).join(\", \")}. `",
+      "replace": "    `this run ${met} and this build cannot host it. `",
       "expectRed": "and the refusal names both the version it met and the set this build serves",
       "cell": "and the refusal names both the version it met and the set this build serves",
-      "note": "\"This build cannot\" is only actionable if it says what it can. The mutant is a message a reader would accept as complete, which is why the cell reads the served set out of the sentence rather than trusting it to be there."
+      "note": "\"This build cannot\" is only actionable if it says what it can. The mutant is a message a reader would accept as complete, which is why the cell reads the served set out of the sentence rather than trusting it to be there. RE-ANCHORED: the absent-version repair rewrote this very line, and the anchor audit caught it at find=0 -- a mutation nothing can aim reports ERROR while the ledger still looks healthy."
     },
     {
       "name": "the refusal is thrown rather than returned as an outcome",
@@ -58,6 +58,24 @@
       "expectRed": "while the same spec at a version this build DOES serve gets past the table",
       "cell": "while the same spec at a version this build DOES serve gets past the table",
       "note": "The narrowness twin. A gate that refused every record would satisfy all three refusal cells above perfectly and stop the driver hosting anything at all. Graded on the control arm, which differs from the refused record by exactly one character of one pin."
+    },
+    {
+      "name": "a record that names NO version is described as one that names \"undefined\"",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  const met = version === undefined ? \"names no language version at all\" : `was recorded under language version ${version}`;",
+      "replace": "  const met = `was recorded under language version ${version}`;",
+      "expectRed": "and the refusal says the record names none, rather than interpolating the missing value",
+      "cell": "and the refusal says the record names none, rather than interpolating the missing value",
+      "note": "The defect exactly as it shipped and as it was measured through the driver before the repair: `recorded under language version undefined and this build serves 1`. The refusal was already correct in code and in effect; only the sentence was wrong, which is the kind of defect a cell asserting the code alone cannot see. An operator acts differently on \"written under a version I do not have\" than on \"says nothing at all\", and the second is the one that arrives from a record written before the field existed."
+    },
+    {
+      "name": "every refusal claims the record named no version, whatever it named",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  const met = version === undefined ? \"names no language version at all\" : `was recorded under language version ${version}`;",
+      "replace": "  const met = \"names no language version at all\";",
+      "expectRed": "and the refusal names both the version it met and the set this build serves",
+      "cell": "and the refusal names both the version it met and the set this build serves",
+      "note": "The narrowness twin of the mutation above. Collapsing the other way satisfies the absent-record cell perfectly and loses the recorded version out of every other refusal, which is the half an operator needs to find the build that serves it. Graded on the version-9 arm, so the two mutations differ by exactly which branch they delete."
     }
   ],
   "unkillable": [
