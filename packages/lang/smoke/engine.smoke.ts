@@ -2679,7 +2679,7 @@ let n = 1;
 {
   const configPath = fileURLToPath(new URL("./mutations/engine-seam.json", import.meta.url));
   const config = JSON.parse(readFileSync(configPath, "utf8")) as {
-    mutations: { name: string; file: string; find: string; expectRed?: string; cell?: string; completionMarker?: string }[];
+    mutations: { name: string; file: string; find: string; expectRed?: string; cell?: string; completionMarker?: string; note?: string }[];
   };
   const root = fileURLToPath(new URL("../../../", import.meta.url));
   const sources = new Map<string, string>();
@@ -2692,6 +2692,8 @@ let n = 1;
   };
 
   const ambiguous: string[] = [];
+  /** Hoisted: the two cells below assert this reached the config's length, which is the ordering guard. */
+  let audited = 0;
   const absent: string[] = [];
   /** Names that match more than one printed cell, or none: the tool matches by substring. */
   const ambiguousName: string[] = [];
@@ -2723,21 +2725,100 @@ let n = 1;
   );
   // The negative half: an unambiguous name must NOT be reported, or the audit reds on everything.
   ok("while an unambiguous name is reported as nothing at all", matchesOnce("ctl", "expectRed", "the head answers for the write", ["the head answers", "the head answers for the write"]).length === 0);
-  ok("every `find` matches its file exactly once, so every mutant can be aimed", ambiguous.length === 0, ambiguous);
-  ok("every `expectRed` and marker names a cell this suite actually printed", absent.length === 0, absent);
 
-  const downstream: string[] = [];
-  let audited = 0;
+  /**
+   * Does `list` hold this name EXACTLY? Shared by the audit loop and by the control below, so the
+   * control grades the code the audit runs rather than a copy of its idea.
+   */
+  const namesExactly = (list: readonly string[], name: string): boolean => list.indexOf(name) >= 0;
+  // ---- why BOTH name checks exist, on a subject that separates them -----------------------------
+  //
+  // The exact-match check and the tool-rule check at the end of this section read like one sentence
+  // and are not. mutation-proof finds a cell by SUBSTRING (`line.includes(expectRed)`), so a name
+  // that is a strict substring of exactly one cell satisfies the TOOL while naming no cell EXACTLY.
+  // The difference is load-bearing: the ordering audit resolves aim and marker with `indexOf` and
+  // fires only when both resolve, so a substring aim gives -1 and the ordering check silently SKIPS
+  // that mutation - this section's own class arriving through a different door. MEASURED: trimming
+  // three characters off a real aim left the tool-rule cell green and redded the exact-match one.
+  {
+    const CELL = "the head answers for the write";
+    const TRIMMED = "the head answers for the writ";
+    ok(
+      "a name that is a substring of one cell but is not that cell passes the tool's rule and fails the exact-match half",
+      matchesOnce("ctl", "expectRed", TRIMMED, [CELL]).length === 0 && !namesExactly([CELL], TRIMMED),
+    );
+    // The negative half, or an exact-match check that reds on EVERYTHING would satisfy the cell above.
+    ok(
+      "while a name that is the cell exactly passes both halves",
+      matchesOnce("ctl", "expectRed", CELL, [CELL]).length === 0 && namesExactly([CELL], CELL),
+    );
+  }
+
+  // ---- the marker-less EXCEPTION, pinned as three assertions rather than a comment ----------------
+  //
+  // This suite is FAIL-FAST, so a mutation's completionMarker is what proves the run REACHED the
+  // window its aim sits in. A mutation with no marker is therefore an ungraded aim, and it fails in
+  // BOTH directions: a death upstream of the aim grades as a KILL (the false-kill direction), and on
+  // the other side a textbook kill can grade INCONCLUSIVE. Exactly ONE mutation here may be
+  // marker-less, and only because its aim is the FIRST cell this file prints - a first cell has no
+  // upstream, so a marker for it is impossible rather than merely omitted.
+  //
+  // MEASURED, before these three cells existed: stripping the marker from an ordinary deep mutation
+  // left this suite at 380/380 green. Every one of the four checks below the loop iterates the
+  // markers that EXIST, so the set they walk SHRINKS with the fault and none of them can see it.
+  // These read the whole mutation list instead, which is the set the fault actually changes.
+  const bare = config.mutations.filter((m) => m.completionMarker === undefined);
+  const firstCell = cells[0] ?? "";
+  ok(
+    "exactly one mutation names no completion marker, because only a first cell can lack an upstream",
+    bare.length === 1,
+    bare.map((m) => m.name),
+  );
+  ok(
+    "and that one aims at the first cell this file prints, which is what makes it impossible not merely absent",
+    bare.length === 1 && (bare[0]?.cell ?? bare[0]?.expectRed) === firstCell,
+    { aim: bare[0]?.cell ?? bare[0]?.expectRed, firstCell },
+  );
+  // THE CLAUSE THAT STOPS THE EXEMPTION READING AS A PRECEDENT. Without it the next author finds a
+  // mutation with no marker, no explanation, and a green ledger, and copies the shape.
+  ok(
+    "and its own note says the word, so the next author reads the rule and not just the exemption",
+    bare.length === 1 && (bare[0]?.note ?? "").includes("completionMarker"),
+    bare[0]?.note,
+  );
+
+  // ---- find-uniqueness: its own pass, ABOVE the audit loop and BELOW the clauses ----------------
+  //
+  // ABOVE the loop because this file validates every aim against the cells printed SO FAR (section
+  // 22b), so nothing can name a cell that prints after the audit - and a check no mutant can aim at
+  // is a check no ledger grades, which is exactly how this one died. It used to sit INSIDE the loop
+  // and be READ before the loop filled it, so it asserted an empty array: MEASURED, an anchor of
+  // `const ` in ctx.ts - 76 occurrences, aimable at nothing - left the suite green at 380/380.
+  //
+  // BELOW the clauses above because the mutants that grade THEM edit this config, which makes their
+  // own anchors stale as a side effect. Measured while building this commit: with this pass ordered
+  // first, all three clause mutants redded HERE instead of on the clause they aim at - a mis-aim the
+  // ledger would have reported as three kills on one cell. Order is the fix; the aims are unchanged.
+  let aimable = 0;
   for (const m of config.mutations) {
-    audited += 1;
+    aimable += 1;
     const hits = sourceOf(m.file).split(m.find).length - 1;
     if (hits !== 1) ambiguous.push(`${m.name}: ${hits} matches in ${m.file}`);
+  }
+  // The count is in the CONDITION and the extra, never the name - a cell whose name carries a
+  // measured number renames itself under the mutant meant to red it. It is here so that reading this
+  // list before its own pass ran, which is the fault this commit repairs, reds instead of passing.
+  ok("every `find` matches its file exactly once, so every mutant can be aimed", ambiguous.length === 0 && aimable === config.mutations.length, { ambiguous, aimable });
+
+  const downstream: string[] = [];
+  for (const m of config.mutations) {
+    audited += 1;
     const target = m.cell ?? m.expectRed ?? "";
     const marker = String(m.completionMarker ?? "").replace(/^ok /, "");
     const ti = cells.indexOf(target);
     const mi = cells.indexOf(marker);
-    if (ti < 0) absent.push(`${m.name}: expectRed names no cell (${target})`);
-    if (marker !== "" && mi < 0) absent.push(`${m.name}: completionMarker names no cell (${marker})`);
+    if (!namesExactly(cells, target)) absent.push(`${m.name}: expectRed names no cell (${target})`);
+    if (marker !== "" && !namesExactly(cells, marker)) absent.push(`${m.name}: completionMarker names no cell (${marker})`);
     if (ti >= 0 && mi >= 0 && mi >= ti) downstream.push(`${m.name}: marker at ${mi}, cell at ${ti}`);
     // EXACTLY ONE, not merely present. The tool matches a name by SUBSTRING over the transcript
     // (`line.includes(expectRed)`), so a name that is a substring of a SIBLING'S name is found on
@@ -2753,6 +2834,26 @@ let n = 1;
       ambiguousName.push(...matchesOnce(m.name, what, name, cells));
     }
   }
+  // BELOW THE LOOP, WHICH IS THE WHOLE POINT. This reads an array the loop above FILLS, and it used
+  // to be evaluated BEFORE that loop ran - so it asserted its property against an array that was
+  // still empty and could not fail. It shared that fault with the find-uniqueness cell, which now
+  // has its own pass higher up. MEASURED before the repair: a mutation whose `find` was `const ` in
+  // ctx.ts, 76 occurrences and aimable at nothing, left this suite at 380/380 green with that cell
+  // printing `ok`. Neither cell was any mutant's aim or marker - all 86 checked, both directions -
+  // which is exactly why a green ledger never noticed: a ledger grades the cells a config points
+  // at, and those two were the cells doing the pointing.
+  //
+  // NOT a duplicate of the exactly-one cell below. mutation-proof finds a name by SUBSTRING, so a
+  // name that is a strict substring of one cell satisfies THAT rule while naming no cell EXACTLY.
+  //
+  // AND THE EXACTNESS IS A FACT ABOUT THIS LOOKUP, NOT ABOUT THE RULE - worth saying because the
+  // next reader will otherwise take it for a property of the config language. The ordering check
+  // resolves aim and marker with `indexOf` and fires only when BOTH are >= 0, so a substring aim
+  // gives -1 and falls through as a SKIP; that skip is what this cell closes. Resolve them with the
+  // tool's own relation instead and treat a zero-match aim as a FAULT, and nothing can fall through,
+  // exactness is never needed, and this cell should go rather than stay as decoration. Lane T's
+  // config is built that shape and measured no skip to close.
+  ok("every `expectRed` and marker names a cell EXACTLY, not merely as a substring of one", absent.length === 0 && audited === config.mutations.length, { absent, audited });
   ok(`the mutation config has ${audited} mutations, and every one of them was audited`, audited === config.mutations.length && audited > 0, audited);
   // THE COUNT IS IN THE EXTRA, NOT THE NAME. A cell whose name carries a measured number renames
   // itself the moment the number moves, and no mutation config can name it - which is exactly how
