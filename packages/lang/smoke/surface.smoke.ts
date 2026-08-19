@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "acorn";
 import { validate } from "../src/grammar.js";
-import { LangErrors, type LangErrorCode } from "../src/errors.js";
+import { CATALOG, LangErrors, type LangErrorCode } from "../src/errors.js";
 import { run } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { BUILTINS } from "../src/primitives.js";
@@ -296,6 +296,18 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
     await logsOf("log(json.stringify({ b: 1, a: undefined }));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes(".a"))
       && await logsOf("log(json.stringify([undefined, 1]));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
       && await logsOf("log(json.stringify(0 / 0));").then(() => false, (e: Error) => e.message.startsWith("L4016")));
+  // VERSION 1 HANDS ITS LOG VALUES TO THE HOST AS THEY ARE, a function included. This is pinned on
+  // purpose: the walker replays every run recorded under language version 1, so a program that logs a
+  // builtin (`log(map)`) must keep completing here (journal.smoke replays a checked-in recording of
+  // exactly that). The engine refuses code in a log line (L4016) as ITS rule, declared as a divergence
+  // in the differential suite; the day this cell reds, a v1 record has stopped replaying.
+  {
+    const raw: unknown[][] = [];
+    const outcome = await run("const o = { a: 1 }; log(o.b, 0 / 0, map, { g: (x) => x });", { runId: "surf", handler: new SimHandler({}), onLog: (l) => raw.push([...l.values]) })
+      .then(() => "ran", (e: Error) => e.message);
+    ok("v1: `log` hands its values to the host as they are, absence, NaN and a function included",
+      outcome === "ran" && raw.length === 1 && raw[0][0] === undefined && Number.isNaN(raw[0][1]) && typeof raw[0][2] === "function" && typeof (raw[0][3] as { g: unknown }).g === "function", { outcome, raw });
+  }
   // JSON can spell an OWN field named __proto__, which the literal (L1028) and the member write
   // (L4014) both refuse — a parse that minted one was a bypass around both (measured).
   ok("`json.parse` refuses a \"__proto__\" key (L4016), exactly as the literal refuses it",
@@ -354,6 +366,47 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && JSON.stringify(await logsOf('const o = { a: 1 }; try { log(`${o}`); } catch (e) { log(e.code); }')) === '["L4018"]');
   ok("but identity comparison takes any operands, and primitives coerce as JavaScript coerces them",
     JSON.stringify(await logsOf('const o = { a: 1 }; const p = o; log(o === p, o !== p, "a" + 1, true + 1, null + 1);')) === '[[true,false,"a1",2,1]]');
+  // A callable `then` is the one member a record may not carry, on any route that writes one
+  // (measured before the rule: a record returned from a program function was adopted at the
+  // interpreter's own async boundary, the record's `then` ran with the machinery's continuations,
+  // the await that adopted it never settled, and the rejection the throw became escaped with no
+  // owner and killed the host process, run, journal and all). The refusal is at the write, so no
+  // thenable value ever exists for the machinery to adopt. Each refusal is raced against a timer:
+  // without the guard the adoption PENDS forever, and a cell that hangs instead of reddening
+  // proves nothing.
+  {
+    const bounded = async <T,>(p: Promise<T>, ms = 4000): Promise<T | "unsettled"> => {
+      let t: ReturnType<typeof setTimeout> | undefined;
+      const timer = new Promise<"unsettled">((res) => { t = setTimeout(() => res("unsettled"), ms); });
+      try {
+        return await Promise.race([p, timer]);
+      } finally {
+        clearTimeout(t);
+      }
+    };
+    const refuses = async (source: string): Promise<boolean> =>
+      (await bounded(logsOf(source).then(() => "no fault", (e: Error) => (e.message.startsWith("L4021") ? "L4021" : `other: ${e.message}`)))) === "L4021";
+    ok("a record literal, a member write, and a computed member write each refuse a callable `then` with L4021",
+      (await refuses("const o = { then: () => 1 };"))
+      && (await refuses("const o = {}; o.then = () => 1;"))
+      && (await refuses('const k = "then"; const o = {}; o[k] = () => 1;'))
+      && JSON.stringify(await logsOf('try { const o = { then: () => 1 }; } catch (e) { log(e.code); }')) === '["L4021"]');
+    ok("`then` under any other spelling is data, and a function under another name is still a value",
+      JSON.stringify(await logsOf('const o = { then: 5 }; const p = { go: () => 2 }; log(o.then, p.go());')) === '[[5,2]]');
+    // The repro that owned the fix, kept as a cell: a returned record whose `then` throws must be
+    // the run's own L4021 fault, and NOTHING may leave the run as an unhandled rejection while it
+    // is. Before the guard this cell killed the host running it.
+    let escaped: unknown;
+    const onEscape = (reason: unknown): void => { escaped = reason ?? true; };
+    process.on("unhandledRejection", onEscape);
+    const outcome = await bounded(run(
+      'function evil() { return { then: () => { throw { code: "stray" } } }; } evil();',
+      { runId: "surf-then", handler: new SimHandler({}) },
+    ).then(() => "resolved", (e: Error) => (e.message.startsWith("L4021") ? "L4021" : `other: ${e.message}`)));
+    process.off("unhandledRejection", onEscape);
+    ok("a returned record whose `then` throws is owned by the run as L4021, and no rejection escapes the host",
+      outcome === "L4021" && escaped === undefined, { outcome, escaped });
+  }
   // A computed member key is the same coercion site (measured before the rule: `o[k] = 1` with a
   // record key silently minted the own field "[object Object]", and `o[key]` with an own `toString`
   // closure logged a raw L4000 host error and then killed the process AFTER the run returned — the
@@ -440,6 +493,18 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && JSON.stringify(await logsOf("log(map([1], (x) => x + 1));")) === "[[2]]"
       && JSON.stringify(await logsOf("log(sort([[2], [1]])[0]);")) === "[[1]]"
       && JSON.stringify(await logsOf("log(json.stringify({ a: 1 }));")) === '["{\\"a\\":1}"]');
+  // len counts exactly the kinds that have a length of their own (measured before the rule:
+  // len of a program function answered 2 whatever parameters it declared, the host arity of the
+  // interpreter's own wrapper; len of a builtin answered 0; len of a record, a number or a
+  // boolean silently answered undefined; len of null surfaced the host's TypeError text). The
+  // host's Function.length is a property of the runtime's closure, not a program value.
+  ok("len counts an array or a string and refuses every other kind with L4016, catchably, with no host text",
+    await logsOf("const f = (a, b, c) => a; log(len(f));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("a function"))
+      && await logsOf("const h = map; log(len(h));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && await logsOf("const o = { a: 1 }; log(len(o));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("a record"))
+      && await logsOf("log(len(5));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && await logsOf("log(len(null));").then(() => false, (e: Error) => e.message.startsWith("L4016") && !e.message.includes("Cannot read properties"))
+      && JSON.stringify(await logsOf('try { log(len(true)); } catch (e) { log(e.code); } log(len([1, 2]), len("abc"));')) === '["L4016",[2,3]]');
   // A method is not a value: it is looked up at the call and exists nowhere else (measured before
   // the rule: `xs.map === xs.map` was false where JavaScript says true, and an extracted `push`
   // wrote to its receiver where strict JavaScript throws).
@@ -482,30 +547,75 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
 // ---- 6) the language reference and the guide parse ------------------------------------------------------
 
 for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
-  const path = `${here}/../../../${rel}`;
-  let text: string | null = null;
-  try {
-    text = readFileSync(path, "utf8");
-  } catch {
-    text = null;
-  }
-  if (text !== null) {
-    const blocks = [...text.matchAll(/```js\n([\s\S]*?)```/g)].map((m) => m[1] as string);
-    const bad: string[] = [];
-    for (const [i, block] of blocks.entries()) {
-      // A block marked as an example of a REFUSAL states its code on the first line.
-      const refusal = /^\/\/ refused: (L\d{4})/.exec(block);
-      const codes = codesOf(block);
-      if (refusal !== null) {
-        if (!codes.includes(refusal[1] as string)) bad.push(`block ${i + 1}: expected ${refusal[1]}, got ${codes.join(",") || "accepted"}`);
-      } else if (codes.length > 0) {
-        bad.push(`block ${i + 1}: ${codes.join(",")}`);
-      }
+  // Both documents are part of the repository, so an unreadable one throws here and fails the suite
+  // rather than skipping its cell. The read folds CRLF to LF: on a CRLF checkout the fence regex
+  // below would find no block at all, and a cell over zero blocks is green without having validated
+  // anything.
+  const text = readFileSync(`${here}/../../../${rel}`, "utf8").replace(/\r\n/g, "\n");
+  const blocks = [...text.matchAll(/```js\n([\s\S]*?)```/g)].map((m) => m[1] as string);
+  const bad: string[] = [];
+  for (const [i, block] of blocks.entries()) {
+    // A block marked as an example of a REFUSAL states its code on the first line.
+    const refusal = /^\/\/ refused: (L\d{4})/.exec(block);
+    const codes = codesOf(block);
+    if (refusal !== null) {
+      if (!codes.includes(refusal[1] as string)) bad.push(`block ${i + 1}: expected ${refusal[1]}, got ${codes.join(",") || "accepted"}`);
+    } else if (codes.length > 0) {
+      bad.push(`block ${i + 1}: ${codes.join(",")}`);
     }
-    ok(`every js block in ${rel} validates as written (${blocks.length} blocks)`, bad.length === 0, bad);
-  } else {
-    console.log(`  (${rel} not present; its cells skipped)`);
   }
+  // Both documents carry js blocks, so a count of zero is a document this cell no longer reads,
+  // not a pass: the cell requires at least one block to have been validated.
+  ok(`every js block in ${rel} validates as written (${blocks.length} blocks)`, blocks.length > 0 && bad.length === 0, bad);
+}
+
+// ---- 7) Appendix A IS the catalog, rendered ------------------------------------------------------
+//
+// The document and `CATALOG` are two copies of one table, and nothing compared them. That is not a
+// hypothetical: L5024's row said "A recorded binding has no canonical form" while the code raised
+// "A recorded value has no canonical form" for four commits, because the rule grew to cover a
+// failure's detail and a scope's result and the row was left behind. A reader repairing a program
+// searches the document for the title the tool printed, and finds nothing.
+//
+// TWO CELLS, NOT ONE CONJUNCTION. A single cell would go red with equal confidence whether a row
+// went missing or a title drifted, and those want different repairs: one is a code the catalog and
+// the document disagree about HAVING, the other a code they disagree about SAYING. The drift that
+// caused this section is the second kind, and it is the quieter one.
+//
+// The read is deliberately NOT the tolerant one above: those cells skip when the file is absent,
+// which is right for examples and wrong here, because a catalog cross-check that skips reports the
+// same green whether the document agreed or was not there at all.
+{
+  const appendix = readFileSync(`${here}/../../../spec/cotal-lang.md`, "utf8");
+  const start = appendix.indexOf("## Appendix A");
+  const end = appendix.indexOf("\n## ", start + 1);
+  const section = start === -1 ? "" : appendix.slice(start, end === -1 ? undefined : end);
+  const rows = [...section.matchAll(/^\| (L\d{4}) \| (.+?) \|$/gm)].map((m) => [m[1] as string, m[2] as string] as const);
+  const codes = rows.map(([c]) => c);
+  const cataloged = Object.keys(CATALOG);
+  const missingRow = cataloged.filter((c) => !codes.includes(c));
+  const extraRow = codes.filter((c) => !cataloged.includes(c));
+  const duplicated = codes.filter((c, i) => codes.indexOf(c) !== i);
+  // THE FLOOR IS THE LOAD-BEARING THIRD, and it is asserted against a NUMBER rather than printed.
+  // Both comparisons below are between two collections, and two EMPTY collections agree perfectly:
+  // if the row pattern stops matching (the table's format changes, it moves behind another heading)
+  // or the catalog stops parsing, the cells that follow pass and print that all rows agree. A floor
+  // well under the real count reds on a parser that broke without hard-coding a number that has to
+  // be edited whenever a code is added.
+  ok(
+    `the reference and the catalog both parse to a full table: ${rows.length} rows read, ${cataloged.length} codes, floor 90 each`,
+    rows.length >= 90 && cataloged.length >= 90,
+    { rows: rows.length, catalog: cataloged.length },
+  );
+  ok(
+    `Appendix A lists exactly the catalog's codes, ${cataloged.length} of them, each once`,
+    missingRow.length === 0 && extraRow.length === 0 && duplicated.length === 0 && rows.length === cataloged.length,
+    { rows: rows.length, catalog: cataloged.length, missingRow, extraRow, duplicated },
+  );
+  const drift = rows
+    .filter(([c, t]) => (CATALOG as Record<string, string>)[c] !== t)
+    .map(([c, t]) => `${c}: appendix "${t}" vs catalog "${(CATALOG as Record<string, string>)[c] ?? "(absent)"}"`);
+  ok(`and every one of those ${rows.length} rows carries the title the code raises`, drift.length === 0, drift);
 }
 
 console.log(`surface.smoke: ${pass} checks passed`);

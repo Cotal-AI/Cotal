@@ -199,8 +199,9 @@ c("c8 and the parsed value alone CANNOT show it — the duplicate is gone before
   && (JSON.parse(new TextDecoder().decode(dupRaw)) as { id: string }).id === "req-2");
 // Nested, so the scanner is not merely checking the top level.
 const dupNested = new TextEncoder().encode('{"id":"req-1","args":{"a":1,"a":2}}');
+const dupNestedOutcome = decideAdmission(dupNested, JSON.parse(new TextDecoder().decode(dupNested)), subj, CEIL);
 c("c8 a duplicate NESTED name is caught too",
-  decideAdmission(dupNested, JSON.parse(new TextDecoder().decode(dupNested)), subj, CEIL).cause === "no-canonical-form");
+  dupNestedOutcome.outcome === "quarantine" && dupNestedOutcome.cause === "no-canonical-form");
 // THE NEGATIVE SIDE, which is what stops the scanner degenerating into "refuse everything".
 // Each fixture below is BUILT and then serialised, never hand-escaped — my first attempt at writing
 // those escapes by hand produced invalid JSON.

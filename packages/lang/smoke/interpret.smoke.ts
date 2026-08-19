@@ -12,7 +12,7 @@
  */
 import { run, resume, RunDivergence } from "../src/interpret.js";
 import { requestId } from "../src/keys.js";
-import { resolvePins, type RunPins } from "../src/pins.js";
+import { WALKER_LANGUAGE_VERSION, resolvePins, type RunPins } from "../src/pins.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
 import { EffectError, RunReleased } from "../src/effects.js";
@@ -1046,7 +1046,7 @@ let c = await sleep("1s")
   let released: unknown;
   // Resolved once, here, because the recorded run is released rather than returned and there is no
   // result to take pins from — and both resumes below have to be the SAME run as it.
-  const stopPins = resolvePins({ runId: "r-stop" }, 0);
+  const stopPins = resolvePins({ runId: "r-stop" }, 0, WALKER_LANGUAGE_VERSION);
   try {
     await run(P, {
       runId: "r-stop",

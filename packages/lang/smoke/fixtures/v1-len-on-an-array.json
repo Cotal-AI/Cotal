@@ -1,0 +1,51 @@
+{
+ "what": "The POSITIVE CONTROL beside it: the same shape of program, the same effect, `len` over an ARRAY. This one still replays and completes, which is what keeps the cell beside it from passing because replay is broken generally.",
+ "languageVersion": "1",
+ "source": "const xs = [1, 2, 3];\nconst n = len(xs);\nlog(\"len of an array was\", n);\nconst b = await spawn(\"b\");\nlog(\"done\");",
+ "runId": "v1-len-on-an-array",
+ "seed": "v1-len",
+ "startedAt": 1700000000000,
+ "pins": {
+  "seed": "v1-len",
+  "startedAt": 1700000000000,
+  "yieldEvery": 1024,
+  "stepBudget": 1000000,
+  "effectCeiling": 10000,
+  "languageVersion": "1"
+ },
+ "entries": [
+  {
+   "v": 1,
+   "seq": 0,
+   "run": "v1-len-on-an-array",
+   "scope": "",
+   "kind": "spawn",
+   "name": "b",
+   "occurrence": 0,
+   "inputHash": "sha256:d6c80482a86677fc954aa1263f4419c88b74dde27f07e1c3147fa54551d6da09",
+   "requestId": "Wg7Op8V_GA7YhEdRjrKRNp8sFdIPrtnbws7Vp52ikCY",
+   "attempt": 0,
+   "state": "settled",
+   "startedAt": 0,
+   "external": {
+    "simAgent": "sim.b"
+   },
+   "status": "ok",
+   "endedAt": 0,
+   "result": {
+    "agent": "sim.b",
+    "persona": "b"
+   }
+  }
+ ],
+ "logs": [
+  [
+   "len of an array was",
+   3
+  ],
+  [
+   "done"
+  ]
+ ],
+ "value": null
+}

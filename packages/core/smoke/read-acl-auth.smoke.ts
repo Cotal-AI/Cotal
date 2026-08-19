@@ -114,7 +114,6 @@ try {
     inboxPrefix: `_INBOX_${id.id}`, // the agent's sub.allow is _INBOX_<id>.>
     maxReconnectAttempts: 0,
   });
-  ag.on?.("error" as any, () => {});
 
   const cfg = (filter: string) => ({
     stream_name: CHAT,

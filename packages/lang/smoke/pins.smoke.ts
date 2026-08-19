@@ -11,11 +11,26 @@
  * fails without saying which pin disagreed is a failure an author cannot act on.
  */
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { run, resume } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal } from "../src/journal.js";
 import { CATALOG } from "../src/errors.js";
-import { LANGUAGE_VERSION, PIN_DEFAULTS, PinMismatch, bindPins, resolvePins } from "../src/pins.js";
+import { ENGINE_LANGUAGE_VERSION, LANGUAGE_VERSION, PIN_DEFAULTS, PinMismatch, WALKER_LANGUAGE_VERSION, bindPins, resolvePins } from "../src/pins.js";
+
+/**
+ * A default as the LANGUAGE REFERENCE prints it, from the pins table in spec/cotal-lang.md.
+ *
+ * It REFUSES rather than skipping when the row is absent: a reader that quietly returns nothing when
+ * it cannot find what it came for turns its cell into one that passes hardest exactly when the
+ * document it was watching has been renamed or restructured.
+ */
+const documentedDefault = (pin: string): number => {
+  const spec = readFileSync(new URL("../../../spec/cotal-lang.md", import.meta.url), "utf8");
+  const row = new RegExp(`^\\| \`${pin}\` \\|[^|]*\\| ([0-9 ]+) \\|$`, "m").exec(spec);
+  if (row === null) throw new Error(`spec/cotal-lang.md prints no default for \`${pin}\` in its pins table`);
+  return Number((row[1] as string).replace(/ /g, ""));
+};
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -35,16 +50,41 @@ const sink = (line: { scope: string; values: readonly unknown[] }) => {
 // ---- 1) a fresh run RESOLVES its pins, and the resolved value is what is pinned ---------------
 
 {
-  const pins = resolvePins({ runId: "r-1" }, 1_000);
+  const pins = resolvePins({ runId: "r-1" }, 1_000, WALKER_LANGUAGE_VERSION);
   ok("the seed defaults from the run id", pins.seed === "r-1");
   ok("the logical epoch defaults to the host clock read once", pins.startedAt === 1_000);
   ok("the three limits default to the documented values",
     pins.yieldEvery === PIN_DEFAULTS.yieldEvery
     && pins.stepBudget === PIN_DEFAULTS.stepBudget
     && pins.effectCeiling === PIN_DEFAULTS.effectCeiling);
-  ok("and the language version is stamped", pins.languageVersion === LANGUAGE_VERSION);
+  // AND THE VALUES THEMSELVES. The cell above compares `resolvePins` to `PIN_DEFAULTS`, so it
+  // witnesses the resolver FILLING from the table and cannot witness the table MOVING: both of its
+  // sides move together. MEASURED, and the gap was wider than that one cell -- a realistic edit to
+  // any of the three (`yieldEvery` 1024 -> 2048, `stepBudget` 1e6 -> 2e6, `effectCeiling` 10_000 ->
+  // 20_000) redded nothing anywhere in the lang suites. `effectCeiling` is the sharpest: it has no
+  // witness at ANY value, because no program in the corpus dispatches enough effects to approach it,
+  // and the ceiling is live -- a twelve-effect program refuses L4009 at a ceiling of seven.
+  //
+  // THE NUMBERS ARE WRITTEN HERE AS LITERALS ON PURPOSE. Deriving the expected side from anything in
+  // `src` would rebuild the common source this cell exists to break, and a constant compared against
+  // itself passes hardest exactly when it is wrong.
+  ok("and those three defaults are these exact numbers, not merely whatever the table happens to say",
+    PIN_DEFAULTS.yieldEvery === 1_024
+    && PIN_DEFAULTS.stepBudget === 1_000_000
+    && PIN_DEFAULTS.effectCeiling === 10_000,
+    PIN_DEFAULTS);
+  // THE OTHER COPY. These three numbers are written twice, once in `src` and once in the language
+  // reference, and MEASURED the reference was as free to drift as the code: editing its table row
+  // redded nothing, `smoke:docs` included. Anchoring both cells on the same literals holds all three
+  // together, so a default may only change by an edit that says so in every place it is published.
+  ok("and the language reference prints the same three, so the code and the document cannot drift apart",
+    documentedDefault("yieldEvery") === 1_024
+    && documentedDefault("stepBudget") === 1_000_000
+    && documentedDefault("effectCeiling") === 10_000,
+    { yieldEvery: documentedDefault("yieldEvery"), stepBudget: documentedDefault("stepBudget"), effectCeiling: documentedDefault("effectCeiling") });
+  ok("and the language version is stamped, by the ENGINE that resolved them", pins.languageVersion === WALKER_LANGUAGE_VERSION);
 
-  const supplied = resolvePins({ runId: "r-1", seed: "s-9", startedAt: 42, effectCeiling: 7 }, 1_000);
+  const supplied = resolvePins({ runId: "r-1", seed: "s-9", startedAt: 42, effectCeiling: 7 }, 1_000, WALKER_LANGUAGE_VERSION);
   ok("a supplied seed is what gets pinned", supplied.seed === "s-9");
   ok("a supplied epoch is what gets pinned", supplied.startedAt === 42);
   ok("a supplied ceiling is what gets pinned", supplied.effectCeiling === 7);
@@ -103,18 +143,18 @@ log(now() - t0);
 // ---- 4) a resume BINDS every pin from the record rather than re-defaulting --------------------
 
 {
-  const recorded = resolvePins({ runId: "r-4", seed: "s-4", effectCeiling: 3 }, 700);
-  const bound = bindPins(recorded, { runId: "r-4" });
+  const recorded = resolvePins({ runId: "r-4", seed: "s-4", effectCeiling: 3 }, 700, WALKER_LANGUAGE_VERSION);
+  const bound = bindPins(recorded, { runId: "r-4" }, WALKER_LANGUAGE_VERSION);
   ok("an absent option takes the recorded pin", bound.seed === "s-4" && bound.effectCeiling === 3);
 
-  const agreeing = bindPins(recorded, { runId: "r-4", seed: "s-4", startedAt: 700 });
+  const agreeing = bindPins(recorded, { runId: "r-4", seed: "s-4", startedAt: 700 }, WALKER_LANGUAGE_VERSION);
   ok("an option that AGREES is harmless", agreeing.startedAt === 700);
 }
 
 // ---- 5) a pin the caller changed is REFUSED (L5009), and the refusal names it -----------------
 
 {
-  const recorded = resolvePins({ runId: "r-5", seed: "s-5" }, 700);
+  const recorded = resolvePins({ runId: "r-5", seed: "s-5" }, 700, WALKER_LANGUAGE_VERSION);
 
   const cases: readonly [string, Record<string, unknown>][] = [
     ["seed", { seed: "s-other" }],
@@ -126,7 +166,7 @@ log(now() - t0);
   for (const [pin, override] of cases) {
     let caught: unknown;
     try {
-      bindPins(recorded, { runId: "r-5", ...override });
+      bindPins(recorded, { runId: "r-5", ...override }, WALKER_LANGUAGE_VERSION);
     } catch (e) {
       caught = e;
     }
@@ -136,7 +176,7 @@ log(now() - t0);
 
   let caught: unknown;
   try {
-    bindPins(recorded, { runId: "r-5", seed: "s-other" });
+    bindPins(recorded, { runId: "r-5", seed: "s-other" }, WALKER_LANGUAGE_VERSION);
   } catch (e) {
     caught = e;
   }
@@ -149,18 +189,66 @@ log(now() - t0);
 // ---- 6) a run pinned to another language version is REFUSED (L5008) --------------------------
 
 {
-  const foreign = { ...resolvePins({ runId: "r-6" }, 700), languageVersion: "0" };
+  const foreign = { ...resolvePins({ runId: "r-6" }, 700, WALKER_LANGUAGE_VERSION), languageVersion: "0" };
   let caught: unknown;
   try {
-    bindPins(foreign, { runId: "r-6" });
+    bindPins(foreign, { runId: "r-6" }, WALKER_LANGUAGE_VERSION);
   } catch (e) {
     caught = e;
   }
   ok("a journal from another language version is refused", caught instanceof PinMismatch && caught.code === "L5008");
   ok("and the refusal names both versions",
-    caught instanceof PinMismatch && caught.recorded === "0" && caught.supplied === LANGUAGE_VERSION);
+    caught instanceof PinMismatch && caught.recorded === "0" && caught.supplied === WALKER_LANGUAGE_VERSION);
   ok("the version check runs BEFORE the pin comparison, so a foreign version is not reported as a seed problem",
     caught instanceof PinMismatch && caught.pin === "languageVersion");
+}
+
+// ---- 6b) TWO ENGINES, TWO VERSIONS: the version is passed IN, and each engine compares its own --
+//
+// The version is a property of the engine that runs a program, not of this module, and these cells
+// are what keep it that way. Bumping one shared constant was measured and is not available: the
+// walker would stamp 2 and compare 1, and every walker fresh-run-then-resume round trip fails - 7
+// of 18 suites red, the differential gate among them. Leaving the constant at 1 while the engine
+// speaks 2 fails the other way, on the checked-in v1 records. Each engine stamping AND comparing
+// its own is the only arrangement that breaks neither, so both halves are asserted here: that the
+// two versions are DIFFERENT, and that neither function reads a version out of this module.
+
+{
+  ok("the walker's version and the engine's are two different languages", WALKER_LANGUAGE_VERSION !== ENGINE_LANGUAGE_VERSION,
+    { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VERSION });
+  // The CURRENT language is the engine's. `LANGUAGE_VERSION` is what a caller means by "this
+  // language" and it must move with the newest engine, not with the oldest one still supported.
+  ok("and the current language is the ENGINE's, not the walker's", LANGUAGE_VERSION === ENGINE_LANGUAGE_VERSION,
+    { current: LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VERSION });
+
+  // NEITHER FUNCTION MAY READ A VERSION OUT OF THIS MODULE, and a version belonging to no engine is
+  // how that gets proved: if `resolvePins` reached for a constant, this would come back as one of
+  // the two real ones and look entirely reasonable.
+  ok("a resolver stamps the version it was HANDED, whatever it is", resolvePins({ runId: "r-6b" }, 700, "42").languageVersion === "42",
+    resolvePins({ runId: "r-6b" }, 700, "42").languageVersion);
+
+  const byWalker = resolvePins({ runId: "r-6b" }, 700, WALKER_LANGUAGE_VERSION);
+  const byEngine = resolvePins({ runId: "r-6b" }, 700, ENGINE_LANGUAGE_VERSION);
+  ok("a record binds under the engine that wrote it, on both sides",
+    bindPins(byWalker, { runId: "r-6b" }, WALKER_LANGUAGE_VERSION).languageVersion === WALKER_LANGUAGE_VERSION
+    && bindPins(byEngine, { runId: "r-6b" }, ENGINE_LANGUAGE_VERSION).languageVersion === ENGINE_LANGUAGE_VERSION);
+
+  // AND IS REFUSED UNDER THE OTHER, BOTH DIRECTIONS. One direction alone would pass for a check
+  // that refuses everything older, or everything newer; a run does not get to be resumed by a
+  // future engine any more than by a past one, because "different semantics" has no direction.
+  const refusal = (recorded: typeof byWalker, engine: string): PinMismatch | undefined => {
+    try { bindPins(recorded, { runId: "r-6b" }, engine); return undefined; } catch (e) { return e as PinMismatch; }
+  };
+  const forward = refusal(byWalker, ENGINE_LANGUAGE_VERSION);
+  const backward = refusal(byEngine, WALKER_LANGUAGE_VERSION);
+  ok("a walker record is refused by the engine, and an engine record by the walker",
+    forward instanceof PinMismatch && forward.code === "L5008"
+    && backward instanceof PinMismatch && backward.code === "L5008",
+    { forward: forward?.code, backward: backward?.code });
+  ok("and each refusal names the version RECORDED and the version asking, not a constant",
+    forward?.recorded === WALKER_LANGUAGE_VERSION && forward?.supplied === ENGINE_LANGUAGE_VERSION
+    && backward?.recorded === ENGINE_LANGUAGE_VERSION && backward?.supplied === WALKER_LANGUAGE_VERSION,
+    { forward: [forward?.recorded, forward?.supplied], backward: [backward?.recorded, backward?.supplied] });
 }
 
 // ---- 7) the pinned limits are the ones the interpreter enforces -------------------------------
@@ -176,7 +264,7 @@ while (n < 50) {
 {
   // The ceiling is pinned LOW on the record and the caller passes nothing. If the interpreter
   // re-defaulted instead of binding, this program would finish.
-  const pins = { ...resolvePins({ runId: "r-7" }, 0), effectCeiling: 5 };
+  const pins = { ...resolvePins({ runId: "r-7" }, 0, WALKER_LANGUAGE_VERSION), effectCeiling: 5 };
   let caught: unknown;
   try {
     await exec(LOOP_PROGRAM, { runId: "r-7", handler: new SimHandler({}), pins });

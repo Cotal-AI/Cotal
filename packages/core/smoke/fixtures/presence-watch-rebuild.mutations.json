@@ -1,0 +1,19 @@
+{
+  "command": "pnpm smoke:presence-watch-rebuild:auth",
+  "mutations": [
+    {
+      "name": "P1 the grant is dropped, so every watch rebuild's cleanup is refused again: the predecessor lives until its five-minute inactivity threshold and the broker logs a violation for each one",
+      "file": "packages/core/src/provision.ts",
+      "find": "      `$JS.API.CONSUMER.DELETE.${KV}.>`,\n",
+      "replace": "",
+      "expectRed": "1.5 with NOTHING refused: no consumer-delete violation on the presence bucket"
+    },
+    {
+      "name": "P2 the grant names the wrong stream, which is the plausible typo rather than the plausible deletion: a delete grant is present, reads as intentional, and the presence bucket is still refused",
+      "file": "packages/core/src/provision.ts",
+      "find": "      `$JS.API.CONSUMER.DELETE.${KV}.>`,\n",
+      "replace": "      `$JS.API.CONSUMER.DELETE.${CHAT}.oc.>`,\n",
+      "expectRed": "1.4 and the rebuild DELETED the predecessor it named"
+    }
+  ]
+}

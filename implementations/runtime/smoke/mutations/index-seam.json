@@ -1,0 +1,33 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "guard": "The cross-package index seam: the cells this suite EXECUTED, checked against the list the language package's matrix cites. Source text cannot answer this - `c` is silent on success, so a commented-out or dead cell keeps its sentence in the file while the claim stops being made.",
+  "command": "pnpm smoke:runtime-run-driver",
+  "completionMarker": "run-driver.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/index-seam.json",
+  "mutations": [
+    {
+      "name": "the record stops recording, so the seam cell certifies an empty run",
+      "file": "implementations/runtime/smoke/run-driver.smoke.ts",
+      "find": "const c = (n: string, v: boolean, extra?: unknown) => { EXECUTED.push(n);",
+      "replace": "const c = (n: string, v: boolean, extra?: unknown) => {",
+      "expectRed": "every cell the language package's matrix cites from this file is one THIS RUN executed, exactly once",
+      "cell": "every cell the language package's matrix cites from this file is one THIS RUN executed, exactly once",
+      "note": "THE MUTATION THAT MATTERS, because the whole close is the difference between a sentence being PRESENT and a cell having RUN. With the push removed the list is empty and every cited sentence has zero executions. A cell that stayed green here would be reading the file rather than the run, which is the defect this seam exists to replace."
+    },
+    {
+      "name": "the seam file names a different suite and this one accepts it",
+      "file": "implementations/runtime/smoke/indexed-cells.json",
+      "find": "  \"suite\": \"implementations/runtime/smoke/run-driver.smoke.ts\",",
+      "replace": "  \"suite\": \"implementations/runtime/smoke/journal-store.smoke.ts\",",
+      "expectRed": "the cited-cells file names this suite, so it is this file's seam and not another's",
+      "cell": "the cited-cells file names this suite, so it is this file's seam and not another's",
+      "note": "The artefact is shared with another package, so it can be edited by someone who does not run this suite. Without this cell a seam file re-pointed at another suite would be read here anyway and its list checked against the wrong run's cells - green, and about the wrong file."
+    }
+  ],
+  "why": [
+    "MUTATES THE SUITE AND ITS DATA FILE rather than `src`, because the rule here is about the",
+    "instrument and not about the driver. That is unusual in this directory and deliberate: the claim",
+    "is `this list names cells that ran`, and the only way to break it is to break the recording or",
+    "re-point the list. A src mutation would grade the driver again, which the other configs do."
+  ]
+}

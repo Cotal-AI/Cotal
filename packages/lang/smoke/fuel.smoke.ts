@@ -25,7 +25,7 @@ import { run } from "../src/interpret.js";
 import { RuntimeFault } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { Journal, type JournalEntry, type JournalStore } from "../src/journal.js";
-import { resolvePins } from "../src/pins.js";
+import { WALKER_LANGUAGE_VERSION, resolvePins } from "../src/pins.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -254,7 +254,7 @@ log(votes.a.status);
 // The shape here: pin four, release after three, resume.
 {
   const NOW = 1_770_000_000_000;
-  const pins = resolvePins({ runId: "r-ceil", effectCeiling: 4 }, NOW);
+  const pins = resolvePins({ runId: "r-ceil", effectCeiling: 4 }, NOW, WALKER_LANGUAGE_VERSION);
   const SIX = [1, 2, 3, 4, 5, 6].map((i) => `await sleep("1m", { name: "s${i}" });`).join("\n");
 
   const entries: JournalEntry[] = [];

@@ -1,0 +1,68 @@
+{
+  "command": "pnpm smoke:web-bounded-aggregation",
+  "mutations": [
+    {
+      "name": "B1 the per-source deadline is dropped: every source is read to completion, so the request is unbounded again and the caller waits for the slowest read however long that takes - the 34-second success half of the measured defect",
+      "file": "implementations/web/src/web.ts",
+      "find": "        if (i >= sources.length || expired) return;\n        try {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;",
+      "replace": "        if (i >= sources.length) return;\n        try {\n          const r = await sources[i].read();\n          settled[i] = r;",
+      "expectRed": "2.2 and it answers inside its own deadline"
+    },
+    {
+      "name": "B2 the page stops saying it is short, so a partial read is indistinguishable from a complete one and the dashboard draws a space that looks emptier than it is",
+      "file": "implementations/web/src/web.ts",
+      "find": "      partial: missing.length > 0,\n",
+      "replace": "      partial: false,\n",
+      "expectRed": "2.3 the answer says it is PARTIAL rather than looking complete"
+    },
+    {
+      "name": "B3 the missing sources stop being NAMED, leaving a count that tells a reader something is gone and not what, which on this dashboard is the difference between one slow channel and an empty space",
+      "file": "implementations/web/src/web.ts",
+      "find": "      if (r === LATE) missing.push(sources[i].name);\n",
+      "replace": "      if (r === LATE) missing.push(\"a source\");\n",
+      "expectRed": "2.6 the names are the sources, not a count dressed as one"
+    },
+    {
+      "name": "B4 the pool is restored to the unbounded fan-out that shipped: every source starts at once over one saturated connection, the bytes are spread over reads that all miss the deadline together, and almost nothing completes",
+      "file": "implementations/web/src/web.ts",
+      "find": "    await Promise.all(Array.from({ length: Math.min(concurrency, sources.length) }, worker));",
+      "replace": "    await Promise.all(Array.from({ length: sources.length }, worker));",
+      "expectRed": "3.1 the bounded pool reads MORE sources than starting every source at once"
+    },
+    {
+      "name": "B5 a failing source takes the whole page with it again, which is the `Promise.all` shape that turned one channel's rejection into the route's 500 while every channel that had already answered was discarded",
+      "file": "implementations/web/src/web.ts",
+      "find": "        try {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;\n        } catch {",
+      "replace": "        {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;\n        }\n        if (false) {",
+      "expectRed": "4.0 one failing channel does not make the whole aggregation throw"
+    },
+    {
+      "name": "B6 the dms route's deadline is dropped: the one read that has no partial to serve answers long after the reader gave up instead of refusing, and the browser has nothing to hold its last good list against",
+      "file": "implementations/web/src/web.ts",
+      "find": "        const dms = await within(ep.dmHistory({ limit }), clock.until);\n        if (dms === LATE)\n          return json(res, { error: `direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms` }, 503);\n",
+      "replace": "        const dms = await ep.dmHistory({ limit });\n",
+      "expectRed": "5.6 `/api/dms` REFUSES at its deadline"
+    },
+    {
+      "name": "B7 the refusal stops naming what it exceeded, so the page can say only that something returned a status - the same illegibility as the `{\"error\":\"timeout\"}` this change exists to replace",
+      "file": "implementations/web/src/web.ts",
+      "find": "`direct messages: the read did not finish within ${AGGREGATION_DEADLINE_MS}ms`",
+      "replace": "\"direct messages unavailable\"",
+      "expectRed": "5.7 and the refusal names the deadline it exceeded"
+    },
+    {
+      "name": "B8 the server stops saying a page was short in its own log, so the operator who can tell a slow link from a broken channel is the one person never told",
+      "file": "implementations/web/src/web.ts",
+      "find": "      if (page.partial)\n        console.error(c.yellow(`~ ${req.method ?? \"GET\"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(\", \")}`));\n",
+      "replace": "",
+      "expectRed": "5.10 the server SAYS in its own log that the page was short"
+    },
+    {
+      "name": "B9 the suite's own ceiling is pulled BELOW the deadline, which would make every timing cell here red for a reason that is about this constant rather than about the code, and would let a future edit quietly retune the harness until it agrees with whatever the implementation does",
+      "file": "implementations/web/smoke/bounded-aggregation.smoke.ts",
+      "find": "const CEILING_MS = AGGREGATION_DEADLINE_MS * 3;",
+      "replace": "const CEILING_MS = AGGREGATION_DEADLINE_MS / 2;",
+      "expectRed": "2.0 the suite's own ceiling sits well above the deadline"
+    }
+  ]
+}

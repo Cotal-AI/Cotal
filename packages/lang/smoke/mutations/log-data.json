@@ -1,0 +1,48 @@
+{
+  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "guard": "A log line is data on the ENGINE: its log sink refuses a value carrying a function anywhere inside it (L4016 naming the value and the path), whether or not the host listens, and lets undefined, non-finite numbers and plain data cross to the trace as they are. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-engine",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/log-data.json",
+  "mutations": [
+    {
+      "name": "the engine's log sink hands code to the host again",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    line.values.forEach((v, i) => {\n      try {\n        assertNoCode(v, `log: value ${i + 1}`);\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n    });\n    run.onLog?.(line);",
+      "replace": "    run.onLog?.(line);",
+      "expectRed": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "completionMarker": "ok and its log lines reached the host",
+      "cell": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "note": "The pre-rule shape, measured: in-process the host's onLog received a live closure, and the worker thread died on the host's DataCloneError naming the emitted module body. The worker-leg cell in section 16 reds too, but this in-process cell is the first red in the file."
+    },
+    {
+      "name": "the walk stops at the top level of a record",
+      "file": "packages/lang/src/values.ts",
+      "find": "  for (const [k, v] of Object.entries(value as Record<string, unknown>)) assertNoCode(v, `${path}.${k}`, seen);\n",
+      "replace": "",
+      "expectRed": "an empty record and one carrying a closure, which a shallow signature could not",
+      "completionMarker": "ok and the two infinities, which it draws alike as well",
+      "cell": "an empty record and one carrying a closure, which a shallow signature could not",
+      "note": "The predicate has two dependents now: the engine's log sink, and the harness's shape signature (carriesCode catches assertNoCode so the two cannot drift). A walk that stops at the top level is first noticed by the shape control that names the nesting - section 15b, upstream of the L4016 path cell in 20b - so the aim is that control. Both are the same rule; the control just asks first."
+    },
+    {
+      "name": "the fence widens to the crossing rule and refuses undefined",
+      "file": "packages/lang/src/values.ts",
+      "find": "  if (typeof value === \"function\") {\n    throw new NotCrossable(",
+      "replace": "  if (typeof value === \"function\" || value === undefined) {\n    throw new NotCrossable(",
+      "expectRed": "and an array of absence against an array carrying code, which come free",
+      "completionMarker": "ok an empty record and one carrying a closure, which a shallow signature could not",
+      "cell": "and an array of absence against an array carrying code, which come free",
+      "note": "Widened to refuse undefined, the predicate makes an array of absence read `object+code` in the shape signature (section 15b) before any log line crosses, so that control is the first to notice; the 20b cell that says undefined, a non-finite number and plain data cross to the trace as they are reds too, one section later. The fence is the sink's rule and the signature's, and both are graded here."
+    },
+    {
+      "name": "the refusal depends on a host listening",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    prng,\n    onLog,\n    assertWritable,",
+      "replace": "    prng,\n    ...(run.onLog !== undefined ? { onLog } : {}),\n    assertWritable,",
+      "expectRed": "and the refusal stands with no host listening for log lines at all",
+      "completionMarker": "ok and `undefined`, a non-finite number and plain data cross to the trace as they are",
+      "cell": "and the refusal stands with no host listening for log lines at all",
+      "note": "The sink installed only when a host listens is the pre-rule shape one step removed: a program's outcome would depend on who is watching, which is a fallback wearing a listener's name."
+    }
+  ]
+}
