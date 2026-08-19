@@ -1271,7 +1271,7 @@ await sleep("3h", { name: "after-the-catch" });
   const liveLogs: unknown[][] = [];
   const liveOutcome = await run(src, {
     runId: "scope-dur", handler: new SimHandler({}), journal: live, pins,
-    onLog: (l) => liveLogs.push([...l.values]),
+    onLog: (l: { readonly values: readonly unknown[] }) => liveLogs.push([...l.values]),
   } as never).then(() => ({ completed: true as const }), (e: Error) => ({ completed: false as const, name: e.name }));
 
   const settled = live.entries()[0];

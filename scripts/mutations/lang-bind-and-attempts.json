@@ -61,18 +61,18 @@
     },
     {
       "name": "the first attempt's record says it resolved when it expired",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "                { attempt: 0, requestId: ctx.requestId, settled: \"expired\" },\n",
-      "replace": "                { attempt: 0, requestId: ctx.requestId, settled: \"resolved\" },\n",
+      "file": "packages/lang/src/perform.ts",
+      "find": "              { attempt: 0, requestId: ctx.requestId, settled: \"expired\" },\n",
+      "replace": "              { attempt: 0, requestId: ctx.requestId, settled: \"resolved\" },\n",
       "expectRed": "each attempt records what it settled as, and the escalation records who it went to",
       "cell": "each attempt records what it settled as, and the escalation records who it went to",
       "note": "The identities were asserted; what the attempts settled as was not."
     },
     {
       "name": "the escalation's record drops who it escalated to",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "                { attempt: 1, requestId: nextId, to: cpTo ?? null, settled: second.outcome },\n",
-      "replace": "                { attempt: 1, requestId: nextId, settled: second.outcome },\n",
+      "file": "packages/lang/src/perform.ts",
+      "find": "              { attempt: 1, requestId: nextId, to: cpTo ?? null, settled: second.outcome },\n",
+      "replace": "              { attempt: 1, requestId: nextId, settled: second.outcome },\n",
       "expectRed": "each attempt records what it settled as, and the escalation records who it went to",
       "cell": "each attempt records what it settled as, and the escalation records who it went to",
       "note": "A record of an escalation with no recipient is the half that a future consumer would trust."
@@ -106,27 +106,27 @@
     },
     {
       "name": "the RECOVERY arm says attempt 0 resolved when the only path to attempt 1 is its expiry",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "                  { attempt: 0, requestId: attemptId(0), settled: \"expired\" },\n",
-      "replace": "                  { attempt: 0, requestId: attemptId(0), settled: \"resolved\" },\n",
+      "file": "packages/lang/src/perform.ts",
+      "find": "                { attempt: 0, requestId: attemptId(0), settled: \"expired\" },\n",
+      "replace": "                { attempt: 0, requestId: attemptId(0), settled: \"resolved\" },\n",
       "expectRed": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
       "cell": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
       "note": "A different write site from the live chain: the resumed run is exactly when nobody is left to remember what happened."
     },
     {
       "name": "the RECOVERY arm drops who the escalation went to",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "                  { attempt: ctx.attempt, requestId: ctx.requestId, to: cpTo ?? null, settled: raw.outcome },\n",
-      "replace": "                  { attempt: ctx.attempt, requestId: ctx.requestId, settled: raw.outcome },\n",
+      "file": "packages/lang/src/perform.ts",
+      "find": "                { attempt: ctx.attempt, requestId: ctx.requestId, to: cpTo ?? null, settled: raw.outcome },\n",
+      "replace": "                { attempt: ctx.attempt, requestId: ctx.requestId, settled: raw.outcome },\n",
       "expectRed": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
       "cell": "and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to",
       "note": "The recipient was asserted on the live chain only, so dropping it on recovery stayed green."
     },
     {
       "name": "the NON-ESCALATING record says expired whatever the checkpoint settled as",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "              return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: first.outcome }] };\n",
-      "replace": "              return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: \"expired\" }] };\n",
+      "file": "packages/lang/src/perform.ts",
+      "find": "            return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: first.outcome }] };\n",
+      "replace": "            return { ...first, attempts: [{ attempt: ctx.attempt, requestId: ctx.requestId, settled: \"expired\" }] };\n",
       "expectRed": "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
       "cell": "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
       "note": "The most travelled of the three write sites and the one no cell read."
