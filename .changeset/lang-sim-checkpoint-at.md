@@ -28,10 +28,15 @@ escapes, so does one put through an `as` cast, and so does one handed to a param
 `unknown`. That last one is how the three sites in the runtime consumer escape: their helper takes
 `script: unknown` and casts inside, so their literal is never checked against `SimScript` at all.
 All of those still compile with `at` present and still have it discarded, silently, exactly as
-before. Measured across the whole repository at this commit that is **five pre-existing consumer
+before. Measured across the whole repository at this commit that is **seven pre-existing consumer
 fixtures**, and three of them are in the runtime consumer rather than in this package's own tests,
-so the discarded field is not confined to the package that defines the type. A sixth literal with
-`at` exists at this commit and is deliberately not one of the five: this change adds it, in
+so the discarded field is not confined to the package that defines the type. Two of the seven are
+worth naming, because a first count of this missed them and a second reader found them: the two
+scripts in `packages/lang/smoke/differential.smoke.ts` sit in a corpus whose tuple declares that
+slot as `object`, so they are never measured against `SimScript` at all. That is the third escape
+this paragraph lists, and it is the one a count reaches for last, because the other two at least
+name the type they slip past. An eighth literal with `at` exists at this commit and is deliberately
+not one of the seven: this change adds it, in
 `packages/lang/smoke/sim.smoke.ts`, as the cell that proves the implementation discards a scripted
 `at` on both return paths. It escapes the same way, through a parameter declared `unknown`, which
 is the point of it. The type closes the
