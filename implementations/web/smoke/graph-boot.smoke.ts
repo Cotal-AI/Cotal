@@ -85,11 +85,20 @@ async function main() {
   const rafs: ((t: number) => void)[] = [];
   const drawn: string[] = [];
 
+  // THE STALE BOOTSTRAP IS NOT EMPTY, IT IS OLD. A REST snapshot captured before the live agent
+  // joined still HAS content: an agent that has since gone. An empty-list bootstrap can be beaten
+  // by a defence as narrow as "ignore an empty roster", so a suite built on one proves less than it
+  // reads; an OLDER NON-EMPTY snapshot can only be beaten by ordering. `local.O` is in the
+  // bootstrap and absent from the live roster, and the live roster is a FULL snapshot on every
+  // presence event (`ep.on("presence", () => broadcast("roster", ep.getRoster()))`, web.ts:462,
+  // the same call `/api/roster` serves), so it supersedes rather than merges: `local.O` is gone.
+  const STALE_ROSTER = [{ card: { id: "local.O", name: "old", kind: "agent" }, status: "waiting", ts: 1 }];
+  const STALE_MEMBERS = { asOf: 1, members: [{ id: "local.O", live: ["general"], durable: [] }] };
   const payload = (u: string) => {
     if (u.includes("/api/meta")) return { space: "s" };
-    if (u.includes("/api/channels")) return [];
-    if (u.includes("/api/roster")) return [];
-    if (u.includes("/api/membership")) return { members: [] };
+    if (u.includes("/api/channels")) return [{ channel: "general", messages: 1, replay: true, deliveryClass: "durable" }];
+    if (u.includes("/api/roster")) return STALE_ROSTER;
+    if (u.includes("/api/membership")) return STALE_MEMBERS;
     if (u.includes("/api/activity")) return { entries: [], partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 };
     return [];
   };
@@ -135,8 +144,15 @@ async function main() {
   // event was handled. That was the harness failing to be the page, not the page failing.
   const html = readFileSync(join(web, "graph.html"), "utf8");
   const scripts = [...html.matchAll(/<script src="\/([^"]+\.js)"><\/script>/g)].map((m) => m[1]);
-  ok("0.1 the harness loads every script the page loads, discovered from graph.html not hardcoded",
-    scripts.length >= 4 && scripts.includes("graph.js"), { scripts });
+  // The list below is a TRIPWIRE, not the source: the harness runs whatever graph.html names, so a
+  // sixth script would be loaded here automatically. What the literal pins is that the stub surface
+  // in this file was chosen against THESE five. The last time that set changed under a hardcoded
+  // harness the gap surfaced as an undefined global in the middle of an unrelated cell rather than
+  // as a failure naming its cause. `graph.js` LAST matters on its own: its boot line runs at parse
+  // time and reads globals the other four define, so a different order is a different program.
+  const PAGE_SCRIPTS = ["snapshot.js", "harness.js", "parts.js", "agui-frame.js", "graph.js"];
+  ok("0.1 the harness loads EXACTLY the scripts graph.html names, in the page's order, graph.js last",
+    JSON.stringify(scripts) === JSON.stringify(PAGE_SCRIPTS), { scripts, expected: PAGE_SCRIPTS });
   const ctx = vm.createContext(sandbox);
   for (const s of scripts)
     vm.runInContext(readFileSync(join(web, s), "utf8"), ctx, { filename: s });
@@ -195,8 +211,9 @@ async function main() {
   console.log("3. the live snapshot is not overwritten by an older bootstrap snapshot");
   drawn.length = 0;
   for (const fn of rafs.splice(0)) fn(1000);
+  const afterBootstrap = [...drawn];
   ok("3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE GRAPH after every bootstrap read has applied",
-    drawn.includes("aa"), { drawnLabels: drawn.slice(0, 12) });
+    afterBootstrap.includes("aa"), { drawnLabels: afterBootstrap.slice(0, 12) });
   // CONTROL: prove the renderer draws agent labels at all, or 3.1 could pass by never drawing
   // anything and never failing for the reason it names.
   const fn2 = feed?.listeners["roster"];
@@ -213,8 +230,50 @@ async function main() {
   const pill = (sandbox.document as { getElementById: (id: string) => Record<string, unknown> })
     .getElementById("feed");
   const pillText = String((pill.querySelector as (s: string) => { textContent: unknown })(".t").textContent);
-  ok("3.3 the membership PILL still reports the live feed, not the older bootstrap's empty snapshot",
+  ok("3.3 the membership PILL still reports the live feed, not the older bootstrap's stale snapshot",
     pillText === "membership: live", { pillText });
+  // AND THE RULE IS DROP, NOT MERGE, which 3.1 alone cannot tell apart. The bootstrap here is not
+  // empty, it is OLD: it names an agent the live snapshot no longer carries. Since the feed sends
+  // the WHOLE roster on every presence event, an agent missing from it is genuinely gone, so an
+  // implementation that merged the two snapshots instead of dropping the older one would keep 3.1
+  // green and resurrect a departed agent onto the graph. Read off the SAME frame as 3.1.
+  ok("3.4 and the agent only the STALE bootstrap knew about is not resurrected onto the graph",
+    !afterBootstrap.includes("old"), { drawnLabels: afterBootstrap.slice(0, 12) });
+
+  // ── 4. A UNICAST NAMING SOMEONE THE GRAPH HAS NEVER SEEN INVENTS NOTHING ─────────────────────
+  //
+  // Opening the feed first lets a message name a recipient before any roster has introduced them,
+  // which the chained boot made impossible by construction. The page reads the recipient with
+  // `agents.get` and falls back to the raw id for the label; it deliberately does NOT `ensureAgent`
+  // them, so an unknown recipient neither crashes the handler nor becomes a node. The second half
+  // is worth more than tidiness: a node conjured out of a message's own metadata is a node no
+  // presence ever vouched for. Both halves are DRIVEN here, not read off the source.
+  console.log("4. a unicast naming an unknown recipient neither crashes nor invents a node");
+  const ABSENT = "local.UZZ7QK4A5MHTKC3PZWL6RGYD4XN2VJBQF5HSEMR7TW6YUAO3IPCD";
+  const before = thrown.length;
+  try {
+    feed?.listeners["message"]?.({ data: JSON.stringify({ mode: "unicast", msg: { id: "u", ts: Date.now(),
+      from: { id: "local.Y", name: "zz" }, to: ABSENT, parts: [{ kind: "text", text: "hi" }] } }) });
+  } catch (e) { thrown.push(`unicast: ${e instanceof Error ? e.message : String(e)}`); }
+  ok("4.1 the handler survives a recipient no roster has ever introduced", thrown.length === before,
+    thrown.slice(before));
+  // Both hide filters ship ON, and an invented node would be offline AND edgeless, so it would be
+  // hidden and 4.2 would pass for the wrong reason. Turn them off through the page's OWN controls,
+  // which is what a reader does when they want to see everything.
+  (byId("hideOffline").onclick as () => void)();
+  (byId("hideEmpty").onclick as () => void)();
+  drawn.length = 0;
+  for (const fn of rafs.splice(0)) fn(1002);
+  ok("4.2 and the unknown recipient did NOT become a node on the graph",
+    !drawn.includes(ABSENT), { drawnLabels: drawn.slice(0, 12) });
+  // CONTROL: the SAME id, announced by a roster whose card carries no name, takes the raw id as its
+  // label and is drawn. So 4.2 goes red when a node is invented, rather than passing because a node
+  // labelled by a raw id is something this arm could never have seen in the first place.
+  feed?.listeners["roster"]?.({ data: JSON.stringify([{ card: { id: ABSENT, kind: "agent" }, status: "waiting", ts: 1 }]) });
+  drawn.length = 0;
+  for (const fn of rafs.splice(0)) fn(1003);
+  ok("4.3 control: that same id, once a roster announces it, IS drawn under its raw id",
+    drawn.includes(ABSENT), { drawnLabels: drawn.slice(0, 12) });
 }
 
 await main();

@@ -28,7 +28,14 @@
       "file": "implementations/web/src/web/graph.js",
       "find": "        apply: supersededByFeed(\"membership\", (m) => applyMembership(m)) },",
       "replace": "        apply: (m) => applyMembership(m) },",
-      "expectRed": "3.3 the membership PILL still reports the live feed, not the older bootstrap's empty snapshot"
+      "expectRed": "3.3 the membership PILL still reports the live feed, not the older bootstrap's stale snapshot"
+    },
+    {
+      "name": "G5 the unicast path introduces its recipient instead of only looking them up, so a message naming an id no presence ever announced conjures a node onto the graph",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "      const to = typeof msg.to === \"string\" ? agents.get(msg.to) : msg.to && agents.get(msg.to.id);",
+      "replace": "      const to = typeof msg.to === \"string\" ? ensureAgent(msg.to) : msg.to && ensureAgent(msg.to.id);",
+      "expectRed": "4.2 and the unknown recipient did NOT become a node on the graph"
     }
   ]
 }
