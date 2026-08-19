@@ -1,13 +1,20 @@
 {
   "suite": "packages/lang/smoke/engine.smoke.ts",
-  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side, and the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), and the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
   "why": [
     "These cells are first-party rather than differential, because the walker cannot grade them: the",
     "fuel unit changes in languageVersion 2, the thenable programs kill the walker's host process, and",
     "the calling-convention adapter has no walker counterpart. A first-party cell with no mutant is a",
-    "cell nobody has shown can fail, so every law the seam claims to hold gets a mutation here."
+    "cell nobody has shown can fail, so every law the seam claims to hold gets a mutation here.",
+    "",
+    "ONE CELL HERE HAS NO MUTANT, ON PURPOSE. `the library calls exactly the argument positions the",
+    "seam adapts` is a drift alarm on library.ts, which this lane may not edit: it probes every name in",
+    "every table with a marker and compares the positions the library ACTUALLY calls to the ones the",
+    "seam adapts. It is declaration-independent by construction, so mutating the seam's list cannot red",
+    "it - the two mutants that grade that list are the ones on `adaptArgs` and on the read form. Its own",
+    "failure mode, finding nothing at all, is graded by the count cell beside it."
   ],
   "mutations": [
     {
@@ -169,6 +176,76 @@
       "completionMarker": "ok a run right up to its ceiling completes",
       "cell": "a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one",
       "note": "The engine builds its own EffectHost, so this seeding is engine-specific wiring the walker's effect-ceiling config does not reach. Under the mutant the resume gets a full fresh allowance, performs the two remaining sleeps and ends GREEN with six entries - a runaway loop that crashes periodically never reaches the ceiling at all."
+    },
+    {
+      "name": "a builtin read as a VALUE does not adapt the callback it is handed",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      const p = async (...args: unknown[]): Promise<unknown> => await (v as Callable)(currentFrame(), adaptArgs(key, args));",
+      "replace": "      const p = async (...args: unknown[]): Promise<unknown> => await (v as Callable)(currentFrame(), args);",
+      "expectRed": "a builtin read as a VALUE adapts the callback it is handed",
+      "completionMarker": "ok so the run's frame never reaches the program through an element call",
+      "cell": "a builtin read as a VALUE adapts the callback it is handed",
+      "note": "The read form and the call form reach library.ts by different paths, and only one of them adapted. Reduced by lane T on the differential corpus: `const f = map; f([1, 2], (x) => x)` answered `[<EngineFrame>, <EngineFrame>]` - the run's own key scope, clock and cancellation signal handed to the program as an argument, readable and writable."
+    },
+    {
+      "name": "a builtin's program view is minted afresh on every read",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const had = programView.get(v as object);\n    if (had !== undefined) return had;",
+      "replace": "",
+      "expectRed": "a builtin read twice is the same value",
+      "completionMarker": "ok and the run's frame never reaches the program through it",
+      "cell": "a builtin read twice is the same value",
+      "note": "A builtin is ONE immutable binding for the whole run, so `map === map` is true on the walker. A fresh adapter per read makes it false, and nothing in the output of a program differs until it compares two reads."
+    },
+    {
+      "name": "every function in an argument list is adapted, not only the one the library calls",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const at = CALLBACK_ARG.get(key);\n    if (at === undefined || typeof args[at] !== \"function\") return args as unknown[];\n    const out = args.slice();\n    out[at] = toWalker(args[at] as (...x: unknown[]) => unknown);\n    return out;",
+      "replace": "    return args.map((a) => (typeof a === \"function\" ? toWalker(a as (...x: unknown[]) => unknown) : a));",
+      "expectRed": "a program closure stored through a library method reads back as the SAME value",
+      "completionMarker": "ok and a member call through the seam agrees",
+      "cell": "a program closure stored through a library method reads back as the SAME value",
+      "note": "Ruling 1c's invariant, and the shape of the defect that produced it: a mutating method STORES its argument, so blanket adaptation put the walker view in the program's own array. Reduced by lane T - the program read it back and it neither called (`args is not iterable`) nor compared `===` to the value it pushed."
+    },
+    {
+      "name": "a member is classified by what it answered instead of by its name",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (typeof obj === \"string\" || Array.isArray(obj)) {\n      if (prop === \"length\" || arrayIndex(prop) !== undefined) return { from: \"own\", value: memberOf(obj, prop, asCallee) };\n    }\n    return { from: \"table\", fn: memberOf(obj, prop, asCallee) as Callable, key: `${kind}.${prop}` };",
+      "replace": "    const v = memberOf(obj, prop, asCallee);\n    return typeof v === \"function\" ? { from: \"table\", fn: v as Callable, key: `${kind}.${prop}` } : { from: \"own\", value: v };",
+      "expectRed": "a function ELEMENT is called as a program closure, not as a curated method",
+      "completionMarker": "ok a program closure stored through a library method reads back as the SAME value",
+      "cell": "a function ELEMENT is called as a program closure, not as a curated method",
+      "note": "The second frame-leak door, found while writing the cell for the first and reproduced before the fix: an array element that happens to be a closure looked like a curated method, so `fs[0](\"a\")` was called `(frame, [\"a\"])` and ANSWERED the EngineFrame. Reads right, and wrong - the name decides the path, never the value the name produced."
+    },
+    {
+      "name": "free() does not serve the pure primitives or the event constructors",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    freeNames.set(name, ((_frame, a) => impl(a)) as Callable);",
+      "replace": "    if (name === \"\") freeNames.set(name, ((_frame, a) => impl(a)) as Callable);",
+      "expectRed": "free() serves the pure primitives and the event constructors",
+      "completionMarker": "ok the step COUNTS differ, which is the declared v2 pin-unit divergence",
+      "cell": "free() serves the pure primitives and the event constructors",
+      "note": "Ratified design 3A puts `channel`, `run`, `replied`, `message`, `idle` and `down` behind `free()`; the engine answered L2001 for all six, found by lane T's first differential run. The graded cell compares the SHAPES the two engines produce, so serving them from a second copy of the table would fail it just as serving nothing does."
+    },
+    {
+      "name": "the operand of `++` is not required to be a number",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          if (typeof v !== \"number\") {",
+      "replace": "          if (false) {",
+      "expectRed": "a STRING operand of `++` refuses (L4018) rather than counting",
+      "completionMarker": "ok unary `update` answers a number operand unchanged",
+      "cell": "a STRING operand of `++` refuses (L4018) rather than counting",
+      "note": "Ruled in 1c: the walker reads the operand through `Number(...)`, so `\"5\"++` answers 6 while `o + 1` on the same value does something else - the silent-coercion class, filed as Cotal-AI/Cotal#646 and NOT built into the new engine. Under the mutant the operand passes through unrefused, which is the walker's answer minus even its coercion."
+    },
+    {
+      "name": "a non-function callee is called instead of refused",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (typeof v !== \"function\") {\n        throw new RuntimeFault(\"L4011\", `this value is not a function, so it cannot be called`);\n      }\n      return v;",
+      "replace": "      return v;",
+      "expectRed": "calling a record is L4011",
+      "completionMarker": "ok a function callee passes through as itself",
+      "cell": "calling a record is L4011",
+      "note": "Seam member 14, granted in ruling 1c. It is the whole of the member: the transform emits it behind a `typeof`, so nothing but the refusal ever reaches it, and a `callee` that refuses nothing is a callee that is not there."
     }
   ]
 }

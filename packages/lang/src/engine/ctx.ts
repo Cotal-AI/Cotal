@@ -25,7 +25,7 @@ import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { Prng, birthDepth, born as stampBirth, deepFreeze, setOwn } from "../values.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
-import { dispatchPrimitive, type EffectHost } from "../perform.js";
+import { dispatchPrimitive, freeConstructors, type EffectHost } from "../perform.js";
 import { PRIMITIVES } from "../primitives.js";
 import type { RunOptions } from "../interpret.js";
 
@@ -43,8 +43,9 @@ export interface Site {
 }
 
 /**
- * The seam. Thirteen members, and the count is the point: a member added here without a joint rule
+ * The seam. Fourteen members, and the count is the point: a member added here without a joint rule
  * is a widening, and lane T's surface cell reddens on any call to a name not on this interface.
+ * Thirteen were ruled in seam ruling 1; `callee` is the fourteenth, granted in 1c.
  */
 export interface EngineCtx {
   /** L4013 step budget, plus the yield that keeps the macrotask queue alive and applies the cut. */
@@ -67,10 +68,12 @@ export interface EngineCtx {
   template(parts: readonly string[], values: readonly unknown[]): string;
   /** The binary operators' coercion law (L4018) and JavaScript's meaning. `===`/`!==` stay native. */
   binary(op: string, l: unknown, r: unknown): unknown;
-  /** `-`, `+`, `~` under the same law. `!` and `typeof` stay native. */
+  /** `-`, `+`, `~` under the same law, and `update` for the operand of `++`/`--`. `!`/`typeof` are native. */
   unary(op: string, v: unknown): unknown;
   /** The iterability law (L4015): arrays and strings, nothing else. */
   iter(v: unknown): unknown[];
+  /** The L4011 refusal at a non-function callee. Emitted behind a `typeof`, so only the refusal runs. */
+  callee(v: unknown): unknown;
   /** At the head of every emitted catch: rethrow the uncatchable, else the program-visible error. */
   caught(e: unknown): unknown;
 }
@@ -240,35 +243,99 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   };
   const freeNames = new Map<string, unknown>(builtins(libraryContext).map(([n, v]) => [n, v]));
 
+  // The two pure primitives and the four event constructors are free VALUES, not journalled effects
+  // (design §3A). They come from the SAME table the walker declares them from (perform.ts), wrapped
+  // into the internal `(frame, args)` convention here so one `free` serves every name: a second copy
+  // of the shapes is a second answer to what a handle or an event descriptor IS on the wire.
+  for (const [name, impl] of freeConstructors({ runId: run.runId, programHash: run.programHash, startedAt: run.pins.startedAt })) {
+    freeNames.set(name, ((_frame, a) => impl(a)) as Callable);
+  }
+
   // ---- the calling-convention adapter, both directions ----------------------------------------
   //
   // The walker's convention is `(frame, args)`, and library.ts calls every callback that way. The
   // transform emits plain `async (...args)` closures and never a frame parameter (ruled). So the
-  // HOST adapts at every crossing, in both directions, and this pair is the whole of it.
+  // HOST adapts at every crossing, in both directions, and this section is the whole of it.
+  //
+  // THE INVARIANT (ruling 1c): adaptation may never be observable from inside the program. A value
+  // the program hands to a library function and reads back must behave AND compare `===` as the one
+  // it handed in. Two things follow, and both were live defects before they were rules:
+  //
+  //   * ONLY A POSITION THE LIBRARY CALLS IS ADAPTED. Adapting every function in an argument list
+  //     rewrote the ones a mutating method STORES: `xs.push(f)` put the walker view in the array,
+  //     and the program read back a value that neither called (`args is not iterable`) nor compared
+  //     equal to the one it pushed.
+  //   * AN ADAPTER IS MINTED ONCE PER VALUE. A fresh closure per read makes `map !== map`, which is
+  //     false on the walker, where a builtin is one immutable binding for the whole run.
+
+  /**
+   * Where a library function calls one of its arguments, by qualified name.
+   *
+   * Derived from library.ts's `asCallable` sites: the eleven callback-taking array methods take
+   * theirs FIRST, the six higher-order builtins take theirs SECOND (the list is first). It is held
+   * to those sites BEHAVIOURALLY rather than by reading them — a cell probes every name in every
+   * table with a marker function and compares the set of positions the library actually calls to
+   * this one, so a table that grows a callback position reds here instead of drifting.
+   */
+  const CALLBACK_ARG = new Map<string, number>([
+    ...["map", "filter", "find", "findIndex", "findLast", "findLastIndex", "some", "every", "forEach", "reduce", "flatMap"].map(
+      (n) => [`array.${n}`, 0] as const,
+    ),
+    ...["map", "filter", "find", "some", "every", "sort"].map((n) => [`builtin.${n}`, 1] as const),
+  ]);
+
+  /** Host value -> the program's view of it, so a value has ONE view for the life of the run. */
+  const programView = new WeakMap<object, unknown>();
+  /** A program view -> the host callable it wraps, so a round trip through the seam is the identity. */
+  const hostOf = new WeakMap<object, Callable>();
+  /** Program closure -> the walker's view of it, for the same reason in the other direction. */
+  const walkerView = new WeakMap<object, Callable>();
 
   /** A program closure, as library.ts calls it. The frame travels explicitly, not by ambience. */
-  const toWalker = (fn: (...a: unknown[]) => unknown): Callable =>
-    async (frame, args) => await withFrame(frame as EngineFrame, () => fn(...args));
+  const toWalker = (fn: (...a: unknown[]) => unknown): Callable => {
+    const underlying = hostOf.get(fn);
+    if (underlying !== undefined) return underlying;
+    const had = walkerView.get(fn);
+    if (had !== undefined) return had;
+    const w: Callable = async (frame, args) => await withFrame(frame as EngineFrame, () => fn(...args));
+    walkerView.set(fn, w);
+    return w;
+  };
 
-  /** A `(frame, args)` callable, as the program calls it. The frame comes from the ambient one. */
-  const toProgram = (fn: Callable): ((...a: unknown[]) => Promise<unknown>) =>
-    async (...args) => await fn(currentFrame(), args);
-
-  /** Adapt every function IN an argument list, leaving everything else alone. */
-  const adaptArgs = (args: readonly unknown[]): unknown[] =>
-    args.map((a) => (typeof a === "function" ? toWalker(a as (...x: unknown[]) => unknown) : a));
+  /** Adapt the ONE argument this library function calls, and nothing else in the list. */
+  const adaptArgs = (key: string, args: readonly unknown[]): unknown[] => {
+    const at = CALLBACK_ARG.get(key);
+    if (at === undefined || typeof args[at] !== "function") return args as unknown[];
+    const out = args.slice();
+    out[at] = toWalker(args[at] as (...x: unknown[]) => unknown);
+    return out;
+  };
 
   /**
    * A host value on its way OUT to the program: any `(frame, args)` callable in it becomes a plain
-   * closure. Only `json` needs the record walk, and it is walked rather than special-cased so a
-   * builtin that grows members later does not silently hand out the wrong convention.
+   * closure that adapts its own arguments the same way the call form does. Only `json` needs the
+   * record walk, and it is walked rather than special-cased so a builtin that grows members later
+   * does not silently hand out the wrong convention.
    */
-  const toProgramValue = (v: unknown): unknown => {
-    if (typeof v === "function") return toProgram(v as Callable);
-    if (v === null || typeof v !== "object" || Array.isArray(v)) return v;
-    const out: Record<string, unknown> = {};
-    for (const [k, inner] of Object.entries(v as Record<string, unknown>)) setOwn(out, k, toProgramValue(inner));
-    return deepFreeze(out);
+  const toProgramValue = (name: string, v: unknown): unknown => {
+    if (v === null || (typeof v !== "object" && typeof v !== "function")) return v;
+    const had = programView.get(v as object);
+    if (had !== undefined) return had;
+    let out: unknown;
+    if (typeof v === "function") {
+      const key = `builtin.${name}`;
+      const p = async (...args: unknown[]): Promise<unknown> => await (v as Callable)(currentFrame(), adaptArgs(key, args));
+      hostOf.set(p, v as Callable);
+      out = p;
+    } else if (Array.isArray(v)) {
+      out = v;
+    } else {
+      const rec: Record<string, unknown> = {};
+      for (const [k, inner] of Object.entries(v as Record<string, unknown>)) setOwn(rec, k, toProgramValue(`${name}.${k}`, inner));
+      out = deepFreeze(rec);
+    }
+    programView.set(v as object, out);
+    return out;
   };
 
   // ---- fuel ------------------------------------------------------------------------------------
@@ -348,7 +415,9 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    * first argument — measured: `json.stringify([1,2])` refused its own array as an illegal second
    * argument, which is the convention mismatch wearing a coercion error's name.
    */
-  type Found = { readonly from: "table"; readonly fn: Callable } | { readonly from: "own"; readonly value: unknown };
+  type Found =
+    | { readonly from: "table"; readonly fn: Callable; readonly key: string }
+    | { readonly from: "own"; readonly value: unknown };
 
   const memberOf = (obj: unknown, prop: string, asCallee: boolean): unknown => {
     switch (typeof obj) {
@@ -379,14 +448,26 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     }
   };
 
-  /** The same lookup as {@link memberOf}, keeping WHERE the member came from. */
+  /** Which curated table a receiver answers from, and the first half of a member's qualified name. */
+  const tableKind = (obj: unknown): string | undefined =>
+    typeof obj === "string" ? "string" : typeof obj === "number" ? "number" : Array.isArray(obj) ? "array" : undefined;
+
+  /**
+   * The same lookup as {@link memberOf}, keeping WHERE the member came from.
+   *
+   * The two paths are told apart by the NAME, never by what the name answered. Deciding on
+   * `typeof v === "function"` reads right and is wrong: an array element can itself be a program
+   * closure, so `fs[0]("a")` classified as a curated method and was called `(frame, ["a"])` — the
+   * frame handed to the program as its first argument, which is the hazard this whole section
+   * exists to close. Measured on `const fs = [(x) => x]` before the fix.
+   */
   const lookup = (obj: unknown, prop: string, asCallee: boolean): Found => {
-    const isRecord = typeof obj === "object" && obj !== null && !Array.isArray(obj);
-    if (isRecord) return { from: "own", value: memberOf(obj, prop, asCallee) };
-    const v = memberOf(obj, prop, asCallee);
-    // Only a receiver with a curated table can answer a callable here; `length` and an index are
-    // ordinary values and take the own path.
-    return typeof v === "function" ? { from: "table", fn: v as Callable } : { from: "own", value: v };
+    const kind = tableKind(obj);
+    if (kind === undefined) return { from: "own", value: memberOf(obj, prop, asCallee) };
+    if (typeof obj === "string" || Array.isArray(obj)) {
+      if (prop === "length" || arrayIndex(prop) !== undefined) return { from: "own", value: memberOf(obj, prop, asCallee) };
+    }
+    return { from: "table", fn: memberOf(obj, prop, asCallee) as Callable, key: `${kind}.${prop}` };
   };
 
   const ctx: EngineCtx = {
@@ -441,9 +522,9 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     async call(o, k, args) {
       const found = lookup(o, keyOf(k), true);
       if (found.from === "table") {
-        // A curated method: the walker's convention, and every program closure among the arguments
-        // is adapted into it on the way in.
-        return await found.fn(currentFrame(), adaptArgs(args));
+        // A curated method: the walker's convention, and the ONE argument this method calls is
+        // adapted into it on the way in. Every other argument crosses untouched — see the invariant.
+        return await found.fn(currentFrame(), adaptArgs(found.key, args));
       }
       if (typeof found.value !== "function") {
         throw new RuntimeFault("L4011", "this value is not a function, so it cannot be called");
@@ -481,11 +562,11 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // `map(xs, upper)` and `const f = trim` both need one, and what leaves has to speak the
       // program's convention or a native call would pass `(x)` where the library expects
       // `(frame, [x])`.
-      if (args === undefined) return toProgramValue(v);
+      if (args === undefined) return toProgramValue(name, v);
       if (typeof v !== "function") {
         throw new RuntimeFault("L4011", `\`${name}\` is not a function, so it cannot be called`);
       }
-      return (v as Callable)(currentFrame(), adaptArgs(args));
+      return (v as Callable)(currentFrame(), adaptArgs(`builtin.${name}`, args));
     },
 
     async await(v) {
@@ -574,6 +655,20 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         case "~":
           refuseCoercion("~", v);
           return ~(v as number);
+        case "update":
+          // `x++`, `x--` and their compound cousins, on the slow path only: the transform emits a
+          // native increment when it can see the operand is a number. A DECLARED DIVERGENCE, ruled
+          // (1c): the walker reads the operand through `Number(...)`, so `"5"++` answers 6 and a
+          // record settles as NaN, while `o + 1` and `x += 1` refuse on the very same values. That
+          // is the silent-coercion class, filed against the walker as issue #646, and it is not
+          // being built into the new engine for fidelity's sake.
+          if (typeof v !== "number") {
+            throw new RuntimeFault(
+              "L4018",
+              `\`++\` and \`--\` count, and ${v === null ? "null" : Array.isArray(v) ? "an array" : `a ${typeof v}`} is not a number, so there is nothing to count. Nothing is converted for you here: parse it first — \`number(value)\` — or hold the counter in a number.`,
+            );
+          }
+          return v;
         default:
           throw new RuntimeFault("L1000", `unsupported unary operator ${String(op)}`);
       }
@@ -586,6 +681,16 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         "L4015",
         `${v === null ? "null" : typeof v === "object" ? "a record" : typeof v} is not iterable: only arrays and strings can be spread or looped over. For a record, iterate \`keys(record)\` or \`entries(record)\`.`,
       );
+    },
+
+    callee(v) {
+      // Member 14, granted by ruling 1c. The transform emits it behind a `typeof` so a real call
+      // stays a native call; this is only the refusal, and it is the walker's own words because the
+      // differential suite compares the message, not merely the code.
+      if (typeof v !== "function") {
+        throw new RuntimeFault("L4011", `this value is not a function, so it cannot be called`);
+      }
+      return v;
     },
 
     caught(e) {

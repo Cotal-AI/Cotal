@@ -24,6 +24,9 @@ import { RuntimeFault } from "../src/errors.js";
 import { Cancelled } from "../src/effects.js";
 import { LangErrors } from "../src/errors.js";
 import { SimHandler } from "../src/sim.js";
+import { arrayMethods, numberMethods, stringMethods } from "../src/library.js";
+import { BUILTINS } from "../src/primitives.js";
+import { Prng } from "../src/values.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun } from "../src/engine/ctx.js";
 import { runOnEngine } from "../src/engine/host.js";
 import { run as walkerRun } from "../src/interpret.js";
@@ -88,6 +91,11 @@ const caught = async (body: () => unknown): Promise<unknown> => {
   }
 };
 const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefined)?.code;
+
+/** A plain evaluator. The confined path is the worker; this is a test process comparing two engines. */
+const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =>
+  // eslint-disable-next-line no-eval
+  (0, eval)(module) as (ctx: EngineCtx) => () => Promise<unknown>;
 
 // ---- 1) the seam runs a program, and the journal is the walker's shape -------------------------
 //
@@ -391,8 +399,14 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
     ok("unary `-` and `~` mean what JavaScript means", h.ctx.unary("-", 3) === -3 && h.ctx.unary("~", 0) === -1);
     ok("`!` and `typeof` are answered here too", h.ctx.unary("!", 0) === true && h.ctx.unary("typeof", "x") === "string");
     ok("iter spreads an array and a string", h.ctx.iter([1, 2]).length === 2 && h.ctx.iter("ab").join("") === "ab");
+    // `update` is the operand of `++`/`--` on the slow path: the transform emits a native increment
+    // when it can see a number, and asks here when it cannot.
+    ok("unary `update` answers a number operand unchanged", h.ctx.unary("update", 5) === 5);
     return undefined;
   });
+  ok("a STRING operand of `++` refuses (L4018) rather than counting", codeOf(await caught(() => h.inFrame(() => h.ctx.unary("update", "5")))) === "L4018");
+  ok("and so does a record", codeOf(await caught(() => h.inFrame(() => h.ctx.unary("update", {})))) === "L4018");
+  ok("and undefined", codeOf(await caught(() => h.inFrame(() => h.ctx.unary("update", undefined)))) === "L4018");
   ok("a record operand is L4018, on either side", codeOf(await caught(() => h.inFrame(() => h.ctx.binary("+", {}, 1)))) === "L4018");
   ok("including the right-hand side", codeOf(await caught(() => h.inFrame(() => h.ctx.binary("+", 1, {})))) === "L4018");
   ok("a record interpolated into a template is L4018", codeOf(await caught(() => h.inFrame(() => h.ctx.template(["", ""], [{}])))) === "L4018");
@@ -400,6 +414,57 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
   ok("a record is not iterable (L4015)", codeOf(await caught(() => h.inFrame(() => h.ctx.iter({})))) === "L4015");
   ok("and neither is null", codeOf(await caught(() => h.inFrame(() => h.ctx.iter(null)))) === "L4015");
   ok("an unsupported unary operator is L1000, not a silent answer", codeOf(await caught(() => h.inFrame(() => h.ctx.unary("void", 1)))) === "L1000");
+}
+
+{
+  // A DECLARED DIVERGENCE, ruled in 1c and asserted rather than hidden.
+  //
+  // The walker reads the operand of `++` through `Number(...)`, so a string counts and a record
+  // settles as NaN, while `o + 1` on the very same values does something else entirely - the
+  // silent-coercion class, filed against the walker as Cotal-AI/Cotal#646. The engine refuses
+  // instead. Both halves are MEASURED here, so the day the walker's behaviour changes this cell
+  // reds and the divergence is re-decided rather than inherited.
+  const logs: unknown[][] = [];
+  const walker = await walkerRun(`let n = "5";\nn++;\nlog("n", n);\n`, {
+    runId: "upd-1",
+    handler: new SimHandler({}),
+    onLog: (l) => logs.push([...l.values]),
+  });
+  ok("the walker COUNTS a string operand, which is the divergence", JSON.stringify(logs) === '[["n",6]]', logs);
+  ok("and it completes rather than refusing", walker.journal.entries().length === 0);
+  const h = harness();
+  ok(
+    "the engine refuses the same operand, by rule and not by accident",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.unary("update", "5")))) === "L4018",
+  );
+}
+
+// ---- 6b) callee: the L4011 refusal at a non-function callee -------------------------------------
+//
+// Seam member 14, granted in ruling 1c. The transform emits it behind a `typeof`, so a real call
+// stays a native call and only the refusal comes here. The message is the walker's own words,
+// because the differential suite compares what the program sees, not merely the code.
+
+{
+  const h = harness();
+  await h.inFrame(() => {
+    const f = (): number => 1;
+    ok("a function callee passes through as itself", h.ctx.callee(f) === f);
+    return undefined;
+  });
+  for (const [what, v] of [["a record", {}], ["undefined", undefined], ["a number", 3], ["a string", "f"], ["null", null]] as const) {
+    ok(`calling ${what} is L4011`, codeOf(await caught(() => h.inFrame(() => h.ctx.callee(v)))) === "L4011");
+  }
+  // The walker's words are MEASURED, not quoted: the same refusal is provoked on the oracle and the
+  // two messages are compared, so a reworded walker reds here instead of drifting apart silently.
+  const fromWalker = await caught(() => walkerRun(`const x = 1;\nx();\n`, { runId: "callee-1", handler: new SimHandler({}) }));
+  const fromEngine = await caught(() => h.inFrame(() => h.ctx.callee(1)));
+  ok("the walker refuses the same program", codeOf(fromWalker) === "L4011", String(fromWalker));
+  ok(
+    "and the two engines refuse in the same words",
+    (fromEngine as Error).message === (fromWalker as Error).message,
+    { engine: (fromEngine as Error).message, walker: (fromWalker as Error).message },
+  );
 }
 
 // ---- 7) caught: the uncatchable stay uncatchable, and the catch parameter is a record -----------
@@ -465,6 +530,166 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
   });
   ok("an unknown free name is L2001, never undefined", codeOf(await caught(() => h.inFrame(() => h.ctx.free("nope", [])))) === "L2001");
   ok("calling a non-function value is L4011", codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "a", [])))) === "L4011");
+}
+
+// ---- 8b) the adaptation is INVISIBLE, and the frame never crosses --------------------------------
+//
+// Ruling 1c's invariant: a value the program hands to a library function and reads back must behave
+// AND compare `===` as the one it handed in. Adapting every function in an argument list broke both
+// halves - a mutating method STORED the walker view, and the program read back something that did
+// not call and did not compare equal. The other half of the same section is the hazard underneath
+// it: an unadapted crossing hands the RUN'S OWN FRAME to the program as an argument, and the frame
+// carries the key scope, the clock and the cancellation signal, all writable.
+
+{
+  const h = harness();
+  await h.inFrame(async () => {
+    const f = async (x: unknown): Promise<unknown> => x;
+
+    // Every mutating method that STORES an argument. `concat` is here too: it does not mutate, but
+    // it puts the argument in the value it answers, which is the same crossing.
+    const pushed = h.ctx.born([]) as unknown[];
+    await h.ctx.call(pushed, "push", [f]);
+    const unshifted = h.ctx.born([]) as unknown[];
+    await h.ctx.call(unshifted, "unshift", [f]);
+    const spliced = h.ctx.born([0]) as unknown[];
+    await h.ctx.call(spliced, "splice", [0, 0, f]);
+    const joined = (await h.ctx.call(h.ctx.born([]), "concat", [h.ctx.born([f])])) as unknown[];
+    const written = h.ctx.born([]) as unknown[];
+    h.ctx.set(written, 0, f);
+
+    ok(
+      "a program closure stored through a library method reads back as the SAME value",
+      [pushed, unshifted, spliced.slice(0, 1), joined, written].every((xs) => h.ctx.get(xs, 0) === f),
+      [pushed, unshifted, spliced, joined, written].map((xs) => (h.ctx.get(xs, 0) === f ? "===" : "adapted")),
+    );
+
+    // THE ELEMENT DOOR. Classifying a member by what it answered rather than by its NAME made an
+    // array element that happens to be a closure look like a curated method: measured, `fs[0]("a")`
+    // answered the EngineFrame and the callback saw `EngineFrame` where it expected `"a"`.
+    const seen: unknown[] = [];
+    const fs = h.ctx.born([async (x: unknown) => { seen.push(x); return x; }]) as unknown[];
+    const back = await h.ctx.call(fs, 0, ["a"]);
+    ok("a function ELEMENT is called as a program closure, not as a curated method", back === "a", String(back));
+    ok(
+      "so the run's frame never reaches the program through an element call",
+      seen.length === 1 && seen[0] === "a",
+      seen.map((v) => (v === null || typeof v !== "object" ? String(v) : (v as object).constructor.name)),
+    );
+
+    // The second half of the invariant: it still CALLS. Before the fix this was
+    // `args is not iterable` - the stored walker view read its second argument as the argument list.
+    ok("and it still calls, in the program's own convention", (await h.ctx.call(pushed, 0, ["z"])) === "z");
+    return undefined;
+  });
+}
+
+{
+  const h = harness();
+  await h.inFrame(async () => {
+    // THE READ-FORM DOOR. `const f = map; f(xs, cb)` reaches library.ts through a different path
+    // than `map(xs, cb)`, and the path that did not adapt handed `cb` the frame: measured,
+    // `f([1, 2], (x) => x)` answered `[<EngineFrame>, <EngineFrame>]`.
+    const seen: unknown[] = [];
+    const asValue = h.ctx.free("map") as (...a: unknown[]) => Promise<unknown>;
+    const out = (await asValue(h.ctx.born([1, 2]), async (x: unknown) => { seen.push(x); return x; })) as unknown[];
+    ok("a builtin read as a VALUE adapts the callback it is handed", JSON.stringify(out) === "[1,2]", out);
+    ok(
+      "and the run's frame never reaches the program through it",
+      seen.length === 2 && seen.every((v) => typeof v === "number"),
+      seen.map((v) => (v === null || typeof v !== "object" ? String(v) : (v as object).constructor.name)),
+    );
+
+    // A builtin is ONE immutable binding for the whole run, so two reads are one value. A fresh
+    // adapter per read makes `map !== map`, which is false on the walker.
+    ok("a builtin read twice is the same value", h.ctx.free("map") === h.ctx.free("map"));
+    ok("a record-shaped builtin too", h.ctx.free("json") === h.ctx.free("json"));
+    const json = h.ctx.free("json") as Record<string, unknown>;
+    ok("and so are its members", json.stringify === (h.ctx.free("json") as Record<string, unknown>).stringify);
+    return undefined;
+  });
+}
+
+{
+  // WHERE THE LIBRARY CALLS ITS ARGUMENT, DERIVED RATHER THAN DECLARED.
+  //
+  // The seam adapts exactly one position per name, and that list is a reading of library.ts's
+  // `asCallable` sites - a reading drifts. So this cell measures the real thing: every name in
+  // every curated table and every free builtin is called THROUGH THE SEAM with a marker in each of
+  // the first three argument positions, and a position is recorded when the marker FIRES. It fires
+  // whether the library called it in the walker's convention or the program's, so what is observed
+  // does not depend on what is declared, and a table that grows a callback position reds here
+  // instead of quietly storing an adapted value somewhere.
+  const h = harness();
+  const lib = {
+    runId: "probe",
+    programHash: "probe",
+    startedAt: 0,
+    prng: new Prng("probe"),
+    assertWritable: (): void => {},
+  };
+  const tables: readonly (readonly [string, readonly string[]])[] = [
+    ["array", Object.keys(arrayMethods(lib))],
+    ["string", Object.keys(stringMethods())],
+    ["number", Object.keys(numberMethods())],
+  ];
+  const observed = new Set<string>();
+  const marker = (hit: { fired: boolean }) => (...a: unknown[]): unknown => {
+    hit.fired = true;
+    return typeof a[0] === "number" ? a[0] : true;
+  };
+  const probe = async (key: string, at: number, call: (m: unknown) => Promise<unknown>): Promise<void> => {
+    const hit = { fired: false };
+    try {
+      await call(marker(hit));
+    } catch {
+      // Wrong arguments for this name. What matters is only whether OUR function was called.
+    }
+    if (hit.fired) observed.add(`${key}@${at}`);
+  };
+
+  await h.inFrame(async () => {
+    for (const [kind, names] of tables) {
+      for (const name of names) {
+        for (let at = 0; at < 3; at += 1) {
+          const filler = [0, 0].slice(0, at);
+          const receiver = (): unknown => (kind === "array" ? h.ctx.born([1, 2]) : kind === "string" ? "ab" : 3.5);
+          await probe(`${kind}.${name}`, at, async (m) => await h.ctx.call(receiver(), name, [...filler, m]));
+        }
+      }
+    }
+    for (const name of BUILTINS) {
+      const value = h.ctx.free(name);
+      if (value !== null && typeof value === "object") {
+        // A record-shaped builtin (`json`) reaches its members through the own-field path.
+        for (const member of Object.keys(value as Record<string, unknown>)) {
+          for (let at = 0; at < 3; at += 1) {
+            const filler = [0, 0].slice(0, at);
+            await probe(`builtin.${name}.${member}`, at, async (m) => await h.ctx.call(value, member, [...filler, m]));
+          }
+        }
+        continue;
+      }
+      for (let at = 0; at < 3; at += 1) {
+        const filler = at === 0 ? [] : [h.ctx.born([1, 2]), 0].slice(0, at);
+        await probe(`builtin.${name}`, at, async (m) => await h.ctx.free(name, [...filler, m]));
+      }
+    }
+    return undefined;
+  });
+
+  const expected = [
+    ...["map", "filter", "find", "findIndex", "findLast", "findLastIndex", "some", "every", "forEach", "reduce", "flatMap"].map(
+      (n) => `array.${n}@0`,
+    ),
+    ...["map", "filter", "find", "some", "every", "sort"].map((n) => `builtin.${n}@1`),
+  ].sort();
+  const found = [...observed].sort();
+  ok("the library calls exactly the argument positions the seam adapts", JSON.stringify(found) === JSON.stringify(expected), {
+    missing: expected.filter((k) => !observed.has(k)),
+    extra: found.filter((k) => !expected.includes(k)),
+  });
+  ok("and the probe found something to compare", found.length === 17, found.length);
 }
 
 // ---- 9) a seam call with no frame fails loudly ---------------------------------------------------
@@ -539,11 +764,6 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
 // transform's output, on a real corpus. What they prove is that the wiring produces the walker's
 // RunResult and, for one hand-written pair, the SAME journal. One program is an existence proof, not
 // a gate, and it is written down here so nobody reads it as one.
-
-/** A plain evaluator. The confined path is the worker; this is a test process comparing two engines. */
-const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =>
-  // eslint-disable-next-line no-eval
-  (0, eval)(module) as (ctx: EngineCtx) => () => Promise<unknown>;
 
 const SOURCE = `
 const builder = await spawn("builder", { name: "hire" });
@@ -724,6 +944,76 @@ await sleep("1m", { name: "s3" });
   ok("the step count is NOT a member of the seam", !("steps" in (e.ctx as unknown as Record<string, unknown>)));
   ok("and it is not enumerable on the object the program holds", !Object.keys(e.ctx).includes("steps"));
   ok("but the host can read it", typeof e.steps() === "number");
+}
+
+
+// ---- 13) the free VALUE constructors: the two pure primitives and the four events ----------------
+//
+// Design §3A: `channel`, `run`, `replied`, `message`, `idle` and `down` are free values, not
+// journalled effects, and `free()` serves them. They are the walker's own table (perform.ts) rather
+// than a second copy, and the cell that says so compares the SHAPES both engines produce, because a
+// fork here is a fork in what a handle or an event descriptor IS on the wire.
+
+{
+  const CONSTRUCTOR_SOURCE = `
+const c = channel("ops");
+const a = await spawn("builder", { name: "hire" });
+log("shapes", [c, run(), replied(a), message(c, { from: a, matches: "hi" }), idle(c, "5m"), down(a)]);
+`;
+  const CONSTRUCTOR_MODULE = `(ctx) => async () => {
+  await ctx.fuel();
+  const c = ctx.free("channel", ["ops"]);
+  const a = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
+  await ctx.free("log", ["shapes", ctx.born([
+    c,
+    ctx.free("run", []),
+    ctx.free("replied", [a]),
+    ctx.free("message", [c, ctx.born({ from: a, matches: "hi" })]),
+    ctx.free("idle", [c, "5m"]),
+    ctx.free("down", [a]),
+  ])]);
+}`;
+  const script = {};
+  const engineLogs: unknown[][] = [];
+  const walkerLogs: unknown[][] = [];
+  // The outcome is CAPTURED: a name `free()` does not serve throws L2001 out of the run, and a cell
+  // that let it through would kill the suite anonymously instead of failing by its own name.
+  let served: unknown;
+  try {
+    served = await runOnEngine(CONSTRUCTOR_SOURCE, CONSTRUCTOR_MODULE, {
+      runId: "free-1",
+      handler: new SimHandler(script),
+      evaluate: plainly,
+      onLog: (l) => engineLogs.push([...l.values]),
+    });
+  } catch (e) {
+    served = e;
+  }
+  const walker = await walkerRun(CONSTRUCTOR_SOURCE, {
+    runId: "free-1",
+    handler: new SimHandler(script),
+    onLog: (l) => walkerLogs.push([...l.values]),
+  });
+
+  ok("free() serves the pure primitives and the event constructors", engineLogs.length === 1, String(served));
+  const engine = served as Awaited<ReturnType<typeof runOnEngine>>;
+  ok("and every shape is the walker's, field for field", JSON.stringify(engineLogs) === JSON.stringify(walkerLogs), {
+    engine: engineLogs,
+    walker: walkerLogs,
+  });
+  ok(
+    "and there were six shapes to compare",
+    Array.isArray(engineLogs[0]?.[1]) && (engineLogs[0]?.[1] as unknown[]).length === 6,
+    engineLogs[0]?.[1],
+  );
+  ok("the journals stay identical across them", JSON.stringify(engine.journal.entries()) === JSON.stringify(walker.journal.entries()));
+  // A constructor is a VALUE, so reading one without calling it has to work as well.
+  const read = await runOnEngine("log(\"x\", 1);", `(ctx) => async () => { await ctx.fuel(); return typeof ctx.free("channel"); }`, {
+    runId: "free-2",
+    handler: new SimHandler({}),
+    evaluate: plainly,
+  });
+  ok("a constructor read as a VALUE is a function, not L2001", read.value === "function", read.value);
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);
