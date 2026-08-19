@@ -254,13 +254,17 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   const sim = new SimHandler({
     turns: { build: { status: "done", at: 0 } },
     asks: { q: 3 },
-    checkpoints: { gate: { status: "resolved", value: true, by: "sim" }, lapsed: { status: "expired" } },
+    checkpoints: {
+      gate: [{ status: "resolved", value: true, by: "sim" }, { status: "resolved", value: true, by: "sim" }],
+      lapsed: { status: "expired" },
+      signed: { status: "resolved", value: "ship", by: "david", artifact: "plan.md" },
+    },
   });
   const s = new KeyScope();
   const agent = { agent: "a", persona: "p" };
   const seen: { fact: Record<string, unknown>; at: number }[] = [];
-  const ctxAt = (key: StepKey): EffectContext => ({
-    ...ctxFor(key),
+  const ctxAt = (key: StepKey, attempt = 0): EffectContext => ({
+    ...ctxFor(key, attempt),
     bind: async (e) => { seen.push({ fact: e, at: sim.now() }); },
   });
 
@@ -277,7 +281,8 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     { seen, t1, now: sim.now() });
 
   const t2 = sim.now();
-  await sim.checkpoint({ prompt: "ok?" }, ctxAt(s.nextEffect("checkpoint", "gate")));
+  const gate = s.nextEffect("checkpoint", "gate");
+  await sim.checkpoint({ prompt: "ok?" }, ctxAt(gate));
   ok("a checkpoint binds its OWN fact, which is not the goal fact",
     seen.length === 3 && seen[2]?.fact.simCheckpoint === "/checkpoint:gate#0"
       && !("simGoal" in (seen[2]?.fact ?? {})) && seen[2]?.at === t2 && sim.now() > t2,
@@ -296,6 +301,31 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     lapsed.outcome === "expired" && seen.length === 4 && seen[3]?.fact.simCheckpoint === "/checkpoint:lapsed#0"
       && !("simGoal" in (seen[3]?.fact ?? {})) && seen[3]?.at === t3 && sim.now() > t3,
     { seen, t3, now: sim.now(), lapsed });
+
+  // ...and every cell above builds its context at attempt 0, so the VALUE bound on the escalation
+  // is covered nowhere: 8c's escalation arms watch entered and settled, and the interpret cell
+  // counts binds and reads presence. An engineering review measured the gap with
+  // `ctx.attempt === 1 ? "WRONG-VALUE" : stepKeyString(ctx.key)` at the checkpoint bind site, which
+  // left all 788 checks in the package green while the escalated attempt recorded a fact that
+  // points at nothing. The step key does not depend on the attempt, which is the property: an
+  // escalation rebinds to the SAME external step, so a crash mid-escalation recovers the same
+  // reference the first attempt recorded. Reproduced on this tree at 788 before this cell existed.
+  const t4 = sim.now();
+  await sim.checkpoint({ prompt: "again?" }, ctxAt(gate, 1));
+  ok("and the ESCALATION attempt binds the same fact by value, not merely some fact",
+    seen.length === 5 && seen[4]?.fact.simCheckpoint === "/checkpoint:gate#0"
+      && !("simGoal" in (seen[4]?.fact ?? {})) && seen[4]?.at === t4 && sim.now() > t4,
+    { seen, t4, now: sim.now() });
+
+  // ...and the resolved return has to carry what the script said, not just the right shape. The
+  // `by` and `artifact` spreads are each droppable on their own: a simulator that returned the
+  // decision without WHO made it reads as a clean approval, which is the one field an audit of a
+  // checkpoint exists to answer.
+  const decided = await sim.checkpoint({ prompt: "sign?" }, ctxAt(s.nextEffect("checkpoint", "signed")));
+  ok("a resolved checkpoint returns the script's value, its approver and its artifact",
+    decided.outcome === "resolved" && decided.value === "ship"
+      && decided.by === "david" && decided.artifact === "plan.md",
+    { ...decided });
 }
 
 // ---- 8c) and none of them SETTLES while its own bind is still in flight -------------------------
