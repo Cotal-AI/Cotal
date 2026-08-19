@@ -550,7 +550,9 @@ for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
   const path = `${here}/../../../${rel}`;
   let text: string | null = null;
   try {
-    text = readFileSync(path, "utf8");
+    // Read with the repository's line endings: on a CRLF checkout the fence regex below would find
+    // no block at all, and a cell over zero blocks is green without having validated anything.
+    text = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
   } catch {
     text = null;
   }
@@ -567,7 +569,9 @@ for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
         bad.push(`block ${i + 1}: ${codes.join(",")}`);
       }
     }
-    ok(`every js block in ${rel} validates as written (${blocks.length} blocks)`, bad.length === 0, bad);
+    // Both documents carry js blocks, so a count of zero is a document this cell no longer reads,
+    // not a pass: the cell requires at least one block to have been validated.
+    ok(`every js block in ${rel} validates as written (${blocks.length} blocks)`, blocks.length > 0 && bad.length === 0, bad);
   } else {
     console.log(`  (${rel} not present; its cells skipped)`);
   }
