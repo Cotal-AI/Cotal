@@ -102,7 +102,7 @@ try {
   anc.publish(attackerReq, new TextEncoder().encode(body), { reply: forgedReply });
   await anc.flush();
   await wait(700);
-  check("forged reply target (peer's subtree) is NOT answered — no injection into the victim's lane", victimGot !== true);
+  check("forged reply target (peer's subtree) is NOT answered: no injection into the victim's lane", victimGot !== true);
 
   // Control: a legitimate request with the reply under the attacker's OWN subtree IS answered.
   let attackerGot: boolean | undefined;
