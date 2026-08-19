@@ -42,6 +42,15 @@
       "note": "A loop runs the same step twice under one scope, so the two rows differ only by occurrence and the scope cell cannot see this."
     },
     {
+      "name": "the bind matches the scope, the name and the occurrence but discards the KIND",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const scopeOf = full.slice(0, full.lastIndexOf(\"/\"));\n    const hit = [...this.byKey.entries()].find(([, e]) => e.scope === scopeOf && e.name === key.name && e.occurrence === key.occurrence);\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands on the kind that asked for it, and the other kind sharing its name and occurrence is untouched",
+      "cell": "the bind lands on the kind that asked for it, and the other kind sharing its name and occurrence is untouched",
+      "note": "Occurrences count per kind:name tag, so two kinds under one name and one scope are both #0 and differ in nothing the other three cells constrain."
+    },
+    {
       "name": "the first attempt's record says it resolved when it expired",
       "file": "packages/lang/src/interpret.ts",
       "find": "                { attempt: 0, requestId: ctx.requestId, settled: \"expired\" },\n",

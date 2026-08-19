@@ -204,6 +204,41 @@ const H = (v: unknown) => digest(v);
   );
 }
 
+// ---- 3e) ...and the KIND, the last field of the key with no cell of its own ------------------
+//
+// The key is (scope, kind, name, occurrence). 3b pins the name, 3c the scope, 3d the occurrence,
+// and each of those three cells is satisfied by a lookup that discards the KIND, because in every
+// one of them the two rows already differ in the field that cell is about. The collision this needs
+// is one scope running two DIFFERENT kinds under the SAME name: `KeyScope.nextEffect` counts
+// occurrences per `${kind}:${name}` tag, so `turn:build` and `checkpoint:build` are both #0 and
+// differ in nothing else. A kind-discarding lookup then lands the checkpoint's reference on the
+// settled turn, which is the same durable loss the three cells above describe, reached through the
+// one field none of them constrains.
+{
+  const j = new Journal({ run: "r-3e" });
+  const s = new KeyScope();
+  const turn = s.nextEffect("turn", "build");
+  const cp = s.nextEffect("checkpoint", "build");
+  const h = H({ agent: "builder" });
+  await j.begin(turn, h, 1000);
+  await j.settle(turn, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.begin(cp, h, 1200);
+  await j.bind(cp, { goalId: "g-checkpoint" });
+
+  const resumed = new Journal({ run: "r-3e", entries: j.entries() });
+  const s2 = new KeyScope();
+  const vTurn = resumed.lookup(s2.nextEffect("turn", "build"), h);
+  const vCp = resumed.lookup(s2.nextEffect("checkpoint", "build"), h);
+  const turnExternal = vTurn.verdict === "replay" ? vTurn.entry.external : "not replayable";
+  ok(
+    "the bind lands on the kind that asked for it, and the other kind sharing its name and occurrence is untouched",
+    vCp.verdict === "pending"
+      && (vCp.entry.external as { goalId?: string } | undefined)?.goalId === "g-checkpoint"
+      && vTurn.verdict === "replay" && turnExternal === undefined,
+    JSON.stringify(resumed.entries().map((e) => ({ kind: e.kind, name: e.name, external: e.external }))),
+  );
+}
+
 // ---- 4) failures and cancellations replay as themselves ---------------------------------------
 
 {
