@@ -289,6 +289,12 @@ log("rounds", rounds, r.status);`,
     { turns: { t: { status: "done", at: 0 } } },
   ],
   ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done", at: 0 } } }, "L3021"],
+  // A MEMBER WRITE HAS TO TRAVEL THROUGH `set`, and until these two nothing in the corpus said so: a
+  // native `o[k] = v` emission left every corpus program green and showed up only as a declared
+  // divergence. Both refusals are the write path's own - the curated table on the key, the receiver
+  // law on a non-record - and neither is reachable from a read.
+  ["refusals: a curated key on the write path", 'const o = {}; o.__proto__ = { a: 1 }; log("after");', {}, "L4014"],
+  ["refusals: a member written onto a non-record", 'const s = "ab"; s.x = 1; log("after");', {}, "L4010"],
   // F7 RETIRED, both halves landed: the transform classifies the dead zone as a cell and reads it by
   // name, the host answers L2004 for an absent own `v`. Held until 93bab769, compared from here on.
   ["a temporal dead zone", "const f = () => x; const r = f(); const x = 1; log(r);", {}, "L2004"],
