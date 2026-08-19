@@ -98,6 +98,9 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
 
 const j = (v: unknown) => JSON.stringify(v);
 
+/** Which language each engine speaks — the pin every cross-engine refusal below is named for. */
+const versionOf = { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VERSION };
+
 /**
  * What a logged value IS, where JSON cannot say.
  *
@@ -790,7 +793,7 @@ const SURVIVED: readonly (readonly [string, string])[] = [
   console.log(`  (${SURVIVED.length} program(s) the oracle used to die on, checked in a child because a regression HANGS this suite rather than reding it)`);
 }
 
-// ---- one journal, either engine: each arm resumes from the other's ------------------------------
+// ---- one journal, one engine: each arm resumes its own and refuses the other's -----------------
 
 /**
  * The strongest form of "the same journal", and the one equality alone cannot reach.
@@ -844,9 +847,39 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   }
   ok("every resumable program dispatches an effect the refusing handler answers loudly", spoke === RESUMABLE.length, { spoke, of: RESUMABLE.length });
 
-  let crossings = 0;
+  // A JOURNAL IS REPLAYABLE BY THE ENGINE THAT WROTE IT, AND BY NO OTHER ONE.
+  //
+  // Both halves are asserted here for every resumable program, because the version split made them
+  // opposite answers to the same question and each is worthless alone. Within an engine the journal
+  // is still a journal: the resume reads it, dispatches nothing, and lands on the same logs and the
+  // same value. Across engines it is refused BY NAME - v1 and v2 are different languages (log is
+  // data in one and not the other, and a step is a different unit), so a record replayed by an
+  // engine that does not speak its language is exactly what the pin exists to stop. Asserting only
+  // the refusal would leave this gate with no proof that a journal can be resumed at all; asserting
+  // only the replay would let the split pass unnoticed.
+  const resumeOn = async (
+    on: "walker" | "engine",
+    source: string,
+    journal: Journal,
+    pins: Awaited<ReturnType<typeof walk>>["pins"],
+    sink: unknown[][],
+  ) => {
+    const back = { runId: "d", handler: new RefusesEverything() as never, pins, seed: SEED, startedAt: AT, onLog: (l: { values: readonly unknown[] }) => sink.push([...l.values]) };
+    try {
+      const r =
+        on === "walker"
+          ? await walkResume(source, journal, back as never)
+          : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
+      return { value: r.value as unknown, fault: null as null | { code?: string; recorded?: unknown; supplied?: unknown } };
+    } catch (e) {
+      return { value: undefined as unknown, fault: e as { code?: string; recorded?: unknown; supplied?: unknown } };
+    }
+  };
+
+  let replays = 0;
+  let refusals = 0;
   for (const [name, source, script] of RESUMABLE) {
-    for (const [wrote, replays] of [
+    for (const [wrote, other] of [
       ["walker", "engine"],
       ["engine", "walker"],
     ] as const) {
@@ -864,37 +897,38 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
         ok(`the ${wrote} completes the program it is to be resumed from: ${name}`, false, {
           error: (e as { code?: string }).code ?? `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`,
         });
-        crossings += 1;
         continue;
       }
 
       // The pins travel with the journal. Re-resolving them would be a different run wearing this
       // one's history: the epoch moves to the resuming host and every pure draw changes.
       const again: unknown[][] = [];
-      const back = { runId: "d", handler: new RefusesEverything() as never, pins: original.pins, seed: SEED, startedAt: AT, onLog: (l: { values: readonly unknown[] }) => again.push([...l.values]) };
-      let error: string | null = null;
-      let value: unknown;
-      try {
-        const r =
-          replays === "walker"
-            ? await walkResume(source, original.journal, back as never)
-            : await resumeOnEngine(source, transform(source).module, original.journal, { ...(back as never), evaluate });
-        value = r.value;
-      } catch (e) {
-        error = (e as { code?: string }).code ?? `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`;
-      }
-      ok(`${replays} resumes from the journal the ${wrote} wrote: ${name}`, error === null && j(again) === j(logs) && j(value) === j(original.value), {
-        error,
+      const own = await resumeOn(wrote, source, original.journal, original.pins, again);
+      ok(`the ${wrote} resumes the journal it wrote itself, reading it rather than dispatching: ${name}`, own.fault === null && j(again) === j(logs) && j(own.value) === j(original.value), {
+        fault: own.fault === null ? null : (own.fault.code ?? `${(own.fault as Error).name}: ${(own.fault as Error).message.slice(0, 80)}`),
         logs: { first: logs, resumed: again },
-        value: { first: original.value, resumed: value },
+        value: { first: original.value, resumed: own.value },
       });
-      crossings += 1;
+      replays += 1;
+
+      // AND THE OTHER ENGINE REFUSES IT, saying which version wrote the record and which one is
+      // reading — a bare code would be satisfied by any refusal on the path, including one that
+      // never looked at the version.
+      const across: unknown[][] = [];
+      const crossed = await resumeOn(other, source, original.journal, original.pins, across);
+      ok(`and the ${other} refuses that journal by name, naming the version that wrote it and its own: ${name}`, crossed.fault !== null && crossed.fault.code === "L5008" && crossed.fault.recorded === versionOf[wrote] && crossed.fault.supplied === versionOf[other] && across.length === 0, {
+        code: crossed.fault === null ? null : crossed.fault.code,
+        recorded: crossed.fault === null ? null : crossed.fault.recorded,
+        supplied: crossed.fault === null ? null : crossed.fault.supplied,
+        dispatched: across.length,
+      });
+      refusals += 1;
     }
   }
-  console.log(`  (${crossings} journal crossings, each resumed against a handler that refuses every dispatch)`);
+  console.log(`  (${replays} journals resumed by the engine that wrote them and ${refusals} refused by the other, every one against a handler that refuses every dispatch)`);
 }
 
-// ---- a run its host stopped, finished on the other engine ---------------------------------------
+// ---- a run its host stopped, finished by the engine that paused it ------------------------------
 
 {
   // THE OPERATIONAL STORY, not a synthetic one. A driver pauses a run - an operator asked, a work
@@ -904,7 +938,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // the wave stated as one program, and it is checked in BOTH directions.
   const source = 'const a = await spawn("one");\nawait sleep("1m", { name: "s1" });\nawait sleep("2m", { name: "s2" });\nlog("done", a.agent);';
   const finished: { logs: unknown[][]; entries: JournalEntry[]; value: unknown }[] = [];
-  for (const [wrote, replays] of [
+  for (const [wrote, other] of [
     ["walker", "engine"],
     ["engine", "walker"],
   ] as const) {
@@ -931,26 +965,41 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       entries: journal.entries().length,
     });
 
-    // GUARDED, like the crossings above: an engine that cannot finish the resume must red one named
+    // GUARDED, like the resumes above: an engine that cannot finish the resume must red one named
     // cell, not take the suite down before its summary line and turn a real red into a dead run.
-    const logs: unknown[][] = [];
-    const back = { runId: "d", handler: new SimHandler({}), pins, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };
-    let r: Awaited<ReturnType<typeof walkResume>> | null = null;
-    let error: string | null = null;
-    try {
-      r =
-        replays === "walker"
-          ? await walkResume(source, journal, back as never)
-          : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
-    } catch (e) {
-      error = (e as { code?: string }).code ?? `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`;
-    }
-    ok(`and the ${replays} finishes it from there`, error === null && r !== null && j(logs) === j([["done", "sim.one"]]) && r.journal.entries().length === 3, {
-      error,
-      logs,
-      entries: r === null ? null : r.journal.entries().length,
+    const finish = async (on: "walker" | "engine") => {
+      const logs: unknown[][] = [];
+      const back = { runId: "d", handler: new SimHandler({}), pins, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };
+      try {
+        const r =
+          on === "walker"
+            ? await walkResume(source, journal, back as never)
+            : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
+        return { logs, run: r as Awaited<ReturnType<typeof walkResume>> | null, fault: null as null | { code?: string; recorded?: unknown; supplied?: unknown } };
+      } catch (e) {
+        return { logs, run: null, fault: e as { code?: string; recorded?: unknown; supplied?: unknown } };
+      }
+    };
+
+    // THE HALF THE SPLIT LEAVES STANDING: a paused run is finished by the engine that paused it.
+    const own = await finish(wrote);
+    ok(`and the ${wrote} finishes its own paused run from there`, own.fault === null && own.run !== null && j(own.logs) === j([["done", "sim.one"]]) && own.run.journal.entries().length === 3, {
+      fault: own.fault === null ? null : own.fault.code,
+      logs: own.logs,
+      entries: own.run === null ? null : own.run.journal.entries().length,
     });
-    finished.push({ logs, entries: r === null ? [] : [...r.journal.entries()], value: r === null ? undefined : r.value });
+
+    // AND THE HALF IT TAKES AWAY, asserted rather than left to be discovered: the operational story
+    // of "another host picks it up" now ends at the language boundary, and it says so by name.
+    const crossed = await finish(other);
+    ok(`and the ${other} refuses to finish it, naming the version that paused it and its own`, crossed.fault !== null && crossed.fault.code === "L5008" && crossed.fault.recorded === versionOf[wrote] && crossed.fault.supplied === versionOf[other] && crossed.logs.length === 0, {
+      code: crossed.fault === null ? null : crossed.fault.code,
+      recorded: crossed.fault === null ? null : crossed.fault.recorded,
+      supplied: crossed.fault === null ? null : crossed.fault.supplied,
+      dispatched: crossed.logs.length,
+    });
+
+    finished.push({ logs: own.logs, entries: own.run === null ? [] : [...own.run.journal.entries()], value: own.run === null ? undefined : own.run.value });
   }
   const [a, b] = finished as [(typeof finished)[0], (typeof finished)[0]];
   // TWO SYMMETRIC DEATHS ARE NOT AGREEMENT. A crossing whose resume throws still pushes a
@@ -961,10 +1010,13 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // "the same journal, not the same rendering" went green BECAUSE its two subjects died together.
   //
   // So a comparison whose subjects may not exist has to say they exist FIRST. `produced` is the
-  // predicate, named rather than inlined because it outlives this cell: when the cross-engine
-  // crossings become refusals and the property moves onto two FRESH runs, the carrier inherits the
-  // same hazard — two runs that both failed to produce a journal still agree perfectly — and it must
-  // carry this guard forward rather than lose it with the cell it was written for.
+  // predicate, named rather than inlined because it outlived the cell it was written for: the two
+  // journals compared here are now each engine finishing its OWN paused run, since the crossing that
+  // used to produce them is refused, and the hazard came across unchanged — two runs that both
+  // failed to produce a journal agree perfectly. The property this carries is the one the split does
+  // not touch: the same program, paused at the same place, finishes to the SAME journal on either
+  // engine, entry for entry, which is what makes "the same journal" mean a journal and not a
+  // rendering of one.
   const produced = (x: (typeof finished)[0]) => x.entries.length > 0 && x.logs.length > 0;
   ok(
     "and the two finished journals are the same journal, entry for entry, with two journals there to compare",

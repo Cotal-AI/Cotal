@@ -210,6 +210,24 @@
       "expectRed": "and the two finished journals are the same journal, entry for entry, with two journals there to compare",
       "cell": "and the two finished journals are the same journal, entry for entry, with two journals there to compare",
       "note": "The control that found the false green, kept as the mutant that grades its guard. Both resumes refuse L5008, both finish cells red, and BEFORE the guard this comparison still printed ok with entries [0, 0] - two identical empty placeholders comparing as agreement. The fault cannot be manufactured any other way: a comparison of two subjects only lies about them when BOTH are absent, so the mutant has to kill both crossings. It is aimed at the comparison rather than at the finish cells it also reds, which this COUNTING suite grades by name."
+    },
+    {
+      "name": "the crossing is handed back to the engine that wrote the journal, so the refusal cell no longer crosses anything",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "      const crossed = await resumeOn(other, source, original.journal, original.pins, across);",
+      "replace": "      const crossed = await resumeOn(wrote, source, original.journal, original.pins, across);",
+      "expectRed": "and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock",
+      "cell": "and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock",
+      "note": "A refusal cell whose subject stops being a crossing is the circular-check class in its purest form: the record and the reader are the same engine, nothing disagrees, and the cell would report a refusal that never happened. Aimed at one program by name because every crossing prints its own cell."
+    },
+    {
+      "name": "the writer's own resume is sent to the other engine, so the replay half tests the refusal instead",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "      const own = await resumeOn(wrote, source, original.journal, original.pins, again);",
+      "replace": "      const own = await resumeOn(other, source, original.journal, original.pins, again);",
+      "expectRed": "the walker resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock",
+      "cell": "the walker resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock",
+      "note": "The mirror of the crossing mutant, and the reason both halves are asserted: with the replay half pointed across engines the suite would prove only that engines refuse each other, and would no longer prove that a journal can be resumed at all."
     }
   ],
   "completionMarker": "differential.smoke:"
