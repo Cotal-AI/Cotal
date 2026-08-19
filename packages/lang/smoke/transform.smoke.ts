@@ -481,13 +481,14 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   const names = [...walkerBodies.keys()].sort();
   const subsets = [[], ...names.map((n) => [n]), names];
   let matched = 0;
+  const mismatched: string[] = [];
   for (const losers of subsets) {
     const mine = digest(losers.map((n) => [n, bodies[n] ?? null]));
     const theirs = digest(losers.map((n) => [n, walkerBodies.get(n) ?? null]));
     if (mine === theirs) matched += 1;
-    else ok(`the shipped payload digests as the walker's for losers [${losers.join()}]`, false, { mine, theirs });
+    else mismatched.push(`[${losers.join()}] mine ${mine.slice(0, 20)} theirs ${theirs.slice(0, 20)}`);
   }
-  ok("the shipped payload digests as the walker's value over every loser set", matched === subsets.length, { matched, of: subsets.length });
+  ok("the shipped payload digests as the walker's value over every loser set", matched === subsets.length, { matched, of: subsets.length, mismatched });
   console.log(`  (${subsets.length} loser sets digested on both sides)`);
 }
 
