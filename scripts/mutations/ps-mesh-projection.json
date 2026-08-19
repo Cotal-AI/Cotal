@@ -54,6 +54,26 @@
       "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "note": "A joined row is idle and a never-joining row is absent, so a rewrite that touches only offline agrees with both and needs a managed row that actually reaches offline.",
       "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "only the WORKING status is rewritten, so a row misreports what its agent is doing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.name)?.status === \"working\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "expectRed": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "cell": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "note": "The fixture walks the whole union, so a rewrite aimed at working has nowhere to hide either.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "only the WAITING status is rewritten, so a row misreports what its agent is doing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.name)?.status === \"waiting\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "expectRed": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "cell": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "note": "The fixture walks the whole union, so a rewrite aimed at waiting has nowhere to hide either.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
 }
