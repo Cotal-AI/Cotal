@@ -151,6 +151,7 @@
     "probe:pipe-oneshot": "tsx implementations/manager/smoke/_probe-pipe-oneshot-exit.ts",
     "probe:missed-handoff": "tsx implementations/manager/smoke/_probe-missed-handoff.ts",
     "probe:live-socket-gap": "tsx implementations/manager/smoke/_probe-live-socket-gap.ts",
+    "probe:late-delivery": "tsx implementations/manager/smoke/_probe-late-delivery.ts",
     "smoke:manager-console": "pnpm --filter @cotal-ai/manager... build && tsx implementations/manager/smoke/console-assets.smoke.ts",
     "smoke:windows": "tsx implementations/manager/smoke/windows-launch.smoke.ts",
     "smoke:secret-fs": "tsx packages/core/smoke/secret-fs.smoke.ts",
@@ -437,6 +438,8 @@
     "smoke:codex-events-lifecycle": "tsx extensions/connector-codex/smoke/events-lifecycle.smoke.ts",
     "smoke:presence-watch-rebuild:auth": "tsx packages/core/smoke/presence-watch-rebuild.smoke.ts",
     "smoke:web-history-limit": "tsx implementations/web/smoke/history-limit.smoke.ts",
+    "smoke:web-echo-escaping": "tsx implementations/web/smoke/echo-escaping.smoke.ts",
+    "smoke:web-channel-alias": "tsx implementations/web/smoke/channel-alias.smoke.ts",
     "smoke:core-history-limit": "tsx packages/core/smoke/history-limit.smoke.ts",
     "smoke:web-graph-boot": "tsx implementations/web/smoke/graph-boot.smoke.ts"
   },

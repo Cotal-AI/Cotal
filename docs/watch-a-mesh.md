@@ -134,6 +134,19 @@ rather than guessed at. The same holds for the channel name in the URL: an escap
 read is the caller's typo, not a broken server. Either way a malformed request is answered as a bad
 request and never as the dashboard having broken.
 
+A refusal names the value it received, and it renders that value so you can read it. Characters that
+would otherwise be invisible, rearrange the text around them, or mark part of it as an annotation
+come back as their escape in both the response and the line printed in the terminal, so what you
+read is what was actually sent. Ordinary text, accents and non-Latin scripts included, is left
+alone: a character that renders as itself is left as itself.
+
+A channel name has to be the name the mesh actually uses: dotted segments of letters, digits, `_`
+and `-`, or a `*` or `>` where the mesh reads a whole subtree. Anything else is refused rather than
+quietly rewritten, because the wire rewrites what it cannot use and two different names would then
+be one channel. That matters most on the delete button: a name that had to be rewritten would have
+purged a channel you did not name, while the answer showed you the name you typed. Delete takes no
+wildcard at all, so the one destructive control names exactly one channel.
+
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
 raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines

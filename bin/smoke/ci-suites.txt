@@ -358,6 +358,8 @@ smoke:presence-watch-rebuild:auth
 smoke:web-history-limit
 smoke:core-history-limit
 smoke:web-graph-boot
+smoke:web-echo-escaping
+smoke:web-channel-alias
 
 # The two auth suites this branch revived: the despawn/respawn barrier contract (reservation,
 # lifecycle keying, replay safety) and the swallowed-revoke name hold. Both threw before their
