@@ -37,7 +37,7 @@ const prompts = process.env.COOP_PROMPTS?.trim() || undefined;
 const marker2 = process.env.COOP_MARKER_QUEUED?.trim() || undefined;
 // Set only for the late-intake scenario: the parent writes `late` once it has SEEN the seat go
 // offline, and the probe answers by knocking on every public door. `lateFired` is written after
-// those calls return and is the positive control — without it the assertion that nothing changed
+// those calls return and is the positive control, without which the assertion that nothing changed
 // would also pass on a probe that never knocked.
 const late = process.env.COOP_LATE?.trim() || undefined;
 // THE CROSSING SCENARIO. A caller admitted BEFORE the stop parks inside its presence write and
@@ -176,7 +176,7 @@ if (late) {
     // chain stopped, so knock with every id this probe created rather than guessing.
     for (const id of ["ses_coop", "ses_next", "ses_third"]) await fireTool(id);
     // A prompt hook too. It has no presence-visible effect (its publish carries the stored status,
-    // which is already offline), so it is knocked but not graded — see the fixture's note.
+    // which is already offline), so it is knocked but not graded (see the fixture's note).
     await (hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> })["chat.message"](
       { sessionID: "ses_coop" },
       { parts: [] },

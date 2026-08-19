@@ -724,7 +724,7 @@ export const cotal: Plugin = async () => {
    * each entry is the mistake this file has now made twice: the guard was correct for every caller
    * that had been listed, and the list was mistaken for the property. A hook is fenced here by being
    * in this table, so a door added later cannot be forgotten, and there is no per-entry line for a
-   * refactor to drop. `dispose` is deliberately NOT in it — it is the teardown itself.
+   * refactor to drop. `dispose` is deliberately NOT in it, being the teardown itself.
    *
    * BOUNDED, NOT ABSOLUTE. This closes ADMISSION, not the work already inside a hook when the flag
    * flips; that work is what the joins in `quiesce` cover, and a hook that had already passed this
