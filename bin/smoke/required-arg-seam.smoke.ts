@@ -1000,8 +1000,9 @@ const invokedHere = (n: ts.Node): boolean => {
     && o.parent.expression === o;
 };
 
-function writtenSource(init: ts.Expression): boolean {
-  const root = unwrap(init);
+const writtenSource = (init: ts.Expression): boolean => writtenIn(unwrap(init));
+
+function writtenIn(root: ts.Node): boolean {
   let found = false;
   const visit = (n: ts.Node): void => {
     if (found) return;
@@ -1066,15 +1067,18 @@ function propertyOf(src: ts.ObjectLiteralExpression, key: string, consts: Map<st
 function patternValue(pattern: ts.BindingName, init: ts.Expression | undefined,
   name: string, consts: Map<string, string>): Read {
   if (!init) return OPAQUE;
-  if (!writtenSource(init)) return OPAQUE; // not written out here, so this file has nothing to read
-  const src = writtenStructure(init);
+  const from = sourceText(init, consts);
+  if (from.kind === "unsettled" || from.kind === "refuse") return DECLINED;
+  if (from.kind === "none") return OPAQUE; // not written out here: this file has nothing to read
+  const text = from.expr;
+  const src = writtenStructure(text);
   if (ts.isObjectBindingPattern(pattern)) {
     for (const el of pattern.elements) {
       if (!bindsPatternName(el.name, name)) continue;
       if (el.dotDotDotToken) return DECLINED; // a rest holds what the other elements did not take
       const key = keyText(el.propertyName ?? el.name, consts);
       if (key === undefined) return DECLINED;
-      const got = sourceValue(init, key, consts);
+      const got = sourceValue(text, key, consts);
       // Written here and not read is a REFUSAL, which is the whole difference between this and the
       // value that simply is not written here at all.
       if (got.kind === "declined" || got.kind === "opaque") return DECLINED;
@@ -1149,18 +1153,25 @@ function nestedWrites(scope: ts.Node, name: string): number {
   return found;
 }
 
-function nameFact(id: ts.Identifier, consts: Map<string, string>): NameFact {
+/** The fact about a name, plus the declaration that settled it when one did, because a MEMBER read
+ *  of that name needs the declaration's own text and must not walk the scopes a second time to find
+ *  it. Two walks of the same question are two answers waiting to disagree. */
+function resolveName(id: ts.Identifier, consts: Map<string, string>):
+  { fact: NameFact; decl?: ts.VariableDeclaration; sole?: ts.Node; written: boolean } {
   for (let scope = scopeOf(id); scope; scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope)) {
     const reads: Read[] = [];
+    const decls: ts.VariableDeclaration[] = [];
+    const sites: ts.Node[] = [];
     let writes = 0, opaque = 0;
     const visit = (n: ts.Node): void => {
       // A nested function DECLARATION is both a binding here and a scope of its own, and the binding
       // has to be seen first: skipping it as a scope hid the name it binds, and the walk carried on
       // outward to an unrelated binding that then answered for it.
-      if (opaqueBinding(n, id.text)) { opaque += 1; return; }
+      if (opaqueBinding(n, id.text)) { opaque += 1; sites.push(n); return; }
       if (n !== scope && ts.isFunctionLike(n)) return; // another scope answers for its own names
       if (ts.isVariableDeclaration(n) && bindsPatternName(n.name, id.text)) {
         const r = declaredValue(n, id.text, consts);
+        decls.push(n); sites.push(n);
         if (r.kind === "opaque") opaque += 1;
         else reads.push(r);
         // The pattern IS this binding, so do not walk it again; the initializer can still hold
@@ -1174,20 +1185,153 @@ function nameFact(id: ts.Identifier, consts: Map<string, string>): NameFact {
     visit(scope);
     const binds = reads.length + writes + opaque + nestedWrites(scope, id.text);
     if (binds === 0) continue; // not bound here: the enclosing scope answers
-    if (binds > 1) return "unsettled";
-    if (opaque === 1) return "unknown"; // bound here, by something this file cannot value
+    const decl = decls.length === 1 ? decls[0] : undefined;
+    const sole = sites.length === 1 && binds === 1 ? sites[0] : undefined;
+    const written = decls.some((d) => !!d.initializer && writtenSource(d.initializer));
+    if (binds > 1) return { fact: "unsettled", written };
+    if (opaque === 1) return { fact: "unknown", decl, sole, written }; // not this file's to value
     const r = reads[0];
-    if (r.kind === "declined") return "declined";
-    if (r.kind === "absent") return "undefined";
-    return literalUndefined(unwrap(r.expr)) ? "undefined" : "unknown";
+    if (r.kind === "declined") return { fact: "declined", decl, sole, written };
+    if (r.kind === "absent") return { fact: "undefined", decl, sole, written };
+    return { fact: literalUndefined(unwrap(r.expr)) ? "undefined" : "unknown", decl, sole, written };
   }
-  return "unknown";
+  return { fact: "unknown", written: false };
 }
 
-const isProvablyUndefined = (e: ts.Expression, consts: Map<string, string>): boolean => {
+const nameFact = (id: ts.Identifier, consts: Map<string, string>): NameFact =>
+  resolveName(id, consts).fact;
+
+/** Can the OBJECT this name holds have changed since the declaration wrote it out?
+ *
+ *  Reading a member off the declaration's text is a statement about the value AT THE CALL, and four
+ *  three ordinary things break that link: a property written afterwards, the object handed to a call
+ *  that can keep it, and a second name for the same object. Through any of them, `const opts
+ *  = { tls: undefined }; opts.tls = false;` would be reported as stating the key undefined while the
+ *  program works, which is the untrue-assertion direction, and this reader flinches from that harder
+ *  than from a miss: a miss fails to catch a broken program, an untrue assertion spends the
+ *  credibility that makes the real reds worth acting on.
+ *
+ *  A `delete` is deliberately NOT in that list, though it changes the object as surely as a write
+ *  does. It can only make a property more absent, and absent is the very fact this reader reds on,
+ *  so no delete can turn one of its reds into a false one. A branch for it would have been dead
+ *  weight with a cell that could not tell whether it ran.
+ *
+ *  Stated residual, since it is not a route this closes: the alias rule follows the name, not the
+ *  object, so a second name taken in a shape not listed here (a property of something else, an
+ *  element of an array) keeps its own mutations out of view. */
+function mutableHere(id: ts.Identifier): boolean {
+  const memberOf = (e: ts.Expression): boolean => {
+    const x = unwrap(e);
+    return (ts.isPropertyAccessExpression(x) || ts.isElementAccessExpression(x))
+      && ts.isIdentifier(unwrap(x.expression)) && (unwrap(x.expression) as ts.Identifier).text === id.text;
+  };
+  const isName = (e: ts.Expression | undefined): boolean =>
+    !!e && ts.isIdentifier(unwrap(e)) && (unwrap(e) as ts.Identifier).text === id.text;
+  let found = false;
+  const visit = (n: ts.Node): void => {
+    if (found) return;
+    if (ts.isBinaryExpression(n) && n.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+      && n.operatorToken.kind <= ts.SyntaxKind.LastAssignment
+      && (memberOf(n.left) || isName(n.right))) { found = true; return; } // written into, or aliased
+    if ((ts.isCallExpression(n) || ts.isNewExpression(n))
+      && (n.arguments ?? []).some((a) => isName(ts.isSpreadElement(a) ? a.expression : a))) {
+      found = true; return; // handed over, and the callee can keep it and write into it later
+    }
+    if (ts.isVariableDeclaration(n) && ts.isIdentifier(n.name) && isName(n.initializer)) {
+      found = true; return; // a second name for the same object, whose writes are not watched here
+    }
+    ts.forEachChild(n, visit);
+  };
+  visit(id.getSourceFile());
+  return found;
+}
+
+/** The text this file should treat as a value's SOURCE, following a name to the declaration that
+ *  settled it.
+ *
+ *  A name bound exactly once here IS its declaration: `const src = { tls: undefined }; const { tls }
+ *  = src` states the same two facts as the inline spelling, put on two lines, and passing it while
+ *  refusing the inline one made the announced rule about the SPELLING rather than about the text. A
+ *  call of a name bound to a producer written here is the same act as the inline invocation, so it
+ *  arms the same refusal: the body is text this reader is looking at and a call it does not model.
+ *
+ *  It follows names only while they stay readable. Bound more than once and this file cannot say
+ *  which binding is live, so a name whose bindings wrote text here is refused, and one whose
+ *  bindings did not is left alone rather than refused, since refusing what was never readable is a
+ *  red that teaches nothing.
+ *
+ *  ONE hop, and the flag says so out loud rather than a depth counter pretending at more. A name
+ *  handed to another name is an ALIAS, which the rule above already stops at, so a second hop is
+ *  code that cannot run and a mutation nothing can kill. Where the chain matters the answer is the
+ *  honest one: a name whose declaration hands over another name is not chased. */
+type Source =
+  | { kind: "text"; expr: ts.Expression }
+  | { kind: "unsettled" }
+  | { kind: "refuse" }
+  | { kind: "none" };
+
+const NO_SOURCE: Source = { kind: "none" };
+
+function sourceText(init: ts.Expression, consts: Map<string, string>, follow = true): Source {
+  const x = unwrap(init);
+  if (follow && ts.isIdentifier(x)) {
+    const r = resolveName(x, consts);
+    if (r.fact === "unsettled") return r.written ? { kind: "unsettled" } : NO_SOURCE;
+    const i = r.decl && ts.isIdentifier(r.decl.name) ? r.decl.initializer : undefined;
+    if (!i || mutableHere(x)) return NO_SOURCE;
+    return sourceText(i, consts, false);
+  }
+  if (ts.isCallExpression(x) && ts.isIdentifier(unwrap(x.expression))) {
+    const r = resolveName(unwrap(x.expression) as ts.Identifier, consts);
+    const bound = r.sole && ts.isVariableDeclaration(r.sole) && r.sole.initializer
+      ? unwrap(r.sole.initializer) : r.sole;
+    // A producer written here whose body writes the structure out: refused, not read, exactly as the
+    // inline invocation is, because reading it would mean following what the body does.
+    if (bound && ts.isFunctionLike(bound) && writtenIn(bound)) return { kind: "refuse" };
+    // and otherwise the call is judged on its own text, like any other, below.
+  }
+  return writtenSource(x) ? { kind: "text", expr: x } : NO_SOURCE;
+}
+
+/** What this file can say about `opts.tls`, where `opts` is written out here.
+ *
+ *  The rule this file announced is about the TEXT: a structure written here is either read or
+ *  refused, never passed. The rule it implemented was about the READ SHAPE, and only the shapes
+ *  where the binding IS the value ever consulted the text. So `const opts = { tls: undefined };
+ *  seam({ creds, tls: opts.tls })` passed while the seam threw, with the literal three lines up, the
+ *  key named in it, and the value spelled out. It is the plainest spelling this reader has failed
+ *  on, and it survived every round because every fixture read the binding rather than a member of
+ *  it. A probe at the first position of the read-shape space reads as proof of the whole space. */
+function memberFact(e: ts.Expression, consts: Map<string, string>): NameFact {
   const x = unwrap(e);
-  return literalUndefined(x) || (ts.isIdentifier(x) && nameFact(x, consts) === "undefined");
+  let target: ts.Expression, key: string | undefined;
+  if (ts.isPropertyAccessExpression(x)) { target = x.expression; key = x.name.text; }
+  else if (ts.isElementAccessExpression(x)) {
+    target = x.expression;
+    key = foldString(x.argumentExpression, consts);
+  } else return "unknown";
+  const obj = unwrap(target);
+  if (!ts.isIdentifier(obj)) return "unknown";
+  const src = sourceText(obj, consts);
+  if (src.kind === "unsettled") return "unsettled";
+  if (src.kind === "refuse") return "declined";
+  if (src.kind === "none") return "unknown"; // not written here: not this file's to answer
+  if (key === undefined) return "declined"; // written here, and which member is being read is not
+  const got = sourceValue(src.expr, key, consts);
+  if (got.kind === "absent") return "undefined"; // the property is not there, so the read IS undefined
+  if (got.kind === "value") return literalUndefined(unwrap(got.expr)) ? "undefined" : "unknown";
+  return "declined";
+}
+
+/** One question asked of every value, whatever shape it is written in. */
+const valueFact = (e: ts.Expression, consts: Map<string, string>): NameFact => {
+  const x = unwrap(e);
+  if (literalUndefined(x)) return "undefined";
+  if (ts.isIdentifier(x)) return nameFact(x, consts);
+  return memberFact(x, consts);
 };
+
+
 
 /**
  * The values an argument expression can actually evaluate to.
@@ -1206,6 +1350,46 @@ function alternatives(e: ts.Expression): ts.Expression[] {
     if (k === ts.SyntaxKind.BarBarToken || k === ts.SyntaxKind.QuestionQuestionToken
       || k === ts.SyntaxKind.AmpersandAmpersandToken) return [...alternatives(x.left), ...alternatives(x.right)];
     if (k === ts.SyntaxKind.CommaToken) return alternatives(x.right);
+  }
+  return [x];
+}
+
+/** What a literal IS, for the two operators that choose an arm by looking at one. */
+function literalKind(e: ts.Expression): "nullish" | "falsy" | "truthy" | "unknown" {
+  const x = unwrap(e);
+  if (literalUndefined(x) || x.kind === ts.SyntaxKind.NullKeyword) return "nullish";
+  if (x.kind === ts.SyntaxKind.TrueKeyword || ts.isObjectLiteralExpression(x)
+    || ts.isArrayLiteralExpression(x)) return "truthy";
+  if (x.kind === ts.SyntaxKind.FalseKeyword) return "falsy";
+  if (ts.isNumericLiteral(x)) return Number(x.text) === 0 ? "falsy" : "truthy";
+  if (ts.isStringLiteral(x)) return x.text === "" ? "falsy" : "truthy";
+  return "unknown";
+}
+
+/** The values a KEY'S OWN expression can hand to the seam.
+ *
+ *  A different question from the argument's alternatives, and folding them the same way is a false
+ *  red on the commonest defaulting idiom there is: `tls: opts.tls ?? false` hands over `opts.tls`
+ *  only when it is NOT nullish, so the left arm of `??` can never be the undefined this seam refuses,
+ *  and `||` hands over its left only when truthy, which undefined never is. Reading both arms there
+ *  would report a program that cannot throw as stating the key undefined. `&&` is the other way
+ *  round: it hands over a falsy left, undefined included, so both arms are real. */
+function valueAlternatives(e: ts.Expression): ts.Expression[] {
+  const x = unwrap(e);
+  if (ts.isConditionalExpression(x))
+    return [...valueAlternatives(x.whenTrue), ...valueAlternatives(x.whenFalse)];
+  if (ts.isBinaryExpression(x)) {
+    const k = x.operatorToken.kind, lit = literalKind(x.left);
+    if (k === ts.SyntaxKind.QuestionQuestionToken)
+      return valueAlternatives(lit === "falsy" || lit === "truthy" ? x.left : x.right);
+    if (k === ts.SyntaxKind.BarBarToken)
+      return valueAlternatives(lit === "truthy" ? x.left : x.right);
+    if (k === ts.SyntaxKind.AmpersandAmpersandToken) {
+      if (lit === "nullish" || lit === "falsy") return valueAlternatives(x.left);
+      if (lit === "truthy") return valueAlternatives(x.right);
+      return [...valueAlternatives(x.left), ...valueAlternatives(x.right)];
+    }
+    if (k === ts.SyntaxKind.CommaToken) return valueAlternatives(x.right);
   }
   return [x];
 }
@@ -1281,7 +1465,8 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
     if (keyIsOpaque) { unverifiable ||= `the key is a getter, whose value this file cannot read: ${show(alt)}`; continue; }
     // The VALUE is asked the same question the argument was: an expression that can evaluate to
     // `undefined` on any branch delivers exactly what the seam throws on.
-    if (keyValue && alternatives(keyValue).some((v) => isProvablyUndefined(v, consts))) {
+    const facts = keyValue ? valueAlternatives(keyValue).map((v) => valueFact(v, consts)) : [];
+    if (facts.includes("undefined")) {
       return { verdict: "missing-key", detail: `states the key as \`undefined\`, which is not the boolean the seam demands: ${show(alt)}` };
     }
     // A value this file binds MORE THAN ONCE has no single value to read, and the order rule the KEY
@@ -1290,18 +1475,14 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
     // from the declaration and the program ran on the assignment. A parameter is bound nowhere this
     // file can read and stays untouched, which is the load-bearing case: destructured params feeding
     // `{ creds, tls }` are the house idiom and must not go red.
-    const unsettled = keyValue && alternatives(keyValue).map(unwrap)
-      .find((v) => ts.isIdentifier(v) && nameFact(v, consts) === "unsettled");
-    if (unsettled) {
+    if (facts.includes("unsettled")) {
       unverifiable ||= `the value is a name this file binds more than once, so its value at the call is not settled here: ${show(alt)}`;
       continue;
     }
     // The value is written out at its declaration and this reader did not take that shape apart.
     // Declining is not the same as finding it fine, and reporting it as fine is how six unread
     // shapes passed while the call threw.
-    const declined = keyValue && alternatives(keyValue).map(unwrap)
-      .find((v) => ts.isIdentifier(v) && nameFact(v, consts) === "declined");
-    if (declined) {
+    if (facts.includes("declined")) {
       unverifiable ||= `the value is destructured out of a shape written here that this reader does not take apart: ${show(alt)}`;
       continue;
     }
@@ -1966,6 +2147,82 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const { tls } = { ...base, other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...while a source this file cannot see at all is still DECLINED rather than refused",
     one(`const { tls } = cfg;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  // A MEMBER of a structure written here is the same text as the binding of it, and only the
+  // shapes where the binding IS the value ever consulted that text. `const opts = { tls: undefined
+  // }; standaloneConnectOpts({ creds: c, tls: opts.tls })` passed with the literal three lines up
+  // and the key named in it. Every fixture had read the binding; none had read a member of it.
+  check("a MEMBER of a structure written here is read, since it is the same text the binding is",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...while the same member holding a real boolean is untouched",
+    one(`const opts = { tls: false };\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...and a property that is NOT there hands over undefined, which is what the seam throws on",
+    one(`const opts = { other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...and an ELEMENT access is the same read, spelled with brackets",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts["tls"] });`) === "missing-key");
+  check("...including through a folded const, the arithmetic every other key folds by",
+    one(`const K = "tls";\nconst opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts[K] });`) === "missing-key");
+  check("...while a member this file cannot NAME is refused, since any of them could be the key",
+    one(`function f(k: string) { const opts = { tls: undefined as any }; return standaloneConnectOpts({ creds: c, tls: opts[k] }); }`) === "unverifiable");
+  check("...and the MERGE is read from a member too, rightmost arm winning as the merge itself does",
+    one(`const opts = Object.assign(base, { tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...while an arm this file cannot read could be the one that wins, so it is refused",
+    one(`const opts = Object.assign({ tls: undefined as any }, base);\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "unverifiable");
+  check("...and a FROZEN structure is the same structure with a call around it",
+    one(`const opts = Object.freeze({ tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  check("...and a GETTER is refused rather than run, in this position as in the other",
+    one(`const opts = { get tls() { return undefined; } } as any;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "unverifiable");
+  check("...while a structure this file cannot see is not claimed in either direction",
+    one(`const opts = cfg;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...and a holder bound MORE THAN ONCE is refused, since this file cannot say which is live",
+    one(`let opts = { tls: false };\nopts = other;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "unverifiable");
+  check("...while a holder this file never binds, a parameter say, is left alone rather than refused",
+    one(`function f(opts: any) { return standaloneConnectOpts({ creds: c, tls: opts.tls }); }`) === "has-key");
+  check("...and a member of a member is not chased, since the object it reads from is not a name here",
+    one(`const opts = { inner: { tls: undefined as any } };\nstandaloneConnectOpts({ creds: c, tls: opts.inner.tls });`) === "has-key");
+  // The declaration's text is only the value AT THE CALL while nothing has touched the object since.
+  // Asserting through a later write would be a false statement about a working program, which costs
+  // more than the miss that comes of declining.
+  check("a property WRITTEN after the declaration is not answered from the declaration",
+    one(`const opts = { tls: undefined as any };\nopts.tls = false;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one ASSIGNED to a second name, which the declaration spelling is only one half of",
+    one(`const opts = { tls: undefined as any };\nlet a: any;\na = opts;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one HANDED to a call, which can keep the object and write into it later",
+    one(`const opts = { tls: undefined as any };\ntouch(opts);\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...nor one with a SECOND NAME, whose own writes this rule does not watch",
+    one(`const opts = { tls: undefined as any };\nconst alias = opts;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "has-key");
+  check("...while an untouched holder still reds, so mutability did not become a blanket",
+    one(`const opts = { tls: undefined as any };\nconst n = 1;\nstandaloneConnectOpts({ creds: c, tls: opts.tls });`) === "missing-key");
+  // The same text, reached through a NAME, is the same two facts spelled on two lines.
+  check("a source NAMED and then taken apart is the text its declaration wrote",
+    one(`const src = { tls: undefined as any };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...while the same source holding a real boolean is untouched",
+    one(`const src = { tls: false };\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a PRODUCER written here is refused where it is called, as the inline invocation is",
+    one(`const mk = () => ({ tls: undefined as any });\nconst { tls } = mk();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...in the declaration spelling too, since the shape is the producer and not the arrow",
+    one(`function mk() { return { tls: undefined as any }; }\nconst { tls } = mk();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...while a producer that writes NOTHING out here is not text this file is looking at",
+    one(`const mk = () => cfg;\nconst { tls } = mk();\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a callee this file never binds is judged on its own text, as it always was",
+    one(`const { tls } = structuredClone({ tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and a name whose declaration hands over ANOTHER name is not chased a second hop",
+    one(`const src = base;\nconst { tls } = src;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  // A key's own expression chooses its arm by looking at one, so folding both is a false red on the
+  // commonest defaulting idiom there is.
+  check("a NULLISH DEFAULT cannot hand over the undefined it exists to replace",
+    one(`const opts = { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls: opts.tls ?? false });`) === "has-key");
+  check("...and neither can `||`, which hands over its left only when it is truthy",
+    one(`const t = undefined;\nstandaloneConnectOpts({ creds: c, tls: t || false });`) === "has-key");
+  check("...while its RIGHT arm is the value when the left is not, and is claimed",
+    one(`const t = false;\nstandaloneConnectOpts({ creds: c, tls: t || undefined });`) === "missing-key");
+  check("...and a non-nullish LEFT is the value of `??`, whatever stands to its right",
+    one(`standaloneConnectOpts({ creds: c, tls: false ?? undefined })`) === "has-key");
+  check("...and `&&` hands over a falsy left, undefined included, so both its arms are real",
+    one(`const t = undefined;\nstandaloneConnectOpts({ creds: c, tls: t && false });`) === "missing-key");
+  check("...and its right arm is the value when the left is truthy",
+    one(`standaloneConnectOpts({ creds: c, tls: true && undefined })`) === "missing-key");
+  check("...while a TERNARY hands over either branch, so both of those are still folded",
+    one(`standaloneConnectOpts({ creds: c, tls: flag ? false : undefined })`) === "missing-key");
   // A write from INSIDE a nested scope reaches the same binding, and not counting it made this
   // reader ASSERT undefined about a name an ordinary nested function initialises.
   check("a name INITIALISED by a nested function is not asserted undefined from its bare declaration",
