@@ -76,14 +76,43 @@ try {
   console.log("1. a limit that cannot be answered is refused, not searched for");
   const nan = await settled(ep.channelHistory("ch0", { limit: Number.NaN }));
   ok("1.1 a NaN limit REFUSES, naming what it received, rather than never returning",
-    !!nan && "threw" in nan && nan.threw.includes("finite") && nan.threw.includes("NaN"),
+    !!nan && "threw" in nan && nan.threw.includes("whole number") && nan.threw.includes("NaN"),
     nan === null ? "never returned" : nan);
   const inf = await settled(ep.channelHistory("ch0", { limit: Number.POSITIVE_INFINITY }));
   ok("1.2 an Infinite limit refuses too, which is the other end of the same skipped guard",
-    !!inf && "threw" in inf && inf.threw.includes("finite"),
+    !!inf && "threw" in inf && inf.threw.includes("whole number"),
     inf === null ? "never returned" : inf);
   ok("1.3 the DM read carries the same rule, since it is the same search underneath",
-    await settled(ep.dmHistory({ limit: Number.NaN })).then((r) => !!r && "threw" in r && r.threw.includes("finite")));
+    await settled(ep.dmHistory({ limit: Number.NaN })).then((r) => !!r && "threw" in r && r.threw.includes("whole number")));
+  // NEGATIVE INFINITY IS NOT THE SAME CELL AS POSITIVE. It is the one value that reaches the zero
+  // check and would be swallowed by it: `-Infinity <= 0` is TRUE, so a guard placed BELOW that check
+  // turns a limit nobody can answer into a silent empty page. This cell is what makes the guard's
+  // POSITION graded rather than merely its existence.
+  const negInf = await settled(ep.channelHistory("ch0", { limit: Number.NEGATIVE_INFINITY }));
+  ok("1.4 a NEGATIVE infinite limit REFUSES, it is not quietly folded into the empty page",
+    !!negInf && "threw" in negInf && negInf.threw.includes("whole number"),
+    negInf === null ? "never returned" : negInf);
+
+  // A COUNT IS A WHOLE NUMBER OF MESSAGES. A fraction is not a smaller read, it is a DIFFERENT read:
+  // the page is taken with `slice(-limit)`, and slice truncates toward zero, so any limit in (0,1)
+  // becomes `slice(0)` and hands back the subject's ENTIRE retained history. Measured on 30 retained:
+  // limit 0.5 and 0.9 both returned all 30, and 2.5 returned 2, a page that was never asked for.
+  // This is the same whole-history hole the HTTP frame closes with its 400; a guard that stops at
+  // "finite" leaves it open for every caller that does not go through that frame.
+  for (const frac of [0.5, 0.9, 1.5, 2.5]) {
+    const f = await settled(ep.channelHistory("ch0", { limit: frac }));
+    ok(`1.5 a fractional limit ${frac} REFUSES: a count of messages is a whole number`,
+      !!f && "threw" in f, f === null ? "never returned" : f);
+  }
+  // The same whole-history hole from the far end: 1e21 IS an integer, but it is past the range a
+  // double counts exactly, and `slice(-1e21)` is `slice(0)`, the entire retained set again.
+  const huge = await settled(ep.channelHistory("ch0", { limit: 1e21 }));
+  ok("1.7 an integer too large to count exactly refuses, it does not become the whole history",
+    !!huge && "threw" in huge, huge === null ? "never returned" : huge);
+  const half = await settled(ep.channelHistory("ch0", { limit: 0.5 }));
+  ok("1.6 and specifically it does NOT return the whole retained history, which is what 0.5 did",
+    !(!!half && "value" in half && half.value.length === 30),
+    half && "value" in half ? { returned: half.value.length, retained: 30 } : half);
 
   console.log("2. the shapes that already worked are untouched");
   const zero = await settled(ep.channelHistory("ch0", { limit: 0 }));

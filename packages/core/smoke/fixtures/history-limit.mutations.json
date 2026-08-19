@@ -5,37 +5,44 @@
     {
       "name": "C1 the finite guard is dropped: a NaN limit reaches the widening search, whose two exits are both permanently false for it, so the read never returns and its caller is never told",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "replace": "    if (false)\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
+      "find": "    if (!Number.isSafeInteger(limit))\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);\n    if (limit <= 0) return [];",
+      "replace": "    if (limit <= 0) return [];",
       "expectRed": "1.1 a NaN limit REFUSES, naming what it received, rather than never returning"
     },
     {
       "name": "C2 the guard stops refusing and returns an empty page instead, the fallback shape: a caller who asked an unanswerable question is told the channel is empty",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "replace": "    if (!Number.isFinite(limit))\n      return [];",
+      "find": "      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);",
+      "replace": "      return [];",
       "expectRed": "1.1 a NaN limit REFUSES, naming what it received, rather than never returning"
     },
     {
       "name": "C3 the refusal stops naming the value it received, so a caller who computed a bad limit is told a rule was broken but not which value broke it",
       "file": "packages/core/src/endpoint.ts",
-      "find": "      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "replace": "      throw new Error(`history limit must be a finite number`);",
+      "find": "      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);",
+      "replace": "      throw new Error(\"history limit must be a whole number of messages this server can count exactly\");",
       "expectRed": "1.1 a NaN limit REFUSES, naming what it received, rather than never returning"
     },
     {
       "name": "C4 the guard widens and swallows the working cases too: zero and negatives start throwing instead of returning an empty page, changing a contract this change was not supposed to touch",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a finite number, received ${limit}`);\n    if (limit <= 0) return [];",
-      "replace": "    if (!Number.isFinite(limit) || limit <= 0)\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
+      "find": "    if (!Number.isSafeInteger(limit))\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);\n    if (limit <= 0) return [];",
+      "replace": "    if (!Number.isSafeInteger(limit) || limit <= 0)\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);",
       "expectRed": "2.1 zero still means an EMPTY page, not a throw and not everything"
     },
     {
-      "name": "C5 the guard is moved BELOW the zero check, which changes nothing for NaN (every comparison against it is false) and is the shape that looks like a fix while leaving the loop reachable",
+      "name": "C5 the guard is moved BELOW the zero check, intact, which is the real ordering regression: -Infinity is <= 0, so it stops being refused and is folded into a silent empty page",
       "file": "packages/core/src/endpoint.ts",
-      "find": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a finite number, received ${limit}`);\n    if (limit <= 0) return [];",
-      "replace": "    if (limit <= 0) return [];\n    if (Number.isFinite(limit) === true && false)\n      throw new Error(`history limit must be a finite number, received ${limit}`);",
-      "expectRed": "1.1 a NaN limit REFUSES, naming what it received, rather than never returning"
+      "find": "    if (!Number.isSafeInteger(limit))\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);\n    if (limit <= 0) return [];",
+      "replace": "    if (limit <= 0) return [];\n    if (!Number.isSafeInteger(limit))\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);",
+      "expectRed": "1.4 a NEGATIVE infinite limit REFUSES, it is not quietly folded into the empty page"
+    },
+    {
+      "name": "C6 the guard weakens from a whole countable number back to merely finite, which readmits the quietest case: a limit in (0,1) truncates to slice(0) and returns the entire retained history",
+      "file": "packages/core/src/endpoint.ts",
+      "find": "    if (!Number.isSafeInteger(limit))\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);\n    if (limit <= 0) return [];",
+      "replace": "    if (!Number.isFinite(limit))\n      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);\n    if (limit <= 0) return [];",
+      "expectRed": "1.5 a fractional limit 0.5 REFUSES: a count of messages is a whole number"
     }
   ]
 }
