@@ -62,8 +62,16 @@ export interface EngineCtx {
    * undefined. Without the argument, `get` is byte-unchanged.
    */
   get(o: unknown, k: unknown, binding?: string): unknown;
-  /** Write a member: L2031, L2032, L4014, L4017, L4019. Answers `v`, as an assignment does. */
-  set(o: unknown, k: unknown, v: unknown): unknown;
+  /**
+   * Write a member: L2031, L2032, L4014, L4017, L4019. Answers `v`, as an assignment does.
+   *
+   * `binding` is F7's cell WRITE, ruled as a fourth argument for the same reason `get` took a third.
+   * It is present ONLY on an ASSIGNMENT to a cell, never on the declaration's own initialising write,
+   * and an absent OWN key there means the declaration has not run: L2004 naming the binding, in the
+   * walker's assignment words, which are not the read's. The key is LEFT ABSENT by the refusal, so
+   * the declaration that has not run yet still initialises the binding when it does.
+   */
+  set(o: unknown, k: unknown, v: unknown, binding?: string): unknown;
   /**
    * Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else.
    *
@@ -631,6 +639,20 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     return { from: "table", fn: memberOf(obj, prop, asCallee) as Callable, key: `${kind}.${prop}` };
   };
 
+  /**
+   * F7'S CELL TEST, in ONE place because both doors ask the same question.
+   *
+   * A binding the transform turned into a cell exists for its whole block, and the cell record is
+   * hoisted to the top of that block so the closures capturing it have something to close over. What
+   * decides whether the DECLARATION has run is whether the key is THERE - `hasOwn`, never truthiness,
+   * because a binding initialised to `undefined` has run and a truthiness test would refuse it.
+   *
+   * Written once rather than at each door: a duplicated guard is one whose mutant can be defeated by
+   * copying it, and the read and the write differ in their SENTENCE, not in this question.
+   */
+  const declarationHasRun = (cell: unknown, prop: string): boolean =>
+    cell !== null && typeof cell === "object" && Object.prototype.hasOwnProperty.call(cell, prop);
+
   const ctx: EngineCtx = {
     fuel,
 
@@ -641,7 +663,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // something to close over. What decides whether the DECLARATION has run is whether the key is
       // there - `hasOwn`, never truthiness, because a binding initialised to `undefined` has run.
       // The walker's own words, so a program cannot tell which engine refused it.
-      if (binding !== undefined && !(o !== null && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, prop))) {
+      if (binding !== undefined && !declarationHasRun(o, prop)) {
         throw new RuntimeFault(
           "L2004",
           `${binding} is used before its declaration was reached: the binding exists for the whole block, but it holds no value until the \`let\`/\`const\` line runs. Call this function after the declaration, or move the declaration up.`,
@@ -650,8 +672,20 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       return memberOf(o, prop, false);
     },
 
-    set(o, k, v) {
+    set(o, k, v, binding) {
       const prop = keyOf(k);
+      // F7'S OTHER CELL DOOR, and it is a SEPARATE refusal rather than the read's reused: the walker
+      // answers a different sentence for a write, and a program that could tell the two engines apart
+      // by which sentence it caught would be a divergence dressed as a message. Both are catchable,
+      // both leave the binding uninitialised, and the declaration still initialises it when reached.
+      // Emitted only on an assignment - the declaration's own `set` passes three arguments - so a
+      // cell being written for the first time by its `let` line never comes through here.
+      if (binding !== undefined && !declarationHasRun(o, prop)) {
+        throw new RuntimeFault(
+          "L2004",
+          `${binding} is assigned before its declaration was reached: the binding exists for the whole block, but it holds no value until the \`let\`/\`const\` line runs.`,
+        );
+      }
       if (o === null || o === undefined || typeof o !== "object") {
         throw new RuntimeFault(
           "L4010",

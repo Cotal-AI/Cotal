@@ -1866,6 +1866,65 @@ log("out", out);
   // Without the argument, `get` is byte-unchanged: an absent field is undefined, as it always was.
   ok("without a binding name, an absent field is still just undefined", (await h.inFrame(() => h.ctx.get(cell, "v"))) === undefined);
 
+  // ---- the WRITE half of the same door, ruled as `set`'s fourth argument -------------------------
+  //
+  // A binding only ever WRITTEN from a deeper function has no early read to classify, so `get`'s
+  // third argument never sees it and the engine died on a native ReferenceError. The walker refuses
+  // it, catchably, in words that are NOT the read's - so the write clause is its own refusal here
+  // rather than the read's reused, and these cells compare both sentences against the oracle.
+  const wroteEarly = await caught(() =>
+    walkerRun(`function f() { n = 2; }
+f();
+let n = 1;
+log("n", n);
+`, { runId: "f7w", handler: new SimHandler({}) }),
+  );
+  ok("the walker refuses an assignment before the declaration with L2004", codeOf(wroteEarly) === "L2004", String(wroteEarly));
+
+  const wcell = await h.inFrame(() => h.ctx.born({}));
+  const engineWrote = await caught(() => h.inFrame(() => h.ctx.set(wcell, "v", 2, "n")));
+  ok("and so does the engine's write clause, when the cell has no own key yet", codeOf(engineWrote) === "L2004", String(engineWrote));
+  ok(
+    "with the WALKER'S ASSIGNMENT message, word for word",
+    (engineWrote as Error).message === (wroteEarly as Error).message,
+    { engine: (engineWrote as Error).message.slice(0, 80), walker: (wroteEarly as Error).message.slice(0, 80) },
+  );
+  // AND IT IS THE WRITE'S SENTENCE, NOT THE READ'S. The two are one word apart, and a host that
+  // answered the read's words for a write would be a divergence a program can see through `e.message`
+  // while every code-level cell stayed green.
+  ok(
+    "the write's refusal is not the read's",
+    (engineWrote as Error).message !== (fromEngine as Error).message && (engineWrote as Error).message.includes("is assigned before"),
+    (engineWrote as Error).message.slice(0, 60),
+  );
+  // THE REFUSAL LEAVES THE CELL ABSENT, which is what lets the declaration still run. A clause that
+  // wrote first and refused after would leave the binding initialised by a line that never executed.
+  ok("and it left the cell uninitialised, so the declaration can still initialise it", !Object.prototype.hasOwnProperty.call(wcell as object, "v"), Object.keys(wcell as object));
+  const settled = await h.inFrame(() => {
+    h.ctx.set(wcell, "v", 1);
+    return h.ctx.set(wcell, "v", 2, "n");
+  });
+  ok("once the declaration has run, the same assignment goes through", settled === 2 && (await h.inFrame(() => h.ctx.get(wcell, "v", "n"))) === 2, settled);
+  // CATCHABLE, like the read: the walker's is a program error and the engine's catch head must make
+  // the same record, or a program's `catch` behaves differently on the two engines.
+  const wCaught: unknown[][] = [];
+  await walkerRun(`function f() { n = 2; }
+try { f(); } catch (e) { log("code", e.code); log("kind", e.kind); }
+let n = 1;
+`, {
+    runId: "f7wc",
+    handler: new SimHandler({}),
+    onLog: (l) => wCaught.push([...l.values]),
+  });
+  ok("the walker's caught early assignment is L2004/runtime", JSON.stringify(wCaught) === '[["code","L2004"],["kind","runtime"]]', wCaught);
+  const asRecord = (await h.inFrame(() => h.ctx.caught(engineWrote))) as { code?: string; kind?: string };
+  ok("and the engine's catch head answers the same record for the write", asRecord.code === "L2004" && asRecord.kind === "runtime", asRecord);
+
+  // WITHOUT THE ARGUMENT, `set` IS BYTE-UNCHANGED: the declaration's own initialising write passes
+  // three, and a cell with no key yet is exactly the state it is called in.
+  const fresh = await h.inFrame(() => h.ctx.born({}));
+  ok("without a binding name, a first write to an empty cell just writes", (await h.inFrame(() => h.ctx.set(fresh, "v", 5))) === 5);
+
   // The CAUGHT form. The walker's answer, measured: ["L2004", "runtime"].
   const wLogs: unknown[][] = [];
   await walkerRun(`function f() { return x; }\ntry { f(); } catch (e) { log("code", e.code); log("kind", e.kind); }\nconst x = 1;\n`, {
@@ -1966,6 +2025,17 @@ log("out", out);
   const below = await caught(() => assertNodeFloor("20.19.0"));
   ok("a node below the floor is refused by major version", below instanceof RuntimeFault, String(below));
   ok("and the refusal names both the version it found and the floor", (below as Error).message.includes("20.19.0") && (below as Error).message.includes("node 22"), (below as Error).message.slice(0, 120));
+  // IT IS A LANGUAGE REFUSAL, ASSERTED BY CODE, not merely something that threw: a sub-floor run has
+  // to arrive as one sentence a reader can act on.
+  ok("and it carries the language code, not a bare Error", codeOf(below) === "L1000", codeOf(below));
+  // AND IT IS NEVER A MODULE-NOT-FOUND. That is the shape this whole change removed: below the floor
+  // the answer must be the sentence above, and not node failing to resolve a file that is right
+  // there - which is what an unrefused sub-floor run used to produce.
+  ok(
+    "and it never presents as a module-resolution failure",
+    !/Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND/.test((below as Error).message) && (below as Error).name !== "Error",
+    { name: (below as Error).name, message: (below as Error).message.slice(0, 80) },
+  );
   ok("the floor itself is allowed", (await caught(() => assertNodeFloor("22.23.2"))) === undefined);
   ok("and anything above it", (await caught(() => assertNodeFloor("26.7.0"))) === undefined);
   // A version string it cannot read is NOT refused: refusing on an unparseable version would fail a
