@@ -1,0 +1,29 @@
+{
+  "suite": "opencode-coop",
+  "guard": "the manager's cooperative stop joins queued event work before it exits",
+  "command": "pnpm smoke:opencode-coop",
+  "completionMarker": "OPENCODE COOPERATIVE-STOP SMOKE",
+  "proveWith": "pnpm smoke:opencode-coop",
+  "why": [
+    "The join is what makes NOTHING MAY PUBLISH AFTER TEARDOWN true on the path a supervised seat",
+    "actually takes. It went into the plugin-unload path first, with that sentence above it, while the",
+    "manager's stop ran a separate routine that exited without joining, so the claim was false exactly",
+    "where it mattered. Both ways out now call one bounded teardown.",
+    "",
+    "C1 REMOVES BOTH JOINS RATHER THAN ONE, and that is a statement about what this grades. The two",
+    "cover different cases: the holder join covers work already running, and the swap-chain join covers",
+    "a swap that is queued but has not begun. This cell exercises the first, so removing the chain join",
+    "alone leaves the holder join to catch it and the suite stays green. Removing either one",
+    "individually is therefore NOT graded here; what is graded is that the teardown joins the event",
+    "work at all. The queued-but-not-started case has no cell."
+  ],
+  "mutations": [
+    {
+      "name": "C1 the shared teardown stops joining the event work at all, so a stop abandons a drain that was already in flight",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    await settleWithin(events?.settled(), SWAP_SETTLE_MS, \"event holder at teardown\");\n",
+      "replace": "",
+      "expectRed": "cooperative stop joined the queued event work before exiting"
+    }
+  ]
+}
