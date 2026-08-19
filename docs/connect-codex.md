@@ -180,8 +180,43 @@ Eight things are specific to Codex and worth knowing before you read a stream:
 - **A broker that is down when the seat starts costs the outage, not the seat.** The plane publishes
   through the seat's mesh connection, so a seat armed while its broker was unreachable cannot start
   its emitter. It says so in its log, and rebuilds the emitter at the first turn boundary once the
-  broker is there. What it loses is everything the thread wrote before that boundary, the outage and
-  the turn that triggered the rebind alike, by the same rule as above.
+  broker is there. A rebind DECLINES to publish two things, and they are one rule rather than two
+  exceptions. It declines what the thread wrote while the seat was cut off. It also declines the
+  turn whose own boundary triggered it: Codex writes a turn's first record before it announces that
+  the turn started, and that announcement is what a rebind runs on, so the record is always behind
+  whatever boundary the rebind takes, and a run is never opened from the middle of a turn. The first
+  turn to start after the rebind is published in full. One case is different and is named here
+  rather than left to be discovered: if the emitter had already been publishing this thread and
+  then died, the seat's log carries its position, and the rebind CONTINUES that log rather than
+  starting where it binds. An outage there costs the wait, not the content: everything the thread
+  wrote while the plane was down, including whatever it wrote while the plane was already dead, is
+  published once the plane is back. Two consequences are worth stating plainly, because both are
+  easy to read past. A tool RESULT is published as the tool returned it, so anything a tool read on
+  the seat's behalf, including messages it fetched from a channel with a narrower reader set, is in
+  this stream; nothing redacts it or marks where it came from. And a backlog written while the
+  plane was terminal is not discarded, it is delivered on recovery. Together those mean the readers
+  of an events channel must be treated as at least as wide as every channel the seat's own tools
+  can read. What the stream does not carry, here or on a live plane, is the session's own record of
+  the user's words and the developer instructions. Neither of those two carriers is introduced by
+  the boundary rule above and neither changes shape, but the rule is not confined to the seat whose
+  emitter never started. It changes WHICH RECORDS reach the stream, on every armed seat. A bind
+  announces where the stream starts and the emitter's setup then runs before its first read; what
+  the thread appended inside that window used to land behind the cursor and be dropped, and it is
+  published now. A whole turn can sit in there, tool results included, so the carrier described
+  just above now covers a stretch of the session it previously lost. Nothing is sent twice in
+  either case.
+
+  And the reader set is a requirement rather than a guarantee, which is the last thing to say
+  plainly. The grant does not enforce it, and it is worth being exact about what does. A spawn
+  through the manager gives a seat publish rights on its own event channel and nothing else, and a
+  spawn whose grant names a different agent's event channel is refused at the door. That fence is
+  the manager's, it reads the concrete form and leaves a pattern such as `events.<owner>.>` to
+  ordinary ACL authority, and a foreground `cotal spawn` on your own machine grants whatever you
+  name because it mints from your own signing material. [connect-claude.md](connect-claude.md#event-plane)
+  spells all three out. Who may READ a plane is minted separately and out of band either way, with
+  `cotal actor grant` on a user-auth mesh and `cotal mint --profile agent --allow-subscribe` on a
+  static one. So holding the events readers to at least the width of every channel the seat's tools
+  can read is the operator's policy to keep, enforced by whoever mints those readers.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 

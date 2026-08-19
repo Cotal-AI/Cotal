@@ -2,6 +2,7 @@
 // protocol to drive the host's turn loop, and journals everything it sees to
 // FAKE_CODEX_LOG (JSONL) so the smoke can assert on it. Turn behavior is scripted by
 // the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
+// TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → complete with status "failed";
 // default → complete.
@@ -220,6 +221,26 @@ function materializeRollout() {
   journal({ ev: "rollout", path: p, thread: THREAD });
   for (const line of pendingRecords.splice(0)) appendFileSync(p, line);
 }
+/** A TURN THE SUITE HAS TO ORDER AGAINST SOMETHING THIS PROCESS CANNOT SEE.
+ *
+ *  `FAKE_CODEX_GO` names a file that does not exist yet, and the first turn writes not one record
+ *  until it does. The host binds its event plane without awaiting the bind and drives an
+ *  auto-submitted prompt a few awaits later, so a boot turn otherwise races the bind that decides
+ *  where the published stream starts. LOST ONLY SOMETIMES IS WORSE THAN LOST ALWAYS: a lost race
+ *  puts the turn's records behind the boundary, nothing can leak, and a test of the leak passes in
+ *  both worlds while discriminating nothing.
+ *
+ *  Deliberately unbounded. The suite releases the marker whether its own wait succeeded or expired,
+ *  so the only way to sit here forever is a suite that stopped caring, and a fake hanging under a
+ *  suite timeout is louder than a fixture that quietly proceeded and proved nothing. */
+const GO_MARK = process.env.FAKE_CODEX_GO ?? "";
+let goSpent = false;
+async function waitForGo() {
+  if (GO_MARK === "" || goSpent) return;
+  goSpent = true;
+  while (!existsSync(GO_MARK)) await new Promise((r) => setTimeout(r, 50));
+}
+
 let turnSeq = 0;
 let activeTurn;
 let interruptWaiter;
@@ -231,6 +252,7 @@ let soloUsed = false; // SOLOTUI is one-shot
 let foreignUsed = false; // FOREIGN is one-shot: the REDELIVERED batch must complete normally
 
 async function runTurn(text) {
+  await waitForGo();
   const turnId = `turn_${++turnSeq}`;
   activeTurn = turnId;
   activeTurnIsRace = text.includes("RACE");
@@ -267,6 +289,21 @@ async function runTurn(text) {
     } catch (e) {
       journal({ ev: "toolReplyNoAuth", turnId, error: String(e) });
     }
+  }
+  if (text.includes("TOOLREC")) {
+    // THE ROLLOUT IS WHAT THE EVENT PLANE READS, so a turn that used a tool has to leave behind the
+    // records a real one leaves. `TOOL:roster` above calls MCP and writes to the JOURNAL, so that
+    // path puts no tool anywhere the plane can see. These are the two shapes the mapper reads, joined
+    // on `call_id`, and their strings are markers an assertion about a leak can name: the command
+    // line a shell call carries, and the output it returned.
+    const callId = `call_${turnSeq}`;
+    rolloutRecord("response_item", {
+      type: "function_call",
+      call_id: callId,
+      name: "shell",
+      arguments: JSON.stringify({ command: ["/bin/echo", `toolargs:${turnSeq}`] }),
+    });
+    rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
   if (text.includes("SOLOTUI") && !soloUsed) {
     // A turn the human started with NOTHING of ours open. The host must still pump its buffered
