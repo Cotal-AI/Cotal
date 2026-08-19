@@ -233,7 +233,7 @@ registry.register(e2eFailCon);
 
 // A connector whose child LAUNCHES and stays alive but never joins the mesh: the only seat state in
 // which a managed row exists with NO roster entry, which is the `?? "absent"` half of the ps
-// projection. Same provisioning path as `e2e`, one difference — it never opens an endpoint.
+// projection. Same provisioning path as `e2e`, with one difference: it never opens an endpoint.
 const e2eQuietCon: Connector = {
   kind: "connector",
   name: "e2e-quiet",
@@ -448,8 +448,8 @@ try {
   // Comparing `mesh` to the roster's status does NOT catch that on its own, which was measured
   // rather than assumed: a joined agent's status is `idle` (core `endpoint.ts`, the default
   // `PresenceStatus`), so a hard-coded `idle` AGREES with the roster and the comparison passes.
-  // Sampling for a transition does not help either — on this tree a seat is already `idle` in the
-  // roster by the time the spawn returns, so there is no non-live sample to catch a constant with.
+  // Sampling for a transition does not help either, since on this tree a seat is already `idle` in
+  // the roster by the time the spawn returns, so there is no non-live sample to catch a constant.
   //
   // What no constant can satisfy is the projection's OTHER branch. `?? "absent"` is reached by a
   // managed row whose name has no roster entry at all, so the cell pins two rows at once: `alpha`,
