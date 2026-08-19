@@ -118,7 +118,7 @@ try {
   const endpoint = (actor = ACTOR) => {
     const ep = new CotalEndpoint({
       space: SPACE,
-      servers: [url],
+      servers: url,
       card: { name: "multi-agent", kind: "agent", owner: OWNER, actor, id: actor },
       lifecycleUid: mintLifecycleUid(),
     });

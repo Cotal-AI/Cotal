@@ -354,6 +354,47 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && JSON.stringify(await logsOf('const o = { a: 1 }; try { log(`${o}`); } catch (e) { log(e.code); }')) === '["L4018"]');
   ok("but identity comparison takes any operands, and primitives coerce as JavaScript coerces them",
     JSON.stringify(await logsOf('const o = { a: 1 }; const p = o; log(o === p, o !== p, "a" + 1, true + 1, null + 1);')) === '[[true,false,"a1",2,1]]');
+  // A callable `then` is the one member a record may not carry, on any route that writes one
+  // (measured before the rule: a record returned from a program function was adopted at the
+  // interpreter's own async boundary, the record's `then` ran with the machinery's continuations,
+  // the await that adopted it never settled, and the rejection the throw became escaped with no
+  // owner and killed the host process, run, journal and all). The refusal is at the write, so no
+  // thenable value ever exists for the machinery to adopt. Each refusal is raced against a timer:
+  // without the guard the adoption PENDS forever, and a cell that hangs instead of reddening
+  // proves nothing.
+  {
+    const bounded = async <T,>(p: Promise<T>, ms = 4000): Promise<T | "unsettled"> => {
+      let t: ReturnType<typeof setTimeout> | undefined;
+      const timer = new Promise<"unsettled">((res) => { t = setTimeout(() => res("unsettled"), ms); });
+      try {
+        return await Promise.race([p, timer]);
+      } finally {
+        clearTimeout(t);
+      }
+    };
+    const refuses = async (source: string): Promise<boolean> =>
+      (await bounded(logsOf(source).then(() => "no fault", (e: Error) => (e.message.startsWith("L4021") ? "L4021" : `other: ${e.message}`)))) === "L4021";
+    ok("a record literal, a member write, and a computed member write each refuse a callable `then` with L4021",
+      (await refuses("const o = { then: () => 1 };"))
+      && (await refuses("const o = {}; o.then = () => 1;"))
+      && (await refuses('const k = "then"; const o = {}; o[k] = () => 1;'))
+      && JSON.stringify(await logsOf('try { const o = { then: () => 1 }; } catch (e) { log(e.code); }')) === '["L4021"]');
+    ok("`then` under any other spelling is data, and a function under another name is still a value",
+      JSON.stringify(await logsOf('const o = { then: 5 }; const p = { go: () => 2 }; log(o.then, p.go());')) === '[[5,2]]');
+    // The repro that owned the fix, kept as a cell: a returned record whose `then` throws must be
+    // the run's own L4021 fault, and NOTHING may leave the run as an unhandled rejection while it
+    // is. Before the guard this cell killed the host running it.
+    let escaped: unknown;
+    const onEscape = (reason: unknown): void => { escaped = reason ?? true; };
+    process.on("unhandledRejection", onEscape);
+    const outcome = await bounded(run(
+      'function evil() { return { then: () => { throw { code: "stray" } } }; } evil();',
+      { runId: "surf-then", handler: new SimHandler({}) },
+    ).then(() => "resolved", (e: Error) => (e.message.startsWith("L4021") ? "L4021" : `other: ${e.message}`)));
+    process.off("unhandledRejection", onEscape);
+    ok("a returned record whose `then` throws is owned by the run as L4021, and no rejection escapes the host",
+      outcome === "L4021" && escaped === undefined, { outcome, escaped });
+  }
   // A computed member key is the same coercion site (measured before the rule: `o[k] = 1` with a
   // record key silently minted the own field "[object Object]", and `o[key]` with an own `toString`
   // closure logged a raw L4000 host error and then killed the process AFTER the run returned — the
@@ -440,6 +481,18 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && JSON.stringify(await logsOf("log(map([1], (x) => x + 1));")) === "[[2]]"
       && JSON.stringify(await logsOf("log(sort([[2], [1]])[0]);")) === "[[1]]"
       && JSON.stringify(await logsOf("log(json.stringify({ a: 1 }));")) === '["{\\"a\\":1}"]');
+  // len counts exactly the kinds that have a length of their own (measured before the rule:
+  // len of a program function answered 2 whatever parameters it declared, the host arity of the
+  // interpreter's own wrapper; len of a builtin answered 0; len of a record, a number or a
+  // boolean silently answered undefined; len of null surfaced the host's TypeError text). The
+  // host's Function.length is a property of the runtime's closure, not a program value.
+  ok("len counts an array or a string and refuses every other kind with L4016, catchably, with no host text",
+    await logsOf("const f = (a, b, c) => a; log(len(f));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("a function"))
+      && await logsOf("const h = map; log(len(h));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && await logsOf("const o = { a: 1 }; log(len(o));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("a record"))
+      && await logsOf("log(len(5));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && await logsOf("log(len(null));").then(() => false, (e: Error) => e.message.startsWith("L4016") && !e.message.includes("Cannot read properties"))
+      && JSON.stringify(await logsOf('try { log(len(true)); } catch (e) { log(e.code); } log(len([1, 2]), len("abc"));')) === '["L4016",[2,3]]');
   // A method is not a value: it is looked up at the call and exists nowhere else (measured before
   // the rule: `xs.map === xs.map` was false where JavaScript says true, and an extracted `push`
   // wrote to its receiver where strict JavaScript throws).

@@ -61,11 +61,21 @@ const loader = new DefaultResourceLoader({
           seen.push({ type: "message_start", batchId: details?.batchId });
         }
       });
-      pi.on("context", (event) => seen.push({ type: "context", batchIds: batchIds(event.messages) }));
-      pi.on("after_provider_response", (event) => seen.push({ type: "response", status: event.status }));
-      pi.on("agent_end", () => seen.push({ type: "agent_end", aborted: activeSignal?.aborted }));
-      pi.on("session_shutdown", (event) => seen.push({ type: "shutdown", reason: event.reason }));
-      pi.on("session_start", (event) => seen.push({ type: "session_start", reason: event.reason }));
+      pi.on("context", (event) => {
+        seen.push({ type: "context", batchIds: batchIds(event.messages) });
+      });
+      pi.on("after_provider_response", (event) => {
+        seen.push({ type: "response", status: event.status });
+      });
+      pi.on("agent_end", () => {
+        seen.push({ type: "agent_end", aborted: activeSignal?.aborted });
+      });
+      pi.on("session_shutdown", (event) => {
+        seen.push({ type: "shutdown", reason: event.reason });
+      });
+      pi.on("session_start", (event) => {
+        seen.push({ type: "session_start", reason: event.reason });
+      });
       pi.on("session_before_compact", (event) => {
         seen.push({ type: "before_compact", reason: event.reason, willRetry: event.willRetry });
         return {
@@ -76,9 +86,9 @@ const loader = new DefaultResourceLoader({
           },
         };
       });
-      pi.on("session_compact", (event) =>
-        seen.push({ type: "compact", reason: event.reason, willRetry: event.willRetry }),
-      );
+      pi.on("session_compact", (event) => {
+        seen.push({ type: "compact", reason: event.reason, willRetry: event.willRetry });
+      });
     },
   ],
 });
@@ -173,8 +183,12 @@ try {
   let replacementFactoryRuns = 0;
   const replacementExtension = (pi: ExtensionAPI): void => {
     replacementFactoryRuns++;
-    pi.on("session_shutdown", (event) => replacementEvents.push({ type: "shutdown", reason: event.reason }));
-    pi.on("session_start", (event) => replacementEvents.push({ type: "session_start", reason: event.reason }));
+    pi.on("session_shutdown", (event) => {
+      replacementEvents.push({ type: "shutdown", reason: event.reason });
+    });
+    pi.on("session_start", (event) => {
+      replacementEvents.push({ type: "session_start", reason: event.reason });
+    });
   };
   const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent }: {
     cwd: string;
