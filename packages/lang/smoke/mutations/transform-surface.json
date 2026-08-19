@@ -1,0 +1,397 @@
+{
+  "suite": "packages/lang/smoke/transform.smoke.ts",
+  "guard": "The emitted module is closed over the seam, routes each law through it, and carries the binding-depth rule the walker keeps at run time. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-transform",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/transform-surface.json",
+  "mutations": [
+    {
+      "name": "the context parameter takes a fixed name, so a program that declares it shadows the seam",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "return { ctx: free(\"__ctx\"), temp: prefix(\"__t\"), label: prefix(\"__l\") };",
+      "replace": "return { ctx: \"__ctx\", temp: prefix(\"__t\"), label: prefix(\"__l\") };",
+      "expectRed": "a program that declares `__ctx` does not get the context's name",
+      "completionMarker": "ok transform is a pure function of its source, byte for byte",
+      "cell": "a program that declares `__ctx` does not get the context's name",
+      "note": "The validator ADMITS a program-declared `__ctx` (measured at 9dc154f8), so a fixed name is not a naming preference: the program's binding shadows the endowment for the rest of its scope and every seam call in that region reaches a program value."
+    },
+    {
+      "name": "the cell rule never fires, so a binding written from a deeper function stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "if (b.funcId !== funcId && b.kind !== \"const\") b.cell = true;",
+      "replace": "if (false) b.cell = true;",
+      "expectRed": "a mutable binding written from a nested function is a born cell",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a mutable binding written from a nested function is a born cell",
+      "note": "L2032's binding half. Native bindings carry no depth, so without the cell the write from inside a concurrent branch is not refused anywhere - the shape scopes.smoke's fixture proves the validator cannot see."
+    },
+    {
+      "name": "the cell is marked and then emitted as a plain binding",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (b?.cell === true) return `const ${name} = ${this.seam(\"born\", `{ v: ${valueCode} }`)};\\n`;",
+      "replace": "        if (false) return `const ${name} = ${this.seam(\"born\", `{ v: ${valueCode} }`)};\\n`;",
+      "expectRed": "a mutable binding written from a nested function is a born cell",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a mutable binding written from a nested function is a born cell",
+      "note": "The analysis marking a cell and the emitter honouring it are two steps, and only the second one produces code. This is the half that would leave the mark correct and the emission native."
+    },
+    {
+      "name": "an object literal's keys are emitted verbatim, so `__proto__` can reach a prototype again",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "`[${this.propertyKey(p)}]: ${this.expr(p.value as AnyNode)}`",
+      "replace": "`${this.propertyKey(p)}: ${this.expr(p.value as AnyNode)}`",
+      "expectRed": "an object literal's keys are emitted computed",
+      "completionMarker": "ok a const captured by a nested function is not a cell",
+      "cell": "an object literal's keys are emitted computed",
+      "note": "A literal `__proto__:` key sets a prototype in JavaScript and names an own field in this language. The validator refuses that spelling today (L1028, measured); the computed form means the emitted code cannot express the hazard whatever the validator does later."
+    },
+    {
+      "name": "a member read is emitted as a native index, so it reaches the host prototype",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return done(this.seam(\"get\", `${obj}, ${this.memberKey(node)}`), g);",
+      "replace": "        return done(`${obj}[${this.memberKey(node)}]`, g);",
+      "expectRed": "a member read is one get",
+      "completionMarker": "ok and every surfaced member carries its reason",
+      "cell": "a member read is one get",
+      "note": "The member law (L4014, L4020, the curated tables, no prototype reach) is the host's, and a native index is exactly the read the walker refuses to perform."
+    },
+    {
+      "name": "a `while` header stops charging fuel, so a pure loop cannot be bounded or cancelled",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return `${b}: for (;;) {\\n${this.fuel()}if (!(${test})) break ${b};\\n${c}: {\\n${body}}\\n}\\n`;",
+      "replace": "        return `${b}: for (;;) {\\nif (!(${test})) break ${b};\\n${c}: {\\n${body}}\\n}\\n`;",
+      "expectRed": "a loop header charges fuel",
+      "completionMarker": "ok and every surfaced member carries its reason",
+      "cell": "a loop header charges fuel",
+      "note": "The step check is the only cancellation point the engine has: no wall-clock timeout, no terminate. A loop that charges nothing is a run nothing can stop."
+    },
+    {
+      "name": "`undefined` is emitted as the global name, so the module is no longer closed",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "if (VALUE_NAMES.includes(name)) return VOID;",
+      "replace": "if (VALUE_NAMES.includes(name)) return \"undefined\";",
+      "expectRed": "the emitted module has no unbound reference: the undefined value",
+      "completionMarker": "ok and reaches no seam member outside the ruling: empty statement",
+      "cell": "the emitted module has no unbound reference: the undefined value",
+      "note": "The host evaluates the module with ZERO endowments. `undefined` is a global binding, so spelling it is an unbound reference - one the compartment happens to satisfy today, which is why only a resolver over the emitted code can see it."
+    },
+    {
+      "name": "a declaring identifier is not recorded, so the emitter cannot resolve a name it declared",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind, declEnd));",
+      "replace": "        this.declare(scope, node.name as string, kind, declEnd);",
+      "expectRed": "the transform emits, and a fault in the emitter has a cell to land on",
+      "cell": "the transform emits, and a fault in the emitter has a cell to land on",
+      "note": "Aimed at a THROW MESSAGE until now, which is a kill graded on a crash: measured, the mutant killed this suite with an uncaught Error after 30 named cells and zero failed cells, and the config matched the emitter's own sentence out of the stack trace. The break is unchanged - a declarator that records nothing leaves the emitter with a name that resolves to nothing, which a validated program cannot contain - but section 0 now captures the file's first transform, so it reds BY NAME on a cell instead of ending the process. That is the difference between the ledger reporting a wrong answer and reporting a corpse. NO completionMarker, alone in this config, and that is forced rather than chosen: every other mutant here names an UPSTREAM cell so an early unrelated crash cannot be counted, but this aim is now the FILE'S FIRST CELL and nothing prints before it. Left in place the marker made a correct kill INCONCLUSIVE - the graded cell reds at line one and the run never reaches the marker. A convention that cannot apply to the first cell should not be declared for it."
+    },
+    {
+      "name": "an update's operand loses its numeric fast path, so every counter crosses the seam",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `((${t} = ${code}), typeof ${t} === \"number\" ? ${t} : ${this.seam(\"unary\", `${q(\"update\")}, ${t}`)})`;",
+      "replace": "    return `((${t} = ${code}), ${this.seam(\"unary\", `${q(\"update\")}, ${t}`)})`;",
+      "expectRed": "an update's fast path keeps a numeric counter native",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "an update's fast path keeps a numeric counter native",
+      "note": "`n++` is the hot path of every counted loop in the language. Without the fast path each increment is a host call, and the numeric corpus stops being the part of the differential that is identical for free."
+    },
+    {
+      "name": "an update's slow leg is emitted natively, so a non-number operand is coerced instead of refused",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `((${t} = ${code}), typeof ${t} === \"number\" ? ${t} : ${this.seam(\"unary\", `${q(\"update\")}, ${t}`)})`;",
+      "replace": "    return `((${t} = ${code}), typeof ${t} === \"number\" ? ${t} : ${t})`;",
+      "expectRed": "an update's operand charges the coercion law when it is not a number",
+      "completionMarker": "ok an update's fast path keeps a numeric counter native",
+      "cell": "an update's operand charges the coercion law when it is not a number",
+      "note": "The mirror of the mutation above, and it keeps the `typeof` test in place on purpose so the fast-path cell still passes and this one is what reds. The seam gives `update` the L4018 refusal; a native else branch silently answers NaN, which is the walker behaviour the transform declined to rebuild (issue 646)."
+    },
+    {
+      "name": "every unary operator is emitted natively, so `-record` stops refusing",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return `((${t} = ${v}), typeof ${t} === \"number\" ? ${op}${t} : ${this.seam(\"unary\", `${q(op)}, ${t}`)})`;",
+      "replace": "        return `((${t} = ${v}), ${op}${t})`;",
+      "expectRed": "a unary operator that can refuse still charges it",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a unary operator that can refuse still charges it",
+      "note": "The mirror of the mutation above. `-o` on a record is L4018 in the walker and NaN in native JavaScript, so the fast path may only cover what it has already proved is a number."
+    },
+    {
+      "name": "a race ships no branch bodies, so the engine cannot digest its losers",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      if (named !== undefined) bodies[named] = stripPositions(p.value);",
+      "replace": "      if (false) bodies[named as string] = stripPositions(p.value);",
+      "expectRed": "every branch travels, because which one loses is the run's answer",
+      "completionMarker": "ok a race call site ships exactly one branch payload",
+      "cell": "every branch travels, because which one loses is the run's answer",
+      "note": "The engine has no AST at run time, so a branch that does not travel is one the host can only digest as null - a settled race would journal a branchDigest the walker never wrote."
+    },
+    {
+      "name": "a race ships a derived form of each branch instead of the body the walker hashes",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      if (named !== undefined) bodies[named] = stripPositions(p.value);",
+      "replace": "      if (named !== undefined) bodies[named] = JSON.stringify(stripPositions(p.value));",
+      "expectRed": "the shipped payload digests as the walker's value over every loser set",
+      "completionMarker": "ok every branch travels, because which one loses is the run's answer",
+      "cell": "the shipped payload digests as the walker's value over every loser set",
+      "note": "The keys still all travel, so the cell above stays green: this is the half that survives a shape check. The walker hashes ONE array of [loserName, body] pairs over a loser set only the run knows, so any per-branch derivation makes the host hash a hash and write a different byte string into a journal entry that has to be identical."
+    },
+    {
+      "name": "a call on a value is emitted natively, so a non-function callee is a host TypeError",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return done(`(await ((${f} = ${fn}), typeof ${f} === \"function\" ? ${f} : ${this.seam(\"callee\", f)})(${args}))`, g);",
+      "replace": "        return done(`(await ((${f} = ${fn}))(${args}))`, g);",
+      "expectRed": "a call on a value charges the callee law",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a call on a value charges the callee law",
+      "note": "`const f = 1; f()` is admitted by the validator (measured at 9dc154f8). The walker answers L4011, a refusal the program can catch; a native call answers a host TypeError, which is a different class entirely."
+    },
+    {
+      "name": "an optional call is emitted without the flag, so the host resolves a name it should not",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}]${cont}`)})`;",
+      "expectRed": "a tail optional call is emitted through the ruled flag",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a tail optional call is emitted through the ruled flag",
+      "note": "The optional-call flag is what makes `o.z?.()` short-circuit to undefined with nothing called. Without it the host resolves the method name unconditionally and refuses, where the walker answers undefined."
+    },
+    {
+      "name": "every method call carries the optional flag, so a missing method stops refusing",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          if (node.optional !== true) return done(`(await ${this.seam(\"call\", `${obj}, ${key}, [${args}]`)})`, g);",
+      "replace": "          if (node.optional !== true) return done(`(await ${this.seam(\"call\", `${obj}, ${key}, [${args}], true`)})`, g);",
+      "expectRed": "an ordinary method call carries no flag",
+      "completionMarker": "ok a tail optional call is emitted through the ruled flag",
+      "cell": "an ordinary method call carries no flag",
+      "note": "The mirror. `xs.nope()` is L4020 on the walker; flagged optional it would quietly answer undefined, which turns a refusal into a value the program carries on with."
+    },
+    {
+      "name": "an optional call keeps the rest of its chain to itself",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          const cont = rest === undefined ? \"\" : `, ${this.continuation(rest)}`;",
+      "replace": "          const cont = \"\";",
+      "expectRed": "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
+      "note": "Only the host knows an optional call short-circuited: measured on the walker, `o.z?.().x` on an absent member is undefined while `o.m?.().x` on a member that returns undefined is L4010. Dropping the fifth argument drops the rest of the chain, so `.x` is never read at all."
+    },
+    {
+      "name": "an optional call hands over an evaluated argument list, so a short-circuit runs its arguments anyway",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, [${args}], true${cont}`)})`;",
+      "expectRed": "an optional call hands its arguments over as a thunk",
+      "completionMarker": "ok a tail optional call is emitted through the ruled flag",
+      "cell": "an optional call hands its arguments over as a thunk",
+      "note": "The walker checks the member BEFORE evaluating the argument list, so `o.m?.(await sleep(\"1s\"))` on an absent member journals nothing while the same argument on a present method journals a sleep. An array here has already run them, and a resume of that entry replays a step the walker's run never recorded."
+    },
+    {
+      "name": "a tail optional call is handed a continuation it has nothing to continue",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          const cont = rest === undefined ? \"\" : `, ${this.continuation(rest)}`;",
+      "replace": "          const cont = `, ${this.continuation(rest ?? ((v) => v))}`;",
+      "expectRed": "a tail optional call carries no continuation",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a tail optional call carries no continuation: there is nothing written after it",
+      "note": "The mirror. The fifth argument only ever accompanies the fourth, and the host refuses a continuation on a call that is not optional (L1000); one on a tail call is an emitter mistake wearing a valid shape."
+    },
+    {
+      "name": "the continuation's guards leak out into the chain's",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `async (${value}) => ${this.short(body, guards)}`;",
+      "replace": "    return `async (${value}) => ${body}`;",
+      "expectRed": "a `?.` after the optional call is guarded inside the continuation",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a `?.` after the optional call is guarded inside the continuation, where the call answered",
+      "note": "A link written after the optional call is guarded only where the call answered. Collecting its guards and never applying them emits the body with a temp the guard never assigned, so `o.m?.()?.x` reads a member of undefined instead of short-circuiting."
+    },
+    {
+      "name": "a scope-opener's body is evaluated at the call instead of inside the scope",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = false;",
+      "expectRed": "a fan-out's body travels unevaluated",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a fan-out's body travels unevaluated",
+      "note": "The walker evaluates the body INSIDE the scope, after the entry has begun. Eager, the host's `deferredBody` calls the body function itself with no arguments (measured before the fix: `fanOut` answered L3041 `argument 1 of turn is undefined`, and `conclave` ran its body's `notify` and then died on `fn is not a function`), so the body runs once, outside its scope, and journals where the walker's run never did."
+    },
+    {
+      "name": "the branch bag of a combinator with no deferred argument is wrapped in a thunk",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = spec !== undefined && spec.opensScope;",
+      "expectRed": "a combinator with no deferred argument wraps nothing at all",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a combinator with no deferred argument wraps nothing at all",
+      "note": "The mirror, and it is not symmetric: `parallel` and `race` take a bag of branches at index 0 and have NO deferred argument, so a thunk in position 1 is the options bag wrapped - the host answers L1000 for asking a combinator for a deferred body it does not have."
+    },
+    {
+      "name": "the hoisted-function clause is dropped, so a function declaration's early read stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "replace": "    if ((path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "expectRed": "a hoisted function's read makes a cell wherever the declaration sits",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "a hoisted function's read makes a cell wherever the declaration sits",
+      "note": "A hoisted `function` declaration is reachable before anything textually after it has run, so the rule takes it at any depth and wherever the declaration sits. Aimed at the cell whose programs reach clause (i) ALONE: every dead-zone program also satisfies the textual clause, and against those this mutant SURVIVED."
+    },
+    {
+      "name": "the textual clause is dropped, so a closure written before the declaration stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "replace": "    if (path.some((f) => f.hoisted)) {",
+      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
+      "note": "The other clause: a function EXPRESSION whose enclosing statement is not after the end of the declarator, which includes an arrow inside the binding's own initializer (`const x = (() => x)()` is L2004, measured)."
+    },
+    {
+      "name": "every captured binding becomes a dead-zone cell",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.length === 0) return;",
+      "replace": "    if (path.length === 0) return;\n    if (path.length > 0) {\n      b.cell = true;\n      b.deadZone = true;\n      return;\n    }",
+      "expectRed": "a captured binding no closure can read early stays native",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "a captured binding no closure can read early stays native",
+      "note": "The predicate is a rule, not a preference: making every captured binding a record costs a seam call on every read of a binding nothing can reach early. The first cell to notice is the one that says a captured `const` is not a cell, which is the same claim read from the site counts."
+    },
+    {
+      "name": "a dead-zone cell's record is built at its declaration instead of at the top of the block",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          if (b?.deadZone !== true || this.hoisted.has(b)) continue;",
+      "replace": "          if (b?.cell !== true || this.hoisted.has(b)) continue;",
+      "expectRed": "a cell for the write rule alone is not hoisted",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "a cell for the write rule alone is not hoisted",
+      "note": "The two cell classes are kept apart on purpose: hoisting the write-rule class costs a second seam call on a path that runs. Hoisting it turns its one `born({ v: init })` into a `born({})` plus a second `set`, which is what the site-count cell reads."
+    },
+    {
+      "name": "a cell read is emitted without the binding's name",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    if (b !== undefined) return b.cell ? this.seam(\"get\", `${name}, ${q(\"v\")}, ${q(b.name)}`) : name;",
+      "replace": "    if (b !== undefined) return b.cell ? this.seam(\"get\", `${name}, ${q(\"v\")}`) : name;",
+      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
+      "note": "The name is what lets the host answer L2004 FOR THAT BINDING when the record's `v` is absent. Without it an absent field is just undefined, and the dead zone becomes a value the program carries on with."
+    },
+    {
+      "name": "the declared arity stops covering the binding-name argument, so a site sits outside the table",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "  get: [2, 3],",
+      "replace": "  get: [2, 2],",
+      "expectRed": "every seam call site the corpus and the wide list emit passes an argument count the contract declares",
+      "cell": "every seam call site the corpus and the wide list emit passes an argument count the contract declares",
+      "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
+      "note": "The names-only check cannot see this: every site still reaches `get`. Only the argument COUNT says the emitter and the contract have drifted, which is the drift that produced the eager-argument divergence."
+    },
+    {
+      "name": "the declared arity is widened past every site, granting a shape no ruling covers",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "  call: [3, 5],",
+      "replace": "  call: [3, 6],",
+      "expectRed": "and no declared range is wider than the emission that justifies it",
+      "cell": "and no declared range is wider than the emission that justifies it",
+      "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
+      "note": "The other direction, and the one a table alone would never notice: a bound nothing reaches is a permission for a future emission with no ruling behind it, and every site stays inside it forever."
+    },
+    {
+      "name": "the dead-zone rule never looks at writes, so an early write is emitted against a record that does not exist yet",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    this.deadZone(b);\n  }",
+      "replace": "  }",
+      "expectRed": "a write that can land in the dead zone hoists its record",
+      "cell": "a write that can land in the dead zone hoists its record",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "Without the hoist the cell record is itself in a temporal dead zone when the early write evaluates its arguments, so the failure is a native ReferenceError the seam never sees - the exact shape the read half was ruled to remove."
+    },
+    {
+      "name": "a dead-zone write is emitted without the binding's name, so the host has nothing to refuse on",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const named = b !== undefined && b.deadZone;",
+      "replace": "    const named = false;",
+      "expectRed": "and carries the binding name, which is what the host refuses on",
+      "cell": "and carries the binding name, which is what the host refuses on",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "The record is hoisted, so nothing throws: the write lands in a binding whose declaration has not run, silently, and the program logs the walker's refusal as a value."
+    },
+    {
+      "name": "the declaration's own write carries the name too, so a binding refuses its own initialisation",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (b?.cell === true && this.hoisted.has(b)) return `${this.seam(\"set\", `${name}, ${q(\"v\")}, ${valueCode}`)};\\n`;",
+      "replace": "        if (b?.cell === true && this.hoisted.has(b)) return `${this.cellWrite(b, name, valueCode)};\\n`;",
+      "expectRed": "and the declaration writes into that record rather than building one",
+      "cell": "and the declaration writes into that record rather than building one",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "Measured rather than aimed at the cell that reads best: the READ program's declaration is the first one emitted, and its cell already pins the three-argument spelling, so it is what reds. The rule is the same one either way - the write that ENDS a dead zone can never be the write that refuses for it."
+    },
+    {
+      "name": "a cell is renamed and its aim is left behind, which is the fault that reached a ledger run",
+      "file": "packages/lang/smoke/transform.smoke.ts",
+      "find": "  [\"a member read is one get\", \"const o = { a: 1 }; log(o.a);\", { fuel: 1, born: 1, get: 1, free: 1 }],",
+      "replace": "  [\"a member read is one fetch\", \"const o = { a: 1 }; log(o.a);\", { fuel: 1, born: 1, get: 1, free: 1 }],",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
+      "cell": "every mutation's expectRed names exactly one cell this suite printed",
+      "note": "The exact fault that reached a ledger run: a rename leaves a config aim pointing at a sentence nothing prints, and nothing notices until the ledger runs and reports WRONG-RED. A corpus row's name IS a cell's name here, and renaming one breaks NO assertion by itself - the audit is the only thing in the file that can see it - so this mutant is the whole evidence that the audit works rather than merely runs. The rename REPLACES a word rather than appending one, and that is the whole difference between a kill and a survivor: the audit matches expectRed as a substring, so `... get, renamed` still contains `... get` and the stale aim keeps matching. Measured as a SURVIVOR in that spelling before this one."
+    },
+    {
+      "name": "a transform is run above the guard, so the file's first one is unguarded again",
+      "file": "packages/lang/smoke/transform.smoke.ts",
+      "find": "  walk(root);\n  return out;\n};\n",
+      "replace": "  walk(root);\n  return out;\n};\n\nconst __ahead = transform(\"log(1);\").module;\nvoid __ahead;\n",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "the guarded transform is still the first one this file runs",
+      "cell": "the guarded transform is still the first one this file runs",
+      "note": "The control arm the guard is worthless without, and the one the engine suite's equivalent taught: an insertion ABOVE the guard silently re-opens the hole, because the guard's value is its POSITION and nothing about it is checked by running it. This mutant adds an ordinary, harmless-looking transform above section 0 - it breaks no assertion and reds no other cell - and the offset check is the only thing that sees it. ANCHORED ON CODE, three lines of it: the nearest unique thing above section 0 is a comment, and reaching for it is what the fixtures walk refuses - a guard whose anchor is prose can be disarmed by a docs commit that cannot announce what it disabled. `walk(root);` alone occurs three times and with `return out;` twice; the third line makes it unique without prose."
+    },
+    {
+      "name": "a second mutation loses its upstream marker, so the exception stops being one",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"completionMarker\": \"ok transform is a pure function of its source, byte for byte\",\n",
+      "replace": "",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "cell": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "note": "The exception is only an exception while there is ONE of it. Strip a marker from any other mutant and this config has two bare aims, either of which can be graded off a run that died before reaching its cell - which is the whole reason the convention exists. The suite reads this file at run time, so the mutation is visible to the cell that grades it."
+    },
+    {
+      "name": "the bare mutation is aimed somewhere other than the first cell, where a marker WOULD be possible",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"expectRed\": \"the transform emits, and a fault in the emitter has a cell to land on\",\n      \"cell\": \"the transform emits, and a fault in the emitter has a cell to land on\",",
+      "replace": "      \"expectRed\": \"the emitted module has no unbound reference: the undefined value\",\n      \"cell\": \"the emitted module has no unbound reference: the undefined value\",",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "cell": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "note": "Being marker-less is justified by WHICH cell the aim is on, not by the aim existing. Re-point the bare mutant at an ordinary cell deep in the file and the exemption becomes an unexplained hole: that cell has plenty of upstream, so a marker is possible and its absence is a gap. The replacement names a REAL cell on purpose, so the expectRed audit one cell above still passes and this clause is what reds."
+    },
+    {
+      "name": "the bare mutation stops explaining itself, so the exception survives as folklore",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "NO completionMarker, alone in this config, and that is forced rather than chosen: every other mutant here names an UPSTREAM cell so an early unrelated crash cannot be counted, but this aim is now the FILE'S FIRST CELL and nothing prints before it. Left in place the marker made a correct kill INCONCLUSIVE - the graded cell reds at line one and the run never reaches the marker. A convention that cannot apply to the first cell should not be declared for it.\"",
+      "replace": "NO marker declared, alone in this config, and that is forced rather than chosen: every other mutant here names an UPSTREAM cell so an early unrelated crash cannot be counted, but this aim is now the FILE'S FIRST CELL and nothing prints before it. Left in place the marker made a correct kill INCONCLUSIVE - the graded cell reds at line one and the run never reaches the marker. A convention that cannot apply to the first cell should not be declared for it.\"",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "cell": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "note": "The third clause, and the one a reader meets first: the exemption has to say the word where the next person looks, in the note, not in a channel post or a commit body. Rewording the note past the term leaves the config still correct and still silently exceptional - which is how a named exception becomes a precedent."
+    },
+    {
+      "name": "a marker is truncated to wording its cell shares with a family, so an earlier stop counts as arrival",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"completionMarker\": \"ok and reaches no seam member outside the ruling: empty statement\",",
+      "replace": "      \"completionMarker\": \"ok and reaches no seam member outside the ruling:\",",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "cell": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "note": "H's fault, manufactured here rather than waited for: the marker keeps naming a real cell and loses the words that made it one cell. Truncated this way it occurs in 32 printed names, the first of them far upstream of the aim, so any run that reached THAT cell satisfies a guard that claims the run reached a much later one. The config still parses, every verdict it produces still looks right, and only this cell counts the matches."
+    },
+    {
+      "name": "a marker is moved onto a cell downstream of its own aim, where a kill can never print it",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"completionMarker\": \"ok an update's fast path keeps a numeric counter native\",",
+      "replace": "      \"completionMarker\": \"ok and no declared range is wider than the emission that justifies it\",",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "cell": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "note": "The opposite failure, and the one measured on this config at 0b7db8b0: a marker at or after the cell it guards cannot print on a kill, because the suite is fail-fast and stops at the red. The verdict flips from KILLED to INCONCLUSIVE - evidence discarded by the check added to protect it. The replacement is a REAL cell, so nothing else notices; upstreamness is the only property that changed."
+    }
+  ]
+}

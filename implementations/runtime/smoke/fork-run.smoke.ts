@@ -38,6 +38,7 @@ import {
   Journal,
   journalEntryKeyString,
   resolvePins,
+  WALKER_LANGUAGE_VERSION,
   run as runProgram,
   SimHandler,
   type JournalEntry,
@@ -52,7 +53,7 @@ import { pickFreePort } from "./_free-port.js";
 const SPACE = "forkrun";
 const EP = "manager";
 const NOW = 1_770_000_000_000;
-const PINS = resolvePins({ runId: "r-parent" }, NOW);
+const PINS = resolvePins({ runId: "r-parent" }, NOW, WALKER_LANGUAGE_VERSION);
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {
@@ -189,8 +190,8 @@ const plan = async (
   // What the child would get if it resolved its own: the same call the parent made, with the child's
   // id. It is a different seed, and every pure draw in the copied prefix would be a different draw.
   c("a child that resolved its own pins would be reseeded, which is the defect",
-    resolvePins({ runId: "r-child" }, NOW).seed !== p.pins.seed,
-    resolvePins({ runId: "r-child" }, NOW).seed);
+    resolvePins({ runId: "r-child" }, NOW, WALKER_LANGUAGE_VERSION).seed !== p.pins.seed,
+    resolvePins({ runId: "r-child" }, NOW, WALKER_LANGUAGE_VERSION).seed);
   c("the epoch is the parent's too: a fork does not restart the run clock",
     p.pins.startedAt === PINS.startedAt, { plan: p.pins.startedAt, parent: PINS.startedAt });
 

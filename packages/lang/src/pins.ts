@@ -14,18 +14,40 @@
 import { CATALOG } from "./errors.js";
 
 /**
- * The interpreter's own semantic version, bumped when a release changes what a program MEANS: the
- * PRNG, a builtin, numeric behaviour, or walker scheduling.
+ * The language version is a property of the ENGINE that runs a program, not of this module.
+ *
+ * There are two engines. The tree-walker in `interpret.ts` IS language version 1 and stays so
+ * forever: it is the replay engine for every run recorded under 1, and a v1 record has nowhere else
+ * to go. The engine in `engine/` is version 2 - a different language, not a faster one (`log` is
+ * data there and refuses code, and the step unit is a transformed-site hit rather than a walker
+ * dispatch), which is exactly what a version bump is for.
+ *
+ * SO THE VERSION IS PASSED IN rather than read from here. Bumping a single shared constant was
+ * MEASURED and is not available: the walker would stamp 2 and compare 1, and every walker
+ * fresh-run-then-resume round trip fails - 7 of 18 suites red, the differential gate among them.
+ * Leaving the constant at 1 while the engine speaks 2 fails the other way: 2 suites red on the
+ * checked-in v1 records. Each engine stamping AND comparing its own version breaks neither.
  *
  * Deliberately NOT the package version. `@cotal-ai/lang` versions in lockstep with every other
  * package in the repo, so a release of an unrelated package would otherwise invalidate every open
  * run in the space — a loud failure with no cause behind it, which is worse than no check at all.
  *
- * It is here because source and seed are not sufficient across an upgrade: unchanged source can
- * take a different branch BEFORE the first effect, where there is no input hash to compare against
- * and nothing to diverge on.
+ * It is pinned at all because source and seed are not sufficient across an upgrade: unchanged
+ * source can take a different branch BEFORE the first effect, where there is no input hash to
+ * compare against and nothing to diverge on.
  */
-export const LANGUAGE_VERSION = "1";
+export const WALKER_LANGUAGE_VERSION = "1";
+
+/** The engine's language. See {@link WALKER_LANGUAGE_VERSION} for why these are two constants. */
+export const ENGINE_LANGUAGE_VERSION = "2";
+
+/**
+ * THE CURRENT LANGUAGE: what a FRESH run gets, and the only thing a caller choosing no engine can
+ * mean. It is the dispatcher's constant - it decides which engine a run with no recorded version is
+ * routed to - and it is deliberately defined AS the engine's version rather than repeating "2", so
+ * the two can never drift into disagreeing about what "current" is.
+ */
+export const LANGUAGE_VERSION = ENGINE_LANGUAGE_VERSION;
 
 export const PIN_DEFAULTS = Object.freeze({
   yieldEvery: 1_024,
@@ -82,14 +104,14 @@ export class PinMismatch extends Error {
  * Resolve the pin set for a FRESH run. `now` is the host clock, read exactly once: the logical
  * epoch is a recorded fact from here on, so a second read could not be the same run's epoch.
  */
-export function resolvePins(options: PinnableOptions, now: number): RunPins {
+export function resolvePins(options: PinnableOptions, now: number, languageVersion: string): RunPins {
   return Object.freeze({
     seed: options.seed ?? options.runId,
     startedAt: options.startedAt ?? now,
     yieldEvery: options.yieldEvery ?? PIN_DEFAULTS.yieldEvery,
     stepBudget: options.stepBudget ?? PIN_DEFAULTS.stepBudget,
     effectCeiling: options.effectCeiling ?? PIN_DEFAULTS.effectCeiling,
-    languageVersion: LANGUAGE_VERSION,
+    languageVersion,
   });
 }
 
@@ -101,14 +123,14 @@ export function resolvePins(options: PinnableOptions, now: number): RunPins {
  * it would silently make this a different run against the same journal, which is the same failure
  * an edited sleep duration causes and gets the same fail-loud treatment.
  */
-export function bindPins(recorded: RunPins, options: PinnableOptions): RunPins {
-  if (recorded.languageVersion !== LANGUAGE_VERSION) {
+export function bindPins(recorded: RunPins, options: PinnableOptions, languageVersion: string): RunPins {
+  if (recorded.languageVersion !== languageVersion) {
     throw new PinMismatch(
       "L5008",
       "languageVersion",
       recorded.languageVersion,
-      LANGUAGE_VERSION,
-      `This run started under language version ${recorded.languageVersion} and this interpreter is version ${LANGUAGE_VERSION}. Source and seed do not pin behaviour across a semantics change: unchanged source can take a different branch before the first effect, where there is no input hash to diverge on.\n\nOptions\n  resume on the recorded version\n  fork(run, <step>)   start a new run on this version, keeping the prefix`,
+      languageVersion,
+      `This run started under language version ${recorded.languageVersion} and this engine is version ${languageVersion}. Source and seed do not pin behaviour across a semantics change: unchanged source can take a different branch before the first effect, where there is no input hash to diverge on.\n\nOptions\n  resume on the recorded version\n  fork(run, <step>)   start a new run on this version, keeping the prefix`,
     );
   }
   const checks: readonly [keyof RunPins & string, string | number | undefined, string | number][] = [

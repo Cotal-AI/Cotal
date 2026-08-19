@@ -1,0 +1,28 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "what": "The cells of the suite above that another package's index cites. A SEAM BETWEEN TWO PACKAGES, and a data file rather than a list inside either suite because neither package should be scraping structure out of the other's source.",
+  "readBy": [
+    "implementations/runtime/smoke/run-driver.smoke.ts -- asserts every sentence here is a cell THAT RUN EXECUTED, exactly once. That is the half source text cannot answer: `c` is silent on success, so a cell commented out or left dead behind a condition keeps its sentence in the file while the claim stops being made.",
+    "packages/lang/smoke/differential.smoke.ts -- asserts SET EQUALITY, both directions, between its version-split matrix's driver rows and this list. Containment either way alone leaves a hole, and the direction the runtime suite cannot see is a row added to that matrix whose sentence never reached this file."
+  ],
+  "why": [
+    "MEASURED, on both sides independently: with one cited cell commented out, a source-text",
+    "containment check still passes -- grep finds the sentence TWICE, because the commented-out line",
+    "still carries it -- and the language package's index printed `every one resolved by name` about a",
+    "cell that no longer ran. Neither cell above can be satisfied by a quotation.",
+    "OWNED BY THE RUNTIME PACKAGE, because these are its cells' names and it is the package that renames",
+    "them. A rename lands here in the same commit or the suite that owns the rename reds first."
+  ],
+  "cells": [
+    "a record no engine here serves is RELEASED, not failed and not thrown",
+    "and it is refused by name, L5023",
+    "and the refusal names both the version it met and the set this build serves",
+    "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
+    "a record that names no language version at all is refused the same way",
+    "and the refusal says the record names none, rather than interpolating the missing value",
+    "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+    "while the same spec at a version this build DOES serve gets past the table",
+    "a fresh run completes on the engine this build serves",
+    "and it is stamped with the version of the ENGINE that ran it, not with the current language"
+  ]
+}

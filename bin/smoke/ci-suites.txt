@@ -360,6 +360,20 @@ smoke:core-history-limit
 smoke:web-graph-boot
 smoke:web-echo-escaping
 smoke:web-channel-alias
+# The engine host: the seam the transformed module is handed, the worker that
+# runs it under lockdown in a Compartment with zero endowments, and the laws the walker enforces
+# inline enforced here at one boundary instead.
+smoke:lang-engine
+
+# The source transform: the emitted module's surface, closed over the seam,
+# reaching no unruled member, pure in its source, one rule per admitted node type. The differential
+# suite against the walker is the primary gate and lands with the engine host's `__ctx`.
+smoke:lang-transform
+
+# The primary gate for the two engines: the same program through the walker and through the engine,
+# compared on value, log, refusal and journal entry for entry. What a rule made divergent, and
+# what the engine cannot run yet, are two named lists inside it rather than programs left out.
+smoke:lang-differential
 
 # The two auth suites this branch revived: the despawn/respawn barrier contract (reservation,
 # lifecycle keying, replay safety) and the swallowed-revoke name hold. Both threw before their

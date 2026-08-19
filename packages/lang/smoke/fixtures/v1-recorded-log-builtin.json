@@ -1,0 +1,64 @@
+{
+  "what": "A run RECORDED ONCE on the walker under language version 1, whose program logs a builtin, a namespace and a record carrying a function. journal.smoke replays it with whatever walker is current and requires the same outcome: the walker is the replay engine for v1 records, and a rule that reaches them would show here first. Written by scratchpad/fold3/record-v1.mts at feat/lang-engine 4724cdc4 (walker `log` byte-identical to 4de1ea9c); do not regenerate.",
+  "languageVersion": "1",
+  "source": "await sleep(\"1m\", { name: \"a\" });\nlog(\"handler is\", map);\nawait sleep(\"2m\", { name: \"b\" });\nlog(\"done\", json, { g: (x) => x });\n",
+  "runId": "v1-recorded-log-builtin",
+  "seed": "v1-recording",
+  "startedAt": 1700000000000,
+  "pins": {
+    "seed": "v1-recording",
+    "startedAt": 1700000000000,
+    "yieldEvery": 1024,
+    "stepBudget": 1000000,
+    "effectCeiling": 10000,
+    "languageVersion": "1"
+  },
+  "entries": [
+    {
+      "v": 1,
+      "seq": 0,
+      "run": "v1-recorded-log-builtin",
+      "scope": "",
+      "kind": "sleep",
+      "name": "a",
+      "occurrence": 0,
+      "inputHash": "sha256:1466c179ef9a9c33bd96fb50bd810ae81b4e9e43a2c3f61581eac75d56f9708b",
+      "requestId": "DP-nKwlyiy9A-HUZ_uBXmjOcEO8XJ1RqCcDP8MCFkQ0",
+      "attempt": 0,
+      "state": "settled",
+      "startedAt": 0,
+      "status": "ok",
+      "endedAt": 60000,
+      "result": null
+    },
+    {
+      "v": 1,
+      "seq": 1,
+      "run": "v1-recorded-log-builtin",
+      "scope": "",
+      "kind": "sleep",
+      "name": "b",
+      "occurrence": 0,
+      "inputHash": "sha256:378387df9e27075098a8521e80dc5d6252ce5000aa7460dd7c1fddb68e1e466a",
+      "requestId": "8zS8znFOGal8ifeFltN2llgQix5LXHZvbo6H1ht0n8g",
+      "attempt": 0,
+      "state": "settled",
+      "startedAt": 60000,
+      "status": "ok",
+      "endedAt": 180000,
+      "result": null
+    }
+  ],
+  "logs": [
+    [
+      "handler is",
+      null
+    ],
+    [
+      "done",
+      {},
+      {}
+    ]
+  ],
+  "value": null
+}
