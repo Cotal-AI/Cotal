@@ -2487,7 +2487,7 @@ let n = 1;
     // DataCloneError whose message carried the emitted module body - a host algorithm's complaint
     // about a language rule, with the program's compiled source in it.
     ok(
-      "never a DataCloneError, and never with the module body in the message",
+      "a refused LOG line never comes back as a DataCloneError, and never with the module body in the message",
       !/DataClone/.test(`${failed(answer).name} ${failed(answer).message}`) && !String(failed(answer).message).includes("ctx.fuel"),
       String(failed(answer).message).slice(0, 100),
     );

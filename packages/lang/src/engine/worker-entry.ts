@@ -140,9 +140,16 @@ const answerWith = (e: unknown): void => {
 // answered", which is the wrong cause every time, and MEASURED: a handler binding a function
 // produced exactly that, a DataCloneError naming a host algorithm reported as a silent exit.
 //
-// UNREACHABLE TODAY, ON PURPOSE, and said here rather than left for a reader to assume. Every value
-// that crosses back is fenced: `value` by `assertCrossable` above, `external` and `error.detail` by
-// the guards in perform.ts, entries' `result` at settle, and `pins`/`programHash`/`steps` are
-// primitives. That fence is by ENUMERATION, so it holds until a field is added to the answer and
-// nobody checks it — and this line is what makes that day LOUD instead of silent.
+// A BACKSTOP, NOT A DEAD BRANCH, and the difference is worth stating because this comment once
+// claimed the stronger thing. Every value that crosses back is fenced at its own write site:
+// `value` by `assertCrossable` above, `external` and a failure's `detail` by the guards in
+// perform.ts, an effect's `result` at its settle, and a SCOPE's settled value at its own settle.
+// `pins`, `programHash` and `steps` are primitives.
+//
+// THAT LIST IS AN ENUMERATION, so it is true of the fields it names and silent about any other. It
+// was WRONG once, and not hypothetically: this comment claimed the route was unreachable while a
+// scope's settled value crossed unfenced, so a legal program whose branch returned a closure
+// completed on the walker and answered a DataCloneError through a thread. The fence for that landed
+// with the cell that measures it. What survives is the honest reading: this line names no known
+// route at this sha, and it is what makes the day a new field is added LOUD instead of silent.
 run().then((result) => port.postMessage({ kind: "result", result }), answerWith).catch(answerWith);

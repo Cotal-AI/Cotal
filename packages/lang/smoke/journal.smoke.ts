@@ -924,7 +924,7 @@ await sleep("3h", { name: "after-the-catch" });
   // carry: nothing here is hand-built as an object, only text and the parse a store performs.
   //
   // THE TEXT IS A STRING LITERAL ON PURPOSE. Writing `{ "__proto__": 1 }` as an object literal SETS
-  // A PROTOTYPE instead of naming a field, and `JSON.stringify` would then emit `{}` — a fixture
+  // A PROTOTYPE instead of naming a field, and `JSON.stringify` would then emit `{}`: a fixture
   // that silently stopped carrying the hazard, and a cell that goes green for the wrong reason. So
   // the first assertion below is about the FIXTURE, not the rule.
   const text = `{"v":1,"seq":0,"run":"r-bind-p","scope":"","kind":"spawn","name":"b","occurrence":0,`
