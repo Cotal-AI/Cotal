@@ -1,27 +1,27 @@
 {
-  "suite": "packages/lang/smoke/surface.smoke.ts",
-  "guard": "A log line is data: `log` refuses a value carrying a function anywhere inside it (L4016 naming the value and the path), once, in the shared builtin, and lets undefined, non-finite numbers and plain data cross to the trace as they are. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
-  "command": "pnpm smoke:lang-surface",
+  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "guard": "A log line is data on the ENGINE: its log sink refuses a value carrying a function anywhere inside it (L4016 naming the value and the path), whether or not the host listens, and lets undefined, non-finite numbers and plain data cross to the trace as they are. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/log-data.json",
   "mutations": [
     {
-      "name": "log hands code to the host again",
-      "file": "packages/lang/src/library.ts",
-      "find": "        a.forEach((v, i) => {\n          try {\n            assertNoCode(v, `log: value ${i + 1}`);\n          } catch (e) {\n            if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n            throw e;\n          }\n        });\n",
-      "replace": "",
-      "expectRed": "`log` refuses a function value (L4016) and names it",
-      "completionMarker": "ok `json.stringify` is the canonical form (sorted keys, no spaces)",
-      "cell": "`log` refuses a function value (L4016) and names it",
-      "note": "The pre-rule shape, measured: the walker's onLog received a live closure and the worker thread died on the host's DataCloneError naming the emitted module body."
+      "name": "the engine's log sink hands code to the host again",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    line.values.forEach((v, i) => {\n      try {\n        assertNoCode(v, `log: value ${i + 1}`);\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n    });\n    run.onLog?.(line);",
+      "replace": "    run.onLog?.(line);",
+      "expectRed": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "completionMarker": "ok and its log lines reached the host",
+      "cell": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "note": "The pre-rule shape, measured: in-process the host's onLog received a live closure, and the worker thread died on the host's DataCloneError naming the emitted module body. The worker-leg cell in section 16 reds too, but this in-process cell is the first red in the file."
     },
     {
       "name": "the walk stops at the top level of a record",
       "file": "packages/lang/src/values.ts",
       "find": "  for (const [k, v] of Object.entries(value as Record<string, unknown>)) assertNoCode(v, `${path}.${k}`, seen);\n",
       "replace": "",
-      "expectRed": "and a function nested in a logged record or array, naming the path",
-      "completionMarker": "ok `log` refuses a function value (L4016) and names it",
-      "cell": "and a function nested in a logged record or array, naming the path",
+      "expectRed": "and a function nested in a logged record, array or namespace, naming the path",
+      "completionMarker": "ok the engine refuses a log line carrying a function (L4016) and names the value",
+      "cell": "and a function nested in a logged record, array or namespace, naming the path",
       "note": "A top-level function still refuses, so the first cell stays green and only the nested cell notices; a record carrying a closure (the `json` namespace is one) would cross again."
     },
     {
@@ -33,6 +33,16 @@
       "completionMarker": "ok the refusal is the program's to catch",
       "cell": "and `undefined`, a non-finite number and plain data cross to the trace as they are",
       "note": "The over-fence control: `log(o.missing)` is a realistic program and the trace is not the journal, so the deliberate looseness is pinned, not merely the refusal."
+    },
+    {
+      "name": "the refusal depends on a host listening",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    prng,\n    onLog,\n    assertWritable,",
+      "replace": "    prng,\n    ...(run.onLog !== undefined ? { onLog } : {}),\n    assertWritable,",
+      "expectRed": "and the refusal stands with no host listening for log lines at all",
+      "completionMarker": "ok and `undefined`, a non-finite number and plain data cross to the trace as they are",
+      "cell": "and the refusal stands with no host listening for log lines at all",
+      "note": "The sink installed only when a host listens is the pre-rule shape one step removed: a program's outcome would depend on who is watching, which is a fallback wearing a listener's name."
     }
   ]
 }

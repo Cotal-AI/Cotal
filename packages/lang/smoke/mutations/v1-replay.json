@@ -1,0 +1,18 @@
+{
+  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "guard": "A run recorded under language version 1 replays on whatever walker is current: the checked-in recording (a program that logs a builtin, a namespace and a record carrying a function) completes with the same entries and log lines, so a rule that reaches the v1 replay path reds here first. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-journal",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/v1-replay.json",
+  "mutations": [
+    {
+      "name": "the engine's log rule reaches the shared builtin, and so the v1 replay path",
+      "file": "packages/lang/src/library.ts",
+      "find": "      fn(\"log\", (frame, a) => {\n        ctx.onLog?.({ scope: scopePathString(frame.keys.path), values: a });\n        return null;\n      }, \"all\"),",
+      "replace": "      fn(\"log\", (frame, a) => {\n        a.forEach((v, i) => {\n          if (typeof v === \"function\") throw new RuntimeFault(\"L4016\", `log: value ${i + 1} is a function`);\n        });\n        ctx.onLog?.({ scope: scopePathString(frame.keys.path), values: a });\n        return null;\n      }, \"all\"),",
+      "expectRed": "the walker that is current replays it: same entries, same log lines, no dispatch",
+      "completionMarker": "ok the checked-in recording is a language version 1 record with journalled effects",
+      "cell": "the walker that is current replays it: same entries, same log lines, no dispatch",
+      "note": "This is the exact shape that landed at 59b5d6bd and was caught by the panel: correct for the engine, retroactive on every v1 record whose program logs a builtin. Measured then: the recording failed L4016 one line after its first recorded sleep."
+    }
+  ]
+}

@@ -77,14 +77,17 @@ export class NotCrossable extends TypeError {
 }
 
 /**
- * A log line is DATA for a human reading the trace, and code never crosses to it: a function anywhere
- * inside a logged value is refused before the line leaves the run, naming the value and the path.
- * Measured before the rule: the walker handed its host a live closure (a program function in a host
- * callback, whose arity even showed which engine wrote it), and the worker thread died on the host's
- * own DataCloneError, whose message carried the emitted module body verbatim. Everything else a program
- * can build crosses to a trace as it is - `undefined` and a non-finite number included, because the
- * trace is not the journal and a human wants to see them - so this is deliberately NOT `assertCrossable`.
- * `seen` marks everything visited: a second visit answers the same question, and a cycle terminates.
+ * A log line is DATA for a human reading the trace, and on the ENGINE code never crosses to it: the
+ * engine's log sink (src/engine/ctx.ts) refuses a function anywhere inside a logged value before the
+ * line reaches any transport, naming the value and the path. Measured before the rule: the worker
+ * thread died on the host's own DataCloneError, whose message carried the emitted module body verbatim.
+ * The WALKER is deliberately untouched: it is the replay engine for every run recorded under language
+ * version 1, and a v1 record whose program logs a builtin (`log(map)`) must replay as it was recorded
+ * (a checked-in recording in journal.smoke holds that), so this is a rule of the engine, declared as a
+ * divergence in the differential, not a change to v1. Everything else a program can build crosses to a
+ * trace as it is - `undefined` and a non-finite number included, because the trace is not the journal
+ * and a human wants to see them - so this is deliberately NOT `assertCrossable`. `seen` marks
+ * everything visited: a second visit answers the same question, and a cycle terminates.
  */
 export function assertNoCode(value: unknown, path: string, seen = new Set<object>()): void {
   if (typeof value === "function") {

@@ -9,7 +9,8 @@
  */
 import { Journal, JournalAppendRejected, RunClock, journalEntryKeyString, type JournalEntry } from "../src/journal.js";
 import { KeyScope, digest, stepKeyString } from "../src/keys.js";
-import { run } from "../src/interpret.js";
+import { resume, run } from "../src/interpret.js";
+import { readFileSync } from "node:fs";
 import { SimHandler } from "../src/sim.js";
 import type { EffectHandler } from "../src/effects.js";
 
@@ -614,6 +615,52 @@ await sleep("3h", { name: "after-the-catch" });
   ok("and they keep the order the run PERFORMED them in, not the order they finished in",
     two.entries().map((e) => journalEntryKeyString(e)).join() === "/sleep:a#0,/sleep:b#0",
     two.entries().map((e) => `${journalEntryKeyString(e)}:${e.state}`));
+}
+
+
+// ---- a run recorded under language version 1 replays on the walker that is current --------------
+//
+// "Runs recorded under version 1 replay on the walker forever" is a property ACROSS commits, and no
+// in-process journal can test it: a journal written and read by the same walker at the same sha agrees
+// with itself whatever that walker does. So this recording was written ONCE (fixtures/, by the walker
+// at feat/lang-engine 4724cdc4) and is replayed here by whatever walker is current, against a handler
+// that refuses every dispatch. Its program logs a builtin, a namespace and a record carrying a function
+// on purpose: the engine refuses those in a log line (its rule, declared in the differential), and
+// this cell is what keeps that rule off the v1 replay path - measured before it existed, a rule landed
+// in the shared builtin made this exact record fail L4016 one line after its first recorded sleep.
+
+{
+  const fixture = JSON.parse(readFileSync(new URL("./fixtures/v1-recorded-log-builtin.json", import.meta.url), "utf8")) as {
+    readonly languageVersion: string;
+    readonly source: string;
+    readonly runId: string;
+    readonly seed: string;
+    readonly startedAt: number;
+    readonly pins: { readonly languageVersion: string };
+    readonly entries: readonly JournalEntry[];
+    readonly logs: readonly unknown[][];
+  };
+  ok("the checked-in recording is a language version 1 record with journalled effects", fixture.languageVersion === "1" && fixture.entries.length === 2, fixture.pins);
+  const refusing = new Proxy(new SimHandler({}), {
+    get(target, key) {
+      if (key === "now") return () => fixture.startedAt;
+      throw new Error(`the replay dispatched ${String(key)} instead of reading the journal`);
+    },
+  }) as unknown as EffectHandler;
+  const replayed: unknown[][] = [];
+  const outcome = await resume(fixture.source, new Journal({ run: fixture.runId, entries: fixture.entries }), {
+    runId: fixture.runId,
+    handler: refusing,
+    pins: fixture.pins as never,
+    seed: fixture.seed,
+    startedAt: fixture.startedAt,
+    onLog: (l) => replayed.push([...l.values]),
+  }).then((r) => ({ ran: true as const, entries: r.journal.entries() }), (e: Error) => ({ ran: false as const, error: e.message }));
+  ok(
+    "the walker that is current replays it: same entries, same log lines, no dispatch",
+    outcome.ran && JSON.stringify(outcome.entries) === JSON.stringify(fixture.entries) && JSON.stringify(replayed) === JSON.stringify(fixture.logs),
+    outcome.ran ? { replayed } : outcome,
+  );
 }
 
 console.log(`journal.smoke: ${pass} checks passed`);

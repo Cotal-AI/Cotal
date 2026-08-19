@@ -23,7 +23,7 @@ import { Cancelled, EffectError, type EffectHandler } from "../effects.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "../library.js";
 import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
-import { Prng, birthDepth, born as stampBirth, deepFreeze, setOwn } from "../values.js";
+import { NotCrossable, Prng, assertNoCode, birthDepth, born as stampBirth, deepFreeze, setOwn } from "../values.js";
 import type { AgentHandleValue } from "../effects.js";
 import { digest, type ScopeKind } from "../keys.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
@@ -263,12 +263,33 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     }
   };
 
+  // A LOG LINE IS DATA on this engine: a function anywhere inside a logged value is refused HERE, in
+  // the one sink every log line leaves through, before it reaches any transport - the in-process host
+  // callback or the worker thread, which cannot even clone one (measured, unguarded: the thread died
+  // on the host's DataCloneError with the emitted module body in its message). Held whether or not the
+  // host is listening, so a program's outcome never depends on who is watching; refused as the builtin
+  // refuses (L4016 naming the value and the path), catchable, the way json.stringify refuses. The
+  // WALKER is untouched on purpose: it replays every run recorded under language version 1, and a v1
+  // record that logs a builtin must replay as recorded. This is a rule of the engine, declared as a
+  // divergence in the differential suite.
+  const onLog = (line: { readonly scope: string; readonly values: readonly unknown[] }): void => {
+    line.values.forEach((v, i) => {
+      try {
+        assertNoCode(v, `log: value ${i + 1}`);
+      } catch (e) {
+        if (e instanceof NotCrossable) throw new RuntimeFault("L4016", e.message);
+        throw e;
+      }
+    });
+    run.onLog?.(line);
+  };
+
   const libraryContext = {
     runId: run.runId,
     programHash: run.programHash,
     startedAt: run.pins.startedAt,
     prng,
-    ...(run.onLog !== undefined ? { onLog: run.onLog } : {}),
+    onLog,
     assertWritable,
   };
 
