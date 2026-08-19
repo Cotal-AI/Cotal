@@ -3167,9 +3167,19 @@ export class Manager {
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? ["general"];
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
+      // #651: fold the persona's model into the launch record, mirroring the variant line below
+      // and the manifest branch above. Without this, a persona-file model (the common pin source)
+      // never reaches `launch.model`, so the connector runs the seat on it while `ps --wide`/`--json`
+      // reports the model ABSENT - a false "no model pinned" for a seat that has one.
+      model = opts.model ?? def.model;
       variant = opts.variant ?? def.variant;
       launchOptions = mergeLaunchOptions(def.launchOptions, opts.launchOptions);
     }
+    // #651: an empty or whitespace-only model string is not a pin. Coerce it to undefined here, at
+    // the single point every path (persona, manifest, imperative) has resolved `model`, so it
+    // serializes ABSENT rather than present-but-empty (`"model": ""`), which a key-presence consumer
+    // would misread as "a pin was recorded".
+    if (model !== undefined && model.trim() === "") model = undefined;
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
     // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES

@@ -256,7 +256,11 @@ function printAgentRow(r: AgentRow, indent = ""): void {
  *  required on the row); host/instance attribute the seat in a multi-manager scatter view. */
 function printWideFacts(r: AgentRow, indent = ""): void {
   const facts: string[] = [];
+  // #651: render variant INDEPENDENTLY of model. Nesting it inside `if (r.model)` dropped a
+  // recorded variant-without-model from --wide while --json still carried it - a fact silently
+  // lost. Show it under the model when both are present, standalone when only the variant is.
   if (r.model) facts.push(`model ${r.model}${r.variant ? ` (${r.variant})` : ""}`);
+  else if (r.variant) facts.push(`variant ${r.variant}`);
   if (r.cwd) facts.push(`cwd ${r.cwd}`);
   if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
   if (r.spawner) facts.push(`spawner ${r.spawner}`);

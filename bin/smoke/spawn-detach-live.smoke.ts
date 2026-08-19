@@ -209,6 +209,30 @@ try {
   ok("ps --json emits the manager's row verbatim, one JSON line",
     jsonRow !== undefined && jsonRow.name === "bard" && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
 
+  // B3 (#651 fix): a variant WITHOUT a model survives to --wide. A persona that pins only a variant
+  // records it independently (no model), and the --wide render must show it standalone rather than
+  // drop it because a model is absent. Before the fix, printWideFacts nested variant inside
+  // `if (r.model)`, so --json carried the variant but --wide silently lost it - a recorded fact gone.
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", "lutist.md"), "---\nname: lutist\nrole: writer\nvariant: high\n---\nYou play.\n");
+  await capture(() => run("spawn", ["lutist", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "lutist"]));
+  let lutWide = "";
+  for (let i = 0; i < 40 && !/lutist/.test(lutWide); i++) {
+    lutWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
+    if (!/lutist/.test(lutWide)) await sleep(250);
+  }
+  // The wide facts render on the DIM CONTINUATION line right after the seat's name line.
+  const lutLines = lutWide.split("\n");
+  const lutIdx = lutLines.findIndex((l) => /lutist/.test(l));
+  const lutFacts = lutIdx >= 0 ? (lutLines[lutIdx + 1] ?? "") : "";
+  ok("ps --wide shows a variant-without-model as a standalone variant fact", /variant high/.test(lutFacts) && !/model /.test(lutFacts), lutWide);
+  const lutJsonOut = await capture(() => run("ps", ["--space", SPACE, "--json"]));
+  let lutJson: Record<string, unknown> | undefined;
+  try { lutJson = JSON.parse(lutJsonOut.trim().split("\n").find((l) => l.includes("lutist")) ?? ""); } catch { /* graded below */ }
+  ok("ps --json carries the variant and omits model for a variant-only pin",
+    lutJson?.variant === "high" && !("model" in (lutJson ?? {})), lutJsonOut);
+  // Tear lutist down so it does not linger into the single-seat teardown assertion below.
+  await capture(() => run("stop", ["--name", "lutist", "--space", SPACE]));
+
   // C — attach replies the pinned ws:// contract and the socket opens. One-shot ep client over
   // core (the same wire the CLI's askManagerEp uses: inspect resolves the wire target, then the
   // targeted attach rides the manager's v0.4 service endpoint — the open-mesh bare-caller shape).
