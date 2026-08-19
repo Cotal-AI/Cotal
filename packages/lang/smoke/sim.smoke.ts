@@ -217,7 +217,11 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   const h = await sim.spawn({ persona: "builder", worktree: "wt-1" }, ctxFor(s.nextEffect("spawn", "")));
   ok("spawn returns a stable, site-independent handle", h.agent === "sim.builder" && h.persona === "builder");
   ok("and it carries no host-local state", !("path" in h) && !("session" in h));
-  ok("and the effect bound something before settling", bound.length === 1 && "simAgent" in (bound[0] ?? {}));
+  // The VALUE, not the key: an earlier version asserted only that `simAgent` was present, and binding
+  // the string "WRONG" under that key left every cell in this file green. Comparing it against the
+  // handle the call RETURNED is what makes the journal fact and the returned reference the same
+  // thing, which is the property crash recovery actually needs.
+  ok("and the effect bound the agent it returned, before settling", bound.length === 1 && bound[0]?.simAgent === h.agent, bound);
   const h2 = await sim.spawn({ persona: "builder" }, ctxFor(s.nextEffect("spawn", "")));
   ok("a second spawn of the same persona is a distinct agent", h2.agent !== h.agent, h2.agent);
 }
@@ -230,12 +234,23 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 // them to being written, and the effect they exist for is crash recovery: a settled effect whose
 // binding never landed is replayed against state the journal cannot see.
 //
-// The bound KEY is the property, not the fact that something was bound. `turn` and `ask` bind
-// `simGoal` and `checkpoint` binds `simCheckpoint`, so a checkpoint that bound the goal fact would
-// be indistinguishable from a turn to anything reading the journal. Each cell names its own key and
-// the checkpoint cell refuses the other one.
+// The bound STRING is the property, and so is WHEN it was bound. `turn` and `ask` bind `simGoal`
+// and `checkpoint` binds `simCheckpoint`, so a checkpoint that bound the goal fact would be
+// indistinguishable from a turn to anything reading the journal; and a fact bound after the effect
+// has already moved the world is not the write crash recovery needs, it is a note about a write
+// that already happened.
+//
+// The first version of this block asserted neither. It read the shared array after the await
+// returned and asked only whether the right KEY was present, and both weaknesses were measured
+// rather than argued: binding the literal "WRONG" under the right key in all three handlers left
+// this file at 28 passed, and moving `turn`'s bind below its `advanceBy` left it at 28 passed too.
+// An engineering review found both.
+//
+// The clock is what makes the order observable. Every handler binds, THEN advances, then stamps the
+// advanced clock into what it returns, so a bind that really happened first sees the PRE-advance
+// clock while a bind moved after the advance sees the post-advance one. Recording `sim.now()` at
+// bind time turns "before settling" from a title into a comparison.
 {
-  bound.length = 0;
   const sim = new SimHandler({
     turns: { build: { status: "done", at: 0 } },
     asks: { q: 3 },
@@ -243,16 +258,30 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   });
   const s = new KeyScope();
   const agent = { agent: "a", persona: "p" };
+  const seen: { fact: Record<string, unknown>; at: number }[] = [];
+  const ctxAt = (key: StepKey): EffectContext => ({
+    ...ctxFor(key),
+    bind: async (e) => { seen.push({ fact: e, at: sim.now() }); },
+  });
 
-  await sim.turn({ agent }, ctxFor(s.nextEffect("turn", "build")));
-  ok("a turn binds its goal fact before settling", bound.length === 1 && "simGoal" in (bound[0] ?? {}), bound);
+  const t0 = sim.now();
+  await sim.turn({ agent }, ctxAt(s.nextEffect("turn", "build")));
+  ok("a turn binds its goal fact, by value, before it advances the clock",
+    seen.length === 1 && seen[0]?.fact.simGoal === "/turn:build#0" && seen[0]?.at === t0 && sim.now() > t0,
+    { seen, t0, now: sim.now() });
 
-  await sim.ask({ agent, schema: {} }, ctxFor(s.nextEffect("ask", "q")));
-  ok("an ask binds its goal fact too", bound.length === 2 && "simGoal" in (bound[1] ?? {}), bound);
+  const t1 = sim.now();
+  await sim.ask({ agent, schema: {} }, ctxAt(s.nextEffect("ask", "q")));
+  ok("an ask binds its own goal fact the same way, and its own key",
+    seen.length === 2 && seen[1]?.fact.simGoal === "/ask:q#0" && seen[1]?.at === t1 && sim.now() > t1,
+    { seen, t1, now: sim.now() });
 
-  await sim.checkpoint({ prompt: "ok?" }, ctxFor(s.nextEffect("checkpoint", "gate")));
+  const t2 = sim.now();
+  await sim.checkpoint({ prompt: "ok?" }, ctxAt(s.nextEffect("checkpoint", "gate")));
   ok("a checkpoint binds its OWN fact, which is not the goal fact",
-    bound.length === 3 && "simCheckpoint" in (bound[2] ?? {}) && !("simGoal" in (bound[2] ?? {})), bound);
+    seen.length === 3 && seen[2]?.fact.simCheckpoint === "/checkpoint:gate#0"
+      && !("simGoal" in (seen[2]?.fact ?? {})) && seen[2]?.at === t2 && sim.now() > t2,
+    { seen, t2, now: sim.now() });
 }
 
 // ---- 9) unused script entries are reported --------------------------------------------------------------
