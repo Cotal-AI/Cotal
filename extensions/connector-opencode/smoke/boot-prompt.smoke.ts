@@ -17,7 +17,6 @@
  *
  * Run: pnpm smoke:opencode-boot-prompt
  */
-import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
 import { createServer as createNetServer } from "node:net";
@@ -32,10 +31,21 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 let pass = 0;
+let fail = 0;
+/** RECORDS a failure rather than throwing on it, and the reason is mutation grading rather than
+ *  taste. `assert.ok` ended the run at the first red, so the suite never printed its completion
+ *  marker, and mutation-proof could not tell "the cell caught the defect" from "the run died before
+ *  reaching the cell": every mutation against this file came back INCONCLUSIVE. Measured, not
+ *  supposed. Carrying on means each mutation reddens its OWN named cell and the marker still
+ *  prints, which is what makes the verdict readable. The process still exits non-zero. */
 const check = (name: string, cond: boolean, extra?: unknown) => {
-  assert.ok(cond, `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`);
-  pass++;
-  console.log(`  ✓ ${name}`);
+  if (cond) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+    return;
+  }
+  fail++;
+  console.error(`  ✗ ${name}${extra !== undefined ? `: ${JSON.stringify(extra)}` : ""}`);
 };
 
 // ── 1. the launch spec: does the connector hand the prompt over at all? ──────────────────────────
@@ -187,7 +197,7 @@ try {
   await armA.dispose?.();
   armA = undefined;
 
-  // ARM C — A NATIVE TURN GETS IN FRONT OF THE BOOT PROMPT, and the prompt must still be delivered.
+  // ARM C, A NATIVE TURN GETS IN FRONT OF THE BOOT PROMPT, and the prompt must still be delivered.
   //
   // This is a LOSS, not an ordering question, and it is why the boot text is no longer cleared by
   // the task that starts it. The task used to clear the flag and then call `drive`; a natively
@@ -240,7 +250,9 @@ try {
   await sleep(3000);
   check("a boot with no prompt drives no turn at all", prompts.length === before, prompts.slice(before));
 
-  console.log(`\nOPENCODE BOOT-PROMPT TEST PASSED ✅  (${pass} checks)`);
+} catch (e) {
+  fail++;
+  console.error("  ✗ scenario threw:", (e as Error).message);
 } finally {
   await armA?.dispose?.();
   await armC?.dispose?.();
@@ -251,4 +263,11 @@ try {
   rmSync(dir, { recursive: true, force: true });
   releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
-process.exit(0);
+// The marker prints on EVERY exit path, pass or fail: a grader that cannot tell an unfinished run
+// from a finished red run cannot grade this suite at all.
+console.log(
+  fail === 0
+    ? `\nOPENCODE BOOT-PROMPT TEST PASSED ✅  (${pass} checks)`
+    : `\nOPENCODE BOOT-PROMPT TEST FAILED ❌  (${pass} passed, ${fail} failed)`,
+);
+process.exit(fail === 0 ? 0 : 1);
