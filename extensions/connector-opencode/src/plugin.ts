@@ -336,13 +336,21 @@ export const cotal: Plugin = async () => {
     // cancelled, so offline goes out anyway and that straggler can still finish afterwards. Losing
     // the offline publish to an unbounded wait is the worse of the two, because departure would go
     // back to being inferred from a dropped connection.
-    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, "admitted intake at teardown");
-    // THE LINE BELOW IS THE AUTHORITATIVE ONE FOR THIS SITE, and it exists because the one above it
-    // is not. settleWithin's abandonment message is written for event work and says that whatever
-    // the abandoned work had left to publish is NOT on the wire. Here that is backwards: admitted
-    // work is never cancelled, so a straggler past the bound is exactly the thing that CAN still
-    // publish, and can still send, after departure. Leaving only the generic line would have shipped
-    // a log that contradicts the limitation this bound is honest about.
+    // EACH ONE ABSORBED SEPARATELY, which is the difference between waiting for the set and waiting
+    // for the first thing to happen to it. The set holds the raw calls, and a bare Promise.all
+    // rejects the moment ONE of them does, without waiting for the others; settleWithin then counts
+    // any settlement including a rejection as done, so departure published while another call was
+    // still parked. That is reachable rather than theoretical: setStatus begins with a connection
+    // assertion, and this helper's own connection check is a read before an await, so a stop landing
+    // in between produces exactly such a rejection. Absorbed per item, a failure removes one call
+    // from the wait instead of ending it. Same idiom as settleWithin's own absorption, deliberately.
+    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));
+    const settled = await settleWithin(Promise.all(admitted), INTAKE_SETTLE_MS, "admitted intake at teardown");
+    // The generic line above already says the work is uncancelled and may land late. This adds the
+    // part specific to THIS site: departure goes out regardless, so a straggler here publishes or
+    // SENDS after the seat has announced it left, rather than merely out of order. An earlier
+    // version of the generic line claimed the abandoned work was terminally silent, and this note
+    // existed to contradict it; the contradiction is gone now that the line itself is accurate.
     if (!settled)
       log(
         `admitted work outlived the ${INTAKE_SETTLE_MS}ms intake bound: departure is published anyway, ` +
@@ -479,9 +487,11 @@ export const cotal: Plugin = async () => {
       const settled = await Promise.race([work.then(() => true, () => true), expired]);
       if (!settled)
         log(
-          `${SETTLE_ABANDONED} ${what} did not settle within ${ms}ms, so it is abandoned: whatever it ` +
-            `had left to publish is NOT on the wire, and a run it had open may stay open. The plane ` +
-            `continues rather than wedging every later swap behind this one.`,
+          `${SETTLE_ABANDONED} ${what} did not settle within ${ms}ms, so it is abandoned: the WAIT ` +
+            `stopped, the work did not, and nothing here can cancel it. It may still publish, ` +
+            `possibly after frames from whatever replaced it, and a run it had open may stay open. ` +
+            `Ordering is guaranteed for a step that settles inside the bound, not for this one. The ` +
+            `plane continues rather than wedging every later step behind it.`,
         );
       return settled;
     } finally {

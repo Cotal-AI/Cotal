@@ -197,6 +197,8 @@ try {
   const crossParked = join(dir, "coop-crossing-parked");
   const crossRelease = join(dir, "coop-crossing-release");
   const crossArm = join(dir, "coop-crossing-arm");
+  const rejectRelease = join(dir, "coop-reject-release");
+  const rejectParked = join(dir, "coop-reject-parked");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -215,6 +217,8 @@ try {
       COOP_CROSS_ARM: crossArm,
       COOP_CROSS_PARKED: crossParked,
       COOP_CROSS_RELEASE: crossRelease,
+      COOP_REJECT_RELEASE: rejectRelease,
+      COOP_REJECT_PARKED: rejectParked,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -258,6 +262,10 @@ try {
   }
   check("hook-seat: the pre-stop hook parked inside its presence write", hookParked, { crossParked });
 
+  // BOTH calls must be in the set, or the cell below is about a set of one and cannot see the
+  // difference between waiting for all of them and waiting for the first to settle.
+  check("hook-seat: a second call was admitted and is waiting to fail", existsSync(rejectParked), { rejectParked });
+
   // Drive the cooperative shutdown — exactly what the manager sends on a win32 graceful stop.
   const reply = await sendShutdown(ep.path, ep.token);
 
@@ -275,7 +283,13 @@ try {
   // holding, so the seat is still non-offline here; one that does not wait has already departed.
   // 300ms is inside the 1s bound, so the correct arm is still holding, and far past the moment an
   // unwaiting teardown publishes.
-  await wait(300);
+  // THE FAILING CALL IS RELEASED FIRST, inside the bound, so its rejection reaches the teardown's
+  // wait while the other call is still parked. If that wait is satisfied by the first settlement
+  // rather than by all of them, departure goes out here and the sample below catches it.
+  await wait(100);
+  writeFileSync(rejectRelease, "go\n");
+
+  await wait(200);
   const beforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Otto")?.status;
   check("hook-seat: departure was still unpublished while admitted work was in flight",
     beforeRelease !== undefined && beforeRelease !== "offline", { beforeRelease });

@@ -55,7 +55,12 @@ const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool" | 
 const crossArm = process.env.COOP_CROSS_ARM?.trim() || undefined;
 const crossParked = process.env.COOP_CROSS_PARKED?.trim() || undefined;
 const crossRelease = process.env.COOP_CROSS_RELEASE?.trim() || undefined;
+const rejectRelease = process.env.COOP_REJECT_RELEASE?.trim() || undefined;
+const rejectParked = process.env.COOP_REJECT_PARKED?.trim() || undefined;
 const parked: Array<() => void> = [];
+// Released on its own trigger, and BEFORE the parked one, so the failure lands while the teardown is
+// still waiting rather than after it has given up.
+const parkedReject: Array<() => void> = [];
 if (cross) {
   // The model record publishes presence through a different endpoint method than a status write,
   // so the model door needs its own seam rather than a third case on the activity one.
@@ -71,6 +76,18 @@ if (cross) {
   };
   const original = CotalEndpoint.prototype.setActivity;
   CotalEndpoint.prototype.setActivity = async function (activity: string): Promise<void> {
+    // A SECOND ADMITTED CALL THAT FAILS, which is a different question from one that is slow. The
+    // teardown waits on the set of admitted calls, and if that wait is satisfied by the FIRST thing
+    // to happen rather than by all of them, one failure releases departure while another call is
+    // still parked. A seat that parks a single caller cannot show that, because a set of one has no
+    // difference to show. This is the one that fails, released while the parked one is still held.
+    if (activity === "crossing-reject") {
+      await new Promise<void>((r) => {
+        parkedReject.push(r);
+        if (rejectParked) writeFileSync(rejectParked, "the failing call was admitted and is waiting to fail\n");
+      });
+      throw new Error("admitted presence write failed");
+    }
     if (activity === `crossing-${cross}`) {
       await new Promise<void>((r) => {
         parked.push(r);
@@ -153,7 +170,10 @@ if (marker) {
     // while the mesh agent is still connecting: fired at boot this hook returned without ever
     // reaching its presence write, and the cell it feeds passed while grading nothing. The parent
     // writes this trigger only after it has seen the seat online, and the stop is still ahead.
-    if (cross === "hook") void fireTool("ses_coop", "crossing-hook");
+    if (cross === "hook") {
+      void fireTool("ses_coop", "crossing-hook");
+      void fireTool("ses_coop", "crossing-reject");
+    }
     draining = true;
     void fire({ type: "session.created", properties: { info: { id: "ses_next" } } });
     // Queued BEHIND the one above, which is the whole point: when the stop lands, this swap has not
@@ -216,6 +236,8 @@ if (cross) {
       void (
         hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> }
       )["chat.message"]({ sessionID: "ses_coop", model: { providerID: "crossing", modelID: "model" } }, { parts: [] });
+    while (rejectRelease && !existsSync(rejectRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    for (const release of parkedReject) release();
     while (!existsSync(crossRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
     for (const release of parked) release();
   })();

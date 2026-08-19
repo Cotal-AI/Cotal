@@ -79,7 +79,14 @@
     "be a finding. Measured by hand instead, both directions, and recorded here so it is checkable by",
     "rerunning rather than by trusting this note: with the environment scrubbed the model seat parks and",
     "the suite is 22/0; with it inherited, on a box where the pin is set, the park control fails and the",
-    "ordering cell reads offline."
+    "ordering cell reads offline.",
+    "",
+    "C14 IS NOT A VARIANT OF C10. C10 asks whether the teardown waits at all; C14 asks whether the wait",
+    "is for the SET or merely for the first thing that happens to it. A bare Promise.all rejects as soon",
+    "as one call does, and settleWithin counts any settlement including a rejection as done, so a single",
+    "failure released departure while another call was still parked. Every one of C10 through C13 passed",
+    "against that, because each of them parks exactly one caller and a set of one cannot show the",
+    "difference. It took a second call that FAILS, in the same seat, to make the distinction visible."
   ],
   "mutations": [
     {
@@ -148,7 +155,7 @@
     {
       "name": "C10 teardown stops waiting for work it already admitted, so a presence write parked mid-call resumes after departure and puts the seat back to work",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
+      "find": "    const settled = await settleWithin(Promise.all(admitted), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "replace": "    const settled = true;\n",
       "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     },
@@ -172,6 +179,13 @@
       "find": "        await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));\n",
       "replace": "        await agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant);\n",
       "expectRed": "model-seat: departure was still unpublished while admitted work was in flight"
+    },
+    {
+      "name": "C14 the wait stops absorbing each admitted call separately, so ONE rejection satisfies it and departure publishes while another call is still parked",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
+      "replace": "    const admitted = [...inFlight];\n",
+      "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     }
   ]
 }
