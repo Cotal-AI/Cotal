@@ -54,6 +54,32 @@ function identifiers(node: unknown, out: Set<string>): void {
   }
 }
 
+/** Every Identifier a declaration pattern binds, in source order. */
+function declaredNames(pattern: AnyNode, out: AnyNode[] = []): AnyNode[] {
+  switch (pattern.type) {
+    case "Identifier":
+      out.push(pattern);
+      break;
+    case "AssignmentPattern":
+      declaredNames(pattern.left as AnyNode, out);
+      break;
+    case "RestElement":
+      declaredNames(pattern.argument as AnyNode, out);
+      break;
+    case "ObjectPattern":
+      for (const p of (pattern.properties as AnyNode[]) ?? []) {
+        declaredNames((p.type === "RestElement" ? p.argument : p.value) as AnyNode, out);
+      }
+      break;
+    case "ArrayPattern":
+      for (const el of (pattern.elements as (AnyNode | null)[]) ?? []) if (el !== null && el !== undefined) declaredNames(el, out);
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
 class Emitter {
   private readonly sites = new Map<string, number>();
   private readonly proposed = new Set<string>();
@@ -61,6 +87,8 @@ class Emitter {
   private tempMax = 0;
   private labels = 0;
   private conts = 0;
+  /** Cells whose record was created at the top of a block, so the declaration only writes into it. */
+  private readonly hoisted = new Set<Binding>();
   /** The innermost loop's break and continue labels, and the innermost switch's break label. */
   private breakTo: string | null = null;
   private continueTo: string | null = null;
@@ -118,7 +146,11 @@ class Emitter {
   private readName(node: AnyNode): string {
     const b = this.binding(node);
     const name = node.name as string;
-    if (b !== undefined) return b.cell ? this.seam("get", `${name}, ${q("v")}`) : name;
+    // A CELL READ CARRIES THE BINDING'S NAME (F7, ruled). An absent own `v` is a read before the
+    // declaration ran, and the host answers L2004 for the binding it names — the code the walker
+    // gives, and one a program can catch and read, where a native binding gives a host
+    // ReferenceError that `caught` can only report as L4000/host.
+    if (b !== undefined) return b.cell ? this.seam("get", `${name}, ${q("v")}, ${q(b.name)}`) : name;
     if (VALUE_NAMES.includes(name)) return VOID;
     // A builtin is a BINDING in this language, so it has to be readable as a value: `const f = trim`,
     // `map(xs, upper)`, and `json.stringify(x)` (whose callee's object is the free name `json`).
@@ -148,8 +180,43 @@ class Emitter {
 
   /** A block's statements. `bare` emits them without braces (the program body, a function body). */
   private block(node: AnyNode, bare = false): string {
-    const body = ((node.body as AnyNode[]) ?? []).map((s) => this.stmt(s)).join("");
-    return bare ? body : `{\n${body}}\n`;
+    const stmts = (node.body as AnyNode[]) ?? [];
+    // THE CELLS FIRST: a closure written before the declaration can read the binding, so the record
+    // has to exist before that closure is made. See {@link hoistCells}.
+    const head = this.hoistCells(stmts);
+    const body = stmts.map((s) => this.stmt(s)).join("");
+    return bare ? head + body : `{\n${head}${body}}\n`;
+  }
+
+  /**
+   * The cell RECORDS a statement list declares, created empty at its top.
+   *
+   * F7's shape, ruled: `born({})` at the top of the block, `set(cell, "v", init)` where the
+   * declaration is, and every read through `get(cell, "v", name)`. The record must exist before the
+   * closures that capture it, and its `v` must be ABSENT until the declaration runs — that absence
+   * IS the dead zone, and it is what lets the host answer L2004 by name instead of a native
+   * ReferenceError. `v: undefined` is a present key, so the host asks `hasOwn` and not truthiness.
+   *
+   * A `for (let ...)` head is not here: its carrier gives each iteration its own record, and a
+   * binding declared in a loop head cannot be read before that head has run.
+   */
+  private hoistCells(stmts: readonly AnyNode[]): string {
+    let out = "";
+    for (const s of stmts) {
+      if (s.type !== "VariableDeclaration") continue;
+      for (const d of (s.declarations as AnyNode[]) ?? []) {
+        for (const id of declaredNames(d.id as AnyNode)) {
+          const b = this.binding(id);
+          // ONLY THE DEAD-ZONE CLASS. A binding that is a cell for the write rule alone cannot be
+          // read before its declaration, so its record is still built where it is declared, with
+          // its value already in it — one seam call rather than two on a path that runs.
+          if (b?.deadZone !== true || this.hoisted.has(b)) continue;
+          this.hoisted.add(b);
+          out += `const ${id.name as string} = ${this.seam("born", "{}")};\n`;
+        }
+      }
+    }
+    return out;
   }
 
   private stmt(node: AnyNode): string {
@@ -349,6 +416,10 @@ class Emitter {
     const b = this.label("b");
     const save = this.breakTo;
     this.breakTo = b;
+    // A SWITCH'S CASES SHARE ONE BLOCK SCOPE, and no statement inside it runs before the jump, so a
+    // cell declared in a case is created in a block AROUND the switch instead of at its top. That
+    // block holds nothing else, so it scopes exactly as the switch's own block does.
+    const cells = this.hoistCells(((node.cases as AnyNode[]) ?? []).flatMap((c) => (c.consequent as AnyNode[]) ?? []));
     const disc = this.expr(node.discriminant as AnyNode);
     let out = `${b}: switch (${disc}) {\n`;
     for (const c of (node.cases as AnyNode[]) ?? []) {
@@ -356,7 +427,7 @@ class Emitter {
       for (const s of (c.consequent as AnyNode[]) ?? []) out += this.stmt(s);
     }
     this.breakTo = save;
-    return `${out}}\n`;
+    return cells === "" ? `${out}}\n` : `{\n${cells}${out}}\n}\n`;
   }
 
   // ---- bindings ---------------------------------------------------------------------------------
@@ -377,6 +448,10 @@ class Emitter {
         if (mode === "assign") {
           return b?.cell === true ? `${this.seam("set", `${name}, ${q("v")}, ${valueCode}`)};\n` : `${name} = ${valueCode};\n`;
         }
+        // A hoisted cell's record already exists (see hoistCells): the declaration is the write that
+        // ends its dead zone. A cell that was NOT hoisted is a loop head's carrier, which builds a
+        // fresh record per iteration.
+        if (b?.cell === true && this.hoisted.has(b)) return `${this.seam("set", `${name}, ${q("v")}, ${valueCode}`)};\n`;
         if (b?.cell === true) return `const ${name} = ${this.seam("born", `{ v: ${valueCode} }`)};\n`;
         return `${mode === "let" ? "let" : "const"} ${name} = ${valueCode};\n`;
       }

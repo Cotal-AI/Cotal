@@ -223,6 +223,56 @@
       "completionMarker": "ok an object literal's keys are emitted computed",
       "cell": "a combinator with no deferred argument wraps nothing at all",
       "note": "The mirror, and it is not symmetric: `parallel` and `race` take a bag of branches at index 0 and have NO deferred argument, so a thunk in position 1 is the options bag wrapped - the host answers L1000 for asking a combinator for a deferred body it does not have."
+    },
+    {
+      "name": "the hoisted-function clause is dropped, so a function declaration's early read stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "replace": "    if ((path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "completionMarker": "ok a binding no nested function writes stays native",
+      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
+      "note": "A hoisted `function` declaration is reachable before anything textually after it has run, at any depth: measured, `const r = f()` with `function f() { const g = () => x; return g(); }` and `const x = 1` after it is L2004 on the walker. Without the clause that binding stays native and the engine answers a host ReferenceError."
+    },
+    {
+      "name": "the textual clause is dropped, so a closure written before the declaration stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "replace": "    if (path.some((f) => f.hoisted)) {",
+      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "completionMarker": "ok a binding no nested function writes stays native",
+      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
+      "note": "The other clause: a function EXPRESSION whose enclosing statement is not after the end of the declarator, which includes an arrow inside the binding's own initializer (`const x = (() => x)()` is L2004, measured)."
+    },
+    {
+      "name": "every captured binding becomes a dead-zone cell",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.length === 0) return;",
+      "replace": "    if (path.length === 0) return;\n    if (path.length > 0) {\n      b.cell = true;\n      b.deadZone = true;\n      return;\n    }",
+      "expectRed": "a captured binding no closure can read early stays native",
+      "completionMarker": "ok a binding no nested function writes stays native",
+      "cell": "a captured binding no closure can read early stays native",
+      "note": "The predicate is a rule, not a preference: making every captured binding a record would pass the clause cell above and cost a seam call on every read of a binding nothing can reach early."
+    },
+    {
+      "name": "a dead-zone cell's record is built at its declaration instead of at the top of the block",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          if (b?.deadZone !== true || this.hoisted.has(b)) continue;",
+      "replace": "          if (b === undefined || this.hoisted.has(b)) continue;",
+      "expectRed": "a cell for the write rule alone is still built where it is declared",
+      "completionMarker": "ok a binding no nested function writes stays native",
+      "cell": "a cell for the write rule alone is still built where it is declared",
+      "note": "The two cell classes are kept apart on purpose: hoisting the write-rule class costs a second seam call on a path that runs, and the mutant that hoists everything (this one) shows the cell that keeps them apart is real."
+    },
+    {
+      "name": "a cell read is emitted without the binding's name",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    if (b !== undefined) return b.cell ? this.seam(\"get\", `${name}, ${q(\"v\")}, ${q(b.name)}`) : name;",
+      "replace": "    if (b !== undefined) return b.cell ? this.seam(\"get\", `${name}, ${q(\"v\")}`) : name;",
+      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "completionMarker": "ok a binding no nested function writes stays native",
+      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
+      "note": "The name is what lets the host answer L2004 FOR THAT BINDING when the record's `v` is absent. Without it an absent field is just undefined, and the dead zone becomes a value the program carries on with."
     }
   ]
 }
