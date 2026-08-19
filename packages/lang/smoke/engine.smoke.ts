@@ -30,7 +30,7 @@ import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
 import { Prng } from "../src/values.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
-import { runOnEngine, resumeOnEngine } from "../src/engine/host.js";
+import { NODE_FLOOR, assertNodeFloor, runOnEngine, resumeOnEngine } from "../src/engine/host.js";
 import { runInWorker } from "../src/engine/worker.js";
 import { run as walkerRun } from "../src/interpret.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
@@ -788,12 +788,23 @@ const SCRIPT = { turns: { build: { status: "done" as const } } };
 
 {
   const logs: unknown[][] = [];
-  const engine = await runOnEngine(SOURCE, MODULE, {
-    runId: "host-1",
-    handler: new SimHandler(SCRIPT),
-    evaluate: plainly,
-    onLog: (l) => logs.push([...l.values]),
-  });
+  // CAPTURED, like every other run-level cell here: `runOnEngine` refuses before it does anything -
+  // the node floor, then the validator, then the resume rules - and a refusal awaited straight into
+  // the assertions below would leave the block and kill the suite anonymously.
+  let engine: Awaited<ReturnType<typeof runOnEngine>> | undefined;
+  let refused: unknown;
+  try {
+    engine = await runOnEngine(SOURCE, MODULE, {
+      runId: "host-1",
+      handler: new SimHandler(SCRIPT),
+      evaluate: plainly,
+      onLog: (l) => logs.push([...l.values]),
+    });
+  } catch (e) {
+    refused = e;
+  }
+  ok("runOnEngine RAN this program rather than refusing it at the boundary", refused === undefined, String(refused));
+  engine = engine as Awaited<ReturnType<typeof runOnEngine>>;
 
   ok("runOnEngine answers the walker's RunResult shape", typeof engine.programHash === "string" && engine.journal instanceof Journal);
   ok("its programHash is the SOURCE's hash, not the module's", engine.programHash === programHashOf(SOURCE), engine.programHash);
@@ -1536,19 +1547,30 @@ await parallel({
     const wLogs: unknown[][] = [];
     const eLogs: unknown[][] = [];
     const walker = await walkerRun(source, { runId: "scope-1", handler: new SimHandler(script), onLog: (l) => wLogs.push([...l.values]) });
-    const engine = await runOnEngine(source, module, {
-      runId: "scope-1",
-      handler: new SimHandler(script),
-      evaluate: plainly,
-      onLog: (l) => eLogs.push([...l.values]),
-    });
-    ok(`${label}: the journals are IDENTICAL, entry for entry`, JSON.stringify(walker.journal.entries()) === JSON.stringify(engine.journal.entries()), {
+    // The journal is handed IN, so a refusal still leaves this side something to compare - and so a
+    // refusal fails the cell that names it rather than leaving the block and killing the suite.
+    const journal = new Journal({ run: "scope-1" });
+    let engine: Awaited<ReturnType<typeof runOnEngine>> | undefined;
+    let refused: unknown;
+    try {
+      engine = await runOnEngine(source, module, {
+        runId: "scope-1",
+        handler: new SimHandler(script),
+        evaluate: plainly,
+        journal,
+        onLog: (l) => eLogs.push([...l.values]),
+      });
+    } catch (e) {
+      refused = e;
+    }
+    ok(`${label}: the engine ran a program the walker ran, rather than refusing it`, refused === undefined, String(refused));
+    ok(`${label}: the journals are IDENTICAL, entry for entry`, JSON.stringify(walker.journal.entries()) === JSON.stringify(journal.entries()), {
       walker: walker.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
-      engine: engine.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+      engine: journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
     });
-    ok(`${label}: and the scope was actually journalled`, engine.journal.entries().length > 1, engine.journal.entries().length);
+    ok(`${label}: and the scope was actually journalled`, journal.entries().length > 1, journal.entries().length);
     ok(`${label}: the log is the same`, JSON.stringify(wLogs) === JSON.stringify(eLogs), { walker: wLogs, engine: eLogs });
-    return { walker, engine };
+    return { walker, engine: engine as Awaited<ReturnType<typeof runOnEngine>> };
   };
 
   // ---- parallel ---------------------------------------------------------------------------------
@@ -1684,6 +1706,224 @@ log("out", out);
       await ctx.free("log", ["out", out]);
     }`,
   );
+}
+
+// ---- 18) ruling 1b's closure obligation ----------------------------------------------------------
+//
+// 1b struck the return-path thenable door after this lane refuted it by measurement, and replaced it
+// with an OBLIGATION: the gate is born() + set() + await() only as long as no builtin can hand the
+// program a record carrying an own callable `then`. That property is held here rather than assumed,
+// over the whole builtin table, so a name added to it reds this cell until somebody classifies it.
+//
+// Nothing below is a copy of the answer. The probe is a matrix of ARGUMENT SHAPES applied to every
+// name in `BUILTINS`; which names answer a record is measured, not listed.
+
+{
+  const h = harness();
+  const isRecord = (v: unknown): v is Record<string, unknown> => v !== null && typeof v === "object" && !Array.isArray(v);
+
+  await h.inFrame(async () => {
+    const rec = h.ctx.born({ a: 1, then: 2 });
+    const other = h.ctx.born({ b: 2 });
+    const fn = (x: unknown): unknown => x;
+    const SHAPES: unknown[][] = [
+      [], [rec], [rec, other], [rec, "zz"], [rec, [9, 8]], [rec, 5], [rec, fn],
+      ["a"], ["a", "b"], [1], [1, 2], [[1, 2]], [[1, 2], fn], [`{"then":1,"a":2}`], [`{"a":1}`],
+    ];
+
+    const answeredRecord = new Set<string>();
+    const readRecord = new Set<string>();
+    const carriedCallableThen: string[] = [];
+    let probes = 0;
+    for (const name of BUILTINS) {
+      const asValue = h.ctx.free(name);
+      if (isRecord(asValue)) readRecord.add(name);
+      for (const args of SHAPES) {
+        probes += 1;
+        let answer: unknown;
+        try {
+          answer = await (h.ctx.free(name, args) as unknown);
+        } catch {
+          continue; // A refusal is the common case here and is not the subject.
+        }
+        if (!isRecord(answer)) continue;
+        answeredRecord.add(name);
+        if (typeof answer.then === "function") carriedCallableThen.push(`${name}(${JSON.stringify(args.map((a) => (typeof a === "function" ? "fn" : a)))})`);
+      }
+    }
+
+    const same = (got: ReadonlySet<string>, want: readonly string[]): boolean =>
+      got.size === want.length && want.every((n) => got.has(n));
+
+    // The universe, and its own failure mode: a probe that found nothing would pass every set
+    // comparison below it.
+    ok(`the whole builtin table was probed: ${BUILTINS.length} names x ${SHAPES.length} shapes`, probes === BUILTINS.length * SHAPES.length && BUILTINS.length > 0, { probes, names: BUILTINS.length });
+    ok("the ONLY builtin whose call answers a record is `merge`", same(answeredRecord, ["merge"]), [...answeredRecord]);
+    ok("and the only one whose READ form is a record is the `json` namespace", same(readRecord, ["json"]), [...readRecord]);
+    // THE OBLIGATION ITSELF.
+    ok("no answer anywhere in the matrix carried an own CALLABLE `then`", carriedCallableThen.length === 0, carriedCallableThen);
+
+    // AND THE RULING'S STATED REASON, CORRECTED BY MEASUREMENT. 1b says merge's "output keys derive
+    // from record arguments that already passed born()". They do not, quite: a non-record argument
+    // contributes index keys. The property that actually holds is the one asserted above - a minted
+    // key cannot carry a callable - and it is worth having the difference written down, because a
+    // reason nobody re-measured is how a struck door gets rebuilt.
+    ok(
+      "merge mints index keys from a NON-record argument, so the keys are not all born-derived",
+      JSON.stringify(await h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"])) === '{"0":"z","1":"z","a":1}',
+      await h.ctx.free("merge", [h.ctx.born({ a: 1 }), "zz"]),
+    );
+    ok(
+      "and from an array argument too",
+      JSON.stringify(await h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]])) === '{"0":9,"1":8,"a":1}',
+      await h.ctx.free("merge", [h.ctx.born({ a: 1 }), [9, 8]]),
+    );
+
+    // WHAT KEEPS THE DOOR SHUT, both halves measured. The program cannot build the input:
+    ok("born refuses a record with an own callable `then`", codeOf(await caught(() => h.ctx.born({ then: () => 1 }))) === "L4018");
+    ok("and set refuses writing one onto a born record", codeOf(await caught(() => h.ctx.set(h.ctx.born({ a: 1 }), "then", () => 1))) === "L4018");
+    // And a callable `then` that reaches a builtin from OUTSIDE the seam never comes back as a
+    // record at all: library.ts's own `async` wrapper assimilates it one frame before any
+    // return-path check could look. Measured - the call answers 7, the resolved value, not the
+    // record. That is the refutation 1b was built on, kept as a cell so it stays true.
+    const assimilated = await h.ctx.free("merge", [h.ctx.born({ a: 1 }), { then: (r: (v: unknown) => void) => r(7) }]);
+    ok("a callable `then` reaching a builtin is ASSIMILATED inside library.ts, not returned", assimilated === 7, assimilated);
+
+    // json.parse mints keys from a STRING - a non-record input - and is safe for a different reason
+    // than merge: JSON cannot express a function, so its `then` is never callable.
+    const parsed = await h.ctx.call(h.ctx.free("json"), "parse", [`{"then":1,"a":2}`]);
+    ok("json.parse mints record keys from text, and its `then` cannot be callable", isRecord(parsed) && parsed.then === 1 && typeof parsed.then !== "function", parsed);
+  });
+}
+
+// ---- 19) F7: the cell read, and the ReferenceError that is never the program's -------------------
+//
+// A binding the transform classifies as a CELL is emitted as `born({})` hoisted to the top of its
+// block, `set(cell, "v", init)` at the declaration, and every read as `get(cell, "v", "x")`. The
+// third argument is the whole host clause (ruled a third argument, not a fifteenth member): an
+// absent OWN key means the declaration has not run, which is L2004 for that binding by name.
+
+{
+  const h = harness();
+
+  // The oracle's own words, taken from the oracle rather than transcribed: a hoisted function called
+  // before the `const` it reads.
+  const fromWalker = await caught(() =>
+    walkerRun(`const r = f();\nfunction f() { return x; }\nconst x = 1;\nlog("r", r);\n`, { runId: "f7", handler: new SimHandler({}) }),
+  );
+  ok("the walker refuses a TDZ read at run time with L2004", codeOf(fromWalker) === "L2004", String(fromWalker));
+
+  const cell = await h.inFrame(() => h.ctx.born({}));
+  const fromEngine = await caught(() => h.inFrame(() => h.ctx.get(cell, "v", "x")));
+  ok("and so does the engine, when the cell has no own key yet", codeOf(fromEngine) === "L2004", String(fromEngine));
+  // BYTE-IDENTICAL, and compared rather than eyeballed: the sentence lives inside interpret.ts's
+  // `Env.get` and is not exported, so this cell is what keeps the copy from drifting off the source.
+  ok(
+    "with the WALKER'S message, word for word",
+    (fromEngine as Error).message === (fromWalker as Error).message,
+    { engine: (fromEngine as Error).message.slice(0, 80), walker: (fromWalker as Error).message.slice(0, 80) },
+  );
+
+  // PRESENCE IS `hasOwn`, NOT TRUTHINESS. A binding initialised to `undefined` HAS been initialised,
+  // and a truthiness test would refuse it - the one shape where the two rules disagree.
+  const initialised = await h.inFrame(() => {
+    const c = h.ctx.born({});
+    h.ctx.set(c, "v", undefined);
+    return c;
+  });
+  // CAPTURED: a presence test written as truthiness REFUSES both of these, and the throw would leave
+  // the block and kill the suite instead of failing the cell that names the rule.
+  const readCell = async (c: unknown): Promise<unknown> => {
+    try {
+      return await h.inFrame(() => h.ctx.get(c, "v", "x"));
+    } catch (e) {
+      return e;
+    }
+  };
+  ok("a cell holding `undefined` is INITIALISED, and reads as undefined", (await readCell(initialised)) === undefined, String(await readCell(initialised)));
+  const zero = await h.inFrame(() => {
+    const c = h.ctx.born({});
+    h.ctx.set(c, "v", 0);
+    return c;
+  });
+  ok("and so is one holding 0", (await readCell(zero)) === 0, String(await readCell(zero)));
+
+  // Without the argument, `get` is byte-unchanged: an absent field is undefined, as it always was.
+  ok("without a binding name, an absent field is still just undefined", (await h.inFrame(() => h.ctx.get(cell, "v"))) === undefined);
+
+  // The CAUGHT form. The walker's answer, measured: ["L2004", "runtime"].
+  const wLogs: unknown[][] = [];
+  await walkerRun(`function f() { return x; }\ntry { f(); } catch (e) { log("code", e.code); log("kind", e.kind); }\nconst x = 1;\n`, {
+    runId: "f7c",
+    handler: new SimHandler({}),
+    onLog: (l) => wLogs.push([...l.values]),
+  });
+  ok("the walker's caught TDZ read is L2004/runtime", JSON.stringify(wLogs) === '[["code","L2004"],["kind","runtime"]]', wLogs);
+  const asProgramError = h.ctx.caught(fromEngine) as { code?: string; kind?: string };
+  ok("and the engine's catch head answers the same record", asProgramError.code === "L2004" && asProgramError.kind === "runtime", asProgramError);
+
+  // THE LOUD CLAUSE. A native ReferenceError is not a program error and is not converted into one.
+  let boom: unknown;
+  try {
+    boom = h.ctx.caught(new ReferenceError("zzz is not defined"));
+  } catch (e) {
+    boom = e;
+  }
+  ok("the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it", boom instanceof Error && (boom as Error).name === "EngineFault", String(boom));
+  ok("and it is NOT converted to a program error", (boom as { code?: string }).code === undefined, boom);
+  ok("nor message-parsed into L2004", !(boom as Error).message.includes("L2004"), (boom as Error).message.slice(0, 120));
+  ok("while it carries what actually happened", (boom as Error).message.includes("zzz is not defined"), (boom as Error).message.slice(0, 160));
+  // And a nested catch cannot swallow it either: it is uncatchable by class.
+  let again: unknown;
+  try {
+    again = h.ctx.caught(boom);
+  } catch (e) {
+    again = e;
+  }
+  ok("an emitted catch around it rethrows rather than catching", again === boom, String(again));
+
+  // AT THE RUN BOUNDARY, which is the other place it can surface: a program with no `try` has
+  // nothing to route the bad read through, so it arrives at the host instead.
+  const escaped = await caught(() =>
+    runOnEngine(`log("x", 1);`, `(ctx) => async () => { await ctx.fuel(); return zzz; }`, {
+      runId: "f7-boundary",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+    }),
+  );
+  ok("a ReferenceError escaping the whole run is an ENGINE fault too", (escaped as Error).name === "EngineFault", String(escaped));
+  ok("and it names why a free identifier cannot be the program's fault", (escaped as Error).message.includes("zero free identifiers"), (escaped as Error).message.slice(0, 200));
+}
+
+// ---- 20) the node floor, measured rather than assumed ---------------------------------------------
+//
+// Lane 1 set the wave's floor at node 24 for AsyncContextFrame ALS. Probed at this sha, that reason
+// does not reproduce: ALS propagates 9 of 9 shapes on 22.23.2 - plain await, across the setTimeout
+// macrotask the fuel yield uses, both arms of a Promise.all, after a custom thenable, across
+// nextTick and setImmediate, and a nested run restoring its parent - and the worker from `dist` on
+// 22 answers the same value with the same confinement and the same programHash. What DOES break
+// below the floor is the development path: tsx 4.23.0's ESM loader does not reach a worker thread
+// on 22, so a run started from TypeScript sources cannot load its own worker entry.
+//
+// The floor stands, for that measured reason, and it is a REFUSAL rather than an `engines` line: a
+// package manager's warning is not a refusal, and what breaks below it is a loader nobody would
+// think to look at from a journal.
+
+{
+  ok(`the floor is a single named constant, and it is ${NODE_FLOOR}`, NODE_FLOOR === 24, NODE_FLOOR);
+  const below = await caught(() => assertNodeFloor("22.23.2"));
+  ok("a node below the floor is refused by major version", below instanceof RuntimeFault, String(below));
+  ok("and the refusal names both the version it found and the floor", (below as Error).message.includes("22.23.2") && (below as Error).message.includes("node 24"), (below as Error).message.slice(0, 120));
+  ok("and says what actually breaks there, rather than citing a decision", (below as Error).message.includes("does not inherit tsx's ESM loader"), (below as Error).message.slice(0, 260));
+  ok("the floor itself is allowed", (await caught(() => assertNodeFloor("24.0.0"))) === undefined);
+  ok("and anything above it", (await caught(() => assertNodeFloor("26.7.0"))) === undefined);
+  // A version string it cannot read is NOT refused: refusing on an unparseable version would fail a
+  // run for the shape of a string rather than for the runtime under it.
+  ok("an unreadable version is not refused on the strength of being unreadable", (await caught(() => assertNodeFloor("not-a-version"))) === undefined);
+  // AND THE LIVE ONE, which is the reachability half: every cell above this line has already run a
+  // program through `runOnEngine`, so the check at the run boundary is reached on every one of them.
+  // The mutant that raises the floor to a version nobody has reds the FIRST of them.
+  ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);

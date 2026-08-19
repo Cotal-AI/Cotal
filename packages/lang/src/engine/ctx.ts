@@ -52,8 +52,16 @@ export interface Site {
 export interface EngineCtx {
   /** L4013 step budget, plus the yield that keeps the macrotask queue alive and applies the cut. */
   fuel(): void | Promise<void>;
-  /** Read a member: L4014 (no prototype reach, curated tables), L4020, L4018 on a computed key. */
-  get(o: unknown, k: unknown): unknown;
+  /**
+   * Read a member: L4014 (no prototype reach, curated tables), L4020, L4018 on a computed key.
+   *
+   * `binding` is F7's cell read, ruled as a third argument rather than a fifteenth member. A binding
+   * the transform classified as a CELL is emitted as `get(cell, "v", "x")`, and an absent OWN key
+   * means the declaration has not run yet, which is L2004 for that binding by name. PRESENCE is
+   * `hasOwn` and not truthiness, because `v: undefined` is a binding that HAS been initialised, to
+   * undefined. Without the argument, `get` is byte-unchanged.
+   */
+  get(o: unknown, k: unknown, binding?: string): unknown;
   /** Write a member: L2031, L2032, L4014, L4017, L4019. Answers `v`, as an assignment does. */
   set(o: unknown, k: unknown, v: unknown): unknown;
   /**
@@ -626,8 +634,20 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   const ctx: EngineCtx = {
     fuel,
 
-    get(o, k) {
-      return memberOf(o, keyOf(k), false);
+    get(o, k, binding) {
+      const prop = keyOf(k);
+      // F7'S CELL DOOR. A binding the transform turned into a cell exists for its whole block, and
+      // the cell record is hoisted to the top of that block so the closures capturing it have
+      // something to close over. What decides whether the DECLARATION has run is whether the key is
+      // there - `hasOwn`, never truthiness, because a binding initialised to `undefined` has run.
+      // The walker's own words, so a program cannot tell which engine refused it.
+      if (binding !== undefined && !(o !== null && typeof o === "object" && Object.prototype.hasOwnProperty.call(o, prop))) {
+        throw new RuntimeFault(
+          "L2004",
+          `${binding} is used before its declaration was reached: the binding exists for the whole block, but it holds no value until the \`let\`/\`const\` line runs. Call this function after the declaration, or move the declaration up.`,
+        );
+      }
+      return memberOf(o, prop, false);
     },
 
     set(o, k, v) {
@@ -876,6 +896,14 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // to run. They are recognised by CLASS, which is why the emitted catch has to ask rather than
       // test a shape the program could forge.
       if (isUncatchable(e)) throw e;
+      // A NATIVE ReferenceError IS THE ENGINE'S FAULT, NOT THE PROGRAM'S. The emitted module is
+      // closed over the seam with ZERO free identifiers, so nothing in it can name a binding that
+      // does not exist: a ReferenceError here can only be a TDZ read the transform's classifier
+      // missed, or an emitter temporary used before it was bound. Converting it would hand the
+      // program a `{code: "L4000"}` for a compiler bug, and MAPPING it to L2004 by reading its
+      // message would be worse - it would make the two indistinguishable exactly where they must not
+      // be. So it refuses loudly and uncatchably, with the original message carried along.
+      if (e instanceof ReferenceError) throw new EngineFault(e);
       return toProgramError(e);
     },
   };
@@ -891,6 +919,25 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 // ---- the classes a program may not catch, and the value one that it may -------------------------
 
 /**
+ * The engine broke its own contract, and no program may catch that.
+ *
+ * The one thing that reaches this today is a native `ReferenceError`. The emitted module is a closed
+ * expression with zero free identifiers, so nothing the program wrote can name a binding that is not
+ * there; a ReferenceError therefore means a TDZ read the transform's classifier missed or an emitter
+ * temporary read before it was bound. It is not the program's error, it is not converted to one, and
+ * it is never mapped to L2004 by reading its message - that mapping would make a compiler bug
+ * indistinguishable from the language rule it imitates.
+ */
+export class EngineFault extends Error {
+  constructor(readonly cause: unknown) {
+    super(
+      `the engine broke its own contract: ${(cause as Error)?.message ?? String(cause)}. The emitted module has zero free identifiers, so this can only be a binding the transform did not classify as a cell, or an emitter temporary read before it was bound. It is not the program's error and is not converted into one.`,
+    );
+    this.name = "EngineFault";
+  }
+}
+
+/**
  * Recognised by class rather than by shape.
  *
  * `Cancelled` and `RunReleased` come from effects.ts, `JournalAppendRejected` from journal.ts. The
@@ -902,6 +949,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
  * language). The differential suite carries a cell per class.
  */
 const UNCATCHABLE_NAMES: ReadonlySet<string> = new Set([
+  "EngineFault",
   "Cancelled",
   "JournalAppendRejected",
   "RunReleased",

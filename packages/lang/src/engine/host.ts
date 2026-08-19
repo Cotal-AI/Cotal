@@ -21,8 +21,51 @@ import { Journal, RunClock } from "../journal.js";
 import { KeyScope, programHashOf } from "../keys.js";
 import { bindPins, resolvePins } from "../pins.js";
 import type { RunOptions, RunResult } from "../interpret.js";
-import { createEngine, type EngineCtx } from "./ctx.js";
+import { EngineFault, createEngine, type EngineCtx } from "./ctx.js";
 import { EngineFrame, Signal, withFrame } from "./frame.js";
+
+/**
+ * The node the wave decided to stand on (lane 1's decision, AsyncContextFrame ALS).
+ *
+ * MEASURED against it at 946ae70a, rather than taken on the decision's word, because a floor nobody
+ * probed is a guess with a number on it:
+ *   ALS on node 22.23.2      9 of 9 shapes propagate - plain await, across the setTimeout macrotask
+ *                            the fuel yield uses, both arms of a Promise.all, after a CUSTOM
+ *                            THENABLE, across nextTick and setImmediate, and a nested run that
+ *                            restores its parent. Identical on 26.7.0 and on 22 with
+ *                            --experimental-async-context-frame. Lane 1's stated reason for >= 24
+ *                            does not reproduce on any path this engine takes.
+ *   the seam on node 22      187 of engine.smoke's checks pass, and differential.smoke is 68 of 70
+ *                            with exactly the two reds it has on 26.
+ *   the WORKER on node 22    from `dist`, identical: same value, same confinement (Date.now throws,
+ *                            `process` undefined, 0 own globals), same programHash, 74ms cold
+ *                            against 51ms. The shipped artifact does not need 24.
+ *   the worker under TSX     does NOT run on 22: tsx 4.23.0's ESM loader does not reach a worker
+ *                            thread there, so `./worker-entry.js` is ERR_MODULE_NOT_FOUND, with or
+ *                            without `--import tsx`. On 26 the same spelling resolves and the suite
+ *                            finishes. That is the floor that measurably exists, and it is the DEV
+ *                            and CI path rather than the runtime.
+ * So the floor holds, for a reason nobody had written down. It is enforced here rather than left to
+ * `engines`, because a package manager's warning is not a refusal and this engine will not run on
+ * luck: below the floor, the thing that breaks is a loader nobody would look at from a journal.
+ */
+export const NODE_FLOOR = 24;
+
+/**
+ * Refuse a node below the wave's floor, by MAJOR version.
+ *
+ * A pure function of the version string so a suite can ask it about a version it is not running on;
+ * `runOnEngine` calls it with the live one, which is the only call site.
+ */
+export function assertNodeFloor(version: string): void {
+  const major = Number(version.split(".")[0]);
+  if (Number.isFinite(major) && major < NODE_FLOOR) {
+    throw new RuntimeFault(
+      "L1000",
+      `the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}. The wave's floor is lane 1's decision (AsyncContextFrame ALS), and what MEASURABLY breaks below it is the development path: a worker thread does not inherit tsx's ESM loader there, so a run started from TypeScript sources cannot load its own worker entry. Run node ${NODE_FLOOR}+, or run the built package.`,
+    );
+  }
+}
 
 /** What the transform emits: a closed expression taking the context as its call argument. */
 export type ModuleFactory = (ctx: EngineCtx) => () => Promise<unknown>;
@@ -45,6 +88,9 @@ export interface EngineRunOptions extends RunOptions {
  * whichever engine is about to execute.
  */
 export async function runOnEngine(source: string, module: string, options: EngineRunOptions): Promise<RunResult> {
+  // BEFORE ANYTHING, including the validator: a run that cannot be trusted to carry its frame is not
+  // a run whose refusals mean anything either.
+  assertNodeFloor(process.versions.node);
   validate(source, options.file);
   const programHash = programHashOf(source);
 
@@ -93,7 +139,17 @@ export async function runOnEngine(source: string, module: string, options: Engin
   const frame = new EngineFrame(new KeyScope(), new RunClock(pins.startedAt), new Signal());
 
   const factory = options.evaluate(module);
-  const value = await withFrame(frame, async () => await factory(engine.ctx)());
+  // THE RUN BOUNDARY IS THE SECOND PLACE A NATIVE ReferenceError CAN SURFACE - the first is an
+  // emitted catch, and `caught` refuses it there. A program with no `try` around the bad read has
+  // nothing to route it through, so it arrives here, and here it must not look like a program error
+  // either. See `EngineFault`: zero free identifiers means this can only be the engine's own bug.
+  const value = await withFrame(frame, async () => {
+    try {
+      return await factory(engine.ctx)();
+    } catch (e) {
+      throw e instanceof ReferenceError ? new EngineFault(e) : e;
+    }
+  });
 
   return { value, journal, programHash, pins, steps: engine.steps() };
 }
