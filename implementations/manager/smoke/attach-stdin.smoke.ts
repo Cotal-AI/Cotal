@@ -470,9 +470,14 @@ const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
  * channel that carries nothing at all. Note where that stops: `check` records a failure and returns
  * rather than throwing, so a failed echo does not stop the absence line below printing its own
  * green on an empty tail. The suite still fails, on the echo. Returns the sink offset taken before
- * the first dating byte, and EVERY nonce it wrote, for a caller whose claim is that the tail holds
- * nothing but these. */
-const dateByEcho = async (a: Attached, label: string): Promise<{ before: number; typed: string[] }> => {
+ * the first dating byte, every nonce it wrote, and separately the ONE nonce it watched land. Only
+ * that one is evidence of itself. A try that was dropped left no trace, so bytes matching it in the
+ * tail are unexplained rather than expected, and a caller that subtracts them is subtracting on a
+ * coincidence. */
+const dateByEcho = async (
+  a: Attached,
+  label: string,
+): Promise<{ before: number; typed: string[]; dated: string }> => {
   const before = sink().length;
   // RETRIED, and that is not belt and braces. `[cotal: reconnected]` prints one round trip BEFORE
   // the session takes the terminal (attach-client's `onReady`), and a byte typed in that gap is seen
@@ -494,7 +499,7 @@ const dateByEcho = async (a: Attached, label: string): Promise<{ before: number;
   check(`${label}: the session that is up carries the keyboard, which is what dates the absence below`,
     echoed && sink().subarray(before).includes(Buffer.from(later)),
     { echoed, tries: typed.length, got: sink().subarray(before).toString("utf8").slice(-200) });
-  return { before, typed };
+  return { before, typed, dated: echoed ? later : "" };
 };
 
 let manager: InstanceType<typeof Manager> | undefined;
@@ -715,32 +720,33 @@ try {
     await closeLink();
     await heal();
     check("...the reconnect still lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
-    const { typed } = await dateByEcho(a, "F");
+    const { typed, dated } = await dateByEcho(a, "F");
     // Judged over the WHOLE tail rather than up to where dating began. A byte held while there was
     // no session is flushed when one opens, which is exactly when the dating nonce is in flight, so
     // a window ending where dating STARTS cannot see it: measured under a 1500ms seat delay, that
     // window read empty while the tail carried `x\x1d`. FIFO puts anything already in flight ahead
-    // of the dating echo, so what is left after removing the nonces dating actually wrote is what
-    // the agent should never have read. A try that was DROPPED leaves no trace, which is the race
-    // the retry exists for, so a nonce that is MISSING stays legal; a byte nobody typed does not.
-    // Stripped from the END, newest first, and only as a suffix. Removing a bare nonce ANYWHERE
-    // could absorb a byte the cell is asserting never arrived, if a payload were ever shaped like
-    // one; anchoring to the tail cannot. Run against the previous form over the same tails, the two
-    // disagree on the VERDICT in three shapes, and only ONE of them is this form catching more: a
-    // leak whose bytes match a nonce the control typed passed there and fails here. The other two
-    // are the dating nonces themselves landing out of the order they were typed, with two or with
-    // three; this form reds those and the previous one passed them. That is FALSE RED, and it is
-    // the price of anchoring rather than a gain from it. Where the leak lands AFTER the dating
-    // nonce both forms fail and only the residue text differs, so that case is better diagnostics
-    // and not a stronger check. Spelled out at this length because two shorter versions were
-    // claimed here before it and both were false.
+    // of the dating echo, so what is left after removing the nonce dating actually landed is what
+    // the agent should never have read.
+    // ONE nonce is removed, the one whose echo was seen, from the END and only as a suffix. Not
+    // every nonce that was typed: a dropped try leaves no trace, so a tail that matches one is
+    // unexplained, and removing it absorbs whatever really put those bytes there. That is not
+    // hypothetical. Give this cell a nonce-shaped payload and let the try carrying that same text
+    // be the dropped one, and removing every typed nonce takes the LEAK away and the cell passes
+    // while its claim is false. Removing only the landed nonce reds it. Reachable here only by
+    // editing the payload, since the bytes below are a fixed `x` plus 0x1d and no nonce is shaped
+    // like that, but the rule has to be sound on its own rather than on that coincidence.
+    // The cost is a false RED where a dropped try arrives late or the two land out of the order
+    // they were typed. That is the right way round for a cell guarding a leak, and it is a cost of
+    // anchoring rather than a gain from it.
     let residue = sink().subarray(mark).toString("utf8");
     const tail = residue;
-    for (const n of [...typed].reverse()) {
-      const suffix = residue.endsWith(`${n}\n`) ? `${n}\n` : residue.endsWith(n) ? n : "";
-      if (suffix) residue = residue.slice(0, -suffix.length);
-    }
-    check("...and neither byte reached the agent", residue === "", { got: tail, residue, typed });
+    const suffix = !dated ? ""
+      : residue.endsWith(`${dated}\n`) ? `${dated}\n`
+      : residue.endsWith(dated) ? dated
+      : "";
+    if (suffix) residue = residue.slice(0, -suffix.length);
+    check("...and neither byte reached the agent", residue === "",
+      { got: tail, residue, typed, dated });
     await detachAndSettle(a, base, "F");
   }
 
