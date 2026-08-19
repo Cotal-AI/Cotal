@@ -75,6 +75,15 @@
       "expectRed": "identical on both engines: two effects in one array literal",
       "cell": "identical on both engines: two effects in one array literal",
       "note": "The third of the three literal positions where two effects can sit side by side."
+    },
+    {
+      "name": "a corpus program refuses before it reaches its subject, and the gate calls it identical",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "[\"curated methods\", 'const xs = [3, 1, 2]; log(xs.map((x) => x + 1), sort(xs), \"AB\".toLowerCase(), \"a,b\".split(\",\"), (2.6).toFixed(1), json.stringify({ a: 1 }));', {}],",
+      "replace": "[\"curated methods\", 'const xs = [3, 1, 2]; log(xs.map((x) => x + 1), sort(xs), \"AB\".lower(), (2.6).round(), json.stringify({ a: 1 }));', {}],",
+      "expectRed": "every corpus program completes, or refuses the code it declares",
+      "cell": "every corpus program completes, or refuses the code it declares",
+      "note": "The defect this cell was written for, restored: `lower` and `round` are free builtins and not method names, so the program refuses L4014 on BOTH arms before its first log. `identical on both engines` stays green - two arms agreeing on a refusal neither program was written to produce - which is exactly how the string and number tables came to have no passing cell. This is a fixture-discipline cell, so its mutant is in the fixture."
     }
   ],
   "completionMarker": "differential.smoke:"

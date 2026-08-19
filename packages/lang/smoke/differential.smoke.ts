@@ -84,9 +84,16 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
 
 const j = (v: unknown) => JSON.stringify(v);
 
+/** What an arm answered, as one string: the refusal it raised, or the lines it logged. */
+const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)}`);
+
 /** Where two arms differ, as the field names. Empty means identical. */
 const differences = (a: Arm, b: Arm): string[] => {
   const out: string[] = [];
+  // NO PROGRAM REACHES THIS LEG TODAY: a top-level `return` is a validation refusal (L1024), so a
+  // validated program's run value is always absence. Kept rather than deleted, because the cell
+  // below MEASURES that over the whole corpus — the day a program can produce a value, that cell
+  // reds and this line is live evidence again instead of a comparison nobody restored.
   if (j(a.value) !== j(b.value)) out.push("value");
   if (j(a.logs) !== j(b.logs)) out.push("logs");
   if (a.error !== b.error) out.push("error");
@@ -112,7 +119,17 @@ const WORKFLOW_SCRIPT = {
   clock: { start: 1_000_000 },
 };
 
-const CORPUS: readonly (readonly [string, string, object])[] = [
+/**
+ * A corpus program, its handler script, and WHAT IT MUST DO: the fourth element is the refusal the
+ * program is written to produce, and its absence means the program must COMPLETE.
+ *
+ * Without that split, "identical on both engines" is satisfied by two arms refusing the same thing
+ * for a reason nobody wrote the program to test. Measured, and this is why the split exists:
+ * `"AB".lower()` and `(2.6).round()` are FREE builtins and not method names, so the curated-methods
+ * program errored L4014 on both arms before its first log — a green cell whose subject was never
+ * reached, and the only passing cell the string and number tables had.
+ */
+const CORPUS: readonly (readonly [string, string, object, string?])[] = [
   [
     "a real workflow: spawn, turn, checkpoint, loop",
     `const team = channel("feat-auth");
@@ -136,7 +153,7 @@ log("rounds", rounds, r.status);`,
   ["sleep and the run clock", 'await sleep("1m", { name: "s" }); log(now() > 0);', {}],
   ["closures over a for-loop counter", "const fs = []; for (let i = 0; i < 3; i = i + 1) { fs.push(() => i); } let s = 0; for (const f of fs) { s = s + await f(); } log(s);", {}],
   ["a builtin read as a value", "const f = map; log(f([1, 2], (x) => x), map === map, json === json);", {}],
-  ["refusals: a non-function callee", "const f = 1; log(f());", {}],
+  ["refusals: a non-function callee", "const f = 1; log(f());", {}, "L4011"],
   // STEP KEYS ARE (scope path, kind, name, occurrence), and the corpus has to reach each component
   // or the comparison is over one shape. These four move the occurrence counter, the name, and the
   // scope path a nested call adds.
@@ -170,6 +187,7 @@ log("rounds", rounds, r.status);`,
     "effects before a refusal, so the journal is a prefix",
     'const a = await spawn("one");\nawait sleep("1m", { name: "s" });\nconst o = {};\nlog(o + 1);',
     {},
+    "L4018",
   ],
   ["literals and names", 'const a = 1; const b = "t"; const c = true; const d = null; log(a, b, c, d);', {}],
   ["template interpolation", "const n = 2; log(`n=${n}!`);", {}],
@@ -197,7 +215,10 @@ log("rounds", rounds, r.status);`,
   ["default and rest parameters", "function f(a, b = 2, ...rest) { return a + b + len(rest); } log(await f(1), await f(1, 2, 3, 4));", {}],
   ["a captured mutable binding", "let seen = 0; const bump = () => { seen = seen + 1; }; await bump(); log(seen);", {}],
   ["a recursive named function expression", "const fact = function walk(n) { return n === 0 ? 1 : n * walk(n - 1); }; log(await fact(4));", {}],
-  ["curated methods", 'const xs = [3, 1, 2]; log(xs.map((x) => x + 1), sort(xs), "AB".lower(), (2.6).round(), json.stringify({ a: 1 }));', {}],
+  // MEASURED, not assumed: `lower` and `round` are free builtins and not method names, so the
+  // program this cell used to run refused L4014 at `"AB".lower()` before its first log — the string
+  // and number tables had no passing cell at all. These are their real entries.
+  ["curated methods", 'const xs = [3, 1, 2]; log(xs.map((x) => x + 1), sort(xs), "AB".toLowerCase(), "a,b".split(","), (2.6).toFixed(1), json.stringify({ a: 1 }));', {}],
   ["optional chains", "const o = { a: { b: 1 } }; log(o.a?.b, o.z?.b, o.z?.b.c);", {}],
   // ORDER, WHICH IS WHAT A STEP KEY RECORDS. Both of these journal two sleeps, and the only thing
   // that distinguishes a correct engine from one that evaluates the right side first is which entry
@@ -217,13 +238,13 @@ log("rounds", rounds, r.status);`,
   ["nested calls, inner effect first", 'const f = async (n) => { await sleep("1m", { name: n }); return n; }; const g = async (x) => x + "!"; log(await g(await f("inner")));', {}],
   ["the undefined value", "const u = undefined; log(u === undefined);", {}],
   ["deep recursion", "const f = (n) => (n === 0 ? 0 : n + f(n - 1)); log(await f(50));", {}],
-  ["a template that must refuse a record", "const o = { a: 1 }; log(`x=${o}`);", {}],
+  ["a template that must refuse a record", "const o = { a: 1 }; log(`x=${o}`);", {}, "L4018"],
   ["a template over every scalar", "log(`${null} ${undefined} ${true} ${1.5} ${\"s\"}`);", {}],
   ["an index past the end", "const xs = [1]; log(xs[5]);", {}],
   ["a record shared into a function and written there", "const o = { a: 1 }; const f = async (r) => { r.a = 2; }; await f(o); log(o.a);", {}],
   ["string methods", 'log("Ab Cd".trim(), "a,b".split(","), "abc".slice(1), "ab".repeat(2), "abc".includes("b"), "a-b".replace("-", "+"));', {}],
   ["array methods", "const xs = [3, 1, 2]; log(xs.filter((x) => x > 1), xs.join(\"-\"), xs.at(0), [[1], [2]].flat(), await xs.reduce((a, b) => a + b, 0));", {}],
-  ["number edge cases", "log(1 / 0, 0 / 0, -0, 2 ** 53 + 1, (2.5).round(), (2.4).floor());", {}],
+  ["number edge cases", "log(1 / 0, 0 / 0, -0, 2 ** 53 + 1, round(2.5), floor(2.4));", {}],
   ["a json round trip", "log(json.parse(json.stringify({ a: [1, { b: null }] })));", {}],
   // THE FREE SURFACE, so the coverage cell at the bottom has something to be satisfied by. The pure
   // draws are the sharpest of these: `random`, `randomInt` and `pick` derive from the run seed AND
@@ -235,7 +256,7 @@ log("rounds", rounds, r.status);`,
     "const xs = [3, 1, 2, 1]; log(find(xs, (x) => x > 2), some(xs, (x) => x > 2), every(xs, (x) => x > 0), reverse(xs), unique(xs), range(3), sum(xs), concat(xs, [9]));",
     {},
   ],
-  ["the string builtins", 'log(startsWith("abc", "a"), endsWith("abc", "c"), contains("abc", "b"), upper("ab"));', {}],
+  ["the string builtins", 'log(startsWith("abc", "a"), endsWith("abc", "c"), contains("abc", "b"), upper("ab"), lower("AB"));', {}],
   ["the number builtins", 'log(min(1, 2), max(1, 2), abs(-3), ceil(1.2), parseNumber("42"));', {}],
   ["assert, refusing and passing", 'try { assert(false, "nope"); } catch (e) { log(e.code); } assert(true, "fine"); log("past");', {}],
   ["the seeded pure draws", 'log(random(), randomInt(10), pick([1, 2, 3]), duration("1m"));', {}],
@@ -253,18 +274,21 @@ log("rounds", rounds, r.status);`,
   // A RECORD HAS NO PROTOTYPE TO REACH, so these three are undefined rather than refused - measured,
   // because the cell that assumed a refusal here was the one a mutation walked straight past.
   ["a record has no prototype to reach", "const o = { a: 1 }; log(o.constructor, o.toString, o.__proto__);", {}],
-  ["refusals: a prototype member of a string", 'const s = "a"; log(s.constructor);', {}],
-  ["refusals: a prototype member of an array", "const xs = [1]; log(xs.constructor);", {}],
-  ["refusals: a member of a function", "const f = () => 1; log(f.call);", {}],
+  ["refusals: a prototype member of a string", 'const s = "a"; log(s.constructor);', {}, "L4020"],
+  ["refusals: a prototype member of an array", "const xs = [1]; log(xs.constructor);", {}, "L4020"],
+  ["refusals: a member of a function", "const f = () => 1; log(f.call);", {}, "L4014"],
   ["an array's length is a member, not a prototype reach", "const xs = [1, 2]; log(xs.length);", {}],
-  ["refusals: a method is not a value", "const xs = [1]; const m = xs.map; log(m);", {}],
-  ["refusals: no implicit conversion", "const o = {}; log(o + 1);", {}],
-  ["refusals: not iterable", "const o = {}; log([...o]);", {}],
+  ["refusals: a method is not a value", "const xs = [1]; const m = xs.map; log(m);", {}, "L4020"],
+  ["refusals: no implicit conversion", "const o = {}; log(o + 1);", {}, "L4018"],
+  ["refusals: not iterable", "const o = {}; log([...o]);", {}, "L4015"],
 ];
 
 {
   let identical = 0;
-  for (const [name, source, script] of CORPUS) {
+  let completes = 0;
+  const wrong: string[] = [];
+  const valued: string[] = [];
+  for (const [name, source, script, refuses] of CORPUS) {
     const [w, e] = [await arm("walker", source, script), await arm("engine", source, script)];
     const diff = differences(w, e);
     ok(`identical on both engines: ${name}`, diff.length === 0, {
@@ -272,9 +296,24 @@ log("rounds", rounds, r.status);`,
       walker: { value: w.value, logs: w.logs, error: w.error, entries: w.entries.length },
       engine: { value: e.value, logs: e.logs, error: e.error, entries: e.entries.length },
     });
+    if (refuses === undefined) {
+      if (w.error === null && e.error === null) completes += 1;
+      else wrong.push(`${name}: must complete, refused ${w.error ?? "(walker ok)"} / ${e.error ?? "(engine ok)"}`);
+    } else if (w.error !== refuses || e.error !== refuses) {
+      wrong.push(`${name}: declared ${refuses}, got ${w.error} / ${e.error}`);
+    }
+    if (w.value !== undefined || e.value !== undefined) valued.push(`${name}: ${j(w.value)} / ${j(e.value)}`);
     identical += 1;
   }
-  console.log(`  (${identical} programs identical on both engines)`);
+  // AND EACH ONE DID WHAT IT WAS WRITTEN TO DO. A program that refuses before it reaches its subject
+  // agrees with itself on both arms and tests nothing; this is the cell that catches that class.
+  ok("every corpus program completes, or refuses the code it declares", wrong.length === 0, wrong);
+  // AND THE COMPARATOR'S `value` LEG HAS NO PROGRAM BEHIND IT. A top-level `return` is L1024, so a
+  // validated program's run value is absence and the leg can only be exercised by hand. Measured
+  // here rather than reasoned: when a program can produce a value this reds, and the leg it guards
+  // stops being a comparison nobody can reach.
+  ok("no validated program produces a run value, so the comparator's value leg is exercised by hand alone", valued.length === 0, valued);
+  console.log(`  (${identical} programs identical on both engines: ${completes} complete, ${identical - completes} refuse a declared code)`);
 }
 
 // ---- the comparator's own positive control -------------------------------------------------------
@@ -292,7 +331,9 @@ log("rounds", rounds, r.status);`,
 
   const found = (label: string, mutated: Arm, field: string) =>
     ok(`the comparator reports a perturbed ${label}`, differences(base, mutated).includes(field), differences(base, mutated));
-  found("value", { ...base, value: "perturbed" }, "value");
+  // BUILT BY HAND, and the name says so: no program produces a run value today (the cell above
+  // measures that), so this is the only thing that exercises the comparator's `value` leg.
+  found("value, built by hand because no program produces one", { ...base, value: "perturbed" }, "value");
   found("log line", { ...base, logs: [["perturbed"]] }, "logs");
   found("refusal", { ...base, error: "L9999" }, "error");
   found("entry count", { ...base, entries: base.entries.slice(1) }, "entry count");
@@ -328,7 +369,6 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
 {
   for (const [name, source, script, walkerAnswer, engineAnswer] of DIVERGENT) {
     const [w, e] = [await arm("walker", source, script), await arm("engine", source, script)];
-    const answer = (a: Arm) => (a.error !== null ? a.error : `logs ${j(a.logs)}`);
     ok(`declared divergence, and both answers are what the ruling says: ${name}`, answer(w) === walkerAnswer && answer(e) === engineAnswer, {
       walker: answer(w),
       engine: answer(e),
@@ -403,6 +443,12 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
 
 // ---- what the engine cannot run yet --------------------------------------------------------------
 
+/** What each arm answers today, pinned so a DIFFERENT wrong answer reds the hold instead of keeping it. */
+interface HeldAnswers {
+  readonly walker: string;
+  readonly engine: string;
+}
+
 /**
  * A program held OUT of the corpus, and the refusal that holds it there.
  *
@@ -410,12 +456,13 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
  * today, so landing the missing piece turns this cell red and the program moves up into the corpus
  * in the same change. A held list with no assertion is a coverage cap nobody can see.
  */
-const HELD: readonly (readonly [string, string, object, readonly string[], string])[] = [
+const HELD: readonly (readonly [string, string, object, readonly string[], HeldAnswers, string])[] = [
   [
     "an optional call on a member",
     "const o = { m: () => 1 }; log(await o.m?.(), await o.z?.());",
     {},
     ["logs", "error"],
+    { walker: "logs [[1,null]]", engine: "TypeError: Spread syntax requires ...iterable[Symbol.iterator] to be a function" },
     "F6 is granted (ruling 1d) as an optional flag on the ruled `call`, and the emitter passes it; until the host reads that flag it resolves the name unconditionally, so `o.z?.()` refuses instead of short-circuiting to undefined",
   ],
   [
@@ -423,6 +470,7 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
     "const f = () => x; const r = f(); const x = 1; log(r);",
     {},
     ["error"],
+    { walker: "L2004", engine: "ReferenceError: Cannot access 'x' before initialization" },
     "F7, OPEN. The transform emits a captured binding as a native binding, so reading it before its declaration is JavaScript's own ReferenceError where the walker refuses L2004 - a refusal a program can catch and read the code of. `__ctx.caught` turns the host error into {code: L4000, kind: host}, so it is program-visible with the wrong code rather than invisible. Needs a seam decision: the cell scheme can carry it, at the cost of a `get` per read of a binding a hoisted function or an earlier-defined closure could read first",
   ],
   [
@@ -430,6 +478,7 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
     'const f = () => x; try { log(f()); } catch (e) { log(e.code, e.kind); } const x = 1;',
     {},
     ["logs"],
+    { walker: "logs [[\"L2004\",\"runtime\"]]", engine: "logs [[\"L4000\",\"host\"]]" },
     "the same F7, in the shape that shows what a program actually sees: L2004/runtime on the walker, L4000/host on the engine",
   ],
   [
@@ -437,6 +486,7 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
     'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });\nlog("done");',
     { turns: { t: { status: "done", at: 0 } } },
     ["error", "entry count"],
+    { walker: "L3021", engine: "L1000" },
     "the same loud refusal of every scope-opener",
   ],
   [
@@ -444,6 +494,7 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
     'const a = await spawn("one");\nawait conclave([a], async (c) => { await notify([a], { decision: "join", outcome: "done" }); return c; }, { name: "k" });\nlog("done");',
     {},
     ["logs", "error", "entry count"],
+    { walker: "logs [[\"done\"]]", engine: "L1000" },
     "the same loud refusal of every scope-opener, and the one whose identity hashes its member list",
   ],
   [
@@ -451,6 +502,7 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
     'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);',
     {},
     ["logs", "error", "entry count"],
+    { walker: "logs [[\"a\"]]", engine: "L1000" },
     "the engine refuses every scope-opener loudly (L1000) until its scope machinery lands; the transform ships the race's branch payload already",
   ],
   [
@@ -458,21 +510,26 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
     'await parallel({ one: () => sleep("1m", { name: "one" }), two: () => sleep("2m", { name: "two" }) }, { name: "both" });',
     {},
     ["error", "entry count"],
+    { walker: "logs []", engine: "L1000" },
     "the same loud refusal of every scope-opener",
   ],
 ];
 {
-  for (const [name, source, script, expected, why] of HELD) {
+  for (const [name, source, script, expected, pinned, why] of HELD) {
     const [w, e] = [await arm("walker", source, script), await arm("engine", source, script)];
     const diff = differences(w, e);
-    ok(`held out of the corpus, and still differing exactly as it is held: ${name}`, j(diff) === j(expected), {
+    // BOTH ARMS' ANSWERS, not only the field names that differ. Pinned to the fields alone, a hold
+    // stays green when the engine starts refusing something ELSE and still differs — the hold would
+    // then be recording a fact about the wrong defect. This is the same rule DIVERGENT carries.
+    ok(`held out of the corpus, and still differing exactly as it is held: ${name}`, j(diff) === j(expected) && answer(w) === pinned.walker && answer(e) === pinned.engine, {
       differs: diff,
       expected,
+      answers: { walker: answer(w), engine: answer(e) },
+      pinned,
       why,
-      engine: e.error ?? e.logs,
     });
   }
-  console.log(`  (${HELD.length} program(s) held out of the corpus, each pinned to the difference that holds it)`);
+  console.log(`  (${HELD.length} program(s) held out of the corpus, each pinned to both arms' answers)`);
 }
 
 // ---- one journal, either engine: each arm resumes from the other's ------------------------------
@@ -487,8 +544,9 @@ const HELD: readonly (readonly [string, string, object, readonly string[], strin
  * than quietly re-dispatching and agreeing by luck.
  *
  * The refusing handler is written here rather than reached for: an empty `SimHandler` looks like
- * one and is not — measured, it answers `sleep` perfectly happily, so five of these crossings would
- * have proved nothing while reading as though they proved everything.
+ * one and is not — measured, four of the five programs below RUN TO COMPLETION against it (only the
+ * unscripted turn refuses, L6001), so eight of the ten crossings would have proved nothing while
+ * reading as though they proved everything.
  */
 class RefusesEverything {
   static readonly REACHED = "the resume dispatched an effect instead of reading the journal";
