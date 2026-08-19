@@ -233,6 +233,7 @@ const expressionFor = (name: string, index: number, arm: DeclaredShape): string 
 const generatedCalls: string[] = [];
 const executedCalls: string[] = [];
 const unexercisedArms: string[] = [];
+const declaredArmKeys = new Set<string>();
 // The value the OTHER parameters are held at is never a compile-only arm, or holding one would carry
 // the call that cannot run into every other parameter's call as well.
 const holdArm = (name: string, index: number, shape: DeclaredShape): DeclaredShape =>
@@ -242,6 +243,7 @@ for (const [name, params] of Object.entries(surface.params)) {
   const first = params.map((shape, i) => expressionFor(name, i, holdArm(name, i, shape)));
   params.forEach((shape, index) => {
     for (const arm of armsOf(shape)) {
+      declaredArmKeys.add(keyOfArm(name, index, arm));
       const expression = expressionFor(name, index, arm);
       if (expression === undefined) {
         unexercisedArms.push(`${name}(#${index}) admits ${armKey(arm)}, and nothing here passes one`);
@@ -259,6 +261,22 @@ check(
   "every arm the declaration admits for a parameter is one this consumer passes a value of, so a widened parameter cannot arrive unexercised",
   unexercisedArms.length === 0,
   unexercisedArms.join(" | "),
+);
+// The two tables above are the only hand-written part of the enumeration, so they are held to the
+// declaration in both directions. A pin or a refusal for an arm the declaration no longer admits is
+// a dead anchor: it reads as coverage and covers nothing, exactly like a mutation row whose find has
+// drifted, and it would let the arm it once named come back unexercised under a new shape.
+const staleTable = (table: Readonly<Record<string, string>>): string[] =>
+  Object.keys(table).filter((key) => !declaredArmKeys.has(key));
+check(
+  "every arm this file pins a value for is one the declaration still admits, so a pin cannot outlive the shape it was written for",
+  staleTable(NAMED_ARMS).length === 0,
+  staleTable(NAMED_ARMS).join(" | "),
+);
+check(
+  "and every arm this file refuses to RUN is one the declaration still admits, so a refusal cannot outlive its reason",
+  staleTable(COMPILE_ONLY_ARMS).length === 0,
+  staleTable(COMPILE_ONLY_ARMS).join(" | "),
 );
 const consumerText = (calls: readonly string[]): string => `import type { NatsServerRow, ReapReport, ReapedBroker } from "./reap-smoke-brokers.mjs";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
@@ -289,6 +307,15 @@ check(
   "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
   liveReaps.length === 0,
   liveReaps.map((line) => line.trim()).join(" | "),
+);
+// And refusing to RUN an arm is bounded by what it may not empty: every callable the declaration
+// names is still called by the half that runs, so the refusal table cannot quietly grow until the
+// executed half proves nothing at all.
+const uncalled = Object.keys(surface.params).filter((name) => !new RegExp(`\\b${name}\\(`).test(EXECUTED_CONSUMER));
+check(
+  "and every callable the declaration names is still called by the half that RUNS, so holding an arm back cannot empty it",
+  uncalled.length === 0,
+  uncalled.join(" | "),
 );
 const ranPath = join(dirname(MODULE_PATH), `.declaration-consumer.${process.pid}.mjs`);
 let ran = { status: -1, output: `not run: the generated consumer would have reaped [${liveReaps.map((line) => line.trim()).join(" | ")}]` };
