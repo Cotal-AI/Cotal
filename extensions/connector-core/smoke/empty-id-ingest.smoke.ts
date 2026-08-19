@@ -116,6 +116,10 @@ const rawMsg = (id: string, text: string) =>
     parts: [{ kind: "text", text }],
   });
 
+// The raw connection and the agent are closed in the FINALLY, not on the success path: a red run
+// throws at its first assertion, and an open socket or an unstopped endpoint each keep the process
+// alive long after the FAILED line, which hangs whatever invoked the suite.
+let nc: Awaited<ReturnType<typeof connect>> | undefined;
 try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: {} } });
@@ -125,7 +129,7 @@ try {
   check("agent connected", agent.connected === true);
   await sleep(300);
 
-  const nc = await connect({ servers, maxReconnectAttempts: 0 });
+  nc = await connect({ servers, maxReconnectAttempts: 0 });
   const publish = async (id: string, text: string) => {
     nc.publish(subject, enc.encode(rawMsg(id, text)));
     await nc.flush();
@@ -162,13 +166,13 @@ try {
   const c4 = drainedTexts();
   check("two distinct REAL ids are both delivered", c4.includes("ra") && c4.includes("rb") && c4.length === 2, c4);
 
-  await nc.drain();
   console.log(`\nEMPTY-ID INGEST SMOKE OK ✅  (${pass} checks)`);
-  await agent.stop();
 } catch (e) {
   console.error(`\nEMPTY-ID INGEST SMOKE FAILED ❌  ${(e as Error).message}`);
   process.exitCode = 1;
 } finally {
+  try { await agent.stop(); } catch { /* already down or never up */ }
+  try { if (nc) await nc.drain(); } catch { /* broker already gone */ }
   releaseBroker();
   srv.kill("SIGKILL");
   await awaitExit(srv);
