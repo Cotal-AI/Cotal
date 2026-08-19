@@ -24,13 +24,13 @@
       "note": "Waiting and then discarding the result reaches the same hole as never waiting."
     },
     {
-      "name": "the journal keys a bind by the step's leaf, discarding the scope it ran under",
+      "name": "the bind matches on the step's leaf, discarding the scope it ran under",
       "file": "packages/lang/src/journal.ts",
-      "find": "  private static keyOf(key: StepKey): string {\n    return stepKeyString(key);\n  }\n",
-      "replace": "  private static keyOf(key: StepKey): string {\n    return `${key.kind}:${key.name}#${key.occurrence}`;\n  }\n",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const hit = [...this.byKey.entries()].find(([, e]) => e.kind === key.kind && e.name === key.name && e.occurrence === key.occurrence);\n    const k = hit?.[0] ?? Journal.keyOf(key);\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
       "expectRed": "the bind lands in the branch that asked for it, and its sibling running the same step is untouched",
       "cell": "the bind lands in the branch that asked for it, and its sibling running the same step is untouched",
-      "note": "Parallel branches run the SAME step, so the leaf alone cannot tell two siblings apart."
+      "note": "Severs the bind alone rather than every key in the package: parallel branches run the SAME step, so a leaf match takes the first sibling."
     },
     {
       "name": "the first attempt's record says it resolved when it expired",
