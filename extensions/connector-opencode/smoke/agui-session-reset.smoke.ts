@@ -45,7 +45,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { cotal } from "../src/plugin.js";
+import { bootPlugin } from "./_boot-plugin.js";
 
 async function freePort(): Promise<number> {
   const s = createNetServer();
@@ -158,7 +158,7 @@ Object.assign(process.env, {
 const probe = new CotalEndpoint({ space: SPACE, servers, card: { name: "Probe", kind: "agent", id: "probe" } });
 probe.on("error", () => {});
 
-type Hooks = Awaited<ReturnType<typeof cotal>>;
+type Hooks = Awaited<ReturnType<typeof bootPlugin>>;
 let hooks: Hooks | undefined;
 try {
   for (let i = 0; i < 50; i++) {
@@ -177,7 +177,7 @@ try {
   const onSubject = async (): Promise<number> =>
     (await probe.listChannels()).find((x: { channel: string; messages?: number }) => x.channel === CHANNEL)?.messages ?? 0;
 
-  hooks = await cotal();
+  hooks = await bootPlugin();
   await sleep(1_500);
   const fire = (event: unknown): Promise<void> => (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
   const part = (sessionID: string): Promise<void> => fire({ type: "message.part.updated", properties: { part: { sessionID } } });
