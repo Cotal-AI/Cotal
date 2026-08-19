@@ -50,13 +50,16 @@ export const SEAM_PROPOSED: Readonly<Record<string, string>> = Object.freeze({
 });
 
 /**
- * Operator selectors `unary` must answer beyond `-`, `+` and `~`.
+ * Every operator selector the emitter hands `unary`, and no other.
  *
- * `number` is `Number(v)`, which is what `UpdateExpression` charges its operand through
- * (`let o = {}; o++` is admitted, and the walker answers NaN there rather than the L4018 that `+o`
- * would raise). Surfaced with the member, because an op set is as much a contract as a name.
+ * `!` and `typeof` never reach here: neither can refuse, so both are emitted natively. An earlier
+ * draft added a `number` selector for `UpdateExpression`'s coercion; it was WITHDRAWN, because the
+ * walker charges that operand through a bare `Number(...)` with no refusal at all (`let o = {};
+ * o.c++` answers NaN where `+o.c` answers L4018), so the selector would carry no law. See
+ * `Emitter.toNumber`. An op set is as much a contract as a member name, which is why it is written
+ * down here rather than left implicit in the emitter.
  */
-export const UNARY_OPS: readonly string[] = Object.freeze(["-", "+", "~", "number"]);
+export const UNARY_OPS: readonly string[] = Object.freeze(["-", "+", "~"]);
 
 /** A site whose law has no ruled member and no surfaced proposal yet: refuse rather than invent one. */
 export class SeamPending extends Error {

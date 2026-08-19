@@ -15,6 +15,8 @@ import { parse } from "acorn";
 import { transform } from "../src/transform/index.js";
 import { SEAM_PROPOSED, SEAM_RULED } from "../src/transform/seam.js";
 import { ADMITTED_NODES } from "../src/syntax.js";
+import { run as walk } from "../src/interpret.js";
+import { SimHandler } from "../src/sim.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -390,6 +392,30 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   // all — so the emitted form cannot express the hazard whatever the validator does later.
   const { module } = transform("const o = { a: 1 }; log(o);");
   ok("an object literal's keys are emitted computed", module.includes('{ ["a"]: 1 }'), module.slice(0, 200));
+}
+
+// ---- 10) an update's coercion is native, because the walker's is ---------------------------------
+
+{
+  // `x++` reads its old value through a bare `Number(...)` in the walker, with NO refusal: a record
+  // there answers NaN, where `+o.c` on the same record answers L4018. So the update's coercion must
+  // NOT be charged to the seam's `unary` member, whose whole content is that refusal. This cell
+  // measures the walker rather than restating it, because the oracle is the reason for the rule.
+  const logs: unknown[] = [];
+  const r = await walk("const o = { c: {} }; o.c++; log(o.c);", {
+    runId: "u",
+    handler: new SimHandler({}),
+    onLog: (l) => logs.push([...l.values]),
+  });
+  ok("the walker coerces an update's operand without refusing", JSON.stringify(logs) === "[[null]]", { logs, value: r.value });
+
+  const update = transform("let n = 0; n++; const o = { c: 0 }; o.c++; log(n, o.c);").meta.sites;
+  ok("an update does not charge the seam's coercion law", (update.unary ?? 0) === 0, update);
+
+  // THE MIRROR. Without it, "never call unary" passes the cell above and silently drops L4018 from
+  // every `-x` in the language.
+  const negate = transform("const o = {}; log(-o);").meta.sites;
+  ok("a unary operator that can refuse still charges it", (negate.unary ?? 0) === 1, negate);
 }
 
 console.log(`\ntransform.smoke: ${pass} cells passed`);

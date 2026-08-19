@@ -585,6 +585,21 @@ class Emitter {
   }
 
   /** `x++`, `--o.count`: JavaScript's meaning, with the read charged through `Number` as the walker charges it. */
+  /**
+   * `x++`'s coercion is NATIVE, and deliberately not the seam's.
+   *
+   * The walker reads the old value with a bare `Number(...)` and no refusal at all, so `n++` on a
+   * record is NaN there while `-n` on the same record is L4018. Routing this through the ruled
+   * `unary` member would have to pick one of those laws, and either pick is a divergence: the
+   * refusing ops would start refusing what the walker answers NaN for, and a non-refusing
+   * `unary("number")` would be a seam op that carries no law — decoration at a crossing. ToNumber
+   * is a syntax operator, needs no binding, and is exactly `Number()` for every value a validated
+   * program can hold (BigInt, the one value they differ on, is refused at parse).
+   */
+  private toNumber(code: string): string {
+    return `(+(${code}))`;
+  }
+
   private update(node: AnyNode): string {
     const delta = node.operator === "++" ? "+ 1" : "- 1";
     const prefix = node.prefix === true;
@@ -597,13 +612,13 @@ class Emitter {
         const b = this.binding(arg);
         return b?.cell === true ? this.seam("set", `${arg.name as string}, ${q("v")}, ${value}`) : `(${arg.name as string} = ${value})`;
       };
-      return `((${old} = ${this.seam("unary", `${q("number")}, ${read}`)}), (${next} = ${old} ${delta}), ${write(next)}, ${prefix ? next : old})`;
+      return `((${old} = ${this.toNumber(read)}), (${next} = ${old} ${delta}), ${write(next)}, ${prefix ? next : old})`;
     }
     const obj = this.temp();
     const key = this.temp();
     return (
       `((${obj} = ${this.expr(arg.object as AnyNode)}), (${key} = ${this.memberKey(arg)}), ` +
-      `(${old} = ${this.seam("unary", `${q("number")}, ${this.seam("get", `${obj}, ${key}`)}`)}), (${next} = ${old} ${delta}), ` +
+      `(${old} = ${this.toNumber(this.seam("get", `${obj}, ${key}`))}), (${next} = ${old} ${delta}), ` +
       `${this.seam("set", `${obj}, ${key}, ${next}`)}, ${prefix ? next : old})`
     );
   }

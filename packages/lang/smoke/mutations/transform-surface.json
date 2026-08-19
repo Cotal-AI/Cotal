@@ -83,6 +83,26 @@
       "completionMarker": "ok the emitted module has no unbound reference: array and object literals",
       "cell": "the emitted module has no unbound reference: for with per-iteration closures",
       "note": "GRADED ON THE REFUSAL, not on a cell, and deliberately: the emitter asks the analysis the same question at a declaration as at a use, and an unrecorded declaration makes a per-iteration `for` head unresolvable. It fails LOUD (the emitter refuses to emit) rather than quietly emitting a plain binding for a cell, which is the outcome worth pinning - the quiet half is covered by the mutation above."
+    },
+    {
+      "name": "an update's coercion is charged to the seam's refusing member again",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `(+(${code}))`;",
+      "replace": "    return this.seam(\"unary\", `${q(\"number\")}, ${code}`);",
+      "expectRed": "an update does not charge the seam's coercion law",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "an update does not charge the seam's coercion law",
+      "note": "The walker reads `x++`'s old value through a bare `Number(...)` with no refusal (measured in the cell above: `o.c++` on a record answers NaN, where `-o` answers L4018). Routing it through `unary` either invents a lawless selector or starts refusing what the oracle answers NaN for."
+    },
+    {
+      "name": "every unary operator is emitted natively, so `-record` stops refusing",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return `((${t} = ${v}), typeof ${t} === \"number\" ? ${op}${t} : ${this.seam(\"unary\", `${q(op)}, ${t}`)})`;",
+      "replace": "        return `((${t} = ${v}), ${op}${t})`;",
+      "expectRed": "a unary operator that can refuse still charges it",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a unary operator that can refuse still charges it",
+      "note": "The mirror of the mutation above. `-o` on a record is L4018 in the walker and NaN in native JavaScript, so the fast path may only cover what it has already proved is a number."
     }
   ]
 }
