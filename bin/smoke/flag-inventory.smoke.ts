@@ -148,7 +148,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
-  ps: { flags: [...TARGET, "on:string"], positionals: false },
+  // #651: `--wide` (human facts line) / `--json` (machine rows) enrich the SAME listing; bare
+  // output is unchanged. Mutually exclusive by construction, refused rather than prioritized.
+  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean"], positionals: false },
   // `--no-reconnect` (2026-08, lane A1): attach re-establishes its session when the LINK dies,
   // so the flag is the opt OUT, for scripts that want one session and one exit code. Named
   // `no-reconnect` rather than a negation of a `reconnect` flag for the reason `input` gives

@@ -21,8 +21,13 @@ const nameFlag = (what: string) =>
  *  hatch: the manager that can act on a seat is the one HOSTING it, which is not necessarily the
  *  one that wins the class queue. */
 const onFlag = { name: "on", type: "string", value: "<instance>", description: "target a specific manager instance id (multi-manager space); default = class anycast" } as const;
+// #651: the same rows, two richer presentations. `--wide` stays human (one dim facts line per
+// seat); `--json` is the machine form (one JSON object per line, exactly the row the manager
+// sent). Mutually exclusive because they are two answers to "how should I read this".
+const wideFlag = { name: "wide", type: "boolean", description: "also print the per-seat facts the manager already records: model pin, cwd, pid, spawner, lifecycle uid, host/instance" } as const;
+const jsonFlag = { name: "json", type: "boolean", description: "machine-readable: one JSON object per seat per line (instance headers go to stderr)" } as const;
 export const stopFlags = [...targetFlags, nameFlag("managed agent to stop (required)"), onFlag] as const satisfies readonly FlagSpec[];
-export const psFlags = [...targetFlags, onFlag] as const satisfies readonly FlagSpec[];
+export const psFlags = [...targetFlags, onFlag, wideFlag, jsonFlag] as const satisfies readonly FlagSpec[];
 /** `--no-reconnect`: one session, exit when it ends, whatever ended it. The default reconnects,
  *  which is right for a person at a terminal and wrong for a script that wants a single run with a
  *  single exit code. */
@@ -88,6 +93,17 @@ type AgentRow = {
   mesh: string;
   authHealth?: string;
   authReason?: string;
+  // #651 enrichment: present only when the manager recorded the fact (absent is real state:
+  // no model pin; a runtime that owns no real process has no pid).
+  model?: string;
+  variant?: string;
+  cwd?: string;
+  pid?: number;
+  spawner?: string;
+  instanceId?: string;
+  host?: string;
+  lifecycleUid: string;
+  id: string;
 };
 
 /** Compact process age for a row: `12s`, `47m`, `3.5h`, `2d 7h`. */
@@ -234,8 +250,48 @@ function printAgentRow(r: AgentRow, indent = ""): void {
   if (r.authHealth && r.authReason) console.log(authColor(`${indent}    ${r.authReason}`));
 }
 
+/** The #651 wide facts for one seat, as one dim continuation line. Only fields the row actually
+ *  carries print: an absent fact (no model pin, a runtime with no owned pid) is real state and
+ *  prints nothing, never a fabricated placeholder. The lifecycle uid always prints (it is
+ *  required on the row); host/instance attribute the seat in a multi-manager scatter view. */
+function printWideFacts(r: AgentRow, indent = ""): void {
+  const facts: string[] = [];
+  // #651: render variant INDEPENDENTLY of model. Nesting it inside `if (r.model)` dropped a
+  // recorded variant-without-model from --wide while --json still carried it - a fact silently
+  // lost. Show it under the model when both are present, standalone when only the variant is.
+  if (r.model) facts.push(`model ${r.model}${r.variant ? ` (${r.variant})` : ""}`);
+  else if (r.variant) facts.push(`variant ${r.variant}`);
+  if (r.cwd) facts.push(`cwd ${r.cwd}`);
+  if (r.pid !== undefined) facts.push(`pid ${r.pid}`);
+  if (r.spawner) facts.push(`spawner ${r.spawner}`);
+  facts.push(`uid ${r.lifecycleUid}`);
+  if (r.instanceId) facts.push(`instance ${r.instanceId}`);
+  if (r.host) facts.push(`host ${r.host}`);
+  console.log(c.dim(`${indent}    ${facts.join("  ·  ")}`));
+}
+
+/** How one seat renders in the chosen presentation. `--json` prints the manager's row EXACTLY as
+ *  received (one JSON object per line); `--wide` adds the facts line under the unchanged compact
+ *  row; bare stays exactly today's output. */
+function printSeat(r: AgentRow, opts: { wide: boolean; json: boolean }, indent = ""): void {
+  if (opts.json) {
+    console.log(JSON.stringify(r));
+    return;
+  }
+  printAgentRow(r, indent);
+  if (opts.wide) printWideFacts(r, indent);
+}
+
 export async function ps(args: ParsedArgs): Promise<void> {
   const v = args.values as FlagValues<typeof psFlags>;
+  // #651 presentations: bare output is UNCHANGED by this change - only the flags enrich. The two
+  // forms are mutually exclusive because they answer "how do I read this" two different ways;
+  // inventing a precedence would be a silent fallback, so refuse instead.
+  const opts = { wide: v.wide === true, json: v.json === true };
+  if (opts.wide && opts.json) {
+    console.error(c.red("✗ --wide and --json are mutually exclusive: --wide is the human table, --json the machine form"));
+    process.exit(1);
+  }
   const on = onInstanceOrExit(v.on, "cotal ps");
   // `--on` must reach the MINT, not just the invoke: the one-shot instrument is issued during
   // this resolve, and a credential cannot gain an instance rail after it is minted.
@@ -247,10 +303,12 @@ export async function ps(args: ParsedArgs): Promise<void> {
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
-      console.log(c.dim("(no managed agents)"));
+      // A JSON stream with zero rows is zero lines on stdout, not a prose line that would
+      // corrupt a consumer reading JSONL.
+      if (!opts.json) console.log(c.dim("(no managed agents)"));
       return;
     }
-    for (const r of rows) printAgentRow(r);
+    for (const r of rows) printSeat(r, opts);
     return;
   }
 
@@ -274,10 +332,10 @@ export async function ps(args: ParsedArgs): Promise<void> {
     failIfNotOk(reply);
     const rows = (reply.data as AgentRow[]) ?? [];
     if (!rows.length) {
-      console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim("(no managed agents)"));
       return;
     }
-    for (const r of rows) printAgentRow(r);
+    for (const r of rows) printSeat(r, opts);
     return;
   }
 
@@ -294,10 +352,10 @@ export async function ps(args: ParsedArgs): Promise<void> {
   if (instances.length === 1 && instances[0].reachable && !instances[0].error) {
     const rows = (instances[0].data as AgentRow[]) ?? [];
     if (!rows.length) {
-      console.log(c.dim("(no managed agents)"));
+      if (!opts.json) console.log(c.dim("(no managed agents)"));
       return;
     }
-    for (const r of rows) printAgentRow(r);
+    for (const r of rows) printSeat(r, opts);
     return;
   }
   // Multi-manager: group under a per-instance header; unreachable instances are shown, never dropped.
@@ -310,20 +368,23 @@ export async function ps(args: ParsedArgs): Promise<void> {
   // was named and then withheld. Width costs one line here; the prefix cost the flag entirely.
   for (const inst of instances) {
     const label = `manager ${inst.instanceId}`;
+    // Under --json the instance headers are STRUCTURE, not data: they go to stderr so stdout is
+    // pure rows (each row carries its own instanceId/host, so nothing is lost).
+    const header = (line: string): void => { (opts.json ? console.error : console.log)(line); };
     if (!inst.reachable) {
       // Not "unreachable": the client holds no network verdict. What it knows is which question it
       // asked about this instance and what came back, which is narrower and more useful. The four
       // cases and their wording are `silentManagerRow`.
-      console.log(`${c.bold(label)}  ${silentManagerRow(inst.liveness, inst.instanceId)}`);
+      header(`${c.bold(label)}  ${silentManagerRow(inst.liveness, inst.instanceId)}`);
       continue;
     }
     if (inst.error) {
-      console.log(`${c.bold(label)}  ${c.red(inst.error)}`);
+      header(`${c.bold(label)}  ${c.red(inst.error)}`);
       continue;
     }
     const rows = (inst.data as AgentRow[]) ?? [];
-    console.log(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
-    for (const r of rows) printAgentRow(r, "  ");
+    header(`${c.bold(label)}  ${c.dim(rows.length ? `${rows.length} agent${rows.length === 1 ? "" : "s"}` : "no agents")}`);
+    for (const r of rows) printSeat(r, opts, "  ");
   }
 }
 
