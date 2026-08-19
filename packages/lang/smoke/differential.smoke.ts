@@ -25,6 +25,7 @@ import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
 import { BUILTINS, EFFECT_KINDS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
 import { ADMITTED_NODES } from "../src/syntax.js";
+import { parseModule, unbound } from "./_module-shape.js";
 import { parse } from "acorn";
 import { spawnSync } from "node:child_process";
 
@@ -914,6 +915,28 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const missingKinds = kinds.filter((k) => !reachedKinds.has(k));
   ok("and a corpus program journals every kind the engine can write", missingKinds.length === 0, missingKinds);
   console.log(`  (${ADMITTED_NODES.size} admitted node types and ${kinds.length} journal kinds, each reached by a corpus program the engine ran)`);
+}
+
+// ---- and the surface that holds the compartment closed, over THIS corpus ------------------------
+
+{
+  // MEASURED BY LANE H, and it changes what this is worth: inside the shipped SES compartment an
+  // unbound READ evaluates to `undefined` and throws nothing - the scope proxy answers `has` for
+  // every name - while an unbound WRITE still refuses. So the host's loud free-identifier clause is
+  // a backstop for the write half only, and what holds the read half closed is that the emitted
+  // module has no free identifier to begin with.
+  //
+  // `transform.smoke` asserts that over ITS corpus, which is a list written to reach every node
+  // type. This one is the list of programs the gate actually RUNS, and it is five times the size;
+  // a shape that only lives here would have had nothing checking it. The resolver is shared with
+  // that suite, where a positive control requires it to name a free name that does exist.
+  const open: string[] = [];
+  for (const [name, source] of CORPUS) {
+    const free = unbound(parseModule(transform(source).module));
+    if (free.length > 0) open.push(`${name}: ${free.join(",")}`);
+  }
+  ok("every corpus program emits a module with no free identifier, which is what the compartment cannot catch", open.length === 0, open);
+  console.log(`  (${CORPUS.length} emitted modules resolved, ${open.length} with a free identifier)`);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);
