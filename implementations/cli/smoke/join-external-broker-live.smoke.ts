@@ -170,9 +170,13 @@ try {
   for (const pidfile of ["nats.pid", "delivery.pid", "manager.pid"]) {
     check(`the joining root has no ${pidfile}`, !existsSync(join(joinRoot, ".cotal", pidfile)));
   }
-  // The invariant that MAKES client-only correct rather than merely convenient: the manager lease
-  // is a per-space singleton, so "every machine runs its own manager" is a contradiction, not a
-  // configuration. Prove it here so nobody re-opens the question from first principles.
+  // What the lease primitive enforces is exclusivity PER MANAGER INSTANCE: the key is
+  // `lease.<instanceId>` and acquisition is a `create`, so a held instance lease cannot be taken by
+  // anyone else. It is deliberately NOT a per-space singleton - `readManagerLease` documents that
+  // "several managers may hold one space, each renewing its own lease.<instanceId>" - so this cell
+  // asserts the exclusivity that exists and does not restate a space-wide claim the code does not
+  // make. Whatever keeps a joining machine client-only is decided where a manager may START, not
+  // here.
   const leaseA = new CotalEndpoint({
     space: SPACE, servers: broker.servers, creds: await mintCreds(auth, newIdentity(), "supervisor"),
     card: { name: "mgr-a", kind: "endpoint" }, consume: false, watchPresence: false, registerPresence: false,
@@ -183,14 +187,16 @@ try {
   });
   await leaseA.start(); cleanup.push(() => leaseA.stop());
   await leaseB.start(); cleanup.push(() => leaseB.stop());
-  await leaseA.acquireManagerLease({ holder: leaseA.ref().id, runtime: "pty", root: boxRoot, pid: process.pid });
-  let secondRefused = false;
+  const INSTANCE_A = "mgr-a-instance";
+  await leaseA.acquireManagerLease({ holder: leaseA.ref().id, instanceId: INSTANCE_A, runtime: "pty", root: boxRoot, pid: process.pid });
+  let sameInstanceRefused = false;
   try {
-    await leaseB.acquireManagerLease({ holder: leaseB.ref().id, runtime: "pty", root: joinRoot, pid: process.pid });
+    // A DIFFERENT endpoint, on a different root, reaching for the instance lease A already holds.
+    await leaseB.acquireManagerLease({ holder: leaseB.ref().id, instanceId: INSTANCE_A, runtime: "pty", root: joinRoot, pid: process.pid });
   } catch {
-    secondRefused = true;
+    sameInstanceRefused = true;
   }
-  check("a second manager cannot hold the space's lease (why joiners are client-only)", secondRefused);
+  check("a held manager-instance lease cannot be taken by another holder", sameInstanceRefused);
 
   // ── (v) local teardown on the joining machine leaves the box's mesh alone ────────────────────
   // `cotal down` sweeps by root; `pruneMesh` is the liveness sweep. Neither may delete a record

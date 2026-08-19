@@ -137,7 +137,9 @@ const check = (name: string, ok: boolean, detail: unknown = "") =>
 
 const LIVE_BROKER = "nats://broker.cotal.ai:4222";
 /** Recorded in a registry entry that other tooling on this box may dial. Asserted FIRST. */
-const RECORDED_SERVER = "nats://127.0.0.1:14333";
+// Annotated `string` rather than left as a literal: both cells below are tripwires, and comparing
+// two literal types is reported as an unintentional comparison even though holding is the point.
+const RECORDED_SERVER: string = "nats://127.0.0.1:14333";
 
 const scratch: string[] = [];
 

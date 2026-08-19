@@ -144,13 +144,15 @@ const T: MeshTarget = {
   space: "alpha",
   personaRoot: "/tmp/proj/.cotal/agents",
   source: "registry",
+  mode: "open",
+  tlsRequired: false,
 };
 check("message: unreachable names the server + `cotal up`", (() => {
   const m = preflightMessage("unreachable", T, false);
   return m.includes(DEAD) && m.includes("cotal up") && !m.includes("removed");
 })(), preflightMessage("unreachable", T, false));
-check("message: unreachable + pruned appends the 'stale registry entry — removed' note", () =>
-  preflightMessage("unreachable", T, true).includes("stale registry entry - removed") ? true : false);
+check("message: unreachable + pruned appends the 'stale registry entry - removed' note",
+  preflightMessage("unreachable", T, true).includes("stale registry entry - removed"));
 check("message: pruned-suffix is gated on the prune flag", preflightMessage("unreachable", T, true) !== preflightMessage("unreachable", T, false));
 for (const kind of ["registry-creds-rejected", "registry-open-now-auth", "creds-rejected", "open-wants-auth"] as const)
   check(`message: ${kind} names the server + leads with ✗`, (() => {
