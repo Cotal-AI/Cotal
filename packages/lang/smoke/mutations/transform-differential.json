@@ -32,6 +32,15 @@
       "note": "A record has NO prototype to reach - `o.constructor` is undefined on both arms - so the cell that catches this is a string's, whose curated table refuses the name L4020. A native index answers the host String constructor there, which is a live capability inside a program that is supposed to have none."
     },
     {
+      "name": "a member WRITE is emitted as a native index, so the write path's own refusals stop happening",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "const write = (value: string): string => this.seam(\"set\", `${obj}, ${key}, ${value}`);",
+      "replace": "const write = (value: string): string => `${obj}[${key}] = ${value}`;",
+      "expectRed": "identical on both engines: refusals: a curated key on the write path",
+      "cell": "identical on both engines: refusals: a curated key on the write path",
+      "note": "The mirror of the read mutant above. A native write silently succeeds where the walker refuses: `__proto__` reaches the real prototype and a member onto a string is dropped on the floor. Measured before it was aimed: with the write native, these two corpus programs are the first to red, and the callable-then divergences below red with them."
+    },
+    {
       "name": "a catch binds the raw thrown value, so a program reads a different error record",
       "file": "packages/lang/src/transform/emit.ts",
       "find": "      const caught = this.seam(\"caught\", raw);",
