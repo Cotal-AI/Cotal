@@ -290,9 +290,15 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     const wLogs: unknown[][] = [];
     const eLogs: unknown[][] = [];
     await walkerRun(src, { runId: "idx", handler: new SimHandler({}), onLog: (l) => wLogs.push([...l.values]) });
-    await runOnEngine(src, transform(src).module, { runId: "idx", handler: new SimHandler({}), evaluate: plainly, onLog: (l) => eLogs.push([...l.values]) });
+    // CAPTURED, not awaited into the assertion. This is the FIRST `runOnEngine` in the file, so any
+    // break that stops a run starting at all arrives here first - measured: the mutant that raises
+    // the node floor past every version that exists killed this block anonymously and the suite
+    // never printed a name. A cell has to be able to report its own failure.
+    const refused = await caught(async () => {
+      await runOnEngine(src, transform(src).module, { runId: "idx", handler: new SimHandler({}), evaluate: plainly, onLog: (l) => eLogs.push([...l.values]) });
+    });
     ok("while an IN-RANGE index write completes on the walker", JSON.stringify(wLogs) === '[["z"]]', wLogs);
-    ok("and on the engine, with the same value and the same shape", JSON.stringify(eLogs) === JSON.stringify(wLogs) && sameShapes(eLogs, wLogs), { engine: eLogs, shapes: shapes(eLogs) });
+    ok("and on the engine, with the same value and the same shape", refused === undefined && JSON.stringify(eLogs) === JSON.stringify(wLogs) && sameShapes(eLogs, wLogs), { refused: String(refused), engine: eLogs, shapes: shapes(eLogs) });
   }
   ok(
     "a LONGER length is L4017 for the same reason",

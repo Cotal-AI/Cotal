@@ -671,10 +671,10 @@
       "file": "packages/lang/src/engine/host.ts",
       "find": "export const NODE_FLOOR = 22;",
       "replace": "export const NODE_FLOOR = 999;",
-      "expectRed": "runOnEngine RAN this program rather than refusing it at the boundary",
-      "completionMarker": "ok and the ambient frame is what a framed call reads",
-      "cell": "runOnEngine RAN this program rather than refusing it at the boundary",
-      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal has to fire on the first program that goes through `runOnEngine`, and it does. That is the reachability half, and it is graded by a cell four sections before the floor's own."
+      "expectRed": "and on the engine, with the same value and the same shape",
+      "completionMarker": "ok while an IN-RANGE index write completes on the walker",
+      "cell": "and on the engine, with the same value and the same shape",
+      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal has to fire on the FIRST program that goes through `runOnEngine`, and it does. Which cell that is, is a POSITION and not a name, and it moved: the section-3 control that compares an in-range index write on both arms is now the first engine run in the file, so the refusal arrives there, four sections before the cell that used to name it. Measured after the insertion, not assumed - the first run of this ledger graded WRONG-RED and that is how the shift was found. The control captures its engine run for the same reason: awaited into the assertion, this mutant killed the block anonymously instead of failing a named cell. The floor's own section still states the rule; what this grades is that a real run reaches it."
     },
     {
       "name": "a node below the floor is allowed through",
