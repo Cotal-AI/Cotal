@@ -36,5 +36,6 @@
       "replace": "const INVISIBLE_AFTER_JSON = /[\\u007e-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
       "expectRed": "0.6 the bounds are exact: the codepoint on each side of every range is left alone"
     }
-  ]
+  ],
+  "progressPattern": "^[0-9]\\. "
 }
