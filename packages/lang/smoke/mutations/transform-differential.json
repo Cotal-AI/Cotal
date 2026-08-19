@@ -160,11 +160,20 @@
     {
       "name": "the shape signature goes shallow, so a record carrying a function reads as an empty one",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "        : typeof v === \"object\" && carriesFunction(v)\n          ? \"object+function\"\n          : typeof v;",
-      "replace": "        : typeof v;",
+      "find": "          : typeof v === \"object\"\n            ? carriesCode(v)\n              ? \"object+code\"\n              : \"object\"\n            : typeof v;",
+      "replace": "          : typeof v;",
       "expectRed": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function",
-      "cell": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function",
-      "note": "The first spelling of this signature WAS shallow, and it failed the two rows it had been added for: `{ g: (x) => x }` and `{}` both read `object`, which is the same conflation one level down. Measured before it was aimed - the four top-level pairs still pass shallow, so only the nesting pair reds."
+      "cell": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function, which is the nesting a shallow signature missed",
+      "note": "The first spelling of this signature WAS shallow, and lane H measured that it failed the two rows it had been added for: `{ g: (x) => x }` and `{}` both read `object`, and it is the NESTED closure rather than the bare one that killed the worker with a DataCloneError. The top-level pairs still pass shallow, so only the nesting controls red."
+    },
+    {
+      "name": "negative zero loses its sign in the signature, so `0 / -1` reads as zero",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "    : Object.is(v, -0)\n      ? \"-0\"\n",
+      "replace": "",
+      "expectRed": "the comparator finds a difference the rendering cannot show: zero against negative zero",
+      "cell": "the comparator finds a difference the rendering cannot show: zero against negative zero, which `0 / -1` produces in an ordinary program",
+      "note": "Lane H's second hole in the first spelling. JSON draws -0 as `0` and so does a bare `typeof`, and `0 / -1`, `-0` and `0 * -1` are three ordinary programs that produce a true one, measured on both arms - they are corpus rows now, so this bit has live evidence and not only a control."
     }
   ],
   "completionMarker": "differential.smoke:"

@@ -25,6 +25,7 @@ import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
 import { BUILTINS, EFFECT_KINDS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
 import { ADMITTED_NODES } from "../src/syntax.js";
+import { assertNoCode } from "../src/values.js";
 import { parseModule, unbound } from "./_module-shape.js";
 import { parse } from "acorn";
 import { spawnSync } from "node:child_process";
@@ -95,35 +96,50 @@ const j = (v: unknown) => JSON.stringify(v);
  * this wave cares about most, a live closure handed to a host where the other arm handed absence.
  * Measured, not reasoned: `log((x) => x)` and `log(o.b)` both render `[[null]]` on the walker.
  *
- * Four decisions here, each on purpose. `null` is NAMED rather than left as "object", because
- * undefined-versus-null is the distinction this wave leans on hardest (it is why `get`'s cell test
- * is `hasOwn` and not truthiness). NaN and the infinities are named for the same reason they are
- * the problem: JSON draws them as `null` too. A container that CARRIES a function anywhere inside
- * it is named apart from one that does not — a shallow `typeof` would have drawn `{ g: (x) => x }`
- * and `{}` alike, which is the exact pair the rows about a record carrying a function exist to
- * tell apart, so a signature that could not see it would have failed the cells it was added for.
- * Everything else is bare `typeof`: this stays a SHAPE and does not become a second serializer
- * with blind spots of its own to argue about.
+ * Five decisions here, each on purpose, and the fourth and fifth were lane H's after they ran the
+ * first spelling against the pairs it has to separate. `null` is NAMED rather than left as
+ * "object", because undefined-versus-null is the distinction this wave leans on hardest (it is why
+ * `get`'s cell test is `hasOwn` and not truthiness). NaN and the infinities are named for the same
+ * reason they are the problem: JSON draws them as `null` too. NEGATIVE ZERO is named, because JSON
+ * draws it as `0` and `0 / -1` is an ordinary program. A container that CARRIES CODE anywhere
+ * inside it is named apart from one that does not — a shallow `typeof` drew `{ g: (x) => x }` and
+ * `{}` alike, which is the exact pair these rows exist to separate, and it is the NESTED closure
+ * rather than the bare one that killed the worker with a DataCloneError. Everything else is bare
+ * `typeof`: this stays a SHAPE, one bit per hazard, with no key names, depth or ordering in it, so
+ * it never becomes a second serializer with blind spots of its own to argue about.
+ *
+ * `carriesCode` CATCHES `assertNoCode` rather than re-implementing it, which is the load-bearing
+ * part: that predicate is what the log rule itself is built on, so the signature and the rule
+ * cannot drift apart. A hand-rolled walk here — which is what the first version of this file had —
+ * is a second answer to "does this carry code", and the first one to change is the one nobody
+ * re-reads. It carries its own `seen` set, so a cyclic value costs nothing extra, and arrays come
+ * along for free because `typeof []` is "object": `[fn]` and `[undefined]` both render `[null]`.
  */
-const carriesFunction = (v: unknown, seen: Set<object> = new Set()): boolean => {
-  if (typeof v === "function") return true;
-  if (v === null || typeof v !== "object" || seen.has(v)) return false;
-  seen.add(v);
-  return Object.values(v as Record<string, unknown>).some((x) => carriesFunction(x, seen));
+const carriesCode = (v: unknown): boolean => {
+  try {
+    assertNoCode(v, "v");
+    return false;
+  } catch {
+    return true;
+  }
 };
 
 const shapeOf = (v: unknown): string =>
   v === null
     ? "null"
-    : typeof v === "number" && Number.isNaN(v)
-      ? "NaN"
-      : typeof v === "number" && !Number.isFinite(v)
-        ? v > 0
-          ? "Infinity"
-          : "-Infinity"
-        : typeof v === "object" && carriesFunction(v)
-          ? "object+function"
-          : typeof v;
+    : Object.is(v, -0)
+      ? "-0"
+      : typeof v === "number" && Number.isNaN(v)
+        ? "NaN"
+        : typeof v === "number" && !Number.isFinite(v)
+          ? v > 0
+            ? "Infinity"
+            : "-Infinity"
+          : typeof v === "object"
+            ? carriesCode(v)
+              ? "object+code"
+              : "object"
+            : typeof v;
 
 const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((line) => line.map(shapeOf)));
 
@@ -350,6 +366,12 @@ log("rounds", rounds, r.status);`,
   // absence and NaN are values, not functions, and both arms log them as they are. The trace is
   // not the journal.
   ["absence and NaN are data, and still log", "const o = { a: 1 }; log(o.b, 0 / 0);", {}],
+  // AND THE VALUES JSON CANNOT DRAW, as programs rather than as hand-built control pairs. Measured
+  // on both arms: `0 / -1`, `-0` and `0 * -1` are all a true negative zero, and dividing into one
+  // gives -Infinity, so the shape leg has live evidence in the corpus and not only in its controls.
+  // Both render as `0` and `null`; only the shapes say which value crossed.
+  ["negative zero, three ways to reach it", "log(0 / -1, -0, 0 * -1);", {}],
+  ["and the sign it carries, read back out", "const n = 0 / -1; log(1 / n);", {}],
   // AND THE SAME QUESTION WHERE THE RECEIVER IS AN ARRAY, which was the divergence this row was
   // written as: the walker answered L4014 and the engine L4018, because the engine asked the value's
   // rule before the member rule. Ruled - target-kind, then the freeze, then that kind's member rule,
@@ -522,7 +544,9 @@ const reachedKinds = new Set<string>();
   shapeOnly("absence against a live closure, which is the hazard the log rule exists for", [[undefined]], [[(x: number) => x]]);
   shapeOnly("absence against NaN", [[undefined]], [[Number.NaN]]);
   shapeOnly("NaN against Infinity", [[Number.NaN]], [[Number.POSITIVE_INFINITY]]);
-  shapeOnly("an empty record against one carrying a function", [[{}]], [[{ g: (x: number) => x }]]);
+  shapeOnly("an empty record against one carrying a function, which is the nesting a shallow signature missed", [[{}]], [[{ g: (x: number) => x }]]);
+  shapeOnly("an array of absence against an array carrying code, which renders the same either way", [[[undefined]]], [[[(x: number) => x]]]);
+  shapeOnly("zero against negative zero, which `0 / -1` produces in an ordinary program", [[0]], [[-0]]);
   // AND THE NEGATIVE HALF: the shape leg must not report a difference where there is none, or it
   // would red every row in the suite and mean nothing.
   ok("and reports no shape difference between two arms that logged the same values", !differences({ ...base, logs: [[1, "a", null]] }, { ...base, logs: [[1, "a", null]] }).includes("log shapes"));
@@ -570,8 +594,8 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // makes of a live closure. Three doors: the value itself, a function nested in a record, and a
   // namespace, which is a record of them.
   ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016"],
-  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+function"]]', "L4016"],
-  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+function"]]', "L4016"],
+  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+code"]]', "L4016"],
+  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+code"]]', "L4016"],
 ];
 
 {
