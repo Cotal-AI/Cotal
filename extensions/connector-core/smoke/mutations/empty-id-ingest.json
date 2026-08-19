@@ -12,7 +12,10 @@
     "id while the derivation keeps guarding the other reads. K3 is the opposite authoring error, not a",
     "relapse: a fix that stopped deduping entirely would pass every empty-id cell and silently weaken",
     "the coalescing the cross-path transition window depends on, so the same-real-id cell holds that",
-    "side and K3 proves it holds it.",
+    "side and K3 proves it holds it. K4 is the write-side twin found by the contract lens on the",
+    "successor review: an exact-id drain by a surfaced empty id selected EVERY pending empty-id item",
+    "at once (acked, marked handled, never surfaced), so the requestable set is filtered by the same",
+    "never-a-key rule on the write side.",
     "",
     "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent by RELATIVE SOURCE",
     "PATH (../src/agent.js), so the bytes mutated are the bytes graded: no dist in the path and no",
@@ -26,9 +29,24 @@
     "empty id in the handled or protected sets would arm the exact collapse this fix removes against",
     "any future read-site relapse. The recall-lane id keys (focusExcludedIds, aheadDelivered) are a",
     "narrower same-family residual on the focus recall path, not the ingest delivery this change",
-    "owns, and are named here so the next reader inherits the boundary rather than the surprise."
+    "owns, and are named here so the next reader inherits the boundary rather than the surprise.",
+    "Two further residuals are named in the PR body rather than here: the connector adapters key",
+    "surface/commit bookkeeping by raw id (they are covered only through drainInboxIds no longer",
+    "treating an empty id as requestable), and Plane-3 durable fan-out derives its publish msgID from",
+    "msg.id, so distinct empty-id messages can publish-dedupe inside the broker's duplicate window on",
+    "a durable channel before this receiver ever sees them. Both are their own issues; the receiver",
+    "guarantee here stops at what this layer can see."
   ],
   "mutations": [
+    {
+      "name": "K4 the exact-id drain treats an empty id as requestable again and sweeps the inbox",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const requested = [...new Set(ids)].filter((id) => id !== \"\");",
+      "replace": "    const requested = [...new Set(ids)];",
+      "expectRed": "drainInboxIds([\"\"]) sweeps nothing",
+      "cell": "drainInboxIds([\"\"]) sweeps nothing",
+      "note": "The write-side twin: a host that surfaced one empty-id item drains by the ids it surfaced, and \"\" is the only name it holds. Without the filter that request selects every pending empty-id item, acking and marking handled messages the host never showed, while the same drain call returns only the one item. Found by the contract lens on the first review round and folded per the grader's direction."
+    },
     {
       "name": "K1 the ingest dedup keys on the raw id again, empty included",
       "file": "extensions/connector-core/src/agent.ts",

@@ -166,6 +166,20 @@ try {
   const c4 = drainedTexts();
   check("two distinct REAL ids are both delivered", c4.includes("ra") && c4.includes("rb") && c4.length === 2, c4);
 
+  // ---- Cell 5: an exact-id drain by a surfaced "" sweeps nothing (the drainInboxIds twin, #624) ----
+  // A host frame that surfaced one empty-id item drains by the ids it surfaced, and "" is the only
+  // name it holds for it. Before the fold that request selected EVERY pending empty-id item at once:
+  // acked, marked handled, gone, while the host showed one. Guarded, the request is not a key on the
+  // write side either: nothing is swept, and a scope drain still delivers all three.
+  await publish("", "sweep-a");
+  await publish("", "sweep-b");
+  await publish("", "sweep-c");
+  await waitFor(() => agent.inboxCount() === 3, "three empty-id messages to buffer");
+  const exact = agent.drainInboxIds([""]);
+  check("drainInboxIds([\"\"]) sweeps nothing", agent.inboxCount() === 3 && exact.items.length === 0, { inbox: agent.inboxCount(), items: exact.items.length });
+  const c5 = drainedTexts();
+  check("a scope drain still delivers all three empty-id messages", c5.length === 3 && c5.includes("sweep-a") && c5.includes("sweep-b") && c5.includes("sweep-c"), c5);
+
   console.log(`\nEMPTY-ID INGEST SMOKE OK ✅  (${pass} checks)`);
 } catch (e) {
   console.error(`\nEMPTY-ID INGEST SMOKE FAILED ❌  ${(e as Error).message}`);

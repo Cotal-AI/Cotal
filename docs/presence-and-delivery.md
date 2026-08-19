@@ -89,8 +89,9 @@ Channel delivery has two wire-observable classes, fixed per channel
   machinery behind the backstop is the [delivery daemon](delivery-daemon.md).
 
 A message delivered both ways is one logical delivery; receivers dedupe by `id`. An
-empty `id` is never a dedup key: distinct messages without an id are delivered, not
-collapsed, and may surface more than once. The
+`id` of the empty string is never a dedup key: distinct messages that carry it are delivered,
+not collapsed, and may surface more than once. An absent `id` is a malformed envelope (SPEC
+§5), not this case. The
 space default class is set at creation from the deployment profile (local/self-hosted ⇒
 `durable`); a channel can override it.
 

@@ -617,9 +617,13 @@ export class MeshAgent extends EventEmitter {
   }
 
   /** Ack exact surfaced ids without assuming they still form the physical inbox prefix. Every
-   *  requested id is marked handled, including an item overflow-evicted during the turn. */
+   *  requested id is marked handled, including an item overflow-evicted during the turn.
+   *  #624: an empty id is never a dedup key, so it is not a requestable one either: a host that
+   *  drains by a surfaced "" would otherwise sweep EVERY pending empty-id item in one call, acking
+   *  and marking handled messages it never surfaced. Such a request is dropped here (no selection,
+   *  no missing report), and the items stay buffered for a scope drain. */
   drainInboxIds(ids: readonly string[]): ExactDrainResult {
-    const requested = [...new Set(ids)];
+    const requested = [...new Set(ids)].filter((id) => id !== "");
     const wanted = new Set(requested);
     const selected = this.inbox.filter((p) => wanted.has(p.item.id));
     const present = new Set(selected.map((p) => p.item.id));
