@@ -197,10 +197,10 @@
       "name": "a cell is renamed and its aim is left behind, on this suite's config",
       "file": "packages/lang/smoke/differential.smoke.ts",
       "find": "  [\"a dead-zone write, plainly\", \"const f = () => { n = 1; }; f(); let n = 0; log(n);\", {}, \"L2004\"],",
-      "replace": "  [\"a dead-zone write, plainly enough\", \"const f = () => { n = 1; }; f(); let n = 0; log(n);\", {}, \"L2004\"],",
+      "replace": "  [\"a dead-zone write, on its own\", \"const f = () => { n = 1; }; f(); let n = 0; log(n);\", {}, \"L2004\"],",
       "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
       "cell": "every mutation's expectRed names exactly one cell this suite printed",
-      "note": "A corpus row's name IS a cell's name here, so renaming a row is how this suite's aims go stale - and it changes no behaviour, so no other cell reds. Aimed at the row this config already anchors on, which is the pair most likely to drift together in a future edit."
+      "note": "A corpus row's name IS a cell's name here, so renaming a row is how this suite's aims go stale - and it changes no behaviour, so no other cell reds. Aimed at the row this config already anchors on, which is the pair most likely to drift together in a future edit. The rename REPLACES the trailing word rather than extending it: expectRed is matched as a substring, so `..., plainly enough` still contains `..., plainly` and the stale aim keeps matching. Measured as a SURVIVOR in that spelling before this one."
     }
   ],
   "completionMarker": "differential.smoke:"

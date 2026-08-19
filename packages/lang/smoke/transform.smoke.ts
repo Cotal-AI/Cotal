@@ -114,10 +114,15 @@ const nodeTypes = (root: Node): Set<string> => {
  * boundary. Captured here, the identical break reds by name, and the config aims at that name.
  */
 {
+  // THE PROGRAM IS CHOSEN, NOT ARBITRARY, and the first one here was wrong. `const a = 1; log(a);`
+  // does NOT reach the emitter's throw when a declarator goes unrecorded — an unresolved plain read
+  // falls through to the free-name route — so the guard passed under the mutant and the file died
+  // 31 cells later exactly as before. Measured on both trees: a `for` header's declarator does
+  // reach it. A guard whose subject cannot produce the fault is a cell that only looks like one.
   let thrown: unknown;
   let emitted = "";
   try {
-    emitted = transform("const a = 1; log(a);").module;
+    emitted = transform("const a = 1; for (let i = 0; i < a; i = i + 1) { log(i); }").module;
   } catch (e) {
     thrown = e;
   }
