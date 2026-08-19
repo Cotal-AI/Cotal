@@ -132,15 +132,13 @@
       "note": "A second return-field drift, on a field no hand-written consumer read. It is here because the fixed consumer that preceded the surface reader was beaten twice on exactly this axis, once on supported and once on this counter, by two different reviews. Since the shape is read out of the declaration rather than named here, both die to the same cell."
     },
     {
-      "name": "a declared field drifts to a type the reducer cannot check",
-      "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": " * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: boolean }} ReapReport\n",
-      "replace": " * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: boolean, meta?: object }} ReapReport\n",
-      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
-      "afterRestore": "pnpm gen:reaper-dts",
+      "name": "the reducer stops reducing a primitive, so a checked leaf becomes unverifiable",
+      "file": "bin/smoke/gen-reaper-dts.mts",
+      "find": "const PRIMITIVES = new Set([\"string\", \"number\", \"boolean\", \"undefined\", \"void\", \"null\", \"never\", \"any\", \"unknown\"]);\n",
+      "replace": "const PRIMITIVES = new Set([\"string\", \"number\", \"undefined\", \"void\", \"null\", \"never\", \"any\", \"unknown\"]);\n",
       "expectRed": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
       "cell": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
-      "note": "Two reviews built the same hole green: a declared type the reducer cannot reduce used to satisfy the conformance cells by being unreadable. Their drifts needed a double cast to get past the module's own `@ts-check`; an OPTIONAL field typed as a bare object is the one-edit version that compiles, so the declaration is regenerated and the unverifiable leaf is the only difference."
+      "note": "Both lenses proved the hole from the DECLARATION side, with a field declared `() => void` or `object` while the runtime returned a boolean. That drift cannot be a row here: its only anchor is a JSDoc line, and `smoke:mutation-fixtures` refuses a `find` that spans prose, for the reason the namespace-merge row documents. It is verified by hand instead (an OPTIONAL field declared as a bare `object` regenerates cleanly and reds this cell alone). The row severs the same property from the side that has a code anchor: the reducer stops being able to check a leaf, and the suite must say so rather than pass more."
     },
     {
       "name": "the reporter's declared return drifts from the nothing it gives back",
