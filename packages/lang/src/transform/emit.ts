@@ -247,28 +247,34 @@ class Emitter {
     const c = this.label("c");
     const init = node.init as AnyNode | null;
     const perIteration = init !== null && init !== undefined && init.type === "VariableDeclaration" && init.kind === "let";
-    const test = node.test === null || node.test === undefined ? "true" : this.expr(node.test as AnyNode);
-    const update = node.update === null || node.update === undefined ? "" : `${this.expr(node.update as AnyNode)};\n`;
 
     if (!perIteration) {
       let head = "";
       if (init !== null && init !== undefined) head = init.type === "VariableDeclaration" ? this.stmt(init) : `${this.expr(init)};\n`;
+      const test = node.test === null || node.test === undefined ? "true" : this.expr(node.test as AnyNode);
       const body = this.loopBody(node.body as AnyNode, b, c);
+      const update = node.update === null || node.update === undefined ? "" : `${this.expr(node.update as AnyNode)};\n`;
       return `{\n${head}${b}: for (;;) {\n${this.fuel()}if (!(${test})) break ${b};\n${c}: {\n${body}}\n${update}}\n}\n`;
     }
 
-    // The carrier holds the value BETWEEN iterations; the binding inside the loop is this
-    // iteration's, freshly declared (and freshly born, for a cell).
-    const decls = (init.declarations as AnyNode[]) ?? [];
+    // THE CARRIERS ARE ALLOCATED FIRST, before any expression inside the loop is emitted. They are
+    // the one place a temporary outlives its own expression — they hold the binding's value ACROSS
+    // an iteration — so an expression emitted before them would take their slots and the loop would
+    // overwrite its own counter. Measured, before this order: `for (let i = 0; i < 3; i = i + 1)`
+    // never terminated and the run died on the step budget.
     const first = this.temp();
+    const decls = (init.declarations as AnyNode[]) ?? [];
     const carriers: { readonly carrier: string; readonly id: AnyNode }[] = [];
-    let head = `let ${first} = true;\n`;
     for (const d of decls) {
       const id = d.id as AnyNode;
       if (id.type !== "Identifier") throw new Error("transform: a per-iteration `for (let ...)` head takes a name, not a pattern");
-      const carrier = this.temp();
-      head += `let ${carrier} = ${d.init === null || d.init === undefined ? VOID : this.expr(d.init as AnyNode)};\n`;
-      carriers.push({ carrier, id });
+      carriers.push({ carrier: this.temp(), id });
+    }
+
+    let head = `${first} = true;\n`;
+    for (let i = 0; i < decls.length; i += 1) {
+      const d = decls[i] as AnyNode;
+      head += `${(carriers[i] as { carrier: string }).carrier} = ${d.init === null || d.init === undefined ? VOID : this.expr(d.init as AnyNode)};\n`;
     }
     let open = "";
     let close = "";
@@ -276,6 +282,10 @@ class Emitter {
       open += this.bindPattern(id, carrier, "let");
       close += `${carrier} = ${this.readName(id)};\n`;
     }
+    // The update runs on the NEXT iteration's binding, which is where the specification and the
+    // walker both put it: the per-iteration copy happens after the body and before the increment.
+    const update = node.update === null || node.update === undefined ? "" : `${this.expr(node.update as AnyNode)};\n`;
+    const test = node.test === null || node.test === undefined ? "true" : this.expr(node.test as AnyNode);
     const body = this.loopBody(node.body as AnyNode, b, c);
     return (
       `{\n${head}${b}: for (;;) {\n${open}` +
@@ -529,11 +539,15 @@ class Emitter {
       case "BinaryExpression": {
         const op = node.operator as string;
         const l = this.expr(node.left as AnyNode);
-        const r = this.expr(node.right as AnyNode);
         // `===`/`!==` are taken before the coercion refusal in the walker, so they are native here.
-        if (op === "===" || op === "!==") return `(${l} ${op} ${r})`;
+        if (op === "===" || op === "!==") return `(${l} ${op} ${this.expr(node.right as AnyNode)})`;
+        // THE OPERAND TEMPORARIES ARE ALLOCATED BEFORE THE RIGHT SIDE IS EMITTED. A temporary's life
+        // is its own expression, so a sibling may reuse the slot — but `a` outlives the right
+        // operand's evaluation, and emitting the right side first let it reuse `a`'s slot and
+        // overwrite the left value in place. Measured: `(5 + 1) + (3 + 4)` answered 10 for 13.
         const a = this.temp();
         const b = this.temp();
+        const r = this.expr(node.right as AnyNode);
         // BOTH operands are assigned before the test. A `&&` between the assignments would
         // short-circuit past the right-hand one, so its effects would vanish and the host leg would
         // refuse a stale value (lane H caught this in the design sketch).
@@ -625,7 +639,7 @@ class Emitter {
       if (op === "=") return `((${t} = ${this.expr(node.right as AnyNode)}), ${write(t)}, ${t})`;
       if (op === "&&=" || op === "||=" || op === "??=") return this.logicalAssign(op, this.readName(left), write, node.right as AnyNode, t);
       const cur = this.temp();
-      return `((${cur} = ${this.readName(left)}), (${t} = ${this.binaryOf(op.slice(0, -1), cur, this.expr(node.right as AnyNode))}), ${write(t)}, ${t})`;
+      return `((${cur} = ${this.readName(left)}), (${t} = ${this.binaryOf(op.slice(0, -1), cur, () => this.expr(node.right as AnyNode))}), ${write(t)}, ${t})`;
     }
 
 
@@ -639,7 +653,7 @@ class Emitter {
     const read = (): string => this.seam("get", `${obj}, ${key}`);
     if (op === "&&=" || op === "||=" || op === "??=") return `(${head}, ${this.logicalAssign(op, read(), write, node.right as AnyNode, t)})`;
     const cur = this.temp();
-    return `(${head}, (${cur} = ${read()}), (${t} = ${this.binaryOf(op.slice(0, -1), cur, this.expr(node.right as AnyNode))}), ${write(t)}, ${t})`;
+    return `(${head}, (${cur} = ${read()}), (${t} = ${this.binaryOf(op.slice(0, -1), cur, () => this.expr(node.right as AnyNode))}), ${write(t)}, ${t})`;
   }
 
   /** `&&=`, `||=`, `??=`: the right side is evaluated, and the write happens, only when it proceeds. */
@@ -649,11 +663,18 @@ class Emitter {
     return `((${cur} = ${read}), (${guard}) ? ((${t} = ${this.expr(right)}), ${write(t)}, ${t}) : ${cur})`;
   }
 
-  /** A binary operation over two already-emitted operand expressions. */
-  private binaryOf(op: string, leftCode: string, rightCode: string): string {
-    if (op === "===" || op === "!==") return `(${leftCode} ${op} ${rightCode})`;
+  /**
+   * A binary operation over an already-emitted left operand and a right one this emits.
+   *
+   * The right side is a thunk for the reason the `BinaryExpression` case gives: `a` has to be
+   * allocated before the right operand is emitted, or the right operand reuses `a`'s slot and
+   * overwrites the left value between the assignment and the test.
+   */
+  private binaryOf(op: string, leftCode: string, right: () => string): string {
+    if (op === "===" || op === "!==") return `(${leftCode} ${op} ${right()})`;
     const a = this.temp();
     const b = this.temp();
+    const rightCode = right();
     const fast = STRING_SAFE.has(op)
       ? `(typeof ${a} === "number" && typeof ${b} === "number") || (typeof ${a} === "string" && typeof ${b} === "string")`
       : `typeof ${a} === "number" && typeof ${b} === "number"`;
