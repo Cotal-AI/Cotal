@@ -301,16 +301,10 @@ log("rounds", rounds, r.status);`,
   // arms L4010, so the receiver law is decided before the thenable law and the order is not a
   // divergence here. It is one line above, where the receiver IS a record.
   ["refusals: a callable then written onto a non-record", '"x".then = () => 1; log("after");', {}, "L4010"],
-  // A LOG LINE IS DATA (oracle-side, 59b5d6bd): `log` refuses a value carrying a function anywhere
-  // inside it, L4016 naming the value and the path, because the walker's onLog held a live closure
-  // where the worker died on a host DataCloneError. Both arms answer it from the one place in
-  // library.ts. The three doors are the value itself, a function nested in a record, and a
-  // namespace, which is a record of them.
-  ["refusals: a log line carrying a function", "log((x) => x);", {}, "L4016"],
-  ["refusals: a log line whose record carries a function", 'log("v", { g: (x) => x });', {}, "L4016"],
-  ["refusals: a log line carrying a namespace", "log(json);", {}, "L4016"],
-  // AND THE MIRROR, so the refusal is not read as "log refuses whatever is unusual": absence and NaN
-  // are values, not functions, and they still log as they are. The trace is not the journal.
+  // A LOG LINE IS DATA ON THE ENGINE, and the three refusing doors are declared divergences below;
+  // this is their mirror, so the engine's rule is not read as "log refuses whatever is unusual":
+  // absence and NaN are values, not functions, and both arms log them as they are. The trace is
+  // not the journal.
   ["absence and NaN are data, and still log", "const o = { a: 1 }; log(o.b, 0 / 0);", {}],
   // AND THE SAME QUESTION WHERE THE RECEIVER IS AN ARRAY, which was the divergence this row was
   // written as: the walker answered L4014 and the engine L4018, because the engine asked the value's
@@ -497,6 +491,18 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   ["the value law through `set`: a callable then, written plainly", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
   ["the value law through `set`: a callable then, written computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
   ["the value law through `set`: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, "logs []", "L4018"],
+  // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
+  // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
+  // even clone one - measured, it died on a host DataCloneError with the emitted module body in the
+  // message). The WALKER hands its log values to the host as they are and is left that way on
+  // purpose: it replays every run recorded under language version 1, and a v1 record that logs a
+  // builtin must replay as recorded (journal.smoke replays a checked-in one). So this is a rule of
+  // the engine, declared here with both answers - the walker's is what the comparator's JSON view
+  // makes of a live closure. Three doors: the value itself, a function nested in a record, and a
+  // namespace, which is a record of them.
+  ["a log line is data on the engine: a function value", "log((x) => x);", {}, "logs [[null]]", "L4016"],
+  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]]', "L4016"],
+  ["a log line is data on the engine: a namespace", "log(json);", {}, "logs [[{}]]", "L4016"],
 ];
 
 {

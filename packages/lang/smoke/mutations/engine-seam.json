@@ -431,9 +431,9 @@
       "file": "packages/lang/src/engine/worker-entry.ts",
       "find": "  if (result.value !== undefined) assertCrossable(result.value, \"the value this run returned\");",
       "replace": "  assertCrossable(result.value, \"the value this run returned\");",
-      "expectRed": "a run completes in its own locked-down thread",
+      "expectRed": "a run completes in its own locked-down thread, spawned from the BUILT package",
       "completionMarker": "ok a continuation without the optional flag is refused, not silently run",
-      "cell": "a run completes in its own locked-down thread",
+      "cell": "a run completes in its own locked-down thread, spawned from the BUILT package",
       "note": "A program whose last line is a statement ends with NO value, and the walker reports exactly that. `assertCrossable` refuses undefined by design - it is a rule about values crossing an effect boundary, and absence is not a value - so applying it here refuses the ordinary case. Measured before the guard existed: the first worker cell written refused its own fixture."
     },
     {
@@ -502,7 +502,7 @@
       "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
       "replace": "    onLog: () => {},",
       "expectRed": "and its log lines reached the host",
-      "completionMarker": "ok a run completes in its own locked-down thread",
+      "completionMarker": "ok a run completes in its own locked-down thread, spawned from the BUILT package",
       "cell": "and its log lines reached the host",
       "note": "`log` is a free builtin: it is not journalled, so a line that does not cross while the run is alive is a line nobody ever sees. The run still answers, still with the right journal and the right value."
     },
@@ -531,10 +531,10 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "    return asArm(await (thunk as () => unknown)());",
       "replace": "    return asArm(thunk);",
-      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "expectRed": "fanOut: the engine ran a program the walker ran, rather than refusing it",
       "completionMarker": "ok a RENAMED losing arm diverges too",
-      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
-      "note": "Measured on the walker: `fanOut(xs, await choose(), bag)` journals `[fanOut, sleep]` and `fanOut(xs, fn, { key: await choose() })` journals `[sleep, fanOut]`. The body is evaluated INSIDE the scope and the bag before it, so the body arrives as a thunk and the seam is what calls it there."
+      "cell": "fanOut: the engine ran a program the walker ran, rather than refusing it",
+      "note": "Measured on the walker: `fanOut(xs, await choose(), bag)` journals `[fanOut, sleep]` and `fanOut(xs, fn, { key: await choose() })` journals `[sleep, fanOut]`. The body is evaluated INSIDE the scope and the bag before it, so the body arrives as a thunk and the seam is what calls it there. Re-aimed after the log rule landed: undeferred, the body reaches `log` as a FUNCTION and the engine refuses L4016 on a program the walker completes, so the run-happened guard reds one cell before the journal comparison does. The mutant is the same and so is what it proves; only the cell that notices moved."
     },
     {
       "name": "fanOut's key function is not adapted",
@@ -791,20 +791,30 @@
       "file": "packages/lang/src/values.ts",
       "find": "  if (typeof value === \"function\") {\n    throw new NotCrossable(\n      \"function\",",
       "replace": "  if (false) {\n    throw new NotCrossable(\n      \"function\",",
-      "expectRed": "a logged FUNCTION is refused by the language, not by the transport",
+      "expectRed": "and it is L4016, the same code both in-process arms answer",
       "completionMarker": "ok log lines cross out, values intact",
-      "cell": "a logged FUNCTION is refused by the language, not by the transport",
-      "note": "The defect this crossing was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. Both in-process arms completed, so only a cell on the WORKER leg sees it. The rule itself is graded where it lives (log-data.json over surface.smoke); what this grades is that the worker leg notices."
+      "cell": "and it is L4016, the same code both in-process arms answer",
+      "note": "The defect this crossing was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. Both in-process arms completed, so only a cell on the WORKER leg sees it. The rule itself is graded where it lives (log-data.json over surface.smoke); what this grades is that the worker leg notices. Aimed at the CODE cell, measured: unrefused, the function reaches `postMessage`, the thread's own run fails on the clone and the failure crosses as a fault - so `ok === false` is still true and the first cell stays green. What changes is the code, and the two cells after it."
     },
     {
       "name": "the thread posts a kind the crossing table never cells",
       "file": "packages/lang/src/engine/worker-entry.ts",
       "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
-      "replace": "    onLog: (line) => { port.postMessage({ kind: \"trace\", line }); port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }); },",
+      "replace": "    onLog: (line) => { if (request.runId === \"\\u0000never\") port.postMessage({ kind: \"trace\", line }); port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }); },",
       "expectRed": "the thread posts exactly the 2 message kinds this table cells",
-      "completionMarker": "ok and the host hands the thread exactly the 2 things this table cells",
+      "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
       "cell": "the thread posts exactly the 2 message kinds this table cells",
-      "note": "The failure the table exists for is a MISSING cell, not a wrong one: a whole crossing added to the thread side with nothing asserting anything about it, which is exactly how the log path shipped with an assertion on the return path and none on its own. Set equality against the file is what makes a new crossing red until somebody cells it. The mutant's extra kind is ignored by the host's message handler, so nothing else in the suite notices - which is the point."
+      "note": "The failure the table exists for is a MISSING cell, not a wrong one: a crossing added to the thread side with nothing asserting anything about it, which is exactly how the log path shipped with an assertion on the return path and none on its own. The mutant's extra post is DEAD CODE on purpose - it changes the file's text and nothing else - because a kind that actually crossed would red the host's unknown-kind refusal first, which is a different rule with its own cell. Set equality against the file is what makes a new crossing red until somebody cells it."
+    },
+    {
+      "name": "an unknown message kind is read as the run's answer",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "      if (m.kind !== \"result\") {",
+      "replace": "      if (false) {",
+      "expectRed": "an unknown message kind is refused, not read as the run's answer",
+      "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
+      "cell": "an unknown message kind is refused, not read as the run's answer",
+      "note": "The handler this branch replaced: one case for `log` and everything else read as the answer. A thread posting anything unexpected resolved the run with `undefined` - success, no value - and the real result arrived after nobody was listening. Found by a mutation that added a message kind, reproduced with a two-line worker entry the suite hands in, which is what the entry being an INPUT buys."
     }
   ]
 }

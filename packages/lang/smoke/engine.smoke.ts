@@ -40,9 +40,12 @@ import { SEAM_MEMBERS, transform } from "../src/transform/index.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
 
 let pass = 0;
+/** Every cell that has passed, IN ORDER. Section 23 audits this suite's mutation config against it. */
+const cells: string[] = [];
 const ok = (name: string, cond: boolean, extra?: unknown): void => {
   if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
   pass += 1;
+  cells.push(name);
   console.log(`  ok ${name}`);
 };
 
@@ -2143,6 +2146,52 @@ let n = 1;
   ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
 }
 
+// ---- 20b) a log line is DATA on this engine ---------------------------------------------------------
+//
+// The engine's log sink (ctx.ts) refuses a function anywhere inside a logged value BEFORE the line
+// reaches any transport: measured before the rule, the worker died on the host's DataCloneError with the
+// emitted module body in its message (the worker leg in section 16 holds that end). This is a rule of
+// the ENGINE, declared as a divergence in the differential suite: the walker replays every run recorded
+// under language version 1 and hands its log values to the host as they are (surface.smoke pins that,
+// journal.smoke replays a checked-in v1 recording that logs a builtin). Each program below runs source
+// through the transform onto the in-process engine, so what is graded is the sink, not a hand-built call.
+
+{
+  const onEngine = async (source: string): Promise<{ readonly outcome: string; readonly raw: unknown[][] }> => {
+    const raw: unknown[][] = [];
+    const outcome = await runOnEngine(source, transform(source).module, {
+      runId: "log-data",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+      onLog: (l) => raw.push([...l.values]),
+    }).then(() => "ran", (e: unknown) => (e as Error).message); // a RuntimeFault's message opens with its code
+    return { outcome, raw };
+  };
+  const fn = await onEngine("log((x) => x);");
+  ok("the engine refuses a log line carrying a function (L4016) and names the value", fn.outcome.startsWith("L4016 log: value 1 is a function") && fn.raw.length === 0, fn);
+  const nested = await onEngine('log("v", { g: (x) => x });');
+  const deep = await onEngine("log([[1, (x) => x]]);");
+  const ns = await onEngine("log(json);");
+  ok(
+    "and a function nested in a logged record, array or namespace, naming the path",
+    nested.outcome.startsWith("L4016 log: value 2.g is a function") && deep.outcome.startsWith("L4016 log: value 1[0][1] is a function") && ns.outcome.startsWith("L4016 log: value 1."),
+    { nested: nested.outcome, deep: deep.outcome, ns: ns.outcome },
+  );
+  const caughtByProgram = await onEngine('try { log((x) => x); } catch (e) { log("caught", e.code); }');
+  ok("the refusal is the program's to catch", caughtByProgram.outcome === "ran" && JSON.stringify(caughtByProgram.raw) === '[["caught","L4016"]]', caughtByProgram);
+  // Deliberately NOT the crossing rule: the trace is not the journal, and a human wants to see these.
+  const data = await onEngine("const o = { a: 1 }; log(o.b, 0 / 0, 1 / 0, [1, [2, { b: 3 }]], null);");
+  ok(
+    "and `undefined`, a non-finite number and plain data cross to the trace as they are",
+    data.outcome === "ran" && data.raw.length === 1 && data.raw[0][0] === undefined && Number.isNaN(data.raw[0][1]) && data.raw[0][2] === Infinity && JSON.stringify(data.raw[0][3]) === '[1,[2,{"b":3}]]' && data.raw[0][4] === null,
+    data,
+  );
+  // Held whether or not the host listens: a program's outcome never depends on who is watching.
+  const unheard = await runOnEngine("log((x) => x);", transform("log((x) => x);").module, { runId: "log-data", handler: new SimHandler({}), evaluate: plainly })
+    .then(() => "ran", (e: unknown) => codeOf(e) ?? (e as Error).name);
+  ok("and the refusal stands with no host listening for log lines at all", unheard === "L4016", unheard);
+}
+
 // ---- 22) the worker boundary: every crossing, enumerated -----------------------------------------
 //
 // The differential suite compares the walker against the IN-PROCESS engine, by construction: it
@@ -2288,6 +2337,20 @@ let n = 1;
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
     const requestFields = [...new Set([...entrySrc.matchAll(/request\.(\w+)/g)].map((m) => m[1] as string))].sort();
     ok(`the thread reads exactly the ${REQUEST_FIELDS.length} request fields this table cells`, JSON.stringify(requestFields) === JSON.stringify(REQUEST_FIELDS), { declared: REQUEST_FIELDS, found: requestFields });
+    // AND THE HOST'S SIDE OF THE SAME AGREEMENT, reproduced rather than reasoned: a thread that
+    // posts a kind this host does not know. That is only reachable FROM a thread, so the probe is
+    // one - which the entry being an input makes a two-line fixture instead of a mock. Before the
+    // guard, the handler read anything that was not `log` as the answer, so this resolved the run
+    // with `undefined` and the real result arrived after nobody was listening.
+    const odd = await caught(() =>
+      runInWorker(
+        { source: `log("x", 1);\n`, module: `(ctx) => async () => { await ctx.fuel(); return 1; }`, runId: "odd", handler: { module: SIM_HANDLER, config: {} } },
+        { entry: new URL("./_odd-entry.mjs", import.meta.url) },
+      ).done,
+    );
+    ok("an unknown message kind is refused, not read as the run's answer", odd instanceof Error, JSON.stringify(odd).slice(0, 140));
+    ok("and the refusal names the kind and says the two sides disagree", String((odd as Error).message).includes("trace") && String((odd as Error).message).includes("disagree"), String((odd as Error).message).slice(0, 120));
+
     const workerData = [...new Set([...hostSrc.matchAll(/workerData: \{ ([^}]+) \}/g)].flatMap((m) => String(m[1]).split(",").map((x) => x.trim())))].sort();
     ok(`and the host hands the thread exactly the ${WORKER_DATA.length} things this table cells`, JSON.stringify(workerData) === JSON.stringify(WORKER_DATA), { declared: WORKER_DATA, found: workerData });
   }
@@ -2345,6 +2408,64 @@ let n = 1;
     ok("fuel takes none, and its declared range says so", SEAM_MEMBERS.fuel?.[0] === 0 && SEAM_MEMBERS.fuel?.[1] === 0);
     return undefined;
   });
+}
+
+// ---- 23) the mutation config, audited against this suite's own cells -----------------------------
+//
+// A mutation config is an instrument, and this one had four failure modes that all LOOK like a
+// passing ledger until somebody reads it line by line. Each is now checked here, against the cells
+// this run actually printed, in the order it printed them:
+//
+//   AMBIGUOUS ANCHOR   a `find` that matches twice cannot be aimed. It happened the moment the same
+//                      guard was written at two doors, and the fix was to write the guard once.
+//   ABSENT CELL        an `expectRed` naming a cell this suite does not have can never be graded,
+//                      and a renamed cell leaves one behind silently.
+//   MARKER DOWNSTREAM  this suite is FAIL-FAST, so a completion marker that prints AFTER the cell it
+//                      guards can never print under the mutant: a clean red grades INCONCLUSIVE.
+//                      Three mutants shipped that way and were only caught by reading the ledger.
+//   DYNAMIC NAME       a cell whose name reports the number it is testing renames itself under the
+//                      mutant meant to red it, so the config names a cell that no longer exists.
+//                      That one is not mechanizable from here and is why the two counting cells in
+//                      sections 21 and 22 carry only their declared side.
+//
+// This is a check on the CHECKER, and it reports its own count so a config that quietly stopped
+// covering anything cannot read as one that passes.
+
+{
+  const configPath = fileURLToPath(new URL("./mutations/engine-seam.json", import.meta.url));
+  const config = JSON.parse(readFileSync(configPath, "utf8")) as {
+    mutations: { name: string; file: string; find: string; expectRed?: string; cell?: string; completionMarker?: string }[];
+  };
+  const root = fileURLToPath(new URL("../../../", import.meta.url));
+  const sources = new Map<string, string>();
+  const sourceOf = (file: string): string => {
+    const cached = sources.get(file);
+    if (cached !== undefined) return cached;
+    const text = readFileSync(`${root}${file}`, "utf8");
+    sources.set(file, text);
+    return text;
+  };
+
+  const ambiguous: string[] = [];
+  const absent: string[] = [];
+  const downstream: string[] = [];
+  let audited = 0;
+  for (const m of config.mutations) {
+    audited += 1;
+    const hits = sourceOf(m.file).split(m.find).length - 1;
+    if (hits !== 1) ambiguous.push(`${m.name}: ${hits} matches in ${m.file}`);
+    const target = m.cell ?? m.expectRed ?? "";
+    const marker = String(m.completionMarker ?? "").replace(/^ok /, "");
+    const ti = cells.indexOf(target);
+    const mi = cells.indexOf(marker);
+    if (ti < 0) absent.push(`${m.name}: expectRed names no cell (${target})`);
+    if (marker !== "" && mi < 0) absent.push(`${m.name}: completionMarker names no cell (${marker})`);
+    if (ti >= 0 && mi >= 0 && mi >= ti) downstream.push(`${m.name}: marker at ${mi}, cell at ${ti}`);
+  }
+  ok(`the mutation config has ${audited} mutations, and every one of them was audited`, audited === config.mutations.length && audited > 0, audited);
+  ok("every `find` matches its file exactly once, so every mutant can be aimed", ambiguous.length === 0, ambiguous);
+  ok("every `expectRed` and marker names a cell this suite actually printed", absent.length === 0, absent);
+  ok("and every completion marker is UPSTREAM of the cell it guards, which fail-fast requires", downstream.length === 0, downstream);
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);

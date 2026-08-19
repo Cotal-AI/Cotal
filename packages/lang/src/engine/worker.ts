@@ -142,6 +142,15 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
         options.onLog?.(m.line);
         return;
       }
+      // AN UNKNOWN KIND IS A DISAGREEMENT ABOUT THE PROTOCOL, and it is refused rather than read as
+      // an answer. This branch used to be `else`, so a thread posting anything unexpected resolved
+      // the run with `undefined` and the real result arrived after nobody was listening - a run
+      // reporting success with no value, from a boundary that had already gone wrong.
+      if (m.kind !== "result") {
+        answered = true;
+        reject(new Error(`cotal-lang engine worker sent a message kind this host does not know (${String((m as { kind?: unknown }).kind)}); the thread and the host disagree about the boundary`));
+        return;
+      }
       answered = true;
       resolve(m.result);
     });
