@@ -752,7 +752,14 @@ try {
   // Long enough that a loaded machine still finishes the turn inside it, and asserted below rather
   // than trusted: if the turn does not complete within the window, the SETUP cell reds and says so
   // instead of the graded cell passing for the wrong reason.
-  const WINDOW_MS = 8_000;
+  const WINDOW_MS = 10_000;
+  // THE SLOP IS NOT PADDING, it is the part of the window this suite cannot see. The delay starts
+  // when the holder adopts, which is before the announcement, and the fixture cannot act until it
+  // has OBSERVED that announcement, one 100ms poll and one pipe hop later. So elapsed measured from
+  // the release UNDERSTATES what the window has already spent, and the guard below charges itself
+  // this much for the part it did not watch. Bigger than the gap it covers, on purpose: a guard
+  // that is generous to itself is the one that lets an invalid measurement read as a pass.
+  const WINDOW_UNSEEN_MS = 2_000;
   // TOOLREC, so the turn leaves a tool call and its OUTPUT in the window as well as assistant text.
   // The window is not a text-only window, and the connector's disclosure says a tool result crosses
   // onto the events channel as the tool returned it, so the arm that grades the window grades that
@@ -794,9 +801,10 @@ try {
   // really did land while the emitter had not read yet. If the machine was slow enough that the
   // setup finished first, this reds and names the measurement rather than letting a pass stand on
   // a window that had already closed.
-  check("window:setup:the turn RAN and COMPLETED inside the widened window, so the cell below judges records the emitter had not read", turnOnDisk && spentInWindow < WINDOW_MS, {
+  check("window:setup:the turn RAN and COMPLETED inside the widened window, so the cell below judges records the emitter had not read", turnOnDisk && spentInWindow + WINDOW_UNSEEN_MS < WINDOW_MS, {
     ...margin("E:the window turn is complete on disk"),
     spentMs: spentInWindow,
+    unseenMs: WINDOW_UNSEEN_MS,
     windowMs: WINDOW_MS,
     path: rolloutE,
   });
