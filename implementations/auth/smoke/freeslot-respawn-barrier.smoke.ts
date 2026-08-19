@@ -1,8 +1,6 @@
 /**
- * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate for the P2 alias reservation +
- * lifecycle-keyed cleanup; its three BARRIER cells are BLOCKED and unreachable today, see the
- * disclosure below before reading this as coverage). It proves by EXECUTION the despawn/respawn race
- * that had previously only been established by code-read:
+ * FREESLOT RESPAWN BARRIER smoke (control-surface P1 gate). It proves by EXECUTION the
+ * despawn/respawn race that had previously only been established by code-read:
  *
  *   `freeSlot` frees the agent's name synchronously, then fires `deprovision` DETACHED. The
  *   teardown's LOCAL half (creds/secret shred + ledger revoke) completes in the detached call's
@@ -18,31 +16,30 @@
  * reconciliation that can never resolve through the current alias occupant):
  *
  *   1. RESERVATION — while the predecessor's cleanup is pending, a same-name spawn must not
- *      yield a new live agent under the exact alias. Today the alias frees instantly (RED).
+ *      yield a new live agent under the exact alias. Holds on this tree: the spawn is refused
+ *      with the reserved-pending-retirement operator face (GREEN).
  *   2. LIFECYCLE KEYING — after retirement, the same-alias replacement's broker resources must
- *      be DISTINCT names from the predecessor's. Today the names collide exactly (RED).
+ *      be DISTINCT names from the predecessor's. Holds on this tree (GREEN).
  *   3. REPLAY SAFETY — re-delivering the predecessor's captured broker cleanup (the
  *      at-least-once world: crash recovery, redelivery, reconciliation retry) must leave the
- *      live replacement's footprint untouched. Today it silently destroys it (RED).
+ *      live replacement's footprint untouched. Holds on this tree (GREEN).
  *
- * WHAT IT ACTUALLY COVERS TODAY, WHICH IS NOT THE THREE BARRIERS ABOVE. Phase D, the POSITIVE case
- * after retirement has completed, cannot run: `startAgent` on the still-reserved alias mints
- * `worker-2`, and the auth plane refuses that name, `invalid owner/actor token "worker-2"`, because
- * `-` is the reserved principal name-form separator. The retry loop cannot stop the stray sibling
- * for the same reason. That is #693 and #667, name allocation rather than this suite's subject, so
- * the phase is reported BLOCKED and every cell it makes unreachable is NAMED, read out of this file
- * rather than restated. MEASURED on the current tree: 9 passed, 0 failed, 15 blocked. Before that
- * disclosure the run simply threw partway through phase D and never reached its own banner, which
- * from the outside is indistinguishable from a suite that covered everything; and the header's three
- * BARRIER contracts are among the cells it never reaches, so a reader had no way to tell a gate from
- * a name it is listed under. Matching is on that exact refusal, so a respawn that fails any other
- * way is still a genuine FAIL. The phase was green at 7942856d, on a tree that predates the
- * SecretStore seam; at this branch's merge-base the suite threw before its first cell, so this is
- * newly VISIBLE rather than newly caused. The suite is NOT in bin/smoke/ci-suites.txt, so no CI
- * shard runs it, and it must not be added while any cell is blocked: an exit code of 0 over 15
- * blocked cells is the false signal this disclosure exists to remove.
+ * MEASURED on this tree: 24 passed, 0 failed. All three barrier contracts above hold, so the P2
+ * slice this suite was written to wait for has landed. It had been reading RED for a reason of its
+ * own: phase D retried the respawn 20 times at 250ms, a ~5s budget, while the alias frees in two
+ * stages that together take ~8s. Timed from the awaited teardown, the first ~1.0s is refused
+ * RESERVED; from ~1.3s to ~7.0s the reservation has released but the predecessor's ADVISORY presence
+ * row is still live, so uniqueName numbers the successor `worker-2` and the auth plane refuses that
+ * name-form because `-` is the reserved principal name-form separator; the exact alias is taken at
+ * ~8.0s. That second stage is bounded by the presence record's TTL plus one sweep tick (endpoint.ts:
+ * ttlMs 6000, sweep every ttlMs/3), so the repair is a deadline budgeted past that ceiling, not a
+ * product change. The numbered-name refusal inside the window is real and is tracked as #693 and
+ * #667: for those few seconds the manager mints a name its own auth plane rejects, rather than the
+ * reserved-pending-retirement face it gives in the first second. This suite no longer waits on it.
+ * At this branch's merge-base the suite threw before its first cell, so its cells are newly VISIBLE
+ * rather than newly caused. The suite is NOT in bin/smoke/ci-suites.txt, so no CI shard runs it.
  *
- * All three flip green under the full P2 slice (alias reservation + lifecycle-keyed resources +
+ * All three are green under the landed P2 slice (alias reservation + lifecycle-keyed resources +
  * `(principal, lifecycleUid)`-pinned cleanup). The CONTRACT asserts need no edits for that; only
  * a mechanical rename is expected if P2 restructures the private `deprovisionBroker` seam this
  * harness wraps. The teardown's LOCAL half (creds/secret shred + ledger revoke) is asserted GREEN
@@ -112,7 +109,6 @@ const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdir
 type PsRow = { name: string };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
-const { fileURLToPath } = await import("node:url");
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -169,57 +165,10 @@ function launchEnv(): Record<string, string> {
   return out;
 }
 
-let pass = 0, fail = 0, blocked = 0;
+let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
-// A cell whose subject is a defect tracked in another lane. Counted apart from pass and fail,
-// because a suite that counts it either way is lying: as a pass it claims coverage it does not
-// have, and as a fail it reads to the next reader as today's regression in THIS suite's subject.
-// Where the cell can still run it does, so the marker cannot rot: a blocked cell that PASSES is a
-// RED, since the tracked defect landed and the marker became the false signal it was added to
-// remove. Where the blocker stops the scenario itself, the unreachable cells are named here rather
-// than left unsaid, because a run that dies mid-phase and a run that covered everything look the
-// same from the outside.
-const blockedOn = (issue: string, name: string, cond?: boolean, extra?: unknown) => {
-  if (cond !== true) { blocked++; console.log(`  ⛔ BLOCKED on ${issue}: ${name}`, extra ?? ""); return; }
-  fail++;
-  console.log(`  ✗ FAIL: STALE MARKER: this cell PASSES and is still marked blocked on ${issue}: ${name}`);
-};
-/** Thrown when a tracked blocker stops the scenario: the banner still prints, the run is not a throw. */
-class PhaseBlocked extends Error {}
-
-const RESPAWN_CELL = 'check("same-alias respawn ok after the predecessor retired"';
-/**
- * The cells that a missing replacement makes unreachable, READ OUT OF THIS FILE rather than
- * restated beside them. A hand written list of cell names is a second source of truth about the
- * cells, and it goes stale the first time someone adds one, under-reporting exactly when the
- * disclosure matters most. Empty is a FAIL rather than a quiet zero: it means the anchor moved and
- * this reported nothing while looking like it reported everything.
- */
-const UNREACHABLE_WITHOUT_A_REPLACEMENT: string[] = (() => {
-  const src = readFileSync(fileURLToPath(import.meta.url), "utf8");
-  // TWO occurrences and no other: the line above, which is why this cannot use the first one, and
-  // the call itself. Any other count means the anchor moved and the list would be read from the
-  // wrong place, so it returns empty and the banner reds instead of reporting a plausible list.
-  const hits = src.split(RESPAWN_CELL).length - 1;
-  if (hits !== 2) return [];
-  const from = src.lastIndexOf(RESPAWN_CELL);
-  return [...src.slice(from + RESPAWN_CELL.length).matchAll(/check\(\s*"((?:[^"\\]|\\.)*)"/g)].map((m) => m[1]);
-})();
-
-const printBanner = () => {
-  if (UNREACHABLE_WITHOUT_A_REPLACEMENT.length === 0) {
-    fail++;
-    console.log(`  ✗ FAIL: the unreachable-cell list read nothing out of this file, so any BLOCKED report above is incomplete`);
-  }
-  const verdict = fail > 0
-    ? "RED ❌ (expected until the P2 alias reservation + lifecycle-keyed cleanup land)"
-    : blocked === 0
-      ? "OK ✅"
-      : `NOT RED, AND NOT COVERAGE: ${blocked} cell(s) BLOCKED on #693/#667, including every BARRIER cell`;
-  console.log(`\nFREESLOT RESPAWN BARRIER ${verdict}  (${pass} passed, ${fail} failed, ${blocked} blocked)`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -551,32 +500,26 @@ try {
   // ---------- D. the replacement: same-alias respawn AFTER retirement completed ----------
   console.log("D) same-alias respawn after the predecessor retired");
   rmSync(join(root, "child-connected"), { force: true });
-  // Retry loop: today the alias is free immediately; under the fix the reservation may release a
-  // beat after the awaited teardown settles. Never accept an auto-numbered stand-in — the
-  // contract is about THE alias — so any stray sibling is stopped and the spawn retried.
+  // Retry to a DEADLINE rather than for a fixed number of tries: the alias frees in two stages and
+  // the second stage is a timer. Timed from the awaited teardown on this tree, the first ~1.0s is
+  // refused RESERVED (the reservation still holds the name); from ~1.3s to ~7.0s the reservation has
+  // released but the predecessor's ADVISORY presence row is still live, so uniqueName numbers the
+  // successor and the auth plane refuses that name-form; the exact alias is taken at ~8.0s. That
+  // second stage is bounded by the presence record's TTL plus one sweep tick (endpoint.ts: ttlMs
+  // 6000, sweep every ttlMs/3), so the old 20-try/250ms budget of ~5s expired inside it and read as
+  // a failure. Budget past that ceiling with room for a loaded runner. An auto-numbered stand-in is
+  // never accepted, because the contract is about THE alias, so a stray sibling is stopped and the
+  // spawn retried.
+  const respawnDeadline = Date.now() + 30_000;
   let r2: ControlReply | undefined;
-  for (let i = 0; i < 20; i++) {
+  do {
     const before = listNames();
     r2 = await manager.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
     const delta = listNames().filter((n) => !before.includes(n));
     if (r2.ok === true && delta.includes(AGENT)) break;
     for (const n of delta) await mAny.opStop({ name: n, graceful: false }, mAny.ep.ref().id, true);
     await wait(250);
-  }
-  // #693/#667: with the alias still reserved the manager mints `<name>-2`, and the auth plane
-  // refuses it because `-` is the reserved principal name-form separator. That is name allocation,
-  // not this suite's subject, so the phase is BLOCKED rather than red. The match is on that exact
-  // refusal: a respawn that fails any OTHER way is still a genuine FAIL below.
-  // Matched against the reply's own `error` STRING, not a JSON.stringify of the reply: stringifying
-  // escapes the quotes, so a pattern carrying a literal `"` silently never matches and the phase
-  // reds as if it had failed some other way. Measured: the first version of this did exactly that.
-  const refusal = typeof (r2 as { error?: unknown } | undefined)?.error === "string" ? (r2 as unknown as { error: string }).error : "";
-  const suffixRefusal = new RegExp(`invalid owner/actor token "${AGENT}-`);
-  if (r2?.ok !== true && suffixRefusal.test(refusal)) {
-    blockedOn("#693/#667", "same-alias respawn ok after the predecessor retired", undefined, r2);
-    for (const name of UNREACHABLE_WITHOUT_A_REPLACEMENT) blockedOn("#693/#667", name);
-    throw new PhaseBlocked();
-  }
+  } while (Date.now() < respawnDeadline);
   check("same-alias respawn ok after the predecessor retired", r2?.ok === true && listNames().includes(AGENT), r2);
   // ux follow-through 1: the clean respawn reads as a FRESH spawn of THE alias — never an
   // auto-numbered stand-in, never a lingering refusal string.
@@ -674,14 +617,11 @@ try {
     psList(manager).some((a) => a.name === AGENT) && newHandle?.status() === "running",
     { listed: listNames(), child: childDiag() });
 
-  printBanner();
+  console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
-  if (e instanceof PhaseBlocked) { printBanner(); if (fail) process.exitCode = 1; }
-  else {
-    console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
-    process.exitCode = 1;
-  }
+  console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
+  process.exitCode = 1;
 } finally {
   try { await manager?.stop(); } catch { /* already stopped */ }
   try { await delivery?.stop(); } catch { /* already stopped */ }

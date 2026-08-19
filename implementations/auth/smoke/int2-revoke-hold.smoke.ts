@@ -12,18 +12,17 @@
  * FINDING: on the current tree the copied token's exchange is blocked by the DEEPER auth-plane gate
  * retirement (terminally-retired issuance gate), so the ledger-hold is a defense-in-depth belt over
  * the surviving row; "copied token mints" only reproduces if the RAIL retirement also fails.
- * MEASURED on the current tree: 19 passed, 0 failed, 1 BLOCKED, and the suite is NOT in
- * bin/smoke/ci-suites.txt, so no CI shard runs it. Phase C is green throughout (the hold,
- * standingAuthorityLive, the operator copy, the refused respawn, the copied token blocked by the
- * retired gate). Phase D's last cell, a same-name spawn takes the EXACT alias after recovery, does
- * not pass: with an empty roster the manager mints a suffixed successor its own auth plane then
- * refuses. That is #694, the same mechanism as #693 and #667, and it belongs to the lane that owns
- * name allocation rather than to this suite. It is therefore marked BLOCKED rather than left red:
- * a red here reads to the next reader as today's regression, and counting it as a pass would claim
- * coverage this suite does not have. The cell still RUNS, so if #694 lands and it starts passing the
- * suite goes RED on a stale marker rather than quietly carrying one. Until the store wiring was
- * repaired this suite threw before its first cell, so that outcome is newly VISIBLE rather than
- * newly caused. Pristine f6115a6 would free the name (RED). READ+RUN only.
+ * MEASURED on the current tree: 20 passed, 0 failed, and the suite is NOT in bin/smoke/ci-suites.txt,
+ * so no CI shard runs it. Phase C is green throughout (the hold, standingAuthorityLive, the operator
+ * copy, the refused respawn, the copied token blocked by the retired gate). Phase D's last cell, a
+ * same-name spawn takes the EXACT alias after recovery, had been reading RED because it spawned once:
+ * after the recovery nudge the reservation clears within ~1s, but the predecessor's advisory presence
+ * row keeps uniqueName numbering the successor until that record's TTL plus one sweep tick expires
+ * (endpoint.ts: ttlMs 6000, sweep every ttlMs/3), and the auth plane refuses the numbered name-form.
+ * The single shot landed inside that window, so the cell now retries to a deadline past its ceiling.
+ * The numbered-name refusal is itself real and is tracked as #694, same mechanism as #693 and #667.
+ * Until the store wiring was repaired this suite threw before its first cell, so its cells are newly
+ * VISIBLE rather than newly caused. Pristine f6115a6 would free the name (RED). READ+RUN only.
  *
  * PHASES: A/B spawn a user-mode agent and capture a copied actor token; C chmod the managed-actor
  * ledger dir read-only so revokeAgent's rmSync throws EACCES, despawn, and assert the name stays HELD
@@ -150,20 +149,10 @@ function launchEnv(): Record<string, string> {
   return out;
 }
 
-let pass = 0, fail = 0, blocked = 0;
+let pass = 0, fail = 0;
 const check = (name: string, cond: boolean, extra?: unknown) => {
   if (cond) { pass++; console.log(`  ✓ ${name}`); }
   else { fail++; console.log(`  ✗ FAIL: ${name}`, extra ?? ""); }
-};
-// A cell whose subject is a defect tracked in another lane. It still RUNS, so the marker cannot rot
-// into a claim nobody re-measures, but it is counted apart from pass and fail, because a suite that
-// counts it either way is lying: as a pass it claims coverage it does not have, and as a fail it
-// reads to the next reader as today's regression. If it ever PASSES, that is a RED on this cell:
-// the tracked defect landed and the marker is now the false signal it was added to remove.
-const blockedOn = (issue: string, name: string, cond: boolean, extra?: unknown) => {
-  if (!cond) { blocked++; console.log(`  ⛔ BLOCKED on ${issue}: ${name}`, extra ?? ""); return; }
-  fail++;
-  console.log(`  ✗ FAIL: STALE MARKER: this cell PASSES and is still marked blocked on ${issue}: ${name}`);
 };
 const wait = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -546,18 +535,23 @@ try {
   // nudge may already have spawned `worker` once the hold cleared; if not, do it here. Assert the EXACT
   // alias is live -- a suffixed sibling (worker-2) or an unrelated failure would BOTH leave the exact
   // alias absent from the roster, so this rejects both.
-  if (!psList(manager!).some((a) => a.name === AGENT))
+  // Same two-stage release the freeslot suite measures: after the recovery nudge the reservation
+  // clears within ~1s, but the predecessor's advisory presence row keeps uniqueName numbering the
+  // successor until that record's TTL plus one sweep tick expires (endpoint.ts: ttlMs 6000, sweep
+  // every ttlMs/3), and the auth plane refuses the numbered name-form. A single shot lands inside
+  // that window, so retry to a deadline past its ceiling. The assertion below names the EXACT
+  // alias, so a numbered stand-in can never satisfy it, and it shows up in the failure payload.
+  const aliasDeadline = Date.now() + 30_000;
+  while (!psList(manager!).some((a) => a.name === AGENT) && Date.now() < aliasDeadline) {
     await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
-  blockedOn("#694", "a same-name spawn takes the EXACT alias after recovery (no suffix, no lingering reservation)",
+    if (psList(manager!).some((a) => a.name === AGENT)) break;
+    await wait(250);
+  }
+  check("GREEN: a same-name spawn takes the EXACT alias after recovery (no suffix, no lingering reservation)",
     psList(manager!).some((a) => a.name === AGENT), { live: listNames() });
 
   console.error = origErr;
-  const verdict = fail > 0
-    ? "RED ❌"
-    : blocked === 0
-      ? "GREEN ✅ (fix present: failed revoke holds the name; retry re-drives)"
-      : `GREEN ✅ ON WHAT IT COVERS, and it does NOT cover ${blocked} cell(s) blocked on #694`;
-  console.log(`\nINT-2 SWALLOWED-REVOKE ${verdict}  (${pass} passed, ${fail} failed, ${blocked} blocked)`);
+  console.log(`\nINT-2 SWALLOWED-REVOKE ${fail === 0 ? "GREEN ✅ (fix present: failed revoke holds the name; retry re-drives)" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
   if (fail) process.exitCode = 1;
 } catch (e) {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
