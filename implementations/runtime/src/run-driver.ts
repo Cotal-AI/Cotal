@@ -93,13 +93,22 @@ const ENGINES: readonly { readonly version: string; readonly run: typeof runProg
  * recorded version AND the served set, because "this build cannot" is only actionable if it says
  * what it can.
  */
-function unservedLanguage(version: string): RuntimeFault {
+function unservedLanguage(version: string | undefined): RuntimeFault {
+  // A RECORD MAY NAME NO VERSION AT ALL, and it reaches this branch by the same route: written
+  // before the field existed, it matches no engine either. The two cases get different sentences
+  // because an operator acts on them differently, and because interpolating an absent value says
+  // the record claims "undefined" when what happened is that it claims nothing. MEASURED before the
+  // repair, through the driver: `recorded under language version undefined and this build serves 1`.
+  const met = version === undefined ? "names no language version at all" : `was recorded under language version ${version}`;
+  const repair = version === undefined
+    ? `identify the version this record was written under, and run it on a build that serves it`
+    : `run this record on a build whose engines serve version ${version}`;
   return new RuntimeFault(
     "L5023",
-    `this run was recorded under language version ${version} and this build serves ${ENGINES.map((e) => e.version).join(", ")}. `
+    `this run ${met} and this build serves ${ENGINES.map((e) => e.version).join(", ")}. `
       + `A record replays only on an engine that speaks its language: version 1 is the tree-walker and version 2 is the engine, and they are `
       + `different languages rather than two speeds of one.\n\n`
-      + `Options\n  run this record on a build whose engines serve version ${version}\n  fork(run, <step>) start a new run on this build, keeping the prefix`,
+      + `Options\n  ${repair}\n  fork(run, <step>) start a new run on this build, keeping the prefix`,
   );
 }
 

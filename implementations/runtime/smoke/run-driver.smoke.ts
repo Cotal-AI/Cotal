@@ -564,7 +564,7 @@ try {
   // the current language and then calling the only engine it hosts refuses its own fresh runs,
   // `driver stamps "2" -> walker: REFUSED L5008`.
   c("and it is stamped with the version of the ENGINE that ran it, not with the current language",
-    pinned.languageVersion === WALKER_LANGUAGE_VERSION && LANGUAGE_VERSION !== WALKER_LANGUAGE_VERSION,
+    pinned.languageVersion !== LANGUAGE_VERSION && pinned.languageVersion === WALKER_LANGUAGE_VERSION,
     { stamped: pinned.languageVersion, engine: WALKER_LANGUAGE_VERSION, language: LANGUAGE_VERSION });
 
   // A RECORD FROM A BUILD THAT SERVES MORE THAN THIS ONE. Written directly, because that is exactly
@@ -589,6 +589,24 @@ try {
   const untouched = await readRunRecord(kv, EP, "d-v9");
   c("and the run was not touched: no activation, no status, nothing appended",
     untouched?.status === undefined, untouched?.status?.value);
+
+  // A RECORD FROM BEFORE THE FIELD EXISTED. It reaches the same branch by a different route: not a
+  // version this build does not serve, but no version at all, which `find` also fails to match. The
+  // sentence is the whole cell - an operator reads it, and a refusal that interpolates a missing
+  // value tells them the record says "undefined" when what happened is that it says nothing.
+  const { languageVersion: _dropped, ...versionless } = foreign;
+  await createRunSpec(kv, EP, "d-v-absent", { pins: versionless as typeof foreign, createdAt: 1_000 });
+  const absent = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v-absent", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a record that names no language version at all is refused the same way",
+    absent.status === "released" && (absent.reason as { code?: string }).code === "L5023",
+    absent.status === "released" ? (absent.reason as { code?: string }).code : why(absent));
+  c("and the refusal says the record names none, rather than interpolating the missing value",
+    absent.status === "released" && !/undefined/.test(absent.reason.message)
+    && absent.reason.message.includes(`this build serves ${WALKER_LANGUAGE_VERSION}`),
+    absent.status === "released" ? absent.reason.message.slice(0, 140) : why(absent));
 
   // THE CONTROL, and without it the three cells above are satisfied by a driver that refuses every
   // hand-written spec. Same construction, same absent journal, ONE character different.
