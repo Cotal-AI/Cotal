@@ -25,7 +25,9 @@ import type { Journal } from "../journal.js";
 import type { RunPins } from "../pins.js";
 import { Prng, birthDepth, born as stampBirth, deepFreeze, setOwn } from "../values.js";
 import { currentFrame, withFrame, type EngineFrame } from "./frame.js";
-import { createPerformer } from "./perform.js";
+import { dispatchPrimitive, type EffectHost } from "../perform.js";
+import { PRIMITIVES } from "../primitives.js";
+import type { RunOptions } from "../interpret.js";
 
 /**
  * A static per-call-site payload the transform computes from the input AST.
@@ -129,6 +131,19 @@ function arrayIndex(prop: string): number | undefined {
  * literal (`born`) or a field write (`set`) — `json.parse` cannot spell a function, and spread,
  * `merge` and the array methods only copy fields out of records that already passed a door. `await`
  * is gated too, because a value can also arrive from the host side of the seam.
+ *
+ * THERE IS DELIBERATELY NO CHECK ON THE HOST'S RETURN PATH, and the reason is measured rather than
+ * argued. Seam ruling 1a asked for one at `free`/`call`, on the strength of `merge({}, { then: f })`
+ * minting the shape on the WALKER. It cannot exist: every builtin and curated method in library.ts
+ * returns through its own `async` wrapper, so the assimilation happens INSIDE library.ts, one frame
+ * before any host code could inspect the result. Measured directly against `merge`: with a `then`
+ * that never resolves, the builtin's promise never settles at all (the program closure had already
+ * run); with a `then` that resolves, the record is silently REPLACED by whatever it resolves with.
+ * In both cases the value a return-path gate would examine is either never delivered or already
+ * substituted, so such a gate is unreachable code that no mutant can kill. The walker shape it was
+ * meant to cover is a walker defect (there is no birth gate there at all) and belongs to the filed
+ * issue; in the engine the literal never reaches `merge`, because `born` refuses it first — which is
+ * a cell, not an assertion.
  */
 function hasCallableThen(v: unknown): boolean {
   if (v === null || (typeof v !== "object" && typeof v !== "function")) return false;
@@ -148,7 +163,27 @@ function refuseThenable(v: unknown, where: string): void {
 
 export function createCtx(run: EngineRun): EngineCtx {
   const prng = new Prng(run.pins.seed);
-  const performer = createPerformer(run);
+
+  // The effect seam is ONE function over ONE table, shared with the walker (src/perform.ts). The
+  // engine holds no copy of it: a second set of hashed projections is a set that disagrees with the
+  // oracle on its first edit, and the journal is the contract the differential suite compares.
+  //
+  // THE CEILING IS A RUN BOUND, so the count starts where the run left off. Starting at 0 gives
+  // every activation a full allowance, and a runaway loop that crashed periodically never reaches
+  // the ceiling however much it performed against the world.
+  const host: EffectHost = {
+    journal: run.journal,
+    options: {
+      runId: run.runId,
+      handler: run.handler,
+      journal: run.journal,
+      pins: run.pins,
+      ...(run.onLog !== undefined ? { onLog: run.onLog } : {}),
+      ...(run.shouldStop !== undefined ? { shouldStop: run.shouldStop } : {}),
+    } as RunOptions,
+    ceiling: run.pins.effectCeiling,
+    effectCount: run.journal.dispatchedEffects(),
+  };
 
   /** May this frame write into this container? The value half of freeze-on-share, whole. */
   const assertWritable = (target: object, frame: { readonly depth: number }): void => {
@@ -400,8 +435,18 @@ export function createCtx(run: EngineRun): EngineCtx {
       return stampBirth(v, currentFrame().depth);
     },
 
-    async effect(name, args, site) {
-      return await performer(name, args, site);
+    async effect(name, args, _site) {
+      const spec = PRIMITIVES[name];
+      if (spec === undefined) throw new RuntimeFault("L2001", `${name} is not a primitive`);
+      if (spec.opensScope) {
+        // Loud, not a fallback. A silent sequential `parallel` would journal a scope nobody opened
+        // and pass a differential comparator on every program that does not race.
+        throw new RuntimeFault(
+          "L1000",
+          `\`${name}\` opens a concurrency scope, and the engine's scope machinery is not landed yet. Run this program on the walker.`,
+        );
+      }
+      return await dispatchPrimitive(host, name, args, currentFrame());
     },
 
     free(name, args) {

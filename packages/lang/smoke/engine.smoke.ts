@@ -273,6 +273,28 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
     ok("awaiting an own-callable-`then` value is L4018", codeOf(e) === "L4018");
     ok("and the refusal happened BEFORE the host called it", fired === 0, fired);
   }
+  // LANE T'S DOOR E, IN THE ENGINE'S SHAPE. On the walker, `merge({}, { then: f })` mints the hazard
+  // past both birth and write, because the walker has no birth gate. Under the transform the literal
+  // reaches `born` FIRST, so the builtin is never called at all — which is what makes the entry
+  // doors sufficient here, and it is asserted rather than reasoned: the closure must never run.
+  {
+    let ran = 0;
+    const e = await caught(() =>
+      h.inFrame(() => {
+        h.ctx.free("merge", [h.ctx.born({}), h.ctx.born({ then: () => { ran += 1; return 1; } })]);
+        return undefined;
+      }),
+    );
+    ok("a builtin ARGUMENT built as a literal is refused at birth, before the builtin runs", codeOf(e) === "L4018", String(e));
+    ok("and the program closure never ran", ran === 0, ran);
+  }
+  // The other half of the same claim, so nobody reads the cell above as "merge refuses records":
+  // the same call without a callable `then` goes through.
+  ok(
+    "the same shape without a callable `then` merges normally",
+    JSON.stringify(await h.inFrame(() => h.ctx.free("merge", [h.ctx.born({ a: 1 }), h.ctx.born({ then: 1 })]))) === '{"a":1,"then":1}',
+  );
+
   // A HOST promise must pass through: its `then` is on the prototype, not own, which is exactly what
   // separates it from a program value.
   ok("a host promise still awaits normally", (await h.inFrame(() => h.ctx.await(Promise.resolve(7)))) === 7);
