@@ -95,6 +95,7 @@ export const CATALOG = {
   L4018: "No implicit conversion",
   L4019: "Array write past the end",
   L4020: "A method is not a value",
+  L4021: "A callable `then` is not a record member",
 
   // ---- L5xxx: durability -----------------------------------------------------------------------
   L5001: "Run divergence",

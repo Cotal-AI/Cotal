@@ -166,6 +166,16 @@ function arrayIndex(prop: string): number | undefined {
  * on the walker (`{ then: 1 }` runs to completion); refusing every own `then` would refuse a program
  * the oracle accepts.
  *
+ * THE CODE IS L4021, the walker's, since #657 gave the walker the same rule at its four record-member
+ * write sites (a literal, a spread, a rest pattern, `o.a = v`). Measured across every route a program
+ * can spell it, both engines now answer L4021 where the walker does and the same older code where it
+ * already agreed: a literal, a plain field write, a computed one and a spread are L4021 on both; a
+ * non-callable `then` completes on both; `then` on an ARRAY is L4014 on both, and on a string or a
+ * number L4010 on both. The one door with NO walker route behind it is `await`, which gates a value
+ * arriving from the HOST side of the seam - the walker has no such door because it has no seam. It
+ * carries L4021 too, ruled, so a program reads one code for one shape rather than learning which door
+ * it happened to come through.
+ *
  * Two doors close the whole value graph, by induction: a callable `then` can only enter through a
  * literal (`born`) or a field write (`set`) — `json.parse` cannot spell a function, and spread,
  * `merge` and the array methods only copy fields out of records that already passed a door. `await`
@@ -193,8 +203,8 @@ function hasCallableThen(v: unknown): boolean {
 function refuseThenable(v: unknown, where: string): void {
   if (!hasCallableThen(v)) return;
   throw new RuntimeFault(
-    "L4018",
-    `${where} carries an own callable \`then\`, which this language does not have a meaning for: there are no promises here, and a value with a callable \`then\` is assimilated by the host's await machinery, which would run that function outside the run's frame with the host's own settlement functions as its arguments. Rename the field.`,
+    "L4021",
+    `${where} carries an own callable \`then\`. To the host's promise machinery any object with a callable \`then\` is a promise waiting to be adopted, so the value would never arrive as the one this program built: its \`then\` runs with the machinery's own continuations, a \`then\` that throws or rejects escapes the run as an unhandled rejection with no owner and kills the host, and the await that adopted it never settles. Name the member something else.`,
   );
 }
 
@@ -748,9 +758,9 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       // oracle: `keys({a:1}).then = () => 1` is L4014 "`then` is not a member of an array", the same
       // answer as `.foo`, and `"x".then = f` and `(1).then = f` are L4010. Refusing L4018 here first
       // answered the value's rule for a receiver that never had the member, which is a different
-      // sentence for the same program. On a record the walker refuses NOTHING and this engine
-      // refuses L4018: that is the declared divergence pending the walker's L4021 (#642/#657), and
-      // it is the only one this reordering leaves.
+      // sentence for the same program. On a record BOTH now refuse L4021: #657 gave the walker the
+      // rule at its record-member write sites, so what was the last declared divergence of this
+      // reordering is a corpus row the differential can compare.
       if (prop === "then") refuseThenable({ then: v }, "this field write");
       setOwn(o, prop, v);
       return v;

@@ -12,6 +12,7 @@ import { KeyScope, digest, stepKeyString } from "../src/keys.js";
 import { resume, run } from "../src/interpret.js";
 import { readFileSync } from "node:fs";
 import { SimHandler } from "../src/sim.js";
+import { assertNoCode } from "../src/values.js";
 import type { EffectHandler } from "../src/effects.js";
 
 let pass = 0;
@@ -660,6 +661,25 @@ await sleep("3h", { name: "after-the-catch" });
     "the walker that is current replays it: same entries, same log lines, no dispatch",
     outcome.ran && JSON.stringify(outcome.entries) === JSON.stringify(fixture.entries) && JSON.stringify(replayed) === JSON.stringify(fixture.logs),
     outcome.ran ? { replayed } : outcome,
+  );
+  // The pin above is a RENDERING, and JSON draws a function, `undefined`, NaN and an empty record
+  // the same way (`null` or `{}`), so it cannot tell "the builtin reached the host" from "code was
+  // dropped from the trace", which is one of the remedies this recording exists to keep off the v1
+  // path. So the values are checked for what they ARE: the builtin arrives as a function, and the
+  // namespace and the record still carry code (the log rule's own predicate, so this cannot drift
+  // from it).
+  const carriesCode = (v: unknown): boolean => {
+    try {
+      assertNoCode(v, "v");
+      return false;
+    } catch {
+      return true;
+    }
+  };
+  ok(
+    "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
+    typeof replayed[0]?.[1] === "function" && carriesCode(replayed[1]?.[1]) && carriesCode(replayed[1]?.[2]),
+    replayed.map((line) => line.map((v) => (typeof v === "function" ? "function" : carriesCode(v) ? "object+code" : typeof v))),
   );
 }
 
