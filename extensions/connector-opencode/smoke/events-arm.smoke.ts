@@ -112,6 +112,13 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
   // door because it never said it emits, which is what this connector did until it declared one.
   check("the connector DECLARES an event plane, which is what gets --events past the launch gate",
     typeof opencodeConnector.eventChannel === "function", typeof opencodeConnector.eventChannel);
+  // And it IS core's own derivation, not a second copy. By function identity rather than by output:
+  // two functions that agree on the sampled principal below can diverge on the next, and the property
+  // that matters is that there is exactly one place the subject is decided. The value cell below would
+  // pass a clone that returns the right string for `ollie`; only this fails the moment the assignment
+  // is replaced by a re-implementation.
+  check("and the declared channel IS core's own derivation, not a re-implementation, so no clone can pass the value cell below",
+    opencodeConnector.eventChannel === eventChannel);
   // BY VALUE, not by existence. A method that exists is another predicate proved against itself: it
   // says nothing about whether the channel the manager mints the grant for and the subject the
   // session publishes to are the same string. Compared against core's own derivation, on the
@@ -124,7 +131,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
 }
 
 // ---- Cell count, because a buildLaunch that threw on every input would DELETE cells, not fail them
-const EXPECTED = 14;
+const EXPECTED = 15;
 check(`every cell ran - ${EXPECTED} expected, a conditional cell that vanishes is invisible without this`,
   pass + fail === EXPECTED, `${pass + fail} cells reported`);
 
