@@ -32,6 +32,22 @@
  * present, while the durable journal's `JSON.stringify` flattens every one of those to a string,
  * null, 0, and an absent key. So a divergence introduced by the WORKER transport could not red this
  * suite, and each green below is a statement about the two engines rather than about confinement.
+ *
+ * AND ITS ARMS ARE UNSERIALIZED, which is the second half of the same qualification and the half
+ * that is easier to misread, because it limits a number this file PRINTS rather than a path it
+ * declines to take. A differential is blind to SYMMETRIC loss by construction. `differences` walks
+ * a journal entry by entry through `JSON.stringify`, so two arms that flatten a value the same way
+ * compare equal; and the encoder that flattens it is shared by both arms, also by construction.
+ * Both of those are load-bearing, and neither is a property this suite can test, because a suite
+ * cannot see a difference its own comparison erases.
+ *
+ * So read the entry leg's zero for what it is. "No journal entry the corpus produces carries a
+ * value JSON cannot draw" is a statement about what the EFFECTS record, and about two arms
+ * agreeing. It is NOT evidence that the durable path is faithful: a value that the encoder drops
+ * on the way in is gone identically on both arms, so it is drawn identically, compared equal, and
+ * counted in that zero. A record that lost a field before it was ever stored looks canonical
+ * coming back. Nothing here could report that, and this number should not be cited as though it
+ * could.
  */
 import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
