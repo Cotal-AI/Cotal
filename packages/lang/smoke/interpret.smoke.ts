@@ -772,8 +772,32 @@ log(c.status);
   // snapshotted from a REAL run, from inside the second mint, which is exactly the instant a host
   // can die with work outstanding.
   let atSecondMint: readonly JournalEntry[] = [];
+  // ...and a SECOND snapshot, taken one instant later: after the escalation attempt's own bind has
+  // completed, but before its terminal settles. `atSecondMint` above is taken as the second call
+  // ENTERS, so it cannot see whether that attempt records anything at all. A security review showed
+  // what that costs: give the escalated call a bind that SUCCEEDS and records nothing
+  // (`{ ...ctx, attempt: 1, bind: async () => {} }` at the reissue site) and the whole package stays
+  // green, 84 checks here and 43 in `sim.smoke`, while a crash between the handler returning and the
+  // terminal has an ACTIVE row with no external reference to rebind to. The sim-side arms cannot see
+  // it either: they prove the handler awaits whatever bind it is handed, and this is the interpreter
+  // handing it a useless one.
+  let afterSecondBind: readonly JournalEntry[] = [];
+  let journalBinds = 0;
+  let bindsBeforeSecond = 0;
+  let bindsDuringSecond = -1;
   const live = await (async () => {
-    const journal = new Journal({ run: "r-17" });
+    const bare = new Journal({ run: "r-17" });
+    // Count the journal writes the INTERPRETER drives, so the cell below can say the escalation
+    // attempt's bind reached the journal rather than merely that the row carries some fact.
+    const journal = new Proxy(bare, {
+      get(t, prop, recv) {
+        if (prop !== "bind") return Reflect.get(t, prop, recv);
+        return async (...args: Parameters<Journal["bind"]>) => {
+          journalBinds += 1;
+          return t.bind(...args);
+        };
+      },
+    });
     const sim = new SimHandler({
       checkpoints: { gate: [{ status: "expired", by: "s" }, { status: "resolved", value: 1, by: "d" }] },
       clock: { start: 0 },
@@ -788,8 +812,21 @@ log(c.status);
           if (prop !== "checkpoint") return Reflect.get(t, prop, recv);
           return async (req: never, ctx: never) => {
             call += 1;
-            if (call === 2) atSecondMint = journal.entries().map((e) => ({ ...e }));
-            return innerCp(req, ctx);
+            if (call !== 2) return innerCp(req, ctx);
+            atSecondMint = journal.entries().map((e) => ({ ...e }));
+            bindsBeforeSecond = journalBinds;
+            // Wrap the context the INTERPRETER supplied, so what is measured is the bind the
+            // interpreter passes rather than one this test authored.
+            const supplied = ctx as unknown as { bind: (e: Readonly<Record<string, unknown>>) => Promise<void> };
+            const watched = {
+              ...(ctx as object),
+              bind: async (e: Readonly<Record<string, unknown>>) => {
+                await supplied.bind(e);
+                afterSecondBind = journal.entries().map((x) => ({ ...x }));
+                bindsDuringSecond = journalBinds - bindsBeforeSecond;
+              },
+            };
+            return innerCp(req, watched as never);
           };
         },
       }) as never,
@@ -809,6 +846,24 @@ log(c.status);
     attempt: openRow?.attempt,
     expected: id1,
   });
+
+  // The half the row above cannot reach: that the escalation attempt BOUND something, onto the row
+  // that is still active, before it settled. Asserted on the pending state as well as on the fact,
+  // because an external reference that only appears after the terminal is no use to a crash.
+  //
+  // Asserted as a WRITE the interpreter drove, not as a field that happens to be present. `reissueAs`
+  // carries the row forward with `{ ...entry, requestId, attempt }`, so attempt 0's `external`
+  // SURVIVES into attempt 1 and the two are indistinguishable by value: the sim binds the same step
+  // key both times. A cell that only read the field was green under the no-op mutant, measured, which
+  // is why this counts the journal binds the escalation attempt actually caused.
+  const boundRow = afterSecondBind.find((e) => e.kind === "checkpoint");
+  ok(
+    "the escalation attempt drives its OWN journal bind, on the still-active row, before its terminal",
+    bindsDuringSecond === 1 &&
+      boundRow?.state === "pending" &&
+      (boundRow?.external as { simCheckpoint?: unknown } | undefined)?.simCheckpoint !== undefined,
+    { bindsDuringSecond, state: boundRow?.state, external: boundRow?.external, attempt: boundRow?.attempt },
+  );
 
   /** Exactly what survived the crash, replayed back at the interpreter. */
   const crashed = () => new Journal({ run: "r-17", entries: atSecondMint });
