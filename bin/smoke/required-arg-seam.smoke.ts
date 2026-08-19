@@ -965,6 +965,16 @@ const bindsPatternName = (n: ts.BindingName, name: string): boolean => {
  *  A literal inside a nested function body is deliberately not counted: it is a value that callback
  *  produces, not the structure this declaration takes apart.
  *
+ *  Stated cost, on the refusing side. A call this file does not model, carrying a literal that is
+ *  perfectly readable, is refused too: `structuredClone({ tls: false })` is unverifiable although
+ *  nothing is wrong with it. Reading through it would mean assuming the call returns its argument
+ *  unchanged, and that assumption is a false green waiting for the first function that transforms
+ *  what it is handed, which is what functions are for. So the modelled calls are the ones whose
+ *  semantics are actually known here, freeze and its family and the merge, and every other call
+ *  carrying written text is refused rather than guessed at. That is a red on working code, which is
+ *  the direction this reader is supposed to flinch from, and it is accepted here because the
+ *  alternative is a pass on broken code and because a refusal says out loud that it did not read.
+ *
  *  Stated consequence, since it is an asymmetry and not an oversight: where the initializer has
  *  BRANCHES, `cond ? { tls: false } : { tls: undefined }`, this refuses rather than folding them,
  *  while the ARGUMENT path does fold its alternatives. The two are answering different questions. An
@@ -1898,6 +1908,11 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const { tls } = cond ? { tls: undefined as any } : { tls: false };\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...and a literal reached through a nullish default is reached all the same",
     one(`const { tls } = opts ?? { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and an AWAIT of a written literal is reached as well, which is ordinary async code",
+    one(`async function f() { const { tls } = await { tls: undefined as any }; return standaloneConnectOpts({ creds: c, tls }); }`) === "unverifiable");
+  check("...and the `||` and `&&` family, which is the same shape as the ternary and just as ordinary",
+    one(`const { tls } = opts || { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable"
+    && one(`const { tls } = opts && { tls: undefined as any };\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...and a comma operator hides nothing either",
     one(`const { tls } = (0, { tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   // The literal must be found at DEPTH, not just as a direct child. Mutation caught every cell above
@@ -1907,6 +1922,12 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const { tls } = new Wrapper(makeIt({ tls: undefined as any }));\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...while a literal inside a CALLBACK is that callback's value, not this declaration's source",
     one(`const { tls } = build(cfg, () => ({ tls: false }));\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  // THE COST of that rule, asserted so it is a decision rather than a surprise: a call this file does
+  // not model is refused even when the literal it carries is perfectly fine. Reading through it would
+  // mean assuming the call hands back what it was given, which is a false green waiting for the first
+  // function that transforms its argument.
+  check("...and a call this file does not model is refused even when the literal in it is FINE",
+    one(`const { tls } = structuredClone({ tls: false });\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
   check("...while a call carrying no written literal is not written here at all, and still passes",
     one(`const { tls } = build(cfg);\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("a GETTER in the source is refused, not passed, since reading it would mean running it",
