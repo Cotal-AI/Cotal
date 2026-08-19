@@ -120,6 +120,15 @@
       "expectRed": "and a corpus program journals every kind the engine can write",
       "cell": "and a corpus program journals every kind the engine can write",
       "note": "A coverage-discipline cell, so its mutant is in the fixture. The name is still SPELLED, so the free-name cell stays green and both arms still agree; only a kind the engine actually wrote to a journal counts here, and `monitor` stops being one. Measured before it was aimed: this is the only cell that reds."
+    },
+    {
+      "name": "the dead-zone rule never looks at writes, so an early write dies as a native ReferenceError",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    this.deadZone(b);\n  }",
+      "replace": "  }",
+      "expectRed": "identical on both engines: a dead-zone write",
+      "cell": "identical on both engines: a dead-zone write",
+      "note": "The behavioural half of the surface cell: the walker answers a CATCHABLE L2004 and the program still reads the declared value afterwards, where the mutant's engine dies on an engine fault the program cannot see. Measured before it was aimed."
     }
   ],
   "completionMarker": "differential.smoke:"

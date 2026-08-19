@@ -293,6 +293,36 @@
       "cell": "and no declared range is wider than the emission that justifies it",
       "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
       "note": "The other direction, and the one a table alone would never notice: a bound nothing reaches is a permission for a future emission with no ruling behind it, and every site stays inside it forever."
+    },
+    {
+      "name": "the dead-zone rule never looks at writes, so an early write is emitted against a record that does not exist yet",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    this.deadZone(b);\n  }",
+      "replace": "  }",
+      "expectRed": "a write that can land in the dead zone hoists its record",
+      "cell": "a write that can land in the dead zone hoists its record",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "Without the hoist the cell record is itself in a temporal dead zone when the early write evaluates its arguments, so the failure is a native ReferenceError the seam never sees - the exact shape the read half was ruled to remove."
+    },
+    {
+      "name": "a dead-zone write is emitted without the binding's name, so the host has nothing to refuse on",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const named = b !== undefined && b.deadZone;",
+      "replace": "    const named = false;",
+      "expectRed": "and carries the binding name, which is what the host refuses on",
+      "cell": "and carries the binding name, which is what the host refuses on",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "The record is hoisted, so nothing throws: the write lands in a binding whose declaration has not run, silently, and the program logs the walker's refusal as a value."
+    },
+    {
+      "name": "the declaration's own write carries the name too, so a binding refuses its own initialisation",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (b?.cell === true && this.hoisted.has(b)) return `${this.seam(\"set\", `${name}, ${q(\"v\")}, ${valueCode}`)};\\n`;",
+      "replace": "        if (b?.cell === true && this.hoisted.has(b)) return `${this.cellWrite(b, name, valueCode)};\\n`;",
+      "expectRed": "and the declaration writes into that record rather than building one",
+      "cell": "and the declaration writes into that record rather than building one",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "Measured rather than aimed at the cell that reads best: the READ program's declaration is the first one emitted, and its cell already pins the three-argument spelling, so it is what reds. The rule is the same one either way - the write that ENDS a dead zone can never be the write that refuses for it."
     }
   ]
 }
