@@ -48,7 +48,18 @@
     "THE CROSSING CELL RELEASES INSIDE THE BOUND, ON PURPOSE. The wait is bounded, so a straggler held",
     "past it is released after departure by design and no mutation should be able to claim otherwise.",
     "What is graded is the ORDER for work released while the teardown is still waiting. Holding it",
-    "longer would grade an unbounded wait that this fix does not claim to make."
+    "longer would grade an unbounded wait that this fix does not claim to make.",
+    "",
+    "SEAT-PREFIXED ASSERTION TEXT IS LOAD-BEARING. expectRed is a substring search over the whole",
+    "transcript, so two seats printing the same sentence would let the tool mutation match a red the",
+    "hook seat produced and report a kill for a door it never exercised. A false KILL is worse than a",
+    "survivor, because a survivor announces itself.",
+    "",
+    "THE ORDERING IS SAMPLED BEFORE THE RELEASE, NOT AFTER IT. Looking for an inversion afterwards does",
+    "not work: with the wait removed, departure and the straggler both land between two polls, so the",
+    "parent never sees the intermediate offline, and the next offline it sees is the one agent.stop",
+    "publishes at the end, by which time the inversion has been repaired by the code under test. That",
+    "cell read GREEN against a broken implementation, and it is why C10 first came back WRONG-RED."
   ],
   "mutations": [
     {
@@ -117,23 +128,23 @@
     {
       "name": "C10 teardown stops waiting for work it already admitted, so a presence write parked mid-call resumes after departure and puts the seat back to work",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n    if (!settled) log(\"opencode-teardown admitted work outlived the intake bound; publishing offline anyway\");\n",
-      "replace": "",
-      "expectRed": "work admitted before the stop lands BEFORE departure, never after it"
+      "find": "    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
+      "replace": "    const settled = true;\n",
+      "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     },
     {
       "name": "C11 the hook path stops being tracked, so a pre-stop hook parked inside its presence write is not waited for and crosses departure",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "      if (agent.connected) await track(agent.setStatus(status, activity));\n",
       "replace": "      if (agent.connected) await agent.setStatus(status, activity);\n",
-      "expectRed": "work admitted before the stop lands BEFORE departure, never after it"
+      "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     },
     {
       "name": "C12 the tool path stops being tracked, which the hook path cannot stand in for because a tool reaches the agent without passing through the plugin's presence helper",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
       "replace": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
-      "expectRed": "work admitted before the stop lands BEFORE departure, never after it"
+      "expectRed": "tool-seat: departure was still unpublished while admitted work was in flight"
     }
   ]
 }

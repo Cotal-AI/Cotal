@@ -40,23 +40,29 @@ const marker2 = process.env.COOP_MARKER_QUEUED?.trim() || undefined;
 // those calls return and is the positive control — without it the assertion that nothing changed
 // would also pass on a probe that never knocked.
 const late = process.env.COOP_LATE?.trim() || undefined;
-// THE CROSSING SCENARIO. A hook admitted BEFORE the stop parks inside its presence write and
-// resumes after teardown has published offline. The seam holds the first of setStatus's two awaits,
-// which is the real gap rather than an invented one: setStatus assigns, awaits setActivity, then
-// awaits setStatus, so a teardown starting in that gap publishes offline between them.
-const cross = process.env.COOP_CROSS?.trim() || undefined;
+// THE CROSSING SCENARIO. A caller admitted BEFORE the stop parks inside its presence write and
+// resumes after teardown has published departure. The seam holds the first of setStatus's two
+// awaits, which is the real gap rather than an invented one: setStatus assigns, awaits setActivity,
+// then awaits setStatus, so a teardown starting in that gap publishes departure between them.
+//
+// ONE DOOR PER PROCESS, which is not tidiness. A hook reaches presence through the plugin's helper
+// and a tool reaches the agent directly, so they are two mechanisms; but parking both in one
+// teardown makes them mask each other, because waiting on either holds departure until both have
+// resumed. Removing the tracking from one path then changes nothing observable and the mutation for
+// it survives. Measured, not predicted: that is exactly how C11 and C12 survived. There is one
+// teardown per process, so each door needs its own seat.
+const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool"
+const crossArm = process.env.COOP_CROSS_ARM?.trim() || undefined;
 const crossParked = process.env.COOP_CROSS_PARKED?.trim() || undefined;
 const crossRelease = process.env.COOP_CROSS_RELEASE?.trim() || undefined;
 const parked: Array<() => void> = [];
 if (cross) {
   const original = CotalEndpoint.prototype.setActivity;
   CotalEndpoint.prototype.setActivity = async function (activity: string): Promise<void> {
-    // BOTH DOORS, because they are two mechanisms and not one: a hook reaches presence through the
-    // plugin's own helper, and a tool bypasses that helper and calls the agent directly.
-    if (activity.startsWith("crossing-")) {
+    if (activity === `crossing-${cross}`) {
       await new Promise<void>((r) => {
         parked.push(r);
-        if (crossParked && parked.length === 2) writeFileSync(crossParked, "both pre-stop callers are parked inside their presence writes\n");
+        if (crossParked) writeFileSync(crossParked, `the pre-stop ${cross} call is parked inside its presence write\n`);
       });
     }
     return original.call(this, activity);
@@ -135,14 +141,7 @@ if (marker) {
     // while the mesh agent is still connecting: fired at boot this hook returned without ever
     // reaching its presence write, and the cell it feeds passed while grading nothing. The parent
     // writes this trigger only after it has seen the seat online, and the stop is still ahead.
-    if (cross) {
-      void fireTool("ses_coop", "crossing-hook");
-      // The tool path, which the hook path cannot stand in for: cotal_status reaches the agent
-      // without passing through the plugin's presence helper at all.
-      void (
-        hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
-      ).tool.cotal_status.execute({ activity: "crossing-tool" });
-    }
+    if (cross === "hook") void fireTool("ses_coop", "crossing-hook");
     draining = true;
     void fire({ type: "session.created", properties: { info: { id: "ses_next" } } });
     // Queued BEHIND the one above, which is the whole point: when the stop lands, this swap has not
@@ -185,6 +184,20 @@ if (late) {
 // because it is designed to park.
 if (cross) {
   void (async () => {
+    // ARMED BY THE PARENT, never at boot. Presence is best effort while the mesh agent is still
+    // connecting, so a call fired at boot returns without ever reaching its presence write and the
+    // cell it feeds passes while grading nothing. Measured: that is how the first version of this
+    // scenario went green with its control red.
+    while (crossArm && !existsSync(crossArm)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    // ONLY THE TOOL DOOR IS FIRED HERE. A tool carries no session, so it can be armed from anywhere;
+    // the hook is ownership-checked, and this watcher races the drain watcher, whose swaps change
+    // which session is owned. Fired from here it lost that race, the hook was not ours, and it
+    // returned without reaching its presence write. So the hook is fired by the drain watcher itself,
+    // in front of the swaps, where the session it names is still the owned one.
+    if (cross === "tool")
+      void (
+        hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
+      ).tool.cotal_status.execute({ activity: "crossing-tool" });
     while (!existsSync(crossRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
     for (const release of parked) release();
   })();

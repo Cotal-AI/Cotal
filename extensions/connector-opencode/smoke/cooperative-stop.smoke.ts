@@ -95,6 +95,7 @@ const releaseBroker = teardownOnSignal(srv, dir);
 let mgr: CotalEndpoint | undefined;
 let watcher: CotalEndpoint | undefined;
 let probe: ReturnType<typeof spawn> | undefined;
+let toolProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -182,6 +183,7 @@ try {
   const lateFired = join(dir, "coop-knocked");
   const crossParked = join(dir, "coop-crossing-parked");
   const crossRelease = join(dir, "coop-crossing-release");
+  const crossArm = join(dir, "coop-crossing-arm");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -196,7 +198,8 @@ try {
       COOP_MARKER_QUEUED: markerQueued,
       COOP_LATE: late,
       COOP_LATE_FIRED: lateFired,
-      COOP_CROSS: "1",
+      COOP_CROSS: "hook",
+      COOP_CROSS_ARM: crossArm,
       COOP_CROSS_PARKED: crossParked,
       COOP_CROSS_RELEASE: crossRelease,
     },
@@ -216,6 +219,8 @@ try {
 
   // Start a drain and stop the seat while it is STILL RUNNING. Fired earlier, it would finish on
   // its own and the marker would say nothing about whether the stop waited.
+  // Armed only now, because the probe's caller must be admitted while the seat is genuinely online.
+  writeFileSync(crossArm, "go\n");
   writeFileSync(trigger, "go\n");
   await wait(400);
 
@@ -231,21 +236,36 @@ try {
   // the run a prompt from before the stop is indistinguishable from one after it.
   const promptsAtStop = existsSync(prompts) ? readFileSync(prompts, "utf8").split("\n").filter(Boolean).length : 0;
 
-  // Checked BEFORE the stop, because it is the precondition rather than the result: both callers
-  // must already be inside their presence writes for the crossing to be the thing under test.
-  let bothParked = false;
-  for (let i = 0; i < 40 && !bothParked; i++) {
+  // Checked BEFORE the stop, because it is the precondition rather than the result: the caller must
+  // already be inside its presence write for the crossing to be the thing under test.
+  let hookParked = false;
+  for (let i = 0; i < 40 && !hookParked; i++) {
     await wait(50);
-    bothParked = existsSync(crossParked);
+    hookParked = existsSync(crossParked);
   }
-  check("both pre-stop callers parked inside their presence writes", bothParked, { crossParked });
+  check("hook-seat: the pre-stop hook parked inside its presence write", hookParked, { crossParked });
 
   // Drive the cooperative shutdown — exactly what the manager sends on a win32 graceful stop.
   const reply = await sendShutdown(ep.path, ep.token);
-  // RELEASED IMMEDIATELY, and that is the instrument rather than an accident. The teardown waits a
-  // bounded time for work it already admitted, so releasing after offline would grade an unbounded
-  // wait nobody is claiming. What is claimed is an ORDER: a straggler released while the teardown is
-  // still waiting must land BEFORE departure, never after it.
+
+  // ---- THE ORDERING IS SAMPLED DIRECTLY, BEFORE THE RELEASE, and that is the whole instrument.
+  //
+  // The obvious cell, release and then look for an inversion, does not work and the reason is worth
+  // keeping: with the wait removed, departure and the straggler's write both land between two polls,
+  // so the parent never observes the intermediate offline at all, and the next offline it sees is
+  // the one agent.stop publishes at the very end. By then the inversion has been repaired by the
+  // code under test, so the cell reads green while the implementation is broken. Measured, not
+  // supposed: that is exactly how this mutation came back WRONG-RED.
+  //
+  // So ask the question the fix actually answers instead. While a presence write it admitted is
+  // still in flight, the teardown must NOT have published departure yet. A correct teardown is
+  // holding, so the seat is still non-offline here; one that does not wait has already departed.
+  // 300ms is inside the 1s bound, so the correct arm is still holding, and far past the moment an
+  // unwaiting teardown publishes.
+  await wait(300);
+  const beforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Otto")?.status;
+  check("hook-seat: departure was still unpublished while admitted work was in flight",
+    beforeRelease !== undefined && beforeRelease !== "offline", { beforeRelease });
   writeFileSync(crossRelease, "go\n");
   check("control server acked the shutdown", reply.trim() === JSON.stringify({ ok: true }), reply);
 
@@ -260,19 +280,6 @@ try {
     if (ottoOffline) markerAtOffline = existsSync(marker);
   }
   check("cooperative stop leaves the mesh (watcher sees Otto offline)", ottoOffline, watcher.getRoster().find((p) => p.card.name === "Otto")?.status);
-
-  // ---- DEPARTURE MUST BE THE LAST THING THIS SEAT SAYS, which is a different claim from admission
-  // and is invisible to a cell that only knocks afterwards. A presence write is not atomic: setStatus
-  // assigns, awaits setActivity, then awaits setStatus, so a teardown starting in that gap publishes
-  // offline BETWEEN the two and the parked caller then puts the seat back to work after it has said
-  // it left. Measured on this harness before the fix, both doors: the roster read working.
-  let crossed: string | undefined;
-  for (let i = 0; i < 34 && crossed === undefined; i++) {
-    await wait(60);
-    const s = watcher.getRoster().find((p) => p.card.name === "Otto")?.status;
-    if (s !== undefined && s !== "offline") crossed = s;
-  }
-  check("work admitted before the stop lands BEFORE departure, never after it", crossed === undefined, { crossed });
 
   // ---- ADMISSION IS CLOSED, and it is graded here rather than at the end because it is only
   // answerable while the process is still up: once it exits, losing the connection purges presence
@@ -335,12 +342,76 @@ try {
   // begun when the stop arrives, so the holder join does not cover it and only joining the chain
   // does. Without this, removing the chain join alone stays green.
   check("a swap still QUEUED at the stop was allowed to run before exit", existsSync(markerQueued), { markerQueued });
+
+  // ---- A SECOND SEAT, FOR THE OTHER DOOR. There is one teardown per process, and two callers
+  // parked in the same one mask each other: waiting on either holds departure until both have
+  // resumed, so removing the tracking from one path changes nothing and its mutation survives.
+  // Measured rather than predicted; that is exactly how the first version of these two survived.
+  //
+  // This seat needs no event work. What holds the process open long enough to be sampled is the
+  // teardown waiting on the parked call itself, which is the thing under test.
+  const tillyId = newIdentity();
+  const tillyUid = mintLifecycleUid();
+  const tillyCreds = await provisionAgent(mgr, auth, tillyId, { ...acl, role: "worker", lifecycleUid: tillyUid });
+  const tillyCredsFile = join(dir, "tilly.creds");
+  writeFileSync(tillyCredsFile, tillyCreds);
+  const toolSpec = opencodeConnector.buildLaunch({
+    space, name: "Tilly", role: "worker", id: tillyId.id, lifecycleUid: tillyUid, creds: tillyCredsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const toolEp = toolSpec.control!;
+  const toolArm = join(dir, "tool-crossing-arm");
+  const toolParked = join(dir, "tool-crossing-parked");
+  const toolRelease = join(dir, "tool-crossing-release");
+  mkdirSync(join(dir, "ws-tool"), { recursive: true });
+  toolProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...process.env,
+      ...toolSpec.env,
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-tool"),
+      COOP_CROSS: "tool",
+      COOP_CROSS_ARM: toolArm,
+      COOP_CROSS_PARKED: toolParked,
+      COOP_CROSS_RELEASE: toolRelease,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  let tillyLive = false;
+  for (let i = 0; i < 100 && !tillyLive; i++) {
+    await wait(100);
+    const tilly = watcher.getRoster().find((pr) => pr.card.name === "Tilly");
+    tillyLive = tilly !== undefined && tilly.status !== "offline";
+  }
+  check("tool-seat: the second seat came online, so this leg grades a live one", tillyLive);
+
+  writeFileSync(toolArm, "go\n");
+  let toolParkedSeen = false;
+  for (let i = 0; i < 60 && !toolParkedSeen; i++) {
+    await wait(50);
+    toolParkedSeen = existsSync(toolParked);
+  }
+  check("tool-seat: the pre-stop tool call parked inside its presence write", toolParkedSeen, { toolParked });
+
+  const toolReply = await sendShutdown(toolEp.path, toolEp.token);
+  check("tool-seat: control server acked the shutdown", toolReply.trim() === JSON.stringify({ ok: true }), toolReply);
+
+  // Same instrument as the hook seat, and the same reasoning: sampled directly, before the release,
+  // because an inversion looked for afterwards can complete between two polls and then be repaired
+  // by the terminal stop, leaving the cell green against a broken implementation.
+  await wait(300);
+  const toolBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Tilly")?.status;
+  check("tool-seat: departure was still unpublished while admitted work was in flight",
+    toolBeforeRelease !== undefined && toolBeforeRelease !== "offline", { toolBeforeRelease });
+  writeFileSync(toolRelease, "go\n");
+  await awaitExit(toolProbe, 15_000);
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
 } finally {
   try {
     if (probe && probe.exitCode === null) probe.kill("SIGKILL");
+    if (toolProbe && toolProbe.exitCode === null) toolProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }

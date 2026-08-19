@@ -240,11 +240,18 @@ export const cotal: Plugin = async () => {
    * two and the parked call then puts the seat back to work after it has announced it left.
    * Reproduced on the real plugin and broker, not reasoned: the roster read `working` after offline.
    *
-   * TRACKED HERE AND AT THE TOOL WRAPPER, which between them is every presence write this plugin can
-   * make: the hooks all go through this helper, and the tools bypass it and reach the agent directly,
-   * so they are tracked whole. Tracking a list of the agent's presence-writing METHODS instead would
-   * be the same enumeration this file has already got wrong twice, and it would miss a tool that
-   * sends rather than publishes, which no amount of repairing presence afterwards can take back.
+   * TRACKED HERE AND AT THE TOOL WRAPPER, which between them is every write that CHOOSES a status:
+   * the hooks all go through this helper, and the tools bypass it and reach the agent directly, so
+   * they are tracked whole. Tracking a list of the agent's presence-writing METHODS instead would be
+   * the same enumeration this file has already got wrong twice, and it would miss a tool that sends
+   * rather than publishes, which no amount of repairing presence afterwards can take back.
+   *
+   * ONE PRESENCE PUBLISH IS DELIBERATELY OUTSIDE IT, named here rather than left to be discovered.
+   * The prompt hook records the model, which publishes presence without passing through this helper.
+   * It is not tracked and it does not need to be: it cannot choose a status, it republishes whichever
+   * one the endpoint holds, and its record is submitted before departure's, so departure is the later
+   * write and wins. An earlier version of this comment claimed the two sites below were every
+   * presence write this plugin makes, which was simply false.
    *
    * EVENT WORK IS DELIBERATELY NOT IN HERE. A session create awaits its whole swap, drain included,
    * so waiting on it before publishing departure would queue offline behind exactly the drain that
@@ -324,7 +331,17 @@ export const cotal: Plugin = async () => {
     // the offline publish to an unbounded wait is the worse of the two, because departure would go
     // back to being inferred from a dropped connection.
     const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, "admitted intake at teardown");
-    if (!settled) log("opencode-teardown admitted work outlived the intake bound; publishing offline anyway");
+    // THE LINE BELOW IS THE AUTHORITATIVE ONE FOR THIS SITE, and it exists because the one above it
+    // is not. settleWithin's abandonment message is written for event work and says that whatever
+    // the abandoned work had left to publish is NOT on the wire. Here that is backwards: admitted
+    // work is never cancelled, so a straggler past the bound is exactly the thing that CAN still
+    // publish, and can still send, after departure. Leaving only the generic line would have shipped
+    // a log that contradicts the limitation this bound is honest about.
+    if (!settled)
+      log(
+        `admitted work outlived the ${INTAKE_SETTLE_MS}ms intake bound: departure is published anyway, ` +
+          `and that work is NOT cancelled, so it may still publish or send after departure`,
+      );
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
     await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
