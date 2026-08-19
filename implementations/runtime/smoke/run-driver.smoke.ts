@@ -14,7 +14,7 @@
  * Run: pnpm smoke:runtime-run-driver   (needs nats-server on PATH; part of smoke:ci)
  */
 import { spawn } from "node:child_process";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
@@ -32,7 +32,9 @@ const broker = spawn("nats-server", ["-js", "-sd", sd, "-p", String(PORT), "-a",
 const servers = `nats://127.0.0.1:${PORT}`;
 
 let ok = 0, fail = 0;
-const c = (n: string, v: boolean, extra?: unknown) => { if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
+/** Every cell this run EXECUTED, in order, passed or failed. The seam check at the bottom reads it. */
+const EXECUTED: string[] = [];
+const c = (n: string, v: boolean, extra?: unknown) => { EXECUTED.push(n); if (v) { ok++; } else { fail++; console.log("  ✗ FAIL:", n, extra ?? ""); } };
 const done = () => {
   try { broker.kill("SIGKILL"); } catch { /* already gone */ }
   rmSync(sd, { recursive: true, force: true });
@@ -677,6 +679,33 @@ try {
     served.yieldEvery === PIN_DEFAULTS.yieldEvery && served.stepBudget === PIN_DEFAULTS.stepBudget,
     served);
 }
+
+// ---- the cross-package index seam, answered by EXECUTION rather than by source text -------------
+//
+// `indexed-cells.json` beside this file lists the cells of this suite that the language package's
+// version-split matrix cites. This half asserts every one of them RAN. The other half, in
+// packages/lang/smoke/differential.smoke.ts, asserts set equality between that list and the matrix's
+// driver rows, so between the two nothing in the index can be satisfied by a quotation.
+//
+// WHY THE LIST IS A DATA FILE AND NOT A CONST HERE. Put these sentences in this file as source text
+// and a check that asks whether this file CONTAINS them becomes unconditionally true -- not a weaker
+// check, one that cannot fail. Measured from both lanes: comment out a cited call and containment
+// still passes, because grep finds the sentence twice, once in the dead call and once in the list.
+// A separate artefact leaves the containment answer honest and gives the other lane something to
+// PARSE rather than scrape out of TypeScript, which matters when a cell name carries an apostrophe.
+//
+// EXACTLY ONCE, not merely present: a sentence matching two executed cells leaves the row ambiguous
+// about which cell carries it, and this file already has one name it uses twice.
+const seam = JSON.parse(readFileSync(new URL("./indexed-cells.json", import.meta.url), "utf8")) as {
+  suite: string;
+  cells: string[];
+};
+c("the cited-cells file names this suite, so it is this file's seam and not another's",
+  seam.suite.endsWith("run-driver.smoke.ts"), seam.suite);
+const unrun = seam.cells.map((s) => ({ s, hits: EXECUTED.filter((e) => e === s).length })).filter(({ hits }) => hits !== 1);
+c("every cell the language package's matrix cites from this file is one THIS RUN executed, exactly once",
+  unrun.length === 0, unrun.map(({ s, hits }) => `${hits} execution(s): ${s}`));
+console.log(`  (${seam.cells.length} cited cells checked against ${EXECUTED.length} executed)`);
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);
 done();
