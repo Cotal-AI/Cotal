@@ -17,7 +17,10 @@ const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 // Set by the parent only for the teardown-join scenario; unset, this probe behaves exactly as
 // it always did and the original four cells are unaffected.
 const marker = process.env.COOP_MARKER?.trim() || undefined;
-let reads = 0;
+// Flipped immediately before the un-awaited create, so ONLY the read that the resulting drain
+// performs is slowed and marked. Counting reads instead was wrong: the bind does not read, so the
+// drain's read was the first one and the marker was never written even with the join in place.
+let draining = false;
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== auth) {
     res.writeHead(401).end();
@@ -32,12 +35,11 @@ const oc = createServer((req, res) => {
   // whether a queued drain was still allowed to finish. The first read is fast because it is the
   // fresh adopt at bind time and slowing it would only delay setup.
   if (req.method === "GET" && /^\/session\/[^/]+\/message$/.test(req.url ?? "")) {
-    reads += 1;
     const answer = (): void => {
-      if (marker && reads > 1) writeFileSync(marker, `read ${reads} completed\n`);
+      if (marker && draining) writeFileSync(marker, "the drain's read completed\n");
       res.writeHead(200, { "content-type": "application/json" }).end("[]");
     };
-    if (marker && reads > 1) setTimeout(answer, 2_500);
+    if (marker && draining) setTimeout(answer, 2_500);
     else answer();
     return;
   }
@@ -61,6 +63,7 @@ if (marker) {
   const fire = (event: unknown): Promise<void> =>
     (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
   await fire({ type: "session.created", properties: { info: { id: "ses_coop" } } });
+  draining = true;
   void fire({ type: "session.created", properties: { info: { id: "ses_next" } } });
 }
 
