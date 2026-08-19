@@ -15,11 +15,13 @@
     "that the teardown joins anything at all. C3 removes only the chain join, which the running case",
     "cannot detect because the holder join catches it, and is reddened by the queued case instead.",
     "",
-    "C4 IS GRADED TWICE, ON PURPOSE. The ordering cell samples the wire at the moment presence flips,",
-    "which grades the ORDER but not whether it is sufficient: this harness spawns the probe directly,",
-    "so there is no runtime grace window and no kill. The second leg supplies that: a seat is stopped",
-    "and then killed after a window shorter than its drain, and presence must already have left. The",
-    "first cell to fail names the red; both come from the same reorder."
+    "",
+    "C4 GRADES THE ORDER, NOT SUFFICIENCY AGAINST THE REAL KILL, and that boundary is measured rather",
+    "than assumed. A leg that stopped a seat and killed it after a short grace was built twice and",
+    "discarded twice, because it passed on BOTH arms: losing the connection purges the presence entry,",
+    "so a roster read after a kill says offline whether or not the seat published it, and a read taken",
+    "before the kill did not redden either. Cells that cannot fail are worse than absent ones, so it is",
+    "not here. What remains graded is that presence does not queue behind the drain."
   ],
   "mutations": [
     {
