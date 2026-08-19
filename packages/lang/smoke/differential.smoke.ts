@@ -740,8 +740,24 @@ const reachedKinds = new Set<string>();
   // become false with nothing to say so. This is what says so.
   //
   // It asserts a DEFECT PERSISTS, which is only honest when the assertion names its own remedy: if
-  // this reds, the bind guard has landed — retire this block and rewrite the two sentences it
-  // names, do not "fix" it by loosening the pin.
+  // this reds, the bind guard has landed — retire this block and rewrite the sentences it names, do
+  // not "fix" it by loosening the pin.
+  //
+  // AND THE REMEDY IS SPELLED OUT HERE RATHER THAN KEPT IN SOMEONE'S NOTES, because a repair that
+  // lives outside the tree is gone the day its author is. Four edits, and which of them the machine
+  // would catch was MEASURED on a copy at this commit rather than assumed:
+  //   1. delete this block. Miss it and two independent instruments red: `smoke:mutation-fixtures`
+  //      on a dead anchor, and this suite's own expectRed audit naming the orphaned mutation.
+  //   2. drop the mutation underneath this block's probe — that is the same dead anchor.
+  //   3. rename the cell ending "the one field no crossing rule guards" and follow it in the
+  //      mutation config. Miss the config half and the audit reds alone; fixtures stay green,
+  //      because no anchor happens to contain that name.
+  //   4. rewrite the three sentences that still say the path is unguarded: the paragraph heading the
+  //      entry sweep, the `console.log` detail beside the bind count, and the comment above that
+  //      cell. NOTHING CHECKS THESE — with the first three done and these three left stale the
+  //      suite is 206/206 green, 40 anchors, tsc clean, and the file simply lies.
+  // So a retirement cannot half-land, except in exactly the half that is prose. Which is the half
+  // that survives to be read.
   class BindsUncrossable extends SimHandler {
     override async spawn(req: Parameters<SimHandler["spawn"]>[0], ctx: Parameters<SimHandler["spawn"]>[1]) {
       const handle = await super.spawn(req, ctx);
@@ -770,7 +786,7 @@ const reachedKinds = new Set<string>();
   const [wn, en] = [await externalOf("walker"), await externalOf("engine")];
   const shapeOfRed =
     typeof wn === "string" && typeof en === "string"
-      ? "the guard landed and refuses at the bind: retire this block per the recipe, and rewrite the two sentences that call `external` unguarded"
+      ? "the guard landed and refuses at the bind: retire this block by the four edits above, and do not stop at the three the machine would have caught"
       : wn === undefined && en === undefined
         ? "NOT the guard working: nothing carried the value at all. Either this probe stopped binding — check that first, it is the cheaper fault and it has its own mutation — or the bind DROPPED the value silently, which is worse than no guard. Either way, do not retire this block"
         : "the two arms answered differently on a path they share, which neither a guard nor its absence explains. A finding: stop and measure before touching anything";
