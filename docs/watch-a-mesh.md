@@ -135,9 +135,10 @@ read is the caller's typo, not a broken server. Either way a malformed request i
 request and never as the dashboard having broken.
 
 A refusal names the value it received, and it renders that value so you can read it. Characters that
-would otherwise be invisible or would rearrange the text around them come back as their escape
-(`\u007f`, `\u2028`) in both the response and the line printed in the terminal, so what you read is
-what was actually sent. Ordinary text, accents and non-Latin scripts included, is left alone.
+would otherwise be invisible, rearrange the text around them, or mark part of it as an annotation
+come back as their escape in both the response and the line printed in the terminal, so what you
+read is what was actually sent. Ordinary text, accents and non-Latin scripts included, is left
+alone: a character that renders as itself is left as itself.
 
 A channel name has to be the name the mesh actually uses: dotted segments of letters, digits, `_`
 and `-`. Anything else is refused rather than quietly rewritten, because the wire rewrites what it

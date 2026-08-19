@@ -268,16 +268,30 @@ export class BadRequest extends Error {}
  *  which is exactly the thing the list said it closed. A list is a claim about a set nobody
  *  maintains; the property IS the set, and it moves with the Unicode version the runtime carries.
  *
- *  `Default_Ignorable_Code_Point` is the renders-as-nothing family: the soft hyphen, the zero-width
- *  characters, the word joiner, the variation selectors, the tag characters and the BOM. It also
- *  carries the whole reordering family, measured on this runtime rather than assumed: all twelve
- *  `Bidi_Control` codepoints, U+061C and the isolates included, are default-ignorable, so naming
- *  that property too would be a second name for the same set. The suite pins those twelve by hand,
- *  so a Unicode version that separated them would go red here rather than quietly stop escaping
- *  them. What no property covers is DEL and the C1 controls, which are `Cc`, and U+2028/U+2029,
- *  which are line and paragraph separators, so those are named. C0 is absent because
- *  `JSON.stringify` already escapes all of it. */
-const INVISIBLE_AFTER_JSON = /[\p{Default_Ignorable_Code_Point}\u007f-\u009f\u2028\u2029]/gu;
+ *  Two properties, because neither contains the other and both name the same harm from a different
+ *  side. `Default_Ignorable_Code_Point` is the renders-as-nothing family: the soft hyphen, the
+ *  zero-width characters, the word joiner, the variation selectors, the tag characters and the BOM.
+ *  `Cf` is the format family: characters with no glyph of their own that change how the text around
+ *  them is read, which is where the interlinear annotation controls U+FFF9 to U+FFFB live. Review
+ *  found those three arriving raw against a class that had only the first property, and they are the
+ *  clearest case of the harm: they mark a span as base text plus its gloss, so a reader whose
+ *  terminal does not implement them sees the two runs concatenated into a sentence nobody wrote.
+ *  Measured, the second property adds 32 codepoints and not one of them is a letter or a digit.
+ *
+ *  `Bidi_Control` is deliberately absent: measured on this runtime, all twelve of its codepoints,
+ *  U+061C and the isolates included, are already default-ignorable, so naming it would be a second
+ *  name for one set. The suite pins those twelve by hand, so a Unicode version that separated them
+ *  goes red rather than quietly leaving a reordering character raw.
+ *
+ *  What no property covers is DEL and the C1 controls, which are `Cc`, and U+2028/U+2029, which are
+ *  line and paragraph separators, so those are named. C0 is absent because `JSON.stringify` already
+ *  escapes all of it.
+ *
+ *  NOT IN THIS CLASS, and deliberately: a VISIBLE character that merely resembles another. A Cyrillic
+ *  small a is a letter, it renders as itself, and escaping it would make a refusal about a name a
+ *  human typed unreadable, which is this issue pointed the other way. Confusables are a different
+ *  problem with a different answer, and quoting for a human to read is not it. */
+const INVISIBLE_AFTER_JSON = /[\p{Default_Ignorable_Code_Point}\p{gc=Cf}\u007f-\u009f\u2028\u2029]/gu;
 
 /** QUOTE A CALLER'S OWN VALUE SO AN OPERATOR CAN READ IT.
  *

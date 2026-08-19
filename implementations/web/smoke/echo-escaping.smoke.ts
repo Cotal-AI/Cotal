@@ -28,11 +28,19 @@
  *
  * THE FIRST VERSION OF THE FIX WROTE THAT CLASS AS A HAND LIST AND THE LIST WAS WRONG. Review
  * measured U+061C, U+2060, the variation selectors and the tag characters arriving raw through the
- * same route: every one of them is the thing the list said it closed. The class is now the Unicode
- * properties `Bidi_Control` and `Default_Ignorable_Code_Point`, plus DEL, the C1 controls and
- * U+2028/U+2029, which no property covers. A list is a claim about a set nobody maintains. The
- * codepoints below are named individually anyway, because a failure should say WHICH one, and the
- * nine after the BOM are the ones the list missed.
+ * same route: every one of them is the thing the list said it closed. THE SECOND VERSION NAMED ONE
+ * PROPERTY AND THAT PROPERTY WAS TOO NARROW: review then measured U+FFF9 to U+FFFB, the interlinear
+ * annotation controls, arriving raw, because they are format characters that are not
+ * default-ignorable. They mark a span as base text plus its gloss, so a reader whose terminal does
+ * not implement them sees two runs of text concatenated into a sentence nobody sent.
+ *
+ * The class is now the Unicode properties `Default_Ignorable_Code_Point` and `gc=Cf`, plus DEL, the
+ * C1 controls and U+2028/U+2029, which no property covers. `Bidi_Control` is not named because all
+ * twelve of its members are already default-ignorable, and cell 0.10 pins that by hand so a Unicode
+ * version that separated them reds rather than silently narrowing the class. The codepoints below
+ * are named individually anyway, because a failure should say WHICH one. Naming is not proof that
+ * the literal encodes the union it claims, so cell 0.12 sweeps every codepoint from 0 to 0x10FFFF
+ * and compares what the quoter did against that union.
  *
  * WHAT IS DELIBERATELY NOT ESCAPED, and section 0 proves it: ordinary text, and non-ASCII LETTERS.
  * A quoter that escaped every byte over 0x7f would render a refusal about an accented channel name
@@ -118,6 +126,12 @@ const CLASS: [string, number][] = [
   ["MUSICAL U+1D173, astral", 0x1d173],
   ["TAG U+E0001, astral", 0xe0001],
   ["VARIATION SELECTOR U+E0100, astral", 0xe0100],
+  ["ANNOTATION ANCHOR U+FFF9", 0xfff9],
+  ["ANNOTATION SEPARATOR U+FFFA", 0xfffa],
+  ["ANNOTATION TERMINATOR U+FFFB", 0xfffb],
+  ["ARABIC NUMBER SIGN U+0600", 0x600],
+  ["ARABIC END OF AYAH U+06DD", 0x6dd],
+  ["EGYPTIAN FORMAT U+13430, astral", 0x13430],
 ];
 
 /** Both sides of every range in the class. A cell that only tests the middle of a range cannot tell
@@ -137,6 +151,10 @@ const OUTSIDE: [string, number][] = [
   ["U+1BCA4, just above the shorthand controls", 0x1bca4],
   ["U+1D17B, just above the musical controls", 0x1d17b],
   ["U+E1000, just above the tag block", 0xe1000],
+  ["U+FFEE, just below the U+FFF0 ignorable block", 0xffee],
+  ["U+FFFC, just above the annotation terminator", 0xfffc],
+  ["U+05FF, just below the Arabic number signs", 0x5ff],
+  ["U+1342F, just below the Egyptian format controls", 0x1342f],
 ];
 
 // ---- 0. the quoter, directly ------------------------------------------------------------------
@@ -222,6 +240,47 @@ ok("0.3 CONTROL: what `JSON.stringify` already closed stays closed - every C0 co
   const raw = BIDI.filter((n) => quoteForOperator(cp(n)) !== '"' + escaped(n) + '"');
   ok("0.10 every BIDI CONTROL is escaped, including U+061C and the isolates, which the shipped hand list did not have",
     raw.length === 0, raw.map((n) => n.toString(16)));
+}
+
+// The INTERLINEAR ANNOTATION controls, which review found raw against a class that had only the
+// default-ignorable property. They are `Cf` and NOT default-ignorable, and they are the clearest
+// form of the harm in the whole issue: they mark a span as base text plus its gloss, so a reader
+// whose terminal does not implement them sees the two runs concatenated into a sentence nobody
+// wrote. Not "invisible", not "reordered", but read as something else, which is the third arm of
+// the class statement and the one a single property missed.
+{
+  const ANNOTATION = [0xfff9, 0xfffa, 0xfffb];
+  const raw = ANNOTATION.filter((n) => quoteForOperator(cp(n)) !== '"' + escaped(n) + '"');
+  const sentence = "A" + cp(0xfff9) + "base" + cp(0xfffa) + "gloss" + cp(0xfffb) + "Z";
+  ok("0.11 the INTERLINEAR ANNOTATION controls are escaped, so a base run and its gloss cannot arrive as one sentence nobody wrote",
+    raw.length === 0 && !quoteForOperator(sentence).includes(cp(0xfff9)),
+    { raw: raw.map((n) => n.toString(16)), sentence: quoteForOperator(sentence) });
+}
+
+// THE BOUNDARY ITSELF, swept rather than sampled. Every codepoint from 0 to 0x10FFFF is put through
+// the quoter and compared against the union this file CLAIMS: the two properties, DEL and the C1
+// range, U+2028/U+2029, and whatever `JSON.stringify` already escapes on its own.
+//
+// WHAT THIS PROVES AND WHAT IT DOES NOT: it proves the literal in the source is the union stated in
+// its comment, so a dropped alternative, a wrong flag or a typo'd range is caught for every
+// codepoint rather than for the fourteen this file names. It CANNOT prove the union is the right
+// union: twice now the boundary itself was wrong, and both times a person found it by asking which
+// harm the class is about. The named lists above stay because they are that question written down.
+{
+  const claimed = /[\p{Default_Ignorable_Code_Point}\p{gc=Cf}\u007f-\u009f\u2028\u2029]/u;
+  const wrong: string[] = [];
+  for (let n = 0; n <= 0x10ffff && wrong.length < 8; n++) {
+    if (n >= 0xd800 && n <= 0xdfff) continue;          // lone surrogates are not codepoints a caller can send
+    if (n === 0x22 || n === 0x5c) continue;            // the JSON delimiter and its escape appear in EVERY
+                                                      // quoted string, so "does the output contain this
+                                                      // character" cannot answer the question for these two
+    const ch = cp(n);
+    const shouldEscape = claimed.test(ch) || !JSON.stringify(ch).includes(ch);
+    const isRaw = quoteForOperator(ch).includes(ch);
+    if (isRaw === shouldEscape) wrong.push("U+" + n.toString(16).toUpperCase() + " -> " + quoteForOperator(ch));
+  }
+  ok("0.12 SWEPT over every codepoint: the set the quoter escapes is exactly the union this file claims, plus what JSON.stringify already closed",
+    wrong.length === 0, wrong);
 }
 
 // ---- the live server --------------------------------------------------------------------------

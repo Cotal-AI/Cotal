@@ -37,3 +37,12 @@ invisible character returned another channel's messages, and the delete route pu
 channel while answering with the name the caller typed. Both boundaries now refuse a name the wire
 would rewrite, using the validator core already had for the same aliasing gap on the ACL side.
 Rendering the old answer readably would only have made the lie legible.
+
+A second review pass found the property boundary still short: the interlinear annotation controls
+U+FFF9 to U+FFFB are format characters and not default-ignorable, so they arrived raw. They are the
+clearest form of the harm in the issue, since they mark a span as base text plus its gloss and a
+reader whose terminal does not implement them sees the two runs concatenated into a sentence nobody
+wrote. The class now carries both properties, which adds 32 codepoints, none of them a letter or a
+digit. A swept cell puts every codepoint from 0 to 0x10FFFF through the quoter and compares the
+result against the union the code claims, so a dropped alternative or a mistyped range is caught for
+every codepoint rather than for the ones a list happens to name.

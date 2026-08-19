@@ -12,7 +12,7 @@
     {
       "name": "E2 the class is widened to every codepoint above ASCII, which closes #711 and opens its mirror: a refusal naming a channel with an accented or CJK character renders as escapes instead of as the name the caller typed",
       "file": "implementations/web/src/web.ts",
-      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
       "replace": "const INVISIBLE_AFTER_JSON = /[^\\u0000-\\u007e]/gu;",
       "expectRed": "0.2 CONTROL: a non-ASCII LETTER stays a readable letter, never a unicode escape"
     },
@@ -33,15 +33,15 @@
     {
       "name": "E5 the low bound of the control range moves one codepoint down, so the printable tilde is escaped as well: the kind of off-by-one that makes a refusal about ordinary text unreadable and that a mid-range test cannot see",
       "file": "implementations/web/src/web.ts",
-      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/gu;",
-      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007e-\\u009f\\u2028\\u2029]/gu;",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007e-\\u009f\\u2028\\u2029]/gu;",
       "expectRed": "0.6 the bounds are exact: the codepoint on each side of every range is left alone"
     },
     {
       "name": "E6 the global flag is dropped, so only the FIRST class member in a value is escaped and every one after it still arrives raw: the classic regex slip, invisible to any cell whose input carries a single codepoint",
       "file": "implementations/web/src/web.ts",
-      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/gu;",
-      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/u;",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/u;",
       "expectRed": "1.6 a MIXED value escapes only the class members and leaves the rest alone, including an astral emoji whose surrogate PAIR the class must not touch"
     },
     {
@@ -54,16 +54,30 @@
     {
       "name": "E8 the two separators no Unicode property carries are dropped from the class, which is what a class written as properties ALONE would silently do to them",
       "file": "implementations/web/src/web.ts",
-      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/gu;",
-      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f]/gu;",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f]/gu;",
       "expectRed": "0.9 the LINE and PARAGRAPH separators are escaped, and they are in the class by NAME because no property covers them"
     },
     {
       "name": "E9 the property goes back to the hand list this change shipped with first, which is the exact defect review found: it has the isolates and the overrides and it does not have U+061C",
       "file": "implementations/web/src/web.ts",
-      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
       "replace": "const INVISIBLE_AFTER_JSON = /[\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
       "expectRed": "0.10 every BIDI CONTROL is escaped, including U+061C and the isolates, which the shipped hand list did not have"
+    },
+    {
+      "name": "E10 the format property is dropped, leaving the class the one property review already caught short: the interlinear annotation controls go back to arriving raw, so a base run and its gloss reach an operator as one sentence nobody wrote",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "expectRed": "0.11 the INTERLINEAR ANNOTATION controls are escaped, so a base run and its gloss cannot arrive as one sentence nobody wrote"
+    },
+    {
+      "name": "E11 the renders-as-nothing PROPERTY is replaced by an enumeration of exactly the codepoints this suite NAMES, so every named cell stays green and the thousands of members nobody named go raw: the shape of both boundary defects found so far, and only a sweep can see it",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\u034f\\u115f\\u3164\\ufe00\\ufe0f\\uffa0\\u{e0100}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "expectRed": "0.12 SWEPT over every codepoint: the set the quoter escapes is exactly the union this file claims, plus what JSON.stringify already closed"
     }
   ]
 }
