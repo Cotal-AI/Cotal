@@ -47,8 +47,8 @@
     {
       "name": "a member read is emitted as a native index, so it reaches the host prototype",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
-      "replace": "      return `${obj}[${this.memberKey(node)}]`;",
+      "find": "        return done(this.seam(\"get\", `${obj}, ${this.memberKey(node)}`), g);",
+      "replace": "        return done(`${obj}[${this.memberKey(node)}]`, g);",
       "expectRed": "a member read is one get",
       "completionMarker": "ok and every surfaced member carries its reason",
       "cell": "a member read is one get",
@@ -137,8 +137,8 @@
     {
       "name": "a call on a value is emitted natively, so a non-function callee is a host TypeError",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "      return `(await ((${f} = ${fn}), typeof ${f} === \"function\" ? ${f} : ${this.seam(\"callee\", f)})(${args}))`;",
-      "replace": "      return `(await ((${f} = ${fn}))(${args}))`;",
+      "find": "        return done(`(await ((${f} = ${fn}), typeof ${f} === \"function\" ? ${f} : ${this.seam(\"callee\", f)})(${args}))`, g);",
+      "replace": "        return done(`(await ((${f} = ${fn}))(${args}))`, g);",
       "expectRed": "a call on a value charges the callee law",
       "completionMarker": "ok a for-of is one iter",
       "cell": "a call on a value charges the callee law",
@@ -147,8 +147,8 @@
     {
       "name": "an optional call is emitted without the flag, so the host resolves a name it should not",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, async () => [${args}], true`)})`;",
-      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, async () => [${args}]`)})`;",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}]${cont}`)})`;",
       "expectRed": "a tail optional call is emitted through the ruled flag",
       "completionMarker": "ok every program the seam cannot yet express refuses loudly, and is listed",
       "cell": "a tail optional call is emitted through the ruled flag",
@@ -177,8 +177,8 @@
     {
       "name": "an optional call hands over an evaluated argument list, so a short-circuit runs its arguments anyway",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, async () => [${args}], true`)})`;",
-      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, [${args}], true`)})`;",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, [${args}], true${cont}`)})`;",
       "expectRed": "an optional call hands its arguments over as a thunk",
       "completionMarker": "ok a tail optional call is emitted through the ruled flag",
       "cell": "an optional call hands its arguments over as a thunk",

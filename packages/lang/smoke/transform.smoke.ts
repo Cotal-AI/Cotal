@@ -496,12 +496,29 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
 // ---- 12) the chain the host has to finish, and what the walker answers there --------------------
 
 {
-  // ONLY THE HOST KNOWS AN OPTIONAL CALL SHORT-CIRCUITED. It resolves the method name, because that
-  // is the one place a name may be resolved at all, and a guard on the value it returns cannot tell
-  // a short-circuit from a call that returned undefined: measured below, `o.z?.().x` on an absent
-  // member is undefined while `o.m?.().x` on a member that returns undefined is L4010. Ruling 1d's
-  // fifth argument hands the rest of the chain to the call that made the decision, so the emitter
-  // writes everything after the optional call as a closure instead of writing it after the call.
+  // THE ARGUMENTS FIRST, then the chain: each rule below is one position of the same call, and they
+  // are ordered so a mistake in one is named by its own cell rather than by the next one along.
+  //
+  // Ruling 1d's fourth argument is the optional flag. The seam resolves a method name and calls it
+  // in one step, the one place a method name may be resolved at all, so the short-circuit decision
+  // is the host's and the flag is what asks for it.
+  const closed = transform("const o = { m: () => 1 }; log(await o.m?.());");
+  ok("a tail optional call is emitted through the ruled flag", /\.call\(o, "m", .*, true[,)]/.test(closed.module), closed.module.slice(-260));
+  ok("a tail optional call carries no continuation: there is nothing written after it", !closed.module.includes("true, async ("), closed.module.slice(-260));
+
+  // AND ITS ARGUMENTS ARE HANDED OVER UNEVALUATED. The walker checks the member before it evaluates
+  // the argument list, so a short-circuited optional call runs NO argument; an emitted array has
+  // already run them, and a resume would replay a step the run never recorded.
+  const withArgs = transform('const o = { m: (x) => x }; log(await o.m?.(await sleep("1s", { name: "s" })));').module;
+  ok("an optional call hands its arguments over as a thunk", /\.call\(o, "m", async \(\) => \[.*sleep/.test(withArgs), withArgs.slice(-320));
+  const plain = transform("const xs = [1]; log(xs.map((x) => x));").module;
+  ok("an ordinary method call carries no flag", plain.includes('.call(xs, "map", [') && !plain.includes(", true)"), plain.slice(-200));
+
+  // AND THE FIFTH ARGUMENT IS THE REST OF THE CHAIN, because only the host knows it short-circuited:
+  // a guard on the value it returns cannot tell a short-circuit from a call that returned undefined,
+  // measured below as undefined for `o.z?.().x` on an absent member and L4010 for `o.m?.().x` on a
+  // member that returns undefined. So everything written after the call is emitted as a closure the
+  // host applies or skips, rather than written after the call where it would always run.
   const after = transform("const o = { m: () => ({ x: 1 }) }; log(o.m?.().x);").module;
   ok(
     "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
@@ -534,20 +551,6 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
     at !== -1 && nested.indexOf("=== null") > at && /async \(\S+\) => \(\(\(\S+ = \S+\) === null/.test(nested),
     nested.slice(-320),
   );
-
-  // AND THE MIRROR: the shape ruling 1d DID close is emitted, and it carries the flag. Without this
-  // cell "refuse every optional call" would pass the one above.
-  const closed = transform("const o = { m: () => 1 }; log(await o.m?.());");
-  ok("a tail optional call is emitted through the ruled flag", /\.call\(o, "m", .*, true\)/.test(closed.module), closed.module.slice(-260));
-  ok("a tail optional call carries no continuation: there is nothing written after it", !closed.module.includes("true, async ("), closed.module.slice(-260));
-
-  // AND ITS ARGUMENTS ARE HANDED OVER UNEVALUATED. The walker checks the member before it evaluates
-  // the argument list, so a short-circuited optional call runs NO argument; an emitted array has
-  // already run them, and a resume would replay a step the run never recorded.
-  const withArgs = transform('const o = { m: (x) => x }; log(await o.m?.(await sleep("1s", { name: "s" })));').module;
-  ok("an optional call hands its arguments over as a thunk", /\.call\(o, "m", async \(\) => \[.*sleep/.test(withArgs), withArgs.slice(-320));
-  const plain = transform("const xs = [1]; log(xs.map((x) => x));").module;
-  ok("an ordinary method call carries no flag", plain.includes('.call(xs, "map", [') && !plain.includes(", true)"), plain.slice(-200));
 
   // AND THE WALKER'S ANSWERS ARE RECORDED, because they are what the emission has to reproduce:
   // present function calls, absent short-circuits, a present non-function is L4011, a short-circuit
