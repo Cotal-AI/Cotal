@@ -59,7 +59,13 @@
     "not work: with the wait removed, departure and the straggler both land between two polls, so the",
     "parent never sees the intermediate offline, and the next offline it sees is the one agent.stop",
     "publishes at the end, by which time the inversion has been repaired by the code under test. That",
-    "cell read GREEN against a broken implementation, and it is why C10 first came back WRONG-RED."
+    "cell read GREEN against a broken implementation, and it is why C10 first came back WRONG-RED.",
+    "",
+    "THREE PRESENCE WRITERS, THREE SEATS, THREE MUTATIONS. The model record publishes presence without",
+    "passing through the status helper, so it is a third path and not a variant of the other two. It",
+    "was very nearly shipped as tracked-but-ungraded on the argument that it cannot choose a status and",
+    "its write is submitted first; that argument may be sound, but it rests on the endpoint's KV write",
+    "ordering, which is a layer this file does not own, so it is proven instead of argued."
   ],
   "mutations": [
     {
@@ -145,6 +151,13 @@
       "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
       "replace": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
       "expectRed": "tool-seat: departure was still unpublished while admitted work was in flight"
+    },
+    {
+      "name": "C13 the model publish stops being tracked, so a prompt hook parked inside it is not waited for and its record crosses departure",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "        await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));\n",
+      "replace": "        await agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant);\n",
+      "expectRed": "model-seat: departure was still unpublished while admitted work was in flight"
     }
   ]
 }

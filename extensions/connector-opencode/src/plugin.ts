@@ -246,12 +246,18 @@ export const cotal: Plugin = async () => {
    * the same enumeration this file has already got wrong twice, and it would miss a tool that sends
    * rather than publishes, which no amount of repairing presence afterwards can take back.
    *
-   * ONE PRESENCE PUBLISH IS DELIBERATELY OUTSIDE IT, named here rather than left to be discovered.
-   * The prompt hook records the model, which publishes presence without passing through this helper.
-   * It is not tracked and it does not need to be: it cannot choose a status, it republishes whichever
-   * one the endpoint holds, and its record is submitted before departure's, so departure is the later
-   * write and wins. An earlier version of this comment claimed the two sites below were every
-   * presence write this plugin makes, which was simply false.
+   * THE PROMPT HOOK'S MODEL RECORD IS TRACKED TOO, at its own call site, because it publishes
+   * presence without passing through this helper. An earlier version left it out and argued it was
+   * harmless: it cannot choose a status, it republishes whichever one the endpoint holds, and its
+   * record is submitted before departure's, so departure is the later write. That conclusion may
+   * well be right, but it rests on how the endpoint's KV writes are ordered, which is an assumption
+   * about a layer this file does not own. Tracking it costs one call and makes the ordering true by
+   * construction, so nothing here depends on that assumption being correct.
+   *
+   * WHICH LEAVES A WEAKER PROPERTY THAN THE FENCE HAS, and the difference is worth being plain
+   * about. Admission is closed by MEMBERSHIP: a door is fenced by being in the intake table, so one
+   * added later cannot be forgotten. Presence tracking is by CALL SITE: these three are every place
+   * this plugin writes presence today, and a fourth added later would not be covered automatically.
    *
    * EVENT WORK IS DELIBERATELY NOT IN HERE. A session create awaits its whole swap, drain included,
    * so waiting on it before publishing departure would queue offline behind exactly the drain that
@@ -762,7 +768,7 @@ export const cotal: Plugin = async () => {
       // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
       // default: before the first prompt the dashboard truthfully shows "not reported".
       if (input.model)
-        await agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant);
+        await track(agent.setModel(`${input.model.providerID}/${input.model.modelID}`, input.variant));
       injectIntoPrompt(output);
     },
 

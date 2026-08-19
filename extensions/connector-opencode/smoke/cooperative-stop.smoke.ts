@@ -85,6 +85,18 @@ function sendShutdown(path: string, token: string): Promise<string> {
   });
 }
 
+// THE SEATS DO NOT INHERIT THE OPERATOR'S OWN SESSION. Ambient COTAL_* and OPENCODE_* belong to
+// whoever is RUNNING this suite, and a launch spec only overrides the keys it sets, so anything else
+// survives into the child and quietly changes what is under test. Measured, not precautionary: run
+// from inside a meshed session, the inherited COTAL_MODEL is an operator model pin, the connector
+// treats a pin as authoritative and never records a runtime model, so the seat that grades the model
+// publish could not make one at all and its control failed. It would have passed in CI, where that
+// variable is unset, which is the worst version of this: green where it is checked, wrong where it
+// is written.
+const HOST_ENV = Object.fromEntries(
+  Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !k.startsWith("OPENCODE_")),
+);
+
 const space = `oc-coop-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);
 const dir = mkdtempSync(join(tmpdir(), SMOKE_BROKER_TOKEN));
@@ -96,6 +108,7 @@ let mgr: CotalEndpoint | undefined;
 let watcher: CotalEndpoint | undefined;
 let probe: ReturnType<typeof spawn> | undefined;
 let toolProbe: ReturnType<typeof spawn> | undefined;
+let modelProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -187,7 +200,7 @@ try {
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
-      ...process.env,
+      ...HOST_ENV,
       ...spec.env,
       COTAL_EVENTS: "1",
       COTAL_WORKSPACE_ROOT: join(dir, "ws"),
@@ -366,7 +379,7 @@ try {
   mkdirSync(join(dir, "ws-tool"), { recursive: true });
   toolProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
-      ...process.env,
+      ...HOST_ENV,
       ...toolSpec.env,
       COTAL_WORKSPACE_ROOT: join(dir, "ws-tool"),
       COOP_CROSS: "tool",
@@ -405,6 +418,64 @@ try {
     toolBeforeRelease !== undefined && toolBeforeRelease !== "offline", { toolBeforeRelease });
   writeFileSync(toolRelease, "go\n");
   await awaitExit(toolProbe, 15_000);
+
+  // ---- A THIRD SEAT, FOR THE THIRD PRESENCE WRITER. The prompt hook records the model, and that
+  // publishes presence without passing through the connector's status helper, so it is tracked at
+  // its own call site and therefore needs its own proof. Its own seat for the same reason as the
+  // second: a caller parked in a teardown that is already holding for another caller is masked, so
+  // its mutation would survive while looking covered.
+  const miloId = newIdentity();
+  const miloUid = mintLifecycleUid();
+  const miloCreds = await provisionAgent(mgr, auth, miloId, { ...acl, role: "worker", lifecycleUid: miloUid });
+  const miloCredsFile = join(dir, "milo.creds");
+  writeFileSync(miloCredsFile, miloCreds);
+  const modelSpec = opencodeConnector.buildLaunch({
+    space, name: "Milo", role: "worker", id: miloId.id, lifecycleUid: miloUid, creds: miloCredsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const modelEp = modelSpec.control!;
+  const modelArm = join(dir, "model-crossing-arm");
+  const modelParked = join(dir, "model-crossing-parked");
+  const modelRelease = join(dir, "model-crossing-release");
+  mkdirSync(join(dir, "ws-model"), { recursive: true });
+  modelProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...modelSpec.env,
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-model"),
+      COOP_CROSS: "model",
+      COOP_CROSS_ARM: modelArm,
+      COOP_CROSS_PARKED: modelParked,
+      COOP_CROSS_RELEASE: modelRelease,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  let miloLive = false;
+  for (let i = 0; i < 100 && !miloLive; i++) {
+    await wait(100);
+    const milo = watcher.getRoster().find((pr) => pr.card.name === "Milo");
+    miloLive = milo !== undefined && milo.status !== "offline";
+  }
+  check("model-seat: the third seat came online, so this leg grades a live one", miloLive);
+
+  writeFileSync(modelArm, "go\n");
+  let modelParkedSeen = false;
+  for (let i = 0; i < 60 && !modelParkedSeen; i++) {
+    await wait(50);
+    modelParkedSeen = existsSync(modelParked);
+  }
+  check("model-seat: the pre-stop model publish parked inside its presence write", modelParkedSeen, { modelParked });
+
+  const modelReply = await sendShutdown(modelEp.path, modelEp.token);
+  check("model-seat: control server acked the shutdown", modelReply.trim() === JSON.stringify({ ok: true }), modelReply);
+
+  await wait(300);
+  const modelBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Milo")?.status;
+  check("model-seat: departure was still unpublished while admitted work was in flight",
+    modelBeforeRelease !== undefined && modelBeforeRelease !== "offline", { modelBeforeRelease });
+  writeFileSync(modelRelease, "go\n");
+  await awaitExit(modelProbe, 15_000);
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
@@ -412,6 +483,7 @@ try {
   try {
     if (probe && probe.exitCode === null) probe.kill("SIGKILL");
     if (toolProbe && toolProbe.exitCode === null) toolProbe.kill("SIGKILL");
+    if (modelProbe && modelProbe.exitCode === null) modelProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }

@@ -51,12 +51,24 @@ const late = process.env.COOP_LATE?.trim() || undefined;
 // resumed. Removing the tracking from one path then changes nothing observable and the mutation for
 // it survives. Measured, not predicted: that is exactly how C11 and C12 survived. There is one
 // teardown per process, so each door needs its own seat.
-const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool"
+const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool" | "model"
 const crossArm = process.env.COOP_CROSS_ARM?.trim() || undefined;
 const crossParked = process.env.COOP_CROSS_PARKED?.trim() || undefined;
 const crossRelease = process.env.COOP_CROSS_RELEASE?.trim() || undefined;
 const parked: Array<() => void> = [];
 if (cross) {
+  // The model record publishes presence through a different endpoint method than a status write,
+  // so the model door needs its own seam rather than a third case on the activity one.
+  const originalModel = CotalEndpoint.prototype.setCardModel;
+  CotalEndpoint.prototype.setCardModel = async function (model: string, variant?: string): Promise<void> {
+    if (cross === "model" && model === "crossing/model") {
+      await new Promise<void>((r) => {
+        parked.push(r);
+        if (crossParked) writeFileSync(crossParked, "the pre-stop model publish is parked\n");
+      });
+    }
+    return originalModel.call(this, model, variant);
+  };
   const original = CotalEndpoint.prototype.setActivity;
   CotalEndpoint.prototype.setActivity = async function (activity: string): Promise<void> {
     if (activity === `crossing-${cross}`) {
@@ -198,6 +210,12 @@ if (cross) {
       void (
         hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
       ).tool.cotal_status.execute({ activity: "crossing-tool" });
+    // The session named here is the one the plugin adopted at boot, so the ownership check passes
+    // and the hook actually reaches its model publish rather than returning early.
+    else if (cross === "model")
+      void (
+        hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> }
+      )["chat.message"]({ sessionID: "ses_coop", model: { providerID: "crossing", modelID: "model" } }, { parts: [] });
     while (!existsSync(crossRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
     for (const release of parked) release();
   })();
