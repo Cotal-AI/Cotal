@@ -65,7 +65,21 @@
     "passing through the status helper, so it is a third path and not a variant of the other two. It",
     "was very nearly shipped as tracked-but-ungraded on the argument that it cannot choose a status and",
     "its write is submitted first; that argument may be sound, but it rests on the endpoint's KV write",
-    "ordering, which is a layer this file does not own, so it is proven instead of argued."
+    "ordering, which is a layer this file does not own, so it is proven instead of argued.",
+    "",
+    "THE ENVIRONMENT SCRUB IS NOT MUTATION-GRADED, AND CANNOT HONESTLY BE. The suite gives each seat a",
+    "base environment with the COTAL_ and OPENCODE_ prefixes removed, because a launch spec only",
+    "overrides the keys it sets and everything else survives into the child. That matters: run from",
+    "inside a meshed session, the inherited model pin is authoritative to the connector, so it never",
+    "records a runtime model and the seat grading that publish cannot make one.",
+    "",
+    "A mutation reverting the scrub would report SURVIVED wherever that variable happens to be unset,",
+    "which is every CI run, so its verdict would depend on who executed it rather than on the code. A",
+    "verdict that changes with the operator is worse than no verdict, because a survivor is supposed to",
+    "be a finding. Measured by hand instead, both directions, and recorded here so it is checkable by",
+    "rerunning rather than by trusting this note: with the environment scrubbed the model seat parks and",
+    "the suite is 22/0; with it inherited, on a box where the pin is set, the park control fails and the",
+    "ordering cell reads offline."
   ],
   "mutations": [
     {
