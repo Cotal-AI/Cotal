@@ -1,0 +1,12 @@
+{
+  "command": "pnpm smoke:web-channel-authority",
+  "mutations": [
+    {
+      "name": "A1 the graph page's activity source stops handing its read to the backfill, which is the link between the page's own boot and the attribution loop the rest of this suite drives: the loop would still be correct and would no longer be reached by anything a browser does",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "        apply: (page) => { activityPage = page; seedActivity(page.entries); } },",
+      "replace": "        apply: (page) => { activityPage = page; } },",
+      "expectRed": "graph.js activity source: exactly one apply this harness can run"
+    }
+  ]
+}

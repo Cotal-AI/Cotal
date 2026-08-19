@@ -109,8 +109,30 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   open mode; the graph then degrades to traffic-derived spokes), or *unreadable* — the last
   meaning the read itself did not answer, which is a fact about the viewer rather than about the
   mesh, and is kept distinct from *traffic-only* for exactly that reason. A **hide-offline** control
-  collapses durable-but-away members. Broker-sourced membership needs the delivery daemon (auth
-  mode) and is provisioned on a fresh `cotal up`.
+  collapses durable-but-away members. The live feed opens as the page loads rather than after it, so
+  the pill reports the connection honestly from the first moment instead of sitting in its down
+  state for as long as the first read takes. What the feed says outranks the page's own startup reads: a
+  read issued before a live update cannot overwrite it when it lands afterwards, whether it answers
+  or refuses, so a slow link cannot make the pill contradict what the feed already reported.
+  Broker-sourced membership needs the delivery daemon (auth mode) and is provisioned on a fresh
+  `cotal up`.
+
+**When a read does not land.** A poll that fails never blanks the page. The dashboard keeps the
+last values it actually read and marks them stale in the header, naming which source is stale and
+why (`stale: peers, activity`, with the server's own reason on hover); the next successful read
+replaces the data and clears the mark. The all-activity read is bounded, so on a slow link it can
+come back SHORT rather than late: the header then says `partial: activity`, and the page reports how
+many sources answered out of how many were asked and names the ones that did not. A short page and a
+complete one are never the same bytes. On a link too slow to finish anything the honest answer is
+zero sources answered, and you keep looking at the last good data with the marker up.
+
+The open channel's own history read is bounded by the same deadline. It is a single read, so there
+is no short page to serve: it either produced the messages or it refuses, naming the channel and the
+bound it exceeded, and the view keeps the messages it already had rather than emptying. Every one of
+these routes takes an optional `limit`, and a value that is not a whole number is refused outright
+rather than guessed at. The same holds for the channel name in the URL: an escape the decoder cannot
+read is the caller's typo, not a broken server. Either way a malformed request is answered as a bad
+request and never as the dashboard having broken.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so

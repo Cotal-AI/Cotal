@@ -117,8 +117,11 @@ console.log("web-events-filter smoke");
 // ── 2. the backfill asks only for chat, and asks BEFORE it merges ────────────────────────────────
 {
   const src = new Source();
-  const out = await activityBackfill(src, 200);
+  const page = await activityBackfill(src, 200);
+  const out = page.entries;
 
+  ok("2.0 the page is complete: every source answered inside the deadline",
+    page.partial === false && page.read === page.of && page.missing.length === 0, page);
   ok("2.1 no event channel was ever ASKED for", EVENT_CHANNELS.every((c) => !src.historyAsked.includes(c)), src.historyAsked);
   ok("2.2 history was asked for exactly the chat channels", JSON.stringify(src.historyAsked) === JSON.stringify(KEPT), src.historyAsked);
   ok("2.3 four round trips, not seven", src.historyAsked.length === 4, src.historyAsked.length);
@@ -136,7 +139,7 @@ console.log("web-events-filter smoke");
 // ── 3. the cap keeps the NEWEST, which is what a top-N means ─────────────────────────────────────
 {
   const src = new Source();
-  const out = await activityBackfill(src, 3);
+  const out = (await activityBackfill(src, 3)).entries;
   ok("3.1 capped to the limit", out.length === 3, out.length);
   ok("3.2 and it is the newest three, not the first three", out[out.length - 1]?.mode === "unicast");
 }
@@ -144,7 +147,7 @@ console.log("web-events-filter smoke");
 // ── 4. a mesh with nothing but event channels ────────────────────────────────────────────────────
 {
   const src = new Source(EVENT_CHANNELS.map((channel) => ({ channel, messages: 10 })));
-  const out = await activityBackfill(src, 200);
+  const out = (await activityBackfill(src, 200)).entries;
   ok("4.1 no history round trip at all", src.historyAsked.length === 0, src.historyAsked);
   ok("4.2 the feed is DMs only, not an error", out.every((e) => e.mode === "unicast"));
 }

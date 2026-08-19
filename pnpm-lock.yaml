@@ -529,6 +529,9 @@ importers:
       '@cotal-ai/core':
         specifier: workspace:*
         version: link:../../packages/core
+      '@cotal-ai/smoke-kit':
+        specifier: workspace:*
+        version: link:../../packages/smoke-kit
       '@cotal-ai/workspace':
         specifier: workspace:*
         version: link:../../packages/workspace

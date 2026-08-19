@@ -193,6 +193,46 @@ try {
   const psOut = await capture(() => run("ps", ["--space", SPACE]));
   ok("ps lists the detached agent under its OVERRIDDEN identity", /bard/.test(psOut) && !/poet/.test(psOut), psOut);
 
+  // B2 (#651): the same rows, three presentations. BARE is exactly today's output: one line per
+  // seat, NO facts line (a wide line leaking into the default would be a regression, not
+  // enrichment). WIDE adds the dim facts line with the facts the launch actually pinned (model +
+  // variant rode part A's flags; pid is a real number; the uid/instance/host attribute the seat).
+  // JSON is the manager's row verbatim, one line, parseable, fields equal to what the launch sent.
+  const psBare2 = await capture(() => run("ps", ["--space", SPACE]));
+  ok("bare ps stays compact: one line per seat, no facts line", psBare2.trim().split("\n").length === 1 && !/model /.test(psBare2), psBare2);
+  const psWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
+  ok("ps --wide adds one facts line with the recorded per-seat facts",
+    /model fancy \(high\)/.test(psWide) && /pid \d+/.test(psWide) && /uid [a-z0-9]{26,}/.test(psWide) && /instance [a-z0-9]{26,}/.test(psWide) && /host /.test(psWide), psWide);
+  const psJson = await capture(() => run("ps", ["--space", SPACE, "--json"]));
+  let jsonRow: Record<string, unknown> | undefined;
+  try { jsonRow = JSON.parse(psJson.trim().split("\n").find((l) => l.includes("bard")) ?? ""); } catch { /* graded below */ }
+  ok("ps --json emits the manager's row verbatim, one JSON line",
+    jsonRow !== undefined && jsonRow.name === "bard" && jsonRow.model === "fancy" && jsonRow.variant === "high" && typeof jsonRow.pid === "number" && typeof jsonRow.lifecycleUid === "string" && typeof jsonRow.cwd === "string", psJson);
+
+  // B3 (#651 fix): a variant WITHOUT a model survives to --wide. A persona that pins only a variant
+  // records it independently (no model), and the --wide render must show it standalone rather than
+  // drop it because a model is absent. Before the fix, printWideFacts nested variant inside
+  // `if (r.model)`, so --json carried the variant but --wide silently lost it - a recorded fact gone.
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", "lutist.md"), "---\nname: lutist\nrole: writer\nvariant: high\n---\nYou play.\n");
+  await capture(() => run("spawn", ["lutist", "--detach", "--agent", "e2e", "--space", SPACE, "--name", "lutist"]));
+  let lutWide = "";
+  for (let i = 0; i < 40 && !/lutist/.test(lutWide); i++) {
+    lutWide = await capture(() => run("ps", ["--space", SPACE, "--wide"]));
+    if (!/lutist/.test(lutWide)) await sleep(250);
+  }
+  // The wide facts render on the DIM CONTINUATION line right after the seat's name line.
+  const lutLines = lutWide.split("\n");
+  const lutIdx = lutLines.findIndex((l) => /lutist/.test(l));
+  const lutFacts = lutIdx >= 0 ? (lutLines[lutIdx + 1] ?? "") : "";
+  ok("ps --wide shows a variant-without-model as a standalone variant fact", /variant high/.test(lutFacts) && !/model /.test(lutFacts), lutWide);
+  const lutJsonOut = await capture(() => run("ps", ["--space", SPACE, "--json"]));
+  let lutJson: Record<string, unknown> | undefined;
+  try { lutJson = JSON.parse(lutJsonOut.trim().split("\n").find((l) => l.includes("lutist")) ?? ""); } catch { /* graded below */ }
+  ok("ps --json carries the variant and omits model for a variant-only pin",
+    lutJson?.variant === "high" && !("model" in (lutJson ?? {})), lutJsonOut);
+  // Tear lutist down so it does not linger into the single-seat teardown assertion below.
+  await capture(() => run("stop", ["--name", "lutist", "--space", SPACE]));
+
   // C — attach replies the pinned ws:// contract and the socket opens. One-shot ep client over
   // core (the same wire the CLI's askManagerEp uses: inspect resolves the wire target, then the
   // targeted attach rides the manager's v0.4 service endpoint — the open-mesh bare-caller shape).
