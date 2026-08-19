@@ -70,16 +70,19 @@ const replayMsg = (n: number): CotalMessage => ({
   id: `h-${n}`,
   ts: n,
   space: cfg.space,
-  from: { id: "peer", name: `peer-${n % 7}`, kind: "agent" },
+  from: { id: "peer", name: `peer-${n % 7}` },
   channel: "general",
   parts: [{ kind: "text", text: BODY }],
 });
 
+// A unicast message names its recipient: the inbox classifies by the delivering subject (`dmMeta`),
+// but a DM with no `to` is not a shape the wire can carry, so the fixture spells it out.
 const dmMsg = (id: string, text: string): CotalMessage => ({
   id,
   ts: 10_000,
   space: cfg.space,
-  from: { id: "orch", name: "Ada", role: "orchestrator", kind: "agent" },
+  from: { id: "orch", name: "Ada", role: "orchestrator" },
+  to: cfg.name,
   parts: [{ kind: "text", text }],
 });
 

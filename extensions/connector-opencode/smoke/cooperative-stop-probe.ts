@@ -10,7 +10,7 @@
 import { once } from "node:events";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
-import { cotal } from "../src/plugin.js";
+import { bootPlugin } from "./_boot-plugin.js";
 import { CotalEndpoint } from "@cotal-ai/core";
 
 // The plugin calls OpenCode's HTTP API at boot to own a session. A shutdown test drives no turn, so
@@ -155,7 +155,7 @@ process.env.COTAL_OPENCODE_SERVER_URL = `http://127.0.0.1:${port}`;
 process.env.OPENCODE_SERVER_USERNAME = "opencode";
 process.env.OPENCODE_SERVER_PASSWORD = "test-secret";
 
-const hooks = await cotal();
+const hooks = await bootPlugin();
 
 // QUEUE REAL EVENT WORK, so the parent's shutdown lands while a drain is in flight. The first
 // create binds the holder to this session; the second is NOT awaited, so it leaves a swap on the

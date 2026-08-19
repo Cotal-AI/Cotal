@@ -78,6 +78,10 @@ interface LogEntry {
   method?: string;
   params?: Record<string, unknown>;
   result?: unknown;
+  error?: string;
+  httpStatus?: number;
+  mcpTokenPresent?: boolean;
+  cotalLeak?: string[];
 }
 function logEntries(): LogEntry[] {
   if (!existsSync(LOG)) return [];
