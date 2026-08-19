@@ -748,8 +748,8 @@ export const cotal: Plugin = async () => {
   };
 
   /**
-   * EVERY WAY IN, FENCED IN ONE PLACE. Once teardown has begun, admitting more work undoes the
-   * teardown: a late `permission.asked` or tool hook republishes presence over the offline record
+   * EVERY WAY IN THROUGH THIS PLUGIN, FENCED IN ONE PLACE. Once teardown has begun, admitting more
+   * work undoes the teardown: a late `permission.asked` or tool hook republishes presence over the offline record
    * `quiesce` exists to publish, a part or idle enqueues holder work after the join has already
    * snapshotted it, and a late `session.created` extends the very chain the join is waiting on.
    *
@@ -759,9 +759,17 @@ export const cotal: Plugin = async () => {
    * in this table, so a door added later cannot be forgotten, and there is no per-entry line for a
    * refactor to drop. `dispose` is deliberately NOT in it, being the teardown itself.
    *
-   * BOUNDED, NOT ABSOLUTE. This closes ADMISSION, not the work already inside a hook when the flag
-   * flips; that work is what the joins in `quiesce` cover, and a hook that had already passed this
-   * point still runs. The two together are the claim, and neither is it alone.
+   * BOUNDED, NOT ABSOLUTE, IN TWO DIRECTIONS. It closes ADMISSION, not the work already inside a
+   * hook when the flag flips; that work is what the joins in `quiesce` cover, and a hook that had
+   * already passed this point still runs. The two together are the claim, and neither is it alone.
+   *
+   * AND IT FENCES THIS CONNECTOR, NOT THE EDITOR. `chat.message` is typed `=> Promise<void>`, so a
+   * fenced hook resolving early is that hook's ordinary successful completion: the host reads no
+   * refusal from it and continues, and a natively submitted prompt still starts a model turn. There
+   * is no refusal channel on that hook to use; the only hook in the contract carrying a decision is
+   * `permission.ask`. Cancelling the host would take the SDK's session `abort`, which this teardown
+   * deliberately does not call. What such a turn loses is lost to the teardown regardless, since
+   * `agent.stop()` closes the endpoint under it whether or not this fence exists.
    */
   const fence = <T extends Record<string, (...args: never[]) => Promise<unknown>>>(intake: T): T =>
     Object.fromEntries(

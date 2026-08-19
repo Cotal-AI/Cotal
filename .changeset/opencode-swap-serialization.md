@@ -35,8 +35,12 @@ the offline publish in front of the join rather than behind it: a supervised sea
 its runtime's grace window, so presence queued behind a long drain is the thing that gets lost.
 Queued event work is then given a bounded chance to settle inside whatever time the runtime leaves.
 
-Once that routine has begun, no turn is started, no hook is admitted, and no `cotal_*` tool call
-is run. The refusals are stated as a condition on the state rather than as a list of the callers
+Once that routine has begun, the connector starts no turn of its own, admits no hook work, and
+runs no `cotal_*` tool call. What it does NOT do is cancel the editor: OpenCode types
+`chat.message` as returning void, so a fenced hook resolving early is that hook's ordinary
+successful completion and signals nothing to the host, and a prompt submitted natively through
+the editor or its API still starts a model turn. What such a turn loses to the event plane it
+loses to the teardown itself, which is closing the endpoint under it either way. The refusals are stated as a condition on the state rather than as a list of the callers
 they cover, which is what let the earlier versions through: a turn could still be started by the
 deferred drive a swap fires when its own cutover completes, a late presence event could put a seat
 back on the mesh it had just left, and a tool call already inside the model's turn had no way to
