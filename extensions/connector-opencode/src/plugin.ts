@@ -464,7 +464,9 @@ export const cotal: Plugin = async () => {
    *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
    *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
   async function drive(override?: string): Promise<void> {
-    if (driving || busy || swapping) return; // `swapping`: no turn may start mid-cutover, whoever asks
+    // `swapping` is the mid-cutover refusal, and it lives here rather than at each caller so that
+    // every door is covered by one line: the inbox, the wake, the mention-wake, and the adopt.
+    if (driving || busy || swapping) return;
     if (bootPrompt !== undefined) return; // the boot turn goes first; this batch waits in the inbox
     driving = true;
     try {

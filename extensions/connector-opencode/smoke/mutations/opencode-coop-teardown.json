@@ -24,6 +24,13 @@
       "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    await settleWithin(events?.settled(), SWAP_SETTLE_MS, \"event holder at teardown\");\n",
       "replace": "",
       "expectRed": "cooperative stop joined the queued event work before exiting"
+    },
+    {
+      "name": "C2 a turn may start mid-cutover again, so an ordinary inbound message prompts the new session before its replacement holder is installed",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    if (driving || busy || swapping) return;\n",
+      "replace": "    if (driving || busy) return;\n",
+      "expectRed": "no turn was started while the cutover was open"
     }
   ]
 }
