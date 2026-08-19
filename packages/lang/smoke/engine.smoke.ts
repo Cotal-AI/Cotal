@@ -1216,24 +1216,37 @@ await parallel({
   // syntax requires ...iterable" and `xs.map?.(f)` reached the curated method with a Promise where
   // its argument list should be. Both shapes are below, each against the oracle.
   ok("the walker calls a present member with a plain argument", (await onWalker(`const o = { m: (x) => x };\nlog("r", o.m?.(1));\n`)) === 'ok [["r",1]] []');
-  ok(
-    "and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise",
-    (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async (x: unknown) => x }), "m", async () => [1], true))) === 1,
-  );
+  // CAPTURED, like every other cell here whose subject is a refusal or a throw: unawaited the thunk
+  // hands the spread a Promise, and that TypeError would leave the block and kill the suite
+  // anonymously rather than failing the cell that names the rule.
+  let plainArg: unknown;
+  try {
+    plainArg = await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async (x: unknown) => x }), "m", async () => [1], true));
+  } catch (e) {
+    plainArg = e;
+  }
+  ok("and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise", plainArg === 1, String(plainArg));
   const held = harness({ script: {} });
-  await held.inFrame(() =>
-    held.ctx.call(held.ctx.born({ m: async (x: unknown) => x }), "m", async () => [await held.ctx.effect("sleep", ["1s"])], true),
-  );
+  try {
+    await held.inFrame(() =>
+      held.ctx.call(held.ctx.born({ m: async (x: unknown) => x }), "m", async () => [await held.ctx.effect("sleep", ["1s"])], true),
+    );
+  } catch {
+    // The journal below is the assertion; how the call ended is the cell above's business.
+  }
   ok(
     "an effect INSIDE the argument reaches the journal, matching the walker cell above",
     JSON.stringify(held.run.journal.entries().map((e) => e.kind)) === '["sleep"]',
     held.run.journal.entries().map((e) => e.kind),
   );
   ok("the walker runs a curated method through the optional form", (await onWalker(`const xs = [1, 2];\nlog("r", xs.map?.((x) => x * 3));\n`)) === 'ok [["r",[3,6]]] []');
-  ok(
-    "and the engine's curated path reads that same awaited list",
-    JSON.stringify(await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", async () => [async (x: unknown) => (x as number) * 3], true))) === "[3,6]",
-  );
+  let curated: unknown;
+  try {
+    curated = await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", async () => [async (x: unknown) => (x as number) * 3], true));
+  } catch (e) {
+    curated = e;
+  }
+  ok("and the engine's curated path reads that same awaited list", JSON.stringify(curated) === "[3,6]", String(curated));
 
   // No silent acceptance of an already-evaluated list on the optional path: the short-circuit would
   // be a lie, because the arguments ran before the seam was reached.

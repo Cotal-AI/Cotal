@@ -407,10 +407,10 @@
       "file": "packages/lang/src/engine/worker-entry.ts",
       "find": "lockdown();",
       "replace": "void 0;",
-      "expectRed": "the confinement probe ran",
-      "completionMarker": "ok a continuation without the optional flag is refused, not silently run",
-      "cell": "the confinement probe ran",
-      "note": "`lockdown()` is irreversible and realm-wide, which is why the run gets its own thread to spend it in. It is also what a Compartment is built on top of."
+      "expectRed": "inside the Compartment `Date.now()` throws",
+      "completionMarker": "ok the confinement probe ran",
+      "cell": "inside the Compartment `Date.now()` throws",
+      "note": "`lockdown()` is irreversible and realm-wide, which is why the run gets a thread of its own to spend it in. MEASURED under the mutant rather than assumed: the Compartment is still BUILT and the program still runs - what a Compartment gives you without lockdown is a fresh global object, not tamed intrinsics - so `Date.now()` answers inside it and the run has a clock the journal never saw."
     },
     {
       "name": "a run with no value is put through the rule about values",
