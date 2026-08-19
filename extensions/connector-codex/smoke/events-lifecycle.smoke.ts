@@ -113,15 +113,21 @@ function openRunsIn(list: AguiFramePart[]): string[] {
 }
 const openRuns = (): string[] => openRunsIn(frames);
 const threadsSeen = (): string[] => [...new Set(frames.map((f) => f.threadId))];
-/** Which threads a seat has announced it is publishing, in the order it announced them. Read from
- *  the same log line the dead thread's path is read from below, so both parsers move together if
- *  that line ever changes. */
+/** Which threads a seat has announced it is publishing, in the order it announced them. Reads the
+ *  same log line the dead thread's path is read from below, but not the same part of it: this one
+ *  ends at "from" and never touches the path, so a change to the path or to what follows it moves
+ *  the path parser and leaves this one reading exactly what it read before. */
 const publishedThreads = (log: string): string[] => [...log.matchAll(/publishing thread (\S+) from/g)].map((m) => m[1]);
 
 /** How many times this seat has said it looked for a rollout file and found none. COUNTED, not
  *  tested for presence: a boundary that looked again is the seat's own report that it processed
  *  the boundary, and a cell judging "published nothing" needs that rather than a clock. */
 const gaveUpLooks = (log: string): number => [...log.matchAll(/no rollout file yet/g)].length;
+
+/** How many times this seat has announced that it is rebinding a dead plane. COUNTED for the same
+ *  reason the announcements above are: a boundary that finds a dead holder announces one, so by the
+ *  time a recovery is asked for, the string is already in the log from a boundary that failed. */
+const rebindsAnnounced = (log: string): number => [...log.matchAll(/rebinding at this boundary/g)].length;
 
 /** Wait for a condition, and return WHETHER it happened rather than throwing.
  *
@@ -454,8 +460,8 @@ try {
     added: lateFrames.length,
   });
   // THE LIMIT, ASSERTED BEHIND A PROVEN POSITIVE RATHER THAN SAMPLED AT THE ANNOUNCEMENT. A fresh
-  // adopt starts at the file's last complete record boundary, never at byte zero, so the two turns
-  // that ran while the file did not exist are NOT republished. Read at the announcement that is a
+  // adopt starts at the file's last complete record boundary as of the bind, which here is past
+  // both of the turns that ran while the file did not exist, so they are NOT republished. Read at the announcement that is a
   // negative taken at zero elapsed time, which cannot fail: the announcement is printed while the
   // emitter's setup is still running, so a publish arriving after it is invisible to the cell. Read
   // here, after the wait above has proved the stream is alive and past the bind, the same claim is
@@ -654,10 +660,12 @@ try {
   await operator2.start();
   check("broker-late:the seat recovers its mesh connection on its own", await settle("D:reconnects", () => online2.has(D), 60_000), margin("D:reconnects"));
   await joinEventsOf(D, operator2);
-  // COUNTED FROM A MARK, because the outage turn's own boundary already retried the dead plane:
-  // both the rebind line and an announcement are in this seat's log before the broker came back,
-  // so asking whether either string is PRESENT answers yes without recovery having happened.
+  // COUNTED FROM A MARK, both of them, because the outage turn's own boundary already retried the
+  // dead plane: the rebind line and an announcement are BOTH in this seat's log before the broker
+  // came back, so asking whether either string is PRESENT answers yes about a rebind that failed
+  // rather than about the one that recovered.
   const bindsBefore = publishedThreads(errD).length;
+  const rebindsBefore = rebindsAnnounced(errD);
   await dm(D, "the turn whose boundary rebinds", operator2);
   const rebound = await settle("D:rebinds once the broker is back", () => publishedThreads(errD).length > bindsBefore, 60_000);
   check("broker-late:the next turn boundary REBINDS the dead plane", rebound, {
@@ -666,7 +674,11 @@ try {
     now: publishedThreads(errD).length,
     tail: errD.slice(-400),
   });
-  check("broker-late:and it said so rather than recovering silently", errD.includes("rebinding at this boundary"), { tail: errD.slice(-400) });
+  check("broker-late:and it said so rather than recovering silently", rebindsAnnounced(errD) > rebindsBefore, {
+    before: rebindsBefore,
+    now: rebindsAnnounced(errD),
+    tail: errD.slice(-400),
+  });
   // THE TURN THAT TRIGGERS A REBIND IS NOT THE TURN THAT GETS PUBLISHED, and that is protocol
   // rather than timing. Codex writes a turn's first record to the rollout BEFORE it announces that
   // the turn started, and that announcement is the only thing a rebind can run on, so any boundary

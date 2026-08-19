@@ -70,6 +70,13 @@
       "find": "    return this.inner.read(cursor ?? this.start);",
       "replace": "    return this.inner.read(this.start);",
       "expectRed": "the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it"
+    },
+    {
+      "name": "L11 a seat that recovers its plane says nothing about it, so a reader watching the log cannot tell a recovery from a plane that was never down",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);",
+      "replace": "      log(`AG-UI: the emitter stopped (${events.failure.message})`);",
+      "expectRed": "broker-late:and it said so rather than recovering silently"
     }
   ]
 }

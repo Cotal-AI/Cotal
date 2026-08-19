@@ -292,8 +292,8 @@ async function runTurn(text) {
   }
   if (text.includes("TOOLREC")) {
     // THE ROLLOUT IS WHAT THE EVENT PLANE READS, so a turn that used a tool has to leave behind the
-    // records a real one leaves. `TOOL:roster` above calls MCP and writes to the JOURNAL, so no arm
-    // puts a tool anywhere the plane can see it. These are the two shapes the mapper reads, joined
+    // records a real one leaves. `TOOL:roster` above calls MCP and writes to the JOURNAL, so that
+    // path puts no tool anywhere the plane can see. These are the two shapes the mapper reads, joined
     // on `call_id`, and their strings are markers an assertion about a leak can name: the command
     // line a shell call carries, and the output it returned.
     const callId = `call_${turnSeq}`;

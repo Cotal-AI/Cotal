@@ -188,7 +188,17 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   turn to start after the rebind is published in full. One case is different and is named here
   rather than left to be discovered: if the emitter had already been publishing this thread and
   then died, the seat's log carries its position, and the rebind CONTINUES that log rather than
-  starting where it binds. What that delivers is what the dead emitter had read but not yet sent.
+  starting where it binds. An outage there costs the wait, not the content: everything the thread
+  wrote while the plane was down, including whatever it wrote while the plane was already dead, is
+  published once the plane is back. Two consequences are worth stating plainly, because both are
+  easy to read past. A tool RESULT is published as the tool returned it, so anything a tool read on
+  the seat's behalf, including messages it fetched from a channel with a narrower reader set, is in
+  this stream; nothing redacts it or marks where it came from. And a backlog written while the
+  plane was terminal is not discarded, it is delivered on recovery. Together those mean the readers
+  of an events channel must be treated as at least as wide as every channel the seat's own tools
+  can read. What the stream does not carry, here or on a live plane, is the session's own record of
+  the user's words and the developer instructions. None of that is changed by the boundary rule
+  above, which changes only the seat whose emitter never started at all.
   Nothing is sent twice in either case.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.

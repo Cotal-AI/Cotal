@@ -27,7 +27,16 @@ the old behaviour should expect both. It declines what the thread wrote during t
 declines the turn whose own boundary triggered it, because Codex writes a turn's first record before
 it announces that the turn started, that announcement is what a rebind runs on, and a run is never
 opened from the middle of a turn. The first turn to start after the rebind is published in full.
-One case is different: if the emitter had already been publishing this thread and then died, its
-position is in the log, and the rebind continues that log rather than starting where it binds,
-delivering what the dead emitter had read but not yet sent. Nothing is sent twice in either case. A
-seat launched without the event plane armed is unaffected.
+One case is different and is stated in full rather than in passing, because it is the one a reader
+is most likely to be surprised by: if the emitter had already been publishing this thread and then
+died, its position is in the log, and the rebind continues that log rather than starting where it
+binds. An outage there costs the wait, not the content: what the thread wrote while the plane was
+down, and what it wrote while the plane was already dead, is delivered once the plane is back. Two
+things follow that a reader should not have to discover. A tool result is published as the tool
+returned it, so text a tool read on the seat's behalf from a channel with a narrower reader set
+crosses into the events channel unredacted and unattributed; and a backlog written while the plane
+was terminal is delivered rather than discarded. The session's own record of the user's words and
+the developer instructions is not published in either case. Neither behaviour is introduced or
+changed here, both are the same at the merge base, and this change alters only the seat whose
+emitter never started at all. Nothing is sent twice in either case. A seat launched without the
+event plane armed is unaffected.

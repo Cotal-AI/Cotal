@@ -700,8 +700,10 @@ export async function runCodexHost(): Promise<void> {
       // turn boundary that a seat sitting idle never reaches.
       events.flush(path);
       // SAID OUT LOUD, because it is a limit and not an implementation detail: the stream starts at
-      // the boundary captured just above, the file's last COMPLETE record as of the bind and never
-      // byte zero, so whatever the thread had already written before this moment is not republished. On the ordinary path that is nothing
+      // the boundary captured just above, the file's last COMPLETE record as of the bind, so
+      // whatever the thread had already written before this moment is not republished. A file with
+      // nothing complete in it yet boundaries at its start, which says the same thing: there is
+      // nothing there to leave behind. On the ordinary path that is nothing
       // (the file is created by the primer inject and bound immediately after). On a late bind it
       // is the turns that ran while the file did not exist, and a reader comparing the panel to the
       // terminal deserves to know why they differ rather than to guess.
