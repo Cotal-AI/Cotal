@@ -820,13 +820,19 @@ function settledStrings(src: ts.SourceFile, consts: Map<string, string>): Map<st
  *  that costs a verdict rather than the one that grants a pass.
  *
  *  Second residual, measured rather than assumed: an HTML file's script blocks are parsed as one
- *  program EACH, while at runtime they share one global lexical environment. So a value declared in
- *  an earlier block and read at a call in a later one is answered as bound nowhere, and passes,
- *  where the same two lines inside one block are read and reddened. The KEY path already refuses
- *  across blocks, so this file pays that cost in one position and not the other. It is stated
- *  instead of closed because closing it means threading a file's sibling programs into the value
- *  reader, and the shape it would catch is an HTML page calling the broker connect seam, of which
- *  this repo contains none. A residual worth naming is one someone could hit; this one is named so
+ *  program EACH here, so a value declared in an earlier block and read at a call in a later one is
+ *  answered as bound nowhere and passes, where the same two lines inside one block are read and
+ *  reddened. The KEY path already refuses across blocks, so this file pays that cost in one
+ *  position and not the other.
+ *
+ *  Whether the miss is real depends on which kind of script, and the distinction is the reason this
+ *  is stated carefully rather than loosely. CLASSIC scripts share one global lexical environment, so
+ *  a top-level `const` in the first block IS the binding the second block reads, the value is
+ *  undefined at the call, and passing it is a genuine miss. MODULE scripts do not see each other's
+ *  `const` and `let` at all, so the name at the call is a free reference to something else entirely,
+ *  and answering unknown is closer to right than wrong. A blunt fix, treating any name unbound in a
+ *  multi-program file as unverifiable, would fail closed on both, which is the safe direction but
+ *  buys a refusal on the module case to catch a classic case this repo has no occupant of. Named so
  *  that whoever hits it first is not the person who has to discover it. */
 type NameFact = "undefined" | "unsettled" | "declined" | "unknown";
 
