@@ -42,15 +42,6 @@
       "note": "The outcome SHAPE as its own fact. `drive` declares `Promise<DriveOutcome>`, and a rejection is a shape the signature does not admit -- the caller that branches on `status` never sees it. The suite's own `attempt` helper turns a throw into a third observable status precisely so this grades as a named red instead of killing the run."
     },
     {
-      "name": "a fresh run is stamped with something other than its engine's version",
-      "file": "implementations/runtime/src/run-driver.ts",
-      "find": "      req.handler.now(),\n      engine.version,",
-      "replace": "      req.handler.now(),\n      \"9\",",
-      "expectRed": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
-      "cell": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
-      "note": "WIDER THAN ITS CELL, stated rather than discovered: every resume in this file binds the stamped version against the walker's and refuses, so several earlier cells redden too. It is graded on the stamp cell because that is the one whose SENTENCE is about this line. The literal is \"9\" rather than the current language constant because this module no longer imports one -- deleting that import is part of the same repair, and a mutation may not quietly restore it."
-    },
-    {
       "name": "the table refuses everything, not only what it does not serve",
       "file": "implementations/runtime/src/run-driver.ts",
       "find": "    const served = ENGINES.find((e) => e.version === pins.languageVersion);",
@@ -88,6 +79,11 @@
     }
   ],
   "unkillable": [
+    {
+      "name": "a fresh run is stamped with something other than its engine's version",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "why": "UNGRADABLE FROM THIS SUITE, and the measurement is the reason rather than a guess. It was a graded mutation and it reported WRONG-RED: `resolvePins(..., \"9\")` on the fresh path exits 1 and never prints its cell. MEASURED by hand, mutant applied to the source and the suite run: rc=1 with ZERO `FAIL` lines and an uncaught PinMismatch (recorded '9', supplied '1'). Every fresh run in the file is stamped by that one line, so the first TAKEOVER refuses, and that takeover is one of six drive calls in this file that are awaited without the `attempt` wrapper - the suite dies there, at a point that precedes section 12, so NO cell of section 12 can be reached under any mutation of this line. The claim is not unasserted: `and it is stamped with the version of the ENGINE that ran it, not with the current language` asserts it and passes, and the underlying rule - that a resolver stamps the version it was HANDED rather than one out of its own module - is graded at the unit in packages/lang/smoke/mutations/language-split.json, whose suite has no resume to die on. What is not graded from here is the driver's choice of ARGUMENT, and with one entry in the table every wrong value is wrong globally. Making it gradable means wrapping this file's six unguarded `startRun`/`driveRun` calls in `attempt`, which the file's own doctrine already argues for - an escaping exception grades as the run stopping and names no claim - but that changes what those other sections assert, so it is surfaced rather than done here."
+    },
     {
       "name": "ORDER IS THE PRECEDENCE: a fresh run takes the FIRST entry",
       "file": "implementations/runtime/src/run-driver.ts",
