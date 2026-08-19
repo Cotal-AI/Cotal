@@ -584,6 +584,31 @@ for (const ing of INGRESS) {
     got === VERIFIED, { got, claimed: CLAIMED, verified: VERIFIED });
 }
 
+// REACHABILITY, NOT JUST THE PREDICATE, and this suite lost it when the code moved. On the graph page
+// the loop that attributes a channel now lives in `seedActivity`, so the two graph rows above execute
+// THAT function. Executing it proves the rule and says nothing about whether the page's own boot ever
+// reaches it: that half is what a harness silently drops when the code it drives is entered by name
+// instead of by the path a browser takes. `refreshAll` handing a source's read to its `apply` is
+// proven in `smoke:web-snapshot`; the link THIS suite owns is the one from that `apply` to the loop,
+// so the shipped `apply` is lifted and RUN rather than read.
+{
+  const graphSrc = read("../src/web/graph.js");
+  const found = graphSrc.match(/apply: \(page\) => \{[^}]*seedActivity\(page\.entries\);[^}]*\}/g) ?? [];
+  check("graph.js activity source: exactly one apply this harness can run", found.length === 1, { found: found.length });
+  // The miss has to be reachable, or the cell above is a pattern that matches whatever it is given.
+  check("CONTROL: the same pattern naming a function the page does not have finds nothing",
+    (graphSrc.match(/apply: \(page\) => \{[^}]*seedNothing\(page\.entries\);[^}]*\}/g) ?? []).length === 0);
+  let seeded: unknown;
+  const applyCtx = createContext({ activityPage: null, seedActivity: (a: unknown) => { seeded = a; }, console });
+  runInContext(
+    `({ ${found[0]} }).apply({ entries: [{ channel: ${JSON.stringify(VERIFIED)}, msg: { channel: ${JSON.stringify(CLAIMED)} } }],`
+      + ` partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 })`,
+    applyCtx, { filename: "graph.js (activity apply)" });
+  const seededEntries = seeded as { channel?: string }[] | undefined;
+  check("graph.js /api/activity backfill: the source's apply hands the SERVER'S entries to the backfill the rows above drive",
+    Array.isArray(seededEntries) && seededEntries.length === 1 && seededEntries[0].channel === VERIFIED, seededEntries);
+}
+
 // ── THE HOSTILE CASE: NO authoritative channel, and a forged one in the payload ──────────────────
 // This is the case the cells above could not see, because they only ever drove an ingress WITH a
 // verified channel. `parseSubject().rest` is a channel only on the chat plane, so on `inst`/`svc`

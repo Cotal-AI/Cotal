@@ -58,7 +58,7 @@
       "expectRed": "5.10 the server SAYS in its own log that the page was short"
     },
     {
-      "label": "B9 the suite's own ceiling is pulled BELOW the deadline, which would make every timing cell here red for a reason that is about this constant rather than about the code, and would let a future edit quietly retune the harness until it agrees with whatever the implementation does",
+      "name": "B9 the suite's own ceiling is pulled BELOW the deadline, which would make every timing cell here red for a reason that is about this constant rather than about the code, and would let a future edit quietly retune the harness until it agrees with whatever the implementation does",
       "file": "implementations/web/smoke/bounded-aggregation.smoke.ts",
       "find": "const CEILING_MS = AGGREGATION_DEADLINE_MS * 3;",
       "replace": "const CEILING_MS = AGGREGATION_DEADLINE_MS / 2;",
