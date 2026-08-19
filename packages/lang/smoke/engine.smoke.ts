@@ -31,7 +31,10 @@ import { BUILTINS } from "../src/primitives.js";
 import { Prng } from "../src/values.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
 import { NODE_FLOOR, assertNodeFloor, runOnEngine, resumeOnEngine } from "../src/engine/host.js";
+import * as workerModule from "../src/engine/worker.js";
 import { runInWorker } from "../src/engine/worker.js";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { run as walkerRun } from "../src/interpret.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
 
@@ -1327,26 +1330,38 @@ await parallel({
   );
 }
 
-// ---- 16) the worker: one locked-down thread per run ---------------------------------------------
+// ---- 16) the worker: one locked-down thread per run, RUN FROM `dist` -----------------------------
 //
 // `lockdown()` is irreversible and realm-wide, so a run gets its own realm to harden and the host
 // keeps an isolate whose intrinsics it still owns. The whole run happens inside that thread - the
 // seam, the journal, the effect path and the handler - because `handler.now()` and every journal
 // call in the effect path are SYNCHRONOUS and a proxy over a message port is not.
+//
+// THIS LEG RUNS THE BUILT PACKAGE, and every cell in it says so by name. A worker thread does not
+// necessarily get the loader its parent has: on node 22 it measurably does not, so a `.ts` entry
+// dies on its own `../journal.js` there while answering fine on 26. The entry is therefore an INPUT
+// (`worker.ts` derives nothing), this suite hands it the artifact, and `smoke:lang-engine` builds
+// before it runs. The leg grades what SHIPS rather than a second copy of it, and it grades the same
+// thing on every node instead of on whichever one has a loader that reaches threads.
+
+/** The built entry. Named, not derived: the derivation is exactly what `worker.ts` refuses to do. */
+const WORKER_ENTRY = new URL("../dist/engine/worker-entry.js", import.meta.url);
+/** The handler module the THREAD imports. Plain JS over `dist`, for the same reason as the entry. */
+const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
 
 {
-  const HANDLER = { module: new URL("./_sim-handler.ts", import.meta.url).href, config: SCRIPT };
+  const HANDLER = { module: SIM_HANDLER, config: SCRIPT };
 
   const started = Date.now();
   const logs: unknown[][] = [];
   const run = runInWorker(
     { source: SOURCE, module: MODULE, runId: "host-1", handler: HANDLER },
-    { onLog: (l) => logs.push([...l.values]) },
+    { entry: WORKER_ENTRY, onLog: (l) => logs.push([...l.values]) },
   );
   const answer = await run.done;
   const coldMs = Date.now() - started;
 
-  ok("a run completes in its own locked-down thread", answer.ok === true, JSON.stringify(answer).slice(0, 200));
+  ok("a run completes in its own locked-down thread, spawned from the BUILT package", answer.ok === true, JSON.stringify(answer).slice(0, 200));
   const got = answer as Extract<typeof answer, { ok: true }>;
   ok("and its log lines reached the host", JSON.stringify(logs) === '[["status","done"]]', logs);
 
@@ -1386,8 +1401,8 @@ await parallel({
     source: `log("x", 1);`,
     module: PROBE,
     runId: "confine-1",
-    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
-  }).done;
+    handler: { module: SIM_HANDLER, config: {} },
+  }, { entry: WORKER_ENTRY }).done;
   ok("the confinement probe ran", answer.ok === true, JSON.stringify(answer).slice(0, 200));
   const seen = (answer as Extract<typeof answer, { ok: true }>).value as Record<string, unknown>;
   ok("inside the Compartment `Date.now()` throws", seen.dateNow === "threw", seen.dateNow);
@@ -1417,8 +1432,8 @@ await parallel({
     source: `await sleep("1s");`,
     module: SPIN,
     runId: "stop-1",
-    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
-  });
+    handler: { module: SIM_HANDLER, config: {} },
+  }, { entry: WORKER_ENTRY });
   run.stop("the operator asked this run to stop");
   const answer = await run.done;
   ok("a stopped run ends through its own cancellation path", answer.ok === false, JSON.stringify(answer).slice(0, 160));
@@ -1439,8 +1454,8 @@ await parallel({
       source: `log("x", 1);`,
       module: `(ctx) => async () => { await ctx.fuel(); return () => 1; }`,
       runId: "cross-1",
-      handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
-    }).done;
+      handler: { module: SIM_HANDLER, config: {} },
+    }, { entry: WORKER_ENTRY }).done;
   } catch (e) {
     answer = e;
   }
@@ -1456,8 +1471,8 @@ await parallel({
     source: `log("x", 1);`,
     module: `(ctx) => async () => { await ctx.fuel(); return 1; }`,
     runId: "nohandler-1",
-    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, export: "nothingHere", config: {} },
-  }).done;
+    handler: { module: SIM_HANDLER, export: "nothingHere", config: {} },
+  }, { entry: WORKER_ENTRY }).done;
   ok("a request naming an export that is not there is refused", answer.ok === false, JSON.stringify(answer).slice(0, 160));
   const missing = answer as Extract<typeof answer, { ok: false }>;
   ok("and the refusal names the export it looked for", missing.message.includes("nothingHere"), missing.message.slice(0, 140));
@@ -1471,18 +1486,18 @@ await parallel({
     source: SOURCE,
     module: MODULE,
     runId: "resume-w",
-    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: SCRIPT },
-  }).done;
+    handler: { module: SIM_HANDLER, config: SCRIPT },
+  }, { entry: WORKER_ENTRY }).done;
   ok("the first run recorded its steps", first.ok === true && first.entries.length === 2, JSON.stringify(first).slice(0, 160));
   const recorded = (first as Extract<typeof first, { ok: true }>);
   const again = await runInWorker({
     source: SOURCE,
     module: MODULE,
     runId: "resume-w",
-    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+    handler: { module: SIM_HANDLER, config: {} },
     pins: recorded.pins,
     entries: recorded.entries,
-  }).done;
+  }, { entry: WORKER_ENTRY }).done;
   ok("the resume completes against an EMPTY script", again.ok === true, JSON.stringify(again).slice(0, 200));
   const back = again as Extract<typeof again, { ok: true }>;
   ok(
@@ -1851,6 +1866,65 @@ log("out", out);
   // Without the argument, `get` is byte-unchanged: an absent field is undefined, as it always was.
   ok("without a binding name, an absent field is still just undefined", (await h.inFrame(() => h.ctx.get(cell, "v"))) === undefined);
 
+  // ---- the WRITE half of the same door, ruled as `set`'s fourth argument -------------------------
+  //
+  // A binding only ever WRITTEN from a deeper function has no early read to classify, so `get`'s
+  // third argument never sees it and the engine died on a native ReferenceError. The walker refuses
+  // it, catchably, in words that are NOT the read's - so the write clause is its own refusal here
+  // rather than the read's reused, and these cells compare both sentences against the oracle.
+  const wroteEarly = await caught(() =>
+    walkerRun(`function f() { n = 2; }
+f();
+let n = 1;
+log("n", n);
+`, { runId: "f7w", handler: new SimHandler({}) }),
+  );
+  ok("the walker refuses an assignment before the declaration with L2004", codeOf(wroteEarly) === "L2004", String(wroteEarly));
+
+  const wcell = await h.inFrame(() => h.ctx.born({}));
+  const engineWrote = await caught(() => h.inFrame(() => h.ctx.set(wcell, "v", 2, "n")));
+  ok("and so does the engine's write clause, when the cell has no own key yet", codeOf(engineWrote) === "L2004", String(engineWrote));
+  ok(
+    "with the WALKER'S ASSIGNMENT message, word for word",
+    (engineWrote as Error).message === (wroteEarly as Error).message,
+    { engine: (engineWrote as Error).message.slice(0, 80), walker: (wroteEarly as Error).message.slice(0, 80) },
+  );
+  // AND IT IS THE WRITE'S SENTENCE, NOT THE READ'S. The two are one word apart, and a host that
+  // answered the read's words for a write would be a divergence a program can see through `e.message`
+  // while every code-level cell stayed green.
+  ok(
+    "the write's refusal is not the read's",
+    (engineWrote as Error).message !== (fromEngine as Error).message && (engineWrote as Error).message.includes("is assigned before"),
+    (engineWrote as Error).message.slice(0, 60),
+  );
+  // THE REFUSAL LEAVES THE CELL ABSENT, which is what lets the declaration still run. A clause that
+  // wrote first and refused after would leave the binding initialised by a line that never executed.
+  ok("and it left the cell uninitialised, so the declaration can still initialise it", !Object.prototype.hasOwnProperty.call(wcell as object, "v"), Object.keys(wcell as object));
+  const settled = await h.inFrame(() => {
+    h.ctx.set(wcell, "v", 1);
+    return h.ctx.set(wcell, "v", 2, "n");
+  });
+  ok("once the declaration has run, the same assignment goes through", settled === 2 && (await h.inFrame(() => h.ctx.get(wcell, "v", "n"))) === 2, settled);
+  // CATCHABLE, like the read: the walker's is a program error and the engine's catch head must make
+  // the same record, or a program's `catch` behaves differently on the two engines.
+  const wCaught: unknown[][] = [];
+  await walkerRun(`function f() { n = 2; }
+try { f(); } catch (e) { log("code", e.code); log("kind", e.kind); }
+let n = 1;
+`, {
+    runId: "f7wc",
+    handler: new SimHandler({}),
+    onLog: (l) => wCaught.push([...l.values]),
+  });
+  ok("the walker's caught early assignment is L2004/runtime", JSON.stringify(wCaught) === '[["code","L2004"],["kind","runtime"]]', wCaught);
+  const asRecord = (await h.inFrame(() => h.ctx.caught(engineWrote))) as { code?: string; kind?: string };
+  ok("and the engine's catch head answers the same record for the write", asRecord.code === "L2004" && asRecord.kind === "runtime", asRecord);
+
+  // WITHOUT THE ARGUMENT, `set` IS BYTE-UNCHANGED: the declaration's own initialising write passes
+  // three, and a cell with no key yet is exactly the state it is called in.
+  const fresh = await h.inFrame(() => h.ctx.born({}));
+  ok("without a binding name, a first write to an empty cell just writes", (await h.inFrame(() => h.ctx.set(fresh, "v", 5))) === 5);
+
   // The CAUGHT form. The walker's answer, measured: ["L2004", "runtime"].
   const wLogs: unknown[][] = [];
   await walkerRun(`function f() { return x; }\ntry { f(); } catch (e) { log("code", e.code); log("kind", e.kind); }\nconst x = 1;\n`, {
@@ -1895,34 +1969,81 @@ log("out", out);
   ok("and it names why a free identifier cannot be the program's fault", (escaped as Error).message.includes("zero free identifiers"), (escaped as Error).message.slice(0, 200));
 }
 
-// ---- 20) the node floor, measured rather than assumed ---------------------------------------------
+// ---- 20) the worker entry is an INPUT, and the node floor ----------------------------------------
 //
-// Lane 1 set the wave's floor at node 24 for AsyncContextFrame ALS. Probed at this sha, that reason
-// does not reproduce: ALS propagates 9 of 9 shapes on 22.23.2 - plain await, across the setTimeout
-// macrotask the fuel yield uses, both arms of a Promise.all, after a custom thenable, across
-// nextTick and setImmediate, and a nested run restoring its parent - and the worker from `dist` on
-// 22 answers the same value with the same confinement and the same programHash. What DOES break
-// below the floor is the development path: tsx 4.23.0's ESM loader does not reach a worker thread
-// on 22, so a run started from TypeScript sources cannot load its own worker entry.
+// Lane 1 set the wave's floor at node 24 for AsyncContextFrame ALS. Probed, that reason does not
+// reproduce: ALS propagates 9 of 9 shapes on 22.23.2 - plain await, across the setTimeout macrotask
+// the fuel yield uses, both arms of a Promise.all, after a custom thenable, across nextTick and
+// setImmediate, and a nested run restoring its parent - and the worker from `dist` on 22 answers the
+// same value with the same confinement and the same programHash. Nothing in the RUNTIME needs 24, so
+// the floor is the measured one, 22, and a floor at 24 would refuse ground this engine works on.
 //
-// The floor stands, for that measured reason, and it is a REFUSAL rather than an `engines` line: a
-// package manager's warning is not a refusal, and what breaks below it is a loader nobody would
-// think to look at from a journal.
+// What actually broke on 22 was the DEV PATH: tsx's ESM loader does not reach a worker thread there,
+// so a `.ts` entry dies on its own `../journal.js` and a `.js` one is not found at all - with or
+// without an explicit `--import tsx` on the Worker, and inherited execArgv already carries one. That
+// is not a runtime bound and is not answered with a version number. It is answered by the entry
+// being an INPUT: `worker.ts` derives nothing, section 16 hands it the built artifact, and
+// `smoke:lang-engine` builds first. These cells hold that, and hold the floor at its measured value.
 
 {
-  ok(`the floor is a single named constant, and it is ${NODE_FLOOR}`, NODE_FLOOR === 24, NODE_FLOOR);
-  const below = await caught(() => assertNodeFloor("22.23.2"));
+  const entry = fileURLToPath(WORKER_ENTRY);
+  ok("the built worker entry section 16 spawned EXISTS on disk", existsSync(entry), entry);
+  // MECHANIZED, not narrated: the leg names `dist`. A cell that only said so in prose would keep
+  // saying it after someone pointed the leg back at `src` and made it a node-26-only suite again.
+  ok("and the worker leg runs it from `dist`, not from the sources beside this file", entry.includes("/dist/") && !entry.includes("/src/"), entry);
+
+  // THE HOST DERIVES NO ENTRY, which is the rule the ruling put in place of a version check. Asked
+  // for a run with none, nothing starts: no default, no probe of this module's own extension, and
+  // above all no thread spawned at a path nobody chose. CAPTURED rather than awaited into the
+  // assertion, because the point of the cell is the throw.
+  let noEntry: unknown;
+  try {
+    noEntry = runInWorker(
+      { source: `log("x", 1);`, module: `(ctx) => async () => { await ctx.fuel(); return 1; }`, runId: "no-entry", handler: { module: SIM_HANDLER, config: {} } },
+      {} as never,
+    );
+  } catch (e) {
+    noEntry = e;
+  }
+  ok("a request with NO entry starts no thread at all", noEntry instanceof Error, JSON.stringify(String(noEntry)).slice(0, 140));
+  ok("and it is the missing filename it names, not a default it reached for", String((noEntry as Error).message).includes("filename"), String((noEntry as Error).message).slice(0, 140));
+
+  // AND NOTHING IS EXPORTED TO REACH FOR: the module offers no entry constant a caller could pick up
+  // instead of deciding. This is the half the cell above cannot see, since a derivation could live
+  // outside `runInWorker` and be handed in by a second caller.
+  const exported = Object.keys(workerModule);
+  ok("the worker module exports no entry for a caller to inherit", exported.every((k) => !/entry/i.test(k)), exported);
+}
+
+{
+  ok(`the floor is a single named constant, and it is the measured ${NODE_FLOOR}`, NODE_FLOOR === 22, NODE_FLOOR);
+  // MECHANIZED, not remembered: the engine refuses below the floor the REPO declares it supports, so
+  // the two are compared rather than kept in agreement by hand.
+  const declared = JSON.parse(readFileSync(fileURLToPath(new URL("../../../package.json", import.meta.url)), "utf8")) as { engines?: { node?: string } };
+  const floorOf = (range: string | undefined): number => Number(String(range).replace(/[^0-9.]/g, "").split(".")[0]);
+  ok(`the repo declares node ${declared.engines?.node}, and the engine refuses below the same major`, floorOf(declared.engines?.node) === NODE_FLOOR, { declared: declared.engines?.node, floor: NODE_FLOOR });
+  const below = await caught(() => assertNodeFloor("20.19.0"));
   ok("a node below the floor is refused by major version", below instanceof RuntimeFault, String(below));
-  ok("and the refusal names both the version it found and the floor", (below as Error).message.includes("22.23.2") && (below as Error).message.includes("node 24"), (below as Error).message.slice(0, 120));
-  ok("and says what actually breaks there, rather than citing a decision", (below as Error).message.includes("does not inherit tsx's ESM loader"), (below as Error).message.slice(0, 260));
-  ok("the floor itself is allowed", (await caught(() => assertNodeFloor("24.0.0"))) === undefined);
+  ok("and the refusal names both the version it found and the floor", (below as Error).message.includes("20.19.0") && (below as Error).message.includes("node 22"), (below as Error).message.slice(0, 120));
+  // IT IS A LANGUAGE REFUSAL, ASSERTED BY CODE, not merely something that threw: a sub-floor run has
+  // to arrive as one sentence a reader can act on.
+  ok("and it carries the language code, not a bare Error", codeOf(below) === "L1000", codeOf(below));
+  // AND IT IS NEVER A MODULE-NOT-FOUND. That is the shape this whole change removed: below the floor
+  // the answer must be the sentence above, and not node failing to resolve a file that is right
+  // there - which is what an unrefused sub-floor run used to produce.
+  ok(
+    "and it never presents as a module-resolution failure",
+    !/Cannot find module|ERR_MODULE_NOT_FOUND|MODULE_NOT_FOUND/.test((below as Error).message) && (below as Error).name !== "Error",
+    { name: (below as Error).name, message: (below as Error).message.slice(0, 80) },
+  );
+  ok("the floor itself is allowed", (await caught(() => assertNodeFloor("22.23.2"))) === undefined);
   ok("and anything above it", (await caught(() => assertNodeFloor("26.7.0"))) === undefined);
   // A version string it cannot read is NOT refused: refusing on an unparseable version would fail a
   // run for the shape of a string rather than for the runtime under it.
   ok("an unreadable version is not refused on the strength of being unreadable", (await caught(() => assertNodeFloor("not-a-version"))) === undefined);
   // AND THE LIVE ONE, which is the reachability half: every cell above this line has already run a
-  // program through `runOnEngine`, so the check at the run boundary is reached on every one of them.
-  // The mutant that raises the floor to a version nobody has reds the FIRST of them.
+  // program through `runOnEngine`, so the boundary check is reached on every one of them. The mutant
+  // that raises the floor past every version that exists reds the first of them.
   ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
 }
 

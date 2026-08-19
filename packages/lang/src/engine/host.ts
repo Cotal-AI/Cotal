@@ -25,44 +25,47 @@ import { EngineFault, createEngine, type EngineCtx } from "./ctx.js";
 import { EngineFrame, Signal, withFrame } from "./frame.js";
 
 /**
- * The node the wave decided to stand on (lane 1's decision, AsyncContextFrame ALS).
+ * The node below which this engine refuses to start, and the measurement the number comes from.
  *
- * MEASURED against it at 946ae70a, rather than taken on the decision's word, because a floor nobody
- * probed is a guess with a number on it:
+ * Lane 1 set the wave's floor at 24 for AsyncContextFrame ALS. PROBED, that reason does not
+ * reproduce on any path this engine takes, and the probes are the reason this constant is 22:
  *   ALS on node 22.23.2      9 of 9 shapes propagate - plain await, across the setTimeout macrotask
  *                            the fuel yield uses, both arms of a Promise.all, after a CUSTOM
  *                            THENABLE, across nextTick and setImmediate, and a nested run that
  *                            restores its parent. Identical on 26.7.0 and on 22 with
- *                            --experimental-async-context-frame. Lane 1's stated reason for >= 24
- *                            does not reproduce on any path this engine takes.
- *   the seam on node 22      187 of engine.smoke's checks pass, and differential.smoke is 68 of 70
- *                            with exactly the two reds it has on 26.
- *   the WORKER on node 22    from `dist`, identical: same value, same confinement (Date.now throws,
- *                            `process` undefined, 0 own globals), same programHash, 74ms cold
- *                            against 51ms. The shipped artifact does not need 24.
- *   the worker under TSX     does NOT run on 22: tsx 4.23.0's ESM loader does not reach a worker
- *                            thread there, so `./worker-entry.js` is ERR_MODULE_NOT_FOUND, with or
- *                            without `--import tsx`. On 26 the same spelling resolves and the suite
- *                            finishes. That is the floor that measurably exists, and it is the DEV
- *                            and CI path rather than the runtime.
- * So the floor holds, for a reason nobody had written down. It is enforced here rather than left to
- * `engines`, because a package manager's warning is not a refusal and this engine will not run on
- * luck: below the floor, the thing that breaks is a loader nobody would look at from a journal.
+ *                            --experimental-async-context-frame.
+ *   the seam on 22           the engine suite reaches the same checks it reaches on 26 until it
+ *                            asks for a worker, below.
+ *   the WORKER from `dist`   on node 22: identical answer, identical confinement (Date.now throws,
+ *                            `process` undefined, 0 own globals), identical programHash, 74ms cold
+ *                            against 51ms.
+ * So NOTHING IN THE RUNTIME NEEDS 24, and a refusal at 24 would refuse environments this engine is
+ * measured to work in. What fails on 22 is only the DEV path: a worker thread there does not apply
+ * the parent's ESM loader hooks, so a `.ts` entry's own `../journal.js` is ERR_MODULE_NOT_FOUND -
+ * measured three ways, the `.js` spelling, the `.ts` spelling, and an explicit
+ * `execArgv: ["--import", "tsx"]` on the Worker, none of which changes it. That is not a runtime
+ * bound and is not answered here: the Worker entry is an EXPLICIT INPUT of `runInWorker`, and the
+ * engine suite's worker leg names a built artifact. See `worker.ts`.
+ *
+ * The number is a floor rather than an `engines` line because a package manager's warning is not a
+ * refusal, and an engine whose frame plumbing rests on AsyncLocalStorage will not run on untested
+ * ground and hope. It matches `engines` today; when a real RUNTIME reason to raise it appears, the
+ * constant moves and the reason is written beside these.
  */
-export const NODE_FLOOR = 24;
+export const NODE_FLOOR = 22;
 
 /**
- * Refuse a node below the wave's floor, by MAJOR version.
+ * Refuse a node below the floor, by MAJOR version.
  *
- * A pure function of the version string so a suite can ask it about a version it is not running on;
- * `runOnEngine` calls it with the live one, which is the only call site.
+ * Pure in its argument so a suite can ask it about a version it is not running on; `runOnEngine`
+ * calls it with the live one, which is the only call site.
  */
 export function assertNodeFloor(version: string): void {
   const major = Number(version.split(".")[0]);
   if (Number.isFinite(major) && major < NODE_FLOOR) {
     throw new RuntimeFault(
       "L1000",
-      `the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}. The wave's floor is lane 1's decision (AsyncContextFrame ALS), and what MEASURABLY breaks below it is the development path: a worker thread does not inherit tsx's ESM loader there, so a run started from TypeScript sources cannot load its own worker entry. Run node ${NODE_FLOOR}+, or run the built package.`,
+      `the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}. That is the floor this repo declares it supports and the lowest this engine was measured on; below it nothing here has been tested, and an engine whose frame plumbing rests on AsyncLocalStorage will not run on untested ground and hope.`,
     );
   }
 }

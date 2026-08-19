@@ -98,20 +98,42 @@ function publishStop(buffer: SharedArrayBuffer, reason: string): void {
 }
 
 /**
+ * THE WORKER ENTRY IS AN INPUT, not something this module derives.
+ *
+ * A thread's entry is a FILE ON DISK, and which file that is depends on how the caller was built and
+ * installed - not on anything this module can see about itself. From the compiled package it is
+ * `new URL("./worker-entry.js", import.meta.url)` resolved in the compiled module; a suite that
+ * wants to grade the SHIPPED artifact names that artifact; a bundler that rewrote the layout names
+ * what it produced. So the composition root passes it, and this module makes no guess.
+ *
+ * It was derived here, and the derivation was measurably wrong. Running from TypeScript sources,
+ * node 22 does not apply the parent's ESM loader hooks to a worker thread: a `.js` entry is
+ * ERR_MODULE_NOT_FOUND, and the `.ts` entry gets exactly one step further before dying on its own
+ * `../journal.js`. Inherited execArgv already carries tsx's `--import` into the thread and an
+ * explicit `execArgv: ["--import", "tsx"]` adds it again; neither changes the answer. No spelling
+ * this module could pick makes a `.ts` tree runnable in a thread on that node - the answer is to run
+ * the BUILD, which is a fact about the caller. Making the entry an argument is what lets the caller
+ * say so, and it is why nothing here is version-conditional.
+ */
+export interface WorkerRunOptions {
+  /**
+   * The module the thread starts at: `engine/worker-entry`, in whatever build the caller is running.
+   * A `file:` URL or an absolute path.
+   */
+  readonly entry: URL | string;
+  /** Called for each `log` the run emits, as it emits it. */
+  readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
+}
+
+/**
  * Run a transformed program in its own locked-down thread.
  *
  * The worker is terminated when the run answers, however it answers: one thread per run is the whole
  * point, and a thread that outlives its run is a realm holding a journal nobody is reading.
  */
-export function runInWorker(
-  request: WorkerRunRequest,
-  options: { readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void } = {},
-): WorkerRun {
+export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions): WorkerRun {
   const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
-  // `./worker-entry.js` from THIS module's URL: under tsx it resolves to the .ts beside this file,
-  // and from `dist` to the built .js. One spelling, both, measured - no environment branch.
-  const entry = new URL("./worker-entry.js", import.meta.url);
-  const worker = new Worker(entry, { workerData: { request, stop } });
+  const worker = new Worker(options.entry, { workerData: { request, stop } });
 
   const done = new Promise<WorkerRunResult>((resolve, reject) => {
     let answered = false;
