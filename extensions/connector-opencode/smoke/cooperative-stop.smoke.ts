@@ -242,10 +242,12 @@ try {
   // is stopped and then KILLED after a grace window shorter than its drain, the way `pty.ts` and the
   // tmux and cmux runtimes do, and presence must already have left the mesh.
   //
-  // The window is real rather than nominal. Presence goes stale on its own after the endpoint's TTL,
-  // 6s, so a roster that says offline long enough after a kill says nothing about who published it.
-  // Sampling about one second after the stop keeps the reading inside that margin, so an offline seen
-  // here was PUBLISHED and not inferred from silence.
+  // THE READING IS TAKEN BEFORE THE KILL, and that is the design of this leg rather than a detail.
+  // Measured the other way first and it graded NOTHING: sampled after the kill it passes on both
+  // arms, because losing the connection purges the presence entry and the roster reads offline
+  // whether or not the seat ever published it. Silence answers "is it offline once it is dead" for
+  // free. The question the reorder is actually for is "had it already left WITHIN the window the
+  // runtime allows", and only a reading taken inside that window can answer it.
   // A FRESH control endpoint for the second seat rather than the first one's. Reusing it would ask
   // the plugin to bind a socket path a dead process may still own, and that binding is deliberately
   // fatal so a squatter cannot hijack a control plane, so the leg would fail on setup rather than on
@@ -285,21 +287,17 @@ try {
   const reply2 = await sendShutdown(ep2.path, ep2.token);
   check("control server acked the second shutdown", reply2.trim() === JSON.stringify({ ok: true }), reply2);
 
-  // A grace window shorter than the drain, then the kill the runtime would send.
+  // The runtime's grace window, shorter than the 2.5s drain this seat is holding.
   await wait(400);
+  const leftWithinGrace = watcher.getRoster().find((pr) => pr.card.name === "Otto")?.status === "offline";
+  const drainStillRunning = !existsSync(marker2Path);
   try {
     probe2.kill("SIGKILL");
   } catch {
     /* already gone */
   }
-
-  let offlineAfterKill = false;
-  for (let i = 0; i < 10 && !offlineAfterKill; i++) {
-    await wait(100);
-    offlineAfterKill = watcher.getRoster().find((pr) => pr.card.name === "Otto")?.status === "offline";
-  }
-  check("a seat killed mid-drain had ALREADY left the mesh, so no stale live entry survives it",
-    offlineAfterKill, { offlineAfterKill, drainFinished: existsSync(marker2Path) });
+  check("a seat still draining had ALREADY left the mesh when its grace window ran out",
+    leftWithinGrace && drainStillRunning, { leftWithinGrace, drainStillRunning });
   await awaitExit(probe2, 5_000).catch(() => undefined);
 
   // THE MANAGER'S STOP IS A TEARDOWN TOO, and it is the one a supervised seat actually takes.
