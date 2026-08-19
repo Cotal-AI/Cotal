@@ -77,6 +77,13 @@
       "find": "      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);",
       "replace": "      log(`AG-UI: the emitter stopped (${events.failure.message})`);",
       "expectRed": "broker-late:and it said so rather than recovering silently"
+    },
+    {
+      "name": "L12 the bind's boundary is not substituted, so the emitter positions itself wherever the file ends when its own setup has finished",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),",
+      "replace": "source: new JsonlFileSource<CodexRecord>(rolloutPath),",
+      "expectRed": "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor"
     }
   ]
 }

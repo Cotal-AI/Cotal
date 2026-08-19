@@ -214,6 +214,7 @@ let hostA: ReturnType<typeof spawn> | undefined;
 let hostB: ReturnType<typeof spawn> | undefined;
 let hostC: ReturnType<typeof spawn> | undefined;
 let hostD: ReturnType<typeof spawn> | undefined;
+let hostE: ReturnType<typeof spawn> | undefined;
 /** The late seat's own log. Printed on failure: when this suite goes red the seat's stderr is the
  *  only place the reason is written, and a suite that hides it makes its own failures unreadable. */
 let errB = "";
@@ -222,6 +223,9 @@ let errB = "";
  *  one is about is only visible from inside the seat until it recovers. */
 let errC = "";
 let errD = "";
+/** Seat E's log (the seat whose emitter setup is widened so a turn can run inside it). Same reason
+ *  as the two above: the window this arm is about opens and closes inside the seat. */
+let errE = "";
 /** Did the run reach the end? A suite that THREW is not a suite that failed a cell, and the two
  *  want different output: the thrower needs the seat's log, which is where the reason is. */
 let completed = false;
@@ -243,6 +247,10 @@ function startHost(
    *  it. Both or neither: the prompt is what `cotal spawn --prompt` sets, and the marker is how a
    *  caller orders that turn against a bind it cannot otherwise see. */
   boot?: { prompt: string; goMark: string },
+  /** Widens the emitter's own setup, in ms, so a caller can put a completed turn inside the window
+   *  between the bind's boundary and the emitter's first read. Test-only on the seat's side too:
+   *  omitted here means the variable is never set and the seat runs the unwidened path. */
+  startDelayMs?: number,
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -268,6 +276,7 @@ function startHost(
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "high",
       ...(boot === undefined ? {} : { COTAL_CODEX_PROMPT: boot.prompt, FAKE_CODEX_GO: boot.goMark }),
+      ...(startDelayMs === undefined ? {} : { COTAL_EVENTS_TEST_START_DELAY_MS: String(startDelayMs) }),
     },
     stdio: ["ignore", "ignore", capture ? "pipe" : "inherit"],
   });
@@ -723,6 +732,101 @@ try {
       leakedOutput: wire.includes("tooloutput:1"),
     },
   );
+
+  // ---- (5) the bind window: the thing the boundary rule is actually for -----------------------
+  // THE ONLY ARM THAT GRADES THE PRIMARY FIX, and the reason it needs a widened window rather than
+  // a faster fixture. Every arm above grades what happens AROUND a bind. None of them grades the
+  // window INSIDE it: the bind captures where the stream starts, announces it, and the emitter's
+  // own asynchronous setup then runs before its first read. Whatever the thread appends in there
+  // is exactly what the boundary rule keeps and what positioning-at-first-read loses.
+  //
+  // At its real width that window is tens of milliseconds and a fixture cannot aim a turn into it,
+  // so a cell that tries races it. MEASURED, not assumed: the mutant that deletes the boundary
+  // rule from the construction site was run five times against this suite without this arm and
+  // passed three of them, and the two it failed named disjoint cells in other arms. A verdict that
+  // moves between runs of the same mutant is not evidence, so the seat below widens the window
+  // with its own test-only setting and the fixture puts a whole completed turn inside it.
+  const E = "windowpeer";
+  const homeE = join(dir, "e");
+  const goE = join(dir, "e.go");
+  // Long enough that a loaded machine still finishes the turn inside it, and asserted below rather
+  // than trusted: if the turn does not complete within the window, the SETUP cell reds and says so
+  // instead of the graded cell passing for the wrong reason.
+  const WINDOW_MS = 8_000;
+  // TOOLREC, so the turn leaves a tool call and its OUTPUT in the window as well as assistant text.
+  // The window is not a text-only window, and the connector's disclosure says a tool result crosses
+  // onto the events channel as the tool returned it, so the arm that grades the window grades that
+  // shape too rather than the friendliest one.
+  hostE = startHost(
+    E,
+    homeE,
+    "1",
+    join(dir, "e.log.jsonl"),
+    (chunk) => (errE += chunk),
+    servers,
+    { prompt: "TOOLREC the turn that runs inside the emitter's own setup window", goMark: goE },
+    WINDOW_MS,
+  );
+  check("window:setup:seat E came online", await settle("online:E", () => online.has(E), 60_000), margin("online:E"));
+  await joinEventsOf(E);
+  // ORDERED ON THE SEAT'S OWN OUTPUT, NOT ON A SLEEP. The bind captures its boundary and then
+  // announces it, so the announcement is proof the boundary is already taken and that what runs
+  // next is the setup this seat was told to widen.
+  const boundE = await settle("E:the bind announced its boundary", () => publishedThreads(errE).length >= 1, 60_000);
+  check("window:setup:the bind took its boundary BEFORE the window turn wrote anything", boundE, {
+    ...margin("E:the bind announced its boundary"),
+    tail: errE.slice(-400),
+  });
+  const rolloutE = /publishing thread \S+ from (\S+)/.exec(errE)?.[1] ?? "";
+  const threadE = publishedThreads(errE)[0] ?? "";
+  // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
+  // fake blocks on this file unbounded by design, so a failed cell above stays a failed cell
+  // instead of becoming a suite that hangs somewhere else.
+  const releasedAt = Date.now();
+  writeFileSync(goE, "go");
+  const turnOnDisk = await settle(
+    "E:the window turn is complete on disk",
+    () => rolloutE !== "" && existsSync(rolloutE) && readFileSync(rolloutE, "utf8").includes("task_complete"),
+    60_000,
+  );
+  const spentInWindow = Date.now() - releasedAt;
+  // THE CELL THAT KEEPS THE ONE BELOW HONEST. The graded cell only means what it says if the turn
+  // really did land while the emitter had not read yet. If the machine was slow enough that the
+  // setup finished first, this reds and names the measurement rather than letting a pass stand on
+  // a window that had already closed.
+  check("window:setup:the turn RAN and COMPLETED inside the widened window, so the cell below judges records the emitter had not read", turnOnDisk && spentInWindow < WINDOW_MS, {
+    ...margin("E:the window turn is complete on disk"),
+    spentMs: spentInWindow,
+    windowMs: WINDOW_MS,
+    path: rolloutE,
+  });
+  const framesE = (): AguiFramePart[] => frames.filter((f) => f.threadId === threadE);
+  const arrivedE = await settle(
+    "E:the window turn reaches the wire",
+    () => framesE().some((f) => f.events.some((e) => e.type === "RUN_FINISHED")),
+    60_000,
+  );
+  const evE = framesE().flatMap((f) => f.events as unknown as Record<string, unknown>[]);
+  const deltasE = evE.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
+  const wireE = JSON.stringify(evE);
+  check(
+    "a turn written INSIDE the emitter's setup window is PUBLISHED rather than left behind the cursor",
+    arrivedE &&
+      threadE !== "" &&
+      evE.some((e) => e.type === "RUN_STARTED") &&
+      evE.some((e) => e.type === "RUN_FINISHED") &&
+      deltasE.includes("ok:1") &&
+      wireE.includes("tooloutput:1"),
+    {
+      ...margin("E:the window turn reaches the wire"),
+      threadE,
+      frames: framesE().length,
+      deltas: deltasE,
+      types: [...new Set(evE.map((e) => String(e.type)))],
+      tail: errE.slice(-400),
+    },
+  );
+
   completed = true;
 } finally {
   if (fail > 0 || !completed)
@@ -730,12 +834,13 @@ try {
       ["late seat", errB],
       ["restart-late seat", errC],
       ["broker-late seat", errD],
+      ["window seat", errE],
     ] as const)
       if (err !== "") console.log(`--- ${who} stderr (tail) ---\n${err.slice(-4000)}\n---`);
   // MEASURED BEFORE THE KILL, because after it the answer is the same whether teardown worked or
   // whether the seats were never there. This is what makes the teardown cell below a fact.
   aliveBeforeTeardown = seatPids.filter(alive);
-  for (const h of [hostA, hostB, hostC, hostD]) killTree(h);
+  for (const h of [hostA, hostB, hostC, hostD, hostE]) killTree(h);
   for (const ep of [operator, operator2])
     try {
       await ep?.stop();
@@ -759,7 +864,7 @@ try {
 // hang, so that is the cell: after teardown, neither seat's process group still has a member.
 check(
   "teardown:the seats teardown is responsible for were RUNNING before it, so the cell below is not vacuous",
-  seatPids.length >= 4 && aliveBeforeTeardown.length === seatPids.length - stoppedOnPurpose.size,
+  seatPids.length >= 5 && aliveBeforeTeardown.length === seatPids.length - stoppedOnPurpose.size,
   { started: seatPids.length, stoppedOnPurpose: stoppedOnPurpose.size, alive: aliveBeforeTeardown.length },
 );
 const groupsGone = await settle("teardown:process groups gone", () => !seatPids.some(alive), 10_000);

@@ -289,13 +289,16 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
  * So the boundary is captured at the bind, before the announcement, and substituted HERE, on the
  * one read that would otherwise ask the file where it currently ends.
  *
- * IT IS DELIBERATELY NOT WRITTEN INTO THE LOG. The log's cursor stays the emitter's own, written
- * only once a start has SUCCEEDED, so a start that throws leaves nothing behind. That case is the
- * ordinary one and not an edge: an armed seat whose broker is not up yet loses its emitter at
- * launch and rebinds at a later boundary. A boundary seeded before the start would outlive it, the
- * later bind would read a cursor and treat it as a RESUME, and everything the session wrote while
- * the seat was cut off would be republished onto a channel whose readers are not the input
- * channel's.
+ * IT IS DELIBERATELY NOT WRITTEN INTO THE LOG. The log's cursor stays the emitter's own, and on a
+ * log with nothing in it a start writes nothing at all: its recovery has no pending frame to fold,
+ * so the position is first written by a PUMP, once one has actually read something. A start that
+ * throws therefore leaves nothing behind, and so does a start that succeeded and then died before
+ * its first read. Both leave the log virgin and the next bind boundaries at the file as it stands
+ * then, which is this same window one level up. A start that throws is the ordinary case here and
+ * not an edge: an armed seat whose broker is not up yet loses its emitter at launch and rebinds at
+ * a later boundary. A boundary seeded before the start would outlive it, the later bind would read
+ * a cursor and treat it as a RESUME, and everything the session wrote while the seat was cut off
+ * would be republished onto a channel whose readers are not the input channel's.
  *
  * THE LIMIT, stated once and in one place: this positions the first read of a log that has no
  * cursor. A log that already carries one is a resume and passes through untouched, because a
@@ -367,6 +370,23 @@ export async function runCodexHost(): Promise<void> {
    *  exists, and because `start()` reaches the broker, work that must not run for a thread that
    *  never publishes. */
   const eventsArmed = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "");
+  /** TEST ONLY, and the reason it exists rather than a fixture doing this from outside.
+   *
+   *  The window this whole boundary rule is about is the emitter's own asynchronous setup: the
+   *  bind captures where the stream starts, announces it, and only then does the setup below run
+   *  and the first read happen. That window is a few tens of milliseconds wide, which is not a
+   *  window a test can put a completed turn inside on purpose, so the only cell that could grade
+   *  the rule was one that raced it and therefore graded nothing reliably. This widens the same
+   *  window instead of simulating a different one, so what a fixture writes into it is what the
+   *  running seat would have written into it.
+   *
+   *  Nothing outside a test sets this, and unset is not a shorter wait, it is no wait and no call:
+   *  absent, empty, zero, negative, and unparseable all resolve to 0 and the branch below is not
+   *  taken. */
+  const startDelayMs = ((): number => {
+    const ms = Number(process.env.COTAL_EVENTS_TEST_START_DELAY_MS ?? "");
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  })();
   let events: AguiEmitterHolder<CodexRecord> | undefined;
   let mapper: CodexMapper | undefined;
   /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
@@ -376,6 +396,9 @@ export async function runCodexHost(): Promise<void> {
   const newEventHolder = (startCursor: string): AguiEmitterHolder<CodexRecord> =>
     new AguiEmitterHolder<CodexRecord>(
       async (rolloutPath: string) => {
+        // The test-only widening of this setup, at the top of it so a fixture's write lands in the
+        // real window rather than beside it. Zero unless a test set it, and zero does not await.
+        if (startDelayMs > 0) await new Promise<void>((r) => setTimeout(r, startDelayMs));
         // Throws rather than defaulting to the working directory: a write-ahead log written
         // somewhere no later start looks is a silent loss.
         const workspaceRoot = resolveEventsStateRoot(process.env);
@@ -732,8 +755,13 @@ export async function runCodexHost(): Promise<void> {
     // kills its own plane at launch. Nothing after that publishes, the mesh side recovers around it
     // and looks healthy, and one line in the seat's own log is the whole trace. Flushing a corpse is
     // silence with a heartbeat, so a death is treated as NO BINDING and the next boundary builds a
-    // new one. What the dead holder had not yet published is not recovered: a fresh adopt starts at
-    // the file's last complete record, which is the same stated limit a late bind carries.
+    // new one. WHAT THE FRESH ADOPT THEN PUBLISHES DEPENDS ON WHETHER THE DEAD HOLDER EVER WROTE A
+    // POSITION, and saying only half of that here is what made this comment wrong. A log with no
+    // cursor in it is virgin: the new bind starts at the file's last complete record, so what the
+    // dead holder had not published is not recovered, which is the same stated limit a late bind
+    // carries. A log that carries one is a RESUME and continues it, so everything the thread
+    // appended after that position IS published, including what it appended while this plane was
+    // dead. `BoundStartSource` states that split once and in one place.
     if (events?.failure !== undefined) {
       log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);
       events = undefined;
