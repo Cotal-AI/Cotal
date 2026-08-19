@@ -45,7 +45,22 @@
     "K6 and K7 were retired rather than kept as claimed kills: their guards are load-bearing (the eviction",
     "classification read and the recall tie-break) but the suite's live cells could not redden them through",
     "the broker seam (both survived with the positive control green), and a claimed kill that does not kill is",
-    "exactly what NOT PROVED HERE exists to prevent. The guards stay, disclosed as unkillable-by-this-suite."
+    "exactly what NOT PROVED HERE exists to prevent. The guards stay, disclosed as unkillable-by-this-suite.",
+    "K6, chased to root: the eviction-classification guards are real and doubly enforced (the writer",
+    "refuses to record an empty id; the reader refuses to consult one), and the residual bleed they",
+    "close is UNOBSERVABLE through any real arrival sequence under the current valve: later evictions",
+    "overwrite the same empty key, any drain deletes it, and the pull-only-preferring valve evicts an",
+    "inheriting item immediately. Removing either guard alone is unkillable (the other holds); removing",
+    "both is unkillable because no observable changes. The real-path cell stays because it pins the",
+    "surrounding behavior; the guard is retained as protection, and the unprovability is stated here",
+    "in exactly those words rather than claimed as a kill. Test-only-seam limit, named for the packet.",
+    "K7, chased to root and REMOVED rather than kept as dead protection: the recall tie-break guard",
+    "for empty ids was unreachable by construction once marks and items are addressed by receive key",
+    "(a minted key is never empty; the only empty id in a RecallMark is the initial cursor, whose ts",
+    "differs from every real item and never reaches the id comparison). Per the no-dead-claims rule",
+    "the guard came out with its reasoning recorded at the comparator; the cells that pin comparator",
+    "semantics stay and pass against the unguarded code, which is itself the proof the guard added",
+    "nothing reachable."
   ],
   "mutations": [
     {

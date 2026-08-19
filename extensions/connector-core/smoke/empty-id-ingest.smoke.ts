@@ -261,7 +261,31 @@ try {
   // ---- Cell 10: an id-less recall twin is never "never-recalled" (finding (g)) ----
   check("the recall tie-break does not order an empty id against itself", afterRecallMark({ ts: 100, id: "" }, { ts: 100, id: "" }) === false);
   check("an id-less item still advances past an earlier mark by time", afterRecallMark({ ts: 200, id: "" }, { ts: 100, id: "" }) === true);
-  // ---- Cell 11: absent and non-string ids never reach the receiver's machinery (D16) ----
+  // ---- Cell 11: the REAL eviction path does not bleed an empty id's classification (K6, write+read) ----
+  // Overfill the inbox past the valve so an empty-id pull-only item is evicted through the REAL
+  // rememberEvicted (write side), then deliver a fresh empty-id ambient through the REAL ingest and
+  // assert its lane is its own receive-time classification, not the evicted item's memory (read side).
+  {
+    const agentInbox = agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] };
+    // The evictee must be the OLDEST entry: the valve evicts from the front, so a newest-staged
+    // pull-only item is never chosen. Stage it FIRST, then overflow behind it.
+    const pullEvictee = emptyDelivery("evicted-pull");
+    agentInbox.inbox.push({ item: pullEvictee, ack: () => {}, pullOnly: true });
+    for (let i = 0; i < 205; i++) agentInbox.inbox.push({ item: emptyDelivery(`fill-${i}`), ack: () => {}, pullOnly: false });
+    // Trigger the valve through the real buffer() entry point: deliver one more via the endpoint event.
+    agent.ep.emit("message", msg("", "overflow-trigger"), { ack: () => {}, nak: () => {}, durable: false }, meta);
+    await sleep(200);
+    const survived = agentInbox.inbox.map((p) => p.item.text);
+    check("the overflow valve evicted the oldest entries (the path ran)", survived.length <= 200, survived.length);
+    // Fresh empty-id ambient through the REAL ingest: must be automatic, not inherited pull-only.
+    agent.ep.emit("message", msg("", "fresh-after-evict"), { ack: () => {}, nak: () => {}, durable: false }, meta);
+    await sleep(100);
+    const fresh = agentInbox.inbox.find((p) => p.item.text === "fresh-after-evict");
+    check("a fresh empty-id arrival inherits no evicted classification (both guards, real path)", fresh !== undefined && fresh.pullOnly === false, { fresh: fresh?.pullOnly });
+    agent.drainInbox();
+  }
+
+  // ---- Cell 12: absent and non-string ids never reach the receiver's machinery (D16) ----
   // A foreign client can publish an envelope whose id is absent or a non-string; SPEC sec 5 makes
   // both malformed, and the pumps reject them per delivery class (live drop, so nothing buffers)
   // instead of letting an undefined key flow into the id-keyed lanes.

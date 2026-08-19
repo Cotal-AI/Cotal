@@ -116,11 +116,13 @@ export interface RecallMark {
 
 /** Total order on {@link RecallMark}: by time, then by id, so items sharing a millisecond still queue. */
 export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
-  // #624: an empty id breaks no tie. Two distinct id-less recall items sharing a millisecond are
-  // unordered against each other, so the comparison falls back to time alone for them: the mark
-  // still advances past the pair only when the clock does, and neither is silently never-recalled
-  // by losing an equality comparison to the other's empty string.
-  if (a.id === "" || b.id === "") return a.ts > b.ts;
+  // #624: recall marks and items are addressed by RECEIVE key (never the wire id), and a minted
+  // key is never the empty string, so the tie-break comparator never sees an empty id on either
+  // side: the only empty id in a RecallMark is the initial cursor {ts: 0, id: ""}, whose ts
+  // differs from every real item and so never reaches the id comparison. (The empty-id guard this
+  // comparator once carried was removed after a root chase showed it unreachable: with the wire id
+  // out of the marks, no real path can put two empty ids, or an empty id against a real one, into
+  // the comparison.)
   return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;
 }
 
