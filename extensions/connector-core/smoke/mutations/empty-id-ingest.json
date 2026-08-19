@@ -1,0 +1,60 @@
+{
+  "suite": "extensions/connector-core/smoke/empty-id-ingest.smoke.ts",
+  "guard": "an empty message id is never a dedup key at ingest: two distinct id-less messages are both delivered (a third still delivers after a drain), while real-id coalescing is unchanged",
+  "command": "pnpm smoke:empty-id-ingest",
+  "completionMarker": "EMPTY-ID INGEST SMOKE PASSED",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/empty-id-ingest.json",
+  "why": [
+    "The defect is one decision expressed at one site: which key a received id contributes to the",
+    "ingest coalescing. K1 restores the defect as it was written (key on the raw id, empty included)",
+    "and reddens the live repro cell, the one whose pre-fix observation was inbox 1 with empty-b",
+    "missing. K2 is the plausible partial relapse: only the pending-inbox lookup goes back to the raw",
+    "id while the derivation keeps guarding the other reads. K3 is the opposite authoring error, not a",
+    "relapse: a fix that stopped deduping entirely would pass every empty-id cell and silently weaken",
+    "the coalescing the cross-path transition window depends on, so the same-real-id cell holds that",
+    "side and K3 proves it holds it.",
+    "",
+    "SPECIFIER BOUNDARY, checked rather than assumed. The suite imports the agent by RELATIVE SOURCE",
+    "PATH (../src/agent.js), so the bytes mutated are the bytes graded: no dist in the path and no",
+    "build in the command. Its package-name imports are values from @cotal-ai/core, which this change",
+    "does not touch; the mutation targets only connector-core source.",
+    "",
+    "NOT PROVED HERE, named rather than implied. The write-side guards (markHandled and",
+    "protectDisposition declining to record an empty id) are not independently killable: no read",
+    "consults the empty key while the derivation guard holds, so a mutation that removes either one",
+    "SURVIVES by construction. They are kept as invariant-keeping, not claimed as kills: recording an",
+    "empty id in the handled or protected sets would arm the exact collapse this fix removes against",
+    "any future read-site relapse. The recall-lane id keys (focusExcludedIds, aheadDelivered) are a",
+    "narrower same-family residual on the focus recall path, not the ingest delivery this change",
+    "owns, and are named here so the next reader inherits the boundary rather than the surprise."
+  ],
+  "mutations": [
+    {
+      "name": "K1 the ingest dedup keys on the raw id again, empty included",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const key = ingestDedupKey(m.id);",
+      "replace": "    const key = m.id;",
+      "expectRed": "timed out waiting for both empty-id messages to buffer",
+      "cell": "two distinct messages with EMPTY ids are both delivered",
+      "note": "The defect exactly as it was written: empty-equals-empty matches the pending entry, so the second distinct message is silently dropped. The cell that reddens is the live repro itself, whose pre-fix observation was one buffered message where two were published."
+    },
+    {
+      "name": "K2 only the pending-inbox lookup relapses to the raw id",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key);",
+      "replace": "    const existing = this.inbox.find((p) => p.item.id === m.id);",
+      "expectRed": "timed out waiting for both empty-id messages to buffer",
+      "cell": "two distinct messages with EMPTY ids are both delivered",
+      "note": "The partial relapse a later edit could introduce in isolation: the derivation still guards the handled and protected reads, but the pending merge collapses id-less messages while one is still buffered. Same cell reddens, same first observation."
+    },
+    {
+      "name": "K3 the fix over-corrects and dedups on nothing at all",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "function ingestDedupKey(id: string): string | undefined {\n  return id === \"\" ? undefined : id;\n}",
+      "replace": "function ingestDedupKey(_id: string): string | undefined {\n  return undefined;\n}",
+      "expectRed": "the same REAL id twice still collapses to one entry",
+      "cell": "the same REAL id twice still collapses to one entry",
+      "note": "The bars cut both ways: the fix must not weaken dedup for real ids. Disable the key entirely and every empty-id cell still passes while the live/durable coalescing the transition window depends on is gone; the real-id cell is the one that notices."
+    }
+  ]
+}
