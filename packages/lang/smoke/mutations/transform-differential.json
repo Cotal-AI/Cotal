@@ -201,6 +201,87 @@
       "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
       "cell": "every mutation's expectRed names exactly one cell this suite printed",
       "note": "A corpus row's name IS a cell's name here, so renaming a row is how this suite's aims go stale - and it changes no behaviour, so no other cell reds. Aimed at the row this config already anchors on, which is the pair most likely to drift together in a future edit. The rename REPLACES the trailing word rather than extending it: expectRed is matched as a substring, so `..., plainly enough` still contains `..., plainly` and the stale aim keeps matching. Measured as a SURVIVOR in that spelling before this one."
+    },
+    {
+      "name": "both crossings are handed a record the replaying engine does not speak, so the comparison has nothing to compare",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "    const back = { runId: \"d\", handler: new SimHandler({}), pins, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };",
+      "replace": "    const back = { runId: \"d\", handler: new SimHandler({}), pins: { ...pins, languageVersion: \"2\" }, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };",
+      "expectRed": "and the two finished journals are the same journal, entry for entry, with two journals there to compare",
+      "cell": "and the two finished journals are the same journal, entry for entry, with two journals there to compare",
+      "note": "The control that found the false green, kept as the mutant that grades its guard. Both resumes refuse L5008, both finish cells red, and BEFORE the guard this comparison still printed ok with entries [0, 0] - two identical empty placeholders comparing as agreement. The fault cannot be manufactured any other way: a comparison of two subjects only lies about them when BOTH are absent, so the mutant has to kill both crossings. It is aimed at the comparison rather than at the finish cells it also reds, which this COUNTING suite grades by name."
+    },
+    {
+      "name": "the crossing is handed back to the engine that wrote the journal, so the refusal cell no longer crosses anything",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "      const crossed = await resumeOn(other, source, original.journal, original.pins, across);",
+      "replace": "      const crossed = await resumeOn(wrote, source, original.journal, original.pins, across);",
+      "expectRed": "and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock",
+      "cell": "and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock",
+      "note": "A refusal cell whose subject stops being a crossing is the circular-check class in its purest form: the record and the reader are the same engine, nothing disagrees, and the cell would report a refusal that never happened. Aimed at one program by name because every crossing prints its own cell."
+    },
+    {
+      "name": "the writer's own resume is sent to the other engine, so the replay half tests the refusal instead",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "      const own = await resumeOn(wrote, source, original.journal, original.pins, again);",
+      "replace": "      const own = await resumeOn(other, source, original.journal, original.pins, again);",
+      "expectRed": "the walker resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock",
+      "cell": "the walker resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock",
+      "note": "The mirror of the crossing mutant, and the reason both halves are asserted: with the replay half pointed across engines the suite would prove only that engines refuse each other, and would no longer prove that a journal can be resumed at all."
+    },
+    {
+      "name": "a resume that is handed pins re-resolves them instead of binding them, so a record's own pins are lost",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "      ? bindPins(options.pins, options, ENGINE_LANGUAGE_VERSION)",
+      "replace": "      ? resolvePins(options, options.handler.now(), ENGINE_LANGUAGE_VERSION)",
+      "expectRed": "and when pins DO come with that empty journal the engine keeps them rather than resolving its own",
+      "cell": "and when pins DO come with that empty journal the engine keeps them rather than resolving its own",
+      "note": "The half of the empty-journal rule that CAN be graded narrowly. Re-resolving from the same options reproduces every default, so the cell carries one value no resolver would produce (a stepBudget of 12345) and this mutant is what proves that matters. The other half - an empty journal with no pins is a store, not a resume - is ungraded here by measurement rather than by oversight: its only mutant refuses every corpus run and kills the process (133 reds, no summary line), which grades a dead run instead of a cell."
+    },
+    {
+      "name": "the engine reports no steps, so the two engines stop being tellable apart by their unit",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  return { value, journal, programHash, pins, steps: engine.steps() };",
+      "replace": "  return { value, journal, programHash, pins, steps: 0 };",
+      "expectRed": "the same program charges a different number of steps on each engine, so which one ran is observable at all",
+      "cell": "the same program charges a different number of steps on each engine, so which one ran is observable at all",
+      "note": "The control for every cell that watches WHICH engine ran something. If the engines stop differing observably, a dispatch cell keeps passing while observing nothing - it goes quiet rather than red - so the difference itself is asserted here and this mutant is what proves the assertion has teeth."
+    },
+    {
+      "name": "the engine stamps the walker's version into the record it writes, so the pin has nothing to disagree with",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "      : resolvePins(options, options.handler.now(), ENGINE_LANGUAGE_VERSION);",
+      "replace": "      : resolvePins(options, options.handler.now(), \"1\");",
+      "expectRed": "the record the engine writes is stamped with the engine's own language, which is what the other one later disagrees with",
+      "cell": "the record the engine writes is stamped with the engine's own language, which is what the other one later disagrees with",
+      "note": "The naive bump seen from the other end: with both engines stamping one version every crossing succeeds and the split refuses nothing. Written as a literal rather than as the walker's constant because host.ts does not import it, and a mutant that fails to COMPILE grades a dead run instead of a cell."
+    },
+    {
+      "name": "a matrix row cites a sentence this suite no longer prints, which is what a rename leaves behind",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "[\"the walker resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock\"]",
+      "replace": "[\"the walker resumes the journal it wrote itself, reading it rather than dispatch: sleep and the run clock\"]",
+      "expectRed": "every row this suite owns is a sentence this suite printed",
+      "cell": "every row this suite owns is a sentence this suite printed",
+      "note": "The index's whole reason for being checked instead of written down. A citation is a copy of a sentence that lives somewhere else, and a copy drifts: here the row's text loses two characters, exactly the way a reworded cell leaves its index entry behind. Nothing else in the suite notices - the cell it names still runs and still passes under its new name - so this cell is the only thing between the matrix and a row list that describes a suite that has moved on."
+    },
+    {
+      "name": "a matrix row cites a driver cell the runtime suite does not have, and the cross-package half stops being checked",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "\"and it is stamped with the version of the ENGINE that ran it, not with the current language\",",
+      "replace": "\"and it is stamped with the version of the engine that ran it, not with the current language\",",
+      "expectRed": "every row the dispatcher owns names a cell the runtime suite still has",
+      "cell": "every row the dispatcher owns names a cell the runtime suite still has",
+      "note": "The same drift across the package line, where it is likelier and worse: the dispatcher rows are asserted in implementations/runtime, which cannot be reached from a lang suite except by reading its source, and a lang author has no reason to look there. One word loses its capitals and the citation resolves to nothing. If this cell did not exist, the matrix would keep claiming eight rows while three of them named sentences no suite anywhere prints."
+    },
+    {
+      "name": "a matrix row is dropped, and every surviving citation still resolves",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "    [\"3. a v2 record with entries, on the walker: refused L5008 — the defence behind the dispatch, for a caller who reaches past it\", HERE, [\"and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock\"]],\n",
+      "replace": "",
+      "expectRed": "the index carries all eight rows, in order, and none of them can be dropped quietly",
+      "cell": "the index carries all eight rows, in order, and none of them can be dropped quietly",
+      "note": "The failure the two citation cells are both blind to, because both quantify over the rows that are THERE: an empty matrix satisfies them perfectly. The row removed here is the one only this package can own - a v2 record forced onto the walker's own entry point - so its loss is the loss of the arm observation itself, and without the ordinals it costs nothing. This is why the labels carry numbers."
     }
   ],
   "completionMarker": "differential.smoke:"

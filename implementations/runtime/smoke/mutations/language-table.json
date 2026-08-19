@@ -1,0 +1,106 @@
+{
+  "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
+  "guard": "The capability table: which language versions THIS BUILD's driver hosts. A fresh run is stamped with the version of the engine that will execute it, and a record whose version no engine here serves is released by name (L5023) with nothing appended, rather than walked by whichever engine happens to be present.",
+  "command": "pnpm smoke:runtime-run-driver",
+  "completionMarker": "run-driver.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/language-table.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "an unserved version FALLS BACK to the first engine instead of being refused",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    const served = ENGINES.find((e) => e.version === pins.languageVersion);",
+      "replace": "    const served = ENGINES.find((e) => e.version === pins.languageVersion) ?? ENGINES[0];",
+      "expectRed": "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+      "cell": "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+      "note": "The defect this whole table exists to prevent, in the one spelling a reviewer would wave through: a `??` that reads as robustness. It is the repo's no-fallbacks rule at its sharpest, because the fallback is SILENT and produces a plausible outcome -- the run is released, just for the wrong reason, by an engine that does not speak the record's language. RE-AIMED at the engine-version record rather than the unserved number: this is the dispatch-deletion mutant, and the cell it is graded on is the one that says which arm the dispatcher takes for the record the OTHER engine really writes."
+    },
+    {
+      "name": "the refusal is filed under L5008, the same disagreement one layer in",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  return new RuntimeFault(\n    \"L5023\",",
+      "replace": "  return new RuntimeFault(\n    \"L5008\",",
+      "expectRed": "and it is refused by name, L5023",
+      "cell": "and it is refused by name, L5023",
+      "note": "A TRUE-shaped refusal with a FALSE reason, and the two codes are genuinely close: L5008 says THIS engine does not speak it, whose repair is to run it on the engine that does; L5023 says NO engine in this build does, whose repair is a different build. Graded on the same cell as the fallback above, deliberately -- one proves the gate fires at all, this proves what it says when it does."
+    },
+    {
+      "name": "the refusal says what it met but not what this build serves",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    `this run ${met} and this build serves ${ENGINES.map((e) => e.version).join(\", \")}. `",
+      "replace": "    `this run ${met} and this build cannot host it. `",
+      "expectRed": "and the refusal names both the version it met and the set this build serves",
+      "cell": "and the refusal names both the version it met and the set this build serves",
+      "note": "\"This build cannot\" is only actionable if it says what it can. The mutant is a message a reader would accept as complete, which is why the cell reads the served set out of the sentence rather than trusting it to be there. RE-ANCHORED: the absent-version repair rewrote this very line, and the anchor audit caught it at find=0 -- a mutation nothing can aim reports ERROR while the ledger still looks healthy."
+    },
+    {
+      "name": "the refusal is thrown rather than returned as an outcome",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    if (served === undefined) return { status: \"released\", reason: unservedLanguage(pins.languageVersion) };",
+      "replace": "    if (served === undefined) throw unservedLanguage(pins.languageVersion);",
+      "expectRed": "a record no engine here serves is RELEASED, not failed and not thrown",
+      "cell": "a record no engine here serves is RELEASED, not failed and not thrown",
+      "note": "The outcome SHAPE as its own fact. `drive` declares `Promise<DriveOutcome>`, and a rejection is a shape the signature does not admit -- the caller that branches on `status` never sees it. The suite's own `attempt` helper turns a throw into a third observable status precisely so this grades as a named red instead of killing the run."
+    },
+    {
+      "name": "a fresh run is stamped with something other than its engine's version",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "      req.handler.now(),\n      engine.version,",
+      "replace": "      req.handler.now(),\n      \"9\",",
+      "expectRed": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
+      "cell": "and it is stamped with the version of the ENGINE that ran it, not with the current language",
+      "note": "WIDER THAN ITS CELL, stated rather than discovered: every resume in this file binds the stamped version against the walker's and refuses, so several earlier cells redden too. It is graded on the stamp cell because that is the one whose SENTENCE is about this line. The literal is \"9\" rather than the current language constant because this module no longer imports one -- deleting that import is part of the same repair, and a mutation may not quietly restore it."
+    },
+    {
+      "name": "the table refuses everything, not only what it does not serve",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    const served = ENGINES.find((e) => e.version === pins.languageVersion);",
+      "replace": "    const served = undefined as (typeof ENGINES)[number] | undefined;",
+      "expectRed": "while the same spec at a version this build DOES serve gets past the table",
+      "cell": "while the same spec at a version this build DOES serve gets past the table",
+      "note": "The narrowness twin. A gate that refused every record would satisfy all three refusal cells above perfectly and stop the driver hosting anything at all. Graded on the control arm, which differs from the refused record by exactly one character of one pin."
+    },
+    {
+      "name": "a record that names NO version is described as one that names \"undefined\"",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  const met = version === undefined ? \"names no language version at all\" : `was recorded under language version ${version}`;",
+      "replace": "  const met = `was recorded under language version ${version}`;",
+      "expectRed": "and the refusal says the record names none, rather than interpolating the missing value",
+      "cell": "and the refusal says the record names none, rather than interpolating the missing value",
+      "note": "The defect exactly as it shipped and as it was measured through the driver before the repair: `recorded under language version undefined and this build serves 1`. The refusal was already correct in code and in effect; only the sentence was wrong, which is the kind of defect a cell asserting the code alone cannot see. An operator acts differently on \"written under a version I do not have\" than on \"says nothing at all\", and the second is the one that arrives from a record written before the field existed."
+    },
+    {
+      "name": "every refusal claims the record named no version, whatever it named",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "  const met = version === undefined ? \"names no language version at all\" : `was recorded under language version ${version}`;",
+      "replace": "  const met = \"names no language version at all\";",
+      "expectRed": "and the refusal names both the version it met and the set this build serves",
+      "cell": "and the refusal names both the version it met and the set this build serves",
+      "note": "The narrowness twin of the mutation above. Collapsing the other way satisfies the absent-record cell perfectly and loses the recorded version out of every other refusal, which is the half an operator needs to find the build that serves it. Graded on the version-9 arm, so the two mutations differ by exactly which branch they delete."
+    },
+    {
+      "name": "the guard is deleted, so the run is TAKEN before anything refuses it",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    if (served === undefined) return { status: \"released\", reason: unservedLanguage(pins.languageVersion) };",
+      "replace": "    if (served === undefined && false) return { status: \"released\", reason: unservedLanguage(pins.languageVersion) };",
+      "expectRed": "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
+      "cell": "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
+      "note": "POSITION, mutated as its own fact. Every other mutation here grades WHAT the refusal says; this one grades WHERE it happens. Deleting the guard lets the drive reach `activateRun`, which takes the lease and writes a second activation into the run's subject - so the record has been touched by a build that cannot run it, and \"refused\" would describe the message and not the effect. It is distinct from the fallback mutation: that one substitutes an engine and runs the program under the wrong semantics, this one takes the run and then dies with no engine at all."
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "ORDER IS THE PRECEDENCE: a fresh run takes the FIRST entry",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "why": "Ungradable while the table has ONE entry, and recorded rather than dropped so that a later reader does not read its absence as a missing test. `ENGINES[0]`, `ENGINES[ENGINES.length - 1]` and any sort over one element are the same element, so every mutation on the precedence is a no-op at its own program point and can only report SURVIVED -- which would be honest and would mean nothing. The rule is written down because the day the engine is added the table has two entries and a string sort would silently prefer \"1\" over \"2\"; on that day this becomes gradable and belongs in the set above."
+    }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, inherited from this directory and repeated because it decided the shape of",
+    "every mutation here. This suite loads `@cotal-ai/lang` and `@cotal-ai/core` through package",
+    "specifiers that resolve to `dist`, so a mutant in `packages/lang/src` would sit unread while the",
+    "suite graded an untouched build. The version split itself lives in `packages/lang/src/pins.ts`",
+    "and is graded from `pins.smoke.ts`, which imports it relatively. Everything in THIS config",
+    "mutates `implementations/runtime/src/run-driver.ts`, which the suite imports through",
+    "`../src/index.js` -- the mutated bytes are the bytes it loads, and the command carries no build."
+  ]
+}

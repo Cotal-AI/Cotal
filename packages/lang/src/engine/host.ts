@@ -19,7 +19,7 @@ import { validate } from "../grammar.js";
 import { RuntimeFault } from "../errors.js";
 import { Journal, RunClock } from "../journal.js";
 import { KeyScope, programHashOf } from "../keys.js";
-import { bindPins, resolvePins } from "../pins.js";
+import { bindPins, ENGINE_LANGUAGE_VERSION, resolvePins } from "../pins.js";
 import type { RunOptions, RunResult } from "../interpret.js";
 import { EngineFault, createEngine, type EngineCtx } from "./ctx.js";
 import { EngineFrame, Signal, withFrame } from "./frame.js";
@@ -113,7 +113,9 @@ export async function runOnEngine(source: string, module: string, options: Engin
   }
 
   const pins =
-    options.pins !== undefined ? bindPins(options.pins, options) : resolvePins(options, options.handler.now());
+    options.pins !== undefined
+      ? bindPins(options.pins, options, ENGINE_LANGUAGE_VERSION)
+      : resolvePins(options, options.handler.now(), ENGINE_LANGUAGE_VERSION);
 
   // The journal and the run must be the same run: request ids derive from the runId while recorded
   // results come from the journal, so a mismatch submits work under one identity and resolves it
