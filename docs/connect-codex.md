@@ -180,8 +180,9 @@ Eight things are specific to Codex and worth knowing before you read a stream:
 - **A broker that is down when the seat starts costs the outage, not the seat.** The plane publishes
   through the seat's mesh connection, so a seat armed while its broker was unreachable cannot start
   its emitter. It says so in its log, and rebuilds the emitter at the first turn boundary once the
-  broker is there. What it loses is everything the thread wrote before that boundary, the outage and
-  the turn that triggered the rebind alike, by the same rule as above.
+  broker is there. What it loses is what the thread wrote during the outage. The turn whose boundary
+  triggered the rebind is published: the boundary is taken at the start of that turn, before its
+  records exist, so the turn is ahead of it rather than behind it.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 

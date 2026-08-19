@@ -4,8 +4,8 @@
     {
       "name": "L1 a restarted thread is adopted into the bound holder, which is exactly the state this PR opened in",
       "file": "extensions/connector-codex/src/host.ts",
-      "find": "      events = newEventHolder();\n      rollout = path;",
-      "replace": "      events = events ?? newEventHolder();\n      rollout = path;",
+      "find": "      events = newEventHolder(startCursor);\n      rollout = path;",
+      "replace": "      events = events ?? newEventHolder(startCursor);\n      rollout = path;",
       "expectRed": "the plane KEEPS PUBLISHING after the restart"
     },
     {
@@ -56,6 +56,13 @@
       "find": "          await drainBinding();\n          events = undefined;\n          rollout = undefined;",
       "replace": "          await drainBinding();",
       "expectRed": "restart-late:the successor thread PUBLISHES once its file appears"
+    },
+    {
+      "name": "L9 the emitter positions itself when its setup finishes instead of at the bind, so a turn completing inside that window is dropped",
+      "file": "extensions/connector-codex/src/host.ts",
+      "find": "        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);",
+      "replace": "        if (wal.frontier.sourceCursor !== undefined) await wal.advanceCursorOnly(startCursor);",
+      "expectRed": "broker-late:the turn that triggered the rebind IS published, in full"
     }
   ]
 }

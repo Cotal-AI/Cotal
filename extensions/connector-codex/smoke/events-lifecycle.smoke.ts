@@ -113,6 +113,10 @@ function openRunsIn(list: AguiFramePart[]): string[] {
 }
 const openRuns = (): string[] => openRunsIn(frames);
 const threadsSeen = (): string[] => [...new Set(frames.map((f) => f.threadId))];
+/** Which threads a seat has announced it is publishing, in the order it announced them. Read from
+ *  the same log line the dead thread's path is read from below, so both parsers move together if
+ *  that line ever changes. */
+const publishedThreads = (log: string): string[] => [...log.matchAll(/publishing thread (\S+) from/g)].map((m) => m[1]);
 
 /** Wait for a condition, and return WHETHER it happened rather than throwing.
  *
@@ -120,14 +124,36 @@ const threadsSeen = (): string[] => [...new Set(frames.map((f) => f.threadId))];
  *  whichever wait came first, and a run that dies has a RED PREFIX rather than a failed cell: the
  *  cell that would have named the defect never ran, so the log cannot say which fact broke. Every
  *  load-bearing wait here therefore settles into a boolean and is asserted by name. */
-async function settle(pred: () => boolean, timeoutMs = 30_000): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
+/** Every wait's measurement, kept rather than thrown away. A cell that passed with 40ms of a
+ *  30s budget spent and a cell that passed with 29_900ms spent are different facts about the
+ *  system, and a suite that prints neither cannot tell a reader which one it just saw. The
+ *  tightest of these is reported with the verdict, so a run that is drifting toward a budget says
+ *  so while it is still green. */
+const waits: { label: string; ms: number; budgetMs: number; ok: boolean }[] = [];
+
+async function settle(label: string, pred: () => boolean, timeoutMs = 30_000): Promise<boolean> {
+  const started = Date.now();
+  const deadline = started + timeoutMs;
   for (;;) {
-    if (pred()) return true;
-    if (Date.now() > deadline) return false;
+    if (pred()) {
+      waits.push({ label, ms: Date.now() - started, budgetMs: timeoutMs, ok: true });
+      return true;
+    }
+    if (Date.now() > deadline) {
+      waits.push({ label, ms: Date.now() - started, budgetMs: timeoutMs, ok: false });
+      return false;
+    }
     await sleep(100);
   }
 }
+
+/** The measurement in the shape a failing cell should carry: what was waited for, how long it
+ *  took, and what it was allowed. A cell that reports only its own emptiness sends the reader to
+ *  look for a lost record when the truth may be that the wait simply ran out. */
+const margin = (label: string): Record<string, unknown> => {
+  const w = [...waits].reverse().find((x) => x.label === label);
+  return w === undefined ? { wait: label, measured: "never ran" } : { wait: label, ms: w.ms, budgetMs: w.budgetMs, expired: !w.ok };
+};
 
 const nats = spawn("nats-server", ["-js", "-p", String(PORT), "-sd", join(dir, "js")], { stdio: "ignore" });
 const releaseBroker = teardownOnSignal(nats, dir);
@@ -289,7 +315,7 @@ async function dm(peer: string, text: string, ep: CotalEndpoint = operator): Pro
 
 /** The events channel of a peer, derived from its principal exactly as the connector declares it. */
 async function joinEventsOf(peer: string, ep: CotalEndpoint = operator): Promise<string> {
-  const seen = await settle(() => ep.getRoster().some((p) => p.card.name === peer));
+  const seen = await settle(`roster:${peer}`, () => ep.getRoster().some((p) => p.card.name === peer));
   check(`setup:${peer} joined the mesh`, seen);
   const id = ep.getRoster().find((p) => p.card.name === peer)?.card.id ?? "";
   if (id === "") return "";
@@ -316,11 +342,11 @@ try {
   const A = "eventspeer";
   const homeA = join(dir, "a");
   hostA = startHost(A, homeA, "1", join(dir, "a.log.jsonl"));
-  check("setup:seat A came online", await settle(() => online.has(A)));
+  check("setup:seat A came online", await settle("online:A", () => online.has(A)), margin("online:A"));
   await joinEventsOf(A);
 
   await dm(A, "first turn");
-  const published = await settle(() => evTypes().includes("RUN_FINISHED"));
+  const published = await settle("A:first RUN_FINISHED", () => evTypes().includes("RUN_FINISHED"));
   check("an armed seat PUBLISHES its thread's activity", published && frames.length > 0, { frames: frames.length });
   check("and the run it published opened and closed", evTypes().includes("RUN_STARTED") && evTypes().includes("RUN_FINISHED"), evTypes());
   check("and the assistant's text reached the wire", evTypes().includes("TEXT_MESSAGE_CONTENT"), evTypes());
@@ -335,7 +361,7 @@ try {
   await dm(A, "DIE now");
   await sleep(1500);
   await dm(A, "after the restart");
-  const survived = await settle(() => frames.length > framesBefore && threadsSeen().length > 1);
+  const survived = await settle("A:frames from the restarted thread", () => frames.length > framesBefore && threadsSeen().length > 1);
   const threadB = threadsSeen().find((t) => t !== threadA);
   check("the restarted app-server really is a NEW thread", threadB !== undefined && threadB !== threadA, threadsSeen());
   check("the plane KEEPS PUBLISHING after the restart", survived && frames.some((f) => f.threadId === threadB), { threadB, survived });
@@ -356,11 +382,11 @@ try {
   // never reach the file: `interrupt()` returns when the RPC is acknowledged, not when codex has
   // written anything. The backstop is what closes the run.
   await dm(A, "SLOW hold this turn open");
-  const opened = await settle(() => openRuns().length > 0);
+  const opened = await settle("A:a run is open mid-turn", () => openRuns().length > 0);
   const openAtExit = openRuns();
   hostA.kill("SIGTERM");
   if (hostA.pid !== undefined) stoppedOnPurpose.add(hostA.pid);
-  const drained = await settle(() => openRuns().length === 0, 20_000);
+  const drained = await settle("A:the open run closes at exit", () => openRuns().length === 0, 20_000);
   check("a mid-turn exit CLOSES the run it left open", opened && drained && openRuns().length === 0, {
     wasOpen: openAtExit,
     stillOpen: openRuns(),
@@ -374,13 +400,14 @@ try {
   const B = "latepeer";
   const homeB = join(dir, "b");
   hostB = startHost(B, homeB, "late", join(dir, "b.log.jsonl"), (chunk) => (errB += chunk));
-  check("setup:seat B came online", await settle(() => online.has(B)));
+  check("setup:seat B came online", await settle("online:B", () => online.has(B)), margin("online:B"));
   await joinEventsOf(B);
   // SYNCHRONIZE ON THE SYSTEM'S OWN OBSERVABLE ACTION, not on a clock. The launch's look is
   // bounded; the cell needs the file to appear AFTER that budget is spent, and the only honest way
   // to know it is spent is the host saying so. Sleeping toward the number would be measuring the
   // clock under test, and would silently stop testing the retry the day the budget changes.
-  await settle(() => errB.includes("will look again at the next turn"), 40_000);
+  const lookSpent = await settle("B:the launch's look is spent", () => errB.includes("will look again at the next turn"), 40_000);
+  check("late-file:the launch's bounded look is SPENT before the cells below run", lookSpent, margin("B:the launch's look is spent"));
   const before = frames.length;
   await dm(B, "turn one, before the file exists");
   await sleep(1500);
@@ -388,7 +415,7 @@ try {
   check("and the give-up was REPORTED rather than silent", errB.includes("no rollout file yet"), { tail: errB.slice(-200) });
   // The fake materializes the file on its second turn, exactly as a slow primer would.
   await dm(B, "turn two, which creates the file");
-  const bound = await settle(() => errB.includes("the stream starts here"));
+  const bound = await settle("B:binds once the file appears", () => errB.includes("the stream starts here"));
   check("a rollout that appeared AFTER the launch gave up still binds", bound, {
     tail: errB.slice(-200),
   });
@@ -404,7 +431,11 @@ try {
     tail: errB.slice(-200),
   });
   await dm(B, "turn three, after the bind");
-  await settle(() => frames.length > before);
+  // NAMED, because a silent expiry here is exactly what the two cells below would report as an
+  // empty stream. Given `{ added: 0 }` alone a reader cannot tell a plane that published nothing
+  // from a wait that simply ran out, and those are different defects with different fixes.
+  const lateArrived = await settle("B:frames after the bind", () => frames.length > before);
+  check("late-file:the wait for the post-bind frames did not expire", lateArrived, margin("B:frames after the bind"));
   const lateFrames = frames.slice(before);
   check("and from the bind onward the seat publishes normally", lateFrames.some((f) => f.events.some((e) => e.type === "RUN_FINISHED")), {
     added: lateFrames.length,
@@ -424,24 +455,25 @@ try {
   const homeC = join(dir, "c");
   const cFrom = frames.length;
   hostC = startHost(C, homeC, "restart-late", join(dir, "c.log.jsonl"), (chunk) => (errC += chunk));
-  check("setup:seat C came online", await settle(() => online.has(C)));
+  check("setup:seat C came online", await settle("online:C", () => online.has(C)), margin("online:C"));
   await joinEventsOf(C);
   await dm(C, "first turn on the thread that is about to die");
-  check("restart-late:the first thread publishes before the crash", await settle(() => frames.length > cFrom), {
+  check("restart-late:the first thread publishes before the crash", await settle("C:publishes before the crash", () => frames.length > cFrom), {
+    ...margin("C:publishes before the crash"),
     added: frames.length - cFrom,
   });
   const deadThread = frames.slice(cFrom)[0]?.threadId;
   await dm(C, "DIE now");
   // The successor's file is withheld until its SECOND turn, so the launch bind for the new thread
   // spends its whole budget and gives up. Synchronized on the host saying so, not on a clock.
-  const cGaveUp = await settle(() => errC.includes("no rollout file yet"), 60_000);
+  const cGaveUp = await settle("C:gives up on the successor file", () => errC.includes("no rollout file yet"), 60_000);
   check("restart-late:the successor's rollout was still missing when the bind looked", cGaveUp, { tail: errC.slice(-300) });
   // GIVING UP ON THE SUCCESSOR SAYS NOTHING ABOUT THE PREDECESSOR, whose process is dead: no record
   // will ever be appended to its file again, and a run left open on the wire is a reader waiting
   // forever for an end that cannot come. So the close belongs HERE, at the give-up, and not only on
   // the happy path where a successor eventually binds. A successor that never appears is exactly
   // the case where "the next bind will drain it" never happens.
-  const deadClosed = await settle(() => openRunsIn(frames.slice(cFrom)).length === 0, 20_000);
+  const deadClosed = await settle("C:the predecessor run closes", () => openRunsIn(frames.slice(cFrom)).length === 0, 20_000);
   check("restart-late:the dead thread's run was CLOSED when the plane gave up on its successor", deadClosed, {
     open: openRunsIn(frames.slice(cFrom)),
   });
@@ -464,19 +496,39 @@ try {
     deadPath,
   });
   const afterGiveUp = frames.length;
+  const deadFramesBefore = frames.filter((f) => f.threadId === deadThread).length;
   await dm(C, "successor turn one, before its file exists");
-  await sleep(1500);
-  check("restart-late:and nothing was published onto the DEAD thread while the successor had no file", frames.slice(afterGiveUp).length === 0, {
+  // GATED ON A POSITIVE OBSERVABLE DOWNSTREAM OF THE WINDOW, not on a clock. The window this cell
+  // judges ends when the seat announces the SUCCESSOR, because from that announcement onward the
+  // question of whether it kept feeding the dead thread in the meantime is settled. Sleeping toward
+  // it would assert that nothing arrived inside a duration nobody measured, which stays green when
+  // the plane is merely slow and stays green when the plane is dead.
+  const boundSuccessor = await settle("C:announces the successor thread", () => publishedThreads(errC).some((t) => t !== deadThread), 60_000);
+  check("restart-late:the seat ANNOUNCED the successor, so the window judged below is closed", boundSuccessor, {
+    ...margin("C:announces the successor thread"),
+    announced: publishedThreads(errC),
+    dead: deadThread,
+  });
+  // COUNTED AGAINST A MEASURED BASELINE rather than asserted as emptiness. "No frame carries the
+  // dead thread" is trivially true of a list that never arrived, and this case can only fail
+  // usefully if it can tell those two apart.
+  check("restart-late:and nothing was published onto the DEAD thread while the successor had no file", frames.filter((f) => f.threadId === deadThread).length === deadFramesBefore, {
+    deadBefore: deadFramesBefore,
+    deadNow: frames.filter((f) => f.threadId === deadThread).length,
     added: frames.slice(afterGiveUp).map((f) => f.threadId),
   });
   await dm(C, "successor turn two, which creates its file");
-  const moved = await settle(() => frames.slice(cFrom).some((f) => f.threadId !== deadThread), 60_000);
+  const moved = await settle("C:the successor publishes", () => frames.slice(cFrom).some((f) => f.threadId !== deadThread), 60_000);
   check("restart-late:the successor thread PUBLISHES once its file appears", moved, {
     threads: [...new Set(frames.slice(cFrom).map((f) => f.threadId))],
     tail: errC.slice(-300),
   });
   await dm(C, "successor turn three");
-  await settle(() => frames.slice(cFrom).filter((f) => f.threadId !== deadThread).length > 1);
+  // NAMED, because the three cells below all read `cFrames`, and a silent expiry leaves them
+  // reading a shorter list than the case intends: "no run left open" is trivially true of frames
+  // that never arrived.
+  const cSecond = await settle("C:a second successor frame", () => frames.slice(cFrom).filter((f) => f.threadId !== deadThread).length > 1);
+  check("restart-late:the successor's second frame arrived, so the cells below read a full list", cSecond, margin("C:a second successor frame"));
   const cFrames = frames.slice(cFrom);
   const cDead = cFrames.filter((f) => f.threadId === deadThread);
   check("restart-late:and the plane is no longer pumping the dead thread", cFrames[cFrames.length - 1]?.threadId !== deadThread, {
@@ -527,7 +579,7 @@ try {
   // THE POSITIVE CONTROL, and the reason this case is a test rather than a seat that simply started
   // late: the emitter has to actually DIE first. Without this cell, a bind that quietly succeeded
   // would make every assertion below pass while proving nothing about recovery.
-  const emitterDied = await settle(() => errD.includes("AG-UI emitter stopped"), 60_000);
+  const emitterDied = await settle("D:the emitter dies at launch", () => errD.includes("AG-UI emitter stopped"), 60_000);
   check("broker-late:an armed seat whose broker is unreachable LOSES its emitter at launch", emitterDied, { tail: errD.slice(-400) });
   nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", js2], { stdio: "ignore" });
   releaseBroker2 = teardownOnSignal(nats2, dir);
@@ -537,26 +589,47 @@ try {
   }
   operator2 = makeOperator2(servers2);
   await operator2.start();
-  check("broker-late:the seat recovers its mesh connection on its own", await settle(() => online2.has(D), 60_000));
+  check("broker-late:the seat recovers its mesh connection on its own", await settle("D:reconnects", () => online2.has(D), 60_000), margin("D:reconnects"));
   await joinEventsOf(D, operator2);
   await dm(D, "the turn whose boundary rebinds", operator2);
-  const rebound = await settle(() => errD.includes("rebinding at this boundary") && errD.includes("the stream starts here"), 60_000);
+  const rebound = await settle("D:rebinds at the next boundary", () => errD.includes("rebinding at this boundary") && errD.includes("the stream starts here"), 60_000);
   check("broker-late:the next turn boundary REBINDS the dead plane", rebound, { tail: errD.slice(-400) });
   check("broker-late:and it said so rather than recovering silently", errD.includes("rebinding at this boundary"), { tail: errD.slice(-400) });
-  // THE LIMIT, ASSERTED HERE TOO. The rebind happens AT a boundary, and a fresh adopt starts at the
-  // file's last complete record, so the turn that triggered it is already behind the cursor and is
-  // not republished. That is the same rule the late-file case states, and a reader who expects the
-  // recovering turn to appear deserves the cell rather than the surprise.
-  check("broker-late:the turn that triggered the rebind is NOT republished", frames2.length === 0, {
+  // THE RECOVERING TURN IS PUBLISHED, and this cell exists because the opposite is the intuitive
+  // guess. The rebind runs from the same turn-boundary hook every other bind runs from, so the
+  // boundary it captures is the one BEFORE this turn's records exist: the turn is ahead of the
+  // cursor rather than behind it. It is a FIRST publication and not a second, because the emitter
+  // that died published nothing at all, which is what the run count below pins.
+  //
+  // AND IT IS A WAIT, NOT A READING. The log line this block waits on is written while the
+  // emitter's own setup is still running, so a cell sampling here at zero elapsed time would be
+  // racing the publish it is judging and would report whichever won. The cell this replaced did
+  // exactly that, and was observed green in three different worlds: with the defect present, with
+  // an artificial delay in front of the publish, and in a run where this seat's plane was dead and
+  // published nothing whatsoever.
+  const recovered = await settle("D:the recovering turn is published", () => frames2.some((f) => f.events.some((e) => e.type === "RUN_FINISHED")), 60_000);
+  check("broker-late:the turn that triggered the rebind IS published, in full", recovered, {
+    ...margin("D:the recovering turn is published"),
     frames: frames2.map((f) => f.events.map((e) => e.type)),
-  });
-  await dm(D, "the turn after the rebind", operator2);
-  const republished = await settle(() => frames2.length > 0, 60_000);
-  check("broker-late:and from there the seat PUBLISHES again", republished, {
-    frames: frames2.length,
     tail: errD.slice(-400),
   });
-  const ev2 = frames2.flatMap((f) => f.events.map((e) => e.type));
+  check("broker-late:and exactly once, under a single run", new Set(frames2.map((f) => f.runId)).size === 1, {
+    runs: [...new Set(frames2.map((f) => f.runId))].length,
+    starts: frames2.flatMap((f) => f.events.filter((e) => e.type === "RUN_STARTED")).length,
+  });
+  // MEASURED FROM A MARK. `frames2` is no longer empty by the time we reach here, so a bare
+  // `length > 0` would already be satisfied by the turn above and would pass without this seat
+  // publishing anything further at all.
+  const beforeNext = frames2.length;
+  await dm(D, "the turn after the rebind", operator2);
+  const republished = await settle("D:a further turn after the rebind", () => frames2.length > beforeNext, 60_000);
+  check("broker-late:and from there the seat PUBLISHES again", republished, {
+    ...margin("D:a further turn after the rebind"),
+    before: beforeNext,
+    after: frames2.length,
+    tail: errD.slice(-400),
+  });
+  const ev2 = frames2.slice(beforeNext).flatMap((f) => f.events.map((e) => e.type));
   check("broker-late:the recovered stream opens and closes a run", ev2.includes("RUN_STARTED") && ev2.includes("RUN_FINISHED"), ev2);
 
   completed = true;
@@ -598,9 +671,18 @@ check(
   seatPids.length >= 4 && aliveBeforeTeardown.length === seatPids.length - stoppedOnPurpose.size,
   { started: seatPids.length, stoppedOnPurpose: stoppedOnPurpose.size, alive: aliveBeforeTeardown.length },
 );
-const groupsGone = await settle(() => !seatPids.some(alive), 10_000);
+const groupsGone = await settle("teardown:process groups gone", () => !seatPids.some(alive), 10_000);
 check("teardown:and not one of their process groups survived it", groupsGone, { still: seatPids.filter(alive) });
 
+// THE MARGIN, REPORTED WHILE THE SUITE IS STILL GREEN. A failing cell already carries its own
+// wait in its payload; this line is for the run that passed with almost nothing to spare, which is
+// the only warning a reader gets before a loaded machine turns that wait into a red.
+const expired = waits.filter((w) => !w.ok);
+const tightest = [...waits].filter((w) => w.ok).sort((a, b) => b.ms / b.budgetMs - a.ms / a.budgetMs)[0];
+console.log(
+  `  waits: ${waits.length} measured, ${expired.length} expired` +
+    (tightest === undefined ? "" : `, tightest "${tightest.label}" at ${tightest.ms}ms of ${tightest.budgetMs}ms`),
+);
 console.log(
   `codex-events-lifecycle smoke: ${pass} passed, ${fail} failed  ` +
       `[${frames.length + frames2.length} frames over ${threadsSeen().length + [...new Set(frames2.map((f) => f.threadId))].length} threads, ` +

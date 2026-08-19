@@ -318,7 +318,7 @@ export async function runCodexHost(): Promise<void> {
    *  names the file the emitter is already reading rather than re-deriving it, and a NEW thread
    *  gets a new holder rather than a second adopt (see `bindEvents`). */
   let rollout: string | undefined;
-  const newEventHolder = (): AguiEmitterHolder<CodexRecord> =>
+  const newEventHolder = (startCursor: string): AguiEmitterHolder<CodexRecord> =>
     new AguiEmitterHolder<CodexRecord>(
       async (rolloutPath: string) => {
         // Throws rather than defaulting to the working directory: a write-ahead log written
@@ -334,6 +334,25 @@ export async function runCodexHost(): Promise<void> {
         const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+        // THE STREAM STARTS WHERE THE BIND WAS TAKEN, NOT WHERE THIS SETUP FINISHED.
+        //
+        // A fresh WAL carries no cursor, so the emitter's first read positions the source at the
+        // last complete record AS OF THAT READ. That read happens after everything above: the WAL
+        // directory, the subject frontier, the log itself, and then a channel resolve and a
+        // single-replica preflight, all of them filesystem and broker work. Every record the child
+        // appends while that runs lands BEHIND the cursor and is then treated as "already written",
+        // so a turn that completes inside the window is dropped, permanently and silently, under a
+        // line that has already announced the stream as started. Measured at 17ms and 36ms on an
+        // idle machine and reproduced end to end by widening it: the connector's own cell, "from
+        // the bind onward the seat publishes normally", fails with nothing added.
+        //
+        // `startCursor` is the boundary captured at the BIND, before the announcement. Seeding it
+        // here makes the announced fact true at the moment it is announced, and it is a cursor-only
+        // advance because that is exactly what it means: consumed up to here, emitted nothing.
+        // GUARDED ON A FRESH FRONTIER, because a WAL that already carries a cursor is a RESUME and
+        // its own cursor is the honest one; overwriting it would re-read or skip a live session's
+        // records depending on which way the two disagreed.
+        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);
         mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID() });
         return AguiEmitter.start<CodexRecord>({
           endpoint: agent.ep,
@@ -634,15 +653,18 @@ export async function runCodexHost(): Promise<void> {
       }
       if (rollout === path && events !== undefined) return; // already publishing this thread
       if (events !== undefined) await drainBinding();
-      events = newEventHolder();
+      // CAPTURED HERE, BEFORE THE ANNOUNCEMENT, and that placement is the fix. See the seeding note
+      // in `newEventHolder` for why the emitter cannot be left to position itself later.
+      const startCursor = (await new JsonlFileSource<CodexRecord>(path).read(undefined)).cursor;
+      events = newEventHolder(startCursor);
       rollout = path;
       events.adopt(path);
       // `adopt` starts the emitter, it does not read. Without this the first records wait for a
       // turn boundary that a seat sitting idle never reaches.
       events.flush(path);
-      // SAID OUT LOUD, because it is a limit and not an implementation detail: a fresh adopt starts
-      // at the file's last COMPLETE record boundary, never at byte zero, so whatever the thread had
-      // already written before this moment is not republished. On the ordinary path that is nothing
+      // SAID OUT LOUD, because it is a limit and not an implementation detail: the stream starts at
+      // the boundary captured just above, the file's last COMPLETE record as of the bind and never
+      // byte zero, so whatever the thread had already written before this moment is not republished. On the ordinary path that is nothing
       // (the file is created by the primer inject and bound immediately after). On a late bind it
       // is the turns that ran while the file did not exist, and a reader comparing the panel to the
       // terminal deserves to know why they differ rather than to guess.
