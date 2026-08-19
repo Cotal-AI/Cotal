@@ -4,7 +4,7 @@
  * THIS FILE IS THE CONFINEMENT. `lockdown()` runs ONCE, here, at module load and before anything of
  * the run exists - it is irreversible and realm-wide, so it belongs at the top of a realm nobody
  * else owns. Each run then gets a Compartment with ZERO ENDOWMENTS and the transform's module is
- * evaluated in it; the context is the CALL ARGUMENT, not a global (seam ruling 1), so the program's
+ * evaluated in it; the context is the CALL ARGUMENT, not a global, so the program's
  * `globalThis` is empty and the seam is a value it was handed rather than a name it can reach.
  *
  * MEASURED HERE, at ses@2.3.0 on node v26.7.0, rather than assumed:
@@ -134,8 +134,8 @@ const answerWith = (e: unknown): void => {
 };
 
 // `.catch` AFTER `.then(f, g)`, AND THAT IS THE WHOLE POINT: `g` is `f`'s SIBLING, not its handler,
-// so a throw inside `f` was not caught by it. The result post is the throw that matters — it
-// structured-clones the whole journal — and when it threw, this thread died on an unhandled
+// so a throw inside `f` was not caught by it. The result post is the throw that matters, because it
+// structured-clones the whole journal, and when it threw, this thread died on an unhandled
 // rejection and exited 0 without answering. The host could then say only "exited before the run
 // answered", which is the wrong cause every time, and MEASURED: a handler binding a function
 // produced exactly that, a DataCloneError naming a host algorithm reported as a silent exit.

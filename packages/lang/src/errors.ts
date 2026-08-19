@@ -160,7 +160,7 @@ export const CATALOG = {
   L5023: "No engine in this build serves this record's language version",
   // Allocated from THIS FILE, same rule as the three above. A fact about a RECORD, so L5xxx: the
   // entry's `external` is a value the language cannot express, which is different from the record
-  // disagreeing with the source (L5001) or with this build (L5023) — nothing here disagrees with
+  // disagreeing with the source (L5001) or with this build (L5023): nothing here disagrees with
   // anything, the field simply cannot be read back. Its write-side sibling is deliberately NOT a new
   // code: a handler that binds such a value fails inside its own dispatch, where L4000 handler-fault
   // already says exactly that, and a second name for one fact is the defect the L5017..L5020 note
@@ -342,8 +342,8 @@ export class RunDivergence extends Error {
 /**
  * A migration's walk reached a settled scope it cannot enter.
  *
- * A `conclave` is the case that exists today: its channel handle is HANDLER-DERIVED — the mint
- * returns it and nothing journals it — so a walk cannot re-enter the body without inventing a
+ * A `conclave` is the case that exists today: its channel handle is HANDLER-DERIVED, the mint
+ * returns it and nothing journals it, so a walk cannot re-enter the body without inventing a
  * handle, and an invented one would re-hash every step inside that used the channel into a
  * divergence the run never had. Refusing is the honest exit. Consuming the subtree instead would
  * hide exactly the orphans a migration exists to find, which is a silent wrong answer in place of
@@ -367,7 +367,7 @@ export class UnwalkableScope extends Error {
  * Its own code rather than `RunDivergence`, for the reason the L5005/L5006/L5007 collision in the
  * orphan table bought: `RunDivergence` is a HASH comparison and says so in both its fields and its
  * message, and putting branch NAMES in fields called `recordedHash`/`programHash` would be a lie in
- * the payload a repair loop reads. The author's repair differs too — this one is fixed by looking at
+ * the payload a repair loop reads. The author's repair differs too: this one is fixed by looking at
  * an arm's NAME, not at its body.
  */
 export class ScopeBranchMissing extends Error {

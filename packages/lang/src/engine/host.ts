@@ -3,7 +3,7 @@
  *
  * Same signature and same `RunResult` as the walker's `run()`, so the differential suite can call
  * one and then the other with nothing between them but the engine under test. Everything a run is
- * pinned by — the source's hash, the seed, the logical epoch, the three limits — is resolved by the
+ * pinned by (the source's hash, the seed, the logical epoch, the three limits) is resolved by the
  * SAME functions the walker resolves them with, because a second copy of that logic is a second
  * answer to "which run is this".
  *
@@ -27,7 +27,7 @@ import { EngineFrame, Signal, withFrame } from "./frame.js";
 /**
  * The node below which this engine refuses to start, and the measurement the number comes from.
  *
- * Lane 1 set the wave's floor at 24 for AsyncContextFrame ALS. PROBED, that reason does not
+ * The floor was first set at node 24 for AsyncContextFrame ALS. PROBED, that reason does not
  * reproduce on any path this engine takes, and the probes are the reason this constant is 22:
  *   ALS on node 22.23.2      9 of 9 shapes propagate - plain await, across the setTimeout macrotask
  *                            the fuel yield uses, both arms of a Promise.all, after a CUSTOM
@@ -86,8 +86,8 @@ export interface EngineRunOptions extends RunOptions {
  *
  * `source` is the original program: it is validated here and its hash is the run's identity, exactly
  * as on the walker. `module` is the transform's output for that source. They are both taken because
- * the run is pinned to the SOURCE — a run record names the program an author wrote, not the string a
- * compiler produced — and because the validator's refusals must arrive before anything is journalled,
+ * the run is pinned to the SOURCE (a run record names the program an author wrote, not the string a
+ * compiler produced), and because the validator's refusals must arrive before anything is journalled,
  * whichever engine is about to execute.
  */
 export async function runOnEngine(source: string, module: string, options: EngineRunOptions): Promise<RunResult> {
@@ -100,7 +100,7 @@ export async function runOnEngine(source: string, module: string, options: Engin
   // A RESUME MAY NOT DECLINE TO SAY WHICH RUN IT IS RESUMING. Re-resolving the pins for a run handed
   // history but no pins is a different run wearing the same journal: the clock moves to the resuming
   // host and the seed falls back to the runId default, so both the logical epoch and every pure draw
-  // change, and nothing refuses, because nothing can — neither is a recorded fact a replay could
+  // change, and nothing refuses, because nothing can: neither is a recorded fact a replay could
   // diverge on. A journal with NO entries is a fresh run being handed a store, and stays allowed.
   if (options.pins === undefined && options.journal !== undefined && options.journal.entries().length > 0) {
     throw new RuntimeFault(

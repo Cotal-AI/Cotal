@@ -6,20 +6,20 @@
  * arguments. So the frame travels out-of-band, in an AsyncLocalStorage, and every seam member reads
  * it from there.
  *
- * That this works at all is a measured property of the floor, not an assumption (lane 1's decision,
- * re-measured here at ses@2.3.0 on node v26.7.0): a compartment shares the one locked-down realm's
+ * That this works at all is a measured property of the floor, not an assumption (measured here at
+ * ses@2.3.0 on node v26.7.0): a compartment shares the one locked-down realm's
  * intrinsics, so its promises are the host's promises and ALS propagation is native. Two interleaved
  * runs of the same compartment-evaluated program, each awaiting a host timer inside the seam, kept
  * their own frames with no cross-contamination. Node's remaining documented loss cases are callback
- * APIs and custom thenables — and a program value with its own callable `then` is exactly such a
+ * APIs and custom thenables, and a program value with its own callable `then` is exactly such a
  * thenable, which is why the seam refuses one outright (`born`/`set`/`await`) rather than trusting
  * the frame to survive it.
  *
  * `Signal` and `EngineFrame` are re-authored here rather than imported because the walker's are
- * private to interpret.ts, which this lane does not edit. They are held to the walker's semantics by
- * the differential suite; the shared `performEffect` the orchestrator is extracting should take a
- * STRUCTURAL frame (`{ keys, clock, signal, depth }`) so the walker's Frame and this one both
- * satisfy it without either importing the other.
+ * private to interpret.ts, which the engine does not edit. They are held to the walker's semantics
+ * by the differential suite, and the shared `performEffect` in perform.ts takes a STRUCTURAL frame
+ * (`EffectFrame`: `keys`, `clock`, `signal`) so the walker's Frame and this one both satisfy it
+ * without either importing the other.
  */
 
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -98,7 +98,7 @@ export function withFrame<T>(frame: EngineFrame, body: () => T): T {
  * The ambient frame, or a loud failure.
  *
  * No fallback frame, deliberately. A seam call with no frame means the program is running outside
- * any branch — host machinery invoked it — and inventing a root frame there would give it a key
+ * any branch (host machinery invoked it), and inventing a root frame there would give it a key
  * namespace, a clock and a depth that belong to no branch, which is how a step lands in the wrong
  * place in the journal instead of failing.
  */

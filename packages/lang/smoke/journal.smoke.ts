@@ -783,7 +783,7 @@ await sleep("3h", { name: "after-the-catch" });
  * cross it when they dispatch; `external` reached the record through `ctx.bind` with no domain check
  * at all. Measured before the guard existed, on BOTH engines: a handler binding
  * `{ when: new Date(0), n: -0, bad: NaN, gone: undefined }` recorded all four, and the durable store
- * gives them back as a string, `0`, `null` and an absent key — so the value a resume RE-BINDS to was
+ * gives them back as a string, `0`, `null` and an absent key, so the value a resume RE-BINDS to was
  * not the value that was bound.
  *
  * The rule is CANONICAL, not round-trip-exact: `-0` is admitted and JSON still flattens it. The
@@ -795,7 +795,7 @@ await sleep("3h", { name: "after-the-catch" });
   // the mesh handler binds a chat sequence). Not a hand-built context.
   const sim = new SimHandler({ turns: { build: { status: "done", at: 0 } } });
   // Object.create, NOT a spread: spreading a class instance drops its prototype methods and the run
-  // dies on `options.handler.now is not a function` — measured, twice, by two lanes in one hour, and
+  // dies on `options.handler.now is not a function`, measured twice within an hour on two sides, and
   // once with a zero that agreed with the hypothesis under test.
   const binder = Object.create(sim) as EffectHandler;
   binder.turn = async (_req, ctx) => {
@@ -832,7 +832,7 @@ await sleep("3h", { name: "after-the-catch" });
 
 {
   // THE SCOPE SIDE. `conclave` is the one scope that dispatches, and its `openConclave` receives the
-  // scope's own context — so this is a real program reaching the second wrapper, not a hand-built
+  // scope's own context, so this is a real program reaching the second wrapper, not a hand-built
   // ctx. Before this cell, that wrapper was executed by NOTHING in the corpus in either direction:
   // 275 reaches of the effect wrapper across the lang suites, 0 of this one.
   const sim = new SimHandler({ turns: { huddle: { status: "done", at: 0 } } });
@@ -872,7 +872,7 @@ await sleep("3h", { name: "after-the-catch" });
 
 {
   // THE LOAD SIDE, AND ITS INPUT IS HAND-BUILT OF NECESSITY. Once the write guards exist, no shipped
-  // path can PRODUCE an entry whose binding has no canonical form — which is the point of them — so
+  // path can PRODUCE an entry whose binding has no canonical form (which is the point of them), so
   // the only way to hand one to a loader is to write it out here. Say that plainly: a hand-built
   // input proves the scan DEPENDS on the value, never that a real entry point reaches it. The
   // reachability half is carried by the driver cell in run-driver.smoke, which comes through
@@ -1051,8 +1051,8 @@ await sleep("3h", { name: "after-the-catch" });
 
 /**
  * The second field a handler chooses and the record keeps. It is reachable in a way `external` is
- * not: a FAILING run never hands its entries anywhere — the worker host builds a small
- * `{ok, code, name, message}` on that path — so `detail` only matters when the run SUCCEEDS, which
+ * not: a FAILING run never hands its entries anywhere, because the worker host builds a small
+ * `{ok, code, name, message}` on that path, so `detail` only matters when the run SUCCEEDS, which
  * it does whenever the program catches the failure. Measured before this rule: such a run completed
  * in-process with a function sitting in a settled entry, and died through the worker on a
  * structured-clone error naming a host algorithm rather than the language.
@@ -1094,7 +1094,7 @@ await sleep("3h", { name: "after-the-catch" });
 }
 
 {
-  // THE SCOPE SITE. Its own guard, because a fix at the effect site alone leaves this one open —
+  // THE SCOPE SITE. Its own guard, because a fix at the effect site alone leaves this one open,
   // the same half-fence the two bind wrappers had.
   const sim = new SimHandler({ turns: { huddle: { status: "done", at: 0 } } });
   const thrower = Object.create(sim) as EffectHandler;

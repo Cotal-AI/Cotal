@@ -233,7 +233,7 @@ export function journalEntryKeyString(entry: JournalEntry): string {
  * L5024, raised at the door every loader comes through.
  *
  * A binding is the one recorded field that was written with no domain check on it, so a journal from
- * before this rule — or from a store that is not this repo's — can carry an `external` the language
+ * before this rule, or from a store that is not this repo's, can carry an `external` the language
  * cannot express. Refusing it here rather than where it is re-bound is the no-fallbacks reading: a
  * corrupt entry that stays silent until a resume walks into it fails somewhere that cannot say why.
  *
@@ -318,14 +318,14 @@ export class Journal {
       // THE BINDING IS THE FIELD WITH NO WRITE-SIDE HISTORY. `result` crossed `assertCrossable` when
       // it settled and the arguments crossed it when they dispatched; `external` reached the record
       // through {@link Journal.bind} with nothing between it and the store until the guards in
-      // `performEffect` and `performScope`. Those fence every shipped caller — there are exactly two,
-      // both in perform.ts — but they fence it by ENUMERATION, and a record already written is behind
+      // `performEffect` and `performScope`. Those fence every shipped caller, exactly two of them,
+      // both in perform.ts, but they fence it by ENUMERATION, and a record already written is behind
       // them either way. This door is the one a loaded journal cannot go around.
       // TWO FIELDS, ONE RULE. `external` is what a resume re-binds to; `error.detail` is what a
       // failed step reports itself with. Both are values a handler chose and both reached the record
       // with no domain check until the guards in `performEffect` and `performScope`. `detail` is the
       // second one and it is not hypothetical: a program that CATCHES an effect failure succeeds,
-      // so a run can complete with an unreadable value sitting in a settled entry — measured, and
+      // so a run can complete with an unreadable value sitting in a settled entry. Measured, and
       // through the worker that run dies on a structured-clone error naming a host algorithm.
       for (const [field, value] of [["external", e.external], ["error.detail", e.error?.detail]] as const) {
         if (value === undefined) continue;

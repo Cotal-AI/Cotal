@@ -6,7 +6,7 @@
 The language version belongs to the engine that runs a program, and a build declares which engines it hosts.
 
 There are two engines and now two versions: the tree-walker is language version `1` and stays the
-replay engine for every run recorded under it, and the compiled engine is version `2` — a different
+replay engine for every run recorded under it, and the compiled engine is version `2`, a different
 language rather than a faster one, since `log` is data there and refuses code, and a step is a
 transformed-site hit rather than a walker dispatch. `resolvePins` and `bindPins` take the version as
 an argument, so each engine stamps its own and compares against its own; `WALKER_LANGUAGE_VERSION`
@@ -20,8 +20,8 @@ neither.
 
 The run driver now holds a table of the versions this build hosts, ordered by declared precedence
 rather than by a string sort. A fresh run is stamped with the version of the engine that will
-actually execute it — today that is `1`, the walker, because no driver hosts the version-2 engine
-yet — and a record whose version no engine here serves is released by name with the new **L5023**,
+actually execute it (today that is `1`, the walker, because no driver hosts the version-2 engine
+yet), and a record whose version no engine here serves is released by name with the new **L5023**,
 naming both the version it met and the set this build serves, with the run left untouched: nothing
 activated and nothing appended. It is released rather than failed or thrown, because a build that
 cannot host a language has observed nothing about the program.

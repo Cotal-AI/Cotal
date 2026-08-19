@@ -555,7 +555,7 @@ try {
 // CONSTRUCTOR, and this driver builds one at `new Journal({ run, entries: resumed, store })`. The
 // lang suite's load cell hands that constructor a hand-built entry: once the write guards exist
 // nothing shipped can PRODUCE such an entry, so that cell proves the scan depends on the value and
-// cannot prove any entry point reaches it. This is the half that can — a real takeover, through
+// cannot prove any entry point reaches it. This is the half that can: a real takeover, through
 // this driver, over a prefix that carries a binding.
 //
 // IT HAD TO BE A NEW PROGRAM. Every other run in this file only sleeps, and `sleep` binds nothing,
@@ -728,9 +728,9 @@ await sleep("1h", { name: "first" });
 //
 // WHY THE LIST IS A DATA FILE AND NOT A CONST HERE. Put these sentences in this file as source text
 // and a check that asks whether this file CONTAINS them becomes unconditionally true -- not a weaker
-// check, one that cannot fail. Measured from both lanes: comment out a cited call and containment
+// check, one that cannot fail. Measured from both sides: comment out a cited call and containment
 // still passes, because grep finds the sentence twice, once in the dead call and once in the list.
-// A separate artefact leaves the containment answer honest and gives the other lane something to
+// A separate artefact leaves the containment answer honest and gives the other side something to
 // PARSE rather than scrape out of TypeScript, which matters when a cell name carries an apostrophe.
 //
 // EXACTLY ONCE, not merely present: a sentence matching two executed cells leaves the row ambiguous

@@ -1,20 +1,20 @@
 /**
  * `__ctx`: the WHOLE seam between the transformed program and the host.
  *
- * The transform (lane T) emits a CLOSED function expression with zero free identifiers; the host
+ * The transform emits a CLOSED function expression with zero free identifiers; the host
  * evaluates it in a Compartment with ZERO endowments and passes this object as the call argument
- * (seam ruling 1). So this file is the complete list of what a program can reach. Anything not
- * here is not reachable, which is why the member list is a surface both lanes hold each other to.
+ * (the seam contract). So this file is the complete list of what a program can reach. Anything not
+ * here is not reachable, which is why the member list is a surface both sides hold each other to.
  *
  * Every law lives here, and every table it needs is IMPORTED. `library.ts` owns the curated method
  * tables and the free builtins; `values.ts` owns freezing, birth-depth stamping and the crossing
  * check; `keys.ts` owns key allocation; `journal.ts` owns the entries. Nothing in this file is a
- * second copy of any of them — a copied table is a table that disagrees with the walker on its
+ * second copy of any of them: a copied table is a table that disagrees with the walker on its
  * first edit, and the walker is the differential oracle.
  *
  * WHAT THIS FILE IS NOT: it is not the walker rewritten. The walker enforces these laws inline
  * while it walks; here they are the host side of a native program's calls. The behaviours must be
- * identical and the differential suite is what says so — same programs, walker and engine,
+ * identical and the differential suite is what says so: same programs, walker and engine,
  * identical journals (entry sequences and step keys, not merely output).
  */
 
@@ -46,8 +46,9 @@ export interface Site {
 
 /**
  * The seam. Fourteen members, and the count is the point: a member added here without a joint rule
- * is a widening, and lane T's surface cell reddens on any call to a name not on this interface.
- * Thirteen were ruled in seam ruling 1; `callee` is the fourteenth, granted in 1c.
+ * is a widening, and the transform's surface cell reddens on any call to a name not on this
+ * interface. Thirteen came with the seam contract; `callee` is the fourteenth, added under the
+ * adaptation invariant below.
  */
 export interface EngineCtx {
   /** L4013 step budget, plus the yield that keeps the macrotask queue alive and applies the cut. */
@@ -55,7 +56,7 @@ export interface EngineCtx {
   /**
    * Read a member: L4014 (no prototype reach, curated tables), L4020, L4018 on a computed key.
    *
-   * `binding` is F7's cell read, ruled as a third argument rather than a fifteenth member. A binding
+   * `binding` is the cell read, taken as a third argument rather than a fifteenth member. A binding
    * the transform classified as a CELL is emitted as `get(cell, "v", "x")`, and an absent OWN key
    * means the declaration has not run yet, which is L2004 for that binding by name. PRESENCE is
    * `hasOwn` and not truthiness, because `v: undefined` is a binding that HAS been initialised, to
@@ -65,7 +66,7 @@ export interface EngineCtx {
   /**
    * Write a member: L2031, L2032, L4014, L4017, L4019. Answers `v`, as an assignment does.
    *
-   * `binding` is F7's cell WRITE, ruled as a fourth argument for the same reason `get` took a third.
+   * `binding` is the cell WRITE, taken as a fourth argument for the same reason `get` took a third.
    * It is present ONLY on an ASSIGNMENT to a cell, never on the declaration's own initialising write,
    * and an absent OWN key there means the declaration has not run: L2004 naming the binding, in the
    * walker's assignment words, which are not the read's. The key is LEFT ABSENT by the refusal, so
@@ -75,8 +76,8 @@ export interface EngineCtx {
   /**
    * Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else.
    *
-   * `optional` is `o.m?.()` (F6, ruled 1d as a flag rather than a fifteenth member). It guards a
-   * NULLISH MEMBER and nothing else — measured on the walker, `?.` softens neither L4014 nor L4011 —
+   * `optional` is `o.m?.()`, a flag rather than a fifteenth member. It guards a
+   * NULLISH MEMBER and nothing else (measured on the walker, `?.` softens neither L4014 nor L4011),
    * and a short-circuited call evaluates NO ARGUMENT, which is why the optional form takes a thunk.
    *
    * `chain` is EVERYTHING WRITTEN AFTER the optional call, as a closure. A short-circuit swallows the
@@ -158,7 +159,7 @@ function arrayIndex(prop: string): number | undefined {
  *
  * Measured at 9dc154f8 (node v26.7.0, ses@2.3.0), inside the compartment, one shot per site:
  * constructing such a record is harmless, but RETURNING it out of any async function assimilates
- * it — `then(resolve, reject)` runs, with the host's settlement functions as its arguments — and so
+ * it (`then(resolve, reject)` runs, with the host's settlement functions as its arguments), and so
  * does awaiting it, and so does a function carrying an own `then`. Every transformed function body
  * is async, so the hazard sits at every return of a program value, not merely at `await`.
  *
@@ -173,16 +174,16 @@ function arrayIndex(prop: string): number | undefined {
  * non-callable `then` completes on both; `then` on an ARRAY is L4014 on both, and on a string or a
  * number L4010 on both. The one door with NO walker route behind it is `await`, which gates a value
  * arriving from the HOST side of the seam - the walker has no such door because it has no seam. It
- * carries L4021 too, ruled, so a program reads one code for one shape rather than learning which door
+ * carries L4021 too, so a program reads one code for one shape rather than learning which door
  * it happened to come through.
  *
  * Two doors close the whole value graph, by induction: a callable `then` can only enter through a
- * literal (`born`) or a field write (`set`) — `json.parse` cannot spell a function, and spread,
+ * literal (`born`) or a field write (`set`): `json.parse` cannot spell a function, and spread,
  * `merge` and the array methods only copy fields out of records that already passed a door. `await`
  * is gated too, because a value can also arrive from the host side of the seam.
  *
  * THERE IS DELIBERATELY NO CHECK ON THE HOST'S RETURN PATH, and the reason is measured rather than
- * argued. Seam ruling 1a asked for one at `free`/`call`, on the strength of `merge({}, { then: f })`
+ * argued. Such a check was asked for at `free`/`call`, on the strength of `merge({}, { then: f })`
  * minting the shape on the WALKER. It cannot exist: every builtin and curated method in library.ts
  * returns through its own `async` wrapper, so the assimilation happens INSIDE library.ts, one frame
  * before any host code could inspect the result. Measured directly against `merge`: with a `then`
@@ -191,7 +192,7 @@ function arrayIndex(prop: string): number | undefined {
  * In both cases the value a return-path gate would examine is either never delivered or already
  * substituted, so such a gate is unreachable code that no mutant can kill. The walker shape it was
  * meant to cover is a walker defect (there is no birth gate there at all) and belongs to the filed
- * issue; in the engine the literal never reaches `merge`, because `born` refuses it first — which is
+ * issue; in the engine the literal never reaches `merge`, because `born` refuses it first, which is
  * a cell, not an assertion.
  */
 function hasCallableThen(v: unknown): boolean {
@@ -321,10 +322,10 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   // ---- the calling-convention adapter, both directions ----------------------------------------
   //
   // The walker's convention is `(frame, args)`, and library.ts calls every callback that way. The
-  // transform emits plain `async (...args)` closures and never a frame parameter (ruled). So the
+  // transform emits plain `async (...args)` closures and never a frame parameter. So the
   // HOST adapts at every crossing, in both directions, and this section is the whole of it.
   //
-  // THE INVARIANT (ruling 1c): adaptation may never be observable from inside the program. A value
+  // THE INVARIANT: adaptation may never be observable from inside the program. A value
   // the program hands to a library function and reads back must behave AND compare `===` as the one
   // it handed in. Two things follow, and both were live defects before they were rules:
   //
@@ -340,7 +341,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    *
    * Derived from library.ts's `asCallable` sites: the eleven callback-taking array methods take
    * theirs FIRST, the six higher-order builtins take theirs SECOND (the list is first). It is held
-   * to those sites BEHAVIOURALLY rather than by reading them — a cell probes every name in every
+   * to those sites BEHAVIOURALLY rather than by reading them: a cell probes every name in every
    * table with a marker function and compares the set of positions the library actually calls to
    * this one, so a table that grows a callback position reds here instead of drifting.
    */
@@ -471,7 +472,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    * The `branchDigest`, rebuilt from the call site's payload with the walker's own `digest`.
    *
    * The walker digests `[...losers].sort().map((n) => [n, bodies.get(n) ?? null])` over the arm
-   * bodies with positions stripped, and a name the site does not carry digests as `null` — an arm
+   * bodies with positions stripped, and a name the site does not carry digests as `null`. An arm
    * that was RENAMED is exactly the case this has to notice. Absent `branchDigests` means the arms
    * were not written as an object literal at the call, which is where the walker also answers
    * undefined, so the field's presence is the whole decision.
@@ -542,7 +543,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   //
   // The unit CHANGES from the walker's: the walker charges one dispatch per node it walks, the
   // engine charges one transformed-site hit. That is languageVersion 2's pin-unit change, and it is
-  // why L4013 is a FIRST-PARTY cell rather than a differential one — journals are unaffected,
+  // why L4013 is a FIRST-PARTY cell rather than a differential one: journals are unaffected,
   // because steps are never recorded, but the budget fires at different points on the two engines.
 
   let steps = 0;
@@ -593,7 +594,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         `\`${prop}\` is not a member of ${kind}. The members are: length, an index, ${Object.keys(table).join(", ")}.`,
       );
     }
-    // A method is looked up AT THE CALL and exists nowhere else — a declared difference from
+    // A method is looked up AT THE CALL and exists nowhere else, a declared difference from
     // JavaScript, where `xs.map` is a value. Handing one out gives `xs.map !== xs.map` and an
     // extracted `push` that writes to a receiver strict JavaScript would refuse.
     if (!asCallee) {
@@ -612,7 +613,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    * method speaks the walker's `(frame, args)` convention; an own field of a record holds a value the
    * PROGRAM made (or one the host already adapted on its way out), and that speaks the program's
    * plain `(...args)` convention. Collapsing the two adapted twice and handed the frame in as the
-   * first argument — measured: `json.stringify([1,2])` refused its own array as an illegal second
+   * first argument. Measured: `json.stringify([1,2])` refused its own array as an illegal second
    * argument, which is the convention mismatch wearing a coercion error's name.
    */
   type Found =
@@ -657,8 +658,8 @@ function buildCtx(run: EngineRun): CtxWithSteps {
    *
    * The two paths are told apart by the NAME, never by what the name answered. Deciding on
    * `typeof v === "function"` reads right and is wrong: an array element can itself be a program
-   * closure, so `fs[0]("a")` classified as a curated method and was called `(frame, ["a"])` — the
-   * frame handed to the program as its first argument, which is the hazard this whole section
+   * closure, so `fs[0]("a")` classified as a curated method and was called `(frame, ["a"])`, with
+   * the frame handed to the program as its first argument, which is the hazard this whole section
    * exists to close. Measured on `const fs = [(x) => x]` before the fix.
    */
   const lookup = (obj: unknown, prop: string, asCallee: boolean): Found => {
@@ -671,7 +672,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
   };
 
   /**
-   * F7'S CELL TEST, in ONE place because both doors ask the same question.
+   * THE CELL TEST, in ONE place because both doors ask the same question.
    *
    * A binding the transform turned into a cell exists for its whole block, and the cell record is
    * hoisted to the top of that block so the closures capturing it have something to close over. What
@@ -689,7 +690,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
     get(o, k, binding) {
       const prop = keyOf(k);
-      // F7'S CELL DOOR. A binding the transform turned into a cell exists for its whole block, and
+      // THE CELL DOOR. A binding the transform turned into a cell exists for its whole block, and
       // the cell record is hoisted to the top of that block so the closures capturing it have
       // something to close over. What decides whether the DECLARATION has run is whether the key is
       // there - `hasOwn`, never truthiness, because a binding initialised to `undefined` has run.
@@ -705,7 +706,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
 
     set(o, k, v, binding) {
       const prop = keyOf(k);
-      // F7'S OTHER CELL DOOR, and it is a SEPARATE refusal rather than the read's reused: the walker
+      // THE OTHER CELL DOOR, and it is a SEPARATE refusal rather than the read's reused: the walker
       // answers a different sentence for a write, and a program that could tell the two engines apart
       // by which sentence it caught would be a divergence dressed as a message. Both are catchable,
       // both leave the binding uninitialised, and the declaration still initialises it when reached.
@@ -800,7 +801,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       let answer: unknown;
       if (found.from === "table") {
         // A curated method: the walker's convention, and the ONE argument this method calls is
-        // adapted into it on the way in. Every other argument crosses untouched — see the invariant.
+        // adapted into it on the way in. Every other argument crosses untouched: see the invariant.
         answer = await found.fn(currentFrame(), adaptArgs(found.key, list));
       } else if (typeof found.value !== "function") {
         throw new RuntimeFault("L4011", "this value is not a function, so it cannot be called");
@@ -928,15 +929,15 @@ function buildCtx(run: EngineRun): CtxWithSteps {
           return ~(v as number);
         case "update":
           // `x++`, `x--` and their compound cousins, on the slow path only: the transform emits a
-          // native increment when it can see the operand is a number. A DECLARED DIVERGENCE, ruled
-          // (1c): the walker reads the operand through `Number(...)`, so `"5"++` answers 6 and a
+          // native increment when it can see the operand is a number. A DECLARED DIVERGENCE: the
+          // walker reads the operand through `Number(...)`, so `"5"++` answers 6 and a
           // record settles as NaN, while `o + 1` and `x += 1` refuse on the very same values. That
           // is the silent-coercion class, filed against the walker as issue #646, and it is not
           // being built into the new engine for fidelity's sake.
           if (typeof v !== "number") {
             throw new RuntimeFault(
               "L4018",
-              `\`++\` and \`--\` count, and ${v === null ? "null" : Array.isArray(v) ? "an array" : `a ${typeof v}`} is not a number, so there is nothing to count. Nothing is converted for you here: parse it first — \`number(value)\` — or hold the counter in a number.`,
+              `\`++\` and \`--\` count, and ${v === null ? "null" : Array.isArray(v) ? "an array" : `a ${typeof v}`} is not a number, so there is nothing to count. Nothing is converted for you here: parse it first (\`number(value)\`), or hold the counter in a number.`,
             );
           }
           return v;
@@ -955,7 +956,7 @@ function buildCtx(run: EngineRun): CtxWithSteps {
     },
 
     callee(v) {
-      // Member 14, granted by ruling 1c. The transform emits it behind a `typeof` so a real call
+      // Member 14, the last of the seam. The transform emits it behind a `typeof` so a real call
       // stays a native call; this is only the refusal, and it is the walker's own words because the
       // differential suite compares the message, not merely the code.
       if (typeof v !== "function") {
@@ -1015,7 +1016,7 @@ export class EngineFault extends Error {
  * Recognised by class rather than by shape.
  *
  * `Cancelled` and `RunReleased` come from effects.ts, `JournalAppendRejected` from journal.ts. The
- * three the walker adds — `RunDivergence`, `ScopeBranchMissing`, `UnwalkableScope` — are exported by
+ * three the walker adds (`RunDivergence`, `ScopeBranchMissing`, `UnwalkableScope`) are exported by
  * interpret.ts, and importing them here would pull the whole walker into the engine's module graph
  * for three constructors. They are matched by `name` instead, which is a deliberate, narrow
  * exception to "recognise by class": the names are the classes' own, they are set in the

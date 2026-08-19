@@ -1,19 +1,19 @@
 /**
  * The engine seam: `__ctx`, the whole surface a transformed program can reach.
  *
- * These are FIRST-PARTY cells, not differential ones. The differential suite (lane T's
- * `differential.smoke.ts`) is the primary gate and compares journals against the walker; what lives
+ * These are FIRST-PARTY cells, not differential ones. The differential suite
+ * (`differential.smoke.ts`) is the primary gate and compares journals against the walker; what lives
  * here is what the walker cannot grade: the seam's own shape, the fuel unit (which CHANGES in
- * languageVersion 2 — the walker charges a dispatch, the engine charges a transformed-site hit), the
+ * languageVersion 2: the walker charges a dispatch, the engine charges a transformed-site hit), the
  * thenable gate (a program the walker cannot run at all: it dies as an unhandled rejection, filed as
  * a walker defect), and the calling-convention adapter, which exists only on this side.
  *
- * WHAT THESE CELLS DRIVE, AND WHAT THAT IS WORTH. Lane T's transform is not landed, so each cell
+ * WHAT THESE CELLS DRIVE, AND WHAT THAT IS WORTH. The transform is not landed, so each cell
  * hand-writes the module string the transform will emit. That proves the HOST is correct for the
- * shape the seam ruling fixed; it does NOT prove lane T emits that shape. Only the differential
+ * shape the seam contract fixed; it does NOT prove the transform emits that shape. Only the differential
  * suite over real transform output proves the pair, and until it runs, every claim here is about the
- * host alone. The hand-written modules are deliberately written in the ruled shape — a closed
- * function expression with zero free identifiers, taking the context as its call argument — so the
+ * host alone. The hand-written modules are deliberately written in the contracted shape (a closed
+ * function expression with zero free identifiers, taking the context as its call argument), so the
  * day the transform lands, the same cells run against its output unchanged.
  */
 
@@ -185,7 +185,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
 //
 // A CROSSING IS EITHER ENTRY POINT. The resume wrapper calls straight through to the same function
 // and hits the same check, and its name does not contain the other's, so a search for one walks
-// past the other. Lane T found that while it was still latent. The audit matches both and names
+// past the other. The transform side found that while it was still latent. The audit matches both and names
 // which it found, and a control pins the wider universe rather than leaving it remembered.
 
 const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a cell to land on";
@@ -202,7 +202,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 
 // ---- 1) the seam runs a program, and the journal is the walker's shape -------------------------
 //
-// The whole point of the lane in one cell: a module in the ruled shape (closed expression, zero free
+// The whole point of the seam in one cell: a module in the contracted shape (closed expression, zero free
 // identifiers, context as the CALL argument) performs a real effect through the seam and the entry
 // lands with the step key the walker would have allocated.
 
@@ -312,7 +312,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
     "a write past the end of an array is L4019, because a hole is not a value here",
     codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([]), "2", 1)))) === "L4019",
   );
-  // THE OTHER HALF, lane T's control row, as a PROGRAM on both arms rather than a seam call: an
+  // THE OTHER HALF, the transform's control row, as a PROGRAM on both arms rather than a seam call: an
   // index that exists is an ordinary write, so the refusal above is a rule about holes and not the
   // array path refusing writes. Both answers measured, not transcribed.
   {
@@ -342,12 +342,12 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 4) the thenable gate, and the code it now shares with the oracle ----------------------------
 //
 // A program value with an own CALLABLE `then` is assimilated by the host's await machinery, which
-// runs that closure with the host's own settlement functions as its arguments — measured at every
+// runs that closure with the host's own settlement functions as its arguments, measured at every
 // return of a program value out of an async function, and at every await. The oracle could not grade
 // this at all until #657: the same program took the walker's process down as an unhandled rejection.
 // It now REFUSES, with L4021, at its four record-member write sites, so this engine carries the
-// walker's code rather than its own — and the programs quarantined from the differential for taking
-// a process down are comparable rows again, which is lane T's to move.
+// walker's code rather than its own, and the programs quarantined from the differential for taking
+// a process down are comparable rows again, which is the transform's to move.
 
 {
   const h = harness();
@@ -473,9 +473,9 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
     ok("awaiting an own-callable-`then` value is L4021 as well", codeOf(e) === "L4021");
     ok("and the refusal happened BEFORE the host called it", fired === 0, fired);
   }
-  // LANE T'S DOOR E, IN THE ENGINE'S SHAPE. On the walker, `merge({}, { then: f })` mints the hazard
+  // THE SAME DOOR, IN THE ENGINE'S SHAPE. On the walker, `merge({}, { then: f })` mints the hazard
   // past both birth and write, because the walker has no birth gate. Under the transform the literal
-  // reaches `born` FIRST, so the builtin is never called at all — which is what makes the entry
+  // reaches `born` FIRST, so the builtin is never called at all, which is what makes the entry
   // doors sufficient here, and it is asserted rather than reasoned: the closure must never run.
   {
     let ran = 0;
@@ -524,7 +524,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 }
 
 {
-  // THE PAIR. "A host timer fires during the run" is worthless alone — a timer also fires if the run
+  // THE PAIR. "A host timer fires during the run" is worthless alone: a timer also fires if the run
   // simply ends. The claim is the DIFFERENCE between yielding and not yielding, so the control runs
   // the identical loop with yielding effectively off.
   const spin = async (yieldEvery: number): Promise<boolean> => {
@@ -606,7 +606,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 }
 
 {
-  // A DECLARED DIVERGENCE, ruled in 1c and asserted rather than hidden.
+  // A DECLARED DIVERGENCE, asserted rather than hidden.
   //
   // The walker reads the operand of `++` through `Number(...)`, so a string counts and a record
   // settles as NaN, while `o + 1` on the very same values does something else entirely - the
@@ -630,7 +630,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 
 // ---- 6b) callee: the L4011 refusal at a non-function callee -------------------------------------
 //
-// Seam member 14, granted in ruling 1c. The transform emits it behind a `typeof`, so a real call
+// Seam member 14, the last of the seam. The transform emits it behind a `typeof`, so a real call
 // stays a native call and only the refusal comes here. The message is the walker's own words,
 // because the differential suite compares what the program sees, not merely the code.
 
@@ -677,7 +677,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 8) free and call: the calling-convention adapter, both directions --------------------------
 //
 // The transform emits plain `async (...args)` closures; library.ts calls callbacks as
-// `(frame, args)`. The host adapts at every crossing, and this is the cell that says so — a program
+// `(frame, args)`. The host adapts at every crossing, and this is the cell that says so: a program
 // closure handed to a curated method, and a builtin read as a VALUE and then called natively.
 
 {
@@ -694,7 +694,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
     const filtered = (await h.ctx.free("filter", [[1, 2, 3, 4], async (x: unknown) => (x as number) % 2 === 0])) as number[];
     ok("and as a free builtin's callback", filtered.join(",") === "2,4", filtered);
 
-    // A builtin read as a VALUE, then called natively — what `const f = upper` and `map(xs, upper)`
+    // A builtin read as a VALUE, then called natively, which is what `const f = upper` and `map(xs, upper)`
     // both need. Without the outward adaptation a native call would pass `(x)` where the library
     // expects `(frame, [x])`.
     const asValue = h.ctx.free("upper") as (...a: unknown[]) => Promise<unknown>;
@@ -723,7 +723,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 
 // ---- 8b) the adaptation is INVISIBLE, and the frame never crosses --------------------------------
 //
-// Ruling 1c's invariant: a value the program hands to a library function and reads back must behave
+// The adaptation invariant: a value the program hands to a library function and reads back must behave
 // AND compare `===` as the one it handed in. Adapting every function in an argument list broke both
 // halves - a mutating method STORED the walker view, and the program read back something that did
 // not call and did not compare equal. The other half of the same section is the hazard underneath
@@ -954,7 +954,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 12) the host: the walker's own run shape, and the first end-to-end journal comparison ------
 //
 // `runOnEngine` exists so the differential suite can call one engine and then the other with nothing
-// between them. The cells below are NOT the differential gate - that is lane T's suite over the real
+// between them. The cells below are NOT the differential gate - that is the differential suite over the real
 // transform's output, on a real corpus. What they prove is that the wiring produces the walker's
 // RunResult and, for one hand-written pair, the SAME journal. One program is an existence proof, not
 // a gate, and it is written down here so nobody reads it as one.
@@ -1359,7 +1359,7 @@ await parallel({
 
 // ---- 15) the optional call: `o.m?.()` ------------------------------------------------------------
 //
-// Seam member 4 gains a flag (F6, ruled 1d), not a fifteenth member. Every answer below was MEASURED
+// Seam member 4 gains a flag, not a fifteenth member. Every answer below was MEASURED
 // on the walker first and is compared against it here, because two of them are not what "optional"
 // suggests: `?.` guards a NULLISH MEMBER and nothing else - it softens neither L4014 nor L4011 - and
 // a short-circuited call evaluates NO ARGUMENT AT ALL.
@@ -1443,7 +1443,7 @@ await parallel({
   ok("while a present member does ask, exactly once", ran === 1, ran);
 
   // THE THUNK IS `async`, because any argument the transform emits may itself hold an `await` - so it
-  // is AWAITED here. Lane T found this against my e7819fe3 and I reproduced it before touching the
+  // is AWAITED here. The transform side found this against e7819fe3 and I reproduced it before touching the
   // line: unawaited, `args()` handed the spread a Promise, so an ordinary `o.m?.(1)` died on "Spread
   // syntax requires ...iterable" and `xs.map?.(f)` reached the curated method with a Promise where
   // its argument list should be. Both shapes are below, each against the oracle.
@@ -2029,10 +2029,10 @@ log("out", out);
   );
 }
 
-// ---- 18) ruling 1b's closure obligation ----------------------------------------------------------
+// ---- 18) the closure obligation the return-path door left behind ---------------------------------
 //
-// 1b struck the return-path thenable door after this lane refuted it by measurement, and replaced it
-// with an OBLIGATION: the gate is born() + set() + await() only as long as no builtin can hand the
+// The return-path thenable door was struck after this side refuted it by measurement, and replaced
+// it with an OBLIGATION: the gate is born() + set() + await() only as long as no builtin can hand the
 // program a record carrying an own callable `then`. That property is held here rather than assumed,
 // over the whole builtin table, so a name added to it reds this cell until somebody classifies it.
 //
@@ -2084,7 +2084,7 @@ log("out", out);
     // THE OBLIGATION ITSELF.
     ok("no answer anywhere in the matrix carried an own CALLABLE `then`", carriedCallableThen.length === 0, carriedCallableThen);
 
-    // AND THE RULING'S STATED REASON, CORRECTED BY MEASUREMENT. 1b says merge's "output keys derive
+    // AND THE STATED REASON, CORRECTED BY MEASUREMENT. The rule said merge's "output keys derive
     // from record arguments that already passed born()". They do not, quite: a non-record argument
     // contributes index keys. The property that actually holds is the one asserted above - a minted
     // key cannot carry a callable - and it is worth having the difference written down, because a
@@ -2106,7 +2106,7 @@ log("out", out);
     // And a callable `then` that reaches a builtin from OUTSIDE the seam never comes back as a
     // record at all: library.ts's own `async` wrapper assimilates it one frame before any
     // return-path check could look. Measured - the call answers 7, the resolved value, not the
-    // record. That is the refutation 1b was built on, kept as a cell so it stays true.
+    // record. That is the refutation the rule was built on, kept as a cell so it stays true.
     const assimilated = await h.ctx.free("merge", [h.ctx.born({ a: 1 }), { then: (r: (v: unknown) => void) => r(7) }]);
     ok("a callable `then` reaching a builtin is ASSIMILATED inside library.ts, not returned", assimilated === 7, assimilated);
 
@@ -2117,7 +2117,7 @@ log("out", out);
   });
 }
 
-// ---- 18b) 1b's REACHABILITY half: no program can build the input ---------------------------------
+// ---- 18b) the REACHABILITY half: no program can build the input ----------------------------------
 //
 // The predicate above says no builtin HANDS OUT a record carrying a callable `then`. That is one of
 // two claims, and the other is the one a reader assumes open: can a program WRITE one anywhere the
@@ -2133,12 +2133,12 @@ log("out", out);
 // it, so "no entry" is what says the closure is at the literal and not at the result.
 //
 // The walker took its process down on this program (#642) and now refuses L4021 at the write, so it
-// is comparable again; moving it out of lane T's quarantine and into the corpus is theirs to measure.
+// is comparable again; moving it out of the transform's quarantine and into the corpus is theirs to measure.
 //
 // WHAT GRADES WHAT, since these four cells have no mutant of their own: the refusal's mechanism is
 // the birth gate, and that is graded where it lives (section 4's first cell, and the mutant that
 // drops it). What is graded HERE and nowhere else is the EMISSION - that the branches record
-// reaches `born` before the scope call - which is lane T's to break and this suite's to notice.
+// reaches `born` before the scope call - which is the transform's to break and this suite's to notice.
 {
   for (const [scope, name] of [["parallel", "p"], ["race", "r"]] as const) {
     const source = `await ${scope}({ then: async () => 1, b: async () => 2 }, { name: "${name}" });\n`;
@@ -2151,11 +2151,11 @@ log("out", out);
   }
 }
 
-// ---- 19) F7: the cell read, and the ReferenceError that is never the program's -------------------
+// ---- 19) the cell read, and the ReferenceError that is never the program's ----------------------
 //
 // A binding the transform classifies as a CELL is emitted as `born({})` hoisted to the top of its
 // block, `set(cell, "v", init)` at the declaration, and every read as `get(cell, "v", "x")`. The
-// third argument is the whole host clause (ruled a third argument, not a fifteenth member): an
+// third argument is the whole host clause (a third argument, not a fifteenth member): an
 // absent OWN key means the declaration has not run, which is L2004 for that binding by name.
 
 {
@@ -2206,7 +2206,7 @@ log("out", out);
   // Without the argument, `get` is byte-unchanged: an absent field is undefined, as it always was.
   ok("without a binding name, an absent field is still just undefined", (await h.inFrame(() => h.ctx.get(cell, "v"))) === undefined);
 
-  // ---- the WRITE half of the same door, ruled as `set`'s fourth argument -------------------------
+  // ---- the WRITE half of the same door, `set`'s fourth argument --------------------------------
   //
   // A binding only ever WRITTEN from a deeper function has no early read to classify, so `get`'s
   // third argument never sees it and the engine died on a native ReferenceError. The walker refuses
@@ -2311,7 +2311,7 @@ let n = 1;
 
 // ---- 20) the worker entry is an INPUT, and the node floor ----------------------------------------
 //
-// Lane 1 set the wave's floor at node 24 for AsyncContextFrame ALS. Probed, that reason does not
+// The floor was first set at node 24 for AsyncContextFrame ALS. Probed, that reason does not
 // reproduce: ALS propagates 9 of 9 shapes on 22.23.2 - plain await, across the setTimeout macrotask
 // the fuel yield uses, both arms of a Promise.all, after a custom thenable, across nextTick and
 // setImmediate, and a nested run restoring its parent - and the worker from `dist` on 22 answers the
@@ -2332,7 +2332,7 @@ let n = 1;
   // saying it after someone pointed the leg back at `src` and made it a node-26-only suite again.
   ok("and the worker leg runs it from `dist`, not from the sources beside this file", entry.includes("/dist/") && !entry.includes("/src/"), entry);
 
-  // THE HOST DERIVES NO ENTRY, which is the rule the ruling put in place of a version check. Asked
+  // THE HOST DERIVES NO ENTRY, which is the rule put in place of a version check. Asked
   // for a run with none, nothing starts: no default, no probe of this module's own extension, and
   // above all no thread spawned at a path nobody chose. CAPTURED rather than awaited into the
   // assertion, because the point of the cell is the throw.
@@ -2641,8 +2641,8 @@ let n = 1;
 
 // ---- 21) the seam ARITY TABLE, from the other side ----------------------------------------------
 //
-// `SEAM_MEMBERS` is the contract both lanes hold: member name -> [min, max] ARGUMENT COUNTS the
-// emitter may pass. Lane T checks every emitted call site against it; this half checks the
+// `SEAM_MEMBERS` is the contract both sides hold: member name -> [min, max] ARGUMENT COUNTS the
+// emitter may pass. The transform checks every emitted call site against it; this half checks the
 // IMPLEMENTATION, and the two together are what make the table a contract rather than a comment on
 // one side of a seam.
 //
@@ -2900,7 +2900,7 @@ let n = 1;
   // AND THE SUBJECTS THAT CAN STILL FAIL IT. Both halves, because they are different faults: a name
   // that matches SEVERAL cells is graded off whichever prints first (the trap just closed), and a
   // name that matches NONE is an aim at something the suite never prints - a throw message, or a
-  // sentence left behind by a rename. Lane T measured the second class grading a kill off a crash.
+  // sentence left behind by a rename. The transform side measured the second class grading a kill off a crash.
   ok(
     "a name that is a substring of a sibling's is reported, not passed as present",
     matchesOnce("ctl", "expectRed", "the head answers", ["the head answers", "the head answers for the write"]).length === 1,
@@ -3038,7 +3038,7 @@ let n = 1;
   // resolves aim and marker with `indexOf` and fires only when BOTH are >= 0, so a substring aim
   // gives -1 and falls through as a SKIP; that skip is what this cell closes. Resolve them with the
   // tool's own relation instead and treat a zero-match aim as a FAULT, and nothing can fall through,
-  // exactness is never needed, and this cell should go rather than stay as decoration. Lane T's
+  // exactness is never needed, and this cell should go rather than stay as decoration. The transform side's
   // config is built that shape and measured no skip to close.
   ok("every `expectRed` and marker names a cell EXACTLY, not merely as a substring of one", absent.length === 0 && audited === config.mutations.length, { absent, audited });
   ok(`the mutation config has ${audited} mutations, and every one of them was audited`, audited === config.mutations.length && audited > 0, audited);

@@ -658,8 +658,8 @@ different value for any pin is refused (L5009), and a resume handed history with
 
 `yieldEvery` selects no outcome (§7.3): it is pinned so a run record never churns, and a future
 revision MAY drop it from the pin set. `stepBudget` bounds a walk and not the run because steps are
-not recorded, and a **step is whatever the running engine counts** — a walker dispatch under
-version 1, a transformed-site hit under version 2 — so the same budget does not buy the same
+not recorded, and a **step is whatever the running engine counts** (a walker dispatch under
+version 1, a transformed-site hit under version 2), so the same budget does not buy the same
 program two engines, and a recorded `stepBudget` is not comparable across versions; `effectCeiling` bounds the run because the journal records every dispatch, and a
 resume counts the recorded distinct effect keys (excluding `conclave`, which is dispatched from the
 scope walker) toward it.
@@ -691,7 +691,7 @@ version, and what that engine's current semantics are.
 
 The version is a property of the ENGINE that runs a program, not of this document. An engine MUST
 stamp the pins it resolves with **its own** version and MUST compare a recorded version against
-**its own**, never against a shared notion of "the current language" — an engine that stamped one
+**its own**, never against a shared notion of "the current language": an engine that stamped one
 version and compared another would refuse its own records.
 
 Two refusals divide the work, and the difference is what the operator does next:
@@ -705,7 +705,7 @@ Two refusals divide the work, and the difference is what the operator does next:
 
 A build MAY serve several versions at once. Which versions it serves is a fact about that build,
 declared, and a fresh run MUST be stamped with the version of the engine that will actually execute
-it — never with the newest version the build knows of, unless that is the one that will run it.
+it, never with the newest version the build knows of, unless that is the one that will run it.
 
 ## 9. Errors
 
