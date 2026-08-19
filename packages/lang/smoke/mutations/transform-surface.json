@@ -150,7 +150,7 @@
       "find": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;",
       "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}]${cont}`)})`;",
       "expectRed": "a tail optional call is emitted through the ruled flag",
-      "completionMarker": "ok every program the seam cannot yet express refuses loudly, and is listed",
+      "completionMarker": "ok an object literal's keys are emitted computed",
       "cell": "a tail optional call is emitted through the ruled flag",
       "note": "Ruling 1d's flag is what makes `o.z?.()` short-circuit to undefined with nothing called. Without it the host resolves the method name unconditionally and refuses, where the walker answers undefined."
     },
