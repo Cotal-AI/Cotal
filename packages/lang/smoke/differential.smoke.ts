@@ -169,6 +169,25 @@ const shapeOf = (v: unknown): string =>
 const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((line) => line.map(shapeOf)));
 
 /**
+ * Where a value would be LOST by `JSON.stringify`, as paths. Empty means the rendering is faithful.
+ *
+ * The log leg has a shape signature because its values are program data and a closure handed to a
+ * host renders as `null`. The ENTRY leg has none: it compares renderings, entry by entry. That is
+ * only sound while no journal entry can carry a value JSON flattens, and "only sound while" is a
+ * premise, so it is measured over the corpus below rather than assumed here. The day an effect
+ * records a NaN, a negative zero, or a hole in an array, that cell reds and the entry leg needs the
+ * same signature the log leg has.
+ */
+const jsonBlind = (v: unknown, path: string): string[] => {
+  if (Object.is(v, -0)) return [`${path} = -0`];
+  if (typeof v === "number" && (Number.isNaN(v) || !Number.isFinite(v))) return [`${path} = ${v}`];
+  if (v === undefined) return [`${path} = undefined`];
+  if (typeof v === "function") return [`${path} = function`];
+  if (v === null || typeof v !== "object") return [];
+  return Object.entries(v as object).flatMap(([k, x]) => jsonBlind(x, `${path}.${k}`));
+};
+
+/**
  * What an arm answered, as one string: its refusal if it raised one, AND the lines it logged before
  * it did, with their shapes.
  *
@@ -530,6 +549,7 @@ const reachedKinds = new Set<string>();
   let completes = 0;
   const wrong: string[] = [];
   const valued: string[] = [];
+  const scanned: [string, readonly unknown[]][] = [];
   for (const [name, source, script, refuses] of CORPUS) {
     const [w, e] = [await arm("walker", source, script), await arm("engine", source, script)];
     const diff = differences(w, e);
@@ -545,6 +565,7 @@ const reachedKinds = new Set<string>();
       wrong.push(`${name}: declared ${refuses}, got ${w.error} / ${e.error}`);
     }
     for (const entry of e.entries) reachedKinds.add(entry.kind);
+    scanned.push([`${name} / walker`, w.entries], [`${name} / engine`, e.entries]);
     if (w.value !== undefined || e.value !== undefined) valued.push(`${name}: ${j(w.value)} / ${j(e.value)}`);
     identical += 1;
   }
@@ -556,7 +577,24 @@ const reachedKinds = new Set<string>();
   // here rather than reasoned: when a program can produce a value this reds, and the leg it guards
   // stops being a comparison nobody can reach.
   ok("no validated program produces a run value, so the comparator's value leg is exercised by hand alone", valued.length === 0, valued);
+  // AND THE ENTRY LEG'S PREMISE, measured the same way. `differences` walks the journal entry by
+  // entry through `JSON.stringify` and nothing else — no shape signature, unlike the log leg — so a
+  // journal that differed only by a negative zero, a NaN, an infinity or a hole in an array would
+  // compare IDENTICAL, and identical journals is the whole claim of this gate. That is sound today
+  // and only today: it holds because no effect records such a value, which is a fact about the
+  // effects rather than about the comparison. Measured over every corpus program, both arms.
+  // THE ZERO IS PAIRED WITH THE COUNT IT CAME FROM, in one cell and over one array, because those
+  // are the two ways it lies: a sweep that looked at nothing reports the same zero as a clean
+  // journal, and a count alone says nothing about what was in them. Both read `scanned`, so a sweep
+  // that stopped collecting reds here instead of going quiet.
+  const entries = scanned.flatMap(([, es]) => es);
+  const blind = scanned.flatMap(([where, es]) => es.flatMap((entry, i) => jsonBlind(entry, `${where} entry[${i}]`)));
+  ok("no journal entry carries a value JSON cannot draw, and the sweep that says so visited every one", entries.length > 0 && blind.length === 0, {
+    entries: entries.length,
+    blind,
+  });
   console.log(`  (${identical} programs identical on both engines: ${completes} complete, ${identical - completes} refuse a declared code)`);
+  console.log(`  (${entries.length} journal entries swept across both arms of all ${identical} programs, ${blind.length} carrying a value JSON cannot draw)`);
 }
 
 // ---- the comparator's own positive control -------------------------------------------------------
@@ -609,6 +647,16 @@ const reachedKinds = new Set<string>();
   // AND THE NEGATIVE HALF: the shape leg must not report a difference where there is none, or it
   // would red every row in the suite and mean nothing.
   ok("and reports no shape difference between two arms that logged the same values", !differences({ ...base, logs: [[1, "a", null]] }, { ...base, logs: [[1, "a", null]] }).includes("log shapes"));
+
+  // AND THE SCAN BEHIND THE ENTRY LEG'S PREMISE, which is a ZERO and therefore worth nothing on its
+  // own: a scan that found nothing anywhere would report the same zero over a journal full of NaN.
+  // So it is shown finding one of each kind, nested, in the shape an entry actually has — and the
+  // negative arm alongside, because a scan that flagged ordinary data would make the premise
+  // unfalsifiable in the other direction.
+  const planted = { kind: "turn", key: "k", result: { a: -0, b: [Number.NaN, 1 / 0, -1 / 0], c: [undefined], d: { e: (x: number) => x } } };
+  const flattened = jsonBlind(planted, "entry");
+  ok("the scan behind that premise finds every kind JSON flattens, nested where an entry would carry it", flattened.length === 6, flattened);
+  ok("and finds nothing in an entry JSON draws faithfully", jsonBlind({ kind: "turn", key: "k", result: { a: 0, b: [1, "s", null], c: { d: true } } }, "entry").length === 0);
 }
 
 // ---- what a ruling made different, on purpose ----------------------------------------------------
