@@ -470,13 +470,26 @@ const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
  * never pass on a channel that carries nothing at all. Returns the sink offset taken before this
  * byte, for a caller whose claim is that the window held NOTHING. */
 const dateByEcho = async (a: Attached, label: string): Promise<number> => {
-  const later = nonce();
   const before = sink().length;
-  a.write(`${later}\r`);
-  const echoed = await a.waitFor(new RegExp(`ECHO\\[${later}`), 20_000);
+  // RETRIED, and that is not belt and braces. `[cotal: reconnected]` prints one round trip BEFORE
+  // the session takes the terminal (attach-client's `onReady`), and a byte typed in that gap is seen
+  // by the between-sessions reader and dropped, deliberately. A single unretried byte is therefore
+  // not evidence of anything: measured, cell B lost exactly that race once in two runs and reported
+  // `echoed: false` over a working attach. Type again until one goes through; `tries` is in the
+  // detail so a run says how often the race is being hit rather than hiding it.
+  let later = "";
+  let echoed = false;
+  let tries = 0;
+  const deadline = Date.now() + 40_000;
+  while (!echoed && Date.now() < deadline) {
+    tries++;
+    later = nonce();
+    a.write(`${later}\r`);
+    echoed = await a.waitFor(new RegExp(`ECHO\\[${later}`), 5_000);
+  }
   check(`${label}: the session that is up carries the keyboard, which is what dates the absence below`,
     echoed && sink().subarray(before).includes(Buffer.from(later)),
-    { echoed, got: sink().subarray(before).toString("utf8").slice(-200) });
+    { echoed, tries, got: sink().subarray(before).toString("utf8").slice(-200) });
   return before;
 };
 
