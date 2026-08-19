@@ -254,7 +254,7 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   const sim = new SimHandler({
     turns: { build: { status: "done", at: 0 } },
     asks: { q: 3 },
-    checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
+    checkpoints: { gate: { status: "resolved", value: true, by: "sim" }, lapsed: { status: "expired" } },
   });
   const s = new KeyScope();
   const agent = { agent: "a", persona: "p" };
@@ -282,6 +282,20 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     seen.length === 3 && seen[2]?.fact.simCheckpoint === "/checkpoint:gate#0"
       && !("simGoal" in (seen[2]?.fact ?? {})) && seen[2]?.at === t2 && sim.now() > t2,
     { seen, t2, now: sim.now() });
+
+  // `checkpoint` is the only bound effect with TWO returns, and every cell above scripts the
+  // resolved one. An engineering review measured what that leaves open: gating the bind on the
+  // disposition, `if (scripted.status !== "expired") await ctx.bind(...)`, left this file at 43 of
+  // 43 and the whole package at rc 0, because no fixture anywhere reached the other return with a
+  // bind it could see. Expiry is the worse path to lose, since it is the one the interpreter
+  // escalates from: a crash there replays an escalation against a journal with no record of the
+  // checkpoint that caused it. Reproduced on this tree before this cell was written.
+  const t3 = sim.now();
+  const lapsed = await sim.checkpoint({ prompt: "still?" }, ctxAt(s.nextEffect("checkpoint", "lapsed")));
+  ok("and it binds on the EXPIRED return too, the path the interpreter escalates from",
+    lapsed.outcome === "expired" && seen.length === 4 && seen[3]?.fact.simCheckpoint === "/checkpoint:lapsed#0"
+      && !("simGoal" in (seen[3]?.fact ?? {})) && seen[3]?.at === t3 && sim.now() > t3,
+    { seen, t3, now: sim.now(), lapsed });
 }
 
 // ---- 8c) and none of them SETTLES while its own bind is still in flight -------------------------
