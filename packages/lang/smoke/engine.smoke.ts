@@ -282,6 +282,18 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     "a write past the end of an array is L4019, because a hole is not a value here",
     codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([]), "2", 1)))) === "L4019",
   );
+  // THE OTHER HALF, lane T's control row, as a PROGRAM on both arms rather than a seam call: an
+  // index that exists is an ordinary write, so the refusal above is a rule about holes and not the
+  // array path refusing writes. Both answers measured, not transcribed.
+  {
+    const src = `const sch = { xs: keys({ a: 1 }) };\nsch.xs[0] = "z";\nlog(sch.xs[0]);\n`;
+    const wLogs: unknown[][] = [];
+    const eLogs: unknown[][] = [];
+    await walkerRun(src, { runId: "idx", handler: new SimHandler({}), onLog: (l) => wLogs.push([...l.values]) });
+    await runOnEngine(src, transform(src).module, { runId: "idx", handler: new SimHandler({}), evaluate: plainly, onLog: (l) => eLogs.push([...l.values]) });
+    ok("while an IN-RANGE index write completes on the walker", JSON.stringify(wLogs) === '[["z"]]', wLogs);
+    ok("and on the engine, with the same value and the same shape", JSON.stringify(eLogs) === JSON.stringify(wLogs) && sameShapes(eLogs, wLogs), { engine: eLogs, shapes: shapes(eLogs) });
+  }
   ok(
     "a LONGER length is L4017 for the same reason",
     codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([1]), "length", 5)))) === "L4017",
@@ -2442,6 +2454,36 @@ let n = 1;
     // only sent a short reason could not tell truncation from silence.
     const msg = String(failed(answer).message);
     ok("and a reason past the buffer is truncated, not dropped", msg.includes("the operator asked this run to stop") && !msg.includes("END"), msg.length);
+
+    // WHERE THE CUT FALLS. Truncation is a byte count against a buffer, and a UTF-8 character is
+    // one to four bytes, so a cut placed by bytes alone lands INSIDE one. Measured through this
+    // same path before the fix: a three-byte character straddling the buffer's last byte reached
+    // the run as U+FFFD on the end of the operator's sentence. `encodeInto` fills the room with
+    // whole code points and reports what that took, so the cut is between characters.
+    const split = runWorker(`await sleep("1s");\n`, SPIN);
+    split.stop(`${"x".repeat(510)}\u4e2d\u4e2d`);
+    const splitMsg = String(failed(await split.done).message);
+    ok("a reason cut by the buffer is cut BETWEEN characters, never through one", !splitMsg.includes("\uFFFD") && splitMsg.includes("x".repeat(64)), splitMsg.slice(-24));
+    // The same on a four-byte character, because a two-byte cut is the easy half of the same bug.
+    const emoji = runWorker(`await sleep("1s");\n`, SPIN);
+    emoji.stop(`${"y".repeat(511)}\u{1F600}`);
+    const emojiMsg = String(failed(await emoji.done).message);
+    ok("including a four-byte one, which a two-byte fix would still cut", !emojiMsg.includes("\uFFFD"), emojiMsg.slice(-24));
+
+    // AN EMPTY REASON IS STILL A STOP, and it may not arrive as a control character. The length is
+    // what publishes the bytes, so zero would be no stop at all; flooring it at 1 made the run read
+    // whatever byte was there, and measured, that was a NUL on the end of the sentence.
+    const empty = runWorker(`await sleep("1s");\n`, SPIN);
+    empty.stop("");
+    const emptyAnswer = await empty.done;
+    ok("a stop with an EMPTY reason still ends the run", emptyAnswer.ok === false, JSON.stringify(emptyAnswer).slice(0, 100));
+    const emptyMsg = String(failed(emptyAnswer).message);
+    ok("and says so in a sentence, never as a NUL byte", emptyMsg.includes("gave no reason") && !emptyMsg.includes("\u0000"), emptyMsg.slice(-40));
+    // THE CONTROL, so none of the three above can be read as "the reason is rewritten": an ordinary
+    // one crosses exactly as the operator wrote it.
+    const plain = runWorker(`await sleep("1s");\n`, SPIN);
+    plain.stop("the deploy was rolled back");
+    ok("while an ordinary reason crosses exactly as written", String(failed(await plain.done).message).includes("the deploy was rolled back"), String(failed(await plain.done).message).slice(-40));
   }
 
   // ---- AND THE SET EQUALITY, read off the two files rather than remembered. A crossing added to
