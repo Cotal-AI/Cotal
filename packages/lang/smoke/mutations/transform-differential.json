@@ -201,6 +201,15 @@
       "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
       "cell": "every mutation's expectRed names exactly one cell this suite printed",
       "note": "A corpus row's name IS a cell's name here, so renaming a row is how this suite's aims go stale - and it changes no behaviour, so no other cell reds. Aimed at the row this config already anchors on, which is the pair most likely to drift together in a future edit. The rename REPLACES the trailing word rather than extending it: expectRed is matched as a substring, so `..., plainly enough` still contains `..., plainly` and the stale aim keeps matching. Measured as a SURVIVOR in that spelling before this one."
+    },
+    {
+      "name": "both crossings are handed a record the replaying engine does not speak, so the comparison has nothing to compare",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "    const back = { runId: \"d\", handler: new SimHandler({}), pins, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };",
+      "replace": "    const back = { runId: \"d\", handler: new SimHandler({}), pins: { ...pins, languageVersion: \"2\" }, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };",
+      "expectRed": "and the two finished journals are the same journal, entry for entry, with two journals there to compare",
+      "cell": "and the two finished journals are the same journal, entry for entry, with two journals there to compare",
+      "note": "The control that found the false green, kept as the mutant that grades its guard. Both resumes refuse L5008, both finish cells red, and BEFORE the guard this comparison still printed ok with entries [0, 0] - two identical empty placeholders comparing as agreement. The fault cannot be manufactured any other way: a comparison of two subjects only lies about them when BOTH are absent, so the mutant has to kill both crossings. It is aimed at the comparison rather than at the finish cells it also reds, which this COUNTING suite grades by name."
     }
   ],
   "completionMarker": "differential.smoke:"

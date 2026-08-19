@@ -953,9 +953,24 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     finished.push({ logs, entries: r === null ? [] : [...r.journal.entries()], value: r === null ? undefined : r.value });
   }
   const [a, b] = finished as [(typeof finished)[0], (typeof finished)[0]];
-  ok("and the two finished journals are the same journal, entry for entry", j(a.entries) === j(b.entries) && j(a.logs) === j(b.logs) && j(a.value) === j(b.value), {
-    entries: [a.entries.length, b.entries.length],
-  });
+  // TWO SYMMETRIC DEATHS ARE NOT AGREEMENT. A crossing whose resume throws still pushes a
+  // placeholder above — empty entries, empty logs, an undefined value — so comparing two FAILED
+  // crossings compares two identical nothings and passes. Measured, at 29f861c2 and with no version
+  // split in play: hand both resumes a record the replaying engine does not speak and both finish
+  // cells red with L5008 while this comparison printed `ok`, entries [0, 0]. The cell that carries
+  // "the same journal, not the same rendering" went green BECAUSE its two subjects died together.
+  //
+  // So a comparison whose subjects may not exist has to say they exist FIRST. `produced` is the
+  // predicate, named rather than inlined because it outlives this cell: when the cross-engine
+  // crossings become refusals and the property moves onto two FRESH runs, the carrier inherits the
+  // same hazard — two runs that both failed to produce a journal still agree perfectly — and it must
+  // carry this guard forward rather than lose it with the cell it was written for.
+  const produced = (x: (typeof finished)[0]) => x.entries.length > 0 && x.logs.length > 0;
+  ok(
+    "and the two finished journals are the same journal, entry for entry, with two journals there to compare",
+    produced(a) && produced(b) && j(a.entries) === j(b.entries) && j(a.logs) === j(b.logs) && j(a.value) === j(b.value),
+    { entries: [a.entries.length, b.entries.length], logs: [a.logs.length, b.logs.length] },
+  );
 
   // AND THE REFUSAL THAT PROTECTS IT, on both engines. A journal with recorded steps and no pins is
   // a different run wearing this one's history: the epoch would move to the resuming host and every
