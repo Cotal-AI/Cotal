@@ -174,6 +174,7 @@ try {
   // own fake OpenCode server when it finishes answering a queued read, so its presence after the
   // process is gone says the drain was allowed to finish rather than cut off by the exit.
   const marker = join(dir, "coop-read-finished");
+  const trigger = join(dir, "coop-start-drain");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -182,6 +183,7 @@ try {
       COTAL_EVENTS: "1",
       COTAL_WORKSPACE_ROOT: join(dir, "ws"),
       COOP_MARKER: marker,
+      COOP_TRIGGER: trigger,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -196,6 +198,11 @@ try {
     ottoLive = otto !== undefined && otto.status !== "offline";
   }
   check("the opencode plugin came online (Otto live in the watcher roster)", ottoLive);
+
+  // Start a drain and stop the seat while it is STILL RUNNING. Fired earlier, it would finish on
+  // its own and the marker would say nothing about whether the stop waited.
+  writeFileSync(trigger, "go\n");
+  await wait(400);
 
   // Drive the cooperative shutdown — exactly what the manager sends on a win32 graceful stop.
   const reply = await sendShutdown(ep.path, ep.token);

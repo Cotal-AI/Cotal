@@ -7,7 +7,7 @@
  * plugin's cooperative shutdown ends in process.exit, which would otherwise tear down the test itself.
  */
 import { once } from "node:events";
-import { writeFileSync } from "node:fs";
+import { existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { cotal } from "../src/plugin.js";
 
@@ -17,6 +17,7 @@ const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 // Set by the parent only for the teardown-join scenario; unset, this probe behaves exactly as
 // it always did and the original four cells are unaffected.
 const marker = process.env.COOP_MARKER?.trim() || undefined;
+const trigger = process.env.COOP_TRIGGER?.trim() || undefined;
 // Flipped immediately before the un-awaited create, so ONLY the read that the resulting drain
 // performs is slowed and marked. Counting reads instead was wrong: the bind does not read, so the
 // drain's read was the first one and the marker was never written even with the join in place.
@@ -63,8 +64,16 @@ if (marker) {
   const fire = (event: unknown): Promise<void> =>
     (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
   await fire({ type: "session.created", properties: { info: { id: "ses_coop" } } });
-  draining = true;
-  void fire({ type: "session.created", properties: { info: { id: "ses_next" } } });
+  // THE DRAIN MUST STILL BE IN FLIGHT WHEN THE STOP ARRIVES, which is the whole point and was the
+  // flaw in the first version of this: fired at boot, the drain finished long before the parent got
+  // round to sending the stop, so the marker appeared whether or not the stop waited for anything
+  // and the cell passed with the join removed. The parent now says when, and sends the stop while
+  // the read it triggers is still outstanding.
+  void (async () => {
+    while (trigger && !existsSync(trigger)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    draining = true;
+    void fire({ type: "session.created", properties: { info: { id: "ses_next" } } });
+  })();
 }
 
 // The plugin's control server keeps the event loop alive; the authenticated shutdown op calls
