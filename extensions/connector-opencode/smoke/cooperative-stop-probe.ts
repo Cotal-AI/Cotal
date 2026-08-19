@@ -111,6 +111,14 @@ if (cross) {
   };
 }
 const lateFired = process.env.COOP_LATE_FIRED?.trim() || undefined;
+// THE RESUME SEAT. `drive` reads its phase guards and THEN awaits session creation, so a drive
+// admitted while the seat was healthy is parked inside a server round trip when the stop lands.
+// Holding POST /session here is what puts it there: the plugin's `ensureSession` awaits the boot
+// create, so an inbound DM arriving before this answers admits a drive that cannot proceed. The
+// parent releases the hold only AFTER the shutdown, so any prompt this server then sees was
+// submitted by a drive that crossed the guard before the stop and resumed after it.
+const holdSession = process.env.COOP_HOLD_SESSION?.trim() || undefined;
+const holdRelease = process.env.COOP_HOLD_RELEASE?.trim() || undefined;
 let drainReads = 0;
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== auth) {
@@ -118,7 +126,19 @@ const oc = createServer((req, res) => {
     return;
   }
   if (req.method === "POST" && req.url === "/session") {
-    res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "ses_coop" }));
+    const answer = (): void => {
+      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "ses_coop" }));
+    };
+    if (holdSession) {
+      writeFileSync(holdSession, "session creation is held; any drive admitted now parks in it\n");
+      const poll = (): void => {
+        if (holdRelease && existsSync(holdRelease)) answer();
+        else setTimeout(poll, 10).unref?.();
+      };
+      poll();
+      return;
+    }
+    answer();
     return;
   }
   // The AG-UI source reads a session's records from here. The SECOND read is answered SLOWLY and

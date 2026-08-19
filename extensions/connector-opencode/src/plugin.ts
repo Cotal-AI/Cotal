@@ -24,8 +24,12 @@
  * road. A human typing in the attached TUI, or an API caller hitting the server directly, reaches
  * `chat.message` as a notification the connector cannot refuse: its hooks return `Promise<void>`
  * and influence the host by MUTATING the output object it is handed, and `chat.message`'s output
- * names no cancel and no skip. So a natively submitted prompt starts a model turn whether or not
- * this connector is stopping, cutting over, busy, or still holding the boot floor.
+ * names no cancel and no skip. So a natively submitted prompt REACHES THE HOST whether or not this
+ * connector is stopping, cutting over, busy, or holding the boot floor: none of those flags is
+ * consulted on that path. What the host then does with it is OpenCode's business, not this
+ * connector's, and it is not always a new model turn. At the pinned 1.16.2, a prompt arriving while
+ * the session is already running is coalesced into the run in flight rather than starting a second
+ * one, which is the same COALESCE behaviour `busy` exists to avoid provoking.
  *
  * Read every ordering and precedence claim in this file with that scope: they are claims about
  * connector-submitted turns against each other, not about the host's turns. Where a specific
@@ -234,8 +238,10 @@ export const cotal: Plugin = async () => {
   let busy = false; // a turn is running (ours via drive(), OR the human's via session.status) → don't
   // prompt: opencode would COALESCE onto it (no reject). Released at EVERY turn end (completeTurn).
   let driving = false; // re-entrancy guard around an in-flight server prompt
-  let primed = false; // persona is prepended to the first turn's text once
-  let briefed = false; // the boot channel briefing is prepended once, on the first turn
+  let primed = false; // persona goes out as `system` on the first CONNECTOR-SUBMITTED turn, once
+  // Set on the first connector-submitted turn whether or not there was a briefing to send: the flag
+  // records that the attempt was made, so an empty briefing is not retried on every later turn.
+  let briefed = false;
   let surfaced: string[] = []; // ids surfaced into the current turn, acked on completion (by id, not count)
   let awaitingTurnEnd = false; // a turn is in flight → ignore a duplicate idle that isn't its end
   let errorRetryTimer: ReturnType<typeof setTimeout> | undefined;
@@ -623,6 +629,15 @@ export const cotal: Plugin = async () => {
     try {
       const id = await ensureSession();
       if (!id) return; // no visible session yet — retry on the next event/wake
+      // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
+      // creation is a server round trip, so a drive admitted while the seat was running can park
+      // here and come back after `quiesce` has set `stopping` and published departure. Submitting
+      // then is the defect this change exists to stop, arriving through the one door that was
+      // already past the check rather than through a door that was never guarded. A reviewer
+      // reproduced it live by holding POST /session and disposing while a real DM was parked here.
+      // Nothing has been consumed at this point (peekInbox has not run and `surfaced` is unset), so
+      // returning leaves the batch to be redelivered on the next wake.
+      if (stopping || swapping) return;
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];
       if (override) {

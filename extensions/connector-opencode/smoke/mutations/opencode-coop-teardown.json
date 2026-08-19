@@ -108,7 +108,18 @@
     "element and never rejects, so partial absorption is not a state this code can express. C14 through",
     "C17 therefore grade a REGRESSION rather than a property. Each replaces allSettled with a different",
     "hand-rolled wait, and each is caught by the seat whose shape that wait fails. None of them, and no",
-    "finite set of seats, establishes elementwise absorption for every length; the primitive does."
+    "finite set of seats, establishes elementwise absorption for every length; the primitive does.",
+    "",
+    "C18 IS THE ONE DOOR THAT WAS ALREADY PAST THE CHECK. Every other cell here parks work that has yet",
+    "to be refused, or work that reaches presence. C18 parks a TURN SUBMISSION: drive reads its phase",
+    "guards and then awaits session creation, so the read and the submit are separated by a server round",
+    "trip, and a drive admitted while the seat was healthy resumes inside teardown. A reviewer",
+    "reproduced that live before this cell existed, and the first version of the cell was VACUOUS: with",
+    "nothing else parked, quiesce had an empty intake set and the process exited before the drive could",
+    "resume, so the seat went green on a tree with the defect still in it. The seat now parks a tool",
+    "call as well, which is what holds the teardown open long enough for the window to be real. That is",
+    "also why the precondition is its own cell: if the parked call is not there, the result below grades",
+    "nothing. A SURVIVED on C18 means the window closed again, not that the code is safe."
   ],
   "mutations": [
     {
@@ -170,7 +181,7 @@
     {
       "name": "C9 the tool map stops refusing, so a cotal_* call still inside the model's turn runs after the stop and its presence write puts the seat back on the mesh",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
       "replace": "            await track(def.execute(...args)),\n",
       "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
     },
@@ -191,8 +202,8 @@
     {
       "name": "C12 the tool path stops being tracked, which the hook path cannot stand in for because a tool reaches the agent without passing through the plugin's presence helper",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
-      "replace": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
+      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "replace": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
       "expectRed": "tool-seat: departure was still unpublished while admitted work was in flight"
     },
     {
@@ -229,6 +240,13 @@
       "find": "    const settled = await settleWithin(Promise.allSettled([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "replace": "    const settled = await settleWithin(Promise.all([...inFlight].map((work, i, all) => (i === 0 || i === all.length - 1 ? work.then(() => undefined, () => undefined) : work))), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n",
       "expectRed": "interior-seat: an interior failure did not release departure while parked work remained"
+    },
+    {
+      "name": "C18 the phase recheck after session creation is dropped, so a drive that passed the guard and parked in the server round trip resumes after teardown and submits a turn the seat had already announced it would not start",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (stopping || swapping) return;\n",
+      "replace": "",
+      "expectRed": "resume-seat: a drive already past the guard submitted no turn after teardown began"
     }
   ]
 }

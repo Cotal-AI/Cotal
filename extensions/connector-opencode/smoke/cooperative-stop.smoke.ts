@@ -114,6 +114,7 @@ let toolProbe: ReturnType<typeof spawn> | undefined;
 let modelProbe: ReturnType<typeof spawn> | undefined;
 let mirrorProbe: ReturnType<typeof spawn> | undefined;
 let interiorProbe: ReturnType<typeof spawn> | undefined;
+let resumeProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -638,6 +639,116 @@ try {
     interiorBeforeRelease !== undefined && interiorBeforeRelease !== "offline", { interiorBeforeRelease });
   writeFileSync(interiorRelease, "go\n");
   await awaitExit(interiorProbe, 15_000);
+
+  // ---- A SIXTH SEAT, FOR A DRIVE THAT WAS ALREADY PAST THE GUARD.
+  //
+  // Every seat above parks work that reaches presence. None of them parks a TURN SUBMISSION, and
+  // that is a different door: `drive` reads `stopping` and then awaits session creation, so the
+  // read and the submission are separated by a server round trip. A drive admitted while the seat
+  // was healthy sits inside that round trip when the stop lands, and on resume it submitted a turn
+  // after departure had published. The guard cannot see it, because it already passed.
+  //
+  // The hold is what makes the window certain rather than hoped for: POST /session does not answer
+  // until this parent releases it, and the release happens only after the shutdown is acked, so a
+  // prompt reaching the fake server in this seat cannot be a pre-stop turn that merely landed late.
+  //
+  // THE PRECONDITION IS CARRIED BY THE MUTATION, not by a marker, and that is deliberate. Nothing
+  // observable distinguishes "the drive was admitted and refused on resume" from "no drive was ever
+  // admitted": both submit nothing. So this cell would pass vacuously if the DM never landed. What
+  // rules that out is C18: with the recheck removed the seat must go RED, which it can only do if a
+  // drive really was admitted and really did resume. A SURVIVED there means this seat graded an
+  // absent state, and that is the report we want rather than a green cell.
+  const rheaId = newIdentity();
+  const rheaUid = mintLifecycleUid();
+  const rheaCreds = await provisionAgent(mgr, auth, rheaId, { ...acl, role: "worker", lifecycleUid: rheaUid });
+  const rheaCredsFile = join(dir, "rhea.creds");
+  writeFileSync(rheaCredsFile, rheaCreds);
+  const resumeSpec = opencodeConnector.buildLaunch({
+    space, name: "Rhea", role: "worker", id: rheaId.id, lifecycleUid: rheaUid, creds: rheaCredsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const resumeEp = resumeSpec.control!;
+  const resumeHeld = join(dir, "resume-session-held");
+  const resumeRelease = join(dir, "resume-session-release");
+  const resumePrompts = join(dir, "resume-prompts");
+  // A PARKED PRESENCE WRITE HOLDS THE TEARDOWN OPEN, and without it this seat grades nothing. With
+  // an empty intake set `quiesce` has nothing to wait for, so it publishes departure and exits
+  // before the released drive can resume, and the cell passes with the defect in place. Measured,
+  // not predicted: the first version of this seat did exactly that and went green on an unfixed
+  // tree. The tool door is used because a tool carries no session and can be armed from anywhere.
+  const resumeArm = join(dir, "resume-tool-arm");
+  const resumeParked = join(dir, "resume-tool-parked");
+  const resumeToolRelease = join(dir, "resume-tool-release");
+  mkdirSync(join(dir, "ws-resume"), { recursive: true });
+  resumeProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...resumeSpec.env,
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-resume"),
+      COOP_HOLD_SESSION: resumeHeld,
+      COOP_HOLD_RELEASE: resumeRelease,
+      COOP_PROMPTS: resumePrompts,
+      COOP_CROSS: "tool",
+      COOP_CROSS_ARM: resumeArm,
+      COOP_CROSS_PARKED: resumeParked,
+      COOP_CROSS_RELEASE: resumeToolRelease,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  // Presence does not depend on the session: the mesh agent connects on its own, so the seat is
+  // live in the roster while its session creation is still held.
+  let rheaLive = false;
+  for (let i = 0; i < 100 && !rheaLive; i++) {
+    await wait(100);
+    const r = watcher.getRoster().find((p) => p.card.name === "Rhea");
+    rheaLive = r !== undefined && r.status !== "offline";
+  }
+  let sessionHeld = false;
+  for (let i = 0; i < 60 && !sessionHeld; i++) {
+    await wait(50);
+    sessionHeld = existsSync(resumeHeld);
+  }
+  check("resume-seat: the seat came online with its session creation still held",
+    rheaLive && sessionHeld, { rheaLive, sessionHeld });
+
+  // A REAL INBOUND MESSAGE, through the ordinary door. The inbox handler starts a turn on `!busy`,
+  // so this admits a drive that immediately parks awaiting the held session.
+  const rhea = watcher.getRoster().find((pr) => pr.card.name === "Rhea");
+  if (rhea) await watcher.unicast(rhea.card.id, "a message admitted before the stop");
+  await wait(500);
+
+  // Armed only now, so the presence write is admitted while the seat is genuinely online.
+  writeFileSync(resumeArm, "go\n");
+  let resumeToolParked = false;
+  for (let i = 0; i < 60 && !resumeToolParked; i++) {
+    await wait(50);
+    resumeToolParked = existsSync(resumeParked);
+  }
+  // The precondition for the window, graded rather than assumed: the teardown must have something
+  // to wait on, or it exits before the drive resumes and the cell below means nothing.
+  check("resume-seat: admitted work is parked, so the teardown will hold rather than exit",
+    resumeToolParked, { resumeParked });
+
+  const resumeReply = await sendShutdown(resumeEp.path, resumeEp.token);
+  check("resume-seat: control server acked the shutdown",
+    resumeReply.trim() === JSON.stringify({ ok: true }), resumeReply);
+
+  // Released while the teardown is parked on the tool call, so the drive resumes INSIDE the window
+  // rather than after the process is gone. If it still resumes too late to matter, C18 reports
+  // SURVIVED and this seat is grading an absent state again.
+  writeFileSync(resumeRelease, "go\n");
+  await wait(400);
+  writeFileSync(resumeToolRelease, "go\n");
+  await awaitExit(resumeProbe, 15_000);
+
+  // Session creation was held until after the shutdown was acked, so ANY prompt here was submitted
+  // by a drive that crossed the guard before the stop and resumed after it.
+  const resumeSubmitted = existsSync(resumePrompts)
+    ? readFileSync(resumePrompts, "utf8").split("\n").filter(Boolean)
+    : [];
+  check("resume-seat: a drive already past the guard submitted no turn after teardown began",
+    resumeSubmitted.length === 0, { resumeSubmitted });
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
@@ -648,6 +759,7 @@ try {
     if (modelProbe && modelProbe.exitCode === null) modelProbe.kill("SIGKILL");
     if (mirrorProbe && mirrorProbe.exitCode === null) mirrorProbe.kill("SIGKILL");
     if (interiorProbe && interiorProbe.exitCode === null) interiorProbe.kill("SIGKILL");
+    if (resumeProbe && resumeProbe.exitCode === null) resumeProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }
