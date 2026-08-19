@@ -339,6 +339,19 @@ smoke:opencode-events-reset
 smoke:goal-follow
 smoke:required-arg-seam
 smoke:attach-stdin
+
+# The Codex connector's AG-UI event plane: the mapper against a real app-server
+# thread, the launch arm, and the per-agent rollout resolution.
+smoke:agui-codex-map
+smoke:codex-events-arm
+smoke:codex-rollout-path
+# The same plane through the seam a spawn actually takes: a real broker, the real host process, a
+# real rollout on disk, and a subscriber reading the frames off the channel.
+smoke:codex-events-lifecycle
+
+# The engine host (engine wave, lane H): the seam the transformed module is handed, the worker that
+# runs it under lockdown in a Compartment with zero endowments, and the laws the walker enforces
+# inline enforced here at one boundary instead.
 smoke:lang-engine
 
 # The source transform (engine wave, lane T): the emitted module's surface — closed over the seam,
