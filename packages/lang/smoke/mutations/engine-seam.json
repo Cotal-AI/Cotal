@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/engine.smoke.ts",
-  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, and the calling-convention adapter that exists only on this side. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side, and the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
   "why": [
@@ -119,6 +119,56 @@
       "completionMarker": "ok calling a non-function value is L4011",
       "cell": "a seam call outside any frame throws rather than inventing a root frame",
       "note": "No fallback frame, deliberately: a stray call given a root frame gets a key namespace, a clock and a depth belonging to no branch, and its step lands in the wrong place in the journal instead of failing."
+    },
+    {
+      "name": "the run is pinned to the MODULE's hash instead of the source's",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  const programHash = programHashOf(source);",
+      "replace": "  const programHash = programHashOf(module);",
+      "expectRed": "its programHash is the SOURCE's hash, not the module's",
+      "completionMarker": "ok runOnEngine answers the walker's RunResult shape",
+      "cell": "its programHash is the SOURCE's hash, not the module's",
+      "note": "A run record names the program an author wrote, not the string a compiler produced. Pinned to the module, a transform release would re-hash every open run and no walker-written journal could ever be resumed on the engine."
+    },
+    {
+      "name": "the source is never validated, so the engine executes what the walker would refuse",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  validate(source, options.file);",
+      "replace": "",
+      "expectRed": "invalid source is refused before the module is ever evaluated",
+      "completionMarker": "ok the step COUNTS differ, which is the declared v2 pin-unit divergence",
+      "cell": "invalid source is refused before the module is ever evaluated",
+      "note": "The validator's refusals have to arrive before anything is journalled, whichever engine is about to execute. Without this the engine is a second, laxer front door onto the same journal."
+    },
+    {
+      "name": "a resume with no pins re-resolves them instead of refusing",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (options.pins === undefined && options.journal !== undefined && options.journal.entries().length > 0) {",
+      "replace": "  if (false) {",
+      "expectRed": "a journal with entries and no pins is L5021, not a silently different run",
+      "completionMarker": "ok the caller's evaluator is what turns the module into a factory",
+      "cell": "a journal with entries and no pins is L5021, not a silently different run",
+      "note": "Silent by construction: the clock moves to the resuming host and the seed falls back to the runId default, and neither the epoch nor a pure draw is a recorded fact a replay could diverge on."
+    },
+    {
+      "name": "a run accepts another run's journal",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (options.journal !== undefined && options.journal.run !== options.runId) {",
+      "replace": "  if (false) {",
+      "expectRed": "and another run's journal is L5011",
+      "completionMarker": "ok a journal with entries and no pins is L5021, not a silently different run",
+      "cell": "and another run's journal is L5011",
+      "note": "Request ids derive from the runId while recorded results come from the journal, so a mismatch submits work under one identity and resolves it against another's history."
+    },
+    {
+      "name": "the effect ceiling counts per activation instead of per run",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    effectCount: run.journal.dispatchedEffects(),",
+      "replace": "    effectCount: 0,",
+      "expectRed": "a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one",
+      "completionMarker": "ok a run right up to its ceiling completes",
+      "cell": "a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one",
+      "note": "The engine builds its own EffectHost, so this seeding is engine-specific wiring the walker's effect-ceiling config does not reach. Under the mutant the resume gets a full fresh allowance, performs the two remaining sleeps and ends GREEN with six entries - a runaway loop that crashes periodically never reaches the ceiling at all."
     }
   ]
 }

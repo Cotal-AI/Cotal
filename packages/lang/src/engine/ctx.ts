@@ -161,7 +161,30 @@ function refuseThenable(v: unknown, where: string): void {
 
 // ---- the seam ----------------------------------------------------------------------------------
 
+/**
+ * The seam, plus the one thing the HOST needs from it that the program must never see.
+ *
+ * `steps()` is the count charged against the step budget, which a `RunResult` reports so a host can
+ * see how close a program runs to the ceiling before the ceiling is what tells it. It is deliberately
+ * NOT a member of {@link EngineCtx}: everything on that interface is reachable from inside the
+ * compartment, and a program that can read its own fuel gauge can shape its behaviour around one.
+ */
+export function createEngine(run: EngineRun): { readonly ctx: EngineCtx; steps(): number } {
+  const ctx = buildCtx(run);
+  return { ctx, steps: () => ctx[STEPS]() };
+}
+
+/** The seam alone. */
 export function createCtx(run: EngineRun): EngineCtx {
+  return buildCtx(run);
+}
+
+/** Where the step count hides: a symbol the language cannot name, on the object the program holds. */
+const STEPS: unique symbol = Symbol("cotal-lang engine steps");
+
+type CtxWithSteps = EngineCtx & { readonly [STEPS]: () => number };
+
+function buildCtx(run: EngineRun): CtxWithSteps {
   const prng = new Prng(run.pins.seed);
 
   // The effect seam is ONE function over ONE table, shared with the walker (src/perform.ts). The
@@ -575,7 +598,12 @@ export function createCtx(run: EngineRun): EngineCtx {
     },
   };
 
-  return ctx;
+  return Object.defineProperty(ctx, STEPS, {
+    value: () => steps,
+    enumerable: false,
+    writable: false,
+    configurable: false,
+  }) as CtxWithSteps;
 }
 
 // ---- the classes a program may not catch, and the value one that it may -------------------------

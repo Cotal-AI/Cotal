@@ -23,7 +23,9 @@ import { resolvePins } from "../src/pins.js";
 import { RuntimeFault } from "../src/errors.js";
 import { Cancelled } from "../src/effects.js";
 import { SimHandler } from "../src/sim.js";
-import { createCtx, type EngineCtx, type EngineRun } from "../src/engine/ctx.js";
+import { createCtx, createEngine, type EngineCtx, type EngineRun } from "../src/engine/ctx.js";
+import { runOnEngine } from "../src/engine/host.js";
+import { run as walkerRun } from "../src/interpret.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
 
 let pass = 0;
@@ -527,6 +529,192 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
     replayRun.journal.entries().map((e) => stepKeyString({ scope: [], kind: e.kind, name: e.name, occurrence: e.occurrence })).join(" ") ===
       first.run.journal.entries().map((e) => stepKeyString({ scope: [], kind: e.kind, name: e.name, occurrence: e.occurrence })).join(" "),
   );
+}
+
+// ---- 12) the host: the walker's own run shape, and the first end-to-end journal comparison ------
+//
+// `runOnEngine` exists so the differential suite can call one engine and then the other with nothing
+// between them. The cells below are NOT the differential gate - that is lane T's suite over the real
+// transform's output, on a real corpus. What they prove is that the wiring produces the walker's
+// RunResult and, for one hand-written pair, the SAME journal. One program is an existence proof, not
+// a gate, and it is written down here so nobody reads it as one.
+
+/** A plain evaluator. The confined path is the worker; this is a test process comparing two engines. */
+const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =>
+  // eslint-disable-next-line no-eval
+  (0, eval)(module) as (ctx: EngineCtx) => () => Promise<unknown>;
+
+const SOURCE = `
+const builder = await spawn("builder", { name: "hire" });
+const r = await turn(builder, { name: "build" });
+log("status", r.status);
+`;
+const MODULE = `(ctx) => async () => {
+  await ctx.fuel();
+  const builder = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
+  const r = await ctx.effect("turn", [builder, ctx.born({ name: "build" })]);
+  await ctx.free("log", ["status", ctx.get(r, "status")]);
+}`;
+const SCRIPT = { turns: { build: { status: "done" as const } } };
+
+{
+  const logs: unknown[][] = [];
+  const engine = await runOnEngine(SOURCE, MODULE, {
+    runId: "host-1",
+    handler: new SimHandler(SCRIPT),
+    evaluate: plainly,
+    onLog: (l) => logs.push([...l.values]),
+  });
+
+  ok("runOnEngine answers the walker's RunResult shape", typeof engine.programHash === "string" && engine.journal instanceof Journal);
+  ok("its programHash is the SOURCE's hash, not the module's", engine.programHash === programHashOf(SOURCE), engine.programHash);
+  ok("it charged steps and reports them", engine.steps > 0, engine.steps);
+  ok("and the log builtin reached the host's onLog", JSON.stringify(logs) === '[["status","done"]]', logs);
+
+  // THE COMPARISON. Same source, same script, same run id - so the same seed and the same logical
+  // epoch - through the walker and through the engine.
+  const walker = await walkerRun(SOURCE, { runId: "host-1", handler: new SimHandler(SCRIPT) });
+
+  ok("both engines agree on the program hash", walker.programHash === engine.programHash);
+  ok(
+    "and on every pin",
+    JSON.stringify(walker.pins) === JSON.stringify(engine.pins),
+    { walker: walker.pins, engine: engine.pins },
+  );
+
+  const strip = (j: Journal): string => JSON.stringify(j.entries());
+  ok("the journals are IDENTICAL, entry for entry", strip(walker.journal) === strip(engine.journal), {
+    walker: walker.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+    engine: engine.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+  });
+  // The comparator's own failure mode is that two EMPTY journals compare equal. A corpus program
+  // that journals nothing would pass every comparison ever written.
+  ok("and there was something to compare", engine.journal.entries().length === 2, engine.journal.entries().length);
+
+  // THE DECLARED DIVERGENCE, asserted rather than excluded. The walker charges one dispatch per node
+  // it walks; the engine charges one transformed-site hit. Steps are never journalled, so this
+  // changes no record - but it is the languageVersion 2 pin-unit change, and a suite that quietly
+  // dropped `steps` from its comparison would be hiding a real difference rather than declaring one.
+  ok("the step COUNTS differ, which is the declared v2 pin-unit divergence", walker.steps !== engine.steps, {
+    walker: walker.steps,
+    engine: engine.steps,
+  });
+}
+
+{
+  // The validator runs first, on the SOURCE, whichever engine is about to execute.
+  let refused: unknown;
+  try {
+    await runOnEngine("const x = new Date();", MODULE, {
+      runId: "host-bad",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+    });
+  } catch (e) {
+    refused = e;
+  }
+  ok("invalid source is refused before the module is ever evaluated", refused !== undefined, String(refused));
+
+  // The evaluator is the injection point, and it is used: no hidden default path.
+  let sawModule: string | undefined;
+  await runOnEngine(SOURCE, MODULE, {
+    runId: "host-2",
+    handler: new SimHandler(SCRIPT),
+    evaluate: (m) => {
+      sawModule = m;
+      return plainly(m);
+    },
+  });
+  ok("the caller's evaluator is what turns the module into a factory", sawModule === MODULE);
+}
+
+{
+  // A resume that will not say which run it is resuming.
+  const first = await runOnEngine(SOURCE, MODULE, { runId: "host-3", handler: new SimHandler(SCRIPT), evaluate: plainly });
+  const carried = new Journal({ run: "host-3", entries: first.journal.entries() });
+  ok(
+    "a journal with entries and no pins is L5021, not a silently different run",
+    codeOf(
+      await caught(() =>
+        runOnEngine(SOURCE, MODULE, { runId: "host-3", handler: new SimHandler(SCRIPT), evaluate: plainly, journal: carried }),
+      ),
+    ) === "L5021",
+  );
+  ok(
+    "and another run's journal is L5011",
+    codeOf(
+      await caught(() =>
+        runOnEngine(SOURCE, MODULE, {
+          runId: "host-other",
+          handler: new SimHandler(SCRIPT),
+          evaluate: plainly,
+          journal: new Journal({ run: "host-3" }),
+          pins: first.pins,
+        }),
+      ),
+    ) === "L5011",
+  );
+}
+
+{
+  // THE EFFECT CEILING IS A RUN BOUND, and the engine's own wiring is what seeds it. Counted per
+  // activation instead, a runaway loop that crashed or was released periodically would never reach
+  // the ceiling however much it performed against the world - and the fault text would claim a
+  // run-scoped fact from an activation-scoped counter.
+  const CEIL_SOURCE = `
+await sleep("1m", { name: "s0" });
+await sleep("1m", { name: "s1" });
+await sleep("1m", { name: "s2" });
+await sleep("1m", { name: "s3" });
+`;
+  const sleeps = (n: number): string => `(ctx) => async () => {
+    for (let i = 0; i < ${n}; i += 1) {
+      await ctx.fuel();
+      await ctx.effect("sleep", ["1m", ctx.born({ name: "s" + i })]);
+    }
+  }`;
+
+  const journal = new Journal({ run: "ceil" });
+  const first = await runOnEngine(CEIL_SOURCE, sleeps(4), {
+    runId: "ceil",
+    handler: new SimHandler({}),
+    evaluate: plainly,
+    effectCeiling: 4,
+    journal,
+  });
+  ok("a run right up to its ceiling completes", journal.entries().length === 4, journal.entries().length);
+
+  // The resume: four recorded sleeps replay, and the FIFTH is the one the ceiling has to refuse.
+  const resumed = new Journal({ run: "ceil", entries: journal.entries() });
+  const e = await caught(() =>
+    runOnEngine(CEIL_SOURCE, sleeps(6), {
+      runId: "ceil",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+      journal: resumed,
+      pins: first.pins,
+    }),
+  );
+  ok("a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one", codeOf(e) === "L4009", String(e));
+  ok("the message quotes the pinned ceiling", (e as Error).message.includes("more than 4 effects"), (e as Error).message.slice(0, 70));
+  // The discriminating half: counted per activation, the resume would have had a full fresh
+  // allowance and simply performed the two remaining sleeps, ending green with six entries.
+  ok(
+    "and it dispatched nothing new: the count started where the run left off",
+    resumed.entries().length === 4,
+    resumed.entries().length,
+  );
+}
+
+{
+  // The fuel gauge is the host's, not the program's: everything on EngineCtx is reachable from
+  // inside the compartment, so a program that could read its own step count could shape itself
+  // around one.
+  const h = harness();
+  const e = createEngine(h.run);
+  ok("the step count is NOT a member of the seam", !("steps" in (e.ctx as unknown as Record<string, unknown>)));
+  ok("and it is not enumerable on the object the program holds", !Object.keys(e.ctx).includes("steps"));
+  ok("but the host can read it", typeof e.steps() === "number");
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);
