@@ -610,6 +610,16 @@ export const cotal: Plugin = async () => {
    *  them — ackSurfaced runs on turn completion, so a crash/error redelivers. `override` replaces
    *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
    *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
+  /** THE PHASE REFUSAL, as one predicate read twice rather than two copies of the same condition.
+   *  `drive` reads it on entry and again after session creation resumes, and both readings have to
+   *  mean the same thing: a copy is what lets a later change update one site and leave the other
+   *  saying something else. It is also what keeps the mutations honest. With the condition written
+   *  out twice, a mutation that removed `swapping` from the entry line was silently covered by the
+   *  second line and reported SURVIVED, so the cell that existed to prove the refusal stopped
+   *  proving anything. Measured here, not supposed: C2 and C5 both survived the moment the recheck
+   *  was added, and they discriminate again now that there is one predicate to break. */
+  const phaseClosed = (): boolean => stopping || swapping;
+
   async function drive(override?: string): Promise<void> {
     // THE REFUSALS LIVE HERE, at the one place this connector submits a turn, rather than at each
     // caller.
@@ -623,7 +633,7 @@ export const cotal: Plugin = async () => {
     // Listing which callers are covered is what let that through; the condition is the state, so a
     // caller that reaches this line is refused by it. A prompt submitted natively in the host does
     // not route through `drive` at all; the fence note on the hook table below covers that path.
-    if (stopping || driving || busy || swapping) return;
+    if (phaseClosed() || driving || busy) return;
     if (bootPrompt !== undefined) return; // the boot turn leads the connector's own; this batch waits
     driving = true;
     try {
@@ -637,7 +647,7 @@ export const cotal: Plugin = async () => {
       // reproduced it live by holding POST /session and disposing while a real DM was parked here.
       // Nothing has been consumed at this point (peekInbox has not run and `surfaced` is unset), so
       // returning leaves the batch to be redelivered on the next wake.
-      if (stopping || swapping) return;
+      if (phaseClosed()) return;
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];
       if (override) {

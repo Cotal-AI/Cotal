@@ -132,8 +132,8 @@
     {
       "name": "C2 a turn may start mid-cutover again, so an ordinary inbound message prompts the new session before its replacement holder is installed",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    if (stopping || driving || busy || swapping) return;\n",
-      "replace": "    if (stopping || driving || busy) return;\n",
+      "find": "  const phaseClosed = (): boolean => stopping || swapping;\n",
+      "replace": "  const phaseClosed = (): boolean => stopping;\n",
       "expectRed": "no turn was started while the cutover was open"
     },
     {
@@ -153,8 +153,8 @@
     {
       "name": "C5 teardown stops being a refusal, so the swap's deferred drive starts a NEW turn while the stop is still joining the chain, after presence has gone offline",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    if (stopping || driving || busy || swapping) return;\n",
-      "replace": "    if (driving || busy || swapping) return;\n",
+      "find": "  const phaseClosed = (): boolean => stopping || swapping;\n",
+      "replace": "  const phaseClosed = (): boolean => swapping;\n",
       "expectRed": "the teardown started no turn of its own after the stop began"
     },
     {
@@ -244,7 +244,7 @@
     {
       "name": "C18 the phase recheck after session creation is dropped, so a drive that passed the guard and parked in the server round trip resumes after teardown and submits a turn the seat had already announced it would not start",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "      if (stopping || swapping) return;\n",
+      "find": "      if (phaseClosed()) return;\n",
       "replace": "",
       "expectRed": "resume-seat: a drive already past the guard submitted no turn after teardown began"
     }
