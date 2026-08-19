@@ -288,6 +288,10 @@ log("rounds", rounds, r.status);`,
     { turns: { t: { status: "done", at: 0 } } },
   ],
   ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done", at: 0 } } }, "L3021"],
+  // F7 RETIRED, both halves landed: the transform classifies the dead zone as a cell and reads it by
+  // name, the host answers L2004 for an absent own `v`. Held until 93bab769, compared from here on.
+  ["a temporal dead zone", "const f = () => x; const r = f(); const x = 1; log(r);", {}, "L2004"],
+  ["a temporal dead zone the program catches", 'const f = () => x; try { log(f()); } catch (e) { log(e.code, e.kind); } const x = 1;', {}],
   // AND THE MIRROR: the OPTIONS BAG is evaluated BEFORE the scope. `sleep:warm` lands ahead of
   // `fanOut:f` here, so an emission that deferred everything (rather than the ruled position alone)
   // reds on order in this program while the one below stays green.
@@ -512,27 +516,12 @@ interface HeldAnswers {
  */
 const HELD: readonly (readonly [string, string, object, readonly string[], HeldAnswers, string])[] = [
   [
-    "a temporal dead zone",
-    "const f = () => x; const r = f(); const x = 1; log(r);",
-    {},
-    ["logs", "error"],
-    { walker: "L2004", engine: "logs [[null]]" },
-    "F7, ruled option (b) and HALF LANDED: the transform classifies this binding as a dead-zone cell and reads it as `get(cell, \"v\", \"x\")`, so the native ReferenceError is gone. What is left is the host half - `get` does not yet take the third argument, so an absent own `v` answers undefined where the walker refuses L2004. It converges the day that argument lands, and this cell reds", ],
-  [
-    "a temporal dead zone the program catches",
-    'const f = () => x; try { log(f()); } catch (e) { log(e.code, e.kind); } const x = 1;',
-    {},
-    ["logs"],
-    { walker: "logs [[\"L2004\",\"runtime\"]]", engine: "logs [[null]]" },
-    "the same F7, in the shape that shows what a program actually sees. The engine no longer reports L4000/host, because there is no host error any more: the read answers the record's absent field and the program logs undefined. The named `get` turns that into L2004/runtime",
-  ],
-  [
     "a dead-zone WRITE, which the ruling did not spell",
     "const f = () => { n = 1; }; f(); let n = 0; log(n);",
     {},
     ["error"],
-    { walker: "L2004", engine: "ReferenceError: Cannot access 'n' before initialization" },
-    "MEASURED, and it is the write half of F7, which the ruled predicate does not cover: it quantifies over READS, and nothing reads `n` early here. The walker refuses `n is assigned before its declaration was reached` L2004; the binding is a cell for the WRITE rule, so its record is built at the declaration, and the early `set` reaches the record's own native binding first - a ReferenceError, which is the class lane H's loud clause refuses as an engine fault. Left LOUD on purpose: extending the classifier to writes would hoist the record and the early write would land in it silently, so the program would log 0 where the walker refuses. The fix is the mirror of `get`'s third argument - `set` taking the binding name where the write is not the declaration's - and that is a ruling, not an emitter choice",
+    { walker: "L2004", engine: "EngineFault: the engine broke its own contract: Cannot access 'n' before initialization. The " },
+    "MEASURED, and it is the write half of F7, which the ruled predicate does not cover: it quantifies over READS, and nothing reads `n` early here. The walker refuses `n is assigned before its declaration was reached` L2004; the binding is a cell for the WRITE rule, so its record is built at the declaration, and the early `set` reaches the record's own native binding first - a ReferenceError, which lane H's loud clause now refuses as an ENGINE fault carrying the native message along (the pin is the 80 characters this harness keeps). Left LOUD on purpose: extending the classifier to writes would hoist the record and the early write would land in it silently, so the program would log 0 where the walker refuses. The fix is the mirror of `get`'s third argument - `set` taking the binding name where the write is not the declaration's - and that is a ruling, not an emitter choice",
   ],
 ];
 {
