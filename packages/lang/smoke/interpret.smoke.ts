@@ -630,7 +630,7 @@ log(c.status);
   ok("escalation stays inside ONE journal entry", cps.length === 1, cps.length);
   ok("and that entry is occurrence 0, not a second occurrence", cps[0]?.occurrence === 0);
 
-  const attempts = (cps[0]?.result as { attempts?: { attempt: number; requestId: string }[] })?.attempts ?? [];
+  const attempts = (cps[0]?.result as { attempts?: { attempt: number; requestId: string; settled?: string; to?: string | null }[] })?.attempts ?? [];
   ok("the entry records both attempts", attempts.length === 2, attempts);
   ok(
     "each attempt has its OWN identity, derivable before its mint",
@@ -639,6 +639,17 @@ log(c.status);
     attempts.map((a) => a.requestId),
   );
   ok("the program sees the escalated answer", logs[0] === "resolved", logs);
+  // The rest of each attempt's record, which the cells above never read: the identities can be
+  // perfect while the row says the wrong thing happened. Nothing in this package consumes
+  // `settled` or `to` today, so a drift there is silent until the first consumer trusts it, and
+  // both were measured as unasserted: attempt 0's `settled` flipped from `expired` to `resolved`,
+  // and the escalation's `to` dropped entirely, each left every lang suite green. The record's
+  // whole job is to say what happened to whom, so it is asserted here rather than believed.
+  ok(
+    "each attempt records what it settled as, and the escalation records who it went to",
+    attempts[0]?.settled === "expired" && attempts[1]?.settled === "resolved" && attempts[1]?.to === "david",
+    attempts,
+  );
 
   // THE LINE I FLAGGED AS WEAKEST, now asserted rather than believed. Attempt 1's identity is
   // derived from the checkpoint's input projection; if that projection ever drifts from the value

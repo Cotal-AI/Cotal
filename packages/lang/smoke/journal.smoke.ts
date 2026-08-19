@@ -134,6 +134,41 @@ const H = (v: unknown) => digest(v);
   );
 }
 
+// ---- 3c) ...and the scope is part of that identity, not just the step's own name ---------------
+//
+// 3b's two rows differ by NAME, so a bind that matched on the leaf alone (kind, name, occurrence)
+// and discarded the scope path would still land on the right row and the cell would pass. Measured
+// by a review, not argued: with `Journal.keyOf` reduced to the leaf, all fifteen lang suites stayed
+// green while a bind meant for one parallel branch landed on the other. Sibling branches are the
+// case that actually collides, because a parallel runs the SAME step in each of them: `left` and
+// `right` here both hold `turn:build#0` and differ only in the branch they run under. Recovery
+// reads the branch that never bound, so it re-creates the resource, while the branch that did bind
+// carries a reference to work the other branch owns.
+{
+  const j = new Journal({ run: "r-3c" });
+  const s = new KeyScope();
+  const occ = s.nextScope("parallel", "review");
+  const left = s.branch("parallel", "review", occ, "left").nextEffect("turn", "build");
+  const right = s.branch("parallel", "review", occ, "right").nextEffect("turn", "build");
+  const h = H({ agent: "builder" });
+  await j.begin(left, h, 1000);
+  await j.begin(right, h, 1000);
+  await j.bind(right, { goalId: "g-right" });
+
+  const resumed = new Journal({ run: "r-3c", entries: j.entries() });
+  const s2 = new KeyScope();
+  const occ2 = s2.nextScope("parallel", "review");
+  const vLeft = resumed.lookup(s2.branch("parallel", "review", occ2, "left").nextEffect("turn", "build"), h);
+  const vRight = resumed.lookup(s2.branch("parallel", "review", occ2, "right").nextEffect("turn", "build"), h);
+  ok(
+    "the bind lands in the branch that asked for it, and its sibling running the same step is untouched",
+    vRight.verdict === "pending" && vLeft.verdict === "pending"
+      && (vRight.entry.external as { goalId?: string } | undefined)?.goalId === "g-right"
+      && vLeft.entry.external === undefined,
+    JSON.stringify(resumed.entries().map((e) => ({ scope: e.scope, name: e.name, external: e.external }))),
+  );
+}
+
 // ---- 4) failures and cancellations replay as themselves ---------------------------------------
 
 {

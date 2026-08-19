@@ -1,0 +1,54 @@
+{
+  "grades": "suite",
+  "guard": "each effect's durable bind is awaited on EVERY return it can take, the bind lands on the exact step that asked for it including its scope, and the escalation record says what each attempt settled as and who it went to",
+  "command": "pnpm --filter @cotal-ai/lang test",
+  "progressPattern": "  ok ",
+  "why": "Three review rounds found the same shape here: a cell that pins one branch of a two-branch return, one half of an identity, or an identity without its outcome. Each row below severs a case the suite claimed and names the cell that has to notice.",
+  "mutations": [
+    {
+      "name": "the checkpoint's EXPIRED return fires its bind and walks away",
+      "file": "packages/lang/src/sim.ts",
+      "find": "    await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) });\n",
+      "replace": "    if (scripted.status === \"expired\") { void ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }); } else { await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }); }\n",
+      "expectRed": "a checkpoint that EXPIRED reaches its bind and does NOT settle while that bind is in flight",
+      "cell": "a checkpoint that EXPIRED reaches its bind and does NOT settle while that bind is in flight",
+      "note": "A checkpoint has two returns; every held arm before this one scripted the resolved one."
+    },
+    {
+      "name": "the checkpoint's EXPIRED return swallows a failed bind",
+      "file": "packages/lang/src/sim.ts",
+      "find": "    await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) });\n",
+      "replace": "    if (scripted.status === \"expired\") { await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }).catch(() => {}); } else { await ctx.bind({ simCheckpoint: stepKeyString(ctx.key) }); }\n",
+      "expectRed": "a checkpoint that EXPIRED does not settle when its bind REJECTS, and surfaces that failure unchanged",
+      "cell": "a checkpoint that EXPIRED does not settle when its bind REJECTS, and surfaces that failure unchanged",
+      "note": "Waiting and then discarding the result reaches the same hole as never waiting."
+    },
+    {
+      "name": "the journal keys a bind by the step's leaf, discarding the scope it ran under",
+      "file": "packages/lang/src/journal.ts",
+      "find": "  private static keyOf(key: StepKey): string {\n    return stepKeyString(key);\n  }\n",
+      "replace": "  private static keyOf(key: StepKey): string {\n    return `${key.kind}:${key.name}#${key.occurrence}`;\n  }\n",
+      "expectRed": "the bind lands in the branch that asked for it, and its sibling running the same step is untouched",
+      "cell": "the bind lands in the branch that asked for it, and its sibling running the same step is untouched",
+      "note": "Parallel branches run the SAME step, so the leaf alone cannot tell two siblings apart."
+    },
+    {
+      "name": "the first attempt's record says it resolved when it expired",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "                { attempt: 0, requestId: ctx.requestId, settled: \"expired\" },\n",
+      "replace": "                { attempt: 0, requestId: ctx.requestId, settled: \"resolved\" },\n",
+      "expectRed": "each attempt records what it settled as, and the escalation records who it went to",
+      "cell": "each attempt records what it settled as, and the escalation records who it went to",
+      "note": "The identities were asserted; what the attempts settled as was not."
+    },
+    {
+      "name": "the escalation's record drops who it escalated to",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "                { attempt: 1, requestId: nextId, to: cpTo ?? null, settled: second.outcome },\n",
+      "replace": "                { attempt: 1, requestId: nextId, settled: second.outcome },\n",
+      "expectRed": "each attempt records what it settled as, and the escalation records who it went to",
+      "cell": "each attempt records what it settled as, and the escalation records who it went to",
+      "note": "A record of an escalation with no recipient is the half that a future consumer would trust."
+    }
+  ]
+}

@@ -6,7 +6,7 @@
  * invents a plausible turn result green-lights broken programs, which is worse than not having
  * one, so most of this suite is about what the simulator refuses to do.
  */
-import { SimHandler, SimUnscriptedError } from "../src/sim.js";
+import { SimHandler, SimUnscriptedError, type SimScript } from "../src/sim.js";
 import { EffectError, type EffectContext } from "../src/effects.js";
 import { KeyScope, digest, requestId, type StepKey } from "../src/keys.js";
 
@@ -343,11 +343,12 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   const settlesOnlyAfterItsBind = async (
     name: string,
     start: (sim: SimHandler, held: (k: StepKey, attempt?: number) => EffectContext, s: KeyScope) => Promise<unknown>,
+    checkpoints: SimScript["checkpoints"] = { gate: { status: "resolved", value: true, by: "sim" } },
   ) => {
     const sim = new SimHandler({
       turns: { build: { status: "done", at: 0 } },
       asks: { q: 3 },
-      checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
+      checkpoints,
     });
     const s = new KeyScope();
     let release!: () => void;
@@ -386,6 +387,16 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   // 40 of 40 before this pair was written.
   await settlesOnlyAfterItsBind("a checkpoint on its escalation attempt",
     (sim, held, s) => sim.checkpoint({ prompt: "ok?" }, held(s.nextEffect("checkpoint", "gate"), 1)));
+  // ...and the EXPIRED return, which every arm above misses because they all script `resolved`. A
+  // checkpoint has two returns and they leave the same bind site by different branches, so an arm
+  // on one of them says nothing about the other: `if (scripted.status === "expired") void
+  // ctx.bind(...)` left all 15 lang suites green at 792 checks, because the fact is still recorded
+  // synchronously and 8b's presence, value and order cells all still hold. Expiry is the path the
+  // interpreter escalates from, so a crash in the bind-append gap there loses the reference an
+  // escalation would be replayed against. Reviewed and reproduced on this tree before this arm.
+  await settlesOnlyAfterItsBind("a checkpoint that EXPIRED",
+    (sim, held, s) => sim.checkpoint({ prompt: "still?" }, held(s.nextEffect("checkpoint", "lapsed"))),
+    { lapsed: { status: "expired" } });
 
   // ...and a bind that FAILS has to take the effect down with it. A held bind that eventually
   // SUCCEEDS proves the effect waits; it cannot see an effect that waits and then throws the result
@@ -396,11 +407,12 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   const failsWithItsBind = async (
     name: string,
     start: (sim: SimHandler, failing: (k: StepKey, attempt?: number) => EffectContext, s: KeyScope) => Promise<unknown>,
+    checkpoints: SimScript["checkpoints"] = { gate: { status: "resolved", value: true, by: "sim" } },
   ) => {
     const sim = new SimHandler({
       turns: { build: { status: "done", at: 0 } },
       asks: { q: 3 },
-      checkpoints: { gate: { status: "resolved", value: true, by: "sim" } },
+      checkpoints,
     });
     const s = new KeyScope();
     const boom = new Error("durable bind failed");
@@ -427,6 +439,12 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
     (sim, failing, s) => sim.checkpoint({ prompt: "ok?" }, failing(s.nextEffect("checkpoint", "gate"))));
   await failsWithItsBind("a checkpoint on its escalation attempt",
     (sim, failing, s) => sim.checkpoint({ prompt: "ok?" }, failing(s.nextEffect("checkpoint", "gate"), 1)));
+  // The expired return again, on the rejecting side: swallowing the failure and skipping the write
+  // are two ways to reach the same hole, and an arm on one branch of the return covers neither for
+  // the other.
+  await failsWithItsBind("a checkpoint that EXPIRED",
+    (sim, failing, s) => sim.checkpoint({ prompt: "still?" }, failing(s.nextEffect("checkpoint", "lapsed"))),
+    { lapsed: { status: "expired" } });
 }
 
 // ---- 9) unused script entries are reported --------------------------------------------------------------
