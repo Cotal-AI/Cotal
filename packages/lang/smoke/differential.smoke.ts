@@ -320,6 +320,24 @@ log("rounds", rounds, r.status);`,
   // than `foo` is, whatever is being written into it.
   ["refusals: a callable then written onto an array", 'keys({ a: 1 }).then = () => 1; log("after");', {}, "L4014"],
   ["refusals: a non-member written onto an array, the control", 'keys({ a: 1 }).foo = 1; log("after");', {}, "L4014"],
+  // AND THE FREEZE, which stands AHEAD of the member rule (H measured the order on the walker; this
+  // is the shape that shows it as a program). A record handed to a host effect is frozen from then
+  // on, and after that BOTH writes are L2031: the member the array does not have, which was L4014
+  // one line above, and the member it does have, which completed before it was shared. Without the
+  // last two rows "L2031" would just be L4014 wearing another code.
+  [
+    "refusals: a member written onto a record the host has seen",
+    'const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs.foo = 1;',
+    { asks: { q: { value: { days: 2 }, at: 0 } } },
+    "L2031",
+  ],
+  [
+    "refusals: even a member it HAS, once the host has seen it",
+    'const a = await spawn("w", { name: "a" });\nconst sch = { xs: keys({ a: 1 }) };\nawait ask(a, { name: "q", schema: sch });\nsch.xs[0] = "z";',
+    { asks: { q: { value: { days: 2 }, at: 0 } } },
+    "L2031",
+  ],
+  ["the same member written before the host saw it, the control", 'const sch = { xs: keys({ a: 1 }) };\nsch.xs[0] = "z";\nlog(sch.xs[0]);', {}],
   // The one admitted node type the gate never spelled, found by the coverage cell below rather than
   // by reading the corpus. An unbraced body is L1009, so a stray `;` between statements is the only
   // spelling the validator admits, and it is what the emitter has to carry through unchanged.
