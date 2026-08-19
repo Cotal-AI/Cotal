@@ -28,7 +28,7 @@
       "file": "implementations/web/src/web/graph.js",
       "find": "        apply: supersededByFeed(\"membership\", (m) => applyMembership(m)) },",
       "replace": "        apply: (m) => applyMembership(m) },",
-      "expectRed": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE GRAPH after every bootstrap read has applied"
+      "expectRed": "3.3 the membership PILL still reports the live feed, not the older bootstrap's empty snapshot"
     }
   ]
 }

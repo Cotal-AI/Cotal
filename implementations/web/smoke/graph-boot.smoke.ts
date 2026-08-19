@@ -70,7 +70,8 @@ function stubEl(drawn?: string[]) {
       set: () => true,
     }),
   };
-  el.querySelector = () => stubEl();
+  const kids = new Map<string, Record<string, unknown>>();
+  el.querySelector = (sel: string) => { if (!kids.has(sel)) kids.set(sel, stubEl()); return kids.get(sel)!; };
   el.querySelectorAll = () => [];
   return el;
 }
@@ -157,7 +158,7 @@ async function main() {
   // require the page to survive all three.
   console.log("2. a live event that arrives before the bootstrap finishes does not break the page");
   const early = { roster: '[{"card":{"id":"local.X","name":"aa","kind":"agent"},"status":"waiting"}]',
-                  membership: '{"members":[{"id":"local.X","live":["general"],"durable":[]}]}',
+                  membership: JSON.stringify({ asOf: Date.now(), members: [{ id: "local.X", live: ["general"], durable: [] }] }),
                   message: '{"mode":"chat","channel":"general","msg":{"id":"m","ts":1,"from":{"id":"local.X","name":"aa"},"parts":[{"kind":"text","text":"hi"}]}}' };
   for (const [kind, data] of Object.entries(early)) {
     const fn = feed?.listeners[kind];
@@ -204,6 +205,16 @@ async function main() {
   for (const fn of rafs.splice(0)) fn(1001);
   ok("3.2 control: a roster delivered AFTER the bootstrap does render, so 3.1 tests ordering and not a dead renderer",
     drawn.includes("zz"), { drawnLabels: drawn.slice(0, 12) });
+  // MEMBERSHIP IS A SECOND, INDEPENDENT HALF OF THE SAME RULE, and 3.1 is blind to it: with the
+  // roster half guarded the agent stays on the graph even when its membership has been wrongly
+  // cleared, so a mutation of the membership half SURVIVED until this cell existed. The pill is the
+  // right observable because a reverted membership reads exactly like the symptom that started this
+  // work: a live feed reported as traffic-only or stale.
+  const pill = (sandbox.document as { getElementById: (id: string) => Record<string, unknown> })
+    .getElementById("feed");
+  const pillText = String((pill.querySelector as (s: string) => { textContent: unknown })(".t").textContent);
+  ok("3.3 the membership PILL still reports the live feed, not the older bootstrap's empty snapshot",
+    pillText === "membership: live", { pillText });
 }
 
 await main();
