@@ -25,7 +25,7 @@ const CLI = join(WT, "bin", "cotal.ts");
 // silently no-ops (null stdout) there. `import.meta.resolve` gives tsx an absolute URL so it resolves
 // regardless of the spawn's cwd (the temp project root below).
 const TSX_IMPORT = import.meta.resolve("tsx");
-const nodeRun = (...args: string[]): ReturnType<typeof spawnSync> =>
+const nodeRun = (...args: string[]) =>
   spawnSync(process.execPath, ["--import", TSX_IMPORT, CLI, ...args], { cwd: root, env, encoding: "utf8" });
 
 const home = mkdtempSync(join(tmpdir(), "cotal-spawnf-home-"));
@@ -90,7 +90,7 @@ try {
   const dryOut = dry.stdout + dry.stderr;
   ok("dry-run plans to create #general", /create .*#general/.test(dryOut), dryOut);
   ok("dry-run plans to create #decisions", /create .*#decisions/.test(dryOut), dryOut);
-  ok("dry-run classifies #lobby as exists-unmanaged", /#lobby.*exists — unmanaged/.test(dryOut), dryOut);
+  ok("dry-run classifies #lobby as exists-unmanaged", /#lobby.*exists - unmanaged/.test(dryOut), dryOut);
   ok("dry-run wrote NO ledger", ledgerFiles().length === 0, ledgerFiles());
 
   // 2) Apply: seed the two new channels, leave #lobby untouched, write the ledger.

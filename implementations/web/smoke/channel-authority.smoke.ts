@@ -86,7 +86,7 @@ check("an anycast rest is the ROUTE, not a channel", svc?.rest === "someroute", 
 //
 // EVERY PLANE IS COVERED, not just chat. The kind-gate's whole job is what happens on `inst` and
 // `svc`, so agreement on chat alone would leave the gate's own premise ungraded.
-const srcSubjects = await import("../../../packages/core/src/subjects.ts");
+const srcSubjects = await import("../../../packages/core/src/subjects.js");
 check("core SOURCE loaded directly (an unloadable source would skip this entire block)",
   typeof srcSubjects.parseSubject === "function" && typeof srcSubjects.chatSubject === "function");
 
@@ -473,7 +473,7 @@ const hostileAnycastGraph = () => ({ mode: "anycast", senderId: "s-1", channel: 
 function runAppOnMessage(code: string, entry: unknown, selected = "*") {
   const ctx = {
     __entry: entry,
-    activity: [] as { msg: { id?: string } }[],
+    activity: [] as { msg: { id?: string; channel?: string } }[],
     dms: [] as { id?: string }[],
     channels: new Map<string, { messages?: number }>(),
     channelMsgs: [] as unknown[],
@@ -704,7 +704,8 @@ check("app.js — a forged DM does NOT reach the victim channel's transcript",
 // and the cell passes on exploitable code. MEASURED both ways — selected=VICTIM gives 0 badges,
 // selected=elsewhere gives 1 on `victim-channel`. One fixture cannot serve both branches, so the
 // unread claim gets an OFF-SCREEN run of its own.
-const OFFSCREEN = "some-other-channel";
+// `string`, not the literal: the cell below compares it with VICTIM on purpose.
+const OFFSCREEN: string = "some-other-channel";
 const appHostileOffscreenPayload = hostileDm();
 check("app.js — the OFF-SCREEN unread run receives a payload that STILL carries the forgery",
   appHostileOffscreenPayload.msg.channel === VICTIM, { got: appHostileOffscreenPayload.msg.channel });

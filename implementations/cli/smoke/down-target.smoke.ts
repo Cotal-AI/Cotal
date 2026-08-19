@@ -15,7 +15,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { makeScratch } from "../../../bin/smoke/_scratch.js";
-import { probeLiveness } from "@cotal-ai/workspace";
+import { probeLiveness, type LocalProcess } from "@cotal-ai/workspace";
 
 // Isolate BOTH the machine-home AND the temp root. `findCotalRoot` walks to `/` with no boundary,
 // so a `.cotal` above the temp base (observed: `/tmp/.cotal` on CI; a home-dir `.cotal` when the
@@ -112,7 +112,8 @@ try {
   });
   check("manifest cache round-trips rootedAt", cached.length === 1 && cached[0].rootedAt === "target");
   registry.register(webProcess);
-  registry.register({ kind: "local-process", name: "fixtured", label: "fixture daemon", pidFile: "fixture.pid" });
+  const fixtured: LocalProcess = { kind: "local-process", name: "fixtured", label: "fixture daemon", pidFile: "fixture.pid" };
+  registry.register(fixtured);
 
   process.chdir(neutral);
 
