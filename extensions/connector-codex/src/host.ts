@@ -573,6 +573,16 @@ export async function runCodexHost(): Promise<void> {
    *  have appeared during exactly that window. Without this the retry has to win a race with the
    *  flag, and a turn whose start and end land in one burst would lose it. */
   let missedBind = false;
+  /** Flush what the current binding settled, close the run it left open, and wait for both to land.
+   *
+   *  ORDER MATTERS: closing first would terminate a run the flushed records still belong to. This is
+   *  the same drain the OpenCode connector runs when a new session replaces the one it publishes. */
+  async function drainBinding(): Promise<void> {
+    if (events === undefined) return;
+    if (rollout !== undefined) events.flush(rollout);
+    events.closeRun(Date.now());
+    await events.settled();
+  }
 
   /** Bind the plane to a thread's rollout, DRAINING and REPLACING any previous binding.
    *
@@ -600,6 +610,22 @@ export async function runCodexHost(): Promise<void> {
       const path = await waitForRollout(codexHome, threadId, { attempts, intervalMs: attempts > 1 ? 250 : 0 });
       if (eventsThread !== threadId) return; // a newer thread arrived while this one waited
       if (path === undefined) {
+        // THE PREDECESSOR IS STILL ENDED. Giving up on the new thread's file says nothing about the
+        // old thread, which is gone: its process is dead, no record will ever be appended to it
+        // again, and a run left open on the wire is a reader waiting forever for an end that cannot
+        // come. So the old binding is drained and closed HERE rather than only on the happy path.
+        //
+        // THE CLEAR IS LOAD-BEARING FOR EVERY BOUNDARY BELOW, and that is why it is not merely
+        // tidying up after the drain. A boundary asks whether ANYTHING is bound, and a retry fires
+        // only when nothing is; both are correct only because a binding that no longer belongs to
+        // the thread the seat is on stops existing HERE. Keep the drain and drop these two lines and
+        // the plane feeds a dead thread forever while the live one publishes nothing, which is the
+        // defect this whole path exists to close.
+        if (events !== undefined) {
+          await drainBinding();
+          events = undefined;
+          rollout = undefined;
+        }
         // NOT terminal, and that is the fix for a one-shot bind: an armed seat whose file was slow
         // to appear would otherwise publish nothing for its whole life, with this line as the only
         // trace. The next turn boundary looks again.
@@ -607,11 +633,7 @@ export async function runCodexHost(): Promise<void> {
         return;
       }
       if (rollout === path && events !== undefined) return; // already publishing this thread
-      if (events !== undefined) {
-        if (rollout !== undefined) events.flush(rollout);
-        events.closeRun(Date.now());
-        await events.settled();
-      }
+      if (events !== undefined) await drainBinding();
       events = newEventHolder();
       rollout = path;
       events.adopt(path);
@@ -641,6 +663,19 @@ export async function runCodexHost(): Promise<void> {
    *  nothing tells this process a record landed; the driver's own boundaries are the closest
    *  signal there is, and a flush is cheap and idempotent (the cursor decides what is new). */
   const flushEvents = (): void => {
+    // A DEAD HOLDER IS NOT A BINDING. The holder is TERMINAL on error, and one error it can take is
+    // the one that matters most here: `AguiEmitter.start` refuses an endpoint with no connection,
+    // and `agent.start()` connects in the BACKGROUND, so an armed seat whose broker was not up yet
+    // kills its own plane at launch. Nothing after that publishes, the mesh side recovers around it
+    // and looks healthy, and one line in the seat's own log is the whole trace. Flushing a corpse is
+    // silence with a heartbeat, so a death is treated as NO BINDING and the next boundary builds a
+    // new one. What the dead holder had not yet published is not recovered: a fresh adopt starts at
+    // the file's last complete record, which is the same stated limit a late bind carries.
+    if (events?.failure !== undefined) {
+      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);
+      events = undefined;
+      rollout = undefined;
+    }
     if (rollout !== undefined) {
       events?.flush(rollout);
       return;

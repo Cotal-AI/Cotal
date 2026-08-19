@@ -8,7 +8,7 @@
  * counted. So the cell that matters most here is not "it finds the file", it is "it finds the file
  * under the home it was given and not under any other".
  *
- * The tree shape is MEASURED from a real app-server thread (`.internal` 3.3b), not assumed:
+ * The tree shape is MEASURED from a real app-server thread, not assumed:
  * `<home>/sessions/<YYYY>/<MM>/<DD>/rollout-<stamp>-<thread id>.jsonl`.
  *
  * Run: pnpm smoke:codex-rollout-path
@@ -104,6 +104,24 @@ try {
   const realPath = plant(realCopy, THREAD);
   check("and a REAL file in the same shape still resolves", findRollout(realCopy, THREAD) === realPath, {
     got: findRollout(realCopy, THREAD),
+  });
+
+  // (c) a linked HOME ITSELF. This is the one link no test on a discovered entry can ever see:
+  // everything the walk touches is reached THROUGH this path, so one link here redirects the whole
+  // search in a single move. The launch refuses a linked home when it prepares one, but the window
+  // between preparing a home and reading bytes out of it belongs to whatever can write in the
+  // workspace, so the read refuses it again at the moment the bytes are chosen.
+  const homeTarget = join(root, "home-target");
+  const homeTargetPath = plant(homeTarget, THREAD);
+  const linkedHome = join(root, "linked-home");
+  symlinkSync(homeTarget, linkedHome);
+  check("a symlinked CODEX_HOME is refused outright", findRollout(linkedHome, THREAD) === undefined, {
+    got: findRollout(linkedHome, THREAD),
+  });
+  // The same control, and it is what makes the cell above mean anything: reached by its real path
+  // the identical tree resolves, so what was refused is the LINK and not the contents.
+  check("and the identical tree reached by its REAL path still resolves", findRollout(homeTarget, THREAD) === homeTargetPath, {
+    got: findRollout(homeTarget, THREAD),
   });
 
   // The waiter exists because the file appears late. It must actually retry, and it must give up.

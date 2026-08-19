@@ -2,7 +2,7 @@
  * The Codex mapper, driven against a REAL app-server thread's rollout.
  *
  * The fixture is DERIVED, not authored, and that distinction is the whole argument. It is one real
- * thread produced by this connector's own host (`.internal` 3.3b): every record, every field name,
+ * thread produced by this connector's own host: every record, every field name,
  * every ordering and every id is what codex actually wrote. Only free TEXT is replaced, character
  * for character, because the thread ran in the human's workspace and this file is public. An
  * authored fixture would encode the same beliefs the mapper encodes, so it could not catch the
@@ -14,7 +14,7 @@
  *   `live:`   asserted against the derived real-thread fixture.
  *   `shape:`  asserted against a record built from the MEASURED key-shape census of 34 394 corpus
  *             records (field names, types and presence counts). The shapes are measured; the
- *             particular record is not real. The quota exhaustion recorded in 3.3b is why, and the
+ *             particular record is not real. An exhausted model quota on this account is why, and the
  *             connector live end-to-end proof supersedes every one of these.
  *
  * Never prints record content: cells report counts, type names and ids.
@@ -167,7 +167,7 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
 }
 
 // ------------------------------------------------------- shape, from the measured key census
-// Built from the census in `.internal` 3.3b: `message[assistant]` always has `content: list` of
+// Built from the measured key-shape census of the corpus: `message[assistant]` always has `content: list` of
 // `output_text` plus `phase`; `reasoning` always has `summary: list` of `summary_text` plus
 // `encrypted_content`; `function_call` always has `call_id`/`name`/`arguments`;
 // `function_call_output.output` is a UNION, `str` on 6 353 records and `list` on 380.
@@ -185,6 +185,33 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   c("shape:an assistant message becomes START/CONTENT/END", kt.TEXT_MESSAGE_START === 1 && kt.TEXT_MESSAGE_CONTENT === 1 && kt.TEXT_MESSAGE_END === 1, kt);
   c("shape:and it uses the record's native id as the messageId", withText.events.some((e) => (e as { messageId?: string }).messageId === "m1"));
   c("shape:brackets legal", withText.bracketError === null, withText.bracketError);
+
+  // THE TWO SHAPES `task_complete.error` CAN ARRIVE IN, and the reason the mapper reads both. The
+  // dict is the only one that occurs today: all 6 error values across 1 785 real `task_complete`
+  // records carry `message` plus `codex_error_info`, and zero are bare strings. The string cell is
+  // therefore not a claim about the corpus, it is a guard on the direction the failure would go if
+  // that ever changed, because a mapper that only understands the dict would read a string as a
+  // SUCCESS and publish RUN_FINISHED for a turn that failed.
+  const errDict = replay([
+    start,
+    { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: { message: "stream disconnected", codex_error_info: "stream_error" } } },
+  ]);
+  const ed = errDict.events.find((e) => (e as { type: string }).type === "RUN_ERROR") as { message?: string; code?: string } | undefined;
+  c("error:the dict shape becomes RUN_ERROR carrying its message and code", ed?.message === "stream disconnected" && ed?.code === "stream_error", ed);
+  c("error:and the run does not ALSO finish", kinds(errDict.events).RUN_FINISHED === undefined, kinds(errDict.events));
+  const errString = replay([
+    start,
+    { timestamp: ts, type: "event_msg", payload: { type: "task_complete", turn_id: "t1", error: "bare string failure" } },
+  ]);
+  const es = errString.events.find((e) => (e as { type: string }).type === "RUN_ERROR") as { message?: string; code?: string } | undefined;
+  c("error:a bare string error is a FAILED run, not a finished one", es?.message === "bare string failure" && kinds(errString.events).RUN_FINISHED === undefined, {
+    es,
+    kinds: kinds(errString.events),
+  });
+  c("error:and it carries no invented code", es?.code === undefined, es);
+  c("error:a null error is a success, so the cells above are about the error and not about the branch", kinds(replay([start, done]).events).RUN_FINISHED === 1, {
+    kinds: kinds(replay([start, done]).events),
+  });
 
   const withReasoning = replay([
     start,
@@ -214,7 +241,7 @@ const kinds = (evts: AguiEvent[]): Record<string, number> => {
   const startEvt = withTool.events.find((e) => (e as { type: string }).type === "TOOL_CALL_START") as { toolCallId: string };
   c("shape:TOOL_CALL_START carries the NATIVE call_id, not a synthesized key", startEvt.toolCallId === "call-9", { toolCallId: startEvt.toolCallId });
   c("shape:toolCallId is the NATIVE call_id, not a synthesized key", res.toolCallId === "call-9", { toolCallId: res.toolCallId });
-  c("shape:TOOL_CALL_RESULT carries the messageId section 3.1 owes, derived from the call id", res.messageId === "res:call-9", { messageId: res.messageId });
+  c("shape:TOOL_CALL_RESULT carries the messageId every connector owes, derived from the call id", res.messageId === "res:call-9", { messageId: res.messageId });
 
   // THE UNION. `output` is a string on 6 353 corpus records and a list on 380. A mapper that
   // assumes one throws on the other, and a thrown mapper is a dead event plane, not a dropped record.

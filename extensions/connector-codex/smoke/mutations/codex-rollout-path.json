@@ -49,6 +49,13 @@
       "find": "    if (i + 1 < attempts) await sleep(intervalMs);",
       "replace": "    await sleep(intervalMs);",
       "expectRed": "and the budget is the one it was given, minus the wait it does not take"
+    },
+    {
+      "name": "P8 the handed home is no longer tested, so a link at the walk's own entry point redirects every byte below it",
+      "file": "extensions/connector-codex/src/agui-rollout.ts",
+      "find": "    if (lstatSync(codexHome).isSymbolicLink()) return undefined;",
+      "replace": "    if (false) return undefined;",
+      "expectRed": "a symlinked CODEX_HOME is refused outright"
     }
   ]
 }

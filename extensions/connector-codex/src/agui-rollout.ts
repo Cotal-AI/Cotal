@@ -1,7 +1,7 @@
 /**
  * Resolve a Codex thread's rollout file inside the agent's own `CODEX_HOME`.
  *
- * MEASURED against a real app-server thread (`.internal` 3.3b), not assumed: the file lands at
+ * MEASURED against a real app-server thread, not assumed: the file lands at
  * `<codexHome>/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO-ish stamp>-<thread id>.jsonl`, and the
  * `thread/start` id, `session_meta.payload.id` and this filename key are all the same value.
  *
@@ -19,6 +19,16 @@ import { join } from "node:path";
  *  arrives in that window has to be able to wait rather than fail. */
 export function findRollout(codexHome: string, threadId: string): string | undefined {
   const suffix = `-${threadId}.jsonl`;
+  // THE HOME ITSELF IS TESTED FIRST. Everything below is reached THROUGH this path, so a link here
+  // redirects the whole walk in one move and no test on an entry the walk discovers can see it. The
+  // launch refuses a linked home when it prepares one, and this is the same refusal at the moment
+  // the bytes are chosen, because the time between those two moments belongs to whatever can write
+  // in the workspace.
+  try {
+    if (lstatSync(codexHome).isSymbolicLink()) return undefined;
+  } catch {
+    return undefined;
+  }
   const sessions = join(codexHome, "sessions");
   // THE ROOT OF THE WALK GETS THE SAME TEST EVERY ENTRY BELOW IT GETS, and it has to be here rather
   // than in the loop: entries are checked as they are discovered, so the one directory nobody

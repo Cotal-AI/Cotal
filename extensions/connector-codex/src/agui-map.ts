@@ -12,7 +12,7 @@
  * inner name appears under different envelopes and means different things: `agent_message` is an
  * `event_msg` mirror of an assistant turn AND a `response_item` for inter-agent traffic.
  *
- * Derived against a real app-server thread (`.internal` 3.3b), not against the operator's own
+ * Derived against a real app-server thread, not against the operator's own
  * sessions: `originator` is `cotal` there and the primer records ahead of the first turn do not
  * occur in an operator corpus at all.
  */
@@ -141,7 +141,15 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       const turn = asString(payload.turn_id);
       if (turn !== undefined && openTurn !== undefined && turn !== openTurn) return null;
       const runId = open;
-      const err = asRecord(payload.error);
+      // ANY non-null error is a FAILED TURN, whatever shape it arrives in. Reading only the object
+      // shape would publish a failure as a success the moment Codex wrote a bare string there, and a
+      // run that ended badly reported as finished is a silent wrong rather than a missing event.
+      // MEASURED: all 6 error values in 1 785 real `task_complete` records are objects carrying
+      // `message` and `codex_error_info`, and zero are strings, so this costs nothing today and
+      // removes a shape that could lie tomorrow.
+      const errRecord = asRecord(payload.error);
+      const errText = asString(payload.error);
+      const failed = payload.error !== null && payload.error !== undefined;
       open = null;
       openTurn = undefined;
       // MEASURED, not assumed: a failed turn writes NO `event_msg/error` record at all. The
@@ -149,9 +157,9 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
       // nothing for a real failure. `event_msg/error` occurs 2 times in 74 031 corpus records;
       // this field is the actual path. RUN_ERROR closes the run on its own, so no RUN_FINISHED
       // follows it.
-      if (err !== undefined) {
-        const message = asString(err.message) ?? "codex turn failed";
-        const code = asString(err.codex_error_info);
+      if (failed) {
+        const message = asString(errRecord?.message) ?? errText ?? "codex turn failed";
+        const code = asString(errRecord?.codex_error_info);
         return { runId, events: [runError({ message, timestamp: ts, ...(code ? { code } : {}) })] };
       }
       return { runId, events: [runFinished({ threadId, runId, timestamp: ts, outcome: { type: "success" } })] };
@@ -255,7 +263,7 @@ export function createCodexMapper(opts: { threadId: string; mintRunId: () => str
     if (envelope === "response_item" && (inner === "function_call_output" || inner === "custom_tool_call_output")) {
       const toolCallId = asString(payload.call_id);
       if (toolCallId === undefined) return null;
-      // The `messageId` section 3.1 owes per connector. Codex has no message id for a tool result:
+      // The `messageId` every connector owes on a tool result. Codex has no message id for one:
       // the record's own `id`, present on 2 437 of 6 733, is the response item's id and not a
       // message's. Synthesized from the call id so it is STABLE across a replay of the same
       // record, which a mint would not be.

@@ -184,8 +184,15 @@ const ROLLOUT = process.env.FAKE_CODEX_ROLLOUT ?? "";
 const THREAD = ROLLOUT === "" ? "t_fake" : randomUUID();
 /** `late` withholds the file until the SECOND turn, so the host's bounded first look misses it and
  *  only a later retry can bind. A seat whose file appeared late must still publish what it wrote
- *  before the bind, which is why turn one's records are appended to the file when it is created. */
-const ROLLOUT_LATE = ROLLOUT === "late";
+ *  before the bind, which is why turn one's records are appended to the file when it is created.
+ *
+ *  `restart-late` is the same withholding, but ONLY in the incarnation that follows a crash: the
+ *  first one writes its file at the primer inject like the real app-server does, and the SUCCESSOR
+ *  is the one whose file is slow. That combination is a state neither `1` nor `late` reaches, and
+ *  it is the one where a plane already bound to the dead thread has to notice that the thread it is
+ *  publishing is not the thread the seat is on. The marker file is written by the incarnation that
+ *  dies, so a successor reads it at load and a first incarnation never does. */
+const ROLLOUT_LATE = ROLLOUT === "late" || (ROLLOUT === "restart-late" && existsSync(DIED_MARK));
 let rolloutPath;
 const pendingRecords = [];
 const stamp = () => new Date().toISOString();

@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/connector-codex": minor
+"@cotal-ai/connector-core": minor
 "cotal-ai": minor
 ---
 
@@ -22,13 +23,22 @@ failure on the turn's own completion record. No user authored text is ever publi
 the peer messages injected into the thread, and the persona's developer instructions are all
 withheld, because the events channel carries a different read ACL from the channel you typed into.
 A restarted app-server is a new thread and gets a new stream: the seat finishes the old one, closing
-any run it left open, before it begins the new one. And Codex's own built-in tools, web search, tool
+any run it left open, before it begins the new one. That holds even when the new thread's file is
+slow to appear, which is the case where the old one is closed and the seat then waits, publishing
+nothing, rather than continuing to report the dead thread's activity as if it were live. And Codex's own built-in tools, web search, tool
 search and image generation, are not published, because their records carry an end with no start and
 no key that joins the halves.
 
 What is published is worth stating plainly: an observer of the events channel sees every tool call's
 arguments and outputs verbatim, so withholding user authored text does not make the stream safe to
 widen.
+
+Two limits are worth knowing as well. A stream begins at the last complete record in the file at the
+moment the seat binds to it, never at the beginning of the thread, so anything written before that
+moment is not republished; the seat says so in its log when it happens. And a seat whose broker was
+unreachable when it started loses its emitter, reports that it did, and rebuilds it at a later turn
+boundary once the broker is there, so the outage costs the turns it covered rather than the rest of
+the seat's life.
 
 Migration: none. The plane is opt in per spawn, arming is separate from authorization, and a seat
 launched without `--events` behaves exactly as before.
