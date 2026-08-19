@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/engine.smoke.ts",
-  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), F7's cell read (get's third argument, hasOwn rather than truthiness) and the loud clause that a native ReferenceError is the ENGINE's fault, and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), F7's cell read (get's third argument, hasOwn rather than truthiness) and the loud clause that a native ReferenceError is the ENGINE's fault, the node floor the wave decided on (refused at the run boundary, by major version), and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
   "why": [
@@ -621,9 +621,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "      if (e instanceof ReferenceError) throw new EngineFault(e);",
       "replace": "      void 0;",
-      "expectRed": "a native ReferenceError reaching the catch head is an ENGINE fault, rethrown",
+      "expectRed": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
       "completionMarker": "ok and the engine's catch head answers the same record",
-      "cell": "a native ReferenceError reaching the catch head is an ENGINE fault, rethrown",
+      "cell": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
       "note": "The emitted module has zero free identifiers, so a ReferenceError can only be a binding the transform did not classify as a cell or an emitter temporary read before it was bound. Converted, a compiler bug arrives at the program as an ordinary catchable error and the program handles it - which is how a missed classification ships."
     },
     {
@@ -645,6 +645,36 @@
       "completionMarker": "ok an emitted catch around it rethrows rather than catching",
       "cell": "a ReferenceError escaping the whole run is an ENGINE fault too",
       "note": "The catch head is only ONE of the two places this can surface. A program with no `try` around the bad read has nothing to route it through, so it arrives here - and a bare ReferenceError reaching a caller is indistinguishable from a host crash."
+    },
+    {
+      "name": "the floor is never checked at the run boundary",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "export const NODE_FLOOR = 24;",
+      "replace": "export const NODE_FLOOR = 999;",
+      "expectRed": "runOnEngine answers the walker's RunResult shape",
+      "completionMarker": "ok and the ambient frame is what a framed call reads",
+      "cell": "runOnEngine answers the walker's RunResult shape",
+      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal has to fire on the first program that goes through `runOnEngine`, and it does. That is the reachability half, and it is graded by a cell four sections before the floor's own."
+    },
+    {
+      "name": "a node below the floor is allowed through",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (Number.isFinite(major) && major < NODE_FLOOR) {",
+      "replace": "  if (false) {",
+      "expectRed": "a node below the floor is refused by major version",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "a node below the floor is refused by major version",
+      "note": "Measured below the floor: 187 of this suite's checks pass and then the worker section dies on ERR_MODULE_NOT_FOUND, because tsx's ESM loader does not reach a worker thread on node 22. Without the refusal that is what a developer sees - a module resolution error naming a file that is right there - instead of a sentence saying which node this needs."
+    },
+    {
+      "name": "an unreadable version is refused for being unreadable",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (Number.isFinite(major) && major < NODE_FLOOR) {",
+      "replace": "  if (!(major >= NODE_FLOOR)) {",
+      "expectRed": "an unreadable version is not refused on the strength of being unreadable",
+      "completionMarker": "ok and anything above it",
+      "cell": "an unreadable version is not refused on the strength of being unreadable",
+      "note": "`NaN < 24` is false and `!(NaN >= 24)` is true, which is the whole difference. A version string this cannot parse is a runtime it knows nothing about; refusing it would fail a run for the SHAPE OF A STRING rather than for the runtime under it, and the check exists to answer the second question."
     }
   ]
 }

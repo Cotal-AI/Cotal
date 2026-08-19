@@ -30,7 +30,7 @@ import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
 import { Prng } from "../src/values.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
-import { runOnEngine, resumeOnEngine } from "../src/engine/host.js";
+import { NODE_FLOOR, assertNodeFloor, runOnEngine, resumeOnEngine } from "../src/engine/host.js";
 import { runInWorker } from "../src/engine/worker.js";
 import { run as walkerRun } from "../src/interpret.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
@@ -1858,7 +1858,7 @@ log("out", out);
   } catch (e) {
     boom = e;
   }
-  ok("a native ReferenceError reaching the catch head is an ENGINE fault, rethrown", boom instanceof Error && (boom as Error).name === "EngineFault", String(boom));
+  ok("the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it", boom instanceof Error && (boom as Error).name === "EngineFault", String(boom));
   ok("and it is NOT converted to a program error", (boom as { code?: string }).code === undefined, boom);
   ok("nor message-parsed into L2004", !(boom as Error).message.includes("L2004"), (boom as Error).message.slice(0, 120));
   ok("while it carries what actually happened", (boom as Error).message.includes("zzz is not defined"), (boom as Error).message.slice(0, 160));
@@ -1882,6 +1882,37 @@ log("out", out);
   );
   ok("a ReferenceError escaping the whole run is an ENGINE fault too", (escaped as Error).name === "EngineFault", String(escaped));
   ok("and it names why a free identifier cannot be the program's fault", (escaped as Error).message.includes("zero free identifiers"), (escaped as Error).message.slice(0, 200));
+}
+
+// ---- 20) the node floor, measured rather than assumed ---------------------------------------------
+//
+// Lane 1 set the wave's floor at node 24 for AsyncContextFrame ALS. Probed at this sha, that reason
+// does not reproduce: ALS propagates 9 of 9 shapes on 22.23.2 - plain await, across the setTimeout
+// macrotask the fuel yield uses, both arms of a Promise.all, after a custom thenable, across
+// nextTick and setImmediate, and a nested run restoring its parent - and the worker from `dist` on
+// 22 answers the same value with the same confinement and the same programHash. What DOES break
+// below the floor is the development path: tsx 4.23.0's ESM loader does not reach a worker thread
+// on 22, so a run started from TypeScript sources cannot load its own worker entry.
+//
+// The floor stands, for that measured reason, and it is a REFUSAL rather than an `engines` line: a
+// package manager's warning is not a refusal, and what breaks below it is a loader nobody would
+// think to look at from a journal.
+
+{
+  ok(`the floor is a single named constant, and it is ${NODE_FLOOR}`, NODE_FLOOR === 24, NODE_FLOOR);
+  const below = await caught(() => assertNodeFloor("22.23.2"));
+  ok("a node below the floor is refused by major version", below instanceof RuntimeFault, String(below));
+  ok("and the refusal names both the version it found and the floor", (below as Error).message.includes("22.23.2") && (below as Error).message.includes("node 24"), (below as Error).message.slice(0, 120));
+  ok("and says what actually breaks there, rather than citing a decision", (below as Error).message.includes("does not inherit tsx's ESM loader"), (below as Error).message.slice(0, 260));
+  ok("the floor itself is allowed", (await caught(() => assertNodeFloor("24.0.0"))) === undefined);
+  ok("and anything above it", (await caught(() => assertNodeFloor("26.7.0"))) === undefined);
+  // A version string it cannot read is NOT refused: refusing on an unparseable version would fail a
+  // run for the shape of a string rather than for the runtime under it.
+  ok("an unreadable version is not refused on the strength of being unreadable", (await caught(() => assertNodeFloor("not-a-version"))) === undefined);
+  // AND THE LIVE ONE, which is the reachability half: every cell above this line has already run a
+  // program through `runOnEngine`, so the check at the run boundary is reached on every one of them.
+  // The mutant that raises the floor to a version nobody has reds the FIRST of them.
+  ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);
