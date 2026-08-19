@@ -1,6 +1,8 @@
 # Cotal Lang: the workflow language
 
-> **Status:** Draft, language version `1`, companion to [SPEC.md](../SPEC.md) §14 (v0.5). This
+> **Status:** Draft, language version `2`, companion to [SPEC.md](../SPEC.md) §14 (v0.5). Version
+> `1` is the tree-walker and stays supported: it is the replay engine for every run recorded
+> under it, and §8.4 says what the two versions differ on. This
 > document is the normative reference for the language a Cotal workflow run executes: what a
 > program may say, what it means, and what it writes into the step journal. SPEC.md §14 defines
 > the wire the journal and the run record travel on; this document defines their content and the
@@ -625,11 +627,13 @@ different value for any pin is refused (L5009), and a resume handed history with
 | `yieldEvery` | interpreter dispatches between yields to the host's event loop | 1024 |
 | `stepBudget` | interpreter dispatches allowed in **one walk** before L4013 | 1 000 000 |
 | `effectCeiling` | effects allowed in **the run** before L4009 | 10 000 |
-| `languageVersion` | the language version the run started under | this document's |
+| `languageVersion` | the language version the run started under | the version of the engine that resolves them |
 
 `yieldEvery` selects no outcome (§7.3): it is pinned so a run record never churns, and a future
 revision MAY drop it from the pin set. `stepBudget` bounds a walk and not the run because steps are
-not recorded; `effectCeiling` bounds the run because the journal records every dispatch, and a
+not recorded, and a **step is whatever the running engine counts** — a walker dispatch under
+version 1, a transformed-site hit under version 2 — so the same budget does not buy the same
+program two engines, and a recorded `stepBudget` is not comparable across versions; `effectCeiling` bounds the run because the journal records every dispatch, and a
 resume counts the recorded distinct effect keys (excluding `conclave`, which is dispatched from the
 scope walker) toward it.
 
@@ -637,8 +641,35 @@ scope walker) toward it.
 
 The **language version** is bumped when a revision changes what a program means: the PRNG, a
 builtin, numeric behaviour, or the scheduling of the walker. It is deliberately not the package
-version. A resume under a different language version is refused (L5008); the repair is to resume
-on the recorded version, or to fork (§11.3).
+version.
+
+There are two versions, and they are two languages rather than two speeds of one:
+
+| Version | Engine | What differs |
+| --- | --- | --- |
+| `1` | the tree-walker | a step is one walker dispatch; `log` takes any value the walker can print |
+| `2` | the compiled engine | a step is one transformed-site hit; `log` is **data** and refuses code (L4016) |
+
+Version `1` is not deprecated and does not expire: a run recorded under it has nowhere else to go,
+so the walker remains its replay engine for as long as its records exist.
+
+The version is a property of the ENGINE that runs a program, not of this document. An engine MUST
+stamp the pins it resolves with **its own** version and MUST compare a recorded version against
+**its own**, never against a shared notion of "the current language" — an engine that stamped one
+version and compared another would refuse its own records.
+
+Two refusals divide the work, and the difference is what the operator does next:
+
+- **L5008**, at the engine: this record was handed to an engine whose version differs. There is an
+  engine that speaks it, so the repair is to run it there, or to fork (§11.3).
+- **L5023**, at whatever dispatches to engines: no engine in this build serves the recorded
+  version. There is nothing here to name, so the repair is a build that serves it, or a fork. The
+  refusal MUST name both the version it met and the set it serves; "this build cannot" is only
+  actionable if it says what it can.
+
+A build MAY serve several versions at once. Which versions it serves is a fact about that build,
+declared, and a fresh run MUST be stamped with the version of the engine that will actually execute
+it — never with the newest version the build knows of, unless that is the one that will run it.
 
 ## 9. Errors
 
@@ -797,7 +828,9 @@ with journalled effects returning recorded results by key. Out-of-order concurre
 correctly because keys are structural, and no continuation or interpreter state is ever serialized.
 A resume MUST refuse a journal that belongs to another run (L5011), a pin that differs (L5009), a
 language version that differs (L5008), and history without pins (L5021); it MUST stop on the first
-divergence (L5001). (A recorded branch missing from the source is L5022 only on a migration or fork
+divergence (L5001). Where a build dispatches to more than one engine, a record whose version no
+engine of that build serves is refused before any of this, with L5023 (§8.4), and the run MUST be
+left untouched: nothing activated, nothing appended. (A recorded branch missing from the source is L5022 only on a migration or fork
 walk entering a SETTLED scope, §11.2; a `pending` scope records no arm names to check and is
 re-entered by a resume.) A resume performs live every
 effect the journal has not settled, so a run that stops before its next effect (L5012, the host's
@@ -847,7 +880,8 @@ the parent is untouched.
 
 An implementation MUST enforce the run's `stepBudget` per walk (L4013) and `effectCeiling` per run
 (L4009), and MUST yield to its host at least every `yieldEvery` dispatches so a pure loop cannot
-starve the host's timers. The journal store's payload bound is the store's own: an entry it will not
+starve the host's timers. The step and the dispatch are the engine's own unit (§8.4); an effect is
+not, and `effectCeiling` counts the same thing under either version. The journal store's payload bound is the store's own: an entry it will not
 take is a refused append (L5010, §10.5). L5006 is reserved for a result-size check ahead of the
 append and is not raised by this revision.
 
@@ -953,6 +987,7 @@ time, L5xxx durability, L6xxx simulation.
 | L5020 | A fork cut lies inside a scope whose outcome was already decided |
 | L5021 | Resume over a journal without the run's pins |
 | L5022 | A recorded branch is not in the migrated source |
+| L5023 | No engine in this build serves this record's language version |
 | L6001 | Unscripted effect in simulation |
 | L6002 | Simulation script entry unused |
 
@@ -973,3 +1008,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-18 | Review folds, same revision: the PRNG separator is U+0000 (§8.2, the earlier text said a space and was wrong; the code never changed); `any`/`all` are no longer reserved (§3); `xs.length = n` truncates only, L4017 (§4.3); the L2013 rule states where the validator can see (§2.3); `fanOut` fails like `parallel` (§7.4); L5022 is a walk refusal, not a resume stop (§11.1); no lineage on a fork's child (§11.3); `schema` is opaque and concurrent turns on one handle are the handler's (§6.5); the checkpoint entry's `attempts` chain (§6.5). |
 | 2026-08-18 | Language-lane folds, same revision: operators, computed member keys and the library's primitive parameters coerce primitives only, an array, record or function operand is refused (L4018, §4.5, §5.4); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
 | 2026-08-19 | A record may not carry a callable `then`, on a literal, a spread, a rest pattern or a member write alike, literal key or computed (L4021, §4.3): an object with a callable `then` is a thenable, the host's promise machinery adopts it in place of the value the program built, and its failure escaped the run as an unowned rejection that killed the host. |
+| 2026-08-19 | Language version `2`, the compiled engine, alongside version `1`, the tree-walker (§8.4): a step is the engine's own unit and budgets are not comparable across versions (§8.3, §12); `log` is data under version 2 and refuses code (L4016); an engine stamps and compares its own version, so a record binds only under the engine that wrote it (L5008); and a build that dispatches to engines refuses a version none of its engines serves, naming what it does serve, leaving the run untouched (L5023, §11.1). |

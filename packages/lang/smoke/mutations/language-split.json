@@ -1,0 +1,67 @@
+{
+  "suite": "packages/lang/smoke/pins.smoke.ts",
+  "guard": "The version split: the language version is a property of the ENGINE that runs a program, passed in rather than read from the pins module, and each engine stamps AND compares its own. The walker is version 1 forever, the engine is version 2, and a record binds only under the engine that wrote it.",
+  "command": "pnpm smoke:lang-pins",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/language-split.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "the two engines are collapsed back onto one version",
+      "file": "packages/lang/src/pins.ts",
+      "find": "export const ENGINE_LANGUAGE_VERSION = \"2\";",
+      "replace": "export const ENGINE_LANGUAGE_VERSION = \"1\";",
+      "expectRed": "the walker's version and the engine's are two different languages",
+      "cell": "the walker's version and the engine's are two different languages",
+      "completionMarker": "the version check runs BEFORE the pin comparison, so a foreign version is not reported as a seed problem",
+      "note": "The arrangement this split replaced, and the one a later reader is most likely to try again on the grounds that two constants look redundant. Collapsed, the engine claims to speak the walker's language: an engine-recorded journal would bind on the walker and be REPLAYED under semantics it was never written under, with no recorded fact left to disagree on."
+    },
+    {
+      "name": "the current language points at the OLDEST engine rather than the newest",
+      "file": "packages/lang/src/pins.ts",
+      "find": "export const LANGUAGE_VERSION = ENGINE_LANGUAGE_VERSION;",
+      "replace": "export const LANGUAGE_VERSION = WALKER_LANGUAGE_VERSION;",
+      "expectRed": "and the current language is the ENGINE's, not the walker's",
+      "cell": "and the current language is the ENGINE's, not the walker's",
+      "completionMarker": "the walker's version and the engine's are two different languages",
+      "note": "`LANGUAGE_VERSION` is what a caller means by \"this language\", so it must move with the newest engine and not with the oldest one still supported. Aimed at the alias alone, which is why the marker is the cell immediately above it: that cell stays green here, so a red on this one is about the alias and nothing else."
+    },
+    {
+      "name": "the resolver stamps a version out of this module instead of the one it was handed",
+      "file": "packages/lang/src/pins.ts",
+      "find": "    effectCeiling: options.effectCeiling ?? PIN_DEFAULTS.effectCeiling,\n    languageVersion,",
+      "replace": "    effectCeiling: options.effectCeiling ?? PIN_DEFAULTS.effectCeiling,\n    languageVersion: LANGUAGE_VERSION,",
+      "expectRed": "and the language version is stamped, by the ENGINE that resolved them",
+      "cell": "and the language version is stamped, by the ENGINE that resolved them",
+      "completionMarker": "the seed defaults from the run id",
+      "note": "SHADOWING, disclosed rather than left to be discovered. `a resolver stamps the version it was HANDED, whatever it is` states this rule in the form a reader needs -- a version belonging to no engine, so a module constant cannot masquerade as a correct answer -- but it sits in section 6b, and this mutation reds section 1 first in a fail-fast suite, so the run never reaches it. The mutation is graded on the cell that actually prints. The 6b cell is kept for what it says, not for what it grades."
+    },
+    {
+      "name": "the version check acquires a DIRECTION: older records refused, newer ones accepted",
+      "file": "packages/lang/src/pins.ts",
+      "find": "  if (recorded.languageVersion !== languageVersion) {",
+      "replace": "  if (recorded.languageVersion < languageVersion) {",
+      "expectRed": "a walker record is refused by the engine, and an engine record by the walker",
+      "cell": "a walker record is refused by the engine, and an engine record by the walker",
+      "completionMarker": "a record binds under the engine that wrote it, on both sides",
+      "note": "Chosen over the obvious `!==` removal for a reason worth keeping: removing the check outright makes an EARLIER section throw where it expects to bind, and an escaping exception grades as the run dying rather than as a named cell. A direction is also the likelier real defect -- \"a newer engine can obviously replay an older record\" is a sentence someone will write -- and it is invisible to every one-directional cell. Both directions are asserted because \"different semantics\" has no direction."
+    },
+    {
+      "name": "the refusal reports a module constant as the version that is asking",
+      "file": "packages/lang/src/pins.ts",
+      "find": "      recorded.languageVersion,\n      languageVersion,\n      `This run started under language version",
+      "replace": "      recorded.languageVersion,\n      LANGUAGE_VERSION,\n      `This run started under language version",
+      "expectRed": "and the refusal names both versions",
+      "cell": "and the refusal names both versions",
+      "completionMarker": "a journal from another language version is refused",
+      "note": "A refusal that is correct to raise and wrong about who raised it. It sends the operator to the wrong engine, and under the split it is newly possible: with one shared constant the reported value and the passed one were the same string and no cell could tell them apart."
+    }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, checked rather than assumed: `pins.smoke.ts` imports `../src/pins.js`",
+    "relatively and `pnpm smoke:lang-pins` is a bare `tsx` with no build step, so the mutated bytes",
+    "are the bytes the suite loads. The same mutations under a `pnpm smoke:runtime-*` command would",
+    "be void on arrival -- those suites reach this module through a package specifier that resolves",
+    "to `dist`. The driver's half of this guard is graded separately, in",
+    "`implementations/runtime/smoke/mutations/language-table.json`, against a module that suite",
+    "imports relatively."
+  ]
+}

@@ -20,8 +20,8 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
-import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, RunJournalTailTruncated } from "@cotal-ai/core";
-import { SimHandler, type JournalEntry } from "@cotal-ai/lang";
+import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, RunJournalTailTruncated } from "@cotal-ai/core";
+import { LANGUAGE_VERSION, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -541,6 +541,70 @@ try {
   }));
   c("and a handler that owns no external state needs no method: the takeover still completes",
     noHook.status === "completed", why(noHook));
+}
+
+// ── 12) WHICH ENGINE RUNS THIS: the capability table, and the record it refuses ────────────────
+//
+// The driver hosts a SET of language versions, and that set is a fact about this build rather than
+// about the language. Two claims live here and they pull in opposite directions, which is why both
+// are needed: a FRESH run must be stamped with the version of the engine that will actually execute
+// it, and a RECORD whose version no engine here serves must be refused by name instead of walked by
+// whichever engine happens to be present - which would run a program under semantics it was never
+// recorded under, silently, because no recorded fact would disagree.
+{
+  const out = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v-fresh", source: PROGRAM, lease: lease("m1", 1, 1),
+    handler: new CountingHandler(),
+  }));
+  c("a fresh run completes on the engine this build serves", out.status === "completed", why(out));
+  const pinned = (await readRunRecord(kv, EP, "d-v-fresh"))!.spec.value.pins;
+  // THE STAMP IS THE ENGINE'S, NOT THE LANGUAGE'S, and the second half of this cell is what makes
+  // the first half mean anything: with one shared constant both sides read the same and a driver
+  // stamping the current language would pass. MEASURED before the split existed: a driver stamping
+  // the current language and then calling the only engine it hosts refuses its own fresh runs,
+  // `driver stamps "2" -> walker: REFUSED L5008`.
+  c("and it is stamped with the version of the ENGINE that ran it, not with the current language",
+    pinned.languageVersion === WALKER_LANGUAGE_VERSION && LANGUAGE_VERSION !== WALKER_LANGUAGE_VERSION,
+    { stamped: pinned.languageVersion, engine: WALKER_LANGUAGE_VERSION, language: LANGUAGE_VERSION });
+
+  // A RECORD FROM A BUILD THAT SERVES MORE THAN THIS ONE. Written directly, because that is exactly
+  // what the driver will meet: a spec some other build's dispatcher stamped.
+  const foreign = { ...resolvePins({ runId: "d-v9" }, 1_000, WALKER_LANGUAGE_VERSION), languageVersion: "9" };
+  await createRunSpec(kv, EP, "d-v9", { pins: foreign, createdAt: 1_000 });
+  const refused = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v9", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a record no engine here serves is RELEASED, not failed and not thrown",
+    refused.status === "released", why(refused));
+  c("and it is refused by name, L5023",
+    refused.status === "released" && (refused.reason as { code?: string }).code === "L5023",
+    refused.status === "released" ? (refused.reason as { code?: string }).code : why(refused));
+  c("and the refusal names both the version it met and the set this build serves",
+    refused.status === "released" && /language version 9/.test(refused.reason.message)
+    && refused.reason.message.includes(`this build serves ${WALKER_LANGUAGE_VERSION}`),
+    refused.status === "released" ? refused.reason.message.slice(0, 120) : why(refused));
+  // THE TEETH. A refusal that had already activated the run would have taken the lease, written the
+  // activation and moved the journal - "refused" would then describe the message and not the effect.
+  const untouched = await readRunRecord(kv, EP, "d-v9");
+  c("and the run was not touched: no activation, no status, nothing appended",
+    untouched?.status === undefined, untouched?.status?.value);
+
+  // THE CONTROL, and without it the three cells above are satisfied by a driver that refuses every
+  // hand-written spec. Same construction, same absent journal, ONE character different.
+  const served = { ...foreign, languageVersion: WALKER_LANGUAGE_VERSION };
+  await createRunSpec(kv, EP, "d-v1", { pins: served, createdAt: 1_000 });
+  const other = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v1", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("while the same spec at a version this build DOES serve gets past the table",
+    other.status !== "released" || (other.reason as { code?: string }).code !== "L5023",
+    other.status === "released" ? `${other.reason.name}: ${(other.reason as { code?: string }).code ?? ""}` : why(other));
+  // And the defaults are the ones the record carried, which is what a hand-written spec is for here.
+  c("and the hand-written spec is a real one: its limits are the language's own defaults",
+    served.yieldEvery === PIN_DEFAULTS.yieldEvery && served.stepBudget === PIN_DEFAULTS.stepBudget,
+    served);
 }
 
 console.log(`run-driver.smoke: ${ok} passed, ${fail} failed`);

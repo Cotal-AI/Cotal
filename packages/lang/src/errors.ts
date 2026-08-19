@@ -152,6 +152,12 @@ export const CATALOG = {
   // awaited `Promise.race([])`, which never settles. Its own code and not L5001 because that one is
   // a hash comparison down to its field names, and this is a comparison of branch NAMES.
   L5022: "A recorded branch is not in the migrated source",
+  // Allocated here because the L5xxx range is where a fact about a RECORD lives, and this is one: the
+  // record names a language version and this build has no engine that speaks it. Deliberately not
+  // L5008, which is the same shape of disagreement one layer in - a record handed to a SPECIFIC
+  // engine whose version differs, where the repair is to run it on the engine that matches. Here
+  // there is no such engine to name, so the repair is a different sentence and gets its own code.
+  L5023: "No engine in this build serves this record's language version",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
