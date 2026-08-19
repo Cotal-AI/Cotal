@@ -44,6 +44,16 @@
       "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
       "afterRestore": "pnpm --filter @cotal-ai/manager build",
       "note": "The sentinel is the half a joined-seat-only cell can never reach."
+    },
+    {
+      "name": "only the OFFLINE status is rewritten, so an unavailable principal renders live",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.name)?.status === \"offline\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "note": "A joined row is idle and a never-joining row is absent, so a rewrite that touches only offline agrees with both and needs a managed row that actually reaches offline.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
     }
   ]
 }
