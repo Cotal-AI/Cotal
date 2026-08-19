@@ -373,6 +373,112 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   }
 }
 
+// ---- 7b) the dead zone the write rule cannot see ------------------------------------------------
+
+/** One program per clause of F7's ruled predicate, and the walker's answer for it. */
+const DEAD_ZONE: readonly (readonly [string, string])[] = [
+  ["a hoisted function reads it", "const r = f(); function f() { return x } const x = 1; log(r);"],
+  ["an arrow inside a hoisted function, any depth", "const r = f(); function f() { const g = () => x; return g(); } const x = 1; log(r);"],
+  ["a function expression written before it", "const f = () => x; const r = f(); const x = 1; log(r);"],
+  ["an arrow inside its own initializer", "const x = (() => x)(); log(x);"],
+  ["a `let` read the same way", "const f = () => n; const r = f(); let n = 1; log(r);"],
+  ["a call from a nested block", "const f = () => x; if (true) { log(f()); } const x = 1;"],
+  ["two functions deep", "const g = () => { const h = () => x; return h(); }; const r = g(); const x = 1; log(r);"],
+];
+
+/**
+ * Clause (i) ALONE: a hoisted function reads a binding declared BEFORE it, so the textual clause is
+ * false and only "any hoisted declaration on the path" makes this a cell. The rule is deliberately
+ * conservative there - a hoisted function is reachable from anywhere in its block - and both engines
+ * answer 1 either way, so the classification is the only thing that can be checked.
+ */
+const HOISTED_ONLY: readonly (readonly [string, string])[] = [
+  ["a hoisted function reads a binding declared above it", "const x = 1; function f() { return x } log(f());"],
+  ["an arrow inside one, two deep", "const x = 1; function f() { const g = () => x; return g(); } log(f());"],
+];
+
+/** The mirror: captured, and provably not readable before the declaration. */
+const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
+  ["declared, then captured", "const x = 1; const f = () => x; log(f());"],
+  ["declared, then captured two deep", "const x = 1; const g = () => { const h = () => x; return h(); }; log(g());"],
+  ["a loop head's per-iteration binding", "const fs = []; for (let i = 0; i < 3; i = i + 1) { fs.push(() => i); } log(len(fs));"],
+];
+
+{
+  // F7, RULED option (b). A binding a closure can read BEFORE ITS DECLARATION HAS RUN is refused
+  // L2004 by the walker — a code a program can catch and read — where a native JavaScript binding
+  // answers a host ReferenceError, which `caught` can only report as L4000/host. So that class
+  // becomes a record: `born({})` at the top of its block, `set` at the declaration, and every read
+  // through `get(cell, "v", name)` so the host answers L2004 for the binding by name.
+  const shape = (source: string) => {
+    const { module, meta } = transform(source);
+    return {
+      hoists: (module.match(new RegExp(`= ${meta.ctx}\\.born\\(\\{\\}\\)`, "g")) ?? []).length,
+      named: (module.match(new RegExp(`${meta.ctx}\\.get\\([A-Za-z_$][\\w$]*, "v", "`, "g")) ?? []).length,
+      module,
+    };
+  };
+  const missed: string[] = [];
+  for (const [name, source] of DEAD_ZONE) {
+    const { hoists, named } = shape(source);
+    if (hoists < 1 || named < 1) missed.push(`${name}: hoists ${hoists}, named reads ${named}`);
+  }
+  ok("every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name", missed.length === 0, missed);
+  console.log(`  (${DEAD_ZONE.length} dead-zone clauses)`);
+
+  // CLAUSE (i) ON ITS OWN. Every program above satisfies the textual clause too, so dropping the
+  // hoisted-declaration clause changed nothing there and the mutant SURVIVED. These two reach it
+  // alone: the declaration sits ABOVE the function, so only "a hoisted declaration on the path"
+  // makes them cells.
+  const natively: string[] = [];
+  for (const [name, source] of HOISTED_ONLY) {
+    const { hoists, named } = shape(source);
+    if (hoists < 1 || named < 1) natively.push(`${name}: hoists ${hoists}, named reads ${named}`);
+  }
+  ok("a hoisted function's read makes a cell wherever the declaration sits", natively.length === 0, natively);
+
+  // AND THE MIRROR, which is the half that keeps the predicate from being "make everything a cell":
+  // a binding no closure can reach early stays a native binding, at no seam cost per read.
+  const wrong: string[] = [];
+  for (const [name, source] of NATIVE_CAPTURE) {
+    const { hoists, named } = shape(source);
+    if (hoists !== 0 || named !== 0) wrong.push(`${name}: hoists ${hoists}, named reads ${named}`);
+  }
+  ok("a captured binding no closure can read early stays native", wrong.length === 0, wrong);
+
+  // AND THE RECORD EXISTS BEFORE THE CLOSURE THAT CAPTURES IT. Hoisting is the whole point: created
+  // at the declaration, the closure written above it would capture nothing.
+  const early = shape("const f = () => x; const r = f(); const x = 1; log(r);");
+  const born = early.module.indexOf("born({})");
+  const closure = early.module.indexOf("const f = async");
+  ok("the record is created before the closure that captures it", born !== -1 && closure !== -1 && born < closure, early.module.slice(0, 240));
+  ok("and the declaration writes into that record rather than building one", /\.set\(x, "v", 1\)/.test(early.module) && !early.module.includes("born({ v:"), early.module.slice(0, 260));
+
+  // AND THE TWO CELL CLASSES STAY APART. A binding that is a cell for the WRITE rule alone cannot be
+  // read early, so its record is still built where it is declared, with its value already in it.
+  const write = transform("let seen = 0; const bump = () => { seen = seen + 1; }; bump(); log(seen);").module;
+  ok("a cell for the write rule alone is still built where it is declared", write.includes("born({ v: 0 })") && !write.includes("born({})"), write.slice(0, 200));
+
+  // AND THE ORACLE SAYS SO, for every clause: measured, not quoted. Each dead-zone program refuses
+  // L2004 on the walker and each native one answers its value, which is what the classification is
+  // reproducing — and what the differential suite will hold the engine to once `get` takes the name.
+  const answers: string[] = [];
+  for (const [, source] of [...DEAD_ZONE, ...HOISTED_ONLY, ...NATIVE_CAPTURE]) {
+    try {
+      await walk(source, { runId: "p", handler: new SimHandler({}) });
+      answers.push("ok");
+    } catch (e) {
+      answers.push((e as { code?: string }).code ?? "?");
+    }
+  }
+  ok(
+    "the walker refuses every dead-zone clause L2004 and answers every native one",
+    JSON.stringify(answers) ===
+      JSON.stringify([...DEAD_ZONE.map(() => "L2004"), ...HOISTED_ONLY.map(() => "ok"), ...NATIVE_CAPTURE.map(() => "ok")]),
+    answers,
+  );
+}
+
 // ---- 8) the cell scheme, in both directions ------------------------------------------------------
 
 {
@@ -491,112 +597,6 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   }
   ok("the shipped payload digests as the walker's value over every loser set", matched === subsets.length, { matched, of: subsets.length, mismatched });
   console.log(`  (${subsets.length} loser sets digested on both sides)`);
-}
-
-// ---- 8b) the dead zone the write rule cannot see ------------------------------------------------
-
-/** One program per clause of F7's ruled predicate, and the walker's answer for it. */
-const DEAD_ZONE: readonly (readonly [string, string])[] = [
-  ["a hoisted function reads it", "const r = f(); function f() { return x } const x = 1; log(r);"],
-  ["an arrow inside a hoisted function, any depth", "const r = f(); function f() { const g = () => x; return g(); } const x = 1; log(r);"],
-  ["a function expression written before it", "const f = () => x; const r = f(); const x = 1; log(r);"],
-  ["an arrow inside its own initializer", "const x = (() => x)(); log(x);"],
-  ["a `let` read the same way", "const f = () => n; const r = f(); let n = 1; log(r);"],
-  ["a call from a nested block", "const f = () => x; if (true) { log(f()); } const x = 1;"],
-  ["two functions deep", "const g = () => { const h = () => x; return h(); }; const r = g(); const x = 1; log(r);"],
-];
-
-/**
- * Clause (i) ALONE: a hoisted function reads a binding declared BEFORE it, so the textual clause is
- * false and only "any hoisted declaration on the path" makes this a cell. The rule is deliberately
- * conservative there - a hoisted function is reachable from anywhere in its block - and both engines
- * answer 1 either way, so the classification is the only thing that can be checked.
- */
-const HOISTED_ONLY: readonly (readonly [string, string])[] = [
-  ["a hoisted function reads a binding declared above it", "const x = 1; function f() { return x } log(f());"],
-  ["an arrow inside one, two deep", "const x = 1; function f() { const g = () => x; return g(); } log(f());"],
-];
-
-/** The mirror: captured, and provably not readable before the declaration. */
-const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
-  ["declared, then captured", "const x = 1; const f = () => x; log(f());"],
-  ["declared, then captured two deep", "const x = 1; const g = () => { const h = () => x; return h(); }; log(g());"],
-  ["a loop head's per-iteration binding", "const fs = []; for (let i = 0; i < 3; i = i + 1) { fs.push(() => i); } log(len(fs));"],
-];
-
-{
-  // F7, RULED option (b). A binding a closure can read BEFORE ITS DECLARATION HAS RUN is refused
-  // L2004 by the walker — a code a program can catch and read — where a native JavaScript binding
-  // answers a host ReferenceError, which `caught` can only report as L4000/host. So that class
-  // becomes a record: `born({})` at the top of its block, `set` at the declaration, and every read
-  // through `get(cell, "v", name)` so the host answers L2004 for the binding by name.
-  const shape = (source: string) => {
-    const { module, meta } = transform(source);
-    return {
-      hoists: (module.match(new RegExp(`= ${meta.ctx}\\.born\\(\\{\\}\\)`, "g")) ?? []).length,
-      named: (module.match(new RegExp(`${meta.ctx}\\.get\\([A-Za-z_$][\\w$]*, "v", "`, "g")) ?? []).length,
-      module,
-    };
-  };
-  const missed: string[] = [];
-  for (const [name, source] of DEAD_ZONE) {
-    const { hoists, named } = shape(source);
-    if (hoists < 1 || named < 1) missed.push(`${name}: hoists ${hoists}, named reads ${named}`);
-  }
-  ok("every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name", missed.length === 0, missed);
-  console.log(`  (${DEAD_ZONE.length} dead-zone clauses)`);
-
-  // CLAUSE (i) ON ITS OWN. Every program above satisfies the textual clause too, so dropping the
-  // hoisted-declaration clause changed nothing there and the mutant SURVIVED. These two reach it
-  // alone: the declaration sits ABOVE the function, so only "a hoisted declaration on the path"
-  // makes them cells.
-  const natively: string[] = [];
-  for (const [name, source] of HOISTED_ONLY) {
-    const { hoists, named } = shape(source);
-    if (hoists < 1 || named < 1) natively.push(`${name}: hoists ${hoists}, named reads ${named}`);
-  }
-  ok("a hoisted function's read makes a cell wherever the declaration sits", natively.length === 0, natively);
-
-  // AND THE MIRROR, which is the half that keeps the predicate from being "make everything a cell":
-  // a binding no closure can reach early stays a native binding, at no seam cost per read.
-  const wrong: string[] = [];
-  for (const [name, source] of NATIVE_CAPTURE) {
-    const { hoists, named } = shape(source);
-    if (hoists !== 0 || named !== 0) wrong.push(`${name}: hoists ${hoists}, named reads ${named}`);
-  }
-  ok("a captured binding no closure can read early stays native", wrong.length === 0, wrong);
-
-  // AND THE RECORD EXISTS BEFORE THE CLOSURE THAT CAPTURES IT. Hoisting is the whole point: created
-  // at the declaration, the closure written above it would capture nothing.
-  const early = shape("const f = () => x; const r = f(); const x = 1; log(r);");
-  const born = early.module.indexOf("born({})");
-  const closure = early.module.indexOf("const f = async");
-  ok("the record is created before the closure that captures it", born !== -1 && closure !== -1 && born < closure, early.module.slice(0, 240));
-  ok("and the declaration writes into that record rather than building one", /\.set\(x, "v", 1\)/.test(early.module) && !early.module.includes("born({ v:"), early.module.slice(0, 260));
-
-  // AND THE TWO CELL CLASSES STAY APART. A binding that is a cell for the WRITE rule alone cannot be
-  // read early, so its record is still built where it is declared, with its value already in it.
-  const write = transform("let seen = 0; const bump = () => { seen = seen + 1; }; bump(); log(seen);").module;
-  ok("a cell for the write rule alone is still built where it is declared", write.includes("born({ v: 0 })") && !write.includes("born({})"), write.slice(0, 200));
-
-  // AND THE ORACLE SAYS SO, for every clause: measured, not quoted. Each dead-zone program refuses
-  // L2004 on the walker and each native one answers its value, which is what the classification is
-  // reproducing — and what the differential suite will hold the engine to once `get` takes the name.
-  const answers: string[] = [];
-  for (const [, source] of [...DEAD_ZONE, ...HOISTED_ONLY, ...NATIVE_CAPTURE]) {
-    try {
-      await walk(source, { runId: "p", handler: new SimHandler({}) });
-      answers.push("ok");
-    } catch (e) {
-      answers.push((e as { code?: string }).code ?? "?");
-    }
-  }
-  ok(
-    "the walker refuses every dead-zone clause L2004 and answers every native one",
-    JSON.stringify(answers) ===
-      JSON.stringify([...DEAD_ZONE.map(() => "L2004"), ...HOISTED_ONLY.map(() => "ok"), ...NATIVE_CAPTURE.map(() => "ok")]),
-    answers,
-  );
 }
 
 // ---- 11b) the scope body that must not be evaluated at the call --------------------------------
