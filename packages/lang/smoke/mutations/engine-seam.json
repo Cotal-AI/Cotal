@@ -791,10 +791,10 @@
       "file": "packages/lang/src/values.ts",
       "find": "  if (typeof value === \"function\") {\n    throw new NotCrossable(\n      \"function\",",
       "replace": "  if (false) {\n    throw new NotCrossable(\n      \"function\",",
-      "expectRed": "and it is L4016, the same code both in-process arms answer",
-      "completionMarker": "ok log lines cross out, values intact",
-      "cell": "and it is L4016, the same code both in-process arms answer",
-      "note": "The defect this crossing was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. Both in-process arms completed, so only a cell on the WORKER leg sees it. The rule itself is graded where it lives (log-data.json over surface.smoke); what this grades is that the worker leg notices. Aimed at the CODE cell, measured: unrefused, the function reaches `postMessage`, the thread's own run fails on the clone and the failure crosses as a fault - so `ok === false` is still true and the first cell stays green. What changes is the code, and the two cells after it."
+      "expectRed": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "completionMarker": "ok an unreadable version is not refused on the strength of being unreadable",
+      "cell": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "note": "The defect this crossing was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. What this grades CHANGED at the fold that moved the rule out of the shared `log` builtin and into the engine's own log sink (src/engine/ctx.ts): `assertNoCode` still lives here, but `src/engine/ctx.ts` is now its ONLY caller, so this mutant is an ENGINE-ONLY rule with NO ORACLE BEHIND IT - the walker replays v1 recordings and hands a logged builtin to its host as it is, on purpose, so the differential declares this a divergence and there is no second arm to compare against. Re-aimed after the fold and measured: the first cell to notice is section 20b's in-process one, which runs a program through the transform onto the engine and reads the L4016 sentence; unrefused, that run completes and logs the closure. It reds there, UPSTREAM of the worker leg in section 22 - which stays green under this mutant on its first cell, because the thread's own run then fails on the clone and the failure crosses as a fault, so `ok === false` is still true. Marker is the last static cell of section 20, immediately above."
     },
     {
       "name": "the thread posts a kind the crossing table never cells",

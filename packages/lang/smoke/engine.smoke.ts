@@ -2224,9 +2224,11 @@ let n = 1;
     ok("and so do the optional fields a resume adds: file, pins, entries", again.ok === true, JSON.stringify(again).slice(0, 140));
   }
 
-  // ---- crossing 2: LOG LINES, OUT. A log line is DATA. The rule is held once, in the shared `log`
-  // builtin, so both arms answer it and no transport ever sees code - which is what makes this a
-  // language refusal here rather than a structured-clone failure naming a host algorithm.
+  // ---- crossing 2: LOG LINES, OUT. A log line is DATA on this engine, and the rule is held once, in
+  // the engine's own log sink (section 20b grades it in-process), so no transport ever sees code -
+  // which is what makes this a language refusal here rather than a structured-clone failure naming a
+  // host algorithm. It is an ENGINE rule: the walker replays v1 recordings and does not hold it, so
+  // there is no oracle behind this cell and nothing on the other arm to compare it to.
   {
     const ordinary = `log("status", 1);\n`;
     const lines: unknown[][] = [];
@@ -2239,7 +2241,7 @@ let n = 1;
     const withCode = `log((x) => x);\n`;
     const answer = await runWorker(withCode, transform(withCode).module).done;
     ok("a logged FUNCTION is refused by the language, not by the transport", answer.ok === false, JSON.stringify(answer).slice(0, 160));
-    ok("and it is L4016, the same code both in-process arms answer", failed(answer).code === "L4016", failed(answer).code);
+    ok("and it is L4016, the code the engine's log sink answers in-process too", failed(answer).code === "L4016", failed(answer).code);
     // THE POINT OF THE CELL. Unrefused, this line reached `postMessage` and came back as a
     // DataCloneError whose message carried the emitted module body - a host algorithm's complaint
     // about a language rule, with the program's compiled source in it.
