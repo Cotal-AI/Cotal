@@ -817,8 +817,18 @@ function settledStrings(src: ts.SourceFile, consts: Map<string, string>): Map<st
  *  Residual, stated rather than papered over: a nested BLOCK binding is folded into its enclosing
  *  function rather than given its own scope, so a name declared in both is unsettled and refused
  *  where a full resolver would answer it. That is a refusal on a shadowing shape, in the direction
- *  that costs a verdict rather than the one that grants a pass. */
-type NameFact = "undefined" | "unsettled" | "unknown";
+ *  that costs a verdict rather than the one that grants a pass.
+ *
+ *  Second residual, measured rather than assumed: an HTML file's script blocks are parsed as one
+ *  program EACH, while at runtime they share one global lexical environment. So a value declared in
+ *  an earlier block and read at a call in a later one is answered as bound nowhere, and passes,
+ *  where the same two lines inside one block are read and reddened. The KEY path already refuses
+ *  across blocks, so this file pays that cost in one position and not the other. It is stated
+ *  instead of closed because closing it means threading a file's sibling programs into the value
+ *  reader, and the shape it would catch is an HTML page calling the broker connect seam, of which
+ *  this repo contains none. A residual worth naming is one someone could hit; this one is named so
+ *  that whoever hits it first is not the person who has to discover it. */
+type NameFact = "undefined" | "unsettled" | "declined" | "unknown";
 
 /** Every name an assignment WRITES, which is not the same as the name on its left. `({ K } = o)`
  *  and `[K] = a` write K through a pattern, and a rule that reads only `x = v` sees no write at all
@@ -902,44 +912,157 @@ function opaqueBinding(n: ts.Node, name: string): boolean {
   return false;
 }
 
-/** What a destructuring pattern hands this name, when the thing being taken apart is written out
- *  right here. `const { tls } = { tls: undefined }` is readable and was passing as stated; `const
- *  { tls } = cfg` is not readable, and the difference between those two is the difference between
- *  declining to answer and answering wrongly. */
+/** What this reader got out of one place a value can come from.
+ *
+ *  Four outcomes, and the two in the middle are the point. `absent` is a positive finding: a
+ *  property that is not there hands over undefined, which is exactly what the seam throws on.
+ *  `declined` says the value is written out right here and this reader did not read it, which is a
+ *  refusal; `opaque` says the value is not written out at all, which is not this file's to answer.
+ *  Collapsing those two is what made every unread shape pass: review found six of them, from
+ *  `const [tls] = [undefined]` to `Object.freeze({ tls: undefined })`, each one green while the call
+ *  threw, all sharing the single line that turned "I did not read it" into "it is fine". */
+type Read =
+  | { kind: "value"; expr: ts.Expression }
+  | { kind: "absent" }
+  | { kind: "declined" }
+  | { kind: "opaque" };
+
+const DECLINED: Read = { kind: "declined" };
+const OPAQUE: Read = { kind: "opaque" };
+const FREEZERS = new Set(["freeze", "seal", "preventExtensions"]);
+
+/** A property or element name this file can name, by the same arithmetic every other key folds by. */
+function keyText(name: ts.PropertyName | ts.BindingName | undefined,
+  consts: Map<string, string>): string | undefined {
+  if (!name) return undefined;
+  if (ts.isIdentifier(name) || ts.isStringLiteralLike(name)) return name.text;
+  if (ts.isNumericLiteral(name)) return name.text;
+  if (ts.isComputedPropertyName(name)) return foldString(name.expression, consts);
+  return undefined;
+}
+
+const bindsPatternName = (n: ts.BindingName, name: string): boolean => {
+  const out = new Set<string>();
+  boundNames(n, out);
+  return out.has(name);
+};
+
+/** The structure a destructuring takes apart, when it is written out at the declaration. A freeze
+ *  is that same structure with a call around it, and reading through the call is the twin of the
+ *  admission rule the seam's own name folds by. */
+function writtenStructure(init: ts.Expression): ts.Expression | undefined {
+  const x = unwrap(init);
+  if (ts.isObjectLiteralExpression(x) || ts.isArrayLiteralExpression(x)) return x;
+  if (ts.isCallExpression(x) && x.arguments.length === 1
+    && ts.isPropertyAccessExpression(x.expression) && ts.isIdentifier(x.expression.expression)
+    && x.expression.expression.text === "Object" && FREEZERS.has(x.expression.name.text))
+    return writtenStructure(x.arguments[0]);
+  return undefined;
+}
+
+/** What an object literal written out here hands over for one key. A spread or a key this file
+ *  cannot fold can BE that key, so neither is walked past. */
+function propertyOf(src: ts.ObjectLiteralExpression, key: string, consts: Map<string, string>): Read {
+  let hit: Read = { kind: "absent" };
+  for (const q of src.properties) {
+    if (ts.isSpreadAssignment(q)) return DECLINED;
+    const k = keyText(q.name, consts);
+    if (k === undefined) return DECLINED;
+    if (k !== key) continue;
+    if (ts.isPropertyAssignment(q)) hit = { kind: "value", expr: q.initializer };
+    else if (ts.isShorthandPropertyAssignment(q)) hit = { kind: "value", expr: q.name };
+    else return DECLINED; // a getter is a function body, and reading it would be running it
+  }
+  return hit; // a later statement of the same key wins, so the scan does not stop at the first
+}
+
 function patternValue(pattern: ts.BindingName, init: ts.Expression | undefined,
-  name: string): ts.Expression | undefined | "opaque" {
-  if (!ts.isObjectBindingPattern(pattern) || !init) return "opaque";
-  const src = unwrap(init);
-  if (!ts.isObjectLiteralExpression(src)) return "opaque";
-  if (src.properties.some((q) => ts.isSpreadAssignment(q)
-    || (!!q.name && ts.isComputedPropertyName(q.name)))) return "opaque";
-  const el = pattern.elements.find((e) => ts.isIdentifier(e.name) && e.name.text === name);
-  if (!el || el.dotDotDotToken || el.initializer) return "opaque"; // a rest or a default is another read
-  const key = el.propertyName ?? el.name;
-  if (!ts.isIdentifier(key) && !ts.isStringLiteralLike(key)) return "opaque";
-  const hit = src.properties.find((q) => !!q.name
-    && (ts.isIdentifier(q.name) || ts.isStringLiteralLike(q.name)) && q.name.text === key.text);
-  if (!hit) return undefined; // the property is absent, so this name IS undefined
-  if (ts.isPropertyAssignment(hit)) return hit.initializer;
-  if (ts.isShorthandPropertyAssignment(hit)) return hit.name;
-  return "opaque";
+  name: string, consts: Map<string, string>): Read {
+  if (!init) return OPAQUE;
+  const src = writtenStructure(init);
+  if (!src) return OPAQUE; // not written out here, so this file has nothing to read
+  if (ts.isObjectBindingPattern(pattern) && ts.isObjectLiteralExpression(src)) {
+    for (const el of pattern.elements) {
+      if (!bindsPatternName(el.name, name)) continue;
+      if (el.dotDotDotToken) return DECLINED; // a rest holds what the other elements did not take
+      const key = keyText(el.propertyName ?? el.name, consts);
+      if (key === undefined) return DECLINED;
+      const got = propertyOf(src, key, consts);
+      if (got.kind === "declined" || got.kind === "opaque") return got;
+      if (!ts.isIdentifier(el.name))
+        return got.kind === "absent" ? DECLINED : patternValue(el.name, got.expr, name, consts);
+      // A default runs only when the property is ABSENT, and is dead when it is there.
+      if (got.kind === "absent") return el.initializer ? { kind: "value", expr: el.initializer } : got;
+      return got;
+    }
+    return DECLINED;
+  }
+  if (ts.isArrayBindingPattern(pattern) && ts.isArrayLiteralExpression(src)) {
+    if (src.elements.some((e) => ts.isSpreadElement(e))) return DECLINED; // alignment is gone
+    for (let i = 0; i < pattern.elements.length; i += 1) {
+      const el = pattern.elements[i];
+      if (ts.isOmittedExpression(el) || !bindsPatternName(el.name, name)) continue;
+      if (el.dotDotDotToken) return DECLINED;
+      const got: ts.Expression | undefined = src.elements[i];
+      if (!got || ts.isOmittedExpression(got))
+        return el.initializer ? { kind: "value", expr: el.initializer } : { kind: "absent" };
+      if (!ts.isIdentifier(el.name)) return patternValue(el.name, got, name, consts);
+      return { kind: "value", expr: got };
+    }
+    return DECLINED;
+  }
+  return DECLINED; // written out, but not in a shape this reader takes apart
 }
 
-/** The value a DECLARATION gives this name, or "opaque" where it binds the name by a route this
- *  file cannot value. A catch variable is bound by the throw and a for-of variable by the
- *  iteration: neither has an initializer to read, and reading the absent one as undefined is how
- *  `catch (tls)` came to claim the very value the seam throws on. */
-function declaredValue(decl: ts.VariableDeclaration, name: string): ts.Expression | undefined | "opaque" {
-  if (ts.isCatchClause(decl.parent)) return "opaque";
+/** The value a DECLARATION gives this name. A catch variable is bound by the throw and a for-of
+ *  variable by the iteration: neither has an initializer to read, and reading the absent one as
+ *  undefined is how `catch (tls)` came to claim the very value the seam throws on. */
+function declaredValue(decl: ts.VariableDeclaration, name: string,
+  consts: Map<string, string>): Read {
+  if (ts.isCatchClause(decl.parent)) return OPAQUE;
   if (ts.isVariableDeclarationList(decl.parent) && decl.parent.parent
-    && (ts.isForOfStatement(decl.parent.parent) || ts.isForInStatement(decl.parent.parent))) return "opaque";
-  if (ts.isIdentifier(decl.name)) return decl.initializer;
-  return patternValue(decl.name, decl.initializer, name);
+    && (ts.isForOfStatement(decl.parent.parent) || ts.isForInStatement(decl.parent.parent))) return OPAQUE;
+  if (ts.isIdentifier(decl.name))
+    return decl.initializer ? { kind: "value", expr: decl.initializer } : { kind: "absent" };
+  return patternValue(decl.name, decl.initializer, name, consts);
 }
 
-function nameFact(id: ts.Identifier): NameFact {
+/** Writes to this name from inside NESTED scopes, which reach the same binding unless the nested
+ *  scope binds the name itself. Without this the walk counted only same-scope writes, so `let tls;`
+ *  initialised by a nested `function g() { tls = true; }` looked bound once with no initializer and
+ *  was ASSERTED undefined, which is worse than a miss: it is a false statement about a program that
+ *  works. Its mirror escaped the order rule through the same door. */
+function nestedWrites(scope: ts.Node, name: string): number {
+  let found = 0;
+  const enter = (fn: ts.Node): void => {
+    let bindsOwn = false;
+    const scan = (x: ts.Node): void => {
+      if (bindsOwn) return;
+      if (opaqueBinding(x, name)) { bindsOwn = true; return; }
+      if (ts.isVariableDeclaration(x) && bindsPatternName(x.name, name)) { bindsOwn = true; return; }
+      if (x !== fn && ts.isFunctionLike(x)) return;
+      ts.forEachChild(x, scan);
+    };
+    scan(fn);
+    if (bindsOwn) return; // that scope writes ITS name, which is not this one
+    const count = (x: ts.Node): void => {
+      if (x !== fn && ts.isFunctionLike(x)) { enter(x); return; }
+      if (rebinds(x, name)) found += 1;
+      ts.forEachChild(x, count);
+    };
+    count(fn);
+  };
+  const walk = (x: ts.Node): void => {
+    if (x !== scope && ts.isFunctionLike(x)) { enter(x); return; }
+    ts.forEachChild(x, walk);
+  };
+  walk(scope);
+  return found;
+}
+
+function nameFact(id: ts.Identifier, consts: Map<string, string>): NameFact {
   for (let scope = scopeOf(id); scope; scope = ts.isSourceFile(scope) ? undefined : scopeOf(scope)) {
-    const values: (ts.Expression | undefined)[] = [];
+    const reads: Read[] = [];
     let writes = 0, opaque = 0;
     const visit = (n: ts.Node): void => {
       // A nested function DECLARATION is both a binding here and a scope of its own, and the binding
@@ -947,37 +1070,34 @@ function nameFact(id: ts.Identifier): NameFact {
       // outward to an unrelated binding that then answered for it.
       if (opaqueBinding(n, id.text)) { opaque += 1; return; }
       if (n !== scope && ts.isFunctionLike(n)) return; // another scope answers for its own names
-      if (ts.isVariableDeclaration(n)) {
-        const bound = new Set<string>();
-        boundNames(n.name, bound);
-        if (bound.has(id.text)) {
-          const v = declaredValue(n, id.text);
-          if (v === "opaque") opaque += 1;
-          else values.push(v);
-          // The pattern IS this binding, so do not walk it again; the initializer can still hold
-          // rebindings of the name and is walked on its own.
-          if (n.initializer) visit(n.initializer);
-          return;
-        }
+      if (ts.isVariableDeclaration(n) && bindsPatternName(n.name, id.text)) {
+        const r = declaredValue(n, id.text, consts);
+        if (r.kind === "opaque") opaque += 1;
+        else reads.push(r);
+        // The pattern IS this binding, so do not walk it again; the initializer can still hold
+        // rebindings of the name and is walked on its own.
+        if (n.initializer) visit(n.initializer);
+        return;
       }
       if (rebinds(n, id.text)) writes += 1;
       ts.forEachChild(n, visit);
     };
     visit(scope);
-    const binds = values.length + writes + opaque;
+    const binds = reads.length + writes + opaque + nestedWrites(scope, id.text);
     if (binds === 0) continue; // not bound here: the enclosing scope answers
     if (binds > 1) return "unsettled";
     if (opaque === 1) return "unknown"; // bound here, by something this file cannot value
-    const init = values[0];
-    return !init || literalUndefined(unwrap(init)) ? "undefined" : "unknown";
+    const r = reads[0];
+    if (r.kind === "declined") return "declined";
+    if (r.kind === "absent") return "undefined";
+    return literalUndefined(unwrap(r.expr)) ? "undefined" : "unknown";
   }
   return "unknown";
 }
 
-const isProvablyUndefined = (e: ts.Expression, src: ts.SourceFile): boolean => {
-  void src;
+const isProvablyUndefined = (e: ts.Expression, consts: Map<string, string>): boolean => {
   const x = unwrap(e);
-  return literalUndefined(x) || (ts.isIdentifier(x) && nameFact(x) === "undefined");
+  return literalUndefined(x) || (ts.isIdentifier(x) && nameFact(x, consts) === "undefined");
 };
 
 /**
@@ -1072,7 +1192,7 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
     if (keyIsOpaque) { unverifiable ||= `the key is a getter, whose value this file cannot read: ${show(alt)}`; continue; }
     // The VALUE is asked the same question the argument was: an expression that can evaluate to
     // `undefined` on any branch delivers exactly what the seam throws on.
-    if (keyValue && alternatives(keyValue).some((v) => isProvablyUndefined(v, src))) {
+    if (keyValue && alternatives(keyValue).some((v) => isProvablyUndefined(v, consts))) {
       return { verdict: "missing-key", detail: `states the key as \`undefined\`, which is not the boolean the seam demands: ${show(alt)}` };
     }
     // A value this file binds MORE THAN ONCE has no single value to read, and the order rule the KEY
@@ -1082,9 +1202,18 @@ function classify(arg: ts.Expression | undefined, key: string, src: ts.SourceFil
     // file can read and stays untouched, which is the load-bearing case: destructured params feeding
     // `{ creds, tls }` are the house idiom and must not go red.
     const unsettled = keyValue && alternatives(keyValue).map(unwrap)
-      .find((v) => ts.isIdentifier(v) && nameFact(v) === "unsettled");
+      .find((v) => ts.isIdentifier(v) && nameFact(v, consts) === "unsettled");
     if (unsettled) {
       unverifiable ||= `the value is a name this file binds more than once, so its value at the call is not settled here: ${show(alt)}`;
+      continue;
+    }
+    // The value is written out at its declaration and this reader did not take that shape apart.
+    // Declining is not the same as finding it fine, and reporting it as fine is how six unread
+    // shapes passed while the call threw.
+    const declined = keyValue && alternatives(keyValue).map(unwrap)
+      .find((v) => ts.isIdentifier(v) && nameFact(v, consts) === "declined");
+    if (declined) {
+      unverifiable ||= `the value is destructured out of a shape written here that this reader does not take apart: ${show(alt)}`;
       continue;
     }
   }
@@ -1660,6 +1789,46 @@ console.log("A. the reader itself, on fixtures whose verdicts are known");
     one(`const { tls } = { tls: false };\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("...and one taken from a value this file cannot read is DECLINED, not claimed",
     one(`const { tls } = cfg;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and an ARRAY pattern is read the same way, index against index",
+    one(`const [tls] = [undefined as any];\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...while an array pattern holding a real boolean is untouched",
+    one(`const [tls] = [false];\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a position past the end of the source is absent, which is undefined",
+    one(`const [a, tls] = [1] as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...and a NESTED pattern is followed down to the value it lands on",
+    one(`const { a: { tls } } = { a: { tls: undefined as any } };\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...while the same nesting holding a real boolean stays green",
+    one(`const { a: { tls } } = { a: { tls: false } };\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a computed key in the SOURCE folds by the arithmetic every other key folds by",
+    one(`const K = "tls";\nconst { tls } = { [K]: undefined as any };\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...and a FROZEN source is the same structure with a call around it",
+    one(`const { tls } = Object.freeze({ tls: undefined as any });\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...while a frozen source holding a real boolean stays green, so freezing is not the finding",
+    one(`const { tls } = Object.freeze({ tls: false });\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  // A DEFAULT runs only when the property is absent, so it is the value in one case and dead in the
+  // other, and reading it as opaque in both let `const { tls = undefined } = {}` pass while it threw.
+  check("a DEFAULT is the value when the property is absent, which is when it runs",
+    one(`const { tls = undefined } = {} as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "missing-key");
+  check("...and is DEAD when the property is present, so a real value is not overruled by it",
+    one(`const { tls = undefined } = { tls: false };\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  check("...and a default holding a real boolean is green, so defaults are not a blanket",
+    one(`const { tls = false } = {} as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  // DECLINED is not the same as fine. A shape written out here that this reader does not take apart
+  // is refused, because the six shapes it used to pass were each green while the call threw.
+  check("a GETTER in the source is refused, not passed, since reading it would mean running it",
+    one(`const { tls } = { get tls() { return undefined; } } as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and a SPREAD in the source is refused, since it can supply the key or hide it",
+    one(`const { tls } = { ...base, other: 1 } as any;\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...while a source this file cannot see at all is still DECLINED rather than refused",
+    one(`const { tls } = cfg;\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
+  // A write from INSIDE a nested scope reaches the same binding, and not counting it made this
+  // reader ASSERT undefined about a name an ordinary nested function initialises.
+  check("a name INITIALISED by a nested function is not asserted undefined from its bare declaration",
+    one(`let tls: any;\nfunction g() { tls = true; }\ng();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...and the mirror does not pass either, since the order rule escaped through the same door",
+    one(`let tls: any = false;\nfunction g() { tls = undefined; }\ng();\nstandaloneConnectOpts({ creds: c, tls });`) === "unverifiable");
+  check("...while a nested scope that binds its OWN name writes that one, not this one",
+    one(`const tls = false;\nfunction g() { let tls: any; tls = undefined; return tls; }\ng();\nstandaloneConnectOpts({ creds: c, tls });`) === "has-key");
   check("...and a RENAME binds the new name, not the property name it reads from",
     one(`function f({ tls: renamed }: any) { const tls = undefined as any; return standaloneConnectOpts({ creds: c, tls }); }`) === "missing-key");
   check("a for-of DECLARATION is bound by the iteration, so it is not read as an undefined declaration",
