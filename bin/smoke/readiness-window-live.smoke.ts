@@ -129,7 +129,10 @@ try {
   await mgr.start();
 
   // A — the MCP spawn door: MeshAgent.spawn against the real manager, real slow join.
-  driver = new MeshAgent({ space: SPACE, name: "driver", servers: SERVER, subscribe: [], allowSubscribe: [], allowPublish: [] });
+  driver = new MeshAgent({
+    space: SPACE, name: "driver", servers: SERVER, kind: "agent", tls: false,
+    subscribe: [], allowSubscribe: [], allowPublish: [],
+  });
   driver.start();
   for (let i = 0; i < 100 && !driver.connected; i++) await sleep(100);
   ok("driver (MeshAgent) connected", driver.connected);

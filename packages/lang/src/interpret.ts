@@ -60,6 +60,29 @@ import {
 
 type AnyNode = Record<string, unknown> & { type: string };
 
+/**
+ * Every write of a RECORD member goes through here, whatever spelled it: a literal, a spread, a
+ * rest pattern, or `o.a = v`. The one member the language refuses is a callable `then`.
+ *
+ * The host's promise machinery adopts any object that carries one: resolving a promise with such a
+ * record calls the record's own `then` with the machinery's continuations instead of delivering the
+ * value. Inside this interpreter every function is async, so a program-authored `then` that throws
+ * turns that throw into a rejection of a promise nobody owns, which escapes the run as an
+ * unhandled rejection and kills the host, while the await that adopted the record never settles
+ * and the run hangs behind it (measured: a record returned from a program function did exactly
+ * this, host process and all). Refusing the member is refusing the adoption: the language carries
+ * no thenable values, the same way it carries no sparse arrays and no `__proto__` fields.
+ */
+function setRecordMember(target: object, key: string, value: unknown): void {
+  if (key === "then" && typeof value === "function") {
+    throw new RuntimeFault(
+      "L4021",
+      "`then` cannot name a function here. To the host's promise machinery any object with a callable `then` is a promise waiting to be adopted, so the record would never arrive as the value this program built: its `then` runs with the machinery's own continuations, a `then` that throws or rejects escapes the run as an unhandled rejection with no owner and kills the host, and the await that adopted it never settles. Name the member something else.",
+    );
+  }
+  setOwn(target, key, value);
+}
+
 // ---- environments ------------------------------------------------------------------------------
 
 class Binding {
@@ -565,7 +588,7 @@ class Interpreter {
     } else if (prop === "__proto__") {
       throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
     }
-    setOwn(obj, prop, value);
+    setRecordMember(obj, prop, value);
   }
 
   // ---- the fuel ceiling -----------------------------------------------------------------------
@@ -673,13 +696,13 @@ class Interpreter {
           if (p.type === "SpreadElement") {
             const src = await this.evaluate(p.argument as AnyNode, env, frame);
             if (src !== null && src !== undefined) {
-              for (const [k, v] of Object.entries(src as Record<string, unknown>)) setOwn(out, k, v);
+              for (const [k, v] of Object.entries(src as Record<string, unknown>)) setRecordMember(out, k, v);
             }
             continue;
           }
           const key = p.key as AnyNode;
           const name = key.type === "Identifier" ? (key.name as string) : String(key.value);
-          setOwn(out, name, await this.evaluate(p.value as AnyNode, env, frame));
+          setRecordMember(out, name, await this.evaluate(p.value as AnyNode, env, frame));
         }
         return born(out, frame.depth);
       }
@@ -901,7 +924,7 @@ class Interpreter {
         for (const p of pattern.properties as AnyNode[]) {
           if (p.type === "RestElement") {
             const rest: Record<string, unknown> = {};
-            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) setOwn(rest, k, v);
+            for (const [k, v] of Object.entries(src)) if (!taken.includes(k)) setRecordMember(rest, k, v);
             await this.bindPattern(p.argument as AnyNode, born(rest, frame.depth), env, frame, mode);
             continue;
           }
