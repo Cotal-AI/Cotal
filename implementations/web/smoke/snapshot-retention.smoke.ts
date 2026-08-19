@@ -212,7 +212,11 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   // shape it exists to forbid. Two nesting levels are enough for every call form in these files, and
   // 3.10c/3.10d execute that rather than asserting it.
   const ARGS = String.raw`\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)`;
-  const rawJson = new RegExp(`fetch${ARGS}\\s*\\)\\s*\\.json\\(\\)|fetch${ARGS}\\.then\\(\\s*\\(?r\\)?\\s*=>\\s*r\\.json\\(\\)`, "g");
+  // AND WHITESPACE BEFORE `.then`, which is the second time this pattern was green over a live
+  // survivor. The console page booted its space name with the fetch on one line and its `.then` on
+  // the next, so the class could not reach it: a 500 whose body is JSON resolved as data and the
+  // header read `· undefined` for the rest of the session. 3.10e executes the two-line form.
+  const rawJson = new RegExp(`fetch${ARGS}\\s*\\)\\s*\\.json\\(\\)|fetch${ARGS}\\s*\\.then\\(\\s*\\(?r\\)?\\s*=>\\s*r\\.json\\(\\)`, "g");
   ok("3.8 no unguarded `fetch(...).json()` survives on the console page", (appJs.match(rawJson) ?? []).length === 0, appJs.match(rawJson));
   ok("3.9 no unguarded `fetch(...).json()` survives on the graph page", (graphJs.match(rawJson) ?? []).length === 0, graphJs.match(rawJson));
   // CONTROL for 3.8/3.9: the pattern must be able to find the shape it is looking for.
@@ -227,6 +231,8 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ("const x = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();".match(rawJson) ?? []).length === 1);
   ok("3.10d CONTROL: and when that nesting is two deep",
     ("const x = await (await fetch(`/a/${enc(f(k))}/b`)).json();".match(rawJson) ?? []).length === 1);
+  ok("3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line (the shape that hid the space-name read)",
+    ('fetch("/api/meta")\n    .then((r) => r.json())'.match(rawJson) ?? []).length === 1);
   // The graph page's boot must not be able to skip the live feed again.
   ok("3.11 the graph page connects whatever the boot reported (the wipe was `load().then(connect)`)",
     /load\(\)\s*\.catch\([\s\S]{0,80}?\)\s*\.then\(connect\)/.test(graphJs) && !/load\(\)\.then\(connect\)/.test(graphJs));
@@ -362,6 +368,56 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     await drive(ctx, c, "team.backend");
     ok("4.11 a refused channel history does not erase the poll's other marks",
       label.textContent.includes("peers") && label.textContent.includes("team.backend"), label.textContent);
+  }
+}
+
+// THE SPACE NAME IS A SOURCE, NOT A ONE-SHOT, and this section exists because the structural guard
+// above was green while it was neither. It was read at boot with a bare fetch whose `.then` sat on
+// the next line, so a 500 with a JSON body arrived as data and the header showed `· undefined` with
+// no later poll to correct it. The shipped source is LIFTED out of `app.js` and run through the
+// shipped `refreshAll`, so what is graded is the page's own entry rather than a restatement of it.
+{
+  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
+  const found = appSrc.match(/\{\s*name: "space",[\s\S]{0,400}?\n      \}/g) ?? [];
+  ok("5.1 the console page has exactly one space source this harness can run", found.length === 1, found.length);
+  ok("5.2 CONTROL: the same pattern naming a source the page does not have finds nothing",
+    (appSrc.match(/\{\s*name: "spice",[\s\S]{0,400}?\n      \}/g) ?? []).length === 0);
+  ok("5.3 and it reads through the gate rather than consuming the body directly",
+    /readJson\(await fetch\("\/api\/meta"\)/.test(appSrc));
+
+  const header = { textContent: "· cotal-main" };
+  const doc = { title: "Cotal · cotal-main" };
+  const mk = (res: () => Promise<unknown>) => {
+    const ctx: Record<string, unknown> = {
+      console, window: {}, document: doc, fetch: res,
+      $: (id: string) => (id === "space" ? header : null),
+    };
+    const c = createContext(ctx);
+    runInContext(readFileSync(join(webSrc, "snapshot.js"), "utf8"), c, { filename: "snapshot.js" });
+    // The lifted entry reads `SNAP`, a local of the shipped `refresh()`, so the harness has to bind
+    // the same name to the same object. Cells 5.7 and 5.8 are what caught this being absent: without
+    // them a ReferenceError inside `read` looks exactly like the refusal the section is about.
+    runInContext("var SNAP = window.COTAL_SNAPSHOT;", c, { filename: "app.js (refresh scope)" });
+    runInContext(`__src = ${found[0]};`, c, { filename: "app.js (space source)" });
+    return { ctx, c };
+  };
+
+  {
+    const { ctx, c } = mk(async () => ({ ok: false, status: 500, json: async () => ({ error: "the space could not be read: timeout" }) }));
+    runInContext("__p = window.COTAL_SNAPSHOT.refreshAll([__src]);", c);
+    const stale = await (ctx.__p as Promise<{ name: string; reason: string }[]>);
+    ok("5.4 a 500 whose body is JSON does NOT become the space name", header.textContent === "· cotal-main", header.textContent);
+    ok("5.5 nor the document title", doc.title === "Cotal · cotal-main", doc.title);
+    ok("5.6 and the refusal is REPORTED, by source name", stale.length === 1 && stale[0].name === "space", stale);
+    ok("5.7 carrying the server's own reason", stale[0]?.reason?.includes("the space could not be read"), stale[0]?.reason);
+  }
+  {
+    const { ctx, c } = mk(async () => ({ ok: true, status: 200, json: async () => ({ space: "cotal-next", pid: 1 }) }));
+    runInContext("__p = window.COTAL_SNAPSHOT.refreshAll([__src]);", c);
+    const stale = await (ctx.__p as Promise<unknown[]>);
+    ok("5.8 CONTROL: a read that LANDS replaces the name, so 5.4 is retention and not a stub",
+      header.textContent === "· cotal-next" && doc.title === "Cotal · cotal-next" && stale.length === 0,
+      { header: header.textContent, title: doc.title, stale });
   }
 }
 

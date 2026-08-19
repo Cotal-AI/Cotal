@@ -84,6 +84,20 @@
       "find": "  el.hidden = !label;\n",
       "replace": "  el.hidden = !label;\n  if (!label) return;\n",
       "expectRed": "4.9 and a read that lands clears it"
+    },
+    {
+      "name": "W13 the structural guard stops allowing whitespace before `.then`, which is exactly how it went green over a live unguarded read: the console page's space name was fetched on one line and consumed on the next, so the class the cell exists to forbid could not reach it",
+      "file": "implementations/web/smoke/snapshot-retention.smoke.ts",
+      "find": "  const rawJson = new RegExp(`fetch${ARGS}\\\\s*\\\\)\\\\s*\\\\.json\\\\(\\\\)|fetch${ARGS}\\\\s*\\\\.then\\\\(\\\\s*\\\\(?r\\\\)?\\\\s*=>\\\\s*r\\\\.json\\\\(\\\\)`, \"g\");",
+      "replace": "  const rawJson = new RegExp(`fetch${ARGS}\\\\s*\\\\)\\\\s*\\\\.json\\\\(\\\\)|fetch${ARGS}\\\\.then\\\\(\\\\s*\\\\(?r\\\\)?\\\\s*=>\\\\s*r\\\\.json\\\\(\\\\)`, \"g\");",
+      "expectRed": "3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line"
+    },
+    {
+      "name": "W14 the console page's space name goes back to consuming the response body without checking the status, which is the same refusal-as-data defect as the rest of this change on the one read that used to have no later poll to correct it",
+      "file": "implementations/web/src/web/app.js",
+      "find": "        read: async () => SNAP.readJson(await fetch(\"/api/meta\"), \"space\"),",
+      "replace": "        read: async () => (await fetch(\"/api/meta\")).json(),",
+      "expectRed": "5.4 a 500 whose body is JSON does NOT become the space name"
     }
   ]
 }

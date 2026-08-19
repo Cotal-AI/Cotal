@@ -420,6 +420,10 @@ async function runBackfillFunction(code: string, call: string, file: string, ent
     window: {} as Record<string, unknown>,
     feedOrder: undefined, channelOrder: undefined, orderNotes: [] as unknown[],
     noteOrder() {},
+    // The poll reads the space name as a source, and its apply writes the document title. An apply
+    // that throws aborts the whole poll, so a page-like context has to supply the page globals the
+    // shipped code uses or every cell here measures the harness rather than the backfill.
+    document: { title: "" },
   };
   const c = createContext(ctx);
   runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });

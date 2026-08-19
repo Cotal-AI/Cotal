@@ -968,6 +968,17 @@ async function refresh() {
     // and asking for a page nobody will draw is exactly the per-channel fan-out this change bounded.
     const onAllActivity = !agentSel && !dmSel && selected === "*";
     const stale = await SNAP.refreshAll([
+      // The space name used to be a one-shot at boot with a bare `fetch().then((r) => r.json())`, so
+      // a refusal arrived as data and the header read `· undefined` for the rest of the session:
+      // the same defect as the rest of this change, on the one read that never came back to correct
+      // itself. It is a source like any other now, so it is gated, named when it is stale, and
+      // replaced by the next poll that lands. `/api/meta` is `{space, pid}` computed in process, so
+      // reading it every poll costs no broker work.
+      {
+        name: "space",
+        read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
+        apply: (meta) => { $("space").textContent = `· ${meta.space}`; document.title = `Cotal · ${meta.space}`; },
+      },
       {
         name: "peers",
         read: async () => SNAP.readJson(await fetch("/api/roster"), "peers"),
@@ -1391,12 +1402,6 @@ if (isDemo) {
   document.title = "Cotal · demo";
   renderDemo();
 } else {
-  fetch("/api/meta")
-    .then((r) => r.json())
-    .then((m) => {
-      $("space").textContent = `· ${m.space}`;
-      document.title = `Cotal · ${m.space}`;
-    });
   refresh();
   connect();
 }

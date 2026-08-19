@@ -48,7 +48,14 @@
    *  Returns the stale list, `[{ name, reason }]`, empty when everything landed.
    *
    *  Concurrent, not sequential: on a slow link the pre-existing sequential chain made every source
-   *  wait for the slowest one, and a throw part-way through skipped the rest entirely. */
+   *  wait for the slowest one, and a throw part-way through skipped the rest entirely.
+   *
+   *  WHAT IS CAUGHT IS THE READ, AND ONLY THE READ. A refusal or a network failure is this function's
+   *  business and is turned into a named entry. An `apply` that throws is a defect in the page, not a
+   *  fact about the link, and it is allowed to propagate: swallowing it would hide a broken renderer
+   *  behind a stale marker that says the network is at fault. The cost is stated rather than hidden:
+   *  a throwing apply ends the loop, so the sources after it are not applied and the caller does not
+   *  reach its marker. Every apply here is a plain assignment or a render the page owns. */
   async function refreshAll(sources) {
     const settled = await Promise.all(
       sources.map(async (s) => {

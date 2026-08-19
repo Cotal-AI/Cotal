@@ -453,7 +453,12 @@ console.log("event-order smoke");
       },
       // The stale pill's element, so the shipped `setStale` runs rather than being stubbed out: it is
       // on the same path as the note this section measures and a missing stub would throw there.
-      $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => ({ textContent: "" }) } : null),
+      // `space` answers for the same reason: the poll reads the space name as a source now, and an
+      // apply that throws takes the whole poll with it, which would make every cell below measure a
+      // missing harness global instead of the rule it names.
+      $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => ({ textContent: "" }) }
+        : id === "space" ? { textContent: "" } : null),
+      document: { title: "" },
       refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, renderChannels() {},
       renderDMs() {}, renderRoster() {}, renderRail() {}, rosterRows: () => [],
       roster: [], channels: new Map(), dms: [], activity: [] as unknown[], agentSel: null,
