@@ -165,6 +165,20 @@ try {
   // A caller error and a server fault are different facts; before the split they shared a status.
   ok("1.7 a malformed request is a 400, NEVER the 500 that means the dashboard broke",
     (await get(`${F}/api/dms?limit=abc`, CEILING_MS))?.status === 400);
+  // The same law one level up. The channel name is percent-decoded out of the path, and a decode
+  // that cannot succeed is the caller having typed a bad escape, not the server having broken. It
+  // reached the frame as a bare URIError, which is not a BadRequest, so it was reported 500 by the
+  // very split 1.7 asserts. A rule that holds for the query and not for the path is not the rule.
+  const badEscape = await get(`${F}/api/channels/%zz/history`, CEILING_MS);
+  ok("1.8 a channel name that cannot be percent-decoded is the CALLER's error, so 400 and not 500",
+    badEscape?.status === 400, { status: badEscape?.status, body: badEscape?.body?.slice(0, 120) });
+  ok("1.9 and that refusal says what was wrong with the name, not just that something failed",
+    !!badEscape && /channel name/i.test(badEscape.body), badEscape?.body?.slice(0, 160));
+  // A well formed name that simply is not there stays a 200 empty read, so 1.8 cannot pass by
+  // turning every unknown channel into a refusal.
+  const absentChan = await get(`${F}/api/channels/no-such-channel/history?limit=5`, CEILING_MS);
+  ok("1.10 a well formed name for a channel with nothing in it still READS, it is not refused",
+    absentChan?.status === 200, { status: absentChan?.status });
 
   // The core guard that protects every OTHER caller is graded in `smoke:core-history-limit`.
   // It cannot be graded here: the routes above refuse a malformed limit before it can reach

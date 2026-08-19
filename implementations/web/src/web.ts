@@ -261,6 +261,18 @@ export class BadRequest extends Error {}
  *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
  *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
  *  asked for. */
+/** The channel name out of the path. A percent escape the decoder cannot read is the caller having
+ *  typed a bad one, so it is refused as a bad request like any other malformed input. Left as a
+ *  bare `URIError` it reached the request frame unrecognised and was reported as a server fault,
+ *  which is the one thing the 400/500 split exists to prevent. */
+export function channelNameFromPath(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw new BadRequest(`channel name ${JSON.stringify(raw)} is not valid percent-encoded text`);
+  }
+}
+
 export function historyLimit(query: URLSearchParams, fallback: number): number {
   const raw = query.get("limit");
   if (raw === null || raw === "") return fallback;
@@ -637,7 +649,7 @@ export async function web(args: ParsedArgs): Promise<void> {
       }
     }
     if (path.startsWith("/api/channels/") && path.endsWith("/history")) {
-      const name = decodeURIComponent(path.slice("/api/channels/".length, -"/history".length));
+      const name = channelNameFromPath(path.slice("/api/channels/".length, -"/history".length));
       const limit = historyLimit(query, 200);
       // BOUNDED LIKE ITS SIBLINGS, and deliberately the SAME bound rather than a new one. This is
       // one read of one channel, so like `/api/dms` it has no subset to serve when it runs long: a
