@@ -12,7 +12,8 @@
  * miss that quietly re-runs the effect and lets two versions of the truth coexist.
  */
 
-import { deepFreeze } from "./values.js";
+import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
+import { RuntimeFault } from "./errors.js";
 import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
 
@@ -228,6 +229,61 @@ export function journalEntryKeyString(entry: JournalEntry): string {
   return `${entry.scope}/${named}#${entry.occurrence}`;
 }
 
+/**
+ * L5024, raised at the door every loader comes through.
+ *
+ * A binding is the one recorded field that was written with no domain check on it, so a journal from
+ * before this rule, or from a store that is not this repo's, can carry an `external` the language
+ * cannot express. Refusing it here rather than where it is re-bound is the no-fallbacks reading: a
+ * corrupt entry that stays silent until a resume walks into it fails somewhere that cannot say why.
+ *
+ * WHICH DOOR CAN ACTUALLY FIRE, measured rather than assumed, and the first answer written here was
+ * WRONG. The durable store encodes with `JSON.stringify`, and ALMOST every value `JSON.parse` can
+ * produce is one this rule admits, including `-0`, which survives `JSON.parse("-0")` even though
+ * `JSON.stringify` never writes it. The exception is the one that decides this comment: `JSON.parse`
+ * installs its keys as OWN properties, so `{"__proto__":1}` mints an own `__proto__` that a literal
+ * cannot spell, `assertCrossable` refuses it by name, and `JSON.stringify` writes it straight back
+ * out again. That value ROUND-TRIPS THIS STORE, so the driver's door is not insurance against a
+ * future store: it can fire on a durable journal written today, and `library.ts` guards the same
+ * hazard one file away for `json.parse`. The WORKER's door catches a different set on top of it:
+ * `workerData` is a structured clone, which preserves `Date`, `NaN`, `-0`, an own `undefined` key
+ * and a `Map`.
+ */
+type RecordedField = "external" | "error.detail" | "result";
+
+/**
+ * WHY EACH FIELD MATTERS, said in its own words. One sentence for all three would have to be vague
+ * enough to fit the loosest, and the operator reading this is deciding whether to repair a store.
+ */
+const WHAT_THE_FIELD_IS: Record<RecordedField, string> = {
+  external: "`external` is what a resume re-binds the handler's own record to",
+  "error.detail": "`error.detail` is how a failed step explains itself, and a resume hands it to the program that catches it",
+  result: "`result` is what a resume hands back INSTEAD of running the step again",
+};
+
+function bindingWithoutCanonicalForm(entry: JournalEntry, field: RecordedField, cause: NotCrossable): RuntimeFault {
+  const step = `${entry.scope}/${entry.name === "" ? entry.kind : `${entry.kind}:${entry.name}`}#${entry.occurrence}`;
+  return new RuntimeFault(
+    "L5024",
+    `A recorded value has no canonical form\n\n  entry seq ${entry.seq}   ${entry.kind}   \`${field}\` UNREADABLE\n`
+      + `        step      ${step}\n        cause     ${cause.message}\n\n`
+      + `${WHAT_THE_FIELD_IS[field]}, so a value the language cannot express is one `
+      + "this run would hand back to the program as if it had been recorded. The entry cannot be read, and reading it as "
+      + `anything else would invent a fact.\n\nOptions\n  repair the entry at seq ${entry.seq} in the store, so its `
+      + `\`${field}\` is a value an effect boundary can carry\n  fork(run, "${step}")   start again from before this step`,
+  );
+}
+
+/** The entry kinds whose `result` is an assembly of branches rather than one handler's value. */
+const SCOPE_KINDS: ReadonlySet<string> = new Set(["parallel", "race", "fanOut", "conclave"]);
+
+/** What the crossing rule calls the value it is refusing, so its path reads as the record's own. */
+const LABEL_OF: Record<RecordedField, string> = {
+  external: "the recorded binding",
+  "error.detail": "the recorded failure detail",
+  result: "the recorded result",
+};
+
 export class Journal {
   readonly run: string;
   readonly readOnly: boolean;
@@ -259,6 +315,46 @@ export class Journal {
         throw new Error(`journal for run ${this.run} was seeded with an entry from run ${e.run}; a run resumes only from its own journal`);
       // The stored `scope` string is authoritative: it is what makes a journal readable back
       // without re-running the program that produced it.
+      // THE BINDING IS THE FIELD WITH NO WRITE-SIDE HISTORY. `result` crossed `assertCrossable` when
+      // it settled and the arguments crossed it when they dispatched; `external` reached the record
+      // through {@link Journal.bind} with nothing between it and the store until the guards in
+      // `performEffect` and `performScope`. Those fence every shipped caller, exactly two of them,
+      // both in perform.ts, but they fence it by ENUMERATION, and a record already written is behind
+      // them either way. This door is the one a loaded journal cannot go around.
+      // TWO FIELDS, ONE RULE. `external` is what a resume re-binds to; `error.detail` is what a
+      // failed step reports itself with. Both are values a handler chose and both reached the record
+      // with no domain check until the guards in `performEffect` and `performScope`. `detail` is the
+      // second one and it is not hypothetical: a program that CATCHES an effect failure succeeds,
+      // so a run can complete with an unreadable value sitting in a settled entry. Measured, and
+      // through the worker that run dies on a structured-clone error naming a host algorithm.
+      for (const [field, value] of [["external", e.external], ["error.detail", e.error?.detail]] as const) {
+        if (value === undefined) continue;
+        try {
+          assertCrossable(value, LABEL_OF[field]);
+        } catch (cause) {
+          if (!(cause instanceof NotCrossable)) throw cause;
+          throw bindingWithoutCanonicalForm(e, field, cause);
+        }
+      }
+      // `result` IS THE THIRD FIELD, AND IT IS NOT READ LIKE THE OTHER TWO. An effect's result is
+      // the handler's own value and answers to the rule whole. A SCOPE's result is the
+      // interpreter's assembly `{ branches, value }`, and its branch positions may legitimately be
+      // absent, so it answers to the same absence-exempt rule its write fence uses. `branches` is a
+      // list of branch NAMES (strings) and needs no exemption.
+      if (e.result !== undefined) {
+        try {
+          if (SCOPE_KINDS.has(e.kind)) {
+            const assembled = e.result as { readonly branches?: unknown; readonly value?: unknown };
+            if (assembled.branches !== undefined) assertCrossable(assembled.branches, "the recorded branch list");
+            assertScopeValueCrossable(assembled.value, "the recorded result.value", e.kind);
+          } else {
+            assertCrossable(e.result, LABEL_OF.result);
+          }
+        } catch (cause) {
+          if (!(cause instanceof NotCrossable)) throw cause;
+          throw bindingWithoutCanonicalForm(e, "result", cause);
+        }
+      }
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;
       // FROZEN ON THE WAY IN, because replay returns `entry.result` to the program as a value that
       // already crossed an effect boundary. The LIVE path freezes the result before it settles, but

@@ -6,8 +6,8 @@
   "mutations": [
     {
       "name": "effect inputs stay writable after the dispatch, the shipped defect",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "    for (const arg of args) deepFreeze(arg);",
+      "file": "packages/lang/src/perform.ts",
+      "find": "  for (const arg of args) deepFreeze(arg);",
       "replace": "",
       "expectRed": "the options bag crosses like any input: an ask's schema is frozen at the share (L2031)",
       "completionMarker": "ok a workflow's catch does not swallow a divergence",

@@ -130,3 +130,17 @@ for the run that hits it: the step is recorded as attempted and failed, and a re
 failure rather than retrying it, so a run started today does not heal the day those effects land. No
 `cotal` command starts or resumes a run yet. Those are the next lanes, and this page will say so
 when they change.
+
+**Two engines, and which one runs your program.** The tree-walker is language version `1` and the
+compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`
+§8.4 lists what differs). Today the driver hosts version `1` only, so **every run a driver starts is
+stamped `1` and executed by the walker**, whatever the newest version in the package is. That is a
+fact about this build rather than about the language: the driver serves a declared set of versions,
+and a record whose version it does not serve is refused by name (**L5023**) with the run left
+untouched, instead of being replayed by whichever engine happens to be present. Records do not cross
+between versions in either direction; the repair is to resume on the recorded version, or to fork.
+
+**The engine needs node 22 or newer** and refuses below it with **L1000**, which is an
+implementation limit and not a language error, so you will not find it in the catalog. It is a floor
+rather than a warning because the engine's frame plumbing rests on `AsyncLocalStorage`, and 22 is
+the lowest node it has been measured on. The walker has no such floor.

@@ -69,27 +69,27 @@
     },
     {
       "name": "the walk reads only `result` and ignores the fact, so a failed scope still looks armless",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        const branches = recorded?.branches ?? entry.branches ?? [];",
-      "replace": "        const branches = recorded?.branches ?? [];",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      const branches = recorded?.branches ?? entry.branches ?? [];",
+      "replace": "      const branches = recorded?.branches ?? [];",
       "expectRed": "and what it returns is the failure the run recorded, because it entered the arm that failed",
       "cell": "and what it returns is the failure the run recorded, because it entered the arm that failed",
       "note": "Half the fix without the other half: the entry now carries the names and nothing reads them. It does NOT redden the no-hang cell, because the backstop catches it and refuses -- so the mutation is graded on the cell that says WHAT the walk returned, not on the one that says it returned at all. Two cells that would collapse into one if either half were dropped."
     },
     {
       "name": "the empty-set backstop is removed, so a journal written before the fix hangs again",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        if (only.size === 0 && all.length > 0) {",
-      "replace": "        if (false && only.size === 0 && all.length > 0) {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (only.size === 0 && all.length > 0) {",
+      "replace": "      if (false && only.size === 0 && all.length > 0) {",
       "expectRed": "a journal written before the fix refuses rather than hanging",
       "cell": "a journal written before the fix refuses rather than hanging",
       "note": "The half that covers records nobody can go back and rewrite. Without it, every run recorded before this change is permanently un-migratable by hanging rather than by refusing, which is the difference between a bad answer and no answer."
     },
     {
       "name": "PARANOID: the backstop stops checking the SOURCE, so an emptied scope is refused too",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        if (only.size === 0 && all.length > 0) {",
-      "replace": "        if (only.size === 0) {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (only.size === 0 && all.length > 0) {",
+      "replace": "      if (only.size === 0) {",
       "expectRed": "an emptied scope over a record with no arm names is NOT caught by the backstop",
       "cell": "an emptied scope over a record with no arm names is NOT caught by the backstop",
       "note": "The other direction, and the one a fix written from the bug report alone lands on. The backstop's subject is a RECORD that carries no arm names, not a SOURCE that declares none. It first SURVIVED against a `race({})` fixture, and the reason is worth keeping: an empty `race` awaits `Promise.race([])` and hangs on a LIVE run too, so the cell timed out in both worlds and graded nothing. `parallel` resolves on an empty arm set, which is what makes the distinction observable at all."

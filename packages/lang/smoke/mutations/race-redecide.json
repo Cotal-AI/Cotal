@@ -6,8 +6,8 @@
   "mutations": [
     {
       "name": "the cut is never re-decided after an in-flight effect advances a cancelled arm",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      frames.forEach((f, j) => {\n        f.clock.onAdvance(() => {\n          if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {\n            f.signal.cancel(\"a sibling branch won the race\", { cutPure: true });\n          }\n        });\n      });",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    frames.forEach((f, j) => {\n      f.clock.onAdvance(() => {\n        if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {\n          f.signal.cancel(\"a sibling branch won the race\", { cutPure: true });\n        }\n      });\n    });",
       "replace": "",
       "expectRed": "the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
       "completionMarker": "ok and the resume takes the SAME path",
@@ -16,9 +16,9 @@
     },
     {
       "name": "any landing on a cancelled arm cuts it, frontier ignored",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "          if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {",
-      "replace": "          if (f.signal.cancelled && !f.signal.cutPure) {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {",
+      "replace": "        if (f.signal.cancelled && !f.signal.cutPure) {",
       "expectRed": "an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",
       "completionMarker": "ok the loser's infinite pure tail is abandoned once its in-flight effect lands past the frontier, and the run completes",
       "cell": "an arm whose in-flight effect lands BEFORE the frontier runs its pure tail and wins",

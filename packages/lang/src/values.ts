@@ -77,6 +77,35 @@ export class NotCrossable extends TypeError {
 }
 
 /**
+ * A log line is DATA for a human reading the trace, and on the ENGINE code never crosses to it: the
+ * engine's log sink (src/engine/ctx.ts) refuses a function anywhere inside a logged value before the
+ * line reaches any transport, naming the value and the path. Measured before the rule: the worker
+ * thread died on the host's own DataCloneError, whose message carried the emitted module body verbatim.
+ * The WALKER is deliberately untouched: it is the replay engine for every run recorded under language
+ * version 1, and a v1 record whose program logs a builtin (`log(map)`) must replay as it was recorded
+ * (a checked-in recording in journal.smoke holds that), so this is a rule of the engine, declared as a
+ * divergence in the differential, not a change to v1. Everything else a program can build crosses to a
+ * trace as it is - `undefined` and a non-finite number included, because the trace is not the journal
+ * and a human wants to see them - so this is deliberately NOT `assertCrossable`. `seen` marks
+ * everything visited: a second visit answers the same question, and a cycle terminates.
+ */
+export function assertNoCode(value: unknown, path: string, seen = new Set<object>()): void {
+  if (typeof value === "function") {
+    throw new NotCrossable(
+      "function",
+      `${path} is a function. A log line is data for a human reading the trace, and code does not cross to it; log what it computes instead`,
+    );
+  }
+  if (value === null || typeof value !== "object" || seen.has(value)) return;
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i += 1) assertNoCode(value[i], `${path}[${i}]`, seen);
+    return;
+  }
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) assertNoCode(v, `${path}.${k}`, seen);
+}
+
+/**
  * A value that cannot canonicalize cannot be journalled, and a value that cannot be journalled
  * cannot be replayed. Catching it at the boundary is strictly better than discovering it at
  * digest time, because here we still know which argument it was.
@@ -175,4 +204,54 @@ export class Prng {
     for (let i = 0; i < 6; i += 1) v = v * 256 + (h[i] ?? 0);
     return v / 2 ** 48;
   }
+}
+
+/**
+ * The value rule over a SCOPE's settled value. The exemption it carries is ABSENCE, and it is
+ * POSITIONAL, so it has to follow the scope's KIND rather than its shape.
+ *
+ * `parallel`, `fanOut` and `race` settle an INTERPRETER ASSEMBLY: a record or array of branch
+ * values, or `{ index, value }` for a race. A branch whose last line is a statement produced no
+ * value, which is legal and ordinary, so `undefined` in a branch SLOT is absence rather than a value
+ * that failed the rule. That is the exemption, and it is exactly one level deep, where the assembly
+ * puts branch outcomes. A branch that returns `{ x: undefined }` is refused exactly as an effect
+ * result carrying the same record is: that `undefined` is a field the PROGRAM wrote.
+ *
+ * `conclave` HAS NO ASSEMBLY. Its settled value is the body's own value, so level one is already the
+ * program's own record fields, and giving them the slot exemption hands it to exactly the values it
+ * was never meant to cover. Measured, on the rule's first version: a conclave body returning
+ * `{ x: e.missing }` completed, the durable store wrote the field away as `{}` with nothing raised,
+ * and a replay handed the program `keys(r) == []` where the live run had `["x"]`. The same silent
+ * false replay the rule exists to stop, with `undefined` in the place of a function. So a conclave
+ * exempts only a body that produced NO VALUE AT ALL, and everything inside a value it did produce
+ * answers to the effect door's rule.
+ *
+ * UNKNOWN KINDS TAKE THE STRICTER READING, because a kind this function has not been taught about
+ * is one nobody has decided the shape of, and the wrong default there is the silent one.
+ *
+ * It lives here rather than beside either caller because BOTH doors need the same rule: the write
+ * fence in `perform.ts` and the load scan in `journal.ts`. Two copies of a rule this positional is
+ * how the two ends stop agreeing.
+ */
+const ASSEMBLING_SCOPES: ReadonlySet<string> = new Set(["parallel", "race", "fanOut"]);
+
+export function assertScopeValueCrossable(value: unknown, where: string, scopeKind: string): void {
+  if (value === undefined) return;
+  if (!ASSEMBLING_SCOPES.has(scopeKind)) {
+    assertCrossable(value, where);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((el, i) => {
+      if (el !== undefined) assertCrossable(el, `${where}[${i}]`);
+    });
+    return;
+  }
+  if (typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype) {
+    for (const [k, el] of Object.entries(value as Record<string, unknown>)) {
+      if (el !== undefined) assertCrossable(el, `${where}.${k}`);
+    }
+    return;
+  }
+  assertCrossable(value, where);
 }
