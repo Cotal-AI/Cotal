@@ -233,9 +233,15 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ("const x = await (await fetch(`/a/${enc(f(k))}/b`)).json();".match(rawJson) ?? []).length === 1);
   ok("3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line (the shape that hid the space-name read)",
     ('fetch("/api/meta")\n    .then((r) => r.json())'.match(rawJson) ?? []).length === 1);
-  // The graph page's boot must not be able to skip the live feed again.
-  ok("3.11 the graph page connects whatever the boot reported (the wipe was `load().then(connect)`)",
-    /load\(\)\s*\.catch\([\s\S]{0,80}?\)\s*\.then\(connect\)/.test(graphJs) && !/load\(\)\.then\(connect\)/.test(graphJs));
+  // The graph page's boot must not be able to skip OR DELAY the live feed. This cell used to REQUIRE
+  // `load().catch(...).then(connect)`, the shape that guaranteed `connect` would RUN. The page now
+  // opens the feed FIRST, which guarantees it runs SOON as well, so the old assertion had turned
+  // into a requirement to keep the weaker boot. What survives is the property, restated against the
+  // boot that ships: the feed is opened, and it is chained behind the bootstrap in no spelling.
+  ok("3.11 the graph page opens the live feed WITHOUT waiting for the boot (the wipe was `load().then(connect)`)",
+    /connect\(\);\s*\n\s*load\(\)/.test(graphJs) && !/\.then\(\s*connect\s*\)/.test(graphJs));
+  ok("3.11b CONTROL: the chained shape 3.11 forbids is one this pattern can still see",
+    /\.then\(\s*connect\s*\)/.test("load().catch((err) => console.error(err)).then(connect);"));
 }
 
 // -- 4. THE SELECTED CHANNEL'S HISTORY, DRIVEN --------------------------------------------------
