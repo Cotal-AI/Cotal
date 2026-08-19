@@ -441,10 +441,10 @@
       "file": "packages/lang/src/engine/worker-entry.ts",
       "find": "  if (result.value !== undefined) assertCrossable(result.value, \"the value this run returned\");",
       "replace": "  void result.value;",
-      "expectRed": "a run that returns a function is refused by the crossing rule",
+      "expectRed": "and the refusal names the language's rule, not a clone algorithm",
       "completionMarker": "ok and it carries the reason the host wrote into shared memory",
-      "cell": "a run that returns a function is refused by the crossing rule",
-      "note": "Unrefused, a function reaches `postMessage` and the thread dies on a DataCloneError with nothing left to answer with: the caller is told the worker exited, which names a host algorithm for something the language already has a word for. The cell captures the outcome rather than awaiting it into its assertion, so this mutant fails the cell that names the rule instead of killing the suite anonymously."
+      "cell": "and the refusal names the language's rule, not a clone algorithm",
+      "note": "Unrefused, a function reaches `postMessage` and the clone fails. The thread no longer DIES on that: since the rethrow landed it ANSWERS with the DataCloneError, so the outcome cell is satisfied either way (`ok === false` holds for an answered refusal as much as a refused value) and the kill moved one cell downstream, onto the one that refuses a host algorithm's name where the language has a word of its own. Measured on two arms rather than reasoned: with the rethrow the outcome cell prints ok and the naming cell fails with {\"name\":\"DataCloneError\"}; at the commit before it, the thread exits and the host rejects at worker.ts:177 with `worker exited with code 0 before the run answered`, which reds the outcome cell instead. The general rule this cost us: a rethrow that converts a death into an answer moves every mutant's kill in that file one cell downstream, so re-grade a file's WHOLE config when a commit touches it, not just the entries the commit adds."
     },
     {
       "name": "the run never reads the stop flag",
