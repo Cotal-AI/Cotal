@@ -56,6 +56,13 @@
       "find": "      if (page.partial)\n        console.error(c.yellow(`~ ${req.method ?? \"GET\"} ${path} partial: ${page.read}/${page.of} sources within ${page.deadlineMs}ms, missing ${page.missing.join(\", \")}`));\n",
       "replace": "",
       "expectRed": "5.10 the server SAYS in its own log that the page was short"
+    },
+    {
+      "label": "B9 the suite's own ceiling is pulled BELOW the deadline, which would make every timing cell here red for a reason that is about this constant rather than about the code, and would let a future edit quietly retune the harness until it agrees with whatever the implementation does",
+      "file": "implementations/web/smoke/bounded-aggregation.smoke.ts",
+      "find": "const CEILING_MS = AGGREGATION_DEADLINE_MS * 3;",
+      "replace": "const CEILING_MS = AGGREGATION_DEADLINE_MS / 2;",
+      "expectRed": "2.0 the suite's own ceiling sits well above the deadline"
     }
   ]
 }

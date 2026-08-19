@@ -103,6 +103,22 @@ const clockOf = (ms: number) => {
   return { until, done };
 };
 
+/** A CELL THAT ASSERTS A BOUND MUST NOT ITSELF WAIT WITHOUT ONE. Every call below is one whose whole
+ *  subject is that it comes back in time. With the deadline mutated away the same call comes back
+ *  only once the link has moved the entire corpus, which on this link is minutes, so the run dies on
+ *  the harness timeout and reports an unknown instead of reddening the assertion that names the rule.
+ *  The ceiling is three times the deadline: a build that honours the deadline never reaches it, so no
+ *  cell here is measuring this constant, and reaching it IS the failure the cell is looking for. The
+ *  cells read a LATE result as "did not answer", which is what it is. */
+const CEILING_MS = AGGREGATION_DEADLINE_MS * 3;
+const within = async <T>(work: Promise<T>, ms: number): Promise<T | typeof LATE> => {
+  const clock = clockOf(ms);
+  // The abandoned work keeps running: a read in flight has no cancel (#661). Swallowing its later
+  // rejection keeps a mutant's failure on the cell that names it rather than on an unhandled reject.
+  work.catch(() => {});
+  try { return await Promise.race([work, clock.until]); } finally { clock.done(); }
+};
+
 /** BASELINE: every source started at once. The shape that shipped. */
 async function floodArm(ep: CotalEndpoint): Promise<number> {
   const srcs = await sourcesOf(ep);
@@ -198,21 +214,23 @@ try {
   {
     const ep = await mkEp("wan");
     const t = Date.now();
-    const page = await activityBackfill(ep as unknown as ActivitySource, 100);
+    const answered = await within(activityBackfill(ep as unknown as ActivitySource, 100), CEILING_MS);
     const ms = Date.now() - t;
+    const page = answered === LATE ? undefined : answered;
 
     // THE HEADLINE. The shipped version answered 500 after 15.94s on a link of this shape; this one
     // must ANSWER, and must answer inside its own bound. The slack is for the channel list, which is
     // read before the clock's sources start.
-    ok("2.1 the aggregation ANSWERS rather than throwing, on the link that used to 500 it", typeof page.partial === "boolean");
-    ok("2.2 and it answers inside its own deadline", ms < AGGREGATION_DEADLINE_MS + 3000, { ms, deadline: AGGREGATION_DEADLINE_MS });
-    ok("2.3 the answer says it is PARTIAL rather than looking complete", page.partial === true, page);
-    ok("2.4 it counts what it read, out of what it asked for", page.read < page.of && page.of === CHANNELS + 1, { read: page.read, of: page.of });
-    ok("2.5 and NAMES every source that did not answer", page.missing.length === page.of - page.read, { missing: page.missing.length, read: page.read, of: page.of });
-    ok("2.6 the names are the sources, not a count dressed as one", page.missing.every((m) => m === "direct messages" || names.some((n) => m === `#${n}`)), page.missing.slice(0, 3));
-    ok("2.7 the page carries its own deadline, so a reader can tell WHY it is short", page.deadlineMs === AGGREGATION_DEADLINE_MS, page.deadlineMs);
+    ok("2.0 the suite's own ceiling sits well above the deadline, so a cell that reaches it is a cell about the code and not about this constant", CEILING_MS > AGGREGATION_DEADLINE_MS + 3000, { ceiling: CEILING_MS, deadline: AGGREGATION_DEADLINE_MS });
+    ok("2.1 the aggregation ANSWERS rather than throwing, on the link that used to 500 it", typeof page?.partial === "boolean");
+    ok("2.2 and it answers inside its own deadline", ms < AGGREGATION_DEADLINE_MS + 3000, { ms, deadline: AGGREGATION_DEADLINE_MS, ceiling: CEILING_MS });
+    ok("2.3 the answer says it is PARTIAL rather than looking complete", page?.partial === true, page);
+    ok("2.4 it counts what it read, out of what it asked for", page !== undefined && page.read < page.of && page.of === CHANNELS + 1, { read: page?.read, of: page?.of });
+    ok("2.5 and NAMES every source that did not answer", page !== undefined && page.missing.length === page.of - page.read, { missing: page?.missing.length, read: page?.read, of: page?.of });
+    ok("2.6 the names are the sources, not a count dressed as one", page !== undefined && page.missing.every((m) => m === "direct messages" || names.some((n) => m === `#${n}`)), page?.missing.slice(0, 3));
+    ok("2.7 the page carries its own deadline, so a reader can tell WHY it is short", page?.deadlineMs === AGGREGATION_DEADLINE_MS, page?.deadlineMs);
     // A partial that dropped the sources it DID read would be a slower way of returning nothing.
-    ok("2.8 every source that answered contributed", page.read === 0 || page.entries.length > 0, { read: page.read, entries: page.entries.length });
+    ok("2.8 every source that answered contributed", page !== undefined && (page.read === 0 || page.entries.length > 0), { read: page?.read, entries: page?.entries.length });
     await ep.stop();
   }
 
@@ -234,13 +252,14 @@ try {
     const floodRead = await floodArm(await mkEp("flooded"));
     await wait(SETTLE_MS);
     const ep = await mkEp("pooled");
-    const page = await activityBackfill(ep as unknown as ActivitySource, 100);
+    const pooled = await within(activityBackfill(ep as unknown as ActivitySource, 100), CEILING_MS);
     await ep.stop();
+    const page = pooled === LATE ? undefined : pooled;
 
     ok("3.0 the pooled arm read something at all (two zeroes would compare equal and prove nothing)",
-      page.read > 0, { pooled: page.read, of: page.of });
+      (page?.read ?? 0) > 0, { pooled: page?.read ?? "did not answer", of: page?.of });
     ok("3.1 the bounded pool reads MORE sources than starting every source at once",
-      page.read > floodRead, { pooled: page.read, flood: floodRead, of: page.of });
+      page !== undefined && page.read > floodRead, { pooled: page?.read ?? "did not answer", flood: floodRead, of: page?.of });
     ok("3.2 and starting them all at once cannot finish the set, which is why the panel was empty rather than short",
       floodRead < CHANNELS + 1, floodRead);
     ok("3.3 the pool is not the whole set (a pool equal to the set is no pool)",
@@ -363,7 +382,7 @@ try {
       cRes instanceof Error ? cRes.message : cRes.status);
 
     const t0 = Date.now();
-    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`).catch((e) => e as Error);
+    const aRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
     const aMs = Date.now() - t0;
     const aBody = aRes instanceof Error ? undefined : await aRes.json().catch(() => undefined);
     const status = aRes instanceof Error ? 0 : aRes.status;
@@ -378,7 +397,7 @@ try {
     // The single read. It cannot be partial, so its bound is a named refusal the browser can hold its
     // last good list against - the whole reason `readJson` refuses a non-200 instead of storing it.
     const t1 = Date.now();
-    const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=${DMS}`).catch((e) => e as Error);
+    const dRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/dms?limit=${DMS}`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
     const dMs = Date.now() - t1;
     const dBody = dRes instanceof Error ? undefined : await dRes.json().catch(() => undefined);
     const dStatus = dRes instanceof Error ? 0 : dRes.status;
@@ -393,7 +412,7 @@ try {
     // that would pin a defect in place; it asserts the part that must hold either way - whatever the
     // route answers, a reader can act on it. A bare `{"error":"timeout"}`, which is what the shipped
     // build sent, is the thing being forbidden.
-    const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`).catch((e) => e as Error);
+    const nRes = await fetch(`http://127.0.0.1:${WEB_PORT}/api/activity?limit=100`, { signal: AbortSignal.timeout(CEILING_MS) }).catch((e) => e as Error);
     const nBody = nRes instanceof Error ? undefined : await nRes.json().catch(() => undefined);
     const nStatus = nRes instanceof Error ? 0 : nRes.status;
     ok("5.9 the request following a refused read either answers or REFUSES LEGIBLY, never with a bare broker word",

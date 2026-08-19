@@ -1,6 +1,7 @@
 ---
 "@cotal-ai/web": minor
 "@cotal-ai/core": minor
+"@cotal-ai/connector-core": minor
 ---
 
 The dashboard survives a poll that fails, and its aggregation answers instead of failing.
