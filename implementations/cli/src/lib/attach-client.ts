@@ -200,7 +200,7 @@ export function isTransportEnd(reason: string): boolean {
  * by default, {@link detachKey}) detaches without killing the agent. Transport-agnostic over the
  * mesh §13.6 session.
  */
-export function attachClient(transport: TerminalTransport, hold?: TerminalHold): Promise<AttachOutcome> {
+export function attachClient(transport: TerminalTransport, hold?: TerminalHold, takeStdin?: () => boolean): Promise<AttachOutcome> {
   // Resolve the detach key before connecting so a bad COTAL_DETACH_KEY fails loudly up front
   // (matching the manager's other fail-fast exits) instead of after an attach we'd only tear down.
   let detach: ReturnType<typeof detachKey>;
@@ -230,6 +230,14 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
     // reads (per-session: bytes still in flight when a link dies are gone with it).
     // Did this session ever put bytes on the terminal (see AttachOutcome.carried)?
     let carried = false;
+    // Did THIS session ever take the stream? A reconnecting caller holds a reader between sessions,
+    // and a session that ends before its `ready` fires never ran the handoff below, so it never
+    // took anything: pausing on the way out would pause a stream it does not own, under a reader
+    // that is still installed and now reads nothing. Measured before this line existed: a link
+    // killed while a session's opening flush was in flight left the loop's watcher listening over a
+    // paused stream for the whole backoff, and everything typed at that frozen terminal was flushed
+    // into the agent by the NEXT session's resume. Cell O of `smoke:attach-stdin` is that window.
+    let tookStdin = false;
     let mouseBuf = "";
     // Carry the tail of the previous output frame so an alt-screen escape split across ws frames
     // (e.g. `ESC[?10` then `49h`) is still detected; 16 bytes covers these private-mode sequences.
@@ -312,15 +320,33 @@ export function attachClient(transport: TerminalTransport, hold?: TerminalHold):
       // terminal: a reconnecting caller undoes it once, after the last attempt, so the screen does
       // not flash back to the shell and get repainted over between sessions.
       if (ownsTerminal) term.restore();
-      else stdin.pause();
+      else if (tookStdin) stdin.pause();
     };
 
     transport.onReady(() => {
+      // Take stdin from whoever was holding it BETWEEN sessions, synchronously and before anything
+      // below touches the stream. A reconnecting caller keeps a reader installed for the whole
+      // non-session period so bytes typed at a terminal with no session are read and dropped rather
+      // than buffered; without this handoff both readers would be live at once and a detach byte
+      // would be seen twice. Synchronous by construction: `data` is emitted on a later tick, so the
+      // gap between the caller's `off` and the `on` below cannot lose a byte.
+      //
+      // It ANSWERS, because the byte it may have just eaten is a detach. The caller's reader owns
+      // stdin until this line, and this line runs when the session is READY, which is a round trip
+      // after the caller announced the reconnect. A key pressed in between is seen by that reader
+      // and by nobody else: without this branch the operator's detach vanishes and the session they
+      // meant to leave comes up and keeps their keystrokes. So a press that already landed detaches
+      // the session that is opening, before it takes the terminal or reads a byte.
+      if (takeStdin?.()) {
+        transport.close();
+        return;
+      }
       // Make an override visible (the CLI's "attached to X — Ctrl-] to detach" hint still prints the
       // default label). Only on override, so the default case stays free of duplicate noise.
       if (detach.overridden) console.error(c.dim(`detach key: ${detach.label} (via COTAL_DETACH_KEY)`));
       term.enterRaw();
       stdin.resume();
+      tookStdin = true;
       sendResize();
       process.stdout.on("resize", sendResize);
       stdin.on("data", onInput);
