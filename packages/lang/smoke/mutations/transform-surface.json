@@ -219,9 +219,9 @@
       "file": "packages/lang/src/transform/emit.ts",
       "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
       "replace": "    const defers = spec !== undefined && spec.opensScope;",
-      "expectRed": "a combinator with no deferred argument hands its branches over as they are",
+      "expectRed": "a combinator with no deferred argument wraps nothing at all",
       "completionMarker": "ok an object literal's keys are emitted computed",
-      "cell": "a combinator with no deferred argument hands its branches over as they are",
+      "cell": "a combinator with no deferred argument wraps nothing at all",
       "note": "The mirror, and it is not symmetric: `parallel` and `race` take a bag of branches at index 0 and have NO deferred argument, so a thunk in position 1 is the options bag wrapped - the host answers L1000 for asking a combinator for a deferred body it does not have."
     }
   ]

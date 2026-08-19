@@ -510,7 +510,15 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   // branches, not a body; wrapping that bag would hand the host a thunk it refuses as an engine
   // fault. Which primitives defer comes from the table, so this is the other half of that read.
   const par = transform('await parallel({ one: () => sleep("1m", { name: "one" }) }, { name: "both" });').module;
-  ok("a combinator with no deferred argument hands its branches over as they are", /effect\("parallel", \[__ctx\.born\(\{/.test(par), par.slice(-320));
+  // NOT ONLY POSITION 0: the mutant that wraps by "is a scope-opener" rather than by the table wraps
+  // `parallel`'s OPTIONS BAG, which a check on the branches alone walks straight past (it did -
+  // that mutant SURVIVED until this cell read the whole emission). `async () => (` is the deferred
+  // wrapper's own spelling: a branch body is `async (...__ta) =>` and a continuation `async (__tc0) =>`.
+  ok(
+    "a combinator with no deferred argument wraps nothing at all",
+    /effect\("parallel", \[__ctx\.born\(\{/.test(par) && !par.includes("async () => ("),
+    par.slice(-320),
+  );
 }
 
 // ---- 12) the chain the host has to finish, and what the walker answers there --------------------
