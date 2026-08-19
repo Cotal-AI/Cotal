@@ -135,6 +135,12 @@ if (late) {
       { sessionID: "ses_coop" },
       { parts: [] },
     );
+    // AND THE TOOL MAP, which is intake that never passes through the hook table: OpenCode holds
+    // these closures from registration. cotal_status is the one with a presence-visible effect, so
+    // it is the one that can be graded rather than merely exercised.
+    await (
+      hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
+    ).tool.cotal_status.execute({ status: "working" });
     if (lateFired) writeFileSync(lateFired, "every public door was knocked after offline\n");
   })();
 }

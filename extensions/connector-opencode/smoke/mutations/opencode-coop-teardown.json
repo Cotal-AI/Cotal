@@ -32,7 +32,13 @@
     "post-teardown effect is a card-model publish, and that publish carries the STORED status, which",
     "is already offline, so there is no presence-visible harm to key a cell on. The probe knocks on it",
     "so the door is exercised, but mutating it out of the table would survive, and no claim here",
-    "covers it."
+    "covers it.",
+    "",
+    "C9 IS A FOURTH DOOR AND NOT A FOURTH COPY OF THE SAME ONE. The tool map never passes through",
+    "the hook table: OpenCode is handed those closures at registration, so fencing the table left",
+    "them open. It is graded through cotal_status because that is the cotal_* tool with a",
+    "presence-visible effect; the others are fenced by the same wrapper but their harm is a channel",
+    "write, which this harness does not watch."
   ],
   "mutations": [
     {
@@ -89,6 +95,13 @@
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    ...fence(intake),\n",
       "replace": "    ...fence(intake),\n    event: intake.event,\n",
+      "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
+    },
+    {
+      "name": "C9 the tool map stops refusing, so a cotal_* call still inside the model's turn runs after the stop and its presence write puts the seat back on the mesh",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
+      "replace": "            await def.execute(...args),\n",
       "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
     }
   ]

@@ -40,7 +40,7 @@ import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodeRecord } from "./agui-source.js";
 import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
-import type { Plugin, Hooks } from "@opencode-ai/plugin";
+import type { Plugin, Hooks, ToolDefinition } from "@opencode-ai/plugin";
 import { buildCotalTools } from "./tools.js";
 
 function log(msg: string): void {
@@ -666,6 +666,30 @@ export const cotal: Plugin = async () => {
       ]),
     ) as T;
 
+  /**
+   * THE TOOL MAP IS INTAKE TOO, and it does not arrive through the table above. OpenCode is handed
+   * these closures once, at registration, so a call already inside the model's turn reaches its spec
+   * with no idea a stop is running: nothing in the turn loop knows the control socket fired. The
+   * harm is the same one, not a smaller one. `cotal_status` publishes presence and would put the
+   * seat back on the mesh it has just left, and the rest write to channels a departed seat should
+   * no longer be writing to.
+   *
+   * REFUSED, NOT DROPPED. A tool call has a caller waiting on a result, so returning nothing would
+   * read as a hang rather than as a shutdown; and it never throws, which is the convention this
+   * whole surface already keeps.
+   */
+  const fenceTools = (tools: Record<string, ToolDefinition>): Record<string, ToolDefinition> =>
+    Object.fromEntries(
+      Object.entries(tools).map(([name, def]) => [
+        name,
+        {
+          ...def,
+          execute: async (...args: Parameters<ToolDefinition["execute"]>): ReturnType<ToolDefinition["execute"]> =>
+            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await def.execute(...args),
+        },
+      ]),
+    );
+
   const intake = {
     "chat.message": async (input, output) => {
       if (!ours(input.sessionID)) return;
@@ -824,7 +848,7 @@ export const cotal: Plugin = async () => {
   } satisfies Partial<Hooks>;
 
   const hooks: Hooks = {
-    tool: buildCotalTools(agent, config),
+    tool: fenceTools(buildCotalTools(agent, config)),
     ...fence(intake),
 
     // The editor unloading the plugin. Same teardown as the manager's stop, minus the exit: see

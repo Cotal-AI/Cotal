@@ -33,9 +33,13 @@ offline presence in front of the join rather than behind it: a supervised seat i
 its runtime's grace window, so presence queued behind a long drain is the thing that gets lost.
 Queued event work is then given whatever time the runtime allows.
 
-Once that routine has begun, no turn is started and no hook is admitted. Both refusals are stated
-as a condition on the state rather than as a list of the callers they cover, which is what let the
-earlier versions through: a turn could still be started by the deferred drive a swap fires when its
-own cutover completes, and a late presence event could put a seat back on the mesh it had just
-left. Admission is what closes; work already inside a hook when the stop arrives is what the join
-covers, and the two together are the guarantee.
+Once that routine has begun, no turn is started, no hook is admitted, and no `cotal_*` tool call
+is run. The refusals are stated as a condition on the state rather than as a list of the callers
+they cover, which is what let the earlier versions through: a turn could still be started by the
+deferred drive a swap fires when its own cutover completes, a late presence event could put a seat
+back on the mesh it had just left, and a tool call already inside the model's turn had no way to
+know a stop was running. A refused tool call says so rather than returning nothing, because its
+caller is waiting on a result and silence would read as a hang.
+
+Admission is what closes; work already inside a hook when the stop arrives is what the join covers,
+and the two together are the guarantee.
