@@ -25,14 +25,14 @@
       "note": "L2032's binding half. Native bindings carry no depth, so without the cell the write from inside a concurrent branch is not refused anywhere - the shape scopes.smoke's fixture proves the validator cannot see."
     },
     {
-      "name": "the declaring identifier is not recorded, so no declaration can ever be a cell",
-      "file": "packages/lang/src/transform/scope.ts",
-      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind));",
-      "replace": "        this.declare(scope, node.name as string, kind);",
+      "name": "the cell is marked and then emitted as a plain binding",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (b?.cell === true) return `const ${name} = ${this.seam(\"born\", `{ v: ${valueCode} }`)};\\n`;",
+      "replace": "        if (false) return `const ${name} = ${this.seam(\"born\", `{ v: ${valueCode} }`)};\\n`;",
       "expectRed": "a mutable binding written from a nested function is a born cell",
       "completionMarker": "ok a for-of is one iter",
       "cell": "a mutable binding written from a nested function is a born cell",
-      "note": "The subtler half of the same rule, and the defect this file actually had: the emitter asks 'is this a cell?' at the DECLARATION as well as at each use, and a declaration missing from the map answers no - so the cell is marked and then emitted as a plain binding."
+      "note": "The analysis marking a cell and the emitter honouring it are two steps, and only the second one produces code. This is the half that would leave the mark correct and the emission native."
     },
     {
       "name": "an object literal's keys are emitted verbatim, so `__proto__` can reach a prototype again",
@@ -73,6 +73,16 @@
       "completionMarker": "ok and reaches no seam member outside the ruling: empty statement",
       "cell": "the emitted module has no unbound reference: the undefined value",
       "note": "Seam ruling 1: the host evaluates the module with ZERO endowments. `undefined` is a global binding, so spelling it is an unbound reference - one the compartment happens to satisfy today, which is why only a resolver over the emitted code can see it."
+    },
+    {
+      "name": "a declaring identifier is not recorded, so the emitter cannot resolve a name it declared",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind));",
+      "replace": "        this.declare(scope, node.name as string, kind);",
+      "expectRed": "resolves to nothing, which a validated program cannot contain",
+      "completionMarker": "ok the emitted module has no unbound reference: array and object literals",
+      "cell": "the emitted module has no unbound reference: for with per-iteration closures",
+      "note": "GRADED ON THE REFUSAL, not on a cell, and deliberately: the emitter asks the analysis the same question at a declaration as at a use, and an unrecorded declaration makes a per-iteration `for` head unresolvable. It fails LOUD (the emitter refuses to emit) rather than quietly emitting a plain binding for a cell, which is the outcome worth pinning - the quiet half is covered by the mutation above."
     }
   ]
 }
