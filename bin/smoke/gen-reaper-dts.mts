@@ -75,6 +75,82 @@ function emitOptions(): ts.CompilerOptions {
 }
 
 /**
+ * A declared type reduced to the part a runtime value can be held to.
+ *
+ * `opaque` is the honest exit: a shape this cannot reduce is reported as unchecked rather than
+ * quietly treated as satisfied, so a caller can say which leaves were actually witnessed.
+ */
+export type DeclaredShape =
+  | { readonly kind: "primitive"; readonly name: string }
+  | { readonly kind: "array"; readonly of: DeclaredShape }
+  | { readonly kind: "object"; readonly props: Readonly<Record<string, DeclaredShape>> }
+  | { readonly kind: "union"; readonly of: readonly DeclaredShape[] }
+  | { readonly kind: "opaque"; readonly text: string };
+
+const PRIMITIVES = new Set(["string", "number", "boolean", "undefined", "void", "null", "never", "any", "unknown"]);
+
+/**
+ * What the COMMITTED declaration says this module exports, and what each exported function returns,
+ * read out of the declaration by the compiler rather than restated here.
+ *
+ * This exists because a hand-written consumer is an enumeration, which is the failure this whole
+ * guard removes one level down: a consumer that happens to touch `reaped[].owner` and not
+ * `supported` cannot see a declaration that lies about `supported`. Reading the surface OUT of the
+ * declaration means a field or an export that nobody thought of is still covered, and a new one
+ * shows up as a name the suite has not witnessed rather than as silence.
+ */
+export function declaredModuleSurface(): {
+  readonly exports: readonly string[];
+  readonly returns: Readonly<Record<string, DeclaredShape>>;
+} {
+  const options: ts.CompilerOptions = {
+    ...emitOptions(),
+    allowJs: false,
+    checkJs: false,
+    declaration: false,
+    emitDeclarationOnly: false,
+    noEmit: true,
+  };
+  const program = ts.createProgram({ rootNames: [DECLARATION_PATH], options });
+  const checker = program.getTypeChecker();
+  const source = program.getSourceFile(DECLARATION_PATH);
+  if (source === undefined) throw new Error(`could not load ${DECLARATION_PATH}`);
+  const moduleSymbol = checker.getSymbolAtLocation(source);
+  if (moduleSymbol === undefined) throw new Error(`${DECLARATION_PATH} is not a module`);
+
+  const shapeOf = (type: ts.Type, depth: number): DeclaredShape => {
+    const text = checker.typeToString(type);
+    if (PRIMITIVES.has(text)) return { kind: "primitive", name: text === "void" ? "undefined" : text };
+    if (depth > 4) return { kind: "opaque", text };
+    if (checker.isArrayType(type)) {
+      const [element] = checker.getTypeArguments(type as ts.TypeReference);
+      return element === undefined ? { kind: "opaque", text } : { kind: "array", of: shapeOf(element, depth + 1) };
+    }
+    if (type.isUnion()) return { kind: "union", of: type.types.map((t) => shapeOf(t, depth + 1)) };
+    const properties = type.getProperties();
+    if (properties.length === 0) return { kind: "opaque", text };
+    const props: Record<string, DeclaredShape> = {};
+    for (const property of properties) {
+      const declaration = property.valueDeclaration ?? property.declarations?.[0] ?? source;
+      props[property.getName()] = shapeOf(checker.getTypeOfSymbolAtLocation(property, declaration), depth + 1);
+    }
+    return { kind: "object", props };
+  };
+
+  const exports: string[] = [];
+  const returns: Record<string, DeclaredShape> = {};
+  for (const exported of checker.getExportsOfModule(moduleSymbol)) {
+    const name = exported.getName();
+    exports.push(name);
+    const declaration = exported.valueDeclaration ?? exported.declarations?.[0];
+    if (declaration === undefined) continue;
+    const [signature] = checker.getTypeOfSymbolAtLocation(exported, declaration).getCallSignatures();
+    if (signature !== undefined) returns[name] = shapeOf(signature.getReturnType(), 0);
+  }
+  return { exports: exports.sort(), returns };
+}
+
+/**
  * Typecheck `source` as a `.mts` consumer sitting beside the module, and hand back its diagnostics.
  *
  * The point is WHICH file answers `./reap-smoke-brokers.mjs` for it. `allowJs` is off here, so the

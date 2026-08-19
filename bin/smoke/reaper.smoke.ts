@@ -26,7 +26,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
-import { DECLARATION_PATH, MODULE_PATH, checkDeclarationConsumer, readCommittedDeclaration, renderReaperDeclaration, transpileConsumer } from "./gen-reaper-dts.mjs";
+import { DECLARATION_PATH, MODULE_PATH, type DeclaredShape, checkDeclarationConsumer, declaredModuleSurface, readCommittedDeclaration, renderReaperDeclaration, transpileConsumer } from "./gen-reaper-dts.mjs";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -200,6 +200,80 @@ check(
   `exit ${ran.status}: ${ran.output.split("\n").find((l) => /Error/.test(l)) ?? ran.output.trim().slice(-200)}`,
 );
 
+// ---- and the check is over the WHOLE declared surface, not the part a consumer happened to touch -
+//
+// The consumer above is a fixed text, which makes it an enumeration, and a security review beat it
+// the same way the two earlier hand-written guards were beaten: it read `reaped[].owner` and never
+// `supported`, so declaring `ReapReport.supported` as a `string` while the code returns a boolean
+// (double cast, so `// @ts-check` stays green) regenerated a declaration promising a string and left
+// the suite at 25 of 25. A consumer written to THAT declaration compiled clean and threw at runtime.
+// Reproduced first-party at 25 of 25 before these cells existed.
+//
+// So the surface is read OUT of the declaration by the compiler instead of being restated here: the
+// exported names, and for each exported function the shape of what it returns, reduced to the part a
+// runtime value can be held to. A shape that cannot be reduced is reported as `opaque` rather than
+// counted as satisfied, so an unchecked leaf shows up as unchecked. A field nobody thought of is
+// covered because nobody had to think of it, and a NEW export reds the completeness cell below
+// rather than passing in silence.
+const surface = declaredModuleSurface();
+// The three type names are exercised too, by the consumer's `import type` and its annotations: a
+// type that stopped being exported would fail that compile rather than pass unnoticed.
+const EXERCISED = [
+  "NatsServerRow", "ReapReport", "ReapedBroker",
+  "SMOKE_BROKER_PREFIX", "listNatsServers", "reapSmokeBrokers", "reportReaped",
+];
+check(
+  "every name the declaration exports is one this suite exercises, so a new export cannot arrive unwitnessed",
+  surface.exports.join(",") === [...EXERCISED].sort().join(","),
+  `declared [${surface.exports.join(", ")}] vs exercised [${[...EXERCISED].sort().join(", ")}]`,
+);
+
+const mismatches = (shape: DeclaredShape, value: unknown, path: string): string[] => {
+  switch (shape.kind) {
+    case "primitive":
+      if (shape.name === "undefined") return value === undefined ? [] : [`${path}: declared undefined, got ${typeof value}`];
+      if (shape.name === "null") return value === null ? [] : [`${path}: declared null, got ${typeof value}`];
+      return typeof value === shape.name ? [] : [`${path}: declared ${shape.name}, got ${typeof value}`];
+    case "array":
+      return Array.isArray(value)
+        ? value.flatMap((v, i) => mismatches(shape.of, v, `${path}[${i}]`))
+        : [`${path}: declared an array, got ${typeof value}`];
+    case "object":
+      return typeof value === "object" && value !== null
+        ? Object.entries(shape.props).flatMap(([k, s]) => mismatches(s, (value as Record<string, unknown>)[k], `${path}.${k}`))
+        : [`${path}: declared an object, got ${typeof value}`];
+    case "union":
+      return shape.of.some((s) => mismatches(s, value, path).length === 0)
+        ? []
+        : [`${path}: no declared member of ${shape.of.map((s) => s.kind).join("|")} matches ${typeof value}`];
+    case "opaque":
+      return [];
+  }
+};
+const leaves = (shape: DeclaredShape, path: string): string[] => {
+  switch (shape.kind) {
+    case "object": return Object.entries(shape.props).flatMap(([k, s]) => leaves(s, `${path}.${k}`));
+    case "array": return leaves(shape.of, `${path}[]`);
+    case "union": return shape.of.flatMap((s) => leaves(s, path));
+    default: return [path];
+  }
+};
+
+const dryReport = reapSmokeBrokers({ dryRun: true });
+const dryMismatches = mismatches(surface.returns.reapSmokeBrokers!, dryReport, "reapSmokeBrokers()");
+check(
+  "and every field the declaration promises of a report is the type the report actually carries",
+  dryMismatches.length === 0,
+  dryMismatches.join(" | "),
+);
+const listedShape = surface.returns.listNatsServers!;
+const listedMismatches = mismatches(listedShape, listNatsServers(), "listNatsServers()");
+check(
+  "and the same for the enumerator, whose declared return has two members and must satisfy one",
+  listedMismatches.length === 0,
+  listedMismatches.join(" | "),
+);
+
 const dirs: string[] = [];
 const kids: ChildProcess[] = [];
 const releases: Array<() => void> = [];
@@ -264,6 +338,18 @@ try {
   check("the live-owner broker is counted as owned, not silently skipped", result.ownedLive >= 1, `ownedLive=${result.ownedLive}`);
   check("the report counts what it deliberately did not claim", result.unclaimable >= 2, `unclaimable=${result.unclaimable}`);
   check("the report counts everything it inspected", result.inspected >= 3, `inspected=${result.inspected}`);
+
+  // The dry-run conformance cell above runs on a report whose `reaped` is usually empty, and an
+  // empty array witnesses nothing about its element type. This one runs on the report of a reap
+  // that actually killed something, so `ReapedBroker`'s own declared fields are held to the values
+  // the runtime produced. The non-empty requirement is part of the cell for that reason: without it
+  // the element check passes vacuously exactly when it matters.
+  const reapedMismatches = mismatches(surface.returns.reapSmokeBrokers!, result, "the real reap's report");
+  check(
+    "the declared shape holds for a report that actually reaped, so the element type is witnessed and not assumed",
+    reapedMismatches.length === 0 && result.reaped.length > 0,
+    `${reapedMismatches.join(" | ")} (reaped ${result.reaped.length})`,
+  );
 
   // Running again with the orphan already gone must be a clean no-op: the reaper runs after every
   // suite in the chain, so the quiet path is the common one.

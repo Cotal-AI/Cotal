@@ -103,6 +103,15 @@
       "expectRed": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
       "cell": "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
       "note": "Every row above ties the declaration to the module's JSDoc, and a double cast is the one thing `// @ts-check` cannot see through, so a JSDoc that lies about its own implementation emits a declaration that lies too. A security review built exactly that (`@param {number} label` plus a cast back to string before a string-only use) and the suite stayed at 23 of 23. This row is the mirror: the declaration still promises a string and the code now demands a number of it, which no comparison of bytes or of comments can see. Only the executed consumer can, and it is the cell that reds."
+    },
+    {
+      "name": "a RETURN VALUE drifts under a declaration that still reads as true",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    supported: true,",
+      "replace": "    supported: /** @type {boolean} */ (/** @type {unknown} */ (\"yes\")),",
+      "expectRed": "and every field the declaration promises of a report is the type the report actually carries",
+      "cell": "and every field the declaration promises of a report is the type the report actually carries",
+      "note": "The row above covers a PARAMETER the declaration lies about; this covers a RETURN FIELD, which the fixed consumer could not see. A security review proved that gap by declaring ReapReport.supported as a string, double casting the returned booleans so the module still typechecked, and regenerating: the declaration promised a string, the runtime returned a boolean, and the suite stayed at 25 of 25 because the consumer read reaped[].owner and never supported. The surface is now read out of the declaration by the compiler, so this mutant reds without anyone having named the field."
     }
   ]
 }
