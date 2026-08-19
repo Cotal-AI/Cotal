@@ -143,6 +143,36 @@
       "completionMarker": "ok a for-of is one iter",
       "cell": "a call on a value charges the callee law",
       "note": "`const f = 1; f()` is admitted by the validator (measured at 9dc154f8). The walker answers L4011, a refusal the program can catch; a native call answers a host TypeError, which is a different class entirely."
+    },
+    {
+      "name": "an optional call is emitted without the flag, so the host resolves a name it should not",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
+      "replace": "        const optional = \"\";",
+      "expectRed": "a tail optional call is emitted through the ruled flag",
+      "completionMarker": "ok every program the seam cannot yet express refuses loudly, and is listed",
+      "cell": "a tail optional call is emitted through the ruled flag",
+      "note": "Ruling 1d's flag is what makes `o.z?.()` short-circuit to undefined with nothing called. Without it the host resolves the method name unconditionally and refuses, where the walker answers undefined."
+    },
+    {
+      "name": "every method call carries the optional flag, so a missing method stops refusing",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
+      "replace": "        const optional = \", true\";",
+      "expectRed": "an ordinary method call carries no flag",
+      "completionMarker": "ok a tail optional call is emitted through the ruled flag",
+      "cell": "an ordinary method call carries no flag",
+      "note": "The mirror. `xs.nope()` is L4020 on the walker; flagged optional it would quietly answer undefined, which turns a refusal into a value the program carries on with."
+    },
+    {
+      "name": "an optional call with a chain after it is emitted instead of refused",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (node.optional === true && !tail) {",
+      "replace": "        if (false) {",
+      "expectRed": "every program the seam cannot yet express refuses loudly, and is listed",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "every program the seam cannot yet express refuses loudly, and is listed",
+      "note": "The host makes the short-circuit decision and cannot tell the transform it made one. Measured on the walker: `o.z?.().x` on an absent member is undefined, `o.m?.().x` on a member returning undefined is L4010 - so emitting the continuation would answer undefined for both and silently drop a refusal."
     }
   ]
 }

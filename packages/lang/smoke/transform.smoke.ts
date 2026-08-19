@@ -496,11 +496,14 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
 
 {
   // A VALIDATED PROGRAM THE TRANSFORM CANNOT COMPILE IS A HOLE IN THE PRIMARY GATE, so it is named
-  // here rather than discovered when someone writes it. `o.m?.()` needs to know whether a member is
-  // nullish BEFORE calling it, and the seam's `call` resolves the name and calls in one step — the
-  // one place a method name may be resolved at all (L4020 refuses it everywhere else). Surfaced as
-  // F6. When the seam answers it, this cell reds and the program moves into the corpus above.
-  const pending = ["const o = { m: () => 1 }; log(await o.m?.());"];
+  // here rather than discovered when someone writes it. Ruling 1d closed `o.m?.()` with an optional
+  // flag on `call`; what stays open is an optional call with a CHAIN AFTER IT. The host makes the
+  // short-circuit decision, because only it may resolve a method name, and it has no way to tell
+  // the transform that it made one — measured on the walker, `o.z?.().x` on an absent member is
+  // undefined while `o.m?.().x` on a member returning undefined is L4010, so a guard on the
+  // returned value would answer undefined for both. When the seam answers it, this cell reds and
+  // the program moves into the corpus above.
+  const pending = ["const o = { m: () => ({ x: 1 }) }; log(o.m?.().x);"];
   let refused = 0;
   for (const source of pending) {
     let name = "";
@@ -514,14 +517,24 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   }
   ok("every program the seam cannot yet express refuses loudly, and is listed", refused === pending.length, { refused, of: pending.length });
 
-  // AND THE WALKER'S ANSWER IS RECORDED WITH IT, because that is what the emission will have to
-  // reproduce: present function calls, absent short-circuits to undefined, present non-function is
-  // L4011 — the same three answers `?.` gives anywhere else.
+  // AND THE MIRROR: the shape ruling 1d DID close is emitted, and it carries the flag. Without this
+  // cell "refuse every optional call" would pass the one above.
+  const closed = transform("const o = { m: () => 1 }; log(await o.m?.());");
+  ok("a tail optional call is emitted through the ruled flag", closed.module.includes('.call(o, "m", [], true)'), closed.module.slice(-260));
+  const plain = transform("const xs = [1]; log(xs.map((x) => x));").module;
+  ok("an ordinary method call carries no flag", plain.includes('.call(xs, "map", [') && !plain.includes(", true)"), plain.slice(-200));
+
+  // AND THE WALKER'S ANSWERS ARE RECORDED WITH BOTH, because they are what the emission has to
+  // reproduce: for the closed shape, present function calls / absent short-circuits / present
+  // non-function is L4011; for the open one, the two answers a guard on the result could not tell
+  // apart. Measured on the oracle rather than quoted from it.
   const answers: string[] = [];
   for (const source of [
     "const o = { m: () => 1 }; log(await o.m?.());",
     "const o = {}; log(await o.m?.());",
     "const o = { m: 5 }; log(await o.m?.());",
+    "const o = {}; log(o.z?.().x);",
+    "const o = { m: () => undefined }; log(o.m?.().x);",
   ]) {
     const logs: unknown[] = [];
     try {
@@ -531,7 +544,11 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
       answers.push((e as { code?: string }).code ?? "?");
     }
   }
-  ok("the walker's answer for an optional call is recorded with the refusal", JSON.stringify(answers) === JSON.stringify(["[[1]]", "[[null]]", "L4011"]), answers);
+  ok(
+    "the walker's answers for an optional call are recorded with the rule and with the hole",
+    JSON.stringify(answers) === JSON.stringify(["[[1]]", "[[null]]", "L4011", "[[null]]", "L4010"]),
+    answers,
+  );
 }
 
 console.log(`\ntransform.smoke: ${pass} cells passed`);

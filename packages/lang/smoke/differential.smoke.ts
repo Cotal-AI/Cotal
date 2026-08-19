@@ -109,7 +109,30 @@ const WORKFLOW_SCRIPT = {
 };
 
 const CORPUS: readonly (readonly [string, string, object])[] = [
+  [
+    "a real workflow: spawn, turn, checkpoint, loop",
+    `const team = channel("feat-auth");
+const planner = await spawn("planner", { worktree: "wt-1", join: [team] });
+const builder = await spawn("builder", { worktree: "wt-1", join: [team] });
+await turn(planner, { name: "draft-plan" });
+const approval = await checkpoint("approve-plan", "Approve the plan?", { timeout: "10m", onExpiry: "proceed" });
+if (approval.status === "expired") {
+  await notify([planner], { decision: "approve-plan", outcome: "auto-proceeded" });
+}
+let r = await turn(builder, { name: "build" });
+let rounds = 0;
+while (r.status === "blocked") {
+  rounds = rounds + 1;
+  await turn(planner, { name: "unblock" });
+  r = await turn(builder, { name: "build" });
+}
+log("rounds", rounds, r.status);`,
+    WORKFLOW_SCRIPT,
+  ],
   ["sleep and the run clock", 'await sleep("1m", { name: "s" }); log(now() > 0);', {}],
+  ["closures over a for-loop counter", "const fs = []; for (let i = 0; i < 3; i = i + 1) { fs.push(() => i); } let s = 0; for (const f of fs) { s = s + await f(); } log(s);", {}],
+  ["a builtin read as a value", "const f = map; log(f([1, 2], (x) => x), map === map, json === json);", {}],
+  ["refusals: a non-function callee", "const f = 1; log(f());", {}],
   // STEP KEYS ARE (scope path, kind, name, occurrence), and the corpus has to reach each component
   // or the comparison is over one shape. These four move the occurrence counter, the name, and the
   // scope path a nested call adds.
@@ -211,11 +234,14 @@ const CORPUS: readonly (readonly [string, string, object])[] = [
  * suite the day it lands, so it is removed in the same change instead of being remembered.
  */
 const DIVERGENT: readonly (readonly [string, string, object, string, string])[] = [
-  // EMPTY, and not because there are none. Ruling 1c declared exactly one — `x++` on a non-number,
-  // where the walker coerces (issue 646) and the engine refuses L4018 — and it is not reachable
-  // yet: the host's `unary` does not carry the `update` selector, so the engine answers L1000
-  // "not implemented" rather than the refusal the ruling names. It sits in HELD below with both
-  // answers written down, and moves up here the moment the selector lands.
+  // Ruling 1c's one declared divergence, in both of its shapes. The walker reads an update's
+  // operand through a bare `Number(...)`, so a record is NaN and the string "5" increments to 6;
+  // the engine refuses L4018, because silent coercion is the class this language refuses
+  // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646 — and
+  // when it lands the walker starts refusing, these cells red, and the divergence is retired here
+  // rather than remembered.
+  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, "logs [[null]]", "L4018"],
+  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, "logs [[6]]", "L4018"],
 ];
 
 {
@@ -242,48 +268,11 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
  */
 const HELD: readonly (readonly [string, string, object, readonly string[], string])[] = [
   [
-    "a real workflow: spawn, turn, checkpoint, loop",
-    `const team = channel("feat-auth");
-const planner = await spawn("planner", { worktree: "wt-1", join: [team] });
-const builder = await spawn("builder", { worktree: "wt-1", join: [team] });
-await turn(planner, { name: "draft-plan" });
-const approval = await checkpoint("approve-plan", "Approve the plan?", { timeout: "10m", onExpiry: "proceed" });
-if (approval.status === "expired") {
-  await notify([planner], { decision: "approve-plan", outcome: "auto-proceeded" });
-}
-let r = await turn(builder, { name: "build" });
-let rounds = 0;
-while (r.status === "blocked") {
-  rounds = rounds + 1;
-  await turn(planner, { name: "unblock" });
-  r = await turn(builder, { name: "build" });
-}
-log("rounds", rounds, r.status);`,
-    WORKFLOW_SCRIPT,
-    ["logs", "error", "entry count"],
-    "the engine's `free` serves the library's builtins only, so `channel` is L2001; `freeConstructors` landed in perform.ts and is not wired into the seam yet",
-  ],
-  [
-    "closures over a for-loop counter",
-    "const fs = []; for (let i = 0; i < 3; i = i + 1) { fs.push(() => i); } let s = 0; for (const f of fs) { s = s + await f(); } log(s);",
+    "an optional call on a member",
+    "const o = { m: () => 1 }; log(await o.m?.(), await o.z?.());",
     {},
     ["logs", "error"],
-    "a program function stored through a mutating method is stored ADAPTED, and the program reads back something it cannot call",
-  ],
-  [
-    "a builtin read as a value",
-    "const f = map; log(f([1, 2], (x) => x), map === map);",
-    {},
-    ["logs"],
-    "the value form of `free` does not adapt the arguments of the call that follows, and mints a fresh adapter per read, so a callback receives the run's own frame and `map === map` is false",
-  ],
-  ["refusals: a non-function callee", "const f = 1; log(f());", {}, ["error"], "`callee` is member 14 as of ruling 1c and the host's seam does not carry it yet"],
-  [
-    "ruling 1c / issue 646: an update's operand on a record",
-    "const o = { c: {} }; o.c++; log(o.c);",
-    {},
-    ["logs", "error"],
-    "THIS IS A DECLARED DIVERGENCE WAITING FOR ITS ENGINE HALF: the walker coerces to NaN and the engine must refuse L4018, but the host's `unary` has no `update` selector yet, so it answers L1000. When the selector lands this moves into DIVERGENT as walker `logs [[null]]` against engine `L4018`",
+    "F6 is granted (ruling 1d) as an optional flag on the ruled `call`, and the emitter passes it; until the host reads that flag it resolves the name unconditionally, so `o.z?.()` refuses instead of short-circuiting to undefined",
   ],
   [
     "a race, whose losers are digested",
@@ -300,7 +289,6 @@ log("rounds", rounds, r.status);`,
     "the same loud refusal of every scope-opener",
   ],
 ];
-
 {
   for (const [name, source, script, expected, why] of HELD) {
     const [w, e] = [await arm("walker", source, script), await arm("engine", source, script)];

@@ -704,12 +704,25 @@ class Emitter {
    */
   private chain(node: AnyNode): string {
     const guards: string[] = [];
-    const body = this.chainLink(node.type === "ChainExpression" ? (node.expression as AnyNode) : node, guards);
+    const body = this.chainLink(node.type === "ChainExpression" ? (node.expression as AnyNode) : node, guards, true);
     if (guards.length === 0) return body;
     return `((${guards.join(") || (")}) ? ${VOID} : ${body})`;
   }
 
-  private chainLink(node: AnyNode, guards: string[]): string {
+  /**
+   * One link of an optional chain. `tail` is true for the OUTERMOST link, the one whose value is the
+   * chain's value.
+   *
+   * It exists for the optional CALL. `o.m?.()` short-circuits on whether the member is nullish, and
+   * the seam resolves a method name and calls it in one step — the one place a method name may be
+   * resolved at all — so the transform cannot see the answer and the host makes it, through ruling
+   * 1d's optional flag. What the host cannot then tell the transform is WHETHER it short-circuited,
+   * and the chain needs that as soon as anything follows: measured on the walker, `o.z?.().x` on an
+   * absent member is undefined while `o.m?.().x` on a member that returns undefined is L4010. A
+   * guard on the returned value would answer undefined for both. So a tail optional call is emitted
+   * and one with a continuation refuses, loudly and listed.
+   */
+  private chainLink(node: AnyNode, guards: string[], tail = false): string {
     if (node.type === "MemberExpression") {
       let obj = this.chainLink(node.object as AnyNode, guards);
       if (node.optional === true) obj = this.guard(obj, guards);
@@ -730,10 +743,14 @@ class Emitter {
       if (callee.type === "MemberExpression") {
         let obj = this.chainLink(callee.object as AnyNode, guards);
         if (callee.optional === true) obj = this.guard(obj, guards);
-        if (node.optional === true) throw new SeamPending("an optional call on a member (`o.m?.()`)", "CallExpression");
+        if (node.optional === true && !tail) {
+          throw new SeamPending("an optional call with a chain after it (`o.m?.().x`)", "CallExpression");
+        }
         // The one place a method NAME may be resolved: at the call. That is what lets `get` refuse
-        // the same name everywhere else (L4020).
-        return `(await ${this.seam("call", `${obj}, ${this.memberKey(callee)}, [${args}]`)})`;
+        // the same name everywhere else (L4020). Ruling 1d's fourth argument asks the host to
+        // short-circuit to undefined when the member is nullish, calling nothing.
+        const optional = node.optional === true ? ", true" : "";
+        return `(await ${this.seam("call", `${obj}, ${this.memberKey(callee)}, [${args}]${optional}`)})`;
       }
 
       let fn = this.chainLink(callee, guards);
