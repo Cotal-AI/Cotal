@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/differential.smoke.ts",
-  "guard": "The same program on the walker and on the engine produces the same value, the same log, the same refusal, and the same journal entry for entry - the step keys AND their order. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The same program on the walker and on the engine produces the same value, the same log, the same refusal, and the same journal entry for entry - the step keys AND their order. (COUNTING suite, not fail-fast: every cell prints, so an aim is graded by NAME rather than by whichever cell is earliest.)",
   "command": "pnpm smoke:lang-differential",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/transform-differential.json",
   "mutations": [
@@ -126,18 +126,27 @@
       "file": "packages/lang/src/transform/scope.ts",
       "find": "    this.deadZone(b);\n  }",
       "replace": "  }",
-      "expectRed": "identical on both engines: a dead-zone write",
-      "cell": "identical on both engines: a dead-zone write",
+      "expectRed": "identical on both engines: a dead-zone write, plainly",
+      "cell": "identical on both engines: a dead-zone write, plainly",
       "note": "The behavioural half of the surface cell: the walker answers a CATCHABLE L2004 and the program still reads the declared value afterwards, where the mutant's engine dies on an engine fault the program cannot see. Measured before it was aimed."
     },
     {
-      "name": "a program in the survival list is one that no longer refuses, so the check is a comment",
+      "name": "the survival list points at a corpus row that completes, so the check is a comment",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.then = (r) => { r(1); }; log(\"t\", typeof o.then);'],",
-      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", 'const o = {}; o.a = 1; log(\"t\", typeof o.a);'],",
+      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"refusals: a callable then, then a later reference to the record\"],",
+      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"absence and NaN are data, and still log\"],",
       "expectRed": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door",
       "cell": "the oracle's own process survives it, and hands the refusal back to its caller: issue 642 through the set door: a callable then, then any later reference to the record",
-      "note": "The list this replaced was a QUARANTINE and its mutant asked whether the exclusion had expired; this is the mirror, and it is the one that matters now that these three are corpus rows. Swap the subject for a program that completes and the child prints COMPLETED with exit 0 - the process survives, so an assertion that only read the exit code would stay green over a list that had stopped measuring the value law at all. The cell reds because SURVIVING IS NOT THE CLAIM: the claim is that the failure comes back to the caller as the ruled refusal."
+      "note": "Surviving is not the claim; coming back as the ruled refusal is. Point the entry at a corpus row that COMPLETES and the child prints COMPLETED with exit 0 - the lookup still finds a row, the process still survives, and a check reading only the exit code would stay green over a section that had stopped measuring the value law at all."
+    },
+    {
+      "name": "the survival list names a corpus row that is gone, so it checks a program the gate no longer runs",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"refusals: a callable then, then a later reference to the record\"],",
+      "replace": "  [\"issue 642 through the set door: a callable then, then any later reference to the record\", \"refusals: a callable then written onto a rekord\"],",
+      "expectRed": "the survival check names a corpus row that still exists, so the two cannot drift apart: issue 642 through the set door",
+      "cell": "the survival check names a corpus row that still exists, so the two cannot drift apart: issue 642 through the set door: a callable then, then any later reference to the record",
+      "note": "This list held its programs as LITERALS until now - two copies of each source with nothing keeping them equal, on the one section whose job is to stop those rows hanging the suite, so a drift would have been silent and green. The programs live in the corpus and are looked up by name, which removes text drift entirely; what remains is a row that is renamed or deleted out from under the reference, and that is what this mutant is. Note what it does NOT grade, since the lookup only asks whether A row was found: pointing the entry at a DIFFERENT row that exists passes this cell, and is caught by the mutant above it only because that row completes."
     },
     {
       "name": "the child swallows a failure that escaped the caller, so an uncatchable refusal reads as a caught one",
@@ -153,8 +162,8 @@
       "file": "packages/lang/src/transform/emit.ts",
       "find": "    if (VALUE_NAMES.includes(name)) return VOID;",
       "replace": "    if (VALUE_NAMES.includes(name)) return name;",
-      "expectRed": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
-      "cell": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
+      "expectRed": "every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch",
+      "cell": "every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch",
       "note": "Measured: NOT ONE behavioural cell in this suite reds. The free name resolves to the real global in the harness's evaluator, and lane H measured that inside the shipped SES compartment an unbound READ answers `undefined` and throws nothing either - so both arms agree, every journal matches, and the only thing that notices is the resolver over the emitted text. That is the whole argument for running it over the corpus this gate actually executes."
     },
     {
@@ -183,6 +192,15 @@
       "expectRed": "the comparator finds a difference the rendering cannot show: zero against negative zero",
       "cell": "the comparator finds a difference the rendering cannot show: zero against negative zero, which `0 / -1` produces in an ordinary program",
       "note": "Lane H's second hole in the first spelling. JSON draws -0 as `0` and so does a bare `typeof`, and `0 / -1`, `-0` and `0 * -1` are three ordinary programs that produce a true one, measured on both arms - they are corpus rows now, so this bit has live evidence and not only a control."
+    },
+    {
+      "name": "a cell is renamed and its aim is left behind, on this suite's config",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  [\"a dead-zone write, plainly\", \"const f = () => { n = 1; }; f(); let n = 0; log(n);\", {}, \"L2004\"],",
+      "replace": "  [\"a dead-zone write, on its own\", \"const f = () => { n = 1; }; f(); let n = 0; log(n);\", {}, \"L2004\"],",
+      "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
+      "cell": "every mutation's expectRed names exactly one cell this suite printed",
+      "note": "A corpus row's name IS a cell's name here, so renaming a row is how this suite's aims go stale - and it changes no behaviour, so no other cell reds. Aimed at the row this config already anchors on, which is the pair most likely to drift together in a future edit. The rename REPLACES the trailing word rather than extending it: expectRed is matched as a substring, so `..., plainly enough` still contains `..., plainly` and the stale aim keeps matching. Measured as a SURVIVOR in that spelling before this one."
     }
   ],
   "completionMarker": "differential.smoke:"

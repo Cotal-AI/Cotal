@@ -11,6 +11,7 @@
  * forever, so the coverage cell derives its universe from `syntax.ts` and fails on a type no corpus
  * program contains, rather than trusting a hand-kept list.
  */
+import { readFileSync } from "node:fs";
 import { parse } from "acorn";
 import { transform } from "../src/transform/index.js";
 import { SEAM_MEMBERS, SEAM_PROPOSED, SEAM_RULED } from "../src/transform/seam.js";
@@ -21,9 +22,12 @@ import { digest } from "../src/keys.js";
 import { SimHandler } from "../src/sim.js";
 
 let pass = 0;
+/** Every cell that has passed, in order. Section 23 audits this suite's mutation config against it. */
+const CELLS: string[] = [];
 const ok = (name: string, cond: boolean, extra?: unknown) => {
   if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
   pass++;
+  CELLS.push(name);
   console.log(`  ok ${name}`);
 };
 
@@ -95,6 +99,37 @@ const nodeTypes = (root: Node): Set<string> => {
   walk(root);
   return out;
 };
+
+// ---- 0) the FIRST transform in this file, and it is captured ------------------------------------
+
+/**
+ * A cell for an emitter fault to land on, and it has to be the first transform the file runs.
+ *
+ * The emitter throws on a name that resolves to nothing — a plain `Error`, not a language refusal,
+ * because a validated program cannot contain one. Every other transform in this file is awaited
+ * straight into an assertion, so that throw left the block and killed the process: measured, the
+ * suite dies with an uncaught Error after 30 named cells and ZERO failed cells. The mutation config
+ * then graded the mutant that causes it by matching the THROW MESSAGE, which is a kill graded on a
+ * crash rather than on a cell — the same illegible shape the engine suite closed at its own run
+ * boundary. Captured here, the identical break reds by name, and the config aims at that name.
+ */
+{
+  // THE PROGRAM IS CHOSEN, NOT ARBITRARY, and the first one here was wrong. `const a = 1; log(a);`
+  // does NOT reach the emitter's throw when a declarator goes unrecorded — an unresolved plain read
+  // falls through to the free-name route — so the guard passed under the mutant and the file died
+  // 31 cells later exactly as before. Measured on both trees: a `for` header's declarator does
+  // reach it. A guard whose subject cannot produce the fault is a cell that only looks like one.
+  let thrown: unknown;
+  let emitted = "";
+  try {
+    emitted = transform("const a = 1; for (let i = 0; i < a; i = i + 1) { log(i); }").module;
+  } catch (e) {
+    thrown = e;
+  }
+  ok("the transform emits, and a fault in the emitter has a cell to land on", thrown === undefined && emitted.length > 0, {
+    thrown: thrown === undefined ? null : `${(thrown as Error).name}: ${(thrown as Error).message.slice(0, 120)}`,
+  });
+}
 
 // ---- the corpus ---------------------------------------------------------------------------------
 
@@ -659,7 +694,16 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
       observed.set(member, seen === undefined ? { min: arity, max: arity } : { min: Math.min(seen.min, arity), max: Math.max(seen.max, arity) });
     }
   }
-  ok("every seam call site passes an argument count the contract declares", outside.length === 0, outside);
+  // THE SENTENCE NAMES THE SET THE LOOP WALKS, and here that matters more than usual because the
+  // set cannot be everything: the property is about the EMITTER, and no loop enumerates every
+  // program the language admits. So this is a SAMPLE — this suite's corpus, written to reach every
+  // node type, plus the seven programs above that reach the arities the corpus does not. Named as
+  // if it were universal it would read as a guarantee about the emitter, which nothing here can
+  // give. The cell below is what keeps the sample honest in the other direction.
+  // The COUNT stays out of the name and goes to the line below it: `sites` is measured from the
+  // emission, so a mutant that changes what is emitted would change the cell's own name, and a
+  // mutation config cannot name a cell that renames itself the moment it fails.
+  ok("every seam call site the corpus and the wide list emit passes an argument count the contract declares", outside.length === 0, outside);
   // AND THE RANGE IS NOT WIDER THAN THE EMITTER USES, which is the half that keeps the table honest:
   // a range nobody reaches is a permission granted to a future emission with no ruling behind it,
   // and it would pass the cell above forever. Every declared bound has to be a site somewhere here.
@@ -672,6 +716,55 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
     .filter((x) => x !== "");
   ok("and no declared range is wider than the emission that justifies it", slack.length === 0, slack);
   console.log(`  (${sites} seam call sites checked against ${Object.keys(SEAM_MEMBERS).length} declared arity ranges)`);
+}
+
+// ---- 23) the mutation config, audited against the cells this suite prints ----------------------
+
+/**
+ * An instrument for the instrument, and it exists because all three faults it checks were real.
+ *
+ * A mutation config's `expectRed` is matched as a SUBSTRING of the run's output, which fails toward
+ * confidence in three different ways and did: a sentence that no longer exists after a cell is
+ * renamed grades WRONG-RED at fold time rather than at authoring time (one of mine did, in the very
+ * commit that argued anchors must identify one thing); a sentence that is a PREFIX of a sibling
+ * cell can report a kill off the wrong one (one of mine matched three); and a sentence that is not
+ * a cell at all but a THROW MESSAGE grades a crash as a kill (one of mine did, for as long as it
+ * had existed). Exactly one printed cell, per aim, catches all three — zero is a stale sentence or
+ * a throw, more than one is the prefix trap.
+ *
+ * It also asserts the section-0 guard is still the file's first transform, BY OFFSET in this file's
+ * own source. That is beyond what the fault required and it is here for the reason the guard itself
+ * is: an insertion above it silently re-opens the hole, and a rule the author has to remember is
+ * not an invariant. This is the half that the engine suite's equivalent had and mine did not.
+ */
+{
+  const here = new URL(import.meta.url).pathname;
+  const src = readFileSync(here, "utf8");
+  const guardAt = src.indexOf("// ---- 0) the FIRST transform in this file");
+  const guardCell = src.indexOf("the transform emits, and a fault in the emitter has a cell to land on", guardAt + 1);
+  const firstTransform = src.indexOf("transform(", guardAt);
+  ok("the guarded transform is still the first one this file runs", guardAt > 0 && firstTransform > guardAt && firstTransform < guardCell && src.indexOf("transform(") === firstTransform, {
+    guardAt,
+    firstTransform,
+    guardCell,
+  });
+
+  const cfg = JSON.parse(readFileSync(new URL("./mutations/transform-surface.json", import.meta.url), "utf8")) as {
+    suite: string;
+    mutations: { name: string; expectRed: string }[];
+  };
+  ok("the config audited here is the one that names this suite", cfg.suite.endsWith("transform.smoke.ts"), cfg.suite);
+  // THIS CELL COUNTS ITSELF, and it has to: a config may aim a mutant at the audit, and the audit's
+  // own name is not in `CELLS` yet when it runs — `ok` records after it decides. Left out, an aim at
+  // this cell reads as a stale sentence and the audit reds over its own existence.
+  const AUDIT = "every mutation's expectRed names exactly one cell this suite printed";
+  const known = [...CELLS, AUDIT];
+  const wrong = cfg.mutations
+    .map((m) => ({ m, hits: known.filter((c) => c.includes(m.expectRed)).length }))
+    .filter(({ hits }) => hits !== 1)
+    .map(({ m, hits }) => `${m.name}: ${hits} printed cell(s) match ${JSON.stringify(m.expectRed)}`);
+  ok(AUDIT, wrong.length === 0, wrong);
+  console.log(`  (${cfg.mutations.length} expectRed strings audited against ${CELLS.length} printed cells)`);
 }
 
 console.log(`\ntransform.smoke: ${pass} cells passed`);
