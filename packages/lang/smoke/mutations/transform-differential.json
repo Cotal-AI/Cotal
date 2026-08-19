@@ -111,6 +111,15 @@
       "expectRed": "identical on both engines: a fan-out whose key is awaited",
       "cell": "identical on both engines: a fan-out whose key is awaited",
       "note": "The mirror of the rule above: `sleep:warm` lands BEFORE `fanOut:f` on both arms because the options bag is evaluated at the call, outside the scope. Wrapped in a thunk it is computed inside, and the two entries swap. The ruled position is the BODY alone, so this mutant keeps every eager-body program green and shows up only as journal order in the program whose key awaits."
+    },
+    {
+      "name": "a primitive is spelled in a corpus program the run never reaches, so a kind is covered on paper",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "'const a = await spawn(\"one\");\\nawait notify([a], { decision: \"build\", outcome: \"blocked\" });\\nawait monitor([a], { name: \"m\" });\\nlog(\"done\");'",
+      "replace": "'const a = await spawn(\"one\");\\nawait notify([a], { decision: \"build\", outcome: \"blocked\" });\\nif (len([]) > 0) { await monitor([a], { name: \"m\" }); }\\nlog(\"done\");'",
+      "expectRed": "and a corpus program journals every kind the engine can write",
+      "cell": "and a corpus program journals every kind the engine can write",
+      "note": "A coverage-discipline cell, so its mutant is in the fixture. The name is still SPELLED, so the free-name cell stays green and both arms still agree; only a kind the engine actually wrote to a journal counts here, and `monitor` stops being one. Measured before it was aimed: this is the only cell that reds."
     }
   ],
   "completionMarker": "differential.smoke:"
