@@ -430,8 +430,9 @@ log("rounds", rounds, r.status);`,
   ["the seeded pure draws", 'log(random(), randomInt(10), pick([1, 2, 3]), duration("1m"));', {}],
   ["a pure draw inside a function, twice", "const d = () => random(); log(await d(), await d());", {}],
   ["this run's own metadata", "const r = run(); log(r.startedAt > 0, len(r.programHash) > 0);", {}],
-  // F6, ALL OF IT, held out of this corpus until the engine host landed (d556c504) and moved up here
-  // in the same change: the flag, the chain the host finishes, and the argument that must not run.
+  // THE OPTIONAL CALL, ALL OF IT, held out of this corpus until the engine host landed (d556c504)
+  // and moved up here in the same change: the flag, the chain the host finishes, and the argument
+  // that must not run.
   ["an optional call on a member", "const o = { m: () => 1 }; log(await o.m?.(), await o.z?.());", {}],
   [
     "an optional call's chain, finished by the host",
@@ -504,7 +505,7 @@ log("rounds", rounds, r.status);`,
   ["refusals: a callable then, then a later reference to the record", 'const o = {}; o.then = (r) => { r(1); }; log("t", typeof o.then);', {}, "L4021"],
   ["refusals: a scope branch named then", 'await parallel({ then: async () => 1 }, { name: "p" });', {}, "L4021"],
   ["refusals: a race branch named then, where one arm is enough", 'await race({ then: async () => 1, b: async () => 2 }, { name: "r" });', {}, "L4021"],
-  // AND THE FREEZE, which stands AHEAD of the member rule (H measured the order on the walker; this
+  // AND THE FREEZE, which stands AHEAD of the member rule (the order measured on the walker; this
   // is the shape that shows it as a program). A record handed to a host effect is frozen from then
   // on, and after that BOTH writes are L2031: the member the array does not have, which was L4014
   // one line above, and the member it does have, which completed before it was shared. Without the
@@ -526,9 +527,10 @@ log("rounds", rounds, r.status);`,
   // by reading the corpus. An unbraced body is L1009, so a stray `;` between statements is the only
   // spelling the validator admits, and it is what the emitter has to carry through unchanged.
   ["an empty statement", "; let i = 0; while (i < 2) { i = i + 1; }; log(i);", {}],
-  // F7 OVER WRITES, ruled after the read half: the same predicate, the same hoisted record, and
-  // `set` carrying the binding name so the early write refuses instead of landing silently. Held
-  // until 4f7b994c, and all four shapes the walker distinguishes are compared, not just the loud one.
+  // THE DEAD ZONE OVER WRITES, after the read half: the same predicate, the same hoisted record,
+  // and `set` carrying the binding name so the early write refuses instead of landing silently.
+  // Held until 4f7b994c, and all four shapes the walker distinguishes are compared, not just the
+  // loud one.
   // NAMED "plainly" ON PURPOSE: bare, this row's name is a PREFIX of the two below it, and an
   // expectRed is matched as a substring - so a mutant aimed here would report a kill off either of
   // them. A cell name that is a prefix of a sibling is an ambiguous anchor, not just an untidy one.
@@ -537,8 +539,9 @@ log("rounds", rounds, r.status);`,
   ["a dead-zone write the program catches, after which the declaration still initialises", 'function f() { n = 2; } try { f(); } catch (e) { log(e.code, e.kind); } let n = 1; log(n);', {}],
   ["a compound dead-zone write, refused after its read", 'function f() { n += 2; } try { f(); } catch (e) { log(e.code); } let n = 1; log(n);', {}],
   ["the same write once the declaration has run", "function f() { n = 2; } let n = 1; f(); log(n);", {}],
-  // F7 RETIRED, both halves landed: the transform classifies the dead zone as a cell and reads it by
-  // name, the host answers L2004 for an absent own `v`. Held until 93bab769, compared from here on.
+  // THE DEAD-ZONE HOLD RETIRED, both halves landed: the transform classifies the dead zone as a
+  // cell and reads it by name, and the host answers L2004 for an absent own `v`. Held until
+  // 93bab769, compared from here on.
   ["a temporal dead zone", "const f = () => x; const r = f(); const x = 1; log(r);", {}, "L2004"],
   ["a temporal dead zone the program catches", 'const f = () => x; try { log(f()); } catch (e) { log(e.code, e.kind); } const x = 1;', {}],
   // AND THE MIRROR: the OPTIONS BAG is evaluated BEFORE the scope. `sleep:warm` lands ahead of
@@ -787,7 +790,7 @@ const reachedKinds = new Set<string>();
  * suite the day it lands, so it is removed in the same change instead of being remembered.
  */
 const DIVERGENT: readonly (readonly [string, string, object, string, string])[] = [
-  // Ruling 1c's one declared divergence, in both of its shapes. The walker reads an update's
+  // The one declared divergence, in both of its shapes. The walker reads an update's
   // operand through a bare `Number(...)`, so a record is NaN and the string "5" increments to 6;
   // the engine refuses L4018, because silent coercion is the class this language refuses
   // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646, and
@@ -1141,7 +1144,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // horizon was reached - and something else picks it up later. `shouldStop` is asked before every
   // effect that is not already recorded, so the run stops exactly where its journal says it is, and
   // the engine that finishes it need not be the engine that started it. That is the whole promise of
-  // the wave stated as one program, and it is checked in BOTH directions.
+  // the contract stated as one program, and it is checked in BOTH directions.
   const source = 'const a = await spawn("one");\nawait sleep("1m", { name: "s1" });\nawait sleep("2m", { name: "s2" });\nlog("done", a.agent);';
   const finished: { logs: unknown[][]; entries: JournalEntry[]; value: unknown }[] = [];
   for (const [wrote, other] of [
@@ -1524,9 +1527,9 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
 // ---- and the surface that holds the compartment closed, over THIS corpus ------------------------
 
 {
-  // MEASURED BY LANE H, and it changes what this is worth: inside the shipped SES compartment an
-  // unbound READ evaluates to `undefined` and throws nothing - the scope proxy answers `has` for
-  // every name - while an unbound WRITE still refuses. So the host's loud free-identifier clause is
+  // MEASURED IN THE SHIPPED COMPARTMENT, and it changes what this is worth: inside SES an unbound
+  // READ evaluates to `undefined` and throws nothing (the scope proxy answers `has` for every name)
+  // while an unbound WRITE still refuses. So the host's loud free-identifier clause is
   // a backstop for the write half only, and what holds the read half closed is that the emitted
   // module has no free identifier to begin with.
   //

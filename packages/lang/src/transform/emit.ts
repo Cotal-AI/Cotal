@@ -146,16 +146,16 @@ class Emitter {
   private readName(node: AnyNode): string {
     const b = this.binding(node);
     const name = node.name as string;
-    // A CELL READ CARRIES THE BINDING'S NAME (F7, contracted). An absent own `v` is a read before
-    // the declaration ran, and the host answers L2004 for the binding it names: the code the walker
-    // gives, and one a program can catch and read, where a native binding gives a host
+    // A CELL READ CARRIES THE BINDING'S NAME (the dead-zone rule). An absent own `v` is a read
+    // before the declaration ran, and the host answers L2004 for the binding it names: the code the
+    // walker gives, and one a program can catch and read, where a native binding gives a host
     // ReferenceError that `caught` can only report as L4000/host.
     if (b !== undefined) return b.cell ? this.seam("get", `${name}, ${q("v")}, ${q(b.name)}`) : name;
     if (VALUE_NAMES.includes(name)) return VOID;
     // A builtin is a BINDING in this language, so it has to be readable as a value: `const f = trim`,
     // `map(xs, upper)`, and `json.stringify(x)` (whose callee's object is the free name `json`).
-    // Ruling 1a pins the read form as `free(name)` with the arguments OMITTED - the host answers it
-    // in the program's convention, so a native call on what comes back is correct.
+    // The contract pins the read form as `free(name)` with the arguments OMITTED - the host answers
+    // it in the program's convention, so a native call on what comes back is correct.
     if (FREE_VALUES.has(name)) return this.seam("free", q(name));
     // An effect primitive is not a binding the walker ever declares: `const t = turn` is admitted by
     // the validator and answers L2001 at run time (measured at 9dc154f8). The host answers the same
@@ -191,11 +191,11 @@ class Emitter {
   /**
    * The cell RECORDS a statement list declares, created empty at its top.
    *
-   * F7's shape, as contracted: `born({})` at the top of the block, `set(cell, "v", init)` where the
-   * declaration is, and every read through `get(cell, "v", name)`. The record must exist before the
-   * closures that capture it, and its `v` must be ABSENT until the declaration runs. That absence
-   * IS the dead zone, and it is what lets the host answer L2004 by name instead of a native
-   * ReferenceError. `v: undefined` is a present key, so the host asks `hasOwn` and not truthiness.
+   * The dead-zone rule's shape: `born({})` at the top of the block, `set(cell, "v", init)` where
+   * the declaration is, and every read through `get(cell, "v", name)`. The record must exist before
+   * the closures that capture it, and its `v` must be ABSENT until the declaration runs. That
+   * absence IS the dead zone, and it is what lets the host answer L2004 by name instead of a
+   * native ReferenceError. `v: undefined` is a present key, so the host asks `hasOwn`, not truth.
    *
    * A `for (let ...)` head is not here: its carrier gives each iteration its own record, and a
    * binding declared in a loop head cannot be read before that head has run.
@@ -433,7 +433,7 @@ class Emitter {
   // ---- bindings ---------------------------------------------------------------------------------
 
   /**
-   * Write a cell's field: `set(cell, "v", value)`, with F7's binding NAME where the write can land
+   * Write a cell's field: `set(cell, "v", value)`, with the binding NAME where the write can land
    * in the binding's dead zone.
    *
    * The name is passed on every write to a hoisted (dead-zone) cell and on NO other, which is what

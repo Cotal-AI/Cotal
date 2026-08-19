@@ -13,13 +13,14 @@
  *
  * The arity is written here rather than left implicit in the emitter because a member's shape is as
  * much of the contract as its name, and the two that vary are exactly where a divergence hid from a
- * names-only comparison: `call` grew a fourth and then a fifth argument for F6 against a host member
- * declared with three, and the differential found it rather than the surface. `transform.smoke`
- * checks every emitted call site against this range in both directions - no site outside it, and no
- * bound without a site that reaches it - and `engine.smoke` checks the host's `ctx` against the same
- * table: names by set-equality, and `ctx[name].length === max` for each. That last is the ruled
- * spelling, and it is `max` rather than `min` for a measured reason: a TypeScript optional parameter
- * is a plain parameter after erasure and still counts toward `Function.length`, so a `<= min` rule
+ * names-only comparison: `call` grew a fourth and then a fifth argument for the optional call
+ * against a host member declared with three, and the differential found it rather than the surface.
+ * `transform.smoke` checks every emitted call site against this range in both directions - no site
+ * outside it, and no bound without a site that reaches it - and `engine.smoke` checks the host's
+ * `ctx` against the same table: names by set-equality, and `ctx[name].length === max` for each. That
+ * last is the contracted spelling, and it is `max` rather than `min` for a measured reason: a
+ * TypeScript optional parameter is a plain parameter after erasure and still counts toward
+ * `Function.length`, so a `<= min` rule
  * would be vacuous on every fixed member and false on all four variadic ones. The MIN end cannot be
  * read from a function at all - erasure has discarded which parameters were optional - so it is
  * behavioural on the host's side: each variadic member has a cell calling it in its shortest form.
@@ -34,12 +35,12 @@
  */
 export const SEAM_MEMBERS: Readonly<Record<string, readonly [number, number]>> = Object.freeze({
   fuel: [0, 0],
-  // 2, or 3 with F7's binding name, which is what turns an absent own `v` into L2004 by name.
+  // 2, or 3 with the dead-zone rule's binding name, which turns an absent own `v` into L2004.
   get: [2, 3],
-  // 3, or 4 with F7's binding name on a write that can land in the dead zone (ruling: the
-  // declaration's own initializing write never carries it).
+  // 3, or 4 with that binding name on a write that can land in the dead zone (the declaration's
+  // own initializing write never carries it).
   set: [3, 4],
-  // 3 ordinary; 4 with F6's optional-call flag, where the arguments arrive as a thunk; 5 when the
+  // 3 ordinary; 4 with the optional-call flag, where the arguments arrive as a thunk; 5 when the
   // chain continues past the optional call and the rest of it travels as a continuation.
   call: [3, 5],
   born: [1, 1],
@@ -52,7 +53,7 @@ export const SEAM_MEMBERS: Readonly<Record<string, readonly [number, number]>> =
   unary: [2, 2],
   iter: [1, 1],
   caught: [1, 1],
-  // Ruling 1c, member 14: L4011 at a non-function callee. `const f = 1; f()` is a program the
+  // Member 14: L4011 at a non-function callee. `const f = 1; f()` is a program the
   // validator ADMITS (measured at 9dc154f8), and the walker answers L4011 where a native call
   // answers a host TypeError. Emitted behind a `typeof` fast path, so a call to a real function
   // never reaches the host.

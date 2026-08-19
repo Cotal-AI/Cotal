@@ -298,7 +298,7 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
 
 // ---- 7b) the dead zone the write rule cannot see ------------------------------------------------
 
-/** One program per clause of F7's ruled predicate, and the walker's answer for it. */
+/** One program per clause of the dead-zone predicate, and the walker's answer for it. */
 const DEAD_ZONE: readonly (readonly [string, string])[] = [
   ["a hoisted function reads it", "const r = f(); function f() { return x } const x = 1; log(r);"],
   ["an arrow inside a hoisted function, any depth", "const r = f(); function f() { const g = () => x; return g(); } const x = 1; log(r);"],
@@ -328,7 +328,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
 ];
 
 {
-  // F7, CONTRACTED option (b). A binding a closure can read BEFORE ITS DECLARATION HAS RUN is
+  // THE DEAD-ZONE RULE, option (b). A binding a closure can read BEFORE ITS DECLARATION HAS RUN is
   // refused L2004 by the walker (a code a program can catch and read) where a native JavaScript
   // binding answers a host ReferenceError, which `caught` reports as L4000/host. So that class
   // becomes a record: `born({})` at the top of its block, `set` at the declaration, and every read
@@ -385,11 +385,11 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // write rule: a true red that names the wrong rule.
   ok("a cell for the write rule alone is not hoisted", !write.includes("born({})"), write.slice(0, 220));
 
-  // AND F7 OVER WRITES, ruled after the read half. The same predicate decides a WRITE that can land
-  // in the dead zone, the record is hoisted for it too, and `set` carries the binding NAME so the
-  // host refuses L2004 instead of the write landing silently in a record the declaration has not
-  // reached. The declaration's own write never carries the name: it is the one that ends the dead
-  // zone, and naming it there would make a binding refuse its own initialisation.
+  // AND THE SAME RULE OVER WRITES, after the read half. The same predicate decides a WRITE that can
+  // land in the dead zone, the record is hoisted for it too, and `set` carries the binding NAME so
+  // the host refuses L2004 instead of the write landing silently in a record the declaration has
+  // not reached. The declaration's own write never carries the name: it is the one that ends the
+  // dead zone, and naming it there would make a binding refuse its own initialisation.
   const dzWrite = shape("function f() { n = 2; } f(); let n = 1; log(n);");
   ok("a write that can land in the dead zone hoists its record", dzWrite.module.includes("born({})"), dzWrite.module.slice(0, 240));
   ok("and carries the binding name, which is what the host refuses on", /\.set\(n, "v", [^)]*, "n"\)/.test(dzWrite.module), dzWrite.module.slice(0, 400));
@@ -452,7 +452,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
 // ---- 10) an update's operand: a native counter, a refused record --------------------------------
 
 {
-  // THE DECLARED DIVERGENCE OF RULING 1c, held by its oracle rather than by a sentence. The walker
+  // THE ONE DECLARED DIVERGENCE, held by its oracle rather than by a sentence. The walker
   // reads `x++`'s old value through a bare `Number(...)` with no refusal, so a record answers NaN
   // there; the engine refuses it L4018 through `unary("update")`. That is a deliberate departure
   // (issue 646: silent coercion is the class the language refuses everywhere else), and this cell
@@ -573,7 +573,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // THE ARGUMENTS FIRST, then the chain: each rule below is one position of the same call, and they
   // are ordered so a mistake in one is named by its own cell rather than by the next one along.
   //
-  // Ruling 1d's fourth argument is the optional flag. The seam resolves a method name and calls it
+  // The fourth argument to `call` is the optional flag. The seam resolves a method name and calls it
   // in one step, the one place a method name may be resolved at all, so the short-circuit decision
   // is the host's and the flag is what asks for it.
   const closed = transform("const o = { m: () => 1 }; log(await o.m?.());");
@@ -668,8 +668,8 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // better than "an argument count changed". Sitting here it catches only what nothing else did.
   //
   // ARITY, NOT ONLY NAMES. The cell above compares the member NAMES the module reaches; that is what
-  // let `call` grow a fourth and then a fifth argument for F6 against a host member declared with
-  // three, and the divergence that came out of it was found by the differential rather than here.
+  // let `call` grow a fourth and then a fifth argument for the optional call against a host member
+  // declared with three, and the divergence it produced was found by the differential, not here.
   // The declared range now lives beside the member in `seam.ts`, this checks every emitted site
   // against it, and `engine.smoke` checks the host's `ctx` against the same table.
   const WIDE: readonly (readonly [string, string])[] = [

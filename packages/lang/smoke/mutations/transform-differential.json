@@ -191,7 +191,7 @@
       "replace": "",
       "expectRed": "the comparator finds a difference the rendering cannot show: zero against negative zero",
       "cell": "the comparator finds a difference the rendering cannot show: zero against negative zero, which `0 / -1` produces in an ordinary program",
-      "note": "Lane H's second hole in the first spelling. JSON draws -0 as `0` and so does a bare `typeof`, and `0 / -1`, `-0` and `0 * -1` are three ordinary programs that produce a true one, measured on both arms - they are corpus rows now, so this bit has live evidence and not only a control."
+      "note": "The second hole in the first spelling. JSON draws -0 as `0` and so does a bare `typeof`, and `0 / -1`, `-0` and `0 * -1` are three ordinary programs that produce a true one, measured on both arms - they are corpus rows now, so this bit has live evidence and not only a control."
     },
     {
       "name": "a cell is renamed and its aim is left behind, on this suite's config",

@@ -28,15 +28,15 @@ export interface Binding {
   /** Which function scope declared it. A write from a different (deeper) one is what makes a cell. */
   readonly funcId: number;
   /**
-   * The end of this binding's own declarator, for F7's textual clause. Null where the question
-   * cannot arise: a parameter is bound at the call and a `function` declaration is hoisted, so
-   * neither can be read before it holds a value.
+   * The end of this binding's own declarator, for the dead-zone rule's textual clause. Null where
+   * the question cannot arise: a parameter is bound at the call and a `function` declaration is
+   * hoisted, so neither can be read before it holds a value.
    */
   readonly declEnd: number | null;
-  /** A record rather than a native binding: L2032's binding half, or F7's dead zone. */
+  /** A record rather than a native binding: L2032's binding half, or the dead zone. */
   cell: boolean;
   /**
-   * A cell because it can be READ BEFORE ITS DECLARATION (F7), which the L2032 write rule cannot
+   * A cell because it can be READ BEFORE ITS DECLARATION, which the L2032 write rule cannot
    * see. It is kept apart from {@link cell} because only this class needs its record hoisted to the
    * top of the block: a binding that is a cell only for the write rule cannot be read early, so its
    * record is still built where it is declared, with its value already in it.
@@ -70,7 +70,7 @@ class Scope {
   }
 }
 
-/** One function between a read and the binding it reads, as F7's predicate needs to see it. */
+/** One function between a read and the binding it reads, as the dead-zone predicate sees it. */
 interface Enclosing {
   readonly funcId: number;
   /** A hoisted `function` declaration: reachable before anything textually after it has run. */
@@ -83,7 +83,10 @@ class Walk {
   readonly bindingOf = new Map<AnyNode, Binding>();
   readonly bindings: Binding[] = [];
   private nextFunc = 0;
-  /** The functions currently open, outermost first. F7 reads the path from a use out to its binding. */
+  /**
+   * The functions currently open, outermost first. The dead-zone rule reads the path from a use out
+   * to its binding.
+   */
   private readonly fns: Enclosing[] = [];
   /** The statement being walked. A function literal's "enclosing statement" is this one. */
   private stmtStart = 0;
@@ -107,7 +110,8 @@ class Walk {
   }
 
   /**
-   * F7, ruled: which captured bindings can be READ BEFORE THEY HOLD A VALUE, and so must be cells.
+   * The dead-zone rule: which captured bindings can be READ BEFORE THEY HOLD A VALUE, and so must
+   * be cells.
    *
    * The walker refuses that read L2004 (a code a program can catch and read) while a native
    * JavaScript binding answers a host ReferenceError, which `caught` can only report as L4000/host.
@@ -142,8 +146,9 @@ class Walk {
     if (b === undefined) return;
     this.bindingOf.set(node, b);
     if (b.funcId !== funcId && b.kind !== "const") b.cell = true;
-    // AND F7 OVER WRITES, ruled after the read half landed. A write reaches the dead zone by the
-    // same path a read does. Measured on the walker, `n = 2` inside a hoisted `function` called
+    // AND THE SAME RULE OVER WRITES, added after the read half landed. A write reaches the dead
+    // zone by the same path a read does. Measured on the walker, `n = 2` inside a hoisted
+    // `function` called
     // before `let n = 1` is a CATCHABLE L2004 and `n` still reads 1 afterwards, so the same
     // predicate decides it, and the record has to be hoisted for the same reason: an unhoisted one
     // is still in its own temporal dead zone when the early write evaluates the argument, and the

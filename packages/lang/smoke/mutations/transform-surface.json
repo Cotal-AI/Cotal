@@ -101,7 +101,7 @@
       "expectRed": "an update's operand charges the coercion law when it is not a number",
       "completionMarker": "ok an update's fast path keeps a numeric counter native",
       "cell": "an update's operand charges the coercion law when it is not a number",
-      "note": "The mirror of the mutation above, and it keeps the `typeof` test in place on purpose so the fast-path cell still passes and this one is what reds. Ruling 1c gave `update` the L4018 refusal; a native else branch silently answers NaN, which is the walker behaviour the ruling declined to rebuild (issue 646)."
+      "note": "The mirror of the mutation above, and it keeps the `typeof` test in place on purpose so the fast-path cell still passes and this one is what reds. The seam gives `update` the L4018 refusal; a native else branch silently answers NaN, which is the walker behaviour the transform declined to rebuild (issue 646)."
     },
     {
       "name": "every unary operator is emitted natively, so `-record` stops refusing",
@@ -151,7 +151,7 @@
       "expectRed": "a tail optional call is emitted through the ruled flag",
       "completionMarker": "ok an object literal's keys are emitted computed",
       "cell": "a tail optional call is emitted through the ruled flag",
-      "note": "Ruling 1d's flag is what makes `o.z?.()` short-circuit to undefined with nothing called. Without it the host resolves the method name unconditionally and refuses, where the walker answers undefined."
+      "note": "The optional-call flag is what makes `o.z?.()` short-circuit to undefined with nothing called. Without it the host resolves the method name unconditionally and refuses, where the walker answers undefined."
     },
     {
       "name": "every method call carries the optional flag, so a missing method stops refusing",
@@ -274,7 +274,7 @@
       "note": "The name is what lets the host answer L2004 FOR THAT BINDING when the record's `v` is absent. Without it an absent field is just undefined, and the dead zone becomes a value the program carries on with."
     },
     {
-      "name": "the declared arity stops covering the argument F7 added, so a site sits outside the table",
+      "name": "the declared arity stops covering the binding-name argument, so a site sits outside the table",
       "file": "packages/lang/src/transform/seam.ts",
       "find": "  get: [2, 3],",
       "replace": "  get: [2, 2],",
