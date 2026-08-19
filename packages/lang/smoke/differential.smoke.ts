@@ -20,6 +20,7 @@ import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
 import { resume as walkResume, run as walk } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
+import { resolvePins } from "../src/pins.js";
 import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
 import { BUILTINS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
@@ -554,6 +555,84 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     }
   }
   console.log(`  (${crossings} journal crossings, each resumed against a handler that refuses every dispatch)`);
+}
+
+// ---- a run its host stopped, finished on the other engine ---------------------------------------
+
+{
+  // THE OPERATIONAL STORY, not a synthetic one. A driver pauses a run - an operator asked, a work
+  // horizon was reached - and something else picks it up later. `shouldStop` is asked before every
+  // effect that is not already recorded, so the run stops exactly where its journal says it is, and
+  // the engine that finishes it need not be the engine that started it. That is the whole promise of
+  // the wave stated as one program, and it is checked in BOTH directions.
+  const source = 'const a = await spawn("one");\nawait sleep("1m", { name: "s1" });\nawait sleep("2m", { name: "s2" });\nlog("done", a.agent);';
+  const finished: { logs: unknown[][]; entries: JournalEntry[]; value: unknown }[] = [];
+  for (const [wrote, replays] of [
+    ["walker", "engine"],
+    ["engine", "walker"],
+  ] as const) {
+    // The pins are resolved ONCE and travel with the journal, the way a run record carries them.
+    const pins = resolvePins({ runId: "d", seed: SEED, startedAt: AT }, AT);
+    const journal = new Journal({ run: "d" });
+    let asked = 0;
+    const first = {
+      runId: "d",
+      handler: new SimHandler({}),
+      journal,
+      pins,
+      shouldStop: () => (asked++ >= 2 ? "operator paused" : undefined),
+    };
+    let stopped: string | null = null;
+    try {
+      if (wrote === "walker") await walk(source, first);
+      else await runOnEngine(source, transform(source).module, { ...first, evaluate });
+    } catch (e) {
+      stopped = (e as { code?: string }).code ?? (e as Error).name;
+    }
+    ok(`the ${wrote} stops where its host asked it to`, stopped === "L5012" && journal.entries().length === 2, {
+      stopped,
+      entries: journal.entries().length,
+    });
+
+    const logs: unknown[][] = [];
+    const back = { runId: "d", handler: new SimHandler({}), pins, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };
+    const r =
+      replays === "walker"
+        ? await walkResume(source, journal, back as never)
+        : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
+    ok(`and the ${replays} finishes it from there`, j(logs) === j([["done", "sim.one"]]) && r.journal.entries().length === 3, {
+      logs,
+      entries: r.journal.entries().length,
+    });
+    finished.push({ logs, entries: [...r.journal.entries()], value: r.value });
+  }
+  const [a, b] = finished as [(typeof finished)[0], (typeof finished)[0]];
+  ok("and the two finished journals are the same journal, entry for entry", j(a.entries) === j(b.entries) && j(a.logs) === j(b.logs) && j(a.value) === j(b.value), {
+    entries: [a.entries.length, b.entries.length],
+  });
+
+  // AND THE REFUSAL THAT PROTECTS IT, on both engines. A journal with recorded steps and no pins is
+  // a different run wearing this one's history: the epoch would move to the resuming host and every
+  // pure draw would change, and neither is a recorded fact a replay could diverge on.
+  const refusals: (string | null)[] = [];
+  for (const kind of ["walker", "engine"] as const) {
+    const journal = new Journal({ run: "d" });
+    const pins = resolvePins({ runId: "d", seed: SEED, startedAt: AT }, AT);
+    try {
+      await walk(source, { runId: "d", handler: new SimHandler({}), journal, pins });
+    } catch {
+      /* the first run is only here to fill the journal */
+    }
+    try {
+      const opts = { runId: "d", handler: new SimHandler({}) };
+      if (kind === "walker") await walkResume(source, journal, opts);
+      else await resumeOnEngine(source, transform(source).module, journal, { ...opts, evaluate });
+      refusals.push(null);
+    } catch (e) {
+      refusals.push((e as { code?: string }).code ?? (e as Error).name);
+    }
+  }
+  ok("both engines refuse a journal handed back without its pins", j(refusals) === j(["L5021", "L5021"]), refusals);
 }
 
 // ---- every program in every list is a program, and does something -------------------------------
