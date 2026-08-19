@@ -38,7 +38,17 @@
     "the hook table: OpenCode is handed those closures at registration, so fencing the table left",
     "them open. It is graded through cotal_status because that is the cotal_* tool with a",
     "presence-visible effect; the others are fenced by the same wrapper but their harm is a channel",
-    "write, which this harness does not watch."
+    "write, which this harness does not watch.",
+    "",
+    "C10 ASKS WHETHER THE WAIT HAPPENS, C11 AND C12 WHETHER EACH DOOR IS IN IT. Same two-claim shape",
+    "as the fence: a wait nothing is registered with waits for nothing, and grading the wait alone",
+    "cannot see a door that never registers. C12 is not a duplicate of C11 because the two paths reach",
+    "presence differently, the hook through the plugin's helper and the tool straight to the agent.",
+    "",
+    "THE CROSSING CELL RELEASES INSIDE THE BOUND, ON PURPOSE. The wait is bounded, so a straggler held",
+    "past it is released after departure by design and no mutation should be able to claim otherwise.",
+    "What is graded is the ORDER for work released while the teardown is still waiting. Holding it",
+    "longer would grade an unbounded wait that this fix does not claim to make."
   ],
   "mutations": [
     {
@@ -100,9 +110,30 @@
     {
       "name": "C9 the tool map stops refusing, so a cotal_* call still inside the model's turn runs after the stop and its presence write puts the seat back on the mesh",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
-      "replace": "            await def.execute(...args),\n",
+      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "replace": "            await track(def.execute(...args)),\n",
       "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
+    },
+    {
+      "name": "C10 teardown stops waiting for work it already admitted, so a presence write parked mid-call resumes after departure and puts the seat back to work",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, \"admitted intake at teardown\");\n    if (!settled) log(\"opencode-teardown admitted work outlived the intake bound; publishing offline anyway\");\n",
+      "replace": "",
+      "expectRed": "work admitted before the stop lands BEFORE departure, never after it"
+    },
+    {
+      "name": "C11 the hook path stops being tracked, so a pre-stop hook parked inside its presence write is not waited for and crosses departure",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (agent.connected) await track(agent.setStatus(status, activity));\n",
+      "replace": "      if (agent.connected) await agent.setStatus(status, activity);\n",
+      "expectRed": "work admitted before the stop lands BEFORE departure, never after it"
+    },
+    {
+      "name": "C12 the tool path stops being tracked, which the hook path cannot stand in for because a tool reaches the agent without passing through the plugin's presence helper",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "replace": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
+      "expectRed": "work admitted before the stop lands BEFORE departure, never after it"
     }
   ]
 }

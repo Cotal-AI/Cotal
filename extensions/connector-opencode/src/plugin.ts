@@ -76,6 +76,17 @@ export const SETTLE_ABANDONED = "opencode-settle-abandoned";
  * means the step is not slow, it is not coming back.
  */
 const SWAP_SETTLE_MS = 10_000;
+/**
+ * How long teardown waits for interactive work it ALREADY ADMITTED before it publishes departure.
+ *
+ * DERIVED, NOT PICKED. It has to be under the shortest runtime grace window, which is 1.5s for tmux
+ * and cmux against 3s for the built-in pty, because a stop that spends longer than that waiting is a
+ * stop whose offline publish is killed before it lands. That is the failure the publish-before-join
+ * ordering exists to prevent, so a bound above the grace window would reintroduce it here. 1s leaves
+ * room for the publish itself, and what it waits on is one presence round trip or one tool call, not
+ * an event drain: those are excluded and joined afterwards.
+ */
+const INTAKE_SETTLE_MS = 1_000;
 
 export const cotal: Plugin = async () => {
   // No identity → a plain `opencode`, not a launcher-spawned agent. Stay inert.
@@ -219,9 +230,40 @@ export const cotal: Plugin = async () => {
   // this session's first turn rather than a batch that raced it. Cleared by the one drive that
   // carries it, so no later readiness event can issue a second boot turn.
   let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
+  /**
+   * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
+   * publishes departure, which is a different thing from refusing new work: the fence closes the
+   * door, and this covers whoever was already through it.
+   *
+   * It has to exist because a presence write is not atomic. `setStatus` assigns, awaits `setActivity`
+   * and then awaits `setStatus`, so a teardown beginning in that gap publishes offline BETWEEN the
+   * two and the parked call then puts the seat back to work after it has announced it left.
+   * Reproduced on the real plugin and broker, not reasoned: the roster read `working` after offline.
+   *
+   * TRACKED HERE AND AT THE TOOL WRAPPER, which between them is every presence write this plugin can
+   * make: the hooks all go through this helper, and the tools bypass it and reach the agent directly,
+   * so they are tracked whole. Tracking a list of the agent's presence-writing METHODS instead would
+   * be the same enumeration this file has already got wrong twice, and it would miss a tool that
+   * sends rather than publishes, which no amount of repairing presence afterwards can take back.
+   *
+   * EVENT WORK IS DELIBERATELY NOT IN HERE. A session create awaits its whole swap, drain included,
+   * so waiting on it before publishing departure would queue offline behind exactly the drain that
+   * ordering exists to get in front of. The swap chain and the holder are joined AFTER offline, as
+   * before; this set is only ever one round trip or one tool call deep.
+   */
+  const inFlight = new Set<Promise<unknown>>();
+  const track = async <T>(work: Promise<T>): Promise<T> => {
+    inFlight.add(work);
+    try {
+      return await work;
+    } finally {
+      inFlight.delete(work);
+    }
+  };
+
   const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
     try {
-      if (agent.connected) await agent.setStatus(status, activity);
+      if (agent.connected) await track(agent.setStatus(status, activity));
     } catch {
       /* presence is best-effort — never throw into opencode */
     }
@@ -276,6 +318,13 @@ export const cotal: Plugin = async () => {
     } catch {
       /* ignore */
     }
+    // BEFORE DEPARTURE IS PUBLISHED, so that nothing this seat already admitted can act after it has
+    // said it left. Bounded, and the bound is the honest part: a straggler that outlives it is not
+    // cancelled, so offline goes out anyway and that straggler can still finish afterwards. Losing
+    // the offline publish to an unbounded wait is the worse of the two, because departure would go
+    // back to being inferred from a dropped connection.
+    const settled = await settleWithin(Promise.all([...inFlight]), INTAKE_SETTLE_MS, "admitted intake at teardown");
+    if (!settled) log("opencode-teardown admitted work outlived the intake bound; publishing offline anyway");
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
     await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
@@ -685,7 +734,7 @@ export const cotal: Plugin = async () => {
         {
           ...def,
           execute: async (...args: Parameters<ToolDefinition["execute"]>): ReturnType<ToolDefinition["execute"]> =>
-            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await def.execute(...args),
+            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),
         },
       ]),
     );

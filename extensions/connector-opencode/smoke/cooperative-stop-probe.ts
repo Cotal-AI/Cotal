@@ -10,6 +10,7 @@ import { once } from "node:events";
 import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { cotal } from "../src/plugin.js";
+import { CotalEndpoint } from "@cotal-ai/core";
 
 // The plugin calls OpenCode's HTTP API at boot to own a session. A shutdown test drives no turn, so
 // only POST /session is needed.
@@ -39,6 +40,28 @@ const marker2 = process.env.COOP_MARKER_QUEUED?.trim() || undefined;
 // those calls return and is the positive control — without it the assertion that nothing changed
 // would also pass on a probe that never knocked.
 const late = process.env.COOP_LATE?.trim() || undefined;
+// THE CROSSING SCENARIO. A hook admitted BEFORE the stop parks inside its presence write and
+// resumes after teardown has published offline. The seam holds the first of setStatus's two awaits,
+// which is the real gap rather than an invented one: setStatus assigns, awaits setActivity, then
+// awaits setStatus, so a teardown starting in that gap publishes offline between them.
+const cross = process.env.COOP_CROSS?.trim() || undefined;
+const crossParked = process.env.COOP_CROSS_PARKED?.trim() || undefined;
+const crossRelease = process.env.COOP_CROSS_RELEASE?.trim() || undefined;
+const parked: Array<() => void> = [];
+if (cross) {
+  const original = CotalEndpoint.prototype.setActivity;
+  CotalEndpoint.prototype.setActivity = async function (activity: string): Promise<void> {
+    // BOTH DOORS, because they are two mechanisms and not one: a hook reaches presence through the
+    // plugin's own helper, and a tool bypasses that helper and calls the agent directly.
+    if (activity.startsWith("crossing-")) {
+      await new Promise<void>((r) => {
+        parked.push(r);
+        if (crossParked && parked.length === 2) writeFileSync(crossParked, "both pre-stop callers are parked inside their presence writes\n");
+      });
+    }
+    return original.call(this, activity);
+  };
+}
 const lateFired = process.env.COOP_LATE_FIRED?.trim() || undefined;
 let drainReads = 0;
 const oc = createServer((req, res) => {
@@ -93,10 +116,10 @@ const hooks = await cotal();
 // real create arrives, and awaiting it here would drain before the stop and grade nothing.
 const fire = (event: unknown): Promise<void> =>
   (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
-const fireTool = (sessionID: string): Promise<void> =>
+const fireTool = (sessionID: string, tool = "late-tool"): Promise<void> =>
   (hooks as unknown as { "tool.execute.before": (i: unknown) => Promise<void> })["tool.execute.before"]({
     sessionID,
-    tool: "late-tool",
+    tool,
   });
 
 if (marker) {
@@ -108,6 +131,18 @@ if (marker) {
   // the read it triggers is still outstanding.
   void (async () => {
     while (trigger && !existsSync(trigger)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    // ADMITTED HERE rather than at boot, because presence is best effort and silently does nothing
+    // while the mesh agent is still connecting: fired at boot this hook returned without ever
+    // reaching its presence write, and the cell it feeds passed while grading nothing. The parent
+    // writes this trigger only after it has seen the seat online, and the stop is still ahead.
+    if (cross) {
+      void fireTool("ses_coop", "crossing-hook");
+      // The tool path, which the hook path cannot stand in for: cotal_status reaches the agent
+      // without passing through the plugin's presence helper at all.
+      void (
+        hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
+      ).tool.cotal_status.execute({ activity: "crossing-tool" });
+    }
     draining = true;
     void fire({ type: "session.created", properties: { info: { id: "ses_next" } } });
     // Queued BEHIND the one above, which is the whole point: when the stop lands, this swap has not
@@ -142,6 +177,16 @@ if (late) {
       hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
     ).tool.cotal_status.execute({ status: "working" });
     if (lateFired) writeFileSync(lateFired, "every public door was knocked after offline\n");
+  })();
+}
+
+// ADMITTED BEFORE THE STOP, on purpose: the fence refuses at entry, and this call enters while the
+// flag is still clear, so what it grades is the crossing rather than admission. It is not awaited,
+// because it is designed to park.
+if (cross) {
+  void (async () => {
+    while (!existsSync(crossRelease)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    for (const release of parked) release();
   })();
 }
 

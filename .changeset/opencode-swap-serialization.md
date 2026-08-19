@@ -41,5 +41,14 @@ back on the mesh it had just left, and a tool call already inside the model's tu
 know a stop was running. A refused tool call says so rather than returning nothing, because its
 caller is waiting on a result and silence would read as a hang.
 
-Admission is what closes; work already inside a hook when the stop arrives is what the join covers,
-and the two together are the guarantee.
+Departure is also the last thing the seat says. A presence write is not atomic, so a call admitted
+before the stop could be parked mid-write while the teardown published offline, and then put the
+seat back to work after it had announced it left; on the wire, a roster read `working` after
+`offline`. The teardown now waits, briefly, for interactive work it has already admitted before it
+publishes departure, and joins the slower event work afterwards as it already did. Event work is
+deliberately not in that wait, because waiting on a drain is what publishing departure early exists
+to avoid.
+
+That wait is bounded below the shortest runtime grace window, so a stop still publishes departure
+before a hard kill can take it. The tradeoff is stated rather than implied: a straggler that outlives
+the bound is not cancelled, so it can still complete after departure has been published.

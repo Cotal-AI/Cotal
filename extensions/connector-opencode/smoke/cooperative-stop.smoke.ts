@@ -180,6 +180,8 @@ try {
   const markerQueued = join(dir, "coop-queued-swap-ran");
   const late = join(dir, "coop-knock-now");
   const lateFired = join(dir, "coop-knocked");
+  const crossParked = join(dir, "coop-crossing-parked");
+  const crossRelease = join(dir, "coop-crossing-release");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -194,6 +196,9 @@ try {
       COOP_MARKER_QUEUED: markerQueued,
       COOP_LATE: late,
       COOP_LATE_FIRED: lateFired,
+      COOP_CROSS: "1",
+      COOP_CROSS_PARKED: crossParked,
+      COOP_CROSS_RELEASE: crossRelease,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -226,8 +231,22 @@ try {
   // the run a prompt from before the stop is indistinguishable from one after it.
   const promptsAtStop = existsSync(prompts) ? readFileSync(prompts, "utf8").split("\n").filter(Boolean).length : 0;
 
+  // Checked BEFORE the stop, because it is the precondition rather than the result: both callers
+  // must already be inside their presence writes for the crossing to be the thing under test.
+  let bothParked = false;
+  for (let i = 0; i < 40 && !bothParked; i++) {
+    await wait(50);
+    bothParked = existsSync(crossParked);
+  }
+  check("both pre-stop callers parked inside their presence writes", bothParked, { crossParked });
+
   // Drive the cooperative shutdown — exactly what the manager sends on a win32 graceful stop.
   const reply = await sendShutdown(ep.path, ep.token);
+  // RELEASED IMMEDIATELY, and that is the instrument rather than an accident. The teardown waits a
+  // bounded time for work it already admitted, so releasing after offline would grade an unbounded
+  // wait nobody is claiming. What is claimed is an ORDER: a straggler released while the teardown is
+  // still waiting must land BEFORE departure, never after it.
+  writeFileSync(crossRelease, "go\n");
   check("control server acked the shutdown", reply.trim() === JSON.stringify({ ok: true }), reply);
 
   // The plugin leaves the mesh cleanly: Otto flips offline, and the probe exits 0.
@@ -241,6 +260,19 @@ try {
     if (ottoOffline) markerAtOffline = existsSync(marker);
   }
   check("cooperative stop leaves the mesh (watcher sees Otto offline)", ottoOffline, watcher.getRoster().find((p) => p.card.name === "Otto")?.status);
+
+  // ---- DEPARTURE MUST BE THE LAST THING THIS SEAT SAYS, which is a different claim from admission
+  // and is invisible to a cell that only knocks afterwards. A presence write is not atomic: setStatus
+  // assigns, awaits setActivity, then awaits setStatus, so a teardown starting in that gap publishes
+  // offline BETWEEN the two and the parked caller then puts the seat back to work after it has said
+  // it left. Measured on this harness before the fix, both doors: the roster read working.
+  let crossed: string | undefined;
+  for (let i = 0; i < 34 && crossed === undefined; i++) {
+    await wait(60);
+    const s = watcher.getRoster().find((p) => p.card.name === "Otto")?.status;
+    if (s !== undefined && s !== "offline") crossed = s;
+  }
+  check("work admitted before the stop lands BEFORE departure, never after it", crossed === undefined, { crossed });
 
   // ---- ADMISSION IS CLOSED, and it is graded here rather than at the end because it is only
   // answerable while the process is still up: once it exits, losing the connection purges presence
