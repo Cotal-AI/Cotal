@@ -21,7 +21,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { parse } from "acorn";
 import { validate } from "../src/grammar.js";
-import { LangErrors, type LangErrorCode } from "../src/errors.js";
+import { CATALOG, LangErrors, type LangErrorCode } from "../src/errors.js";
 import { run } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { BUILTINS } from "../src/primitives.js";
@@ -571,6 +571,44 @@ for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
   } else {
     console.log(`  (${rel} not present; its cells skipped)`);
   }
+}
+
+// ---- 7) Appendix A IS the catalog, rendered ------------------------------------------------------
+//
+// The document and `CATALOG` are two copies of one table, and nothing compared them. That is not a
+// hypothetical: L5024's row said "A recorded binding has no canonical form" while the code raised
+// "A recorded value has no canonical form" for four commits, because the rule grew to cover a
+// failure's detail and a scope's result and the row was left behind. A reader repairing a program
+// searches the document for the title the tool printed, and finds nothing.
+//
+// TWO CELLS, NOT ONE CONJUNCTION. A single cell would go red with equal confidence whether a row
+// went missing or a title drifted, and those want different repairs: one is a code the catalog and
+// the document disagree about HAVING, the other a code they disagree about SAYING. The drift that
+// caused this section is the second kind, and it is the quieter one.
+//
+// The read is deliberately NOT the tolerant one above: those cells skip when the file is absent,
+// which is right for examples and wrong here, because a catalog cross-check that skips reports the
+// same green whether the document agreed or was not there at all.
+{
+  const appendix = readFileSync(`${here}/../../../spec/cotal-lang.md`, "utf8");
+  const start = appendix.indexOf("## Appendix A");
+  const end = appendix.indexOf("\n## ", start + 1);
+  const section = start === -1 ? "" : appendix.slice(start, end === -1 ? undefined : end);
+  const rows = [...section.matchAll(/^\| (L\d{4}) \| (.+?) \|$/gm)].map((m) => [m[1] as string, m[2] as string] as const);
+  const codes = rows.map(([c]) => c);
+  const cataloged = Object.keys(CATALOG);
+  const missingRow = cataloged.filter((c) => !codes.includes(c));
+  const extraRow = codes.filter((c) => !cataloged.includes(c));
+  const duplicated = codes.filter((c, i) => codes.indexOf(c) !== i);
+  ok(
+    `Appendix A lists exactly the catalog's codes, ${cataloged.length} of them, each once`,
+    missingRow.length === 0 && extraRow.length === 0 && duplicated.length === 0 && rows.length === cataloged.length,
+    { rows: rows.length, catalog: cataloged.length, missingRow, extraRow, duplicated },
+  );
+  const drift = rows
+    .filter(([c, t]) => (CATALOG as Record<string, string>)[c] !== t)
+    .map(([c, t]) => `${c}: appendix "${t}" vs catalog "${(CATALOG as Record<string, string>)[c] ?? "(absent)"}"`);
+  ok(`and every one of those ${rows.length} rows carries the title the code raises`, drift.length === 0, drift);
 }
 
 console.log(`surface.smoke: ${pass} checks passed`);

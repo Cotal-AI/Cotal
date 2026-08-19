@@ -1064,7 +1064,7 @@ time, L5xxx durability, L6xxx simulation.
 | L5021 | Resume over a journal without the run's pins |
 | L5022 | A recorded branch is not in the migrated source |
 | L5023 | No engine in this build serves this record's language version |
-| L5024 | A recorded binding has no canonical form |
+| L5024 | A recorded value has no canonical form |
 | L6001 | Unscripted effect in simulation |
 | L6002 | Simulation script entry unused |
 
