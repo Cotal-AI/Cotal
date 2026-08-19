@@ -36,7 +36,22 @@ things follow that a reader should not have to discover. A tool result is publis
 returned it, so text a tool read on the seat's behalf from a channel with a narrower reader set
 crosses into the events channel unredacted and unattributed; and a backlog written while the plane
 was terminal is delivered rather than discarded. The session's own record of the user's words and
-the developer instructions is not published in either case. Neither behaviour is introduced or
-changed here, both are the same at the merge base, and this change alters only the seat whose
-emitter never started at all. Nothing is sent twice in either case. A seat launched without the
-event plane armed is unaffected.
+the developer instructions is not published in either case. Neither carrier is introduced here and
+neither changes shape; both are the same at the merge base and no new shape is added. What this
+change does alter, on every armed seat and not only the one whose emitter never started, is which
+records reach the stream: what the thread appended between the bind and the emitter's first read
+used to land behind the cursor and be dropped, and it is published now. A whole turn can sit in
+that window, tool results included, so the carrier above covers a stretch of the session it
+previously lost. The reader set that follows from all this is a requirement and not a guarantee:
+the grant does not enforce it. A spawn gives a seat permission to publish its own event channel and
+nothing else and is refused if it names another agent's, and read access is minted separately and
+out of band, so holding the events readers to at least the width of every channel the seat's tools
+can read is the operator's policy to keep. Nothing is sent twice in either case. A seat launched
+without the event plane armed is unaffected.
+
+The window above is now graded rather than argued. A test-only setting widens the emitter's setup
+so a fixture can release a whole completed turn into it and assert the turn reaches the wire;
+absent, empty, zero, negative and unparseable all mean no wait, so an uninstrumented seat runs the
+path it ran before. Measured, and the reason the cell was needed: the mutant that deletes the
+boundary rule passed the suite three times in five without it, failing on disjoint cells the two
+times it failed.

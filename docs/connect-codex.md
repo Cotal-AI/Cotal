@@ -197,9 +197,22 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   plane was terminal is not discarded, it is delivered on recovery. Together those mean the readers
   of an events channel must be treated as at least as wide as every channel the seat's own tools
   can read. What the stream does not carry, here or on a live plane, is the session's own record of
-  the user's words and the developer instructions. None of that is changed by the boundary rule
-  above, which changes only the seat whose emitter never started at all.
-  Nothing is sent twice in either case.
+  the user's words and the developer instructions. Neither of those two carriers is introduced by
+  the boundary rule above and neither changes shape, but the rule is not confined to the seat whose
+  emitter never started. It changes WHICH RECORDS reach the stream, on every armed seat. A bind
+  announces where the stream starts and the emitter's setup then runs before its first read; what
+  the thread appended inside that window used to land behind the cursor and be dropped, and it is
+  published now. A whole turn can sit in there, tool results included, so the carrier described
+  just above now covers a stretch of the session it previously lost. Nothing is sent twice in
+  either case.
+
+  And the reader set is a requirement rather than a guarantee, which is the last thing to say
+  plainly. The grant does not enforce it. A spawn gives a seat permission to PUBLISH its own event
+  channel and nothing else, and is refused outright if it names another agent's. Who may READ that
+  channel is minted separately and out of band (`cotal actor grant` in user mode, `cotal mint
+  --profile agent --allow-subscribe` in open mode), so holding the events readers to at least the
+  width of every channel the seat's tools can read is the operator's policy to keep, enforced by
+  whoever mints those readers.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 
