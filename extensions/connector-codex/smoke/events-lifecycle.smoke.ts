@@ -118,6 +118,11 @@ const threadsSeen = (): string[] => [...new Set(frames.map((f) => f.threadId))];
  *  that line ever changes. */
 const publishedThreads = (log: string): string[] => [...log.matchAll(/publishing thread (\S+) from/g)].map((m) => m[1]);
 
+/** How many times this seat has said it looked for a rollout file and found none. COUNTED, not
+ *  tested for presence: a boundary that looked again is the seat's own report that it processed
+ *  the boundary, and a cell judging "published nothing" needs that rather than a clock. */
+const gaveUpLooks = (log: string): number => [...log.matchAll(/no rollout file yet/g)].length;
+
 /** Wait for a condition, and return WHETHER it happened rather than throwing.
  *
  *  This is not a style choice. A mutation that stops the plane makes the suite hang and then die at
@@ -228,6 +233,10 @@ function startHost(
   log: string,
   capture?: (s: string) => void,
   brokerUrl: string = servers,
+  /** An auto-submitted first prompt, and the file the fake waits on before it writes anything for
+   *  it. Both or neither: the prompt is what `cotal spawn --prompt` sets, and the marker is how a
+   *  caller orders that turn against a bind it cannot otherwise see. */
+  boot?: { prompt: string; goMark: string },
 ): ReturnType<typeof spawn> {
   const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
   for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
@@ -252,6 +261,7 @@ function startHost(
       FAKE_CODEX_ROLLOUT: rollout,
       COTAL_MODEL: "fake-model",
       COTAL_VARIANT: "high",
+      ...(boot === undefined ? {} : { COTAL_CODEX_PROMPT: boot.prompt, FAKE_CODEX_GO: boot.goMark }),
     },
     stdio: ["ignore", "ignore", capture ? "pipe" : "inherit"],
   });
@@ -409,8 +419,19 @@ try {
   const lookSpent = await settle("B:the launch's look is spent", () => errB.includes("will look again at the next turn"), 40_000);
   check("late-file:the launch's bounded look is SPENT before the cells below run", lookSpent, margin("B:the launch's look is spent"));
   const before = frames.length;
+  // BOUNDED BY THE SEAT'S OWN ACTION, NOT BY A CLOCK. Every boundary that finds no file says so
+  // again, so the count rising is this seat reporting that it processed THIS turn's boundary. A
+  // sleep here judges an arrival against a number: too short and it reports "published nothing"
+  // for a seat that had not reached its boundary yet, too long and it is measuring the clock under
+  // test. The budget stays as a loud outer bound and the cell below reads a finished boundary.
+  const looksBefore = gaveUpLooks(errB);
   await dm(B, "turn one, before the file exists");
-  await sleep(1500);
+  const lookedAgain = await settle("B:this turn's boundary looked again and still found no file", () => gaveUpLooks(errB) > looksBefore, 60_000);
+  check("late-file:the seat LOOKED at this turn's boundary, so the cell below is not judging an unfinished turn", lookedAgain, {
+    ...margin("B:this turn's boundary looked again and still found no file"),
+    before: looksBefore,
+    now: gaveUpLooks(errB),
+  });
   check("a seat whose rollout never appeared publishes nothing", frames.length === before, { added: frames.length - before });
   check("and the give-up was REPORTED rather than silent", errB.includes("no rollout file yet"), { tail: errB.slice(-200) });
   // The fake materializes the file on its second turn, exactly as a slow primer would.
@@ -418,14 +439,6 @@ try {
   const bound = await settle("B:binds once the file appears", () => errB.includes("the stream starts here"));
   check("a rollout that appeared AFTER the launch gave up still binds", bound, {
     tail: errB.slice(-200),
-  });
-  // THE LIMIT, ASSERTED RATHER THAN ASSUMED. A fresh adopt starts at the file's last complete
-  // record boundary, never at byte zero, so the turns that ran while the file did not exist are NOT
-  // republished. That is core's rule and this connector does not override it; what it must not do
-  // is lose them QUIETLY, so the bind says so in the log and this cell pins both halves: nothing
-  // from before the bind, and everything after it.
-  check("the turns that ran before the bind are NOT republished", frames.length === before, {
-    added: frames.length - before,
   });
   check("and the seat SAID it was starting from there rather than losing them quietly", errB.includes("not republished"), {
     tail: errB.slice(-200),
@@ -440,9 +453,23 @@ try {
   check("and from the bind onward the seat publishes normally", lateFrames.some((f) => f.events.some((e) => e.type === "RUN_FINISHED")), {
     added: lateFrames.length,
   });
-  check("exactly one run, the one that ran after the bind", new Set(lateFrames.map((f) => f.runId)).size === 1, {
-    runs: [...new Set(lateFrames.map((f) => f.runId))].length,
-  });
+  // THE LIMIT, ASSERTED BEHIND A PROVEN POSITIVE RATHER THAN SAMPLED AT THE ANNOUNCEMENT. A fresh
+  // adopt starts at the file's last complete record boundary, never at byte zero, so the two turns
+  // that ran while the file did not exist are NOT republished. Read at the announcement that is a
+  // negative taken at zero elapsed time, which cannot fail: the announcement is printed while the
+  // emitter's setup is still running, so a publish arriving after it is invisible to the cell. Read
+  // here, after the wait above has proved the stream is alive and past the bind, the same claim is
+  // falsifiable, and it is asserted over content the file genuinely holds: the fake buffers both
+  // early turns and flushes them into the file the moment it materializes.
+  const evB = lateFrames.flatMap((f) => f.events as unknown as Record<string, unknown>[]);
+  const deltasB = evB.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
+  const startsB = evB.filter((e) => e.type === "RUN_STARTED").length;
+  const finishesB = evB.filter((e) => e.type === "RUN_FINISHED").length;
+  check(
+    "late-file:the stream carries the turn that ran AFTER the bind and neither of the two that ran before it",
+    startsB === 1 && finishesB === 1 && !deltasB.includes("ok:1") && !deltasB.includes("ok:2") && deltasB.includes("ok:3"),
+    { starts: startsB, finishes: finishesB, deltas: deltasB },
+  );
 
   // ---- (5) the restart INTO a file that was not there yet -------------------------------------
   // The state neither case 2 nor case 4 reaches, and the one a lens found by building it: a plane
@@ -575,12 +602,48 @@ try {
   check("broker-late:setup:the seat's broker is down before it launches", brokerDown);
   const D = "brokerlatepeer";
   const homeD = join(dir, "d");
-  hostD = startHost(D, homeD, "1", join(dir, "d.log.jsonl"), (chunk) => (errD += chunk), servers2);
+  // THE OUTAGE TURN, and why it is the seat's own boot prompt that runs it. What this arm has to
+  // test the plane against is content the thread wrote WHILE THE MESH WAS UNREACHABLE, and a mesh
+  // DM cannot reach a seat whose broker is down. The connector's auto-submitted first prompt is
+  // the route its own source names as the window where a real turn opens against a still
+  // connecting endpoint, so it is the honest one rather than a harness convenience. The turn
+  // leaves all three shapes this plane can carry: assistant text, a tool call's arguments, and
+  // that tool's output.
+  const goD = join(dir, "d.go");
+  hostD = startHost(D, homeD, "1", join(dir, "d.log.jsonl"), (chunk) => (errD += chunk), servers2, {
+    prompt: "TOOLREC the turn that runs while the mesh is unreachable",
+    goMark: goD,
+  });
   // THE POSITIVE CONTROL, and the reason this case is a test rather than a seat that simply started
   // late: the emitter has to actually DIE first. Without this cell, a bind that quietly succeeded
   // would make every assertion below pass while proving nothing about recovery.
   const emitterDied = await settle("D:the emitter dies at launch", () => errD.includes("AG-UI emitter stopped"), 60_000);
   check("broker-late:an armed seat whose broker is unreachable LOSES its emitter at launch", emitterDied, { tail: errD.slice(-400) });
+  // ORDERED ON THE SEAT'S OWN OUTPUT, NOT ON A SLEEP. The bind captures its boundary and then
+  // announces it, so the announcement is proof the boundary is already taken, and the death above
+  // is proof the start it was taken for threw. Only then is the outage turn released. LOST ONLY
+  // SOMETIMES IS WORSE THAN LOST ALWAYS: released first, the turn's records would sit BEHIND that
+  // boundary, nothing could leak, and the graded cell at the end of this arm would pass in both
+  // worlds while discriminating nothing.
+  const launchBound = await settle("D:the launch bind announced its boundary", () => publishedThreads(errD).length >= 1, 60_000);
+  check("broker-late:setup:the launch bind took its boundary BEFORE the outage turn wrote anything", launchBound, {
+    ...margin("D:the launch bind announced its boundary"),
+    tail: errD.slice(-400),
+  });
+  // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED. The fake blocks on this file without a bound
+  // by design, so releasing it unconditionally keeps a failed cell above reported as a failed cell
+  // rather than as a suite that hangs somewhere else.
+  writeFileSync(goD, "go");
+  const rolloutD = /publishing thread \S+ from (\S+)/.exec(errD)?.[1] ?? "";
+  const outageDone = await settle(
+    "D:the outage turn is complete on disk",
+    () => rolloutD !== "" && existsSync(rolloutD) && readFileSync(rolloutD, "utf8").includes("task_complete"),
+    60_000,
+  );
+  check("broker-late:setup:the outage turn RAN and completed while the mesh was unreachable", outageDone, {
+    ...margin("D:the outage turn is complete on disk"),
+    path: rolloutD,
+  });
   nats2 = spawn("nats-server", ["-js", "-p", String(PORT2), "-sd", js2], { stdio: "ignore" });
   releaseBroker2 = teardownOnSignal(nats2, dir);
   for (let i = 0; i < 50; i++) {
@@ -591,47 +654,63 @@ try {
   await operator2.start();
   check("broker-late:the seat recovers its mesh connection on its own", await settle("D:reconnects", () => online2.has(D), 60_000), margin("D:reconnects"));
   await joinEventsOf(D, operator2);
+  // COUNTED FROM A MARK, because the outage turn's own boundary already retried the dead plane:
+  // both the rebind line and an announcement are in this seat's log before the broker came back,
+  // so asking whether either string is PRESENT answers yes without recovery having happened.
+  const bindsBefore = publishedThreads(errD).length;
   await dm(D, "the turn whose boundary rebinds", operator2);
-  const rebound = await settle("D:rebinds at the next boundary", () => errD.includes("rebinding at this boundary") && errD.includes("the stream starts here"), 60_000);
-  check("broker-late:the next turn boundary REBINDS the dead plane", rebound, { tail: errD.slice(-400) });
-  check("broker-late:and it said so rather than recovering silently", errD.includes("rebinding at this boundary"), { tail: errD.slice(-400) });
-  // THE RECOVERING TURN IS PUBLISHED, and this cell exists because the opposite is the intuitive
-  // guess. The rebind runs from the same turn-boundary hook every other bind runs from, so the
-  // boundary it captures is the one BEFORE this turn's records exist: the turn is ahead of the
-  // cursor rather than behind it. It is a FIRST publication and not a second, because the emitter
-  // that died published nothing at all, which is what the run count below pins.
-  //
-  // AND IT IS A WAIT, NOT A READING. The log line this block waits on is written while the
-  // emitter's own setup is still running, so a cell sampling here at zero elapsed time would be
-  // racing the publish it is judging and would report whichever won. The cell this replaced did
-  // exactly that, and was observed green in three different worlds: with the defect present, with
-  // an artificial delay in front of the publish, and in a run where this seat's plane was dead and
-  // published nothing whatsoever.
-  const recovered = await settle("D:the recovering turn is published", () => frames2.some((f) => f.events.some((e) => e.type === "RUN_FINISHED")), 60_000);
-  check("broker-late:the turn that triggered the rebind IS published, in full", recovered, {
-    ...margin("D:the recovering turn is published"),
-    frames: frames2.map((f) => f.events.map((e) => e.type)),
+  const rebound = await settle("D:rebinds once the broker is back", () => publishedThreads(errD).length > bindsBefore, 60_000);
+  check("broker-late:the next turn boundary REBINDS the dead plane", rebound, {
+    ...margin("D:rebinds once the broker is back"),
+    before: bindsBefore,
+    now: publishedThreads(errD).length,
     tail: errD.slice(-400),
   });
-  check("broker-late:and exactly once, under a single run", new Set(frames2.map((f) => f.runId)).size === 1, {
-    runs: [...new Set(frames2.map((f) => f.runId))].length,
-    starts: frames2.flatMap((f) => f.events.filter((e) => e.type === "RUN_STARTED")).length,
-  });
-  // MEASURED FROM A MARK. `frames2` is no longer empty by the time we reach here, so a bare
-  // `length > 0` would already be satisfied by the turn above and would pass without this seat
-  // publishing anything further at all.
-  const beforeNext = frames2.length;
-  await dm(D, "the turn after the rebind", operator2);
-  const republished = await settle("D:a further turn after the rebind", () => frames2.length > beforeNext, 60_000);
-  check("broker-late:and from there the seat PUBLISHES again", republished, {
-    ...margin("D:a further turn after the rebind"),
-    before: beforeNext,
+  check("broker-late:and it said so rather than recovering silently", errD.includes("rebinding at this boundary"), { tail: errD.slice(-400) });
+  // THE TURN THAT TRIGGERS A REBIND IS NOT THE TURN THAT GETS PUBLISHED, and that is protocol
+  // rather than timing. Codex writes a turn's first record to the rollout BEFORE it announces that
+  // the turn started, and that announcement is the only thing a rebind can run on, so any boundary
+  // a rebind takes is already at or past that record. A run is never opened from the middle of a
+  // turn, so what is left of it is declined rather than published as a run with no beginning. The
+  // NEXT turn is the first one wholly ahead of the boundary, and it is the one this arm grades.
+  const framesBeforeD = frames2.length;
+  await dm(D, "the first turn wholly after the rebind", operator2);
+  const publishedAfterRebind = await settle("D:the first turn after the rebind is published", () => frames2.length > framesBeforeD, 60_000);
+  check("broker-late:the seat PUBLISHES again once a turn starts after the rebind", publishedAfterRebind, {
+    ...margin("D:the first turn after the rebind is published"),
+    before: framesBeforeD,
     after: frames2.length,
     tail: errD.slice(-400),
   });
-  const ev2 = frames2.slice(beforeNext).flatMap((f) => f.events.map((e) => e.type));
-  check("broker-late:the recovered stream opens and closes a run", ev2.includes("RUN_STARTED") && ev2.includes("RUN_FINISHED"), ev2);
-
+  // ONE OBSERVABLE, AND IT IS THE WHOLE CLAIM OF THIS ARM. `events.<owner>.<actor>` carries a read
+  // ACL that is not the input channel's, so republishing what the seat did while it was cut off
+  // widens who can read it. The counts are EXACT rather than "at least one", which is also what
+  // makes a frame published twice a failure here rather than a curiosity.
+  const evD = frames2.flatMap((f) => f.events as unknown as Record<string, unknown>[]);
+  const deltas = evD.filter((e) => e.type === "TEXT_MESSAGE_CONTENT").map((e) => String(e.delta ?? ""));
+  const wire = JSON.stringify(evD);
+  const starts = evD.filter((e) => e.type === "RUN_STARTED").length;
+  const finishes = evD.filter((e) => e.type === "RUN_FINISHED").length;
+  const toolEvents = evD.filter((e) => String(e.type).startsWith("TOOL_CALL")).map((e) => String(e.type));
+  check(
+    "broker-late:the recovered stream carries ONE turn, the first one after the rebind, and nothing the seat did before it",
+    starts === 1 &&
+      finishes === 1 &&
+      toolEvents.length === 0 &&
+      !deltas.includes("ok:1") &&
+      !deltas.includes("ok:2") &&
+      !wire.includes("toolargs:1") &&
+      !wire.includes("tooloutput:1") &&
+      deltas.includes("ok:3"),
+    {
+      starts,
+      finishes,
+      toolEvents,
+      deltas,
+      leakedArgs: wire.includes("toolargs:1"),
+      leakedOutput: wire.includes("tooloutput:1"),
+    },
+  );
   completed = true;
 } finally {
   if (fail > 0 || !completed)

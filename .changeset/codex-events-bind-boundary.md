@@ -11,14 +11,23 @@ the subject frontier, the log open, then a channel resolve and a preflight. Ever
 appended inside that window landed behind the cursor and was treated as already published, so a turn
 that completed inside it was dropped permanently and silently, underneath a line that had already
 said the stream was live. The boundary is now captured at the bind, before the announcement, and
-seeded into the write-ahead log when that log is fresh, so the announced fact is true at the moment
-it is announced. An existing log keeps its own cursor, because that is a resume and its cursor is the
-honest one.
+substituted on the emitter's first read, so the announced fact is true at the moment it is
+announced. A log that already carries a cursor is a resume and keeps it, because a cursor written by
+a live emitter is the honest one.
 
-Migration, and a behaviour flip the docs previously described the other way round: when a seat's
-broker is unreachable at launch and the plane rebinds at a later turn boundary, the turn that
-triggered that rebind is now published. It used to be dropped. The rebind is taken at the start of
-that turn, before the turn's records exist, so the turn is ahead of the boundary rather than behind
-it, and this is a first publication rather than a repeat, because the emitter that died had
-published nothing at all. Records written during the outage itself are still not republished, and a
+It is substituted rather than written into the log, and that half is what keeps a failed start from
+changing what a later one publishes. A seat whose broker is not up yet loses its emitter at launch;
+a boundary written into the log before that start would outlive it, and the next bind would read it
+as a resume and republish everything the thread wrote while the seat was cut off, onto an events
+channel whose read ACL is not the input channel's. The log's cursor is now written only by an
+emitter that started.
+
+Migration: a rebind after a lost connection declines to publish two things, and readers who watched
+the old behaviour should expect both. It declines what the thread wrote during the outage. It also
+declines the turn whose own boundary triggered it, because Codex writes a turn's first record before
+it announces that the turn started, that announcement is what a rebind runs on, and a run is never
+opened from the middle of a turn. The first turn to start after the rebind is published in full.
+One case is different: if the emitter had already been publishing this thread and then died, its
+position is in the log, and the rebind continues that log rather than starting where it binds,
+delivering what the dead emitter had read but not yet sent. Nothing is sent twice in either case. A
 seat launched without the event plane armed is unaffected.

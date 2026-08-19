@@ -62,7 +62,9 @@ import {
   JsonlFileSource,
   ensureEventWalDir,
   resolveEventsStateRoot,
+  type DurableSource,
   type InboxItem,
+  type SourceRead,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
@@ -272,6 +274,57 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
   ];
 }
 
+/**
+ * The rollout source, positioned where the BIND was taken rather than where the emitter's own
+ * setup finished.
+ *
+ * A log with no cursor means "start at the current end", and for this connector the current end is
+ * the wrong end. The emitter is built lazily inside `adopt`, and between the bind and its first
+ * read sit the write-ahead log's directory, the subject frontier, the log itself, a channel
+ * resolve and a single-replica preflight: filesystem and broker work, measured at 17ms and 36ms on
+ * an idle machine. Every record the session appends while that runs would land behind the later
+ * end and be treated as already published, so a turn completing inside the window is dropped,
+ * permanently and silently, under a line that has already announced the stream as started.
+ *
+ * So the boundary is captured at the bind, before the announcement, and substituted HERE, on the
+ * one read that would otherwise ask the file where it currently ends.
+ *
+ * IT IS DELIBERATELY NOT WRITTEN INTO THE LOG. The log's cursor stays the emitter's own, written
+ * only once a start has SUCCEEDED, so a start that throws leaves nothing behind. That case is the
+ * ordinary one and not an edge: an armed seat whose broker is not up yet loses its emitter at
+ * launch and rebinds at a later boundary. A boundary seeded before the start would outlive it, the
+ * later bind would read a cursor and treat it as a RESUME, and everything the session wrote while
+ * the seat was cut off would be republished onto a channel whose readers are not the input
+ * channel's.
+ *
+ * THE LIMIT, stated once and in one place: this positions the first read of a log that has no
+ * cursor. A log that already carries one is a resume and passes through untouched, because a
+ * cursor written by a live emitter is the honest one. Each bind builds its own source with its own
+ * boundary, so a rebind never reuses an older one.
+ *
+ * Which makes the bind's own announcement precise for a fresh log and IMPRECISE for a resume, and
+ * that is worth saying rather than covering. A bind onto a log that already carries a position
+ * CONTINUES that log rather than starting here: the emitter delivers what the previous one had
+ * consumed up to but not published, which is what the log is for. Nothing is sent twice either
+ * way. The line is left as it is because things outside this process parse it, and because the
+ * case it is imprecise about is reachable only after an emitter really was publishing this
+ * thread.
+ */
+class BoundStartSource<T> implements DurableSource<T> {
+  readonly kind: string;
+
+  constructor(
+    private readonly inner: DurableSource<T>,
+    private readonly start: string,
+  ) {
+    this.kind = inner.kind;
+  }
+
+  read(cursor: string | undefined): Promise<SourceRead<T>> {
+    return this.inner.read(cursor ?? this.start);
+  }
+}
+
 export async function runCodexHost(): Promise<void> {
   const config = configFromEnv(); // throws without an identity — a host launch is always managed
   config.connector = "codex";
@@ -334,31 +387,15 @@ export async function runCodexHost(): Promise<void> {
         const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
         const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
-        // THE STREAM STARTS WHERE THE BIND WAS TAKEN, NOT WHERE THIS SETUP FINISHED.
-        //
-        // A fresh WAL carries no cursor, so the emitter's first read positions the source at the
-        // last complete record AS OF THAT READ. That read happens after everything above: the WAL
-        // directory, the subject frontier, the log itself, and then a channel resolve and a
-        // single-replica preflight, all of them filesystem and broker work. Every record the child
-        // appends while that runs lands BEHIND the cursor and is then treated as "already written",
-        // so a turn that completes inside the window is dropped, permanently and silently, under a
-        // line that has already announced the stream as started. Measured at 17ms and 36ms on an
-        // idle machine and reproduced end to end by widening it: the connector's own cell, "from
-        // the bind onward the seat publishes normally", fails with nothing added.
-        //
-        // `startCursor` is the boundary captured at the BIND, before the announcement. Seeding it
-        // here makes the announced fact true at the moment it is announced, and it is a cursor-only
-        // advance because that is exactly what it means: consumed up to here, emitted nothing.
-        // GUARDED ON A FRESH FRONTIER, because a WAL that already carries a cursor is a RESUME and
-        // its own cursor is the honest one; overwriting it would re-read or skip a live session's
-        // records depending on which way the two disagreed.
-        if (wal.frontier.sourceCursor === undefined) await wal.advanceCursorOnly(startCursor);
         mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID() });
         return AguiEmitter.start<CodexRecord>({
           endpoint: agent.ep,
           wal,
           subjectFrontier,
-          source: new JsonlFileSource<CodexRecord>(rolloutPath),
+          // `startCursor` is the boundary this bind captured before it announced itself. Nothing
+          // above writes it into the log: see `BoundStartSource` for what that buys and what it
+          // costs.
+          source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),
           map: mapper.map,
         });
       },
@@ -653,8 +690,8 @@ export async function runCodexHost(): Promise<void> {
       }
       if (rollout === path && events !== undefined) return; // already publishing this thread
       if (events !== undefined) await drainBinding();
-      // CAPTURED HERE, BEFORE THE ANNOUNCEMENT, and that placement is the fix. See the seeding note
-      // in `newEventHolder` for why the emitter cannot be left to position itself later.
+      // CAPTURED HERE, BEFORE THE ANNOUNCEMENT, and that placement is the fix. See
+      // `BoundStartSource` for why the emitter cannot be left to position itself later.
       const startCursor = (await new JsonlFileSource<CodexRecord>(path).read(undefined)).cursor;
       events = newEventHolder(startCursor);
       rollout = path;
