@@ -324,6 +324,92 @@ export const RECORD_KINDS: Record<string, RecordKindDef> = {
     writers: { spec: "pool-owner-lease-command", status: "pool-owner-lease-command" },
     mediation: "mediated",
   },
+  run: {
+    // The WORKFLOW RUN record: `run.<endpoint>.<runId>`, the last-value-wins state beside the
+    // append-only step journal on WFJ. The journal says what happened; this says what the run IS.
+    //
+    // It is a record rather than a journal entry precisely because it is last-value-wins: the
+    // lease holder, the run's state, the artifact refs, and — the part that must never be
+    // recomputed — the PIN SET resolved once at run start: seed, startedAt, yieldEvery, stepBudget,
+    // effectCeiling, languageVersion. Every one of those selects which effects run, so a resume
+    // reads them back and binds them rather than re-deriving them from its own host: `startedAt`
+    // is the run's logical epoch, and a resumed run that took the resuming machine's clock would
+    // measure an elapsed time the recorded run never saw.
+    //
+    // `<endpoint>` leads because the driver is hosted by an endpoint (the manager daemon), so a
+    // retirement drain and a per-endpoint enumeration both work by prefix. It is a CORE kind and
+    // not a registration: `registerRecordKind` reserves single-label names for core.
+    kind: "run",
+    qualifiers: [qEndpoint, qId("runId")],
+    split: true,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
+  answer: {
+    // The CHECKPOINT ANSWER: `answer.<endpoint>.<token>.<answerId>`, the payload half of a
+    // checkpoint resume. The one-use settle fact stays the small arbiter of the race and NAMES the
+    // answerId it accepted; this is where the value and the artifact digest live.
+    //
+    // `<answerId>` is in the KEY rather than one slot per token because a workflow checkpoint's
+    // holder is the run driver and every resolver presents as it: keyed by presenter, two racing
+    // resolvers overwrite one slot and the settle fact selects whichever wrote last instead of the
+    // one that won. Per-answer keys plus a named winner is the discriminator that key lacked.
+    //
+    // ATOMIC and create-only: an answer is one thing that happened, written once before its token
+    // is presented, never updated and never deleted.
+    kind: "answer",
+    qualifiers: [qEndpoint, qId("token"), qId("answerId")],
+    split: false,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
+  notice: {
+    // The RUN NOTICE: `notice.<endpoint>.<runId>.<addresseeId>.<noticeId>`, one bounded decision
+    // record written onto the run and addressed to one agent, rendered ahead of that agent's next
+    // turn. It is a record and NOT a channel post on purpose: a notice is program-authored bytes
+    // moving toward an agent's context, and a channel post would put the program into the
+    // conversation as a participant.
+    //
+    // `<addresseeId>` is DERIVED from the agent's name rather than being the name: an agent name is
+    // dotted and a dot is the key separator, so a raw name would silently re-tokenize the key into
+    // a different shape. The reader holds the handle and re-derives the same id, so per-addressee
+    // enumeration is still one prefix scan.
+    //
+    // SPLIT because consumption is a fact somebody else establishes later: the spec is the notice
+    // (immutable, create-only — a notice is something the program decided) and the status is its
+    // consumption, which migrate reads to refuse moving a run whose notice has not landed yet.
+    kind: "notice",
+    qualifiers: [qEndpoint, qId("runId"), qId("addresseeId"), qId("noticeId")],
+    split: true,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
+  migration: {
+    // The MIGRATION: `migration.<endpoint>.<runId>.<migrationId>`, one run's move onto edited
+    // source — what the walk found, which refusals a person overrode, and who they were.
+    //
+    // ITS OWN KIND BECAUSE IT IS NEITHER HALF OF THE RUN RECORD. A run's spec is what the run IS,
+    // decided once; its status is what the run is DOING, rewritten by every driver heartbeat. A
+    // migration is neither: it is append-only history with an actor on it, and a run can be
+    // migrated more than once. Last-value-wins would let the second migration erase the first's
+    // history; create-only on the run record would collide with the run's own spec.
+    //
+    // `<migrationId>` is DERIVED FROM THE REPORT'S CONTENT, and that is not a stylistic choice: a
+    // migration is decided from a dry walk that may be re-run after a crash, so the same decision
+    // must land on the same record rather than filing a second one — and a counter would need a
+    // reader-writer to allocate it, which is a second arbiter for a fact the content already
+    // determines. The same reasoning as `notice`, for the same reason.
+    //
+    // SPLIT because deciding and APPLYING are different acts by different parties at different
+    // times: the spec is the report (immutable — what the check found), the status is the commit
+    // (create-only — which driver actually advanced the run, decided by the CAS and by nothing
+    // else, so two drivers racing to apply one migration cannot both believe they did).
+    kind: "migration",
+    qualifiers: [qEndpoint, qId("runId"), qId("migrationId")],
+    split: true,
+    writers: { spec: "commit-path", status: "commit-path" },
+    mediation: "mediated",
+  },
   lifecycle: {
     // The optional per-UID append-only audit detail — never the authority (that is the HEAD).
     kind: "lifecycle",

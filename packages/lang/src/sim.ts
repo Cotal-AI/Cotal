@@ -90,6 +90,14 @@ interface Consumption {
  * Every effect resolves from the script or fails loudly. Sleeps are instant and advance the
  * virtual clock by the duration the program asked for, so a program that waits four hours is
  * tested in microseconds without pretending the wait did not happen.
+ *
+ * ONE clock, advanced in ask order — deliberately, and worth saying here because this file is
+ * where a reader would conclude otherwise: concurrent branches do NOT get independent virtual
+ * time. Two racing sleeps advance the same clock as their requests arrive, so under simulation a
+ * race is decided by ask order (then declaration order), not by which duration is shorter. The
+ * run clocks (`RunClock`, per branch) sit above this and stay per-branch; it is the TIMEBASE the
+ * simulator feeds them that is shared. A live handler with real waiting behaves differently, and
+ * `scopes.smoke` section 1b is the cell that pins the difference.
  */
 export class SimHandler implements EffectHandler {
   private virtualNow: number;
@@ -219,7 +227,7 @@ export class SimHandler implements EffectHandler {
     };
   }
 
-  /** Instant, and honest: the clock moves by exactly what the program asked to wait. */
+  /** Instant: the SHARED virtual clock moves by what the program asked to wait (see the class note). */
   async sleep(req: SleepRequest, ctx: EffectContext): Promise<null> {
     this.checkFault(ctx);
     this.advance(parseDuration(req.duration));

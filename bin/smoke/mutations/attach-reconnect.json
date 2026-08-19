@@ -60,7 +60,36 @@
     "Publishing to NATS is a buffer write; the FLUSH is the round trip that says the frame left. Cell B",
     "detaches while the link is still down, so it is the one cell that reaches the exit with a session",
     "genuinely unhandled, and its line was ABSENT on the buggy code. That absence is how the defect was",
-    "found, and mutation 8 is the same absence on demand."
+    "found, and mutation 8 is the same absence on demand.",
+    "",
+    "MUTATION 12 GRADES A DEFECT THIS SUITE SHIPPED WITH, found by measuring the cell it was hiding",
+    "behind. Cell J asserted a clean exit and got one: the detach was honoured immediately, the",
+    "terminal came back, `detached from` printed. What no assertion looked at was WHEN the process",
+    "ended. The backoff `sleep` lost its race and was never cleared, so node held the command open to",
+    "the end of the rung, up to 30 seconds of a shell that had already said it detached. A limit",
+    "measured after the work is no limit, so the assertion is bounded against the next attempt's own",
+    "position, which is the only clock the defect is expressed in.",
+    "",
+    "MUTATION 13 CAME FROM ANOTHER SUITE'S SET, and where a mutation is graded is a fact about which",
+    "cell enters the window, not about which change introduced the line. The `takeStdin?.()` handoff",
+    "belongs to the stdin-ownership change and its own config recorded the deletion as a survivor,",
+    "excused as unreachable. It is reachable: with the handoff gone both readers stay installed, the",
+    "loop's watcher is never stopped, `ownStdin` therefore neither reinstalls nor resumes, and the",
+    "session's `cleanup` pauses a stream the operator is still typing at. The sibling suite never",
+    "presses detach in that window and so cannot tell. Cell B here does exactly that, mid-reconnect,",
+    "and reddens on it. A survivor in one set is not evidence of an ungraded line until the suites",
+    "that reach the line have been asked.",
+    "",
+    "MUTATION 10 SURVIVES HERE AND IS KEPT, because a premise can be environmental and a change can",
+    "move the environment. It was aimed at the one cell where nothing else keeps the process alive,",
+    "and the stdin-ownership change puts a resumed stream there by design. Measured on both trees:",
+    "KILLED at origin/main, SURVIVED here, and reddening again the moment the owning line alone is",
+    "removed. Two repair windows were built and measured and both were rejected rather than shipped,",
+    "which is the part worth keeping: the first cell baselined at exactly its predicted count and",
+    "still could not see the defect, so a repair cell's premise includes proving its window REACHES",
+    "the graded wait, and that is measured rather than read. The mutation stays registered on the",
+    "assertion it can no longer redden, so a run reports a survivor rather than a smaller set, and",
+    "#634 carries the instrument shapes that would observe the ref rather than its consequence."
   ],
   "mutations": [
     {
@@ -160,7 +189,7 @@
       "replace": "  const deadline = new Promise<boolean>((r) => { const t = setTimeout(() => r(false), ms); t.unref?.(); timer = t; });",
       "expectRed": "...exiting clean, rather than aborting on a wait that could not be bounded",
       "cell": "...exiting clean, rather than aborting on a wait that could not be bounded",
-      "note": "A wait bounded by an unref'd timer is not bounded. With something else holding the event loop open, which is true of every severed-link cell, the deadline fires and the bound looks real. On a HELD link the socket is idle, so an unref'd timer lets node empty its loop and abort the command on a pending await: exit 13, no message, the session dropped silently. Aimed at cell I, which is the only state where nothing else keeps the process alive.",
+      "note": "A wait bounded by an unref'd timer is not bounded. With something else holding the event loop open, which is true of every severed-link cell, the deadline fires and the bound looks real. On a HELD link the socket is idle, so an unref'd timer lets node empty its loop and abort the command on a pending await: exit 13, no message, the session dropped silently. Aimed at cell I, which WAS the only state where nothing else keeps the process alive. SURVIVES AS OF THE STDIN-OWNERSHIP CHANGE, and this note records that rather than the set quietly shrinking. Measured on both trees with the same find, replace, command and registered assertion: KILLED at origin/main 6512ac9b, 71 marks of a 73 baseline; SURVIVED here on a full 73, with another mutation in this same file killed in that run as the positive control, so the suite provably reaches the file. The mask is one line: `if (reconnect) ownStdin();` is the first statement of the session hand-back, so the stream is RESUMED across the very flush this cell bounds, and a resumed stream is a ref'd handle. Isolated as one variable: with the deadline unref'd AND that single line deleted, the cell reddens again at exit code 13 with the unsettled-top-level-await warning. Two repair windows were built and measured and both rejected rather than shipped. A one-shot attach, where `--no-reconnect` never calls ownStdin: its cell baselined green at the predicted count and then PASSED under the mutation, and it skips the abandoned release, though the hand-back flush does run in its window, so its failure is not fully explained and stays an open observation. A piped attach, where the population gate installs no reader while reconnect stays true: the probe exited 0 in BOTH arms while reaching the right window, its transcript carrying the held-session line, because the pipe's own stdio handle holds the loop. So every population this harness can build now has something holding the loop across that wait. Kept registered rather than removed or re-aimed on a guess, so a run reports a survivor instead of a smaller set; #634 carries the two instrument shapes that would observe the ref rather than its consequence.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     },
     {
@@ -171,6 +200,26 @@
       "expectRed": "...saying NOTHING about a held session, because it handed the session back on the way out",
       "cell": "...saying NOTHING about a held session, because it handed the session back on the way out",
       "note": "The loop released before claiming the next session, which covers every exit that stays IN the loop and none that leaves it. An operator who detaches during the backoff is the ordinary case: the link may be back, one dial would free the slot, and returning straight out leaves it held and then reports that as though nothing could be done. Aimed at cell J, which heals the link and detaches during the 30s rung so the exit path, not a reconnect, is what has to do the freeing.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the backoff timer is abandoned rather than cleared, so a detach holds the shell to the end of the rung",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "      const detached = watch ? await Promise.race([waited, watch.pressed.then(() => true)]) : await waited;\n      clearTimeout(timer);",
+      "replace": "      const detached = watch ? await Promise.race([waited, watch.pressed.then(() => true)]) : await waited;",
+      "expectRed": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
+      "cell": "...and it gives the shell back on the press, not when the rung it was waiting on expires",
+      "note": "Losing a Promise.race does not stop a setTimeout. Without the clear, the detach is honoured at once and the terminal comes back, and then node keeps the process alive until the abandoned timer fires: measured at 27.0s with the next attempt 26.9s away and 8.3s with it 8.1s away, tracking the rung rather than any work. Aimed at cell J, which bounds the exit against where the next attempt actually falls rather than against a constant, because a constant loose enough for a slow runner is also loose enough for this.",
+      "afterRestore": "pnpm --filter @cotal-ai/cli build"
+    },
+    {
+      "name": "the session's own reader is never handed the stream, so the loop's reader is left over a stream the session paused",
+      "file": "implementations/cli/src/lib/attach-client.ts",
+      "find": "      if (takeStdin?.()) {\n        transport.close();\n        return;\n      }\n",
+      "replace": "",
+      "expectRed": "the detach key ends the attach mid-reconnect",
+      "cell": "the detach key ends the attach mid-reconnect",
+      "note": "Deleting the handoff leaves BOTH readers installed for the whole session, which is why the sibling suite `smoke:attach-stdin` cannot see it: with both live a lone detach byte still ends the attach, and a chunk carrying the byte alongside other input is still refused by the same exact-match test on either side. What it loses is the release. `ownStdin` is `idle ??= watchDetachKey(...)`, so with the loop's watcher never stopped it neither reinstalls nor RESUMES, while `cleanup` pauses the stream the session did take: the operator's next press lands on a paused stream and is read by nobody. Measured on this suite at f345809a against a green baseline of 72: 67 passed, 5 failed, first red here, then `...exiting clean` and the held-session line, then cell J's two, `reconnectsAtPress 0` against `now 1` and `pressToExitMs 27172` against a boundary 26826ms away, spare -346ms. Registered on the FIRST of those reds. Found by review as a survivor of the sibling suite's set and recorded there as unreachable prose; it is reachable, it is graded here, and the sibling config now says so.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build"
     }
   ]

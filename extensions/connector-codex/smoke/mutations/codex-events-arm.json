@@ -1,0 +1,33 @@
+{
+  "command": "pnpm smoke:codex-events-arm",
+  "mutations": [
+    {
+      "name": "A1 the launch stops arming the emitter, which is exactly the state this connector shipped in before",
+      "file": "extensions/connector-codex/src/extension.ts",
+      "find": "      env.COTAL_EVENTS = \"1\";",
+      "replace": "      env.COTAL_EVENTS_DISARMED = \"1\";",
+      "expectRed": "--events arms the emitter (COTAL_EVENTS=1)"
+    },
+    {
+      "name": "A2 the missing workspace root falls back to the process cwd instead of refusing",
+      "file": "extensions/connector-codex/src/extension.ts",
+      "find": "      if (!opts.workspaceRoot)\n        throw new Error(",
+      "replace": "      if (false)\n        throw new Error(",
+      "expectRed": "an armed launch with no workspace root refuses"
+    },
+    {
+      "name": "A3 the connector stops declaring an event plane, so a real armed spawn is refused at the door",
+      "file": "extensions/connector-codex/src/extension.ts",
+      "find": "  eventChannel,\n\n  buildLaunch(opts: LaunchOpts): LaunchSpec {",
+      "replace": "  buildLaunch(opts: LaunchOpts): LaunchSpec {",
+      "expectRed": "the connector DECLARES an event plane"
+    },
+    {
+      "name": "A4 an unarmed launch is armed anyway, so events are no longer opt-in",
+      "file": "extensions/connector-codex/src/extension.ts",
+      "find": "    if (opts.events === true) {",
+      "replace": "    if (opts.events !== undefined || true) {",
+      "expectRed": "an unarmed launch does NOT set COTAL_EVENTS"
+    }
+  ]
+}

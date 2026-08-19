@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/semantics.smoke.ts",
+  "guard": "`switch` selects as JavaScript selects (default only when nothing matched) and `finally` completions override, on both runners. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-semantics",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/js-completion.json",
+  "mutations": [
+    {
+      "name": "default matches immediately again, the shipped defect",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          if (c.test === null || c.test === undefined) continue;\n          if ((await this.evaluate(c.test as AnyNode, switchEnv, frame)) === disc) {",
+      "replace": "          if (c.test === null || c.test === undefined || (await this.evaluate(c.test as AnyNode, switchEnv, frame)) === disc) {",
+      "expectRed": "`default` written above a matching case does not shadow it",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "`default` written above a matching case does not shadow it",
+      "note": "The mutant restores the one-pass walk's meaning: `default` above a matching case runs instead of it, which node never does."
+    },
+    {
+      "name": "the finalizer's abrupt completion is discarded, the shipped defect",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          const f = await this.execute(node.finalizer as AnyNode, env, frame);\n          if (f.type !== \"normal\") return f;",
+      "replace": "          await this.execute(node.finalizer as AnyNode, env, frame);",
+      "expectRed": "a `finally` return overrides the try's, and a `finally` break overrides a pending return",
+      "completionMarker": "ok a program that logs a literal",
+      "cell": "a `finally` return overrides the try's, and a `finally` break overrides a pending return",
+      "note": "With the completion discarded, `try { return 1 } finally { return 2 }` returns 1 again while node returns 2."
+    }
+  ]
+}

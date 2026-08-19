@@ -64,7 +64,7 @@ jobs:
 
   smoke:
     name: smoke (shard ${{ matrix.shard }}/4)
-    timeout-minutes: 20
+    timeout-minutes: 30
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false

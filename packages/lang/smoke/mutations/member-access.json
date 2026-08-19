@@ -1,0 +1,47 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "Member access reaches no host prototype, and a value born outside a concurrent branch cannot be written inside it. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/member-access.json",
+  "mutations": [
+    {
+      "name": "a record answers the host prototype for a name it does not own",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "        return Object.prototype.hasOwnProperty.call(obj, prop) ? (obj as Record<string, unknown>)[prop] : undefined;",
+      "replace": "        return (obj as Record<string, unknown>)[prop];",
+      "expectRed": "a host prototype is not reachable through a record",
+      "completionMarker": "ok a member outside the table on an array is L4014, with the table in the message",
+      "cell": "a host prototype is not reachable through a record",
+      "note": "The pre-existing hole: `o.constructor`, `o.hasOwnProperty` and `o.toString` were host functions, and calling one with the interpreter's `(frame, args)` convention raised a raw TypeError with no L-code and no frame."
+    },
+    {
+      "name": "the birth-depth check is dropped, so an aliased outer value is writable inside a branch",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    if (birthDepth(target) < frame.depth) {",
+      "replace": "    if (false) {",
+      "expectRed": "a value born outside a concurrent branch and written inside it, through an alias, is L2032",
+      "completionMarker": "ok a fresh local record and array may be written; a value that crossed an effect boundary may not (L2031)",
+      "cell": "a value born outside a concurrent branch and written inside it, through an alias, is L2032",
+      "note": "The static L2032 walk cannot see a write through an alias (`const local = acc; local.a = 1`), so the runtime half is the only door on that path."
+    },
+    {
+      "name": "the interpreter's SwitchStatement case is renamed, so a node the table admits has no case",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "      case \"SwitchStatement\": {",
+      "replace": "      case \"SwitchStmt\": {",
+      "expectRed": "every admitted node type has a case in the interpreter",
+      "completionMarker": "ok the table's sets are disjoint",
+      "cell": "every admitted node type has a case in the interpreter",
+      "note": "The parity check reads the interpreter's source: an admitted node type without a `case` is exactly the drift this table exists to end (`x++`, `?.`, `**` were admitted by the validator and refused at run time). `switch` is chosen because no cell upstream of the parity check executes one; renaming a case an earlier cell exercises would redden that cell first and grade WRONG-RED in this fail-fast suite."
+    },
+    {
+      "name": "the computed-key guard is dropped, so host ToPrimitive runs a program closure again",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    refuseCoercion(\"[...]\", k);\n    return String(k);",
+      "replace": "    return String(k);",
+      "expectRed": "a computed member key that is a record, array, or function is L4018, catchable, on write and read",
+      "cell": "a computed member key that is a record, array, or function is L4018, catchable, on write and read",
+      "note": "No completionMarker on purpose: under this mutant the cell's LAST conjunct (the toString-closure read) can kill the process after the named red prints, and a marker would grade that KILLED run INCONCLUSIVE. The cell's conjuncts are ordered so the silent write-mint shape reds FIRST and short-circuits before any closure is invoked, so the red is clean; the crash shape exists in the cell only to pin the live behavior under the fix."
+    }
+  ]
+}

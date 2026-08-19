@@ -1,0 +1,75 @@
+{
+  "suite": "packages/lang/smoke/migrate.smoke.ts",
+  "guard": "L5022: the walk refuses a recorded branch the edited source no longer declares",
+  "command": "pnpm smoke:lang-migrate",
+  "completionMarker": "migrate.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/lang/smoke/mutations/branch-missing.json",
+  "why": [
+    "The complement of branch-digest.json, and it exists because that config's own narrowness",
+    "argument had a hole. The 'losers only' rule is justified by the walk ENTERING the winner: an",
+    "edit there diverges at the step it broke, which is a better error than 'some arm changed'. A",
+    "RENAME removes the arm, so there is no step left to diverge at and the justification quietly",
+    "stops holding.",
+    "",
+    "What it did instead was worse than a silent pass. `race` filtered the source's arms down to the",
+    "recorded winner, got an empty list, and awaited `Promise.race([])` -- which never settles. A",
+    "migration or a fork over a renamed winning arm returned no verdict at all. `parallel` did not",
+    "hang, because `Promise.all([])` resolves, and handed the program back the recorded value keyed",
+    "by an arm the source no longer has.",
+    "",
+    "TWO of the five mutations are in the PARANOID direction. A kill set whose every member makes the",
+    "guard quieter proves only that the suite notices a missing refusal; narrowness is the half that",
+    "keeps an edited race migratable at all, and the cells that defend it need their own mutations.",
+    "",
+    "This suite counts rather than throws, so a mutation may redden more than the cell it names --",
+    "the harness requires the NAMED cell to be red, and the marker prints at the end because the",
+    "suite reaches it on every run."
+  ],
+  "mutations": [
+    {
+      "name": "the guard is skipped entirely: the walk enters nothing and awaits an empty race",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "      if (only !== undefined) {\n        const present = new Set(all.map(([k]) => k));",
+      "replace": "      if (false) {\n        const present = new Set(all.map(([k]) => k));",
+      "expectRed": "REPAIRED: a walk into a recorded winning arm the edit renamed away RETURNS rather than hanging",
+      "cell": "REPAIRED: a walk into a recorded winning arm the edit renamed away RETURNS rather than hanging",
+      "note": "The cell carries its own deadline for exactly this mutation. Asserted with a bare `await`, removing the guard would HANG the suite rather than redden it, and the mutation would be graded on the harness's patience instead of on the guard."
+    },
+    {
+      "name": "the guard covers `race` only, where the hang made it obvious",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "      if (only !== undefined) {\n        const present",
+      "replace": "      if (only !== undefined && name === \"race\") {\n        const present",
+      "expectRed": "a parallel branch the edit renamed away is refused too, rather than completing silently",
+      "cell": "a parallel branch the edit renamed away is refused too, rather than completing silently",
+      "note": "The half that is easy to miss, because `parallel` never announced itself: `Promise.all([])` resolves, so the only symptom is a recorded value handed back under a key the source dropped. A guard written from the bug report alone would stop here."
+    },
+    {
+      "name": "PARANOID: the gap is computed the other way round -- source arms absent from `only`",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "        const missing = [...only].filter((k) => !present.has(k));",
+      "replace": "        const missing = [...present].filter((k) => !only.has(k));",
+      "expectRed": "an unedited race still walks to completion",
+      "cell": "an unedited race still walks to completion",
+      "note": "Every decided race has a loser that is in the SOURCE and not in `only`, so this refuses every race ever recorded -- including one whose source did not change. The control cell is what catches it, which is why the control is not ceremony."
+    },
+    {
+      "name": "PARANOID: refuse when the arm COUNT changed rather than when a recorded name is absent",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "        const missing = [...only].filter((k) => !present.has(k));",
+      "replace": "        const missing = present.size === only.size ? [] : [...only];",
+      "expectRed": "and an arm the edit ADDED does not trip it: nothing recorded went missing",
+      "cell": "and an arm the edit ADDED does not trip it: nothing recorded went missing",
+      "note": "The second narrowness twin. Widening a race adds an arm and removes nothing recorded, so the walk must still complete; a count test cannot tell the two edits apart and makes every widened scope un-migratable."
+    },
+    {
+      "name": "the refusal fires with an empty payload, so it names no arm and no scope",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "          throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);",
+      "replace": "          throw new ScopeBranchMissing(\"\", name, [], [], []);",
+      "expectRed": "the refusal names the missing arm, the scope, and what the source does declare",
+      "cell": "the refusal names the missing arm, the scope, and what the source does declare",
+      "note": "The whole repair for this refusal is a NAME. An author told only 'this scope diverged' goes looking inside an arm's body, which is the one place nothing changed -- so the payload is the guard, not decoration on it."
+    }
+  ]
+}

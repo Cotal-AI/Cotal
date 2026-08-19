@@ -179,6 +179,14 @@ Quiet ambient is pull-only: it never hitchhikes on a human prompt, DM, mention, 
 connector-driven turn. `cotal_inbox` explicitly surfaces and clears it. A quiet-channel
 `@mention` remains automatic and injects normally.
 
+A pull is bounded too, and clears only what it hands over. One `cotal_inbox` call carries at most a
+receivable window (direct messages and role requests first, then channel traffic, replayed history
+last); whatever does not fit stays buffered, is named in the reply, and comes back on the next call.
+A message too large for one whole response is never consumed at all: it is named with its sender and
+size and left buffered, because clearing what cannot be delivered is the loss this bound exists to stop.
+That matters most on the path where it is easiest to lose mail: reconnecting brings a channel-history
+replay with it, so the largest payload and the least expendable message arrive in the same read.
+
 The local inbox is bounded. On pathological overflow it evicts pull-only items before automatic
 traffic. If the bounded live/durable classification guard also fills, the connector fails closed:
 otherwise-normal ambient becomes pull-only until restart. Muted hard-drop and normal focus recall
@@ -225,6 +233,10 @@ did: run boundaries per turn, assistant text, reasoning, and each tool call with
 its end, and its result. Not prose about the work, the work itself, in a vocabulary a program can
 read. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; a personal session
 with the plugin installed publishes nothing.
+
+Tool arguments and results go on this channel verbatim, so withholding user-authored text does not
+make the stream safe to widen: anything a tool reads or prints, including a secret in a command line
+or in the contents of a file, reaches every reader of the channel.
 
 The channel is **`events.<owner>.<actor>`**, named after the session's principal. What the actor
 half is depends on the mesh, and the difference matters when you go looking for it: on a static mesh
@@ -291,6 +303,32 @@ grant any channel you name: that is the out-of-band grant, not a way around the 
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was
 open when the session stopped is closed rather than left dangling.
+
+One channel carries **every session of one agent**, because it is named after the principal and not
+after the session. Alongside the per-session logs the connector keeps one small record per principal,
+holding the last sequence the broker assigned on that channel, so a new session continues the stream
+its predecessor left instead of starting again from nothing. Both live under the events state root
+(`COTAL_WORKSPACE_ROOT`), and neither is something you edit by hand.
+
+A **missing** record is not a fault: the connector rebuilds it from the session logs beside it,
+which is how an agent that was already running before this record existed keeps its stream. That
+rebuild stops if any one of those session logs is damaged. Unreadable, not valid JSON, and written
+for a different principal all count, and so does a session directory or a log that is a link rather
+than the real file the connector wrote, or a log that has more than one name. A tip taken from the
+rest would be too low, and it would stop publication later with nothing left to point at the cause.
+The connector names the file instead, and the only way past it is the directory removal described
+below, under the same condition. A record that **disagrees with the broker** is a fault, and the
+connector stops publishing and says why rather than guessing. A record that **moved while a session
+was writing to it** is refused the same way: it means something else wrote the principal's record,
+and the connector reports which value it held and which the file holds rather than writing over the
+later one. There is no command to clear it. The state is the principal's directory under the events
+root, and clearing it by hand means removing that directory whole: the sequence, the cursor and the
+per-session logs only mean anything together, so removing part of it leaves a state the next start
+refuses. Removing it is only half a remedy, and the half that comes first is the channel. The
+directory is where the agent's memory of the tip lives, not the tip itself, so on a channel that
+still holds frames the next session opens expecting an empty one and stops on the same
+disagreement, with the logs a tip could have been rebuilt from now gone. Purge the channel first,
+then remove the directory.
 
 Reading it: `cotal console` and the web console draw event frames directly. A frame carries no text
 part by design, so a surface that renders a message as flat text shows a marker instead of prose.

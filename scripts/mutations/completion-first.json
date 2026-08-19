@@ -1,0 +1,26 @@
+{
+  "grades": "tool",
+  "guard": "a declared completion marker downgrades a KILLED to INCONCLUSIVE, and only for a suite that declared one",
+  "command": "node scripts/mutation-proof.selftest.mjs",
+  "progressPattern": "✓",
+  "why": "This file used to grade a failure-vocabulary constant that no longer exists. `main` replaced that whole approach with a baseline-transcript comparison, which answers the same question without a grader guessing a suite's output conventions, so the constant and its six mutations went with it. What remains is the one behaviour that survived the merge on its own merits. Note what this config does NOT set: a `completionMarker`. The suite it grades is fail-fast, so it has no line it prints on both outcomes, and pointing the check at its success banner made every genuine kill INCONCLUSIVE. The feature being graded here is one this config must not use on itself.",
+  "mutations": [
+    {
+      "name": "the completion check is disabled outright",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "if (marker !== undefined && !r.output.includes(marker)) {",
+      "replace": "if (false) {",
+      "expectRed": "a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early",
+      "cell": "a suite that declared a completion marker gets INCONCLUSIVE, not KILLED, when the run stops early"
+    },
+    {
+      "name": "THE OPT-IN: the check stops asking whether the suite asked for it",
+      "file": "scripts/mutation-proof.mjs",
+      "find": "if (marker !== undefined && !r.output.includes(marker)) {",
+      "replace": "if (!r.output.includes(marker)) {",
+      "expectRed": "a killed mutation exits 0 and reports KILLED",
+      "cell": "a killed mutation exits 0 and reports KILLED",
+      "note": "With no marker declared this reads `includes(undefined)`, which is false, so EVERY suite starts grading INCONCLUSIVE and the self-test dies at its first cell. Re-aimed there from the opt-in control it was written for: the mutation is broader than that cell, and in a fail-fast file `no broader than the cell it names` is decided by ordering rather than by intent. The control cell still states which property is carrying the weight; this names where the harm actually lands first."
+    }
+  ]
+}

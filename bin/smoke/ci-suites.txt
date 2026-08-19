@@ -182,6 +182,7 @@ smoke:down-lease-tombstone
 smoke:spawn-from-anywhere
 smoke:spawn-from-anywhere:live
 smoke:cross-path-dedup
+smoke:inbox-window
 smoke:backup-cli
 smoke:registry-staging
 smoke:materialize-concurrency
@@ -302,3 +303,48 @@ smoke:user-spawn:live
 smoke:agui-authorship
 smoke:agui-map
 smoke:attach-reconnect
+smoke:agui-multi-session
+smoke:subject-frontier
+
+# The cotal-lang runtime: the language package, the durable step journal and run driver, and the
+# mesh handler that binds the effect interface onto the real planes.
+smoke:mutation-proof
+smoke:doc-binding
+smoke:run-journal
+smoke:run-notice
+smoke:run-migration
+smoke:run-journal-auth
+smoke:lang-pins
+smoke:lang-scopes
+smoke:lang-notify-fact
+smoke:lang-migrate
+smoke:runtime-journal-store
+smoke:runtime-run-driver
+smoke:runtime-mesh-sleep
+smoke:runtime-mesh-checkpoint
+smoke:runtime-mesh-wait
+smoke:runtime-mesh-notify
+smoke:runtime-mesh-seam
+smoke:runtime-migrate
+smoke:runtime-fork
+smoke:lang-semantics
+smoke:lang-surface
+
+# The OpenCode connector's AG-UI event plane: the durable read, the mapper, the launch that
+# arms it, and the per-session emitter swap that keeps `/new` from going dark.
+smoke:agui-opencode-map
+smoke:agui-opencode-source
+smoke:opencode-events-arm
+smoke:opencode-events-reset
+smoke:goal-follow
+smoke:required-arg-seam
+smoke:attach-stdin
+
+# The Codex connector's AG-UI event plane: the mapper against a real app-server
+# thread, the launch arm, and the per-agent rollout resolution.
+smoke:agui-codex-map
+smoke:codex-events-arm
+smoke:codex-rollout-path
+# The same plane through the seam a spawn actually takes: a real broker, the real host process, a
+# real rollout on disk, and a subscriber reading the frames off the channel.
+smoke:codex-events-lifecycle

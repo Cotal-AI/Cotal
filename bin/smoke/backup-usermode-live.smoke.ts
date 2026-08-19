@@ -47,7 +47,7 @@ const { deviceAuthorization } = await fromAuth("better-auth/plugins/device-autho
 const { bearer } = await fromAuth("better-auth/plugins/bearer");
 const { toNodeHandler } = await fromAuth("better-auth/node");
 
-const { CotalEndpoint, isReachable, mintCreds, newIdentity, principalKey } = await import("@cotal-ai/core");
+const { CotalEndpoint, isReachable, mintCreds, mintLifecycleUid, newIdentity, principalKey } = await import("@cotal-ai/core");
 const { authDir, loadSoleSpaceAuth, spaceSegment, userAuthStateDir, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const { cotalAuthProvider, establishIdpSession } = await import("@cotal-ai/auth");
 type DeviceLoginPrompt = import("@cotal-ai/auth").DeviceLoginPrompt;
@@ -194,6 +194,7 @@ try {
   const retained = await cotalAuthProvider.grantAgent({
     store: workspaceSecretStore(root), dir: stateDir, space: SPACE, owner: OWNER, actor: "worker",
     scope: [], allowSubscribe: [CHANNEL], allowPublish: [CHANNEL], role: "worker", parent: `${OWNER}.cli`,
+    lifecycleUid: mintLifecycleUid(),
   });
   check("retained managed agent principal provisioned", !!retained.actorToken && !!retained.sentinelCreds);
   await must("seed channel registry",

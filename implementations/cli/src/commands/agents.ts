@@ -332,7 +332,6 @@ export async function ps(args: ParsedArgs): Promise<void> {
  *  the terminal they walked away from being gone when they come back. */
 const RECONNECT_BACKOFF_MS = [1_000, 2_000, 5_000, 10_000, 30_000] as const;
 
-const sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 
 /** How long any single wait on a LINK may take before the loop stops waiting on it. Neither
  *  `flush()` nor `drain()` carries a deadline of its own, and `connect`'s `timeout` covers only the
@@ -556,14 +555,28 @@ async function releaseAbandonedSession(s: Abandoned): Promise<void> {
  *  dead for as long as a reconnect takes, which is exactly when an operator is most likely to give
  *  up and press it. Non-detach keystrokes are dropped: there is no seat to send them to, and
  *  buffering them would replay a burst into the agent on reconnect. */
-function watchDetachKey(byte: number): { pressed: Promise<void>; stop: () => void } {
+function watchDetachKey(byte: number): { pressed: Promise<void>; hit: () => boolean; stop: (opts?: { pause?: boolean }) => void } {
   const stdin = process.stdin;
-  let hit!: () => void;
-  const pressed = new Promise<void>((r) => { hit = r; });
+  let fire!: () => void;
+  let pressedYet = false;
+  const pressed = new Promise<void>((r) => { fire = r; });
+  const hit = () => { pressedYet = true; fire(); };
+  // Exactly one byte, and exactly the detach byte. A chunk carrying it alongside anything else is
+  // NOT a keypress: measured on a pty, a real keypress arrives in a read of its own even at 3ms
+  // spacing, and the only two ways the byte arrives with company are a paste and a reader that was
+  // not reading. Treating a paste that happens to contain 0x1d as a detach would turn data into a
+  // control action on input nobody typed; the reader that was not reading is the defect this
+  // watcher's new lifetime fixes, not a matching problem.
   const onData = (d: Buffer) => { if (d.length === 1 && d[0] === byte) hit(); };
   stdin.on("data", onData);
   stdin.resume();
-  return { pressed, stop: () => { stdin.off("data", onData); stdin.pause(); } };
+  // `pause: false` hands the stream to a session's own reader, which resumes it synchronously right
+  // after; pausing there and resuming a line later would be a window where a byte has no owner,
+  // which is the whole defect.
+  // `hit` as well as `pressed`, because the press has TWO consumers and one of them cannot await:
+  // the handoff to a session's reader is synchronous, and it has to know whether the byte it is
+  // taking the stream over from has already arrived.
+  return { pressed, hit: () => pressedYet, stop: ({ pause = true } = {}) => { stdin.off("data", onData); if (pause) stdin.pause(); } };
 }
 
 /**
@@ -586,6 +599,36 @@ async function runAttachLoop(
   // successful establishments are exactly what the manager's own session ceiling counts.
   const abandoned: Abandoned[] = [];
   let saidWhy = ""; // the last transient refusal printed, so a steady reason prints once, not per attempt
+  // ONE reader owns stdin for the whole time there is no session: the backoff wait, the round trip
+  // that hands the old session back and opens the new one, and the gap in between. It used to exist
+  // only for the waits, which left the establishment unread: `stdin` was paused, the stream
+  // buffered, and `attachClient`'s `stdin.resume()` flushed whatever had been typed at a terminal
+  // with no session straight into the seat's pty. Measured on the code before this change, with the
+  // bytes graded at the SEAT rather than on screen: typed during a wait, dropped; during an attempt
+  // that failed, dropped; during an attempt that SUCCEEDED, delivered, and a 0x03 typed there
+  // arrived as SIGINT at the agent and killed it (the seat recorded the signal and its pid was
+  // gone). With the reader installed for the whole period those bytes are read and dropped, which
+  // is what the loop always claimed to do, and the detach key works during an attempt as well as
+  // during a wait.
+  let idle: ReturnType<typeof watchDetachKey> | undefined;
+  // A TERMINAL only, and the gate lives HERE rather than at the call sites, because there are three
+  // of them and a gate written at one is a promise the other two break silently. `printf 'ls\n' |
+  // cotal attach` writes into a PIPE, and those bytes are a script's input rather than an operator
+  // giving up on a frozen screen: a reader would eat them with no fault anywhere in sight. That is
+  // true in EVERY window, not only before the first session, so a pipe keeps the old contract
+  // throughout, paused between sessions and flushed into the next one. Measured with the gate at the
+  // first call site alone: a piped attach buffered correctly until its first reconnect and then had
+  // the reader installed on it by the backoff, so `tail -f log | cotal attach` lost its feed across a
+  // link blip. Cells J and I are the first-session halves, cell L is the reconnect one.
+  const ownStdin = (): typeof idle => (process.stdin.isTTY ? (idle ??= watchDetachKey(key.byte)) : undefined);
+  // Returns whether the detach key had ALREADY been pressed, which is the one thing the session's
+  // own reader cannot find out for itself once this reader is gone.
+  const releaseStdin = (opts?: { pause?: boolean }): boolean => {
+    const pressed = idle?.hit() ?? false;
+    idle?.stop(opts);
+    idle = undefined;
+    return pressed;
+  };
   // Give the manager its slots back. Oldest first, and one failure ends the round rather than
   // skipping ahead, because the reason is the link and the link is the same for all of them.
   const releaseAbandoned = async (): Promise<void> => {
@@ -602,19 +645,60 @@ async function runAttachLoop(
   // would have freed. The attempt is bounded exactly like every other, and what it could not
   // deliver is what gets said. What to say, and when to say nothing, is `heldSessionNotice`.
   const done = async (v: AttachVerdict): Promise<AttachVerdict> => {
+    // Give the stream back on the way out, on EVERY exit, because this reader resumed it: a resumed
+    // stdin is a ref'd handle, and one left behind holds the command open after it has said it
+    // detached. That is the same shape as the abandoned backoff timer, and it is why this lives
+    // here rather than at the call sites.
+    releaseStdin();
+    // And drop the process's own claim on the stream, which a PIPE keeps even after a pause. This is
+    // the exit path by definition, so nothing here reads stdin again. MEASURED, on a piped attach
+    // with the reader correctly not installed: the detach was honoured, the manager freed the slot,
+    // `detached from` printed, and the process then sat past 30s with its three stdio pipes as the
+    // only resources keeping the loop alive. A pause was not enough on its own.
+    //
+    // ONLY THE SOCKET KINDS HAVE `unref`, and this is a test of the stream rather than a fallback.
+    // Measured: at a terminal stdin is a `tty.ReadStream` and at a pipe a `net.Socket`, both of which
+    // have it; given a FILE (`cotal attach < seed.txt`) or a parent that spawns with stdio "ignore",
+    // stdin is an `fs.ReadStream` and has no `unref` at all. Calling it there is a TypeError, which
+    // is how `smoke:cli-on-instance` caught this: it spawns attach with stdin ignored, and the
+    // unguarded call turned a pinned-rail deadline into `process.stdin.unref is not a function`. The
+    // same measurement says the other branch needs nothing: a file-backed stdin ends at EOF instead
+    // of staying open like a socket, and a process that takes one and releases it exits at once with
+    // an empty resource list, where the pipe leaves a PipeWrap behind. So the release exists exactly
+    // where there is something to release. Cell N of `smoke:attach-stdin` is the file-backed route.
+    if (typeof process.stdin.unref === "function") process.stdin.unref();
     if (v.kind !== "gone") await releaseAbandoned();
     const notice = heldSessionNotice(abandoned.length, v.kind);
     if (notice) console.error(c.dim(notice));
     return v;
   };
+  // The FIRST establishment is an attach with no session too, and it is the path every attach takes.
+  // Own the keyboard from here rather than from the first reconnect, so a key struck while the
+  // command is still resolving the mesh is read and dropped instead of buffered and flushed into the
+  // seat when the session opens. Measured before this line existed: a nonce typed at that prompt
+  // arrived at the agent.
+  //
+  // `ownStdin` is a no-op at a pipe; both halves are cells (I and J), so neither is an assumption.
+  if (reconnect) ownStdin();
   for (;;) {
     if (!first) {
       // Back off BEFORE the attempt, and stay interruptible: the detach key must work while we
-      // wait, not only while a session is up.
-      const wait = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
-      const watch = watchDetachKey(key.byte);
-      const detached = await Promise.race([sleep(wait).then(() => false), watch.pressed.then(() => true)]);
-      watch.stop();
+      // wait, not only while a session is up. The timer is CLEARED rather than left to the race,
+      // because losing a `Promise.race` does not stop a `setTimeout`: the detach is honoured at
+      // once, the terminal comes back and `detached from` prints, and then node holds the process
+      // open until the abandoned timer fires. On the 30s rung that is half a minute of a shell that
+      // has already said it detached and will not give the prompt back. Measured before this line
+      // existed: press to first output 0.1s, press to EXIT 27.0s with the next attempt 26.9s away,
+      // and 8.3s with it 8.1s away, tracking the rung rather than the work.
+      const ms = RECONNECT_BACKOFF_MS[Math.min(attempt, RECONNECT_BACKOFF_MS.length - 1)];
+      const watch = ownStdin(); // and it STAYS installed through the attempt this wait precedes
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const waited = new Promise<boolean>((r) => { timer = setTimeout(() => r(false), ms); });
+      // No watcher at a pipe, and nothing to replace it with: a detach byte a script writes here
+      // buffers and reaches the next session's own reader, which is exactly what it did before this
+      // change. Racing a promise that can never settle would be the same thing written longer.
+      const detached = watch ? await Promise.race([waited, watch.pressed.then(() => true)]) : await waited;
+      clearTimeout(timer);
       if (detached) return await done({ kind: "ended" });
       attempt++;
     }
@@ -623,12 +707,47 @@ async function runAttachLoop(
     // is retried on the next attempt and accounted for by `done` if it never lands.
     await releaseAbandoned();
     let est: Established;
+    const attempting = establishAttachSession(vv, pin, reconnect, first);
+    // A press DURING the round trip ends the attach now, rather than when the round trip returns.
+    // The in-flight establishment is still awaited: it is bounded like every other one, and a
+    // session that lands after we have stopped looking is a slot the manager still counts, so it
+    // goes on the abandoned list and `done` hands it back over the link that is by then up.
+    //
+    // `idle` is also set on the FIRST establishment at a terminal, where what it buys is the same
+    // thing it buys everywhere else: what gets typed at a prompt that has not come up yet is read
+    // and dropped rather than delivered later, which is what cell I grades. It is not a second way
+    // to abort. Raw mode is entered in `attachClient`'s `onReady` (attach-client.ts), so before the
+    // first session this process has not touched the terminal's mode at all, and Ctrl-C at a cooked
+    // tty is how an operator leaves a command that has not attached.
+    if (idle) {
+      const raced = await Promise.race([
+        attempting.then((e) => ({ est: e }) as const, () => ({ est: undefined }) as const),
+        idle.pressed.then(() => ({ detached: true }) as const),
+      ]);
+      if ("detached" in raced) {
+        releaseStdin();
+        const late = await attempting.catch(() => undefined);
+        if (late?.ok) {
+          abandoned.push({ grant: late.grant, creds: late.creds, inbox: late.inbox, server: late.server });
+          // And CLOSE the link that session came up on. Nothing here will ever read it, and an open
+          // NATS connection is a ref'd handle: measured, the attach printed `detached from` and then
+          // sat there forever, because the hand-back mints its own short-lived connection from the
+          // abandoned session's own credential and never touches this one. Same shape as the
+          // abandoned backoff timer, one layer down.
+          await closeLink(late.nc);
+        }
+        return await done({ kind: "ended" });
+      }
+    }
     try {
-      est = await establishAttachSession(vv, pin, reconnect, first);
+      est = await attempting;
     } catch (e) {
       // The FIRST attempt throws exactly as it always has — the CLI's top-level handler renders
-      // it. Only a reconnect turns a thrown establishment into another attempt.
-      if (first) throw e;
+      // it. Only a reconnect turns a thrown establishment into another attempt. Give the stream
+      // back on the way out: this is the one exit from this loop that does not run through `done`,
+      // and a resumed stdin is a ref'd handle that would hold the command open after it has already
+      // printed why it is giving up.
+      if (first) { releaseStdin(); throw e; }
       est = { ok: false, kind: "transient", message: (e as Error).message };
     }
     if (!est.ok) {
@@ -653,8 +772,17 @@ async function runAttachLoop(
       // The manager replays its byte-exact backlog snapshot on every open (the `ready` handshake
       // in session/bridge.ts), so the reconnected screen repaints through the path that already
       // exists; there is no second backlog here.
-      outcome = await attachClient(transport, hold);
+      outcome = await attachClient(transport, hold, () => releaseStdin({ pause: false }));
     } finally {
+      // Take the stream back FIRST, ahead of the hand-back's own round trips. A session that ends
+      // while its SOCKET is still alive is the case this whole change is about, and everything
+      // below it here is a publish, a flush and a close, each bounded by LINK_DEADLINE_MS: placed
+      // after them, this line would leave the keyboard unowned for as long as a dying link takes
+      // to answer, which is precisely when an operator reaches for the detach key. attachClient's
+      // cleanup has already removed its own reader and paused the stream, so the ownerless gap is
+      // the width of this statement rather than of two deadlines. `done` releases it again on
+      // whichever exit follows, and the backoff wait re-installs the same reader.
+      if (reconnect) ownStdin();
       // Hand the session back. With the link still up that is one advisory frame over the
       // connection already open (a rail that broke while the socket lived — a stall, a gap — is
       // exactly this case, and it is idempotent after a detach has already closed it). The FLUSH is
