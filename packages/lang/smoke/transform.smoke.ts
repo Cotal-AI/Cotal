@@ -13,7 +13,7 @@
  */
 import { parse } from "acorn";
 import { transform } from "../src/transform/index.js";
-import { SEAM_PROPOSED, SEAM_RULED } from "../src/transform/seam.js";
+import { SEAM_MEMBERS, SEAM_PROPOSED, SEAM_RULED } from "../src/transform/seam.js";
 import { ADMITTED_NODES } from "../src/syntax.js";
 import { run as walk, stripPositions } from "../src/interpret.js";
 import { digest } from "../src/keys.js";
@@ -189,6 +189,32 @@ function seamMembers(root: Node, ctx: string): string[] {
   return [...out].sort();
 }
 
+/** Every `<ctx>.<member>(...)` CALL the emitted module makes, as `member` and the count it passes. */
+function seamSites(root: Node, ctx: string): { member: string; arity: number }[] {
+  const out: { member: string; arity: number }[] = [];
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const n of node) walk(n);
+      return;
+    }
+    if (node === null || typeof node !== "object") return;
+    const n = node as Node;
+    if (n.type === "CallExpression") {
+      const callee = n.callee as Node;
+      if (callee.type === "MemberExpression" && callee.computed !== true) {
+        const obj = callee.object as Node;
+        if (obj.type === "Identifier" && obj.name === ctx) out.push({ member: (callee.property as Node).name as string, arity: (n.arguments as unknown[]).length });
+      }
+    }
+    for (const [k, v] of Object.entries(n)) {
+      if (k === "type" || k === "start" || k === "end" || k === "loc" || k === "range") continue;
+      walk(v);
+    }
+  };
+  walk(root);
+  return out;
+}
+
 const nodeTypes = (root: Node): Set<string> => {
   const out = new Set<string>();
   const walk = (node: unknown): void => {
@@ -264,6 +290,50 @@ const CORPUS: readonly (readonly [string, string])[] = [
     checked += 1;
   }
   console.log(`  (${checked} corpus programs closed over the seam)`);
+}
+
+// ---- 1b) every seam call site passes an argument count the contract declares -----------------------
+
+{
+  // ARITY, NOT ONLY NAMES. The cell above compares the member NAMES the module reaches; that is what
+  // let `call` grow a fourth and then a fifth argument for F6 against a host member declared with
+  // three, and the divergence that came out of it was found by the differential rather than here.
+  // The declared range now lives beside the member in `seam.ts`, this checks every emitted site
+  // against it, and `engine.smoke` checks the host's `ctx` against the same table.
+  const WIDE: readonly (readonly [string, string])[] = [
+    ["an optional call whose chain continues", "const o = { m: () => ({ x: { y: 1 } }) }; log(o.m?.().x.y);"],
+    ["an optional call at the tail of its chain", "const o = { m: () => 1 }; log(o.m?.());"],
+    ["a dead-zone read, which carries its binding name", "const f = () => x; const r = f(); const x = 1; log(r);"],
+    ["a non-function callee", "const f = 1; f();"],
+    ["a catch clause", 'try { log(1); } catch (e) { log(e.code); }'],
+    ["a template and an iteration", "const xs = [1, 2]; for (const x of xs) { log(`v${x}`); }"],
+  ];
+  const observed = new Map<string, { min: number; max: number }>();
+  const outside: string[] = [];
+  let sites = 0;
+  for (const [name, source] of [...CORPUS, ...WIDE]) {
+    const { module, meta } = transform(source);
+    for (const { member, arity } of seamSites(parseModule(module), meta.ctx)) {
+      sites += 1;
+      const range = SEAM_MEMBERS[member];
+      if (range === undefined || arity < range[0] || arity > range[1]) outside.push(`${name}: ${member}/${arity}`);
+      const seen = observed.get(member);
+      observed.set(member, seen === undefined ? { min: arity, max: arity } : { min: Math.min(seen.min, arity), max: Math.max(seen.max, arity) });
+    }
+  }
+  ok("every seam call site passes an argument count the contract declares", outside.length === 0, outside);
+  // AND THE RANGE IS NOT WIDER THAN THE EMITTER USES, which is the half that keeps the table honest:
+  // a range nobody reaches is a permission granted to a future emission with no ruling behind it,
+  // and it would pass the cell above forever. Every declared bound has to be a site somewhere here.
+  const slack = Object.entries(SEAM_MEMBERS)
+    .map(([member, [lo, hi]]) => {
+      const seen = observed.get(member);
+      if (seen === undefined) return `${member}: declared ${lo}..${hi}, never reached`;
+      return seen.min === lo && seen.max === hi ? "" : `${member}: declared ${lo}..${hi}, reached ${seen.min}..${seen.max}`;
+    })
+    .filter((x) => x !== "");
+  ok("and no declared range is wider than the emission that justifies it", slack.length === 0, slack);
+  console.log(`  (${sites} seam call sites checked against ${Object.keys(SEAM_MEMBERS).length} declared arity ranges)`);
 }
 
 // ---- 2) the resolver would find one if there were one -------------------------------------------
