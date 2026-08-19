@@ -3,9 +3,16 @@
  * "nothing arrived" when the delivery it is looking for is merely SLOWER than the sleep?
  *
  * One scenario, one defect, one delivery, judged TWICE at two different moments. The link heals
- * slow, so the flush that carries the buffered nonce into the seat lands seconds after the reconnect
- * is announced. The old judgement waits a flat 2000ms and looks; the new one types a later byte and
- * looks only once the seat has echoed it back. The variable under test is the judging shape alone.
+ * NORMALLY and the lateness lives at the SEAT, which is descheduled before it records what it read:
+ * a link slow enough to put a delivery past 2000ms never establishes a session at all, so it cannot
+ * produce the scenario. The old judgement waits a flat 2000ms and looks; the new one types a later
+ * byte and looks only once the seat has echoed it back. The variable under test is the judging
+ * shape alone.
+ *
+ * The byte is typed while the link is SEVERED and the client sits in a backoff rung, so the window
+ * under test is the one cell A owns. That decides which revert makes this probe disagree: a revert
+ * scoped to the establishment window leaves a wait-typed byte owned and both judgements stay green.
+ * See the PR body's table, which names both pairings.
  */
 import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
@@ -94,22 +101,6 @@ const severLoud = (): Promise<void> =>
     s.on("error", rej);
     s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
   });
-const healSlow = (delayMs: number): Promise<void> =>
-  new Promise((res, rej) => {
-    knocks.length = 0;
-    const s = createServer((client) => {
-      const up = netConnect(BROKER_PORT, "127.0.0.1");
-      liveSockets.add(client); liveSockets.add(up);
-      fireKnock();
-      const drop = () => { liveSockets.delete(client); liveSockets.delete(up); client.destroy(); up.destroy(); };
-      for (const ev of ["error", "close"] as const) { client.on(ev, drop); up.on(ev, drop); }
-      const relay = (from: Socket, to: Socket) =>
-        from.on("data", (b) => { setTimeout(() => { if (!to.destroyed) to.write(b); }, delayMs); });
-      relay(client, up); relay(up, client);
-    });
-    s.on("error", rej);
-    s.listen(PROXY_PORT, "127.0.0.1", () => { proxy = s; res(); });
-  });
 const closeLink = (): Promise<void> =>
   new Promise((res) => {
     const s = proxy; proxy = undefined;
@@ -183,11 +174,10 @@ try {
   await wait(300);
 
   // Heal normally. The lateness lives at the SEAT, not on the link, and that is deliberate: a link
-  // slow enough to put a delivery past 2000ms cannot establish a session at all. Measured three
-  // times on the way here, at 3000ms both ways and at 2800ms upstream only, and both ways the client
-  // dialled without stop (25 dials in 120s) and no session ever came up. What DOES put a delivery
-  // late is the condition the red that started this was seen under: a loaded machine, where the seat
-  // process is descheduled and does its work whenever it next runs. That is what SEAT_DELAY_MS is.
+  // slow enough to put a delivery past 2000ms cannot establish a session at all, so delaying the
+  // link removes the scenario instead of producing it. What DOES put a delivery late is the
+  // condition the red that started this was seen under: a loaded machine, where the seat process is
+  // descheduled and does its work whenever it next runs. That is what SEAT_DELAY_MS is.
   await closeLink();
   await heal();
   if (!await waitFor(/\[cotal: reconnected\]/, 120_000))
