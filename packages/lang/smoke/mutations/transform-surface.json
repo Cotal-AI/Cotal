@@ -147,8 +147,8 @@
     {
       "name": "an optional call is emitted without the flag, so the host resolves a name it should not",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
-      "replace": "        const optional = \"\";",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, async () => [${args}], true`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, async () => [${args}]`)})`;",
       "expectRed": "a tail optional call is emitted through the ruled flag",
       "completionMarker": "ok every program the seam cannot yet express refuses loudly, and is listed",
       "cell": "a tail optional call is emitted through the ruled flag",
@@ -157,8 +157,8 @@
     {
       "name": "every method call carries the optional flag, so a missing method stops refusing",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
-      "replace": "        const optional = \", true\";",
+      "find": "        return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, [${args}]`)})`;",
+      "replace": "        return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, [${args}], true`)})`;",
       "expectRed": "an ordinary method call carries no flag",
       "completionMarker": "ok a tail optional call is emitted through the ruled flag",
       "cell": "an ordinary method call carries no flag",
@@ -173,6 +173,16 @@
       "completionMarker": "ok an object literal's keys are emitted computed",
       "cell": "every program the seam cannot yet express refuses loudly, and is listed",
       "note": "The host makes the short-circuit decision and cannot tell the transform it made one. Measured on the walker: `o.z?.().x` on an absent member is undefined, `o.m?.().x` on a member returning undefined is L4010 - so emitting the continuation would answer undefined for both and silently drop a refusal."
+    },
+    {
+      "name": "an optional call hands over an evaluated argument list, so a short-circuit runs its arguments anyway",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, async () => [${args}], true`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, [${args}], true`)})`;",
+      "expectRed": "an optional call hands its arguments over as a thunk",
+      "completionMarker": "ok the walker's answers for an optional call are recorded with the rule and with the hole",
+      "cell": "an optional call hands its arguments over as a thunk",
+      "note": "The walker checks the member BEFORE evaluating the argument list, so `o.m?.(await sleep(\"1s\"))` on an absent member journals nothing while the same argument on a present method journals a sleep. An array here has already run them, and a resume of that entry replays a step the walker's run never recorded."
     }
   ]
 }

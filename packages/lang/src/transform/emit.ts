@@ -749,8 +749,17 @@ class Emitter {
         // The one place a method NAME may be resolved: at the call. That is what lets `get` refuse
         // the same name everywhere else (L4020). Ruling 1d's fourth argument asks the host to
         // short-circuit to undefined when the member is nullish, calling nothing.
-        const optional = node.optional === true ? ", true" : "";
-        return `(await ${this.seam("call", `${obj}, ${this.memberKey(callee)}, [${args}]${optional}`)})`;
+        //
+        // AND THE OPTIONAL FORM HANDS ITS ARGUMENTS OVER UNEVALUATED. The walker checks the member
+        // BEFORE it evaluates the argument list, so `o.m?.(await sleep("1s"))` on an absent member
+        // journals nothing while the same argument on a present method journals a sleep (lane H
+        // measured both). An emitted array has already run them, and a resume would replay a step
+        // the walker's run never recorded — so it is a thunk, and `async` because an argument may
+        // await. The ordinary form is unchanged and still hands over a plain array.
+        if (node.optional === true) {
+          return `(await ${this.seam("call", `${obj}, ${this.memberKey(callee)}, async () => [${args}], true`)})`;
+        }
+        return `(await ${this.seam("call", `${obj}, ${this.memberKey(callee)}, [${args}]`)})`;
       }
 
       let fn = this.chainLink(callee, guards);

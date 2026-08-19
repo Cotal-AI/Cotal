@@ -521,7 +521,13 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   // AND THE MIRROR: the shape ruling 1d DID close is emitted, and it carries the flag. Without this
   // cell "refuse every optional call" would pass the one above.
   const closed = transform("const o = { m: () => 1 }; log(await o.m?.());");
-  ok("a tail optional call is emitted through the ruled flag", closed.module.includes('.call(o, "m", [], true)'), closed.module.slice(-260));
+  ok("a tail optional call is emitted through the ruled flag", closed.module.includes('.call(o, "m", async () => [], true)'), closed.module.slice(-260));
+
+  // AND ITS ARGUMENTS ARE HANDED OVER UNEVALUATED. The walker checks the member before it evaluates
+  // the argument list, so a short-circuited optional call runs NO argument; an emitted array has
+  // already run them, and a resume would replay a step the run never recorded.
+  const withArgs = transform('const o = { m: (x) => x }; log(await o.m?.(await sleep("1s", { name: "s" })));').module;
+  ok("an optional call hands its arguments over as a thunk", /\.call\(o, "m", async \(\) => \[.*sleep/.test(withArgs), withArgs.slice(-320));
   const plain = transform("const xs = [1]; log(xs.map((x) => x));").module;
   ok("an ordinary method call carries no flag", plain.includes('.call(xs, "map", [') && !plain.includes(", true)"), plain.slice(-200));
 
