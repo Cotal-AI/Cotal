@@ -29,6 +29,7 @@ import { BUILTINS } from "../src/primitives.js";
 import { Prng } from "../src/values.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun } from "../src/engine/ctx.js";
 import { runOnEngine } from "../src/engine/host.js";
+import { runInWorker } from "../src/engine/worker.js";
 import { run as walkerRun } from "../src/interpret.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
 
@@ -1209,6 +1210,31 @@ await parallel({
   );
   ok("while a present member does ask, exactly once", ran === 1, ran);
 
+  // THE THUNK IS `async`, because any argument the transform emits may itself hold an `await` - so it
+  // is AWAITED here. Lane T found this against my e7819fe3 and I reproduced it before touching the
+  // line: unawaited, `args()` handed the spread a Promise, so an ordinary `o.m?.(1)` died on "Spread
+  // syntax requires ...iterable" and `xs.map?.(f)` reached the curated method with a Promise where
+  // its argument list should be. Both shapes are below, each against the oracle.
+  ok("the walker calls a present member with a plain argument", (await onWalker(`const o = { m: (x) => x };\nlog("r", o.m?.(1));\n`)) === 'ok [["r",1]] []');
+  ok(
+    "and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise",
+    (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async (x: unknown) => x }), "m", async () => [1], true))) === 1,
+  );
+  const held = harness({ script: {} });
+  await held.inFrame(() =>
+    held.ctx.call(held.ctx.born({ m: async (x: unknown) => x }), "m", async () => [await held.ctx.effect("sleep", ["1s"])], true),
+  );
+  ok(
+    "an effect INSIDE the argument reaches the journal, matching the walker cell above",
+    JSON.stringify(held.run.journal.entries().map((e) => e.kind)) === '["sleep"]',
+    held.run.journal.entries().map((e) => e.kind),
+  );
+  ok("the walker runs a curated method through the optional form", (await onWalker(`const xs = [1, 2];\nlog("r", xs.map?.((x) => x * 3));\n`)) === 'ok [["r",[3,6]]] []');
+  ok(
+    "and the engine's curated path reads that same awaited list",
+    JSON.stringify(await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", async () => [async (x: unknown) => (x as number) * 3], true))) === "[3,6]",
+  );
+
   // No silent acceptance of an already-evaluated list on the optional path: the short-circuit would
   // be a lie, because the arguments ran before the seam was reached.
   ok(
@@ -1267,6 +1293,171 @@ await parallel({
   ok(
     "a continuation without the optional flag is refused, not silently run",
     codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", [], false, (v) => v)))) === "L1000",
+  );
+}
+
+// ---- 16) the worker: one locked-down thread per run ---------------------------------------------
+//
+// `lockdown()` is irreversible and realm-wide, so a run gets its own realm to harden and the host
+// keeps an isolate whose intrinsics it still owns. The whole run happens inside that thread - the
+// seam, the journal, the effect path and the handler - because `handler.now()` and every journal
+// call in the effect path are SYNCHRONOUS and a proxy over a message port is not.
+
+{
+  const HANDLER = { module: new URL("./_sim-handler.ts", import.meta.url).href, config: SCRIPT };
+
+  const started = Date.now();
+  const logs: unknown[][] = [];
+  const run = runInWorker(
+    { source: SOURCE, module: MODULE, runId: "host-1", handler: HANDLER },
+    { onLog: (l) => logs.push([...l.values]) },
+  );
+  const answer = await run.done;
+  const coldMs = Date.now() - started;
+
+  ok("a run completes in its own locked-down thread", answer.ok === true, JSON.stringify(answer).slice(0, 200));
+  const got = answer as Extract<typeof answer, { ok: true }>;
+  ok("and its log lines reached the host", JSON.stringify(logs) === '[["status","done"]]', logs);
+
+  // THE COMPARISON THAT MATTERS: the same program on the oracle, in this process, with nothing
+  // between them but a thread boundary and a Compartment.
+  const walker = await walkerRun(SOURCE, { runId: "host-1", handler: new SimHandler(SCRIPT) });
+  ok(
+    "the journal it brings back is the WALKER'S, entry for entry",
+    JSON.stringify(got.entries) === JSON.stringify(walker.journal.entries()),
+    { worker: got.entries.map((e) => `${e.kind}#${e.occurrence}/${e.status}`), walker: walker.journal.entries().map((e) => `${e.kind}#${e.occurrence}/${e.status}`) },
+  );
+  ok("and there were entries to compare", got.entries.length === 2, got.entries.length);
+  ok("the pins crossed intact", JSON.stringify(got.pins) === JSON.stringify(walker.pins), { worker: got.pins, walker: walker.pins });
+  ok("and the hash is the source's, as it is in this process", got.programHash === walker.programHash);
+  // Reported rather than bounded tightly: the number is the point, and a tight bound on a shared
+  // machine is a flaky cell. Measured on this floor at 22.8-26.4ms for the thread alone.
+  ok(`a cold worker run took ${coldMs}ms, thread and lockdown included`, coldMs < 30_000, coldMs);
+}
+
+{
+  // THE CONFINEMENT, MEASURED THROUGH THE REAL WORKER rather than in a probe beside it. What the
+  // program can reach is the whole security claim, so it is asked from inside the Compartment the
+  // shipping path builds.
+  const PROBE = `(ctx) => async () => {
+    await ctx.fuel();
+    const probe = (f) => { try { f(); return "ran"; } catch (e) { return "threw"; } };
+    return ctx.born({
+      dateNow: probe(() => Date.now()),
+      mathRandom: probe(() => Math.random()),
+      processIs: typeof process,
+      ownGlobals: Object.keys(globalThis).length,
+      sharesIntrinsics: ({}).constructor === Object,
+      functionEscape: probe(() => (function () {}).constructor("return typeof process")()),
+    });
+  }`;
+  const answer = await runInWorker({
+    source: `log("x", 1);`,
+    module: PROBE,
+    runId: "confine-1",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+  }).done;
+  ok("the confinement probe ran", answer.ok === true, JSON.stringify(answer).slice(0, 200));
+  const seen = (answer as Extract<typeof answer, { ok: true }>).value as Record<string, unknown>;
+  ok("inside the Compartment `Date.now()` throws", seen.dateNow === "threw", seen.dateNow);
+  ok("and so does `Math.random()`", seen.mathRandom === "threw", seen.mathRandom);
+  ok("`process` is not there at all", seen.processIs === "undefined", seen.processIs);
+  ok("and `globalThis` has no own keys: the seam is the CALL ARGUMENT, never a global", seen.ownGlobals === 0, seen.ownGlobals);
+  ok("the Function-constructor escape is refused", seen.functionEscape === "threw", seen.functionEscape);
+  // CONFINEMENT, NOT HIDING, and it is asserted rather than left as a footnote: the program shares
+  // the realm's intrinsics and simply cannot reach out of it. A cell that expected otherwise would
+  // be testing a different security model than the one this host actually has.
+  ok("while `({}).constructor === Object` still holds, which is the model", seen.sharesIntrinsics === true, seen.sharesIntrinsics);
+}
+
+{
+  // CANCELLATION IS THE ONLY THING THAT CROSSES DURING A RUN, and it crosses through shared memory
+  // because `shouldStop` is read synchronously between effects. No wall-clock timeout and no
+  // terminate() on a deadline: a thread killed mid-effect leaves a step pending with nothing able
+  // to settle it.
+  const SPIN = `(ctx) => async () => {
+    for (let i = 0; i < 50; i += 1) {
+      await ctx.fuel();
+      await ctx.effect("sleep", ["1s"]);
+    }
+    return "finished";
+  }`;
+  const run = runInWorker({
+    source: `await sleep("1s");`,
+    module: SPIN,
+    runId: "stop-1",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+  });
+  run.stop("the operator asked this run to stop");
+  const answer = await run.done;
+  ok("a stopped run ends through its own cancellation path", answer.ok === false, JSON.stringify(answer).slice(0, 160));
+  const failed = answer as Extract<typeof answer, { ok: false }>;
+  ok("and it carries the reason the host wrote into shared memory", failed.message.includes("the operator asked this run to stop"), failed.message.slice(0, 120));
+}
+
+{
+  // A run whose value cannot cross answers to the LANGUAGE's crossing rule, not to the structured
+  // clone algorithm's: a DataCloneError would name a host algorithm for something the language
+  // already has a word for.
+  // CAPTURED rather than awaited into the assertion: unrefused, a function reaches `postMessage` and
+  // the thread dies on a DataCloneError with nothing to answer with, which awaited here would kill
+  // the suite anonymously instead of failing the cell that names the rule.
+  let answer: Awaited<ReturnType<typeof runInWorker>["done"]> | unknown;
+  try {
+    answer = await runInWorker({
+      source: `log("x", 1);`,
+      module: `(ctx) => async () => { await ctx.fuel(); return () => 1; }`,
+      runId: "cross-1",
+      handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+    }).done;
+  } catch (e) {
+    answer = e;
+  }
+  const failed = answer as { ok?: boolean; name?: string; message?: string };
+  ok("a run that returns a function is refused by the crossing rule", failed.ok === false, JSON.stringify(answer).slice(0, 160));
+  ok("and the refusal names the language's rule, not a clone algorithm", failed.name === "NotCrossable", { name: failed.name, message: String(failed.message).slice(0, 100) });
+}
+
+{
+  // A HANDLER IS NOT SERIALISABLE - it holds sockets, a client and a clock - so the request names a
+  // module and the thread builds the handler there. A module that cannot build one says so by name.
+  const answer = await runInWorker({
+    source: `log("x", 1);`,
+    module: `(ctx) => async () => { await ctx.fuel(); return 1; }`,
+    runId: "nohandler-1",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, export: "nothingHere", config: {} },
+  }).done;
+  ok("a request naming an export that is not there is refused", answer.ok === false, JSON.stringify(answer).slice(0, 160));
+  const missing = answer as Extract<typeof answer, { ok: false }>;
+  ok("and the refusal names the export it looked for", missing.message.includes("nothingHere"), missing.message.slice(0, 140));
+}
+
+{
+  // A RESUME THROUGH THE THREAD: the recorded entries go in, the recorded results come back, and
+  // the handler is never asked. The journal is not a transcript - it is what a resumed run reads
+  // INSTEAD of dispatching - so this is the shape that says the boundary preserved it.
+  const first = await runInWorker({
+    source: SOURCE,
+    module: MODULE,
+    runId: "resume-w",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: SCRIPT },
+  }).done;
+  ok("the first run recorded its steps", first.ok === true && first.entries.length === 2, JSON.stringify(first).slice(0, 160));
+  const recorded = (first as Extract<typeof first, { ok: true }>);
+  const again = await runInWorker({
+    source: SOURCE,
+    module: MODULE,
+    runId: "resume-w",
+    handler: { module: new URL("./_sim-handler.ts", import.meta.url).href, config: {} },
+    pins: recorded.pins,
+    entries: recorded.entries,
+  }).done;
+  ok("the resume completes against an EMPTY script", again.ok === true, JSON.stringify(again).slice(0, 200));
+  const back = again as Extract<typeof again, { ok: true }>;
+  ok(
+    "and its journal is the first run's, entry for entry",
+    JSON.stringify(back.entries) === JSON.stringify(recorded.entries),
+    { first: recorded.entries.length, again: back.entries.length },
   );
 }
 

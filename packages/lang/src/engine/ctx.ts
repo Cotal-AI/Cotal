@@ -563,7 +563,11 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       if (found.from === "own" && (found.value === null || found.value === undefined) && optional === true) {
         return undefined;
       }
-      const list = typeof args === "function" ? args() : args;
+      // AWAITED, because the thunk is `async`: every argument the transform emits may itself contain
+      // an `await`, so a sync arrow could not hold one. Measured without the await: an ordinary
+      // `o.m?.(1)` died on `Spread syntax requires ...iterable`, and `xs.map?.(f)` reached the
+      // curated method with a Promise where its argument list should be.
+      const list = typeof args === "function" ? await args() : args;
       let answer: unknown;
       if (found.from === "table") {
         // A curated method: the walker's convention, and the ONE argument this method calls is
