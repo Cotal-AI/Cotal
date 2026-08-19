@@ -16,9 +16,9 @@
  * reds the hold rather than leaving a program silently outside the gate. A suite that dropped
  * either list would report the same green over a smaller universe.
  */
-import { runOnEngine } from "../src/engine/host.js";
+import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
-import { run as walk } from "../src/interpret.js";
+import { resume as walkResume, run as walk } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
 import { transform } from "../src/transform/index.js";
 
@@ -110,6 +110,13 @@ const WORKFLOW_SCRIPT = {
 
 const CORPUS: readonly (readonly [string, string, object])[] = [
   ["sleep and the run clock", 'await sleep("1m", { name: "s" }); log(now() > 0);', {}],
+  // STEP KEYS ARE (scope path, kind, name, occurrence), and the corpus has to reach each component
+  // or the comparison is over one shape. These four move the occurrence counter, the name, and the
+  // scope path a nested call adds.
+  ["the same effect twice, so occurrence counts", 'await sleep("1m", { name: "s" }); await sleep("2m", { name: "s" }); log(now());', {}],
+  ["an effect in a loop", 'for (const n of ["a", "b", "c"]) { await sleep("1m", { name: n }); } log(now());', {}],
+  ["an effect with no name of its own", 'await sleep("1m"); await sleep("2m"); log(now());', {}],
+  ["an effect inside a function, called twice", 'const step = async (n) => { await sleep("1m", { name: n }); return now(); }; log(await step("one"), await step("two"));', {}],
   ["literals and names", 'const a = 1; const b = "t"; const c = true; const d = null; log(a, b, c, d);', {}],
   ["template interpolation", "const n = 2; log(`n=${n}!`);", {}],
   ["array and object literals", "const xs = [1, 2]; const o = { a: 1, b: xs }; log(o, xs);", {}],
@@ -306,6 +313,96 @@ log("rounds", rounds, r.status);`,
     });
   }
   console.log(`  (${HELD.length} program(s) held out of the corpus, each pinned to the difference that holds it)`);
+}
+
+// ---- one journal, either engine: each arm resumes from the other's ------------------------------
+
+/**
+ * The strongest form of "the same journal", and the one equality alone cannot reach.
+ *
+ * Two journals can compare equal and still not be interchangeable, because a journal is not a
+ * transcript — it is what a RESUMED run reads instead of dispatching. So each program runs on one
+ * engine and is then resumed on the OTHER from the journal it wrote, against a handler that
+ * REFUSES EVERY EFFECT. A resume that reached the handler at all therefore fails loudly rather
+ * than quietly re-dispatching and agreeing by luck.
+ *
+ * The refusing handler is written here rather than reached for: an empty `SimHandler` looks like
+ * one and is not — measured, it answers `sleep` perfectly happily, so five of these crossings would
+ * have proved nothing while reading as though they proved everything.
+ */
+class RefusesEverything {
+  static readonly REACHED = "the resume dispatched an effect instead of reading the journal";
+  now(): number {
+    return AT;
+  }
+}
+for (const m of ["spawn", "turn", "ask", "checkpoint", "sleep", "wait", "notify", "monitor", "openConclave", "closeConclave"]) {
+  (RefusesEverything.prototype as unknown as Record<string, unknown>)[m] = () => {
+    throw new Error(`${RefusesEverything.REACHED} (${m})`);
+  };
+}
+
+const RESUMABLE: readonly (readonly [string, string, object])[] = [
+  ["sleep and the run clock", 'await sleep("1m", { name: "s" }); log(now() > 0);', {}],
+  ["the same effect twice", 'await sleep("1m", { name: "s" }); await sleep("2m", { name: "s" }); log(now());', {}],
+  ["an effect in a loop", 'for (const n of ["a", "b", "c"]) { await sleep("1m", { name: n }); } log(now());', {}],
+  ["an effect inside a function, called twice", 'const step = async (n) => { await sleep("1m", { name: n }); return now(); }; log(await step("one"), await step("two"));', {}],
+  ["two agents and a turn", 'const a = await spawn("one"); await turn(a, { name: "t" }); log(a.agent);', { turns: { t: { status: "done", at: 0 } } }],
+];
+
+{
+  // THE CONTROL FOR THE CONTROL. Every crossing below is silent about the handler, and silence is
+  // only evidence if the handler would have spoken. So each resumable program is first run FRESH
+  // against the same refusing handler, and every one of them has to fail: that is what makes "the
+  // resume said nothing" mean "the resume dispatched nothing".
+  let spoke = 0;
+  for (const [name, source] of RESUMABLE) {
+    let reached = false;
+    try {
+      await walk(source, { runId: "c", handler: new RefusesEverything() as never, journal: new Journal({ run: "c" }), seed: SEED, startedAt: AT });
+    } catch (e) {
+      reached = String((e as Error).message).includes(RefusesEverything.REACHED);
+    }
+    if (reached) spoke += 1;
+    else ok(`the refusing handler is reached by a fresh run of: ${name}`, false);
+  }
+  ok("every resumable program dispatches an effect the refusing handler answers loudly", spoke === RESUMABLE.length, { spoke, of: RESUMABLE.length });
+
+  let crossings = 0;
+  for (const [name, source, script] of RESUMABLE) {
+    for (const [wrote, replays] of [
+      ["walker", "engine"],
+      ["engine", "walker"],
+    ] as const) {
+      const logs: unknown[][] = [];
+      const journal = new Journal({ run: "d" });
+      const first = { runId: "d", handler: new SimHandler(script as never), journal, seed: SEED, startedAt: AT, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };
+      const original = wrote === "walker" ? await walk(source, first) : await runOnEngine(source, transform(source).module, { ...first, evaluate });
+
+      // The pins travel with the journal. Re-resolving them would be a different run wearing this
+      // one's history: the epoch moves to the resuming host and every pure draw changes.
+      const again: unknown[][] = [];
+      const back = { runId: "d", handler: new RefusesEverything() as never, pins: original.pins, seed: SEED, startedAt: AT, onLog: (l: { values: readonly unknown[] }) => again.push([...l.values]) };
+      let error: string | null = null;
+      let value: unknown;
+      try {
+        const r =
+          replays === "walker"
+            ? await walkResume(source, original.journal, back as never)
+            : await resumeOnEngine(source, transform(source).module, original.journal, { ...(back as never), evaluate });
+        value = r.value;
+      } catch (e) {
+        error = (e as { code?: string }).code ?? `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`;
+      }
+      ok(`${replays} resumes from the journal the ${wrote} wrote: ${name}`, error === null && j(again) === j(logs) && j(value) === j(original.value), {
+        error,
+        logs: { first: logs, resumed: again },
+        value: { first: original.value, resumed: value },
+      });
+      crossings += 1;
+    }
+  }
+  console.log(`  (${crossings} journal crossings, each resumed against a handler that refuses every dispatch)`);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);
