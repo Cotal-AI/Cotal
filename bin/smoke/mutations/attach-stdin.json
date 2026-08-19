@@ -138,6 +138,16 @@
   ],
   "mutations": [
     {
+      "cell": "A. bytes typed while the loop is WAITING never reach the agent",
+      "name": "the wait runs with the reader released, so what is typed between attempts buffers and flushes",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "      const watch = ownStdin(); // and it STAYS installed through the attempt this wait precedes",
+      "replace": "      releaseStdin(); const watch = undefined as ReturnType<typeof ownStdin>; // and it STAYS installed through the attempt this wait precedes",
+      "expectRed": "...and the seat read nothing of what was typed at a terminal with no session",
+      "completionMarker": "A: the manager is back on the session count it started with",
+      "note": "INVENTED rather than restored, and the only entry here of that kind, so it is labelled instead of blending in. Checked against history rather than against the comment above it: at `a7742a75^` the backoff wait ALREADY ran `const watch = watchDetachKey(key.byte)`. The wait was always owned, and what that commit added was ownership of the ESTABLISHMENT window and the gaps between attempts. So cell A guards a regression this codebase has never had and there is no shipped defect to put back. The only shape that reds it is an unowned wait, and removing the wait's reader also removes the detach key from every wait, so the run cascades and ends at 19 of 84 marks. Hence the per-entry completionMarker: this mutant is meant to survive as far as cell A and no further. Graded against the suite-END marker instead it reads INCONCLUSIVE, which is a fact about which marker was used and not about the cell. Two earlier candidates proved nothing and are named so they are not retried: `const watch = undefined` alone does not compile (TS2339, `watch` narrows to `never`), and dropping the `ownStdin()` call without releasing removes no reader at all, because `ownStdin` is idempotent through `idle ??=` and the reader is installed before the loop."
+    },
+    {
       "name": "the fix reverted for exactly the establishment window: the reader is stopped before each attempt",
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "    const attempting = establishAttachSession(vv, pin, reconnect, first);",
@@ -147,6 +157,16 @@
       "note": "The shipped defect restored, in the shape it actually had: the old code stopped the watcher and paused stdin before each attempt, so bytes typed while a session was being established buffered and were flushed into the seat by `attachClient`'s own `stdin.resume()`. `releaseStdin()` rather than `idle?.stop()` on purpose, so the next wait builds a FRESH reader exactly as the old code did: a mutant that leaves a stopped reader in place is not the old behaviour, and it would redden cells A and B, which the old code passed. MEASURED at the tip it grades, by hand, with the suite's full output captured rather than inferred from a mark count: A and B stay GREEN, C reddens on the assertion named here with the nonce visible in the seat's own sink, and D reddens twice, on the recorded SIGINT and on the seat's pid being gone. E, F and G are then UNREACHED rather than green: the mutant's own defect killed the agent, so the next cell's attach refuses with `no agent \"stdinseat\"` and the suite ends there. Unreached is not passed, and the boundary claim above rests on A and B, which did run.",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "completionMarker": "C: the manager is back on the session count it started with"
+    },
+    {
+      "cell": "D. Ctrl-C typed in that window does not reach the agent as a signal",
+      "name": "the same establishment-window revert, asked whether that window turns a 0x03 into a real signal",
+      "file": "implementations/cli/src/commands/agents.ts",
+      "find": "    const attempting = establishAttachSession(vv, pin, reconnect, first);",
+      "replace": "    releaseStdin();\n    const attempting = establishAttachSession(vv, pin, reconnect, first);",
+      "expectRed": "...the agent recorded no signal",
+      "completionMarker": "D: the manager is back on the session count it started with",
+      "note": "The SAME one-line revert the C entry uses, registered a second time because the claim is different and cannot be inferred from C's. C asks whether DATA typed in the establishment window reaches the agent. D asks whether a 0x03 typed in that same window arrives as a real SIGNAL, and the answer runs through the pty's line discipline rather than through the byte itself. That distinction was predicted wrong once in this branch's own review, on the reasoning that a raw 0x03 handed to a stub is just data: the seat runs under a pty, the line discipline turns it into a SIGINT, and the seat dies. Measured here, the sink carries `<SIGINT>` and the pid is gone.\nIts red KILLS THE SEAT, which is what D exists to forbid, so the run cannot go on for long: cell E throws `could not resolve \"stdinseat\": no agent` because the seat E needs is the one this mutant killed. The cascade lands on E and NOT on D, which is why the per-entry completionMarker is D's own settle line. That marker prints at mark 24, three marks and two passing checks after the expectRed at mark 21, so it qualifies the red rather than restating it. Do not shorten it to the expectRed: a marker satisfied by the very red it is meant to qualify proves nothing."
     },
     {
       "name": "the wait's reader is stopped when the wait ends, so an attempt runs with nobody reading",
