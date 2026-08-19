@@ -312,8 +312,10 @@ export const cotal: Plugin = async () => {
    * because a backstop that fires on a healthy drain would turn a slow publish into a dropped one,
    * so this routine can be killed part way through and that is expected. What must NOT depend on
    * finishing is the cheap step: publishing offline presence. Behind the join it is lost whenever a
-   * drain outlives the grace window; in front of it, it always lands, and the queued work then gets
-   * whatever time the runtime allows.
+   * drain outlives the grace window; in front of it, it lands unless the kill arrives first, and the
+   * queued work then gets whatever time the runtime allows. It used to say ALWAYS lands, which the
+   * bounded intake wait added later made untrue: that wait sits in front of this publish, so a kill
+   * inside it takes the publish with it.
    *
    * WHAT THAT BUYS IS DELIBERATELY UNDERSTATED HERE. Departure becomes an EXPLICIT publish rather
    * than something a reader has to infer, and that is the whole of the claim. It is NOT that a stale
