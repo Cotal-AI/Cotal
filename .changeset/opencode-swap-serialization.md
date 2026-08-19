@@ -49,6 +49,9 @@ already admitted before it publishes departure, and joins the slower event work 
 already did. Event work is deliberately not in that wait, because waiting on a drain is what
 publishing departure early exists to avoid.
 
-That wait is bounded below the shortest runtime grace window, so a stop still publishes departure
-before a hard kill can take it. The tradeoff is stated rather than implied: a straggler that
-outlives the bound is not cancelled, so it can still complete after departure has been published.
+That wait is bounded below the shortest runtime grace window, which is what leaves room for
+departure to be published before a hard kill under ordinary conditions. It is a margin rather than
+a guarantee: the publish itself has no deadline, so a slow write in the time the bound leaves is
+lost with everything else the kill takes. The other tradeoff is stated rather than implied: a
+straggler that outlives the bound is not cancelled, so it can still complete after departure has
+been published.
