@@ -559,11 +559,15 @@ for (const assistant of [
     });
     ok(launch.args.includes("flag/model") && !launch.args.includes("file/model"), "spawn model overrides the agent file model");
     ok(launch.args.includes("--append-system-prompt"), "the frontmatter-stripped persona is forwarded by file");
-    ok(launch.env.COTAL_OWNER === "owner" && launch.env.COTAL_ACTOR === "actor", "user-mode identity is forwarded");
-    ok(launch.env.GROQ_API_KEY === "groq-test" && !("UNRELATED_SECRET" in launch.env), "only Pi provider keys are forwarded");
+    // `LaunchSpec.env` is optional on the interface; a managed Pi launch always carries one, so
+    // bind it once and assert that, rather than reading through an optional at every cell.
+    const env = launch.env;
+    assert.ok(env, "a managed Pi launch carries a child env");
+    ok(env.COTAL_OWNER === "owner" && env.COTAL_ACTOR === "actor", "user-mode identity is forwarded");
+    ok(env.GROQ_API_KEY === "groq-test" && !("UNRELATED_SECRET" in env), "only Pi provider keys are forwarded");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
     ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");
-    if (launch.env.COTAL_PI_PERSONA_FILE) rmSync(dirname(launch.env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
+    if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 
     assert.throws(
       () => piConnector.buildLaunch({ space: "test", name: "pi", creds: "creds", userAuth: { owner: "o", actor: "a", sentinelCredsPath: "s", bearerCmd: ["b"] } }),

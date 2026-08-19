@@ -27,7 +27,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { opencodeConnector } from "../src/extension.js";
-import { cotal } from "../src/plugin.js";
+import { bootPlugin } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -139,7 +139,7 @@ Object.assign(process.env, {
   OPENCODE_SERVER_PASSWORD: "test-secret",
 });
 
-type PluginHooks = Awaited<ReturnType<typeof cotal>>;
+type PluginHooks = Awaited<ReturnType<typeof bootPlugin>>;
 const fire = (hooks: PluginHooks, event: unknown) => hooks.event!({ event } as never);
 /** The plugin keeps ONE mesh endpoint per process behind a global guard, so a second arm has to
  *  clear it — otherwise `cotal()` hands back the first arm's hooks and the arm grades nothing. */
@@ -159,7 +159,7 @@ try {
   process.env.COTAL_ID = "booty";
   process.env.COTAL_OPENCODE_PROMPT = BOOT_TEXT;
   clearPluginGuard();
-  armA = await cotal();
+  armA = await bootPlugin();
   await waitForPrompts(1);
   check("a boot prompt drives a turn without any peer traffic", prompts.length === 1, prompts);
   check("the boot turn carries the operator's prompt text", prompts[0]?.text.includes(BOOT_TEXT) === true, prompts[0]);
@@ -185,7 +185,7 @@ try {
   process.env.COTAL_ID = "quiety";
   const before = prompts.length;
   clearPluginGuard();
-  armB = await cotal();
+  armB = await bootPlugin();
   await sleep(3000);
   check("a boot with no prompt drives no turn at all", prompts.length === before, prompts.slice(before));
 

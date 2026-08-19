@@ -36,6 +36,7 @@ import {
   mintLifecycleUid,
   principalKey,
   DEV_OWNER,
+  type CotalMessage,
   type Delivery,
 } from "./src/index.js";
 import { pickFreePort } from "./smoke/_free-port.js";
@@ -174,7 +175,7 @@ try {
 
   const got: string[] = [];
   let bobSawMentions: string[] | undefined;
-  b.on("message", (m, d: Delivery) => {
+  b.on("message", (m: CotalMessage, d: Delivery) => {
     const text = m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("");
     const kind = m.to ? "DM" : m.toService ? "ANY:" + m.toService : "#" + (m.channel ?? "");
     got.push(`${kind}:${m.from.name}:${text}`);
@@ -217,7 +218,7 @@ try {
   });
   carol.on("error", (e: Error) => console.error("  ! carol:", e.message));
   const carolGot: string[] = [];
-  carol.on("message", (m, d: Delivery) => {
+  carol.on("message", (m: CotalMessage, d: Delivery) => {
     carolGot.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""));
     d.ack();
   });

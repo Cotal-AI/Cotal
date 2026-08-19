@@ -1,0 +1,103 @@
+{
+  "command": "pnpm smoke:web-snapshot",
+  "mutations": [
+    {
+      "name": "W1 the state-retention is reverted: a refused read applies anyway, with an empty value standing in for the snapshot it could not fetch, which is the wipe the issue reports written as a fallback",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "        stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        continue;\n",
+      "replace": "        stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        sources[i].apply([]);\n        continue;\n",
+      "expectRed": "2.1 a refused source's apply is NEVER called"
+    },
+    {
+      "name": "W2 the refusal stops being reported, so the page keeps its last good snapshot and never says so: the reader is shown stale data as though it were current",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "        stale.push({ kind: \"refused\", name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n",
+      "replace": "",
+      "expectRed": "2.3 the refusal is REPORTED, by source name"
+    },
+    {
+      "name": "W3 the status gate is dropped, so a 500 body parses and is handed back AS DATA, which is exactly how the shipped pages stored a refusal as a snapshot",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "    if (!res.ok) {",
+      "replace": "    if (false) {",
+      "expectRed": "1.1 a 500 whose body is valid JSON is a REFUSAL, not a value"
+    },
+    {
+      "name": "W4 the refusal loses the server's own error text, so the one line naming WHY the refresh did not land says only that something returned a status",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "        if (body && typeof body.error === \"string\") detail = `: ${body.error}`;",
+      "replace": "        if (false) detail = `: ${body.error}`;",
+      "expectRed": "1.3 and carries the server's own error text"
+    },
+    {
+      "name": "W5 the reads go back to running one after another, so on a slow link every source waits for the slowest and a page with four sources pays four link costs to draw one screen",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "    const settled = await Promise.all(\n      sources.map(async (s) => {\n        try {\n          return { value: await s.read() };\n        } catch (e) {\n          return { error: e };\n        }\n      }),\n    );",
+      "replace": "    const settled = [];\n    for (const s of sources) {\n      try {\n        settled.push({ value: await s.read() });\n      } catch (e) {\n        settled.push({ error: e });\n      }\n    }",
+      "expectRed": "2.11 all three reads are in flight together"
+    },
+    {
+      "name": "W6 the graph page goes back to gating its live feed behind a clean boot, so one refused read leaves it permanently disconnected with nothing on it - the measured wipe",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "  load().catch((err) => console.error(err)).then(connect);",
+      "replace": "  load().then(connect).catch((err) => { console.error(err); setConn(false); });",
+      "expectRed": "3.11 the graph page connects whatever the boot reported"
+    },
+    {
+      "name": "W7 the stale marker stops naming anything, so the page keeps its data and the reader is never told which half of it is old",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "    if (refused.length) parts.push(`stale: ${refused.join(\", \")}`);",
+      "replace": "    if (refused.length) parts.push(\"stale\");",
+      "expectRed": "3.2 a stale set NAMES its sources"
+    },
+    {
+      "name": "W8 the selected channel's history goes back to consuming a body without consulting the status, which is the one unguarded read left on either page and the wipe behind the OPEN channel: a 500 answers valid JSON, does not reject, and is handed to the order machine as a history",
+      "file": "implementations/web/src/web/app.js",
+      "find": "      msgs = await window.COTAL_SNAPSHOT.readJson(\n        await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`),\n        `#${key} history`,\n      );",
+      "replace": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();",
+      "expectRed": "4.4 and the refusal is SURFACED as a backfill failure, not swallowed"
+    },
+    {
+      "name": "W9 a refused history goes back to an empty batch, so the channel the reader is looking at is emptied once per poll on a link where that read keeps missing",
+      "file": "implementations/web/src/web/app.js",
+      "find": "      msgs = held;\n",
+      "replace": "      msgs = [];\n",
+      "expectRed": "4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes"
+    },
+    {
+      "name": "W10 retention stops being per channel, so switching to a channel whose read is refused shows the PREVIOUS channel's messages under the new channel's name, which is worse than the empty view it replaced",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    const held = shownChannel === key ? channelMsgs : [];",
+      "replace": "    const held = channelMsgs;",
+      "expectRed": "4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)"
+    },
+    {
+      "name": "W11 marking one source overwrites the whole set again, so a refused channel history erases the poll's own findings and the reader is told about one stale source instead of all of them",
+      "file": "implementations/web/src/web/app.js",
+      "find": "  const rest = staleNow.filter((s) => s.name !== name);\n  setStale(entry ? [...rest, entry] : rest);",
+      "replace": "  setStale(entry ? [entry] : []);",
+      "expectRed": "4.11 a refused channel history does not erase the poll's other marks"
+    },
+    {
+      "name": "W12 recovery only HIDES the marker instead of clearing it, so the previous label and tooltip sit in the element and anything that unhides it tells the reader a source is stale that recovered long ago",
+      "file": "implementations/web/src/web/app.js",
+      "find": "  el.hidden = !label;\n",
+      "replace": "  el.hidden = !label;\n  if (!label) return;\n",
+      "expectRed": "4.9 and a read that lands clears it"
+    },
+    {
+      "name": "W13 the structural guard stops allowing whitespace before `.then`, which is exactly how it went green over a live unguarded read: the console page's space name was fetched on one line and consumed on the next, so the class the cell exists to forbid could not reach it",
+      "file": "implementations/web/smoke/snapshot-retention.smoke.ts",
+      "find": "  const rawJson = new RegExp(`fetch${ARGS}\\\\s*\\\\)\\\\s*\\\\.json\\\\(\\\\)|fetch${ARGS}\\\\s*\\\\.then\\\\(\\\\s*\\\\(?r\\\\)?\\\\s*=>\\\\s*r\\\\.json\\\\(\\\\)`, \"g\");",
+      "replace": "  const rawJson = new RegExp(`fetch${ARGS}\\\\s*\\\\)\\\\s*\\\\.json\\\\(\\\\)|fetch${ARGS}\\\\.then\\\\(\\\\s*\\\\(?r\\\\)?\\\\s*=>\\\\s*r\\\\.json\\\\(\\\\)`, \"g\");",
+      "expectRed": "3.10e CONTROL: the pattern sees a fetch whose `.then` is on the NEXT line"
+    },
+    {
+      "name": "W14 the console page's space name goes back to consuming the response body without checking the status, which is the same refusal-as-data defect as the rest of this change on the one read that used to have no later poll to correct it",
+      "file": "implementations/web/src/web/app.js",
+      "find": "        read: async () => SNAP.readJson(await fetch(\"/api/meta\"), \"space\"),",
+      "replace": "        read: async () => (await fetch(\"/api/meta\")).json(),",
+      "expectRed": "5.4 a 500 whose body is JSON does NOT become the space name"
+    }
+  ]
+}
