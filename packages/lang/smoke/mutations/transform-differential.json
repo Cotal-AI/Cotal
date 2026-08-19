@@ -147,6 +147,24 @@
       "expectRed": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
       "cell": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
       "note": "Measured: NOT ONE behavioural cell in this suite reds. The free name resolves to the real global in the harness's evaluator, and lane H measured that inside the shipped SES compartment an unbound READ answers `undefined` and throws nothing either - so both arms agree, every journal matches, and the only thing that notices is the resolver over the emitted text. That is the whole argument for running it over the corpus this gate actually executes."
+    },
+    {
+      "name": "the shape leg is never compared, so the gate is back to comparing renderings",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  if (shapes(a.logs) !== shapes(b.logs)) out.push(\"log shapes\");",
+      "replace": "",
+      "expectRed": "the comparator finds a difference the rendering cannot show: absence against a literal null",
+      "cell": "the comparator finds a difference the rendering cannot show: absence against a literal null",
+      "note": "A comparator-discipline cell, so its mutant is in the comparator. Every corpus row still passes without this leg - that is the whole point, the blindness was latent - so only the hand-built pairs notice, which is what makes them the evidence that the leg can fail at all."
+    },
+    {
+      "name": "the shape signature goes shallow, so a record carrying a function reads as an empty one",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "        : typeof v === \"object\" && carriesFunction(v)\n          ? \"object+function\"\n          : typeof v;",
+      "replace": "        : typeof v;",
+      "expectRed": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function",
+      "cell": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function",
+      "note": "The first spelling of this signature WAS shallow, and it failed the two rows it had been added for: `{ g: (x) => x }` and `{}` both read `object`, which is the same conflation one level down. Measured before it was aimed - the four top-level pairs still pass shallow, so only the nesting pair reds."
     }
   ],
   "completionMarker": "differential.smoke:"
