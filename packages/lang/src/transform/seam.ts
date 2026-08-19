@@ -63,19 +63,6 @@ export const SEAM_PROPOSED: Readonly<Record<string, string>> = Object.freeze({})
  */
 export const UNARY_OPS: readonly string[] = Object.freeze(["-", "+", "~", "update"]);
 
-/** A site whose law has no ruled member and no surfaced proposal yet: refuse rather than invent one. */
-export class SeamPending extends Error {
-  constructor(
-    readonly item: string,
-    readonly site: string,
-  ) {
-    super(
-      `${site} needs a seam decision that has not been made (${item}). It is surfaced on #fix.lang-transform; the emitter refuses rather than inventing an answer, because inventing one IS widening the seam.`,
-    );
-    this.name = "SeamPending";
-  }
-}
-
 /** Names chosen against the program's own identifier universe, so nothing the emitter needs can be shadowed. */
 export interface Names {
   /** The ctx parameter. The validator admits a program-declared `__ctx` (measured), so this is computed, not fixed. */

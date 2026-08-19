@@ -49,4 +49,4 @@ export function transform(source: string, opts: TransformOptions = {}): { readon
   };
 }
 
-export { SEAM_RULED, SEAM_PROPOSED, UNARY_OPS, SeamPending } from "./seam.js";
+export { SEAM_RULED, SEAM_PROPOSED, UNARY_OPS } from "./seam.js";

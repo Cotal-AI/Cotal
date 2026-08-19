@@ -13,7 +13,7 @@
 import { BUILTINS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES, VALUE_NAMES } from "../primitives.js";
 import { analyze, type Analysis, type AnyNode, type Binding } from "./scope.js";
 import { stripPositions } from "../interpret.js";
-import { SeamPending, pickNames, type Names } from "./seam.js";
+import { pickNames, type Names } from "./seam.js";
 
 /** Free names that are VALUES as well as callees: the walker declares each as a binding (`installGlobals`). */
 const FREE_VALUES: ReadonlySet<string> = new Set([
@@ -36,6 +36,9 @@ const q = (s: string): string => JSON.stringify(s);
 /** `undefined` is a GLOBAL binding; the emitted module has no unbound references, so it spells the value. */
 const VOID = "void 0";
 
+/** Everything written after a chain link: its value, and the guards in force where that value is read. */
+type Rest = (value: string, guards: string[]) => string;
+
 /** Every identifier the source spells, so the emitter's own names can be picked around them. */
 function identifiers(node: unknown, out: Set<string>): void {
   if (Array.isArray(node)) {
@@ -57,6 +60,7 @@ class Emitter {
   private tempTop = 0;
   private tempMax = 0;
   private labels = 0;
+  private conts = 0;
   /** The innermost loop's break and continue labels, and the innermost switch's break label. */
   private breakTo: string | null = null;
   private continueTo: string | null = null;
@@ -704,69 +708,131 @@ class Emitter {
    */
   private chain(node: AnyNode): string {
     const guards: string[] = [];
-    const body = this.chainLink(node.type === "ChainExpression" ? (node.expression as AnyNode) : node, guards, true);
+    const body = this.chainLink(node.type === "ChainExpression" ? (node.expression as AnyNode) : node, guards, undefined);
+    return this.short(body, guards);
+  }
+
+  /** A body under the guards in force where it is written: nullish at any of them and nothing after runs. */
+  private short(body: string, guards: string[]): string {
     if (guards.length === 0) return body;
     return `((${guards.join(") || (")}) ? ${VOID} : ${body})`;
   }
 
   /**
-   * One link of an optional chain. `tail` is true for the OUTERMOST link, the one whose value is the
-   * chain's value.
+   * One link of a chain, with everything written AFTER it handed down as {@link Rest}.
    *
-   * It exists for the optional CALL. `o.m?.()` short-circuits on whether the member is nullish, and
-   * the seam resolves a method name and calls it in one step — the one place a method name may be
-   * resolved at all — so the transform cannot see the answer and the host makes it, through ruling
-   * 1d's optional flag. What the host cannot then tell the transform is WHETHER it short-circuited,
-   * and the chain needs that as soon as anything follows: measured on the walker, `o.z?.().x` on an
-   * absent member is undefined while `o.m?.().x` on a member that returns undefined is L4010. A
-   * guard on the returned value would answer undefined for both. So a tail optional call is emitted
-   * and one with a continuation refuses, loudly and listed.
+   * The chain is emitted from the inside out — the innermost value first, each link wrapping what it
+   * produced — but the OPTIONAL CALL needs the opposite direction. `o.m?.()` short-circuits on
+   * whether the member is nullish, and the seam resolves a method name and calls it in one step, the
+   * one place a method name may be resolved at all, so the host makes that decision and the
+   * transform never sees the answer. What the host cannot then tell the transform is WHETHER it
+   * short-circuited: measured on the walker, `o.z?.().x` on an absent member is undefined while
+   * `o.m?.().x` on a member that RETURNS undefined is L4010, and a guard on the returned value
+   * answers undefined for both, so it would drop a refusal in silence. Ruling 1d's fifth argument
+   * hands the rest of the chain to the call that made the decision instead.
+   *
+   * So `rest` travels down to every link, and each one applies it to its own value — except the
+   * optional call, which compiles it into a closure the host applies or skips.
    */
-  private chainLink(node: AnyNode, guards: string[], tail = false): string {
+  private chainLink(node: AnyNode, guards: string[], rest: Rest | undefined): string {
+    const done = (code: string, g: string[]): string => (rest === undefined ? code : rest(code, g));
+
     if (node.type === "MemberExpression") {
-      let obj = this.chainLink(node.object as AnyNode, guards);
-      if (node.optional === true) obj = this.guard(obj, guards);
-      return this.seam("get", `${obj}, ${this.memberKey(node)}`);
+      return this.chainLink(node.object as AnyNode, guards, (objCode, g) => {
+        const obj = node.optional === true ? this.guard(objCode, g) : objCode;
+        return done(this.seam("get", `${obj}, ${this.memberKey(node)}`), g);
+      });
     }
     if (node.type === "CallExpression") {
       const callee = node.callee as AnyNode;
-      const args = this.args(node);
 
-      if (callee.type === "Identifier" && this.binding(callee) === undefined) {
+      // A primitive is dispatched by NAME, never by value: the validator forbids shadowing one, so a
+      // call spelled `turn` is always the effect. It is emitted BEFORE the ordinary argument list is
+      // built, because a primitive that defers its body hands that argument over differently.
+      if (callee.type === "Identifier" && this.binding(callee) === undefined && PRIMITIVES[callee.name as string] !== undefined) {
         const name = callee.name as string;
-        // A primitive is dispatched by NAME, never by value: the validator forbids shadowing one, so
-        // a call spelled `turn` is always the effect.
-        if (PRIMITIVES[name] !== undefined) return `(await ${this.seam("effect", `${q(name)}, [${args}], ${this.site(name, node)}`)})`;
-        if (FREE_VALUES.has(name)) return `(await ${this.seam("free", `${q(name)}, [${args}]`)})`;
+        return done(`(await ${this.seam("effect", `${q(name)}, [${this.effectArgs(name, node)}], ${this.site(name, node)}`)})`, guards);
+      }
+
+      const args = this.args(node);
+      if (callee.type === "Identifier" && this.binding(callee) === undefined && FREE_VALUES.has(callee.name as string)) {
+        return done(`(await ${this.seam("free", `${q(callee.name as string)}, [${args}]`)})`, guards);
       }
 
       if (callee.type === "MemberExpression") {
-        let obj = this.chainLink(callee.object as AnyNode, guards);
-        if (callee.optional === true) obj = this.guard(obj, guards);
-        if (node.optional === true && !tail) {
-          throw new SeamPending("an optional call with a chain after it (`o.m?.().x`)", "CallExpression");
-        }
-        // The one place a method NAME may be resolved: at the call. That is what lets `get` refuse
-        // the same name everywhere else (L4020). Ruling 1d's fourth argument asks the host to
-        // short-circuit to undefined when the member is nullish, calling nothing.
-        const optional = node.optional === true ? ", true" : "";
-        return `(await ${this.seam("call", `${obj}, ${this.memberKey(callee)}, [${args}]${optional}`)})`;
+        return this.chainLink(callee.object as AnyNode, guards, (objCode, g) => {
+          const obj = callee.optional === true ? this.guard(objCode, g) : objCode;
+          const key = this.memberKey(callee);
+          // The one place a method NAME may be resolved: at the call. That is what lets `get` refuse
+          // the same name everywhere else (L4020). An ordinary call's chain is written natively —
+          // nothing in it waits on a decision only the host made.
+          if (node.optional !== true) return done(`(await ${this.seam("call", `${obj}, ${key}, [${args}]`)})`, g);
+          // AND THE OPTIONAL FORM HANDS ITS ARGUMENTS OVER UNEVALUATED. The walker checks the member
+          // BEFORE it evaluates the argument list, so `o.m?.(await sleep("1s"))` on an absent member
+          // journals nothing while the same argument on a present method journals a sleep (lane H
+          // measured both). An emitted array has already run them, and a resume would replay a step
+          // the walker's run never recorded — so it is a thunk, and `async` because an argument may
+          // await. The ordinary form is unchanged and still hands over a plain array.
+          const cont = rest === undefined ? "" : `, ${this.continuation(rest)}`;
+          return `(await ${this.seam("call", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;
+        });
       }
 
-      let fn = this.chainLink(callee, guards);
-      if (node.optional === true) fn = this.guard(fn, guards);
-      const f = this.temp();
-      // L4011 at a non-function callee, behind a `typeof` so a call to a real function never leaves
-      // the compartment. `const f = 1; f()` is admitted by the validator (measured).
-      return `(await ((${f} = ${fn}), typeof ${f} === "function" ? ${f} : ${this.seam("callee", f)})(${args}))`;
+      return this.chainLink(callee, guards, (fnCode, g) => {
+        const fn = node.optional === true ? this.guard(fnCode, g) : fnCode;
+        const f = this.temp();
+        // L4011 at a non-function callee, behind a `typeof` so a call to a real function never leaves
+        // the compartment. `const f = 1; f()` is admitted by the validator (measured).
+        return done(`(await ((${f} = ${fn}), typeof ${f} === "function" ? ${f} : ${this.seam("callee", f)})(${args}))`, g);
+      });
     }
-    return this.expr(node);
+    return done(this.expr(node), guards);
+  }
+
+  /**
+   * The rest of a chain, as the closure ruling 1d's fifth argument takes.
+   *
+   * Its guards are its OWN: a link after the optional call is guarded only where the call answered,
+   * because a short-circuit already skipped everything here. `async` because a continuation may hold
+   * another call, and the host awaits what it applies.
+   */
+  private continuation(rest: Rest): string {
+    const value = `${this.n.temp}c${this.conts}`;
+    this.conts += 1;
+    const guards: string[] = [];
+    const body = rest(value, guards);
+    return `async (${value}) => ${this.short(body, guards)}`;
   }
 
   private guard(code: string, guards: string[]): string {
     const t = this.temp();
     guards.push(`(${t} = ${code}) === null || ${t} === ${VOID}`);
     return t;
+  }
+
+  /**
+   * A primitive's arguments, with the DEFERRED BODY handed over unevaluated.
+   *
+   * `fanOut` and `conclave` take their body at index 1, and the walker evaluates it INSIDE the
+   * scope, after the entry has begun — measured on the oracle: the same awaited effect journals
+   * after the scope entry in the body position and before it in the options bag. A body handed over
+   * already evaluated has journalled its effects in the wrong place, and a resume would replay a
+   * step the walker's run never recorded; it is the same rule as the optional call's arguments, and
+   * the host refuses a body that is not a thunk (L1000).
+   *
+   * WHICH primitives defer comes from the table — a scope-opener whose options sit at 2 — rather
+   * than from a list of names spelled here, so a fifth combinator cannot arrive with its body
+   * silently eager.
+   */
+  private effectArgs(name: string, node: AnyNode): string {
+    const spec = PRIMITIVES[name];
+    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;
+    return ((node.arguments as AnyNode[]) ?? [])
+      .map((a, i) => {
+        const code = a.type === "SpreadElement" ? `...${this.seam("iter", this.expr(a.argument as AnyNode))}` : this.expr(a);
+        return defers && i === 1 ? `async () => (${code})` : code;
+      })
+      .join(", ");
   }
 
   private args(node: AnyNode): string {

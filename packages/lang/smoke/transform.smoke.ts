@@ -223,6 +223,7 @@ const CORPUS: readonly (readonly [string, string])[] = [
   ["member read and write", "const o = { a: 1 }; o.a = 2; const xs = [1]; xs[0] = 3; log(o.a, xs[0]);"],
   ["computed member", 'const k = "a"; const o = { a: 1 }; log(o[k]);'],
   ["optional chain", "const o = { a: { b: 1 } }; log(o.a?.b, o.z?.b);"],
+  ["an optional call, and the chain the host finishes", "const o = { m: () => ({ x: { y: 1 } }) }; log(o.m?.().x.y, o.m?.()?.x);"],
   ["method call", "const xs = [1, 2]; log(xs.map((x) => x + 1));"],
   ["operators", "const a = 1 + 2 * 3; const b = -a; const c = ~a; const d = !true; const e = a === 7; log(a, b, c, d, e, a % 2, a ** 2, a > 1, a & 1);"],
   ["logical and conditional", "const a = 1 || 2; const b = null ?? 3; const c = a ? 1 : 2; const d = a && b; log(a, b, c, d);"],
@@ -492,43 +493,98 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   console.log(`  (${subsets.length} loser sets digested on both sides)`);
 }
 
-// ---- 12) what the transform still refuses, and what the walker answers there ---------------------
+// ---- 11b) the scope body that must not be evaluated at the call --------------------------------
 
 {
-  // A VALIDATED PROGRAM THE TRANSFORM CANNOT COMPILE IS A HOLE IN THE PRIMARY GATE, so it is named
-  // here rather than discovered when someone writes it. Ruling 1d closed `o.m?.()` with an optional
-  // flag on `call`; what stays open is an optional call with a CHAIN AFTER IT. The host makes the
-  // short-circuit decision, because only it may resolve a method name, and it has no way to tell
-  // the transform that it made one — measured on the walker, `o.z?.().x` on an absent member is
-  // undefined while `o.m?.().x` on a member returning undefined is L4010, so a guard on the
-  // returned value would answer undefined for both. When the seam answers it, this cell reds and
-  // the program moves into the corpus above.
-  const pending = ["const o = { m: () => ({ x: 1 }) }; log(o.m?.().x);"];
-  let refused = 0;
-  const quiet: string[] = [];
-  for (const source of pending) {
-    let name = "";
-    try {
-      transform(source);
-    } catch (e) {
-      name = (e as Error).name;
-    }
-    if (name === "SeamPending") refused += 1;
-    else quiet.push(`${source} -> ${name === "" ? "no refusal at all" : name}`);
-  }
-  ok("every program the seam cannot yet express refuses loudly, and is listed", refused === pending.length, { refused, of: pending.length, quiet });
+  // `fanOut` and `conclave` take their body at index 1, and the walker evaluates it INSIDE the
+  // scope, after the entry has begun: measured on both engines, `fanOut(xs, await choose(), {...})`
+  // journals `fanOut:f` BEFORE the `sleep` inside `choose`, while the same effect in the options bag
+  // journals before the scope. An eager body has journalled in the wrong place, and the host refuses
+  // one that is not a thunk (L1000).
+  const fan = transform('const a = await spawn("one"); await fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: (m) => m.agent });').module;
+  ok('a fan-out\'s body travels unevaluated', /effect\("fanOut", \[.*, async \(\) => \(async \(\.\.\./.test(fan), fan.slice(-320));
+  const con = transform('const a = await spawn("one"); await conclave([a], async (c) => c, { name: "k" });').module;
+  ok("a conclave's body travels unevaluated", /effect\("conclave", \[.*, async \(\) => \(async \(\.\.\./.test(con), con.slice(-320));
 
-  // AND THE MIRROR: the shape ruling 1d DID close is emitted, and it carries the flag. Without this
-  // cell "refuse every optional call" would pass the one above.
+  // AND THE COMBINATORS THAT HAVE NO DEFERRED ARGUMENT KEEP THEIR BAG. `parallel` and `race` take
+  // branches, not a body; wrapping that bag would hand the host a thunk it refuses as an engine
+  // fault. Which primitives defer comes from the table, so this is the other half of that read.
+  const par = transform('await parallel({ one: () => sleep("1m", { name: "one" }) }, { name: "both" });').module;
+  // NOT ONLY POSITION 0: the mutant that wraps by "is a scope-opener" rather than by the table wraps
+  // `parallel`'s OPTIONS BAG, which a check on the branches alone walks straight past (it did -
+  // that mutant SURVIVED until this cell read the whole emission). `async () => (` is the deferred
+  // wrapper's own spelling: a branch body is `async (...__ta) =>` and a continuation `async (__tc0) =>`.
+  ok(
+    "a combinator with no deferred argument wraps nothing at all",
+    /effect\("parallel", \[__ctx\.born\(\{/.test(par) && !par.includes("async () => ("),
+    par.slice(-320),
+  );
+}
+
+// ---- 12) the chain the host has to finish, and what the walker answers there --------------------
+
+{
+  // THE ARGUMENTS FIRST, then the chain: each rule below is one position of the same call, and they
+  // are ordered so a mistake in one is named by its own cell rather than by the next one along.
+  //
+  // Ruling 1d's fourth argument is the optional flag. The seam resolves a method name and calls it
+  // in one step, the one place a method name may be resolved at all, so the short-circuit decision
+  // is the host's and the flag is what asks for it.
   const closed = transform("const o = { m: () => 1 }; log(await o.m?.());");
-  ok("a tail optional call is emitted through the ruled flag", closed.module.includes('.call(o, "m", [], true)'), closed.module.slice(-260));
+  ok("a tail optional call is emitted through the ruled flag", /\.call\(o, "m", .*, true[,)]/.test(closed.module), closed.module.slice(-260));
+  ok("a tail optional call carries no continuation: there is nothing written after it", !closed.module.includes("true, async ("), closed.module.slice(-260));
+
+  // AND ITS ARGUMENTS ARE HANDED OVER UNEVALUATED. The walker checks the member before it evaluates
+  // the argument list, so a short-circuited optional call runs NO argument; an emitted array has
+  // already run them, and a resume would replay a step the run never recorded.
+  const withArgs = transform('const o = { m: (x) => x }; log(await o.m?.(await sleep("1s", { name: "s" })));').module;
+  ok("an optional call hands its arguments over as a thunk", /\.call\(o, "m", async \(\) => \[.*sleep/.test(withArgs), withArgs.slice(-320));
   const plain = transform("const xs = [1]; log(xs.map((x) => x));").module;
   ok("an ordinary method call carries no flag", plain.includes('.call(xs, "map", [') && !plain.includes(", true)"), plain.slice(-200));
 
-  // AND THE WALKER'S ANSWERS ARE RECORDED WITH BOTH, because they are what the emission has to
-  // reproduce: for the closed shape, present function calls / absent short-circuits / present
-  // non-function is L4011; for the open one, the two answers a guard on the result could not tell
-  // apart. Measured on the oracle rather than quoted from it.
+  // AND THE FIFTH ARGUMENT IS THE REST OF THE CHAIN, because only the host knows it short-circuited:
+  // a guard on the value it returns cannot tell a short-circuit from a call that returned undefined,
+  // measured below as undefined for `o.z?.().x` on an absent member and L4010 for `o.m?.().x` on a
+  // member that returns undefined. So everything written after the call is emitted as a closure the
+  // host applies or skips, rather than written after the call where it would always run.
+  const after = transform("const o = { m: () => ({ x: 1 }) }; log(o.m?.().x);").module;
+  ok(
+    "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
+    /\.call\(o, "m", async \(\) => \[\], true, async \((\S+)\) => __ctx\.get\(\1, "x"\)\)/.test(after),
+    after.slice(-280),
+  );
+
+  // AND ALL OF IT TRAVELS, not just the first link: a deep chain and a trailing call are swallowed
+  // by the same short-circuit (measured), so both compile into the one closure.
+  const deep = transform("const o = { m: () => ({ x: { y: 1 } }) }; log(o.m?.().x.y);").module;
+  ok(
+    "a deep chain after the optional call travels as one continuation",
+    /, true, async \((\S+)\) => __ctx\.get\(__ctx\.get\(\1, "x"\), "y"\)\)/.test(deep),
+    deep.slice(-280),
+  );
+  const trailing = transform('const o = { m: () => " a " }; log(o.m?.().trim());').module;
+  ok(
+    "a call after the optional call travels in the same continuation",
+    /, true, async \((\S+)\) => \(await __ctx\.call\(\1, "trim", \[\]\)\)\)/.test(trailing),
+    trailing.slice(-280),
+  );
+
+  // AND A `?.` WRITTEN AFTER IT IS GUARDED INSIDE the closure. Its guard must not run when the call
+  // short-circuited — there is nothing to test then — so the continuation carries its own guards
+  // rather than adding them to the chain's.
+  const nested = transform("const o = { m: () => ({ x: 1 }) }; log(o.m?.()?.x);").module;
+  const at = nested.indexOf('.call(o, "m"');
+  ok(
+    "a `?.` after the optional call is guarded inside the continuation, where the call answered",
+    at !== -1 && nested.indexOf("=== null") > at && /async \(\S+\) => \(\(\(\S+ = \S+\) === null/.test(nested),
+    nested.slice(-320),
+  );
+
+  // AND THE WALKER'S ANSWERS ARE RECORDED, because they are what the emission has to reproduce:
+  // present function calls, absent short-circuits, a present non-function is L4011, a short-circuit
+  // swallows a deep chain and a trailing call alike, and the pair a guard on the returned value
+  // could not have told apart (`[[null]]` for the absent member, L4010 for the member that returned
+  // undefined) is why the continuation is handed over at all. Measured, not quoted.
   const answers: string[] = [];
   for (const source of [
     "const o = { m: () => 1 }; log(await o.m?.());",
@@ -536,6 +592,11 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
     "const o = { m: 5 }; log(await o.m?.());",
     "const o = {}; log(o.z?.().x);",
     "const o = { m: () => undefined }; log(o.m?.().x);",
+    "const o = {}; log(o.z?.().x.y);",
+    "const o = {}; log(o.z?.().trim());",
+    "const o = { m: () => ({ x: { y: 2 } }) }; log(o.m?.().x.y);",
+    'const o = { m: () => " a " }; log(o.m?.().trim());',
+    "const o = { m: () => undefined }; log(o.m?.()?.x);",
   ]) {
     const logs: unknown[] = [];
     try {
@@ -547,7 +608,8 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   }
   ok(
     "the walker's answers for an optional call are recorded with the rule and with the hole",
-    JSON.stringify(answers) === JSON.stringify(["[[1]]", "[[null]]", "L4011", "[[null]]", "L4010"]),
+    JSON.stringify(answers) ===
+      JSON.stringify(["[[1]]", "[[null]]", "L4011", "[[null]]", "L4010", "[[null]]", "[[null]]", "[[2]]", '[["a"]]', "[[null]]"]),
     answers,
   );
 }
