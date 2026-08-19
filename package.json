@@ -366,7 +366,7 @@
     "smoke:ext:live": "tsx bin/smoke/ext-live.smoke.ts",
     "smoke:dogfood:live": "tsx bin/smoke/dogfood-live.smoke.ts",
     "smoke:artifact-store": "tsx packages/core/smoke/artifact-store.smoke.ts",
-    "smoke:backup-inventory": "tsx packages/core/smoke/backup.smoke.ts",
+    "smoke:backup-inventory": "tsx packages/core/smoke/backup-inventory.smoke.ts",
     "smoke:backup-cli": "tsx implementations/cli/smoke/backup.smoke.ts",
     "smoke:backup-perms:live": "pnpm -F @cotal-ai/core smoke:backup:live",
     "smoke:backup-restore:live": "tsx bin/smoke/backup-restore-live.smoke.ts",
