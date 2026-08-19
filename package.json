@@ -58,7 +58,7 @@
     "smoke:lang-semantics": "tsx packages/lang/smoke/semantics.smoke.ts",
     "smoke:lang-surface": "tsx packages/lang/smoke/surface.smoke.ts",
     "smoke:lang-transform": "tsx packages/lang/smoke/transform.smoke.ts",
-    "smoke:lang-engine": "pnpm --filter @cotal-ai/lang build && tsx packages/lang/smoke/engine.smoke.ts",
+    "smoke:lang-engine": "pnpm --filter @cotal-ai/lang build:emit && tsx packages/lang/smoke/engine.smoke.ts",
     "smoke:lang-differential": "tsx packages/lang/smoke/differential.smoke.ts",
     "smoke:orientation": "tsx extensions/connector-core/smoke/orientation.smoke.ts",
     "smoke:docs": "tsx extensions/connector-core/smoke/docs.smoke.ts",

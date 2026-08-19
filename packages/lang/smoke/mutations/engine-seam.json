@@ -702,7 +702,7 @@
       "find": "    set(o, k, v, binding) {",
       "replace": "    set(o, k, v, binding) {\n      binding = undefined;",
       "expectRed": "and so does the engine's write clause, when the cell has no own key yet",
-      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "completionMarker": "ok without a binding name, an absent field is still just undefined",
       "cell": "and so does the engine's write clause, when the cell has no own key yet",
       "note": "The shape the classifier cannot see from reads alone: a binding only ever WRITTEN from a deeper function. Before the clause the engine died on a native ReferenceError - loud, uncatchable, and an engine fault by this host's own rule - where the walker answers a catchable L2004. Dropping the argument on the floor restores exactly that."
     },
@@ -711,10 +711,10 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "`${binding} is assigned before its declaration was reached: the binding exists for the whole block, but it holds no value until the \\`let\\`/\\`const\\` line runs.`",
       "replace": "`${binding} is used before its declaration was reached: the binding exists for the whole block, but it holds no value until the \\`let\\`/\\`const\\` line runs. Call this function after the declaration, or move the declaration up.`",
-      "expectRed": "the write's refusal is not the read's",
-      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
-      "cell": "the write's refusal is not the read's",
-      "note": "The two sentences are one word apart and the walker says both, for two different things. A host that answered the read's words for a write diverges where a program can see it - `e.message` is a program-visible value - while every code-level cell stays green, which is why the words are compared against the oracle and not just the code."
+      "expectRed": "with the WALKER'S ASSIGNMENT message, word for word",
+      "completionMarker": "ok without a binding name, an absent field is still just undefined",
+      "cell": "with the WALKER'S ASSIGNMENT message, word for word",
+      "note": "The two sentences are one word apart and the walker says both, for two different things. A host that answered the read's words for a write diverges where a program can see it - `e.message` is a program-visible value - while every code-level cell stays green, which is why the words are compared against the oracle and not just the code. Aimed at the word-for-word comparison rather than the difference cell: the suite is fail-fast and the comparison against the oracle stands first, so it is the cell that actually notices."
     },
     {
       "name": "the refused write initialises the cell anyway",
@@ -722,7 +722,7 @@
       "find": "    set(o, k, v, binding) {",
       "replace": "    set(o, k, v, binding) {\n      if (binding !== undefined && o !== null && typeof o === \"object\" && !Object.prototype.hasOwnProperty.call(o, keyOf(k))) { (o as Record<string, unknown>)[keyOf(k)] = v; throw new RuntimeFault(\"L2004\", `${binding} is assigned before its declaration was reached: the binding exists for the whole block, but it holds no value until the \\`let\\`/\\`const\\` line runs.`); }",
       "expectRed": "and it left the cell uninitialised, so the declaration can still initialise it",
-      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "completionMarker": "ok without a binding name, an absent field is still just undefined",
       "cell": "and it left the cell uninitialised, so the declaration can still initialise it",
       "note": "Refuses with the same code and the same words, so every cell about the refusal stays green - and leaves the key behind. A caught early write would then have initialised the binding from a line that never ran, and the `let` that follows would look like a redeclaration to the cell test rather than the initialisation it is."
     },
@@ -745,6 +745,26 @@
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
       "cell": "and it never presents as a module-resolution failure",
       "note": "Keeps both the version it found and the floor, so the cell above it stays green, and puts back the one thing this whole change removed: a sub-floor run presenting as node failing to resolve a file that is right there. That was the developer-visible symptom on node 22, and the panel asked for a cell that says it can never come back."
+    },
+    {
+      "name": "the thenable gate runs ahead of the member rule",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
+      "replace": "      assertWritable(o, currentFrame());\n      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");\n      if (Array.isArray(o)) {",
+      "expectRed": "and so does the engine, not the value's rule",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth",
+      "cell": "and so does the engine, not the value's rule",
+      "note": "Where this gate stood until the order was measured, and the reason a rule about the VALUE cannot be asked before the rule about the MEMBER: `keys({a:1}).then = () => 1` came back L4018 where the walker says L4014, the same sentence `.foo` gets, because an array does not have that member at all. Both engines refuse the program either way, which is why only a cell comparing the CODES against the oracle catches it."
+    },
+    {
+      "name": "the member rule runs ahead of the freeze",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
+      "replace": "      if (!Array.isArray(o)) assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
+      "expectRed": "and so does the engine, freeze ahead of the member rule",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth",
+      "cell": "and so does the engine, freeze ahead of the member rule",
+      "note": "The other end of the same order, and it is measured on the oracle too: a frozen array written with a member it does not have answers L2031, not L4014. A host that asked the member rule first would tell an author to fix the member name on a value no member name would have made writable."
     }
   ]
 }

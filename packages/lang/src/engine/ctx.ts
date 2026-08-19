@@ -693,9 +693,6 @@ function buildCtx(run: EngineRun): CtxWithSteps {
         );
       }
       assertWritable(o, currentFrame());
-      // The second door of the thenable gate: a record can acquire a callable `then` after birth,
-      // and a computed key reaches it past any static spelling (`x["th" + "en"] = f`).
-      if (prop === "then") refuseThenable({ then: v }, "this field write");
       if (Array.isArray(o)) {
         if (prop === "length") {
           // `xs.length = n` truncates, as in JavaScript. A LONGER length is refused: JavaScript
@@ -722,6 +719,18 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       } else if (prop === "__proto__") {
         throw new RuntimeFault("L4014", "`__proto__` names an object's prototype, and there are no prototypes here");
       }
+      // THE SECOND DOOR OF THE THENABLE GATE, and it is LAST on purpose. A record can acquire a
+      // callable `then` after birth, and a computed key reaches it past any static spelling
+      // (`x["th" + "en"] = f`). But it applies to a RECORD and to nothing else, because the walker's
+      // order is: what kind of thing is being written (L4010), is it frozen (L2031), does that kind
+      // have this member (L4014/L4017/L4019) - and only then what the value is. MEASURED on the
+      // oracle: `keys({a:1}).then = () => 1` is L4014 "`then` is not a member of an array", the same
+      // answer as `.foo`, and `"x".then = f` and `(1).then = f` are L4010. Refusing L4018 here first
+      // answered the value's rule for a receiver that never had the member, which is a different
+      // sentence for the same program. On a record the walker refuses NOTHING and this engine
+      // refuses L4018: that is the declared divergence pending the walker's L4021 (#642/#657), and
+      // it is the only one this reordering leaves.
+      if (prop === "then") refuseThenable({ then: v }, "this field write");
       setOwn(o, prop, v);
       return v;
     },
