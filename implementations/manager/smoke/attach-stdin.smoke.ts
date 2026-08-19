@@ -466,18 +466,21 @@ const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
  * earlier bytes were ever going to arrive as had to arrive BEFORE this one did; a byte still absent
  * when the echo lands is a byte that was dropped, which is the claim. A fixed sleep in the same
  * place can only fail toward green, because a delivery slower than the sleep lands after the
- * assertion has already passed. The echo is asserted in its own right, so the absence below can
- * never pass on a channel that carries nothing at all. Returns the sink offset taken before the
- * first dating byte, and EVERY nonce it wrote, for a caller whose claim is that the tail holds
+ * assertion has already passed. The echo is asserted in its own right, so a RUN cannot pass on a
+ * channel that carries nothing at all. Note where that stops: `check` records a failure and returns
+ * rather than throwing, so a failed echo does not stop the absence line below printing its own
+ * green on an empty tail. The suite still fails, on the echo. Returns the sink offset taken before
+ * the first dating byte, and EVERY nonce it wrote, for a caller whose claim is that the tail holds
  * nothing but these. */
 const dateByEcho = async (a: Attached, label: string): Promise<{ before: number; typed: string[] }> => {
   const before = sink().length;
   // RETRIED, and that is not belt and braces. `[cotal: reconnected]` prints one round trip BEFORE
   // the session takes the terminal (attach-client's `onReady`), and a byte typed in that gap is seen
   // by the between-sessions reader and dropped, deliberately. A single unretried byte is therefore
-  // not evidence of anything: measured, cell B lost exactly that race once in two runs and reported
-  // `echoed: false` over a working attach. Type again until one goes through; `tries` is in the
-  // detail so a run says how often the race is being hit rather than hiding it.
+  // not evidence of anything: measured, cell B lost exactly that race and reported `echoed: false`
+  // over an attach that was working. No rate is quoted for it; the sample was far too small to
+  // carry one, and the retry is justified by the race existing at all. Type again until one goes
+  // through; `tries` is in the detail so a run says how often the race is being hit, not hiding it.
   const typed: string[] = [];
   let later = "";
   let echoed = false;
@@ -721,10 +724,12 @@ try {
     // the agent should never have read. A try that was DROPPED leaves no trace, which is the race
     // the retry exists for, so a nonce that is MISSING stays legal; a byte nobody typed does not.
     // Stripped from the END, newest first, and only as a suffix. Removing a bare nonce ANYWHERE
-    // could absorb a byte the cell is asserting never arrived if a future payload were shaped like
-    // one; anchoring to the tail cannot. It also strengthens the cell rather than only tidying it:
-    // a nonce that is no longer at the end means something arrived AFTER the dating byte, which is
-    // the delivery this cell exists to catch, so it stays in the residue and reds.
+    // could absorb a byte the cell is asserting never arrived, if a payload were ever shaped like
+    // one; anchoring to the tail cannot. Run against the previous form over the same tails, that
+    // absorption is the ONLY case where the two disagree on the VERDICT: a leak whose bytes match a
+    // nonce the control typed passed there and fails here. Where the leak lands AFTER the dating
+    // nonce both forms fail and only the residue text differs, so that case is better diagnostics
+    // and not a stronger check. Spelled out because the reverse was claimed here first.
     let residue = sink().subarray(mark).toString("utf8");
     const tail = residue;
     for (const n of [...typed].reverse()) {
