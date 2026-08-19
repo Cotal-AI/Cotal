@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -5589,6 +5590,17 @@ export class Manager {
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.
         lifecycleUid: a.lifecycleUid,
+        // #651 enrichment: per-seat facts the manager ALREADY holds, carried on the row so `ps
+        // --wide`/`--json` can surface them without a new collection path. All optional in the row
+        // schema: a fact this backend did not record serializes absent, never fabricated (the
+        // pid is absent on runtimes that do not own a real process; a launch may pin no model).
+        model: a.launch.model,
+        variant: a.launch.variant,
+        cwd: a.launch.cwd,
+        pid: a.handle.pid,
+        spawner: a.spawner,
+        instanceId: this.managerInstanceId,
+        host: hostname(),
         ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
       };
     });

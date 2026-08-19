@@ -230,6 +230,15 @@ try {
     const rows = ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string; mesh: string }>;
     const row = rows.find((x) => x.name === "w1");
     check("ps lists w1 with id + lifecycleUid (the targeting coordinates)", ps.reply.ok === true && row !== undefined && row.id === w1.id && row.lifecycleUid === w1.lifecycleUid, rows);
+    // #651: the row carries the per-seat facts the manager ALREADY holds, so `ps --wide`/`--json`
+    // need no new collection path. `spawnLive` pinned the cwd and the spawner is the ep caller's
+    // authenticated id; no model was pinned, so `model` serializes ABSENT (a real optional, never
+    // a fabricated empty) - that absence is asserted too, it is half the contract.
+    const enrich = row as typeof row & { model?: string; cwd?: string; pid?: number; spawner?: string; instanceId?: string; host?: string };
+    check("ps rows carry the #651 enrichment facts (cwd/pid/spawner/instance/host)",
+      enrich.cwd === repoRoot && typeof enrich.pid === "number" && enrich.pid > 0 && enrich.spawner === A.principal && enrich.instanceId === M.managerInstanceId && typeof enrich.host === "string" && enrich.host.length > 0, enrich);
+    check("...and an unpinned model serializes ABSENT, not fabricated",
+      !("model" in enrich), enrich);
     const ins = await A.call("inspect", { name: "w1" });
     check("inspect returns the same row", ins.reply.ok === true && (ins.reply.data as { id: string }).id === w1.id);
     const insMiss = await A.call("inspect", { name: "ghost" });
