@@ -148,9 +148,15 @@ const res = (status: number, body: unknown) => ({
   ok("2.10 refreshAll RESOLVES rather than rejecting, so a caller cannot be skipped by one bad read",
     Array.isArray(stale));
 }
-// Concurrency, asserted by construction rather than by a clock: every read is entered before any of
-// them is allowed to finish. A sequential chain cannot satisfy this, and a timing threshold would be
-// measuring the machine this suite runs on.
+// Concurrency, asserted on a COUNT rather than on a duration: every read is entered before any of
+// them is allowed to finish. The assertion is `entered === 3`, so nothing here measures the speed of
+// the machine the suite runs on.
+//
+// THE BOUNDED WAIT IS LOAD-BEARING AND WAS EARNED. Waiting on the gate alone made a sequential
+// implementation HANG instead of fail: the gate opens on the third entry, which a sequential chain
+// never reaches, so the mutation proving this cell exited 13 with no assertion printed. A hang is
+// not a red anyone can read. The race bounds the wait, and the release below lets both the correct
+// and the broken implementation finish so the suite reports rather than stalls.
 {
   let entered = 0;
   let release!: () => void;
@@ -161,8 +167,9 @@ const res = (status: number, body: unknown) => ({
     apply: () => {},
   });
   const p = SNAP.refreshAll([mk("a"), mk("b"), mk("c")]);
-  await gate;
+  await Promise.race([gate, new Promise((r) => setTimeout(r, 500))]);
   ok("2.11 all three reads are in flight together (a sequential chain could not enter the third)", entered === 3, entered);
+  release();
   await p;
 }
 // A thrown non-Error must still produce a readable reason; the reason is rendered to a human.
