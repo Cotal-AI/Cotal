@@ -336,6 +336,10 @@ smoke:agui-opencode-map
 smoke:agui-opencode-source
 smoke:opencode-events-arm
 smoke:opencode-events-reset
+# Beside the swap rather than at the end, because it grades the other half of the same event: what
+# that session leaves on disk once the wire is settled. It spawns two processes of its own and holds
+# one drain past the swap bound on purpose, so it is the slower of the pair.
+smoke:opencode-events-release
 smoke:goal-follow
 smoke:required-arg-seam
 smoke:attach-stdin
