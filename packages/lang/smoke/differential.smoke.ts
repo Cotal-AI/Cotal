@@ -21,6 +21,17 @@
  * today. It is kept rather than deleted because the next member to land needs somewhere to be
  * pinned while it is landing, and its count is printed so the emptiness is a number rather than a
  * thing a reader has to notice.
+ *
+ * AND ITS SUBJECT IS THE IN-PROCESS ENGINE, stated here rather than only beside the evaluator
+ * below, because a reader who takes "both engines" from this header will not go looking for the
+ * qualification. Every arm here reaches `runOnEngine`/`resumeOnEngine` directly and nothing in this
+ * file crosses a worker boundary; the confined evaluator is `engine.smoke`'s worker leg. In-process
+ * is the right seam for a journal diff — entries compare entry for entry only when nothing
+ * serializes between them — but the two transports are NOT the same function, measured rather than
+ * assumed: a structured clone keeps a Date a Date, NaN as NaN, -0 negative and an own `undefined`
+ * present, while the durable journal's `JSON.stringify` flattens every one of those to a string,
+ * null, 0, and an absent key. So a divergence introduced by the WORKER transport could not red this
+ * suite, and each green below is a statement about the two engines rather than about confinement.
  */
 import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
