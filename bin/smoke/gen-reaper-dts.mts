@@ -42,14 +42,20 @@ const BANNER = `// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mjs. 
  * The compiler options the emit runs under: the repository's own shared base config, plus the four
  * that make this an emit rather than a check.
  *
- * They are READ rather than restated on purpose. A generator that hand lists `target`, `strict` and
- * `moduleResolution` produces a declaration that is correct under its own settings and possibly wrong
- * under the ones its consumers are typechecked with, which is the second-source-of-truth problem one
- * level up from the one this file exists to remove. `tsconfig.base.json` is what every package in the
- * repository extends, so this cannot drift from them without drifting from itself.
+ * They are READ rather than restated on purpose, and read from the ROOT config, because that is the
+ * project that actually typechecks this module's `.ts` consumers. A generator that hand lists
+ * `target`, `strict` and `moduleResolution` produces a declaration that is correct under its own
+ * settings and possibly wrong under the ones its consumers are checked with, which is the
+ * second-source-of-truth problem one level up from the one this file exists to remove. It is not a
+ * style point: a generator on `target: ESNext` emits `Promise.withResolvers()` as
+ * `PromiseWithResolvers<any>`, `skipLibCheck` lets a consumer on `lib: ES2023` swallow the
+ * unresolved type as `any`, and the declaration then certifies arbitrary operations on a value the
+ * runtime does not have. Reading the consumers' own config makes that a loud refusal instead: the
+ * emit fails with "Property 'withResolvers' does not exist", the declaration is not rewritten, and
+ * the suite reds.
  */
 function emitOptions(): ts.CompilerOptions {
-  const configPath = fileURLToPath(new URL("../../tsconfig.base.json", import.meta.url));
+  const configPath = fileURLToPath(new URL("../../tsconfig.json", import.meta.url));
   const read = ts.readConfigFile(configPath, ts.sys.readFile);
   if (read.error) {
     throw new Error(`could not read ${configPath}: ${ts.flattenDiagnosticMessageText(read.error.messageText, " ")}`);
@@ -65,7 +71,6 @@ function emitOptions(): ts.CompilerOptions {
     declarationMap: false,
     sourceMap: false,
     emitDeclarationOnly: true,
-    noEmit: false,
   };
 }
 

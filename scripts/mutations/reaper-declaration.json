@@ -76,6 +76,15 @@
       "expectRed": "the committed declaration is what the compiler emits from the module",
       "cell": "the committed declaration is what the compiler emits from the module",
       "note": "The mirror direction, and the more dangerous one: it compiles a call the module cannot honour. The file carries a do-not-edit banner, and this is what makes the banner enforceable rather than advisory."
+    },
+    {
+      "name": "the module uses a library feature BEYOND the consumers' lib, which a looser generator would emit as any",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport const FUTURE_PAIR = Promise.withResolvers();",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The generator's OWN configuration is a boundary, and an instrument does not verify its own boundary, so the boundary gets a mutant. An earlier version of this generator hand listed target ESNext while the consumers are checked at target ES2022 and lib ES2023. Under that pairing this exact line emitted PromiseWithResolvers<any>, the repository's skipLibCheck let a consumer swallow the unresolved type as any, and a consumer could then be compiled green against operations the runtime does not have: the declaration certified a lie and the suite stayed at 21 passed. The generator now reads the root tsconfig.json, the project that actually typechecks those consumers, so the same line fails loud instead: Property 'withResolvers' does not exist on type 'PromiseConstructor'. This mutation is what stops a future edit from restating the options and reopening it."
     }
   ]
 }
