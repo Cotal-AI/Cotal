@@ -342,6 +342,36 @@
       "expectRed": "the guarded transform is still the first one this file runs",
       "cell": "the guarded transform is still the first one this file runs",
       "note": "The control arm the guard is worthless without, and the one the engine suite's equivalent taught: an insertion ABOVE the guard silently re-opens the hole, because the guard's value is its POSITION and nothing about it is checked by running it. This mutant adds an ordinary, harmless-looking transform above section 0 - it breaks no assertion and reds no other cell - and the offset check is the only thing that sees it."
+    },
+    {
+      "name": "a second mutation loses its upstream marker, so the exception stops being one",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"completionMarker\": \"ok transform is a pure function of its source, byte for byte\",\n",
+      "replace": "",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "cell": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "note": "The exception is only an exception while there is ONE of it. Strip a marker from any other mutant and this config has two bare aims, either of which can be graded off a run that died before reaching its cell - which is the whole reason the convention exists. The suite reads this file at run time, so the mutation is visible to the cell that grades it."
+    },
+    {
+      "name": "the bare mutation is aimed somewhere other than the first cell, where a marker WOULD be possible",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"expectRed\": \"the transform emits, and a fault in the emitter has a cell to land on\",\n      \"cell\": \"the transform emits, and a fault in the emitter has a cell to land on\",",
+      "replace": "      \"expectRed\": \"the emitted module has no unbound reference: the undefined value\",\n      \"cell\": \"the emitted module has no unbound reference: the undefined value\",",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "cell": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "note": "Being marker-less is justified by WHICH cell the aim is on, not by the aim existing. Re-point the bare mutant at an ordinary cell deep in the file and the exemption becomes an unexplained hole: that cell has plenty of upstream, so a marker is possible and its absence is a gap. The replacement names a REAL cell on purpose, so the expectRed audit one cell above still passes and this clause is what reds."
+    },
+    {
+      "name": "the bare mutation stops explaining itself, so the exception survives as folklore",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "NO completionMarker, alone in this config, and that is forced rather than chosen: every other mutant here names an UPSTREAM cell so an early unrelated crash cannot be counted, but this aim is now the FILE'S FIRST CELL and nothing prints before it. Left in place the marker made a correct kill INCONCLUSIVE - the graded cell reds at line one and the run never reaches the marker. A convention that cannot apply to the first cell should not be declared for it.\"",
+      "replace": "NO marker declared, alone in this config, and that is forced rather than chosen: every other mutant here names an UPSTREAM cell so an early unrelated crash cannot be counted, but this aim is now the FILE'S FIRST CELL and nothing prints before it. Left in place the marker made a correct kill INCONCLUSIVE - the graded cell reds at line one and the run never reaches the marker. A convention that cannot apply to the first cell should not be declared for it.\"",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "cell": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
+      "note": "The third clause, and the one a reader meets first: the exemption has to say the word where the next person looks, in the note, not in a channel post or a commit body. Rewording the note past the term leaves the config still correct and still silently exceptional - which is how a named exception becomes a precedent."
     }
   ]
 }
