@@ -269,6 +269,30 @@
   // into it: they are different facts and the pill has to say which one.
   function membershipUnreadable() { feed.unreadable = true; setFeed(); }
 
+  // ── THE BOOTSTRAP MUST NOT OUTRANK THE LIVE FEED ────────────────────────────────────────────
+  //
+  // Every bootstrap read is ISSUED before its value is applied: `refreshAll` starts all six, awaits
+  // all six, and only then applies each. So a snapshot is always at least as old as the moment the
+  // page asked for it, while an SSE event is by definition newer than that moment. Now that the feed
+  // opens FIRST, a live `roster` or `membership` can land while those reads are still in flight, and
+  // applying the older snapshot afterwards silently reverts it: `updateRoster` on an empty list marks
+  // every unseen agent `present = false` and deletes it outright unless it is still a feed member,
+  // and `applyMembership` on an empty set clears `memberOf`. The agent the feed just announced
+  // vanishes from the graph.
+  //
+  // Both channels carry a FULL snapshot through the SAME apply function, so a live event does not
+  // need merging with the older read, it REPLACES it. Once the feed has spoken for a source, that
+  // source's bootstrap value is stale on arrival and is dropped rather than applied.
+  //
+  // WHAT IS SUPERSEDED IS THE SOURCE, NOT THE SNAPSHOT. `membership` speaks in two sentences, a
+  // snapshot and a REFUSAL, and each side can say either one. Writing the rule only onto the apply
+  // wrappers covered the snapshots and left both refusals loose, in opposite directions: a live
+  // refusal erased by an older successful read, and a successful live snapshot overruled by a
+  // bootstrap read that refused after it. Both end in the header pill making a claim about the mesh
+  // that is really a claim about one read, which is the one thing this pill exists not to do.
+  const liveApplied = new Set();
+  const supersededByFeed = (name, apply) => (value) => { if (!liveApplied.has(name)) apply(value); };
+
   function applyMembership(snap) {
     if (!snap) return;
     feed.unreadable = false; // a snapshot arrived, whatever it contains
@@ -717,14 +741,14 @@
       { name: "channels", read: async () => SNAP.readJson(await fetch("/api/channels"), "channels"),
         apply: (chans) => { for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; } } },
       { name: "peers", read: async () => SNAP.readJson(await fetch("/api/roster"), "peers"),
-        apply: (roster) => updateRoster(roster) },
+        apply: supersededByFeed("peers", (roster) => updateRoster(roster)) },
       // `.catch(() => ({members: []}))` here turned a failed fetch into an empty snapshot, which the
       // pill then reported as "traffic-only" — the client half of the same defect the server had.
       // A non-200 is not a snapshot either: `r.json()` on the refusal body would parse fine and
       // arrive as data, so the status is checked before the body is trusted. That check now lives in
       // `readJson`, and an unreadable feed reaches `membershipUnreadable()` through the stale path.
       { name: "membership", read: async () => SNAP.readJson(await fetch("/api/membership"), "membership"),
-        apply: (m) => applyMembership(m) },
+        apply: supersededByFeed("membership", (m) => applyMembership(m)) },
       // `/api/activity` answers an ENVELOPE, never a bare array; a caller that ignored `partial`
       // would break here rather than seed a short page as though it were the whole backfill.
       { name: "activity", read: async () => SNAP.readJson(await fetch("/api/activity?limit=400"), "activity"),
@@ -739,7 +763,11 @@
         reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
       });
     setStale(stale);
-    if (stale.some((s) => s.name === "membership")) membershipUnreadable();
+    // A bootstrap read that REFUSED is a sentence about the membership source like any other, so it
+    // obeys the same rule as the snapshot beside it: it is a fact about that one read, and the live
+    // feed may already have said something newer. Routed through `supersededByFeed` rather than a
+    // second copy of the condition, because two spellings of one rule is how two halves drift apart.
+    if (stale.some((s) => s.name === "membership")) supersededByFeed("membership", membershipUnreadable)();
     alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout
     const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.scale = f.scale;
   }
@@ -761,13 +789,21 @@
   function seedDms(dmHist) {
     for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
   }
-  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => updateRoster(JSON.parse(e.data))); es.addEventListener("membership", (e) => applyMembership(JSON.parse(e.data))); es.addEventListener("membership-read-failed", () => membershipUnreadable()); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
+  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => { liveApplied.add("peers"); updateRoster(JSON.parse(e.data)); }); es.addEventListener("membership", (e) => { liveApplied.add("membership"); applyMembership(JSON.parse(e.data)); }); es.addEventListener("membership-read-failed", () => { liveApplied.add("membership"); membershipUnreadable(); }); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
 
   resize();
   setInterval(setFeed, 5000); // age "live" → "stale" even without new events
-  // `connect()` runs whatever `load()` reported. It used to be gated behind `load()` resolving, so a
-  // single refused read left the page permanently disconnected with nothing on it; the live feed is
-  // exactly what a page showing stale data needs most.
-  load().catch((err) => console.error(err)).then(connect);
+  // THE FEED IS NOT GATED ON THE BOOTSTRAP, IN EITHER SENSE. It was once chained behind `load()`
+  // RESOLVING, so a single refused read left the page permanently disconnected with nothing on it.
+  // That was fixed by making `load()` never reject, which guaranteed `connect()` would RUN but not
+  // that it would run SOON: chained with `.then`, it still waited for the whole bootstrap, and that
+  // bootstrap reads `/api/activity?limit=400` and `/api/dms?limit=400`, both bounded by the
+  // aggregation deadline. On a slow link the page therefore read `disconnected` for the entire load
+  // window. Observed across a WAN link as "always showing disconnected, and taking long to show the
+  // graph". The live feed is exactly what a page showing stale data needs most, so it opens FIRST
+  // and the bootstrap fills in around it. The Monitor page has always done this: `app.js` ends with
+  // `refresh(); connect();`, concurrent, not chained.
+  connect();
+  load().catch((err) => console.error(err));
   requestAnimationFrame(frame);
 })();
