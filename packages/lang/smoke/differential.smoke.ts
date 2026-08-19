@@ -1167,7 +1167,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       "a record no engine here serves is RELEASED, not failed and not thrown",
       "and it is refused by name, L5023",
       "and the refusal names both the version it met and the set this build serves",
-      "and the run was not touched: no activation, no status, nothing appended",
+      "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
       "a record that names no language version at all is refused the same way",
       "and the refusal says the record names none, rather than interpolating the missing value",
     ]],
