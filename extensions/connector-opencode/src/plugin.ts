@@ -264,8 +264,20 @@ export const cotal: Plugin = async () => {
    *  it; the nudge string exists only in the call that carries it. What is lost when that call
    *  returns early is therefore the WAKE, not the message, whose body stays recallable through
    *  `cotal_inbox`. The seat simply never learns to go and look. Held here for the same reason the
-   *  boot text is held: an early return must cost a retry, not the input. */
+   *  boot text is held: an early return must cost a retry, not the wake.
+   *
+   *  ONE SLOT, AND THAT IS THE DESIGN RATHER THAN A LIMIT WORTH APOLOGISING FOR. A later nudge
+   *  overwrites an earlier one here, and nothing is lost by that: the nudge names the SENDER and not
+   *  the message, so two @mentions from one sender are byte-identical, and the bodies are recovered
+   *  by the seat's own inbox pull from the server frontier rather than carried in this string. What
+   *  must never happen is the slot reaching EMPTY while a caller's wake is still owed, because then
+   *  no pull is ever triggered. The invariant is that at least one wake survives to fire, not that
+   *  every wake is preserved. */
   let pendingOverride: string | undefined;
+  // BUMPED ON EVERY WRITE to the slot above. Value equality cannot stand in for identity here: two
+  // @mentions from the same sender produce a BYTE-IDENTICAL nudge, so comparing the strings would
+  // report "still mine" about a different caller's input in exactly the case that matters.
+  let overrideSeq = 0;
   /**
    * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
    * attempts departure, which is a different thing from refusing new work: the fence closes the
@@ -641,7 +653,11 @@ export const cotal: Plugin = async () => {
 
   /** Is there anything at all for a drive to carry? Three sources, and a caller that asks only about
    *  the inbox misses two of them: the boot text and a held wake nudge are both real work that
-   *  `pendingForWake()` cannot see. */
+   *  `pendingForWake()` cannot see.
+   *
+   *  It answers WHETHER there is work, not HOW MUCH: the nudge slot holds at most one wake, so two
+   *  callers' nudges read here as one. That is sound only because a wake is a hint rather than
+   *  content; see the note on the slot itself. */
   const workPending = (): boolean => bootPending() || pendingOverride !== undefined || pendingForWake() > 0;
 
   async function drive(override?: string): Promise<void> {
@@ -658,7 +674,10 @@ export const cotal: Plugin = async () => {
     // caller that reaches this line is refused by it. A prompt submitted natively in the host does
     // not route through `drive` at all; the fence note on the hook table below covers that path.
     if (phaseClosed() || driving || busy) {
-      if (override !== undefined) pendingOverride = override;
+      if (override !== undefined) {
+        pendingOverride = override;
+        overrideSeq += 1;
+      }
       return;
     }
     // THE BOOT TURN GOES FIRST AND IS RETRIED HERE. While it is pending, other work waits; once its
@@ -668,10 +687,19 @@ export const cotal: Plugin = async () => {
     // this a batch was wrong and the line that waits has to hold the nudge rather than discard it.
     // CARRIED, not just passed: a nudge handed to an earlier call that could not run is picked up
     // here rather than dropped, and a nudge this call cannot submit is put back before returning.
+    // "Picked up rather than dropped" is about the SLOT, not about every individual nudge: a later
+    // wake can overwrite an earlier one, which costs nothing because the wake is a hint and the
+    // bodies are recovered by the pull it triggers.
     const carried = override ?? pendingOverride;
+    // WHAT THIS CALL IS ENTITLED TO CLEAR. Only a call that TOOK the value out of the slot may clear
+    // it, and only while no one has written since. A call handed its own `override` leaves whatever
+    // was parked for someone else alone.
+    const tookFromSlot = override === undefined && carried !== undefined;
+    const carriedSeq = overrideSeq;
     const boot = carried === undefined && bootPending() ? bootPrompt : undefined;
     if (bootPrompt !== undefined && boot === undefined) {
       pendingOverride = carried;
+      overrideSeq += 1;
       return; // whatever this call was carrying waits for the boot turn, and is held, not dropped
     }
     driving = true;
@@ -679,6 +707,7 @@ export const cotal: Plugin = async () => {
       const id = await ensureSession();
       if (!id) {
         pendingOverride = carried;
+        overrideSeq += 1;
         return; // no visible session yet, retry on the next event/wake
       }
       // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
@@ -694,6 +723,7 @@ export const cotal: Plugin = async () => {
       // message was owed to neither. Durability across a stop is a delivery question, not this one.
       if (phaseClosed()) {
         pendingOverride = carried;
+        overrideSeq += 1;
         return;
       }
       const parts: { type: "text"; text: string }[] = [];
@@ -723,13 +753,28 @@ export const cotal: Plugin = async () => {
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
       awaitingTurnEnd = true;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
-      // CLEARED ONLY HERE, once the submission actually landed, so no earlier return can lose the
-      // text. That is a property of the returns, which each park it explicitly, and NOT something
-      // this line grants the throw path: a rejected submission leaves through the catch below, and
-      // for a nudge held only in the parameter there was nothing set to still be pending. The catch
-      // now parks it too, so the claim holds on every exit rather than on the returns alone.
+      // CLEARED ONLY HERE, once the submission actually landed, so no early return can lose the wake
+      // it was carrying. Each return parks it explicitly and the catch does too, so every exit from
+      // this function either submits the wake or leaves it pending for the next drive.
       if (boot !== undefined) bootPrompt = undefined;
-      if (carried !== undefined) pendingOverride = undefined;
+      // OWNERSHIP-CHECKED, because the slot is shared and this clear sits AFTER an await. The value
+      // was read before that await; while it was outstanding another caller can have reached the
+      // entry guard and parked its OWN nudge here. Clearing on the strength of what THIS call took
+      // would then discard a different call's input, which is a lost update across an await and
+      // exactly the case the early returns exist to prevent.
+      //
+      // BY GENERATION, NOT BY VALUE, and that distinction is load-bearing rather than fastidious:
+      // two @mentions from the same sender produce a byte-identical nudge, so a value comparison
+      // would say "still mine" about someone else's input in precisely the case this guards. A call
+      // handed its own `override` never took the slot at all and so may not clear it either.
+      //
+      // ONE SLOT IS DELIBERATE, NOT AN OVERSIGHT. A wake is not content: an @mention in focus is
+      // acked at ingest and stays recallable, so any single wake that fires makes the seat pull its
+      // inbox and recover every held message. Collapsing several wakes into one therefore loses
+      // nothing a seat can observe, while erasing the LAST one loses the pull entirely. The
+      // invariant is that at least one wake survives to fire, which this predicate gives; a queue
+      // would preserve duplicates of an identical hint and buy nothing.
+      if (tookFromSlot && overrideSeq === carriedSeq) pendingOverride = undefined;
       briefed = true;
       primed = true;
     } catch (e) {
@@ -745,6 +790,7 @@ export const cotal: Plugin = async () => {
       // at ingest), so the seat was never retried and never told to go and look. Parking it here is
       // what makes the retry below have something to carry.
       pendingOverride = carried;
+      overrideSeq += 1;
       log(`drive failed: ${(e as Error).message}`);
       scheduleErrorRetry();
     } finally {

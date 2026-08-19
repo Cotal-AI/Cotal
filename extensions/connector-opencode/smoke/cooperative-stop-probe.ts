@@ -130,6 +130,16 @@ const holdRelease = process.env.COOP_HOLD_RELEASE?.trim() || undefined;
 // the server accepted, so "the nudge was submitted" cannot be satisfied by the attempt that failed.
 const failPrompt = process.env.COOP_FAIL_PROMPT?.trim() || undefined;
 const failedPrompts = process.env.COOP_PROMPTS_FAILED?.trim() || undefined;
+// THE COLLIDE SEAT needs a turn to END, because a parked nudge is carried by the next drive and
+// `session.idle` is the sole turn-end site. Firing it on a file lets the parent order the whole
+// sequence from outside: park one drive, park a second caller's nudge behind it, release, then end
+// the turn and see whether the second input is still there to be carried.
+const idleOn = process.env.COOP_IDLE?.trim() || undefined;
+// RECALL, exercised the way a model would. The nudge only tells the seat to go and look; the bodies
+// live on the broker and come back through `cotal_inbox`. Calling it here is what turns "collapsing
+// wakes loses nothing" from an assertion about the ingest code into a measurement.
+const recallGo = process.env.COOP_RECALL_GO?.trim() || undefined;
+const recallOut = process.env.COOP_RECALL?.trim() || undefined;
 let drainReads = 0;
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== auth) {
@@ -240,6 +250,31 @@ const fireTool = (sessionID: string, tool = "late-tool"): Promise<void> =>
     sessionID,
     tool,
   });
+
+if (recallGo && recallOut) {
+  void (async () => {
+    while (!existsSync(recallGo)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    try {
+      const said = await (
+        hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
+      ).tool.cotal_inbox.execute({});
+      writeFileSync(recallOut, said);
+    } catch (e) {
+      writeFileSync(recallOut, `RECALL THREW: ${(e as Error).message}`);
+    }
+  })();
+}
+
+if (idleOn) {
+  const pollIdle = (): void => {
+    if (existsSync(idleOn)) {
+      void fire({ type: "session.idle", properties: { sessionID: "ses_coop" } });
+      return;
+    }
+    setTimeout(pollIdle, 25).unref?.();
+  };
+  pollIdle();
+}
 
 if (marker) {
   await fire({ type: "session.created", properties: { info: { id: "ses_coop" } } });

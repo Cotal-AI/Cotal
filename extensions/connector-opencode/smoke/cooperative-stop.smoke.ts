@@ -117,6 +117,7 @@ let interiorProbe: ReturnType<typeof spawn> | undefined;
 let resumeProbe: ReturnType<typeof spawn> | undefined;
 let carryProbe: ReturnType<typeof spawn> | undefined;
 let throwProbe: ReturnType<typeof spawn> | undefined;
+let collideProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -150,7 +151,12 @@ try {
   const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1) — provision + launch env + child endpoint
   const watchUid = mintLifecycleUid();
   const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...acl, role: "worker", lifecycleUid: ottoUid });
-  const watchCreds = await provisionAgent(mgr, auth, watchId, { ...acl, role: "watcher", lifecycleUid: watchUid });
+  // The watcher also needs `collide`, the history-free channel the ninth seat uses; it is the only
+  // publisher there.
+  const watchCreds = await provisionAgent(mgr, auth, watchId, {
+    ...acl, role: "watcher", lifecycleUid: watchUid,
+    subscribe: ["general", "collide"], allowSubscribe: ["general", "collide"], allowPublish: ["general", "collide"],
+  });
 
   // The watcher endpoint observes Otto's presence (the proof of a clean leave).
   watcher = new CotalEndpoint({
@@ -158,7 +164,11 @@ try {
     servers: SERVERS,
     creds: watchCreds,
     card: { id: watchId.id, name: "watch", role: "watcher", kind: "agent" },
-    channels: ["general"],
+    // `collide` exists so the ninth seat can join a channel with NO history. Every other seat is on
+    // `general`, whose backlog is replayed to each newcomer and DRIVES A BATCH TURN before anything
+    // the cell sends; that batch was the drive that parked, so the cell graded the batch path and
+    // discriminated nothing. A fresh channel makes the cell's own mention the first drive.
+    channels: ["general", "collide"],
     lifecycleUid: watchUid,
     heartbeatMs: 500,
     ttlMs: 30_000,
@@ -935,6 +945,136 @@ try {
   await sendShutdown(throwSpec.control!.path, throwSpec.control!.token);
   await awaitExit(throwProbe, 15_000);
 
+  // ---- A NINTH SEAT: TWO CALLERS, ONE SLOT.
+  //
+  // Every seat above puts ONE input in flight, so each grades a call against itself and none of them
+  // can see the thing that makes this property about inputs PLURAL: `pendingOverride` is a single
+  // unkeyed string shared by every caller. A drive that is parked in session creation read its own
+  // input BEFORE the await; a second caller then parks a different nudge in that slot and returns
+  // through the guard; and when the first call finally submits, it clears the slot on the strength of
+  // ITS OWN carried value rather than on whether the slot still holds what it took. That is a lost
+  // update across an await, and it destroys an input that arrived through a guarded exit, which is
+  // exactly the case the property claims to cover. Found by review running this sequence live.
+  const coId = newIdentity();
+  const coUid = mintLifecycleUid();
+  const coCreds = await provisionAgent(mgr, auth, coId, {
+    ...acl, role: "worker", lifecycleUid: coUid,
+    subscribe: ["collide"], allowSubscribe: ["collide"], allowPublish: ["collide"],
+  });
+  const coCredsFile = join(dir, "collide.creds");
+  writeFileSync(coCredsFile, coCreds);
+  const collideSpec = opencodeConnector.buildLaunch({
+    space, name: "Cleo", role: "worker", id: coId.id, lifecycleUid: coUid, creds: coCredsFile,
+    servers: SERVERS, subscribe: ["collide"], allowSubscribe: ["collide"], allowPublish: ["collide"],
+  });
+  const coPrompts = join(dir, "collide-prompts");
+  const coFocus = join(dir, "collide-in-focus");
+  const coHeld = join(dir, "collide-session-held");
+  const coRelease = join(dir, "collide-release");
+  const coIdle = join(dir, "collide-idle");
+  const coRecall = join(dir, "collide-recall");
+  const coRecallGo = join(dir, "collide-recall-go");
+  mkdirSync(join(dir, "ws-collide"), { recursive: true });
+  collideProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...collideSpec.env,
+      COTAL_EVENTS: "1",
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-collide"),
+      COOP_PROMPTS: coPrompts,
+      COOP_FOCUS: "1",
+      COOP_FOCUS_READY: coFocus,
+      COOP_HOLD_SESSION: coHeld,
+      COOP_HOLD_RELEASE: coRelease,
+      COOP_IDLE: coIdle,
+      COOP_RECALL: coRecall,
+      COOP_RECALL_GO: coRecallGo,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  let cleoLive = false;
+  for (let i = 0; i < 100 && !cleoLive; i++) {
+    await wait(100);
+    const c = watcher.getRoster().find((p) => p.card.name === "Cleo");
+    cleoLive = c !== undefined && c.status !== "offline";
+  }
+  check("collide-seat: the ninth seat came online, so this leg grades a live one", cleoLive);
+  let cleoFocused = false;
+  for (let i = 0; i < 80 && !cleoFocused; i++) {
+    await wait(100);
+    cleoFocused = existsSync(coFocus);
+  }
+  check("collide-seat: the seat is in focus, so each @mention is a wake with no inbox entry behind it",
+    cleoFocused, { coFocus });
+  // The session create must be HELD before the first mention, or the first drive never parks and the
+  // two callers never overlap. Asserted rather than slept for.
+  let cleoHeld = false;
+  for (let i = 0; i < 100 && !cleoHeld; i++) {
+    await wait(100);
+    cleoHeld = existsSync(coHeld);
+  }
+  check("collide-seat: session creation is held, so the first drive parks past the guard", cleoHeld);
+
+  // TWO MENTIONS INSIDE THE PARKED WINDOW. The first drive is parked in session creation holding
+  // `driving`; the second caller therefore reaches the entry guard, parks its own nudge in the
+  // shared slot, and returns. That is a caller input on a guarded early exit.
+  //
+  // GRADED ON THE COUNT OF NUDGE SUBMISSIONS, and that is forced rather than chosen. The nudge names
+  // the SENDER and never the message, so two @mentions from one sender produce a byte-identical
+  // string: no text assertion can tell them apart, and a first version of this cell that tried to
+  // was measuring nothing. The count is the only honest discriminator, which is also why the fix
+  // compares generations instead of values.
+  const nudges = (): number => {
+    if (!existsSync(coPrompts)) return 0;
+    return readFileSync(coPrompts, "utf8").split("\n").filter((l) => /You were mentioned by/.test(l)).length;
+  };
+  await watcher.multicast("@Cleo alpha names you first", { channel: "collide", mentions: ["Cleo"] });
+  await wait(700);
+  await watcher.multicast("@Cleo beta names you second", { channel: "collide", mentions: ["Cleo"] });
+  await wait(700);
+  check("collide-seat: no nudge was submitted while session creation was held", nudges() === 0,
+    { nudges: nudges() });
+
+  // Release. The parked drive submits ITS nudge. Its clear must not reach the nudge the other caller
+  // parked while it was awaiting.
+  writeFileSync(coRelease, "go\n");
+  let firstNudge = false;
+  for (let i = 0; i < 150 && !firstNudge; i++) {
+    await wait(100);
+    firstNudge = nudges() >= 1;
+  }
+  check("collide-seat: the drive parked in session creation submitted a nudge once released",
+    firstNudge, { nudges: nudges() });
+
+  // End the turn. `session.idle` is the sole turn-end site and it drives whatever is still pending,
+  // so a surviving second nudge is carried HERE. With the clear unguarded, the slot was emptied by
+  // the first call and there is nothing left to carry.
+  writeFileSync(coIdle, "go\n");
+  let secondNudge = false;
+  for (let i = 0; i < 200 && !secondNudge; i++) {
+    await wait(100);
+    secondNudge = nudges() >= 2;
+  }
+  check("collide-seat: the nudge parked by the second caller survived the first caller's clear and was driven",
+    secondNudge, { nudges: nudges() });
+
+  // WHY ONE SLOT IS ENOUGH, measured rather than argued. The wake is only a hint; the bodies live on
+  // the broker and come back through recall. This calls `cotal_inbox` exactly as a model would and
+  // requires BOTH mentions in the answer, which is what makes collapsing wakes safe. If this cell
+  // ever fails, the coalescing argument is void and the wake would have to carry content.
+  writeFileSync(coRecallGo, "go\n");
+  let recalled = "";
+  for (let i = 0; i < 150 && !/alpha/i.test(recalled); i++) {
+    await wait(100);
+    recalled = existsSync(coRecall) ? readFileSync(coRecall, "utf8") : "";
+  }
+  check("collide-seat: recall returns the FIRST mention's body, so a wake is a hint and not the content",
+    /alpha names you first/i.test(recalled), { recalled: recalled.slice(0, 400) });
+  check("collide-seat: recall returns the SECOND mention's body too, so one surviving wake recovers both",
+    /beta names you second/i.test(recalled), { recalled: recalled.slice(0, 400) });
+  await sendShutdown(collideSpec.control!.path, collideSpec.control!.token);
+  await awaitExit(collideProbe, 15_000);
+
   // ---- REFUSED IS NOT THE SAME AS DROPPED, and the cell above cannot tell them apart: not
   // submitting and losing the input are both zero prompts. The refusal returns before `peekInbox`
   // runs and before `surfaced` is assigned, so nothing is consumed and a later wake in the SAME
@@ -960,6 +1100,7 @@ try {
     if (resumeProbe && resumeProbe.exitCode === null) resumeProbe.kill("SIGKILL");
     if (carryProbe && carryProbe.exitCode === null) carryProbe.kill("SIGKILL");
     if (throwProbe && throwProbe.exitCode === null) throwProbe.kill("SIGKILL");
+    if (collideProbe && collideProbe.exitCode === null) collideProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }

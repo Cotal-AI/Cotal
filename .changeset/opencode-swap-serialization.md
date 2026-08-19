@@ -71,6 +71,25 @@ wake, and the retry that exists for exactly this case then saw no pending work a
 leaving a seat that was never told to go and look. The error path now parks its input like every
 other exit, so a failed submission costs a retry rather than the wake.
 
+One slot, and one caller clearing another caller's wake. The three exits above each put their input
+back by hand, but they all put it in the SAME place, and the clear that runs after a successful
+submission sat on the far side of an await. A drive parked in session creation had read its input
+before that await; a second caller then reached the entry guard, parked its own wake in that slot and
+returned; and when the first call finally submitted, it emptied the slot on the strength of what IT
+had taken. That is a lost update across an await, and it destroyed a wake that arrived through
+exactly the guarded exit these changes exist to protect. The clear is now ownership checked, by
+generation rather than by value, because the nudge names the sender and not the message, so two
+mentions from one sender are byte identical and comparing them would report "still mine" about
+someone else's input.
+
+What that does and does not promise, stated narrowly on purpose. It does NOT prevent message loss:
+an @mention in focus is acked at ingest and its body stays recallable from the server, so the
+content was never riding on the wake. What it prevents is a caller's wake being erased by an
+unrelated call's clear. One slot is the design rather than a limit: a later wake overwriting an
+earlier one costs nothing, because any single wake that fires makes the seat pull its inbox and
+recover every held message, while emptying the slot entirely means no pull is ever triggered. The
+invariant is that at least one wake survives to fire, not that every wake is kept.
+
 Departure is also ordered behind the work the seat has already admitted, for as long as a short
 bound allows. A presence write is not atomic, so a call admitted before the stop could be parked
 mid-write while the teardown published offline, and then put the seat back to work after it had
