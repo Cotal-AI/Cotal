@@ -15,6 +15,20 @@
       "find": "  connect();\n  load().catch((err) => console.error(err));",
       "replace": "  load().catch((err) => console.error(err));",
       "expectRed": "1.4 control: the feed was opened exactly once, not re-opened per read"
+    },
+    {
+      "name": "G3 the roster bootstrap stops deferring to the live feed, so an older /api/roster snapshot is applied after a live roster event and reverts the agent the feed just announced",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "        apply: supersededByFeed(\"peers\", (roster) => updateRoster(roster)) },",
+      "replace": "        apply: (roster) => updateRoster(roster) },",
+      "expectRed": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE GRAPH after every bootstrap read has applied"
+    },
+    {
+      "name": "G4 the membership bootstrap stops deferring to the live feed, so an older /api/membership snapshot clears the memberOf the live feed had just established",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "        apply: supersededByFeed(\"membership\", (m) => applyMembership(m)) },",
+      "replace": "        apply: (m) => applyMembership(m) },",
+      "expectRed": "3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE GRAPH after every bootstrap read has applied"
     }
   ]
 }

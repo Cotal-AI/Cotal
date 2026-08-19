@@ -50,14 +50,25 @@ const READ_MS = 1200;
  *  answers in single-digit ms. 300ms sits in neither's neighbourhood, so the cell cannot be flaky. */
 const CONCURRENT_MS = 300;
 
-function stubEl() {
+function stubEl(drawn?: string[]) {
   const el: Record<string, unknown> = {
     textContent: "", hidden: false, title: "", width: 800, height: 600, onclick: null,
     style: {}, dataset: {},
     classList: { toggle: () => {}, add: () => {}, remove: () => {}, contains: () => false },
     addEventListener: () => {}, removeEventListener: () => {}, appendChild: () => {},
     getBoundingClientRect: () => ({ width: 800, height: 600, left: 0, top: 0 }),
-    getContext: () => new Proxy({}, { get: () => () => {} }),
+    // The canvas records the TEXT it is asked to draw. `ctx.fillText(a.name, ...)` is how an agent
+    // appears on the graph, so "is this agent drawn" is answerable without reaching into a closure.
+    getContext: () => new Proxy({}, {
+      get: (_t, k) => (k === "fillText" ? (s: unknown) => { drawn?.push(String(s)); }
+        : k === "measureText" ? () => ({ width: 10 })
+        : k === "canvas" ? { width: 800, height: 600 }
+        // createLinearGradient / createRadialGradient must return something with addColorStop, or
+        // the very first frame dies in the starfield before a single label is drawn.
+        : typeof k === "string" && k.startsWith("create") ? () => ({ addColorStop: () => {} })
+        : () => {}),
+      set: () => true,
+    }),
   };
   el.querySelector = () => stubEl();
   el.querySelectorAll = () => [];
@@ -70,6 +81,8 @@ async function main() {
   const fetchedAt: number[] = [];
   let feed: { listeners: Record<string, (e: { data: string }) => void> } | null = null;
   const thrown: string[] = [];
+  const rafs: ((t: number) => void)[] = [];
+  const drawn: string[] = [];
 
   const payload = (u: string) => {
     if (u.includes("/api/meta")) return { space: "s" };
@@ -84,7 +97,7 @@ async function main() {
   const sandbox: Record<string, unknown> = {
     console,
     setTimeout, clearTimeout, setInterval: () => 0, clearInterval: () => {},
-    requestAnimationFrame: () => 0,
+    requestAnimationFrame: (fn: (t: number) => void) => { rafs.push(fn); return rafs.length; },
     // THE SLOW BOOTSTRAP. Every REST read the page makes answers only after READ_MS.
     fetch: (u: string) =>
       new Promise((res) => setTimeout(() => {
@@ -105,9 +118,14 @@ async function main() {
   sandbox.location = { search: "", href: "http://localhost/graph" };
   sandbox.window = sandbox;
   sandbox.globalThis = sandbox;
-  sandbox.document = { getElementById: () => stubEl(), addEventListener: () => {},
-    querySelector: () => stubEl(), querySelectorAll: () => [], title: "" };
+  // STABLE ELEMENTS. `getElementById` returning a NEW stub per call throws away every write the page
+  // makes, so any assertion over the DOM would be reading an object the page never touched.
+  const els = new Map<string, Record<string, unknown>>();
+  const byId = (id: string) => { if (!els.has(id)) els.set(id, stubEl(drawn)); return els.get(id)!; };
+  sandbox.document = { getElementById: byId, addEventListener: () => {},
+    querySelector: () => byId("_q"), querySelectorAll: () => [], title: "" };
   sandbox.devicePixelRatio = 1;
+  sandbox.performance = { now: () => Date.now() - t0 };
 
   // LOAD WHAT THE PAGE LOADS, IN THE PAGE'S ORDER, read out of graph.html rather than listed here,
   // so a script added to the page cannot silently go missing from this harness. An earlier draft
@@ -138,9 +156,9 @@ async function main() {
   // roster, a membership and a message event in while every REST read is still in flight, and
   // require the page to survive all three.
   console.log("2. a live event that arrives before the bootstrap finishes does not break the page");
-  const early = { roster: '[{"card":{"id":"local.X","name":"a","kind":"agent"},"status":"working"}]',
+  const early = { roster: '[{"card":{"id":"local.X","name":"aa","kind":"agent"},"status":"waiting"}]',
                   membership: '{"members":[{"id":"local.X","live":["general"],"durable":[]}]}',
-                  message: '{"mode":"chat","channel":"general","msg":{"id":"m","ts":1,"from":{"id":"local.X","name":"a"},"parts":[{"kind":"text","text":"hi"}]}}' };
+                  message: '{"mode":"chat","channel":"general","msg":{"id":"m","ts":1,"from":{"id":"local.X","name":"aa"},"parts":[{"kind":"text","text":"hi"}]}}' };
   for (const [kind, data] of Object.entries(early)) {
     const fn = feed?.listeners[kind];
     if (!fn) { thrown.push(`${kind}: no listener registered`); continue; }
@@ -162,6 +180,30 @@ async function main() {
     fetchedAt.length > 0, { fetchedAt: fetchedAt.length });
   ok("1.4 control: the feed was opened exactly once, not re-opened per read",
     openedAt.length === 1, { openedAt });
+
+  // ── 3. EARLY LIVE TRUTH MUST SURVIVE THE LATE BOOTSTRAP ──────────────────────────────────────
+  //
+  // Surviving the event is not the same as keeping it, and this is the half the first version of
+  // this suite missed. `refreshAll` awaits EVERY read and only then applies each one, and the feed
+  // and the bootstrap call the SAME `updateRoster` / `applyMembership` with a full snapshot. So a
+  // snapshot requested BEFORE a live event lands is applied AFTER it and silently wins. An empty
+  // bootstrap roster then sets `present = false` and deletes the agent outright unless it is still
+  // a feed member, and an empty membership clears `memberOf`, so the agent the feed just told us
+  // about disappears from the graph. Opening the feed first is what creates this ordering; the
+  // chained boot could not produce it, so the fix has to carry the rule rather than inherit it.
+  console.log("3. the live snapshot is not overwritten by an older bootstrap snapshot");
+  drawn.length = 0;
+  for (const fn of rafs.splice(0)) fn(1000);
+  ok("3.1 THE AGENT THE FEED ANNOUNCED IS STILL ON THE GRAPH after every bootstrap read has applied",
+    drawn.includes("aa"), { drawnLabels: drawn.slice(0, 12) });
+  // CONTROL: prove the renderer draws agent labels at all, or 3.1 could pass by never drawing
+  // anything and never failing for the reason it names.
+  const fn2 = feed?.listeners["roster"];
+  if (fn2) fn2({ data: '[{"card":{"id":"local.Y","name":"zz","kind":"agent"},"status":"waiting"}]' });
+  drawn.length = 0;
+  for (const fn of rafs.splice(0)) fn(1001);
+  ok("3.2 control: a roster delivered AFTER the bootstrap does render, so 3.1 tests ordering and not a dead renderer",
+    drawn.includes("zz"), { drawnLabels: drawn.slice(0, 12) });
 }
 
 await main();
