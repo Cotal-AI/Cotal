@@ -300,6 +300,17 @@ log("rounds", rounds, r.status);`,
   // arms L4010, so the receiver law is decided before the thenable law and the order is not a
   // divergence here. It is one line above, where the receiver IS a record.
   ["refusals: a callable then written onto a non-record", '"x".then = () => 1; log("after");', {}, "L4010"],
+  // A LOG LINE IS DATA (oracle-side, 59b5d6bd): `log` refuses a value carrying a function anywhere
+  // inside it, L4016 naming the value and the path, because the walker's onLog held a live closure
+  // where the worker died on a host DataCloneError. Both arms answer it from the one place in
+  // library.ts. The three doors are the value itself, a function nested in a record, and a
+  // namespace, which is a record of them.
+  ["refusals: a log line carrying a function", "log((x) => x);", {}, "L4016"],
+  ["refusals: a log line whose record carries a function", 'log("v", { g: (x) => x });', {}, "L4016"],
+  ["refusals: a log line carrying a namespace", "log(json);", {}, "L4016"],
+  // AND THE MIRROR, so the refusal is not read as "log refuses whatever is unusual": absence and NaN
+  // are values, not functions, and they still log as they are. The trace is not the journal.
+  ["absence and NaN are data, and still log", "const o = { a: 1 }; log(o.b, 0 / 0);", {}],
   // The one admitted node type the gate never spelled, found by the coverage cell below rather than
   // by reading the corpus. An unbraced body is L1009, so a stray `;` between statements is the only
   // spelling the validator admits, and it is what the emitter has to carry through unchanged.
