@@ -788,12 +788,23 @@ const SCRIPT = { turns: { build: { status: "done" as const } } };
 
 {
   const logs: unknown[][] = [];
-  const engine = await runOnEngine(SOURCE, MODULE, {
-    runId: "host-1",
-    handler: new SimHandler(SCRIPT),
-    evaluate: plainly,
-    onLog: (l) => logs.push([...l.values]),
-  });
+  // CAPTURED, like every other run-level cell here: `runOnEngine` refuses before it does anything -
+  // the node floor, then the validator, then the resume rules - and a refusal awaited straight into
+  // the assertions below would leave the block and kill the suite anonymously.
+  let engine: Awaited<ReturnType<typeof runOnEngine>> | undefined;
+  let refused: unknown;
+  try {
+    engine = await runOnEngine(SOURCE, MODULE, {
+      runId: "host-1",
+      handler: new SimHandler(SCRIPT),
+      evaluate: plainly,
+      onLog: (l) => logs.push([...l.values]),
+    });
+  } catch (e) {
+    refused = e;
+  }
+  ok("runOnEngine RAN this program rather than refusing it at the boundary", refused === undefined, String(refused));
+  engine = engine as Awaited<ReturnType<typeof runOnEngine>>;
 
   ok("runOnEngine answers the walker's RunResult shape", typeof engine.programHash === "string" && engine.journal instanceof Journal);
   ok("its programHash is the SOURCE's hash, not the module's", engine.programHash === programHashOf(SOURCE), engine.programHash);
