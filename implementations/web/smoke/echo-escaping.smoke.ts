@@ -193,9 +193,15 @@ ok("0.3 CONTROL: what `JSON.stringify` already closed stays closed - every C0 co
     alreadyFine.length === 0, alreadyFine.map(([name]) => name));
 }
 
+// The name of this cell used to say "each side of every range", which review caught as a claim the
+// cell does not make: the class is mostly two PROPERTIES, whose ranges this file does not enumerate
+// and could not keep enumerated, and on one named range the upper neighbour (U+202A) is itself a
+// class member. What the list below really is: both neighbours of the two ranges this file names by
+// hand, and a sampled neighbour on each side of the property blocks that carry the members section 0
+// tests. Exhaustiveness is 0.12's job, not this cell's.
 {
   const wrong = OUTSIDE.filter(([, n]) => quoteForOperator(cp(n)) !== '"' + cp(n) + '"');
-  ok("0.6 the bounds are exact: the codepoint on each side of every range is left alone",
+  ok("0.6 the NAMED bounds are exact and the property ranges are sampled either side: eighteen neighbours of the class are left alone",
     wrong.length === 0, wrong.map(([name, n]) => [name, quoteForOperator(cp(n))]));
 }
 

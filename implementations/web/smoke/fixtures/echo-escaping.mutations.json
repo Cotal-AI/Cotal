@@ -35,7 +35,7 @@
       "file": "implementations/web/src/web.ts",
       "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
       "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007e-\\u009f\\u2028\\u2029]/gu;",
-      "expectRed": "0.6 the bounds are exact: the codepoint on each side of every range is left alone"
+      "expectRed": "0.6 the NAMED bounds are exact and the property ranges are sampled either side: eighteen neighbours of the class are left alone"
     },
     {
       "name": "E6 the global flag is dropped, so only the FIRST class member in a value is escaped and every one after it still arrives raw: the classic regex slip, invisible to any cell whose input carries a single codepoint",
