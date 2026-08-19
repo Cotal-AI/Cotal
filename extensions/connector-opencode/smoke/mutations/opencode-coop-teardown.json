@@ -88,12 +88,18 @@
     "against that, because each of them parks exactly one caller and a set of one cannot show the",
     "difference. It took a second call that FAILS, in the same seat, to make the distinction visible.",
     "",
-    "C14 AND C15 BREAK THE SAME LINE AND NAME DIFFERENT CELLS, on purpose. The algorithm is symmetric,",
     "since Promise.all short-circuits on the first rejection to OCCUR rather than on a slot, so the two",
     "arms are not two ways for the defect to appear. What the pair pins is that the ABSORPTION covers",
     "both ends of the set: one arm has the failing call at the tail, the other at the head, and a fix",
     "that wrapped only part of the set would satisfy one and fail the other. Grading only one arm would",
-    "leave the cells of the other ungraded, which is the shape this suite has already shipped twice."
+    "leave the cells of the other ungraded, which is the shape this suite has already shipped twice.",
+    "",
+    "C14 IS THE DEFECT AS IT EXISTED; C15 AND C16 ARE WHAT THE TWO ARMS EXIST FOR. Absorbing nothing",
+    "reddens both seats, so on its own it would let one arm's cells ride on the other's. C15 absorbs only",
+    "the head and C16 only the tail, and because the hook seat admits its failing call LAST while the",
+    "mirror seat admits it FIRST, each of those reddens exactly one seat. That is what makes the pair of",
+    "seats load-bearing rather than decorative: a fix that wrapped part of the set would satisfy one and",
+    "fail the other, and neither seat can show that alone."
   ],
   "mutations": [
     {
@@ -188,17 +194,24 @@
       "expectRed": "model-seat: departure was still unpublished while admitted work was in flight"
     },
     {
-      "name": "C14 the wait stops absorbing each admitted call separately, so ONE rejection satisfies it and departure publishes while another call is still parked",
+      "name": "C14 the wait stops absorbing at all, which is the defect as it existed: one rejection satisfies it and departure publishes while another call is still parked",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
       "replace": "    const admitted = [...inFlight];\n",
       "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
     },
     {
-      "name": "C15 the same lost absorption seen from the other end: the failing call is at the HEAD of the set rather than its tail, and departure still goes out while the call behind it is parked",
+      "name": "C15 absorption covers only the FIRST admitted call, so a failure anywhere behind it still ends the wait early",
       "file": "extensions/connector-opencode/src/plugin.ts",
       "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
-      "replace": "    const admitted = [...inFlight];\n",
+      "replace": "    const admitted = [...inFlight].map((work, i) => (i === 0 ? work.then(() => undefined, () => undefined) : work));\n",
+      "expectRed": "hook-seat: departure was still unpublished while admitted work was in flight"
+    },
+    {
+      "name": "C16 absorption covers only the LAST admitted call, so a failure at the head of the set still ends the wait early",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
+      "replace": "    const admitted = [...inFlight].map((work, i, all) => (i === all.length - 1 ? work.then(() => undefined, () => undefined) : work));\n",
       "expectRed": "mirror-seat: departure was still unpublished while admitted work was in flight"
     }
   ]
