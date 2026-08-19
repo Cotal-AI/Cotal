@@ -2143,6 +2143,156 @@ let n = 1;
   ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
 }
 
+// ---- 22) the worker boundary: every crossing, enumerated -----------------------------------------
+//
+// The differential suite compares the walker against the IN-PROCESS engine, by construction: it
+// calls `runOnEngine` directly. So nothing in it covers the thread boundary, and what covers the
+// boundary is this table - every direction a value crosses in, one cell each, plus set equality
+// against what `worker-entry.ts` actually posts and reads, so a crossing added there reds this
+// section until somebody cells it.
+//
+// It is written as a table because the failure this guards against is not a wrong cell, it is a
+// MISSING one: `log((x) => x)` died in the thread with a host DataCloneError carrying the emitted
+// module body in its message, while both in-process arms completed - a whole crossing with an
+// assertion on the return path and nothing on the log path. A list of crossings that has to match
+// the file is the only shape that notices the next one.
+
+{
+  const runWorker = (source: string, module: string, extra: Record<string, unknown> = {}): ReturnType<typeof runInWorker> =>
+    runInWorker(
+      { source, module, runId: "cross", handler: { module: SIM_HANDLER, config: {} }, ...extra } as Parameters<typeof runInWorker>[0],
+      { entry: WORKER_ENTRY },
+    );
+  const failed = (r: unknown): { code?: string; name?: string; message?: string } => r as { code?: string; name?: string; message?: string };
+
+  // ---- crossing 1: THE REQUEST, IN. Source, module, handler name and config, and the optional
+  // fields a resume adds. Everything else about a handler stays on this side by design.
+  {
+    const first = await runWorker(SOURCE, MODULE, { handler: { module: SIM_HANDLER, config: SCRIPT }, file: "boundary.cotal" }).done;
+    ok("the request crosses in: source, module, handler module and config", first.ok === true, JSON.stringify(first).slice(0, 140));
+    const recorded = first as Extract<typeof first, { ok: true }>;
+    const again = await runWorker(SOURCE, MODULE, { pins: recorded.pins, entries: recorded.entries, file: "boundary.cotal" }).done;
+    ok("and so do the optional fields a resume adds: file, pins, entries", again.ok === true, JSON.stringify(again).slice(0, 140));
+  }
+
+  // ---- crossing 2: LOG LINES, OUT. A log line is DATA. The rule is held once, in the shared `log`
+  // builtin, so both arms answer it and no transport ever sees code - which is what makes this a
+  // language refusal here rather than a structured-clone failure naming a host algorithm.
+  {
+    const ordinary = `log("status", 1);\n`;
+    const lines: unknown[][] = [];
+    const ran = await runInWorker(
+      { source: ordinary, module: transform(ordinary).module, runId: "cross-log", handler: { module: SIM_HANDLER, config: {} } },
+      { entry: WORKER_ENTRY, onLog: (l) => lines.push([...l.values]) },
+    ).done;
+    ok("log lines cross out, values intact", ran.ok === true && JSON.stringify(lines) === '[["status",1]]', lines);
+
+    const withCode = `log((x) => x);\n`;
+    const answer = await runWorker(withCode, transform(withCode).module).done;
+    ok("a logged FUNCTION is refused by the language, not by the transport", answer.ok === false, JSON.stringify(answer).slice(0, 160));
+    ok("and it is L4016, the same code both in-process arms answer", failed(answer).code === "L4016", failed(answer).code);
+    // THE POINT OF THE CELL. Unrefused, this line reached `postMessage` and came back as a
+    // DataCloneError whose message carried the emitted module body - a host algorithm's complaint
+    // about a language rule, with the program's compiled source in it.
+    ok(
+      "never a DataCloneError, and never with the module body in the message",
+      !/DataClone/.test(`${failed(answer).name} ${failed(answer).message}`) && !String(failed(answer).message).includes("ctx.fuel"),
+      String(failed(answer).message).slice(0, 100),
+    );
+  }
+
+  // ---- crossing 3: JOURNAL ENTRIES, OUT. The journal is what a resume reads INSTEAD of
+  // dispatching, so what crosses has to be the entries themselves, not a summary of them.
+  {
+    const answer = await runWorker(SOURCE, MODULE, { handler: { module: SIM_HANDLER, config: SCRIPT } }).done;
+    const got = answer as Extract<typeof answer, { ok: true }>;
+    const walker = await walkerRun(SOURCE, { runId: "cross", handler: new SimHandler(SCRIPT) });
+    ok("journal entries cross out whole, and they are the walker's", JSON.stringify(got.entries) === JSON.stringify(walker.journal.entries()), got.entries.length);
+    ok("and the pins and the program's hash cross with them", JSON.stringify(got.pins) === JSON.stringify(walker.pins) && got.programHash === walker.programHash);
+  }
+
+  // ---- crossing 4: THE RESULT VALUE, OUT, under the language's crossing rule.
+  {
+    const fn = await runWorker(`log("x", 1);\n`, `(ctx) => async () => { await ctx.fuel(); return () => 1; }`).done;
+    ok("a value that cannot cross is refused by the language's rule", fn.ok === false && failed(fn).name === "NotCrossable", JSON.stringify(fn).slice(0, 120));
+    // ABSENCE IS NOT A VALUE, and it crosses: a program whose last line is a statement ends with none.
+    const none = await runWorker(`log("x", 1);\n`, `(ctx) => async () => { await ctx.fuel(); return undefined; }`).done;
+    ok("and a run with NO value crosses as no value, not as a refusal", none.ok === true && (none as Extract<typeof none, { ok: true }>).value === undefined, JSON.stringify(none).slice(0, 120));
+  }
+
+  // ---- crossing 5: FAULTS, OUT. An error is not cloneable in general - it can carry anything - so
+  // what crosses is its code, name and message, and the thread must never try to send the object.
+  {
+    const language = await runWorker(`log("x", 1);\n`, `(ctx) => async () => { await ctx.fuel(); return await ctx.get(null, "x"); }`).done;
+    ok("a language fault crosses with its CODE, so a caller can branch as it always has", failed(language).code === "L4010", JSON.stringify(language).slice(0, 120));
+
+    // AN UNCATCHABLE CLASS, which no cell reached before: a free identifier is the engine's own
+    // fault, and the name is the whole of what tells a reader that. The WRITE is used and not the
+    // read, for a reason worth knowing - see the two cells after this one.
+    const engineFault = await runWorker(`log("x", 1);\n`, `(ctx) => async () => { await ctx.fuel(); nope = 1; return 1; }`).done;
+    ok("an uncatchable engine fault crosses by NAME", engineFault.ok === false && failed(engineFault).name === "EngineFault", JSON.stringify(engineFault).slice(0, 120));
+
+    // AND THE FINDING THIS CELL WAS WRITTEN AGAINST, measured rather than assumed. IN THIS PROCESS a
+    // free identifier is a ReferenceError and the run boundary turns it into an EngineFault. INSIDE
+    // THE COMPARTMENT it is not: SES's scope proxy answers `has` for every name, so a READ of an
+    // unbound identifier is `undefined` and nothing throws, while a WRITE still refuses. So the
+    // host's loud clause is a backstop for the write and NOT for the read, in the path that ships,
+    // and the invariant actually holding the read closed is the transform's zero-free-identifiers
+    // surface. Pinned to the measurement so it reds the day either side changes.
+    const freeRead = await runWorker(
+      `log("x", 1);\n`,
+      `(ctx) => async () => { await ctx.fuel(); const probe = (f) => { try { return "value:" + String(f()); } catch (e) { return e.name; } }; return ctx.born({ read: probe(() => __unbound_zq7__), write: probe(() => { __unbound_zq8__ = 1; return 1; }), onGlobal: probe(() => String("__unbound_zq7__" in globalThis)) }); }`,
+    ).done;
+    const probed = (freeRead as Extract<typeof freeRead, { ok: true }>).value as Record<string, string>;
+    ok("inside the Compartment an unbound READ is undefined, not a ReferenceError", probed?.read === "value:undefined", probed);
+    ok("while an unbound WRITE still refuses, which is what the cell above rides on", probed?.write === "ReferenceError", probed);
+    ok("and the name is genuinely absent from the compartment's global", probed?.onGlobal === "value:false", probed);
+
+    // A HOST ERROR CARRYING SOMETHING THAT CANNOT BE CLONED. The error object never crosses; three
+    // strings do. Unguarded this is the same failure as the log path: a DataCloneError about the
+    // messenger instead of the message.
+    const hostErr = await runWorker(
+      `log("x", 1);\n`,
+      `(ctx) => async () => { await ctx.fuel(); const e = new Error("boom"); e.fn = () => 1; e.self = e; throw e; }`,
+    ).done;
+    ok("a host error carrying a function crosses as name and message", hostErr.ok === false && failed(hostErr).message === "boom", JSON.stringify(hostErr).slice(0, 120));
+    ok("and not as a clone failure about the error object", !/DataClone/.test(`${failed(hostErr).name} ${failed(hostErr).message}`), failed(hostErr).name);
+  }
+
+  // ---- crossing 6: THE STOP FLAG, IN, through shared memory - the one thing that crosses DURING a
+  // run, because `shouldStop` is read synchronously between effects.
+  {
+    const SPIN = `(ctx) => async () => { for (let i = 0; i < 50; i += 1) { await ctx.fuel(); await ctx.effect("sleep", ["1s"]); } return "finished"; }`;
+    const long = `${"the operator asked this run to stop ".repeat(40)}END`;
+    const run = runWorker(`await sleep("1s");\n`, SPIN);
+    run.stop(long);
+    const answer = await run.done;
+    ok("a stop reason crosses in through shared memory and ends the run", answer.ok === false, JSON.stringify(answer).slice(0, 120));
+    // TRUNCATED, NOT DROPPED: a reason too long for the buffer still says what it can. A cell that
+    // only sent a short reason could not tell truncation from silence.
+    const msg = String(failed(answer).message);
+    ok("and a reason past the buffer is truncated, not dropped", msg.includes("the operator asked this run to stop") && !msg.includes("END"), msg.length);
+  }
+
+  // ---- AND THE SET EQUALITY, read off the two files rather than remembered. A crossing added to
+  // the thread side with no cell here reds this, which is the whole reason the table is a table.
+  {
+    const entrySrc = readFileSync(fileURLToPath(new URL("../src/engine/worker-entry.ts", import.meta.url)), "utf8");
+    const hostSrc = readFileSync(fileURLToPath(new URL("../src/engine/worker.ts", import.meta.url)), "utf8");
+    // EVERY NAME BELOW IS THE DECLARED SIDE, never the found side: a cell that reports what it found
+    // renames itself under exactly the mutant meant to red it, and the config can no longer name it.
+    const KINDS = ["log", "result"];
+    const REQUEST_FIELDS = ["entries", "file", "handler", "module", "pins", "runId", "source"];
+    const WORKER_DATA = ["request", "stop"];
+    const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
+    ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
+    const requestFields = [...new Set([...entrySrc.matchAll(/request\.(\w+)/g)].map((m) => m[1] as string))].sort();
+    ok(`the thread reads exactly the ${REQUEST_FIELDS.length} request fields this table cells`, JSON.stringify(requestFields) === JSON.stringify(REQUEST_FIELDS), { declared: REQUEST_FIELDS, found: requestFields });
+    const workerData = [...new Set([...hostSrc.matchAll(/workerData: \{ ([^}]+) \}/g)].flatMap((m) => String(m[1]).split(",").map((x) => x.trim())))].sort();
+    ok(`and the host hands the thread exactly the ${WORKER_DATA.length} things this table cells`, JSON.stringify(workerData) === JSON.stringify(WORKER_DATA), { declared: WORKER_DATA, found: workerData });
+  }
+}
+
 // ---- 21) the seam ARITY TABLE, from the other side ----------------------------------------------
 //
 // `SEAM_MEMBERS` is the contract both lanes hold: member name -> [min, max] ARGUMENT COUNTS the
@@ -2170,7 +2320,10 @@ let n = 1;
   const ctx = h.ctx as unknown as Record<string, (...a: unknown[]) => unknown>;
   const declared = Object.keys(SEAM_MEMBERS).sort();
   const implemented = Object.keys(h.ctx).sort();
-  ok(`the seam declares ${declared.length} members and the host implements ${implemented.length}`, declared.length === implemented.length, { declared: declared.length, implemented: implemented.length });
+  // THE NAME CARRIES ONLY THE SIDE THAT DOES NOT MOVE. A cell whose name reports the number it is
+  // testing renames itself the moment it fails, and a mutation config cannot name a cell that is
+  // called something else under the mutant - measured, as a WRONG-RED, on the mutant below.
+  ok(`the seam declares ${declared.length} members, and the host implements the same number`, declared.length === implemented.length, { declared: declared.length, implemented: implemented.length });
   ok("and they are the SAME names, by set equality in both directions", JSON.stringify(declared) === JSON.stringify(implemented), { declared, implemented });
 
   let checked = 0;

@@ -781,10 +781,30 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "  const ctx: EngineCtx = {\n    fuel,",
       "replace": "  const ctx: EngineCtx = {\n    noop: () => undefined,\n    fuel,",
-      "expectRed": "the seam declares 14 members and the host implements 14",
+      "expectRed": "the seam declares 14 members, and the host implements the same number",
       "completionMarker": "ok a ReferenceError escaping the whole run is an ENGINE fault too",
-      "cell": "the seam declares 14 members and the host implements 14",
-      "note": "The widening this whole surface exists to refuse, and the shape it would actually arrive in: not a member removed, which every behavioural cell would notice, but one ADDED - reachable from the program, invisible to every law cell, and outside the table both lanes hold. Set equality is checked in both directions for exactly this."
+      "cell": "the seam declares 14 members, and the host implements the same number",
+      "note": "The widening this whole surface exists to refuse, and the shape it would actually arrive in: not a member removed, which every behavioural cell would notice, but one ADDED - reachable from the program, invisible to every law cell, and outside the table both lanes hold. Set equality is checked in both directions for exactly this. First spelling of this cell put BOTH counts in its name, so under the mutant it renamed itself to '...implements 15' and the config could not name it: a clean red graded WRONG-RED. The name now carries only the side the mutant does not move."
+    },
+    {
+      "name": "a logged function reaches the transport",
+      "file": "packages/lang/src/values.ts",
+      "find": "  if (typeof value === \"function\") {\n    throw new NotCrossable(\n      \"function\",",
+      "replace": "  if (false) {\n    throw new NotCrossable(\n      \"function\",",
+      "expectRed": "a logged FUNCTION is refused by the language, not by the transport",
+      "completionMarker": "ok log lines cross out, values intact",
+      "cell": "a logged FUNCTION is refused by the language, not by the transport",
+      "note": "The defect this crossing was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. Both in-process arms completed, so only a cell on the WORKER leg sees it. The rule itself is graded where it lives (log-data.json over surface.smoke); what this grades is that the worker leg notices."
+    },
+    {
+      "name": "the thread posts a kind the crossing table never cells",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
+      "replace": "    onLog: (line) => { port.postMessage({ kind: \"trace\", line }); port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }); },",
+      "expectRed": "the thread posts exactly the 2 message kinds this table cells",
+      "completionMarker": "ok and the host hands the thread exactly the 2 things this table cells",
+      "cell": "the thread posts exactly the 2 message kinds this table cells",
+      "note": "The failure the table exists for is a MISSING cell, not a wrong one: a whole crossing added to the thread side with nothing asserting anything about it, which is exactly how the log path shipped with an assertion on the return path and none on its own. Set equality against the file is what makes a new crossing red until somebody cells it. The mutant's extra kind is ignored by the host's message handler, so nothing else in the suite notices - which is the point."
     }
   ]
 }
