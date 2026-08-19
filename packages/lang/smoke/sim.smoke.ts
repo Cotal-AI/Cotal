@@ -8,7 +8,7 @@
  */
 import { SimHandler, SimUnscriptedError } from "../src/sim.js";
 import { EffectError, type EffectContext } from "../src/effects.js";
-import { KeyScope, stepKeyString, type StepKey } from "../src/keys.js";
+import { KeyScope, digest, requestId, type StepKey } from "../src/keys.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -20,12 +20,20 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 const bound: Record<string, unknown>[] = [];
 // ⚠️ THIS DOUBLE WAS MISSING TWO FIELDS THE INTERPRETER ALWAYS SUPPLIES. `requestId` and
 // `attempt` are not optional on `EffectContext`, so a handler reading either one saw `undefined`
-// under these tests and a real value in production — the double and the thing it stands in for
-// disagreeing, with nothing to say so while the suite ran under tsx.
+// under these tests and a real value in production, the double and the thing it stands in for
+// disagreeing with nothing to say so while the suite ran under tsx.
+//
+// `requestId` is derived through the PRODUCTION function rather than spelled here. An earlier
+// revision wrote `${stepKeyString(key)}@${attempt}`, which is present, typed, and impossible: an
+// endpoint id token is `[A-Za-z0-9_-]{1,64}` (see `keys.ts`, and `KEY_RESERVED_RE` names `/`, `#`
+// and `:` as reserved), and that form carries all three plus `@`. Supplying a well-typed value the
+// real system can never emit is the same defect as supplying none, wearing a better disguise.
+const SIM_RUN_ID = "sim-run";
+const SIM_INPUT_HASH = digest({ sim: true });
 const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   key,
   signal: { cancelled: false, onCancel: () => {} },
-  requestId: `${stepKeyString(key)}@${attempt}`,
+  requestId: requestId(SIM_RUN_ID, key, SIM_INPUT_HASH, attempt),
   attempt,
   bind: async (e) => {
     bound.push(e);

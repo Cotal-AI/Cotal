@@ -28,9 +28,13 @@ escapes, so does one put through an `as` cast, and so does one handed to a param
 `unknown`. That last one is how the three sites in the runtime consumer escape: their helper takes
 `script: unknown` and casts inside, so their literal is never checked against `SimScript` at all.
 All of those still compile with `at` present and still have it discarded, silently, exactly as
-before. Measured across the whole repository at this commit that is
-five sites, and three of them are in the runtime consumer rather than in this package's own tests,
-so the discarded field is not confined to the package that defines the type. The type closes the
+before. Measured across the whole repository at this commit that is **five pre-existing consumer
+fixtures**, and three of them are in the runtime consumer rather than in this package's own tests,
+so the discarded field is not confined to the package that defines the type. A sixth literal with
+`at` exists at this commit and is deliberately not one of the five: this change adds it, in
+`packages/lang/smoke/sim.smoke.ts`, as the cell that proves the implementation discards a scripted
+`at` on both return paths. It escapes the same way, through a parameter declared `unknown`, which
+is the point of it. The type closes the
 two idioms a new author reaches for first; it does not close the loophole.
 
 Nothing about the value the simulator produces changes, because it was always stamped from virtual

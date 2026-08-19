@@ -36,6 +36,9 @@ const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<st
   // The constraint used to be `A extends { [k: string]: unknown }`, which no request type can
   // satisfy: an INTERFACE has no implicit index signature, so every handler method failed to
   // infer and the whole object leaned on the `as unknown as EffectHandler` below to stay quiet.
+  // Nothing annotates this literal now, and nothing needs to: `capturing`'s declared return type
+  // checks it at the `return` below. A `satisfies` here would be a second conformance mechanism
+  // for a shape already checked once, which is machinery rather than safety.
   // `A` is only ever pushed into `unknown[]`, so the bound bought nothing and cost ten methods.
   const wrap = <A, R>(
     name: string,
@@ -60,7 +63,7 @@ const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<st
     monitor: wrap("monitor", inner.monitor),
     openConclave: wrap("openConclave", inner.openConclave),
     closeConclave: wrap("closeConclave", inner.closeConclave),
-  } satisfies EffectHandler;
+  };
   return { handler, seen };
 };
 
