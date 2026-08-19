@@ -110,6 +110,7 @@ let probe: ReturnType<typeof spawn> | undefined;
 let toolProbe: ReturnType<typeof spawn> | undefined;
 let modelProbe: ReturnType<typeof spawn> | undefined;
 let mirrorProbe: ReturnType<typeof spawn> | undefined;
+let interiorProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -558,6 +559,78 @@ try {
     mirrorBeforeRelease !== undefined && mirrorBeforeRelease !== "offline", { mirrorBeforeRelease });
   writeFileSync(mirrorRelease, "go\n");
   await awaitExit(mirrorProbe, 15_000);
+
+  // THE INTERIOR SEAT. The two seats above admit exactly two calls each, one with the failure at the
+  // head and one at the tail, and neither can tell absorbing the whole set apart from absorbing only
+  // its ends: in a set of two, every index is an end. This seat admits THREE with the failure in the
+  // middle, which is the smallest set that has an interior at all. Its own process again, because one
+  // process has one teardown.
+  const ivyId = newIdentity();
+  const ivyUid = mintLifecycleUid();
+  const ivyCreds = await provisionAgent(mgr, auth, ivyId, { ...acl, role: "worker", lifecycleUid: ivyUid });
+  const ivyCredsFile = join(dir, "ivy.creds");
+  writeFileSync(ivyCredsFile, ivyCreds);
+  const interiorSpec = opencodeConnector.buildLaunch({
+    space, name: "Ivy", role: "worker", id: ivyId.id, lifecycleUid: ivyUid, creds: ivyCredsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const interiorEp = interiorSpec.control!;
+  const interiorArm = join(dir, "interior-arm");
+  const interiorParked = join(dir, "interior-parked");
+  const interiorRelease = join(dir, "interior-release");
+  const interiorRejectParked = join(dir, "interior-reject-parked");
+  const interiorRejectRelease = join(dir, "interior-reject-release");
+  const interiorShape = join(dir, "interior-shape");
+  mkdirSync(join(dir, "ws-interior"), { recursive: true });
+  interiorProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...interiorSpec.env,
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-interior"),
+      COOP_CROSS: "interior",
+      COOP_CROSS_ARM: interiorArm,
+      COOP_CROSS_PARKED: interiorParked,
+      COOP_CROSS_RELEASE: interiorRelease,
+      COOP_REJECT_PARKED: interiorRejectParked,
+      COOP_REJECT_RELEASE: interiorRejectRelease,
+      COOP_INTERIOR_SHAPE: interiorShape,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+
+  let ivyLive = false;
+  for (let i = 0; i < 100 && !ivyLive; i++) {
+    await wait(100);
+    const ivy = watcher.getRoster().find((pr) => pr.card.name === "Ivy");
+    ivyLive = ivy !== undefined && ivy.status !== "offline";
+  }
+  check("interior-seat: the fifth seat came online, so this leg grades a live one", ivyLive);
+
+  writeFileSync(interiorArm, "go\n");
+  let interiorReady = false;
+  for (let i = 0; i < 60 && !interiorReady; i++) {
+    await wait(50);
+    interiorReady = existsSync(interiorShape);
+  }
+  // THE SHAPE IS THE CELL. Without this the leg could grade a two-call set while claiming three, and
+  // the mutation it exists to kill would survive again for the same reason it survived before.
+  check("interior-seat: three calls were admitted with the failing one between two parked ones",
+    interiorReady, { interiorShape, interiorParked, interiorRejectParked });
+
+  const interiorReply = await sendShutdown(interiorEp.path, interiorEp.token);
+  check("interior-seat: control server acked the shutdown",
+    interiorReply.trim() === JSON.stringify({ ok: true }), interiorReply);
+
+  await wait(100);
+  writeFileSync(interiorRejectRelease, "go\n");
+  await wait(200);
+  const interiorBeforeRelease = watcher.getRoster().find((pr) => pr.card.name === "Ivy")?.status;
+  // An interior rejection must not end the wait: both parked calls are still in flight, so departure
+  // may not have been published yet.
+  check("interior-seat: an interior failure did not release departure while parked work remained",
+    interiorBeforeRelease !== undefined && interiorBeforeRelease !== "offline", { interiorBeforeRelease });
+  writeFileSync(interiorRelease, "go\n");
+  await awaitExit(interiorProbe, 15_000);
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
@@ -567,6 +640,7 @@ try {
     if (toolProbe && toolProbe.exitCode === null) toolProbe.kill("SIGKILL");
     if (modelProbe && modelProbe.exitCode === null) modelProbe.kill("SIGKILL");
     if (mirrorProbe && mirrorProbe.exitCode === null) mirrorProbe.kill("SIGKILL");
+    if (interiorProbe && interiorProbe.exitCode === null) interiorProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }

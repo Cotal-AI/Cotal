@@ -216,6 +216,13 @@
       "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
       "replace": "    const admitted = [...inFlight].map((work, i, all) => (i === all.length - 1 ? work.then(() => undefined, () => undefined) : work));\n",
       "expectRed": "mirror-seat: departure was still unpublished while admitted work was in flight"
+    },
+    {
+      "name": "C17 absorption covers only the ENDS of the set, which BOTH two-call seats pass because in a set of two every index is already an end, so only an interior failure can show it",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));\n",
+      "replace": "    const admitted = [...inFlight].map((work, i, all) => (i === 0 || i === all.length - 1 ? work.then(() => undefined, () => undefined) : work));\n",
+      "expectRed": "interior-seat: an interior failure did not release departure while parked work remained"
     }
   ]
 }

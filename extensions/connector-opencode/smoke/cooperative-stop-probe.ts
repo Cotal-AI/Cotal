@@ -51,12 +51,22 @@ const late = process.env.COOP_LATE?.trim() || undefined;
 // resumed. Removing the tracking from one path then changes nothing observable and the mutation for
 // it survives. Measured, not predicted: that is exactly how C11 and C12 survived. There is one
 // teardown per process, so each door needs its own seat.
-const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool" | "model" | "mirror"
+const cross = process.env.COOP_CROSS?.trim() || undefined; // "hook" | "tool" | "model" | "mirror" | "interior"
 const crossArm = process.env.COOP_CROSS_ARM?.trim() || undefined;
 const crossParked = process.env.COOP_CROSS_PARKED?.trim() || undefined;
 const crossRelease = process.env.COOP_CROSS_RELEASE?.trim() || undefined;
 const rejectRelease = process.env.COOP_REJECT_RELEASE?.trim() || undefined;
 const rejectParked = process.env.COOP_REJECT_PARKED?.trim() || undefined;
+// THE SHAPE ITSELF IS A PRECONDITION, not an assumption. A two-call set cannot tell absorbing every
+// element apart from absorbing only the ends, because in a set of two every index IS an end. The
+// interior seat admits THREE and puts the failing call in the middle, and this marker is what proves
+// the set really had that shape when the stop landed rather than the cell grading two calls it
+// believed were three.
+const interiorShape = process.env.COOP_INTERIOR_SHAPE?.trim() || undefined;
+const noteShape = (): void => {
+  if (interiorShape && parked.length === 2 && parkedReject.length === 1)
+    writeFileSync(interiorShape, "three calls admitted: two parked with the failing one between them\n");
+};
 const parked: Array<() => void> = [];
 // Released on its own trigger, and BEFORE the parked one, so the failure lands while the teardown is
 // still waiting rather than after it has given up.
@@ -85,6 +95,7 @@ if (cross) {
       await new Promise<void>((r) => {
         parkedReject.push(r);
         if (rejectParked) writeFileSync(rejectParked, "the failing call was admitted and is waiting to fail\n");
+        noteShape();
       });
       throw new Error("admitted presence write failed");
     }
@@ -92,6 +103,7 @@ if (cross) {
       await new Promise<void>((r) => {
         parked.push(r);
         if (crossParked) writeFileSync(crossParked, `the pre-stop ${cross} call is parked inside its presence write\n`);
+        noteShape();
       });
     }
     return original.call(this, activity);
@@ -238,6 +250,16 @@ if (cross) {
     else if (cross === "mirror") {
       void fireTool("ses_coop", "crossing-reject");
       void fireTool("ses_coop", "crossing-mirror");
+    }
+    // THREE CALLS, THE FAILING ONE IN THE MIDDLE. The head and tail seats above each admit exactly
+    // two, and a set of two cannot distinguish absorbing every element from absorbing only the first
+    // and the last, because in a set of two every index is already an end. A repair that wraps only
+    // the ends passes both of them and still lets an interior rejection settle the wait early. This
+    // is the smallest set that has an interior at all.
+    else if (cross === "interior") {
+      void fireTool("ses_coop", "crossing-interior");
+      void fireTool("ses_coop", "crossing-reject");
+      void fireTool("ses_coop", "crossing-interior");
     }
     // The session named here is the one the plugin adopted at boot, so the ownership check passes
     // and the hook actually reaches its model publish rather than returning early.
