@@ -336,12 +336,12 @@
     {
       "name": "a transform is run above the guard, so the file's first one is unguarded again",
       "file": "packages/lang/smoke/transform.smoke.ts",
-      "find": "// ---- 0) the FIRST transform in this file, and it is captured ------------------------------------",
-      "replace": "const __ahead = transform(\"log(1);\").module;\nvoid __ahead;\n\n// ---- 0) the FIRST transform in this file, and it is captured ------------------------------------",
+      "find": "  walk(root);\n  return out;\n};\n",
+      "replace": "  walk(root);\n  return out;\n};\n\nconst __ahead = transform(\"log(1);\").module;\nvoid __ahead;\n",
       "completionMarker": "ok and no declared range is wider than the emission that justifies it",
       "expectRed": "the guarded transform is still the first one this file runs",
       "cell": "the guarded transform is still the first one this file runs",
-      "note": "The control arm the guard is worthless without, and the one the engine suite's equivalent taught: an insertion ABOVE the guard silently re-opens the hole, because the guard's value is its POSITION and nothing about it is checked by running it. This mutant adds an ordinary, harmless-looking transform above section 0 - it breaks no assertion and reds no other cell - and the offset check is the only thing that sees it."
+      "note": "The control arm the guard is worthless without, and the one the engine suite's equivalent taught: an insertion ABOVE the guard silently re-opens the hole, because the guard's value is its POSITION and nothing about it is checked by running it. This mutant adds an ordinary, harmless-looking transform above section 0 - it breaks no assertion and reds no other cell - and the offset check is the only thing that sees it. ANCHORED ON CODE, three lines of it: the nearest unique thing above section 0 is a comment, and reaching for it is what the fixtures walk refuses - a guard whose anchor is prose can be disarmed by a docs commit that cannot announce what it disabled. `walk(root);` alone occurs three times and with `return out;` twice; the third line makes it unique without prose."
     },
     {
       "name": "a second mutation loses its upstream marker, so the exception stops being one",
