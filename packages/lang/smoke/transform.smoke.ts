@@ -505,6 +505,7 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   // the program moves into the corpus above.
   const pending = ["const o = { m: () => ({ x: 1 }) }; log(o.m?.().x);"];
   let refused = 0;
+  const quiet: string[] = [];
   for (const source of pending) {
     let name = "";
     try {
@@ -513,9 +514,9 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
       name = (e as Error).name;
     }
     if (name === "SeamPending") refused += 1;
-    else ok(`the transform refuses \`${source}\` loudly`, false, { name });
+    else quiet.push(`${source} -> ${name === "" ? "no refusal at all" : name}`);
   }
-  ok("every program the seam cannot yet express refuses loudly, and is listed", refused === pending.length, { refused, of: pending.length });
+  ok("every program the seam cannot yet express refuses loudly, and is listed", refused === pending.length, { refused, of: pending.length, quiet });
 
   // AND THE MIRROR: the shape ruling 1d DID close is emitted, and it carries the flag. Without this
   // cell "refuse every optional call" would pass the one above.
