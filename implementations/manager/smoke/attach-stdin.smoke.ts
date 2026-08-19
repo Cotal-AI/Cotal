@@ -720,8 +720,17 @@ try {
     // of the dating echo, so what is left after removing the nonces dating actually wrote is what
     // the agent should never have read. A try that was DROPPED leaves no trace, which is the race
     // the retry exists for, so a nonce that is MISSING stays legal; a byte nobody typed does not.
-    const tail = sink().subarray(mark).toString("utf8");
-    const residue = typed.reduce((s, n) => s.split(`${n}\n`).join("").split(n).join(""), tail);
+    // Stripped from the END, newest first, and only as a suffix. Removing a bare nonce ANYWHERE
+    // could absorb a byte the cell is asserting never arrived if a future payload were shaped like
+    // one; anchoring to the tail cannot. It also strengthens the cell rather than only tidying it:
+    // a nonce that is no longer at the end means something arrived AFTER the dating byte, which is
+    // the delivery this cell exists to catch, so it stays in the residue and reds.
+    let residue = sink().subarray(mark).toString("utf8");
+    const tail = residue;
+    for (const n of [...typed].reverse()) {
+      const suffix = residue.endsWith(`${n}\n`) ? `${n}\n` : residue.endsWith(n) ? n : "";
+      if (suffix) residue = residue.slice(0, -suffix.length);
+    }
     check("...and neither byte reached the agent", residue === "", { got: tail, residue, typed });
     await detachAndSettle(a, base, "F");
   }
