@@ -28,7 +28,7 @@ import { arrayMethods, numberMethods, stringMethods } from "../src/library.js";
 import { parse } from "acorn";
 import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
-import { Prng } from "../src/values.js";
+import { Prng, assertNoCode } from "../src/values.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
 import { NODE_FLOOR, assertNodeFloor, runOnEngine, resumeOnEngine } from "../src/engine/host.js";
 import * as workerModule from "../src/engine/worker.js";
@@ -101,6 +101,69 @@ const caught = async (body: () => unknown): Promise<unknown> => {
   }
 };
 const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefined)?.code;
+
+/**
+ * THE SHAPE OF A LOGGED VALUE, beside its rendering, because the rendering is BLIND.
+ *
+ * Every cell in this file that compares log lines compares `JSON.stringify` of them, and that draws
+ * `undefined`, `null`, a function, NaN and both infinities ALL AS `null`, `-0` as `0`, and `{}` and
+ * `{ g: (x) => x }` alike. MEASURED HERE, not argued: two adjacent pins in section 15 both read
+ * `[["r",null]]`, and one of them is `undefined` (a short-circuited `o.m?.()`) while the other is a
+ * real `null` (`sleep` answering through a present method). The rendering could not tell them apart,
+ * so a change that swapped one for the other would have kept both cells green.
+ *
+ * This is the SAME SIGNATURE the differential suite compares its arms with, taken verbatim so a
+ * reader learns one word, and the label rule is the same too: a shape difference is reported under
+ * its OWN name, never folded into the rendering's, because a name that just denied a difference is
+ * the worst place to report one. `carriesCode` CATCHES `assertNoCode` rather than re-implementing
+ * it: that predicate is what the engine's log rule is built on (section 20b), so the signature and
+ * the rule cannot drift apart, it carries its own `seen` set so a cycle costs nothing, and arrays
+ * come free because `typeof []` is "object".
+ *
+ * ONE SPELLING ACROSS BOTH HARNESSES, and this is the agreed one: `object+code` for the nesting case
+ * and `Object.is(v, -0) ? "-0"` for negative zero, which `0 / -1` reaches in an ordinary program.
+ *
+ * Three of its four decisions are graded by a mutant each (the leg unable to differ, the signature
+ * gone shallow, `-0` unnamed). NAMING `null` IS NOT ONE OF THEM, and the honest reason is that a
+ * mutant for it has no cell to red: unnamed, `null` falls to `typeof` and reads "object" while
+ * absence still reads "undefined", so the pair this file cares about stays separated either way. It
+ * is kept because it says what the value IS rather than what class it belongs to, not because
+ * anything here would notice its removal.
+ */
+const carriesCode = (v: unknown): boolean => {
+  try {
+    assertNoCode(v, "v");
+    return false;
+  } catch {
+    return true;
+  }
+};
+
+const shapeOf = (v: unknown): string =>
+  v === null
+    ? "null"
+    : Object.is(v, -0)
+      ? "-0"
+      : typeof v === "number" && Number.isNaN(v)
+        ? "NaN"
+        : typeof v === "number" && !Number.isFinite(v)
+          ? v > 0
+            ? "Infinity"
+            : "-Infinity"
+          : typeof v === "object"
+            ? carriesCode(v)
+              ? "object+code"
+              : "object"
+            : typeof v;
+
+/** The shapes of a run's log lines, in the same layout as their rendering. */
+const shapes = (logs: readonly (readonly unknown[])[]): string => JSON.stringify(logs.map((line) => line.map(shapeOf)));
+
+/**
+ * Do two arms' log lines have the same shapes? ONE function, so the controls in section 15b grade the
+ * predicate the gate leg actually calls rather than a second copy of it that can drift from it.
+ */
+const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(b);
 
 /** A plain evaluator. The confined path is the worker; this is a test process comparing two engines. */
 const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =>
@@ -1224,14 +1287,17 @@ await parallel({
     const logs: unknown[][] = [];
     try {
       const r = await walkerRun(src, { runId: "f6", handler: new SimHandler({}), onLog: (l) => logs.push([...l.values]) });
-      return `ok ${JSON.stringify(logs)} ${JSON.stringify(r.journal.entries().map((e) => e.kind))}`;
+      // SHAPES BESIDE THE RENDERING, under their own word. Measured: six of the pins below read
+      // `[["r",null]]` for an `undefined` and one reads it for a real `null`, and until this leg
+      // existed nothing here could tell those two answers apart.
+      return `ok ${JSON.stringify(logs)} shapes ${shapes(logs)} ${JSON.stringify(r.journal.entries().map((e) => e.kind))}`;
     } catch (e) {
       return `refused ${codeOf(e)}`;
     }
   };
   const h = harness({ script: {} });
 
-  ok("the walker short-circuits an absent member", (await onWalker(`const o = { a: 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",null]] []');
+  ok("the walker short-circuits an absent member", (await onWalker(`const o = { a: 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
   // CAPTURED, not awaited into the assertion: without the short-circuit this call THROWS L4011, and
   // written the other way the throw left the block and killed the suite anonymously instead of
   // failing the cell that names the rule.
@@ -1243,7 +1309,7 @@ await parallel({
   }
   ok("and so does the engine, with nothing called", absent === undefined, String(absent));
 
-  ok("the walker invokes a member that IS a function", (await onWalker(`const o = { m: () => 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",1]] []');
+  ok("the walker invokes a member that IS a function", (await onWalker(`const o = { m: () => 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",1]] shapes [["string","number"]] []');
   ok(
     "and so does the engine",
     (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", () => [], true))) === 1,
@@ -1270,11 +1336,11 @@ await parallel({
   // have run. That is why the optional form takes a thunk: an array would already have been evaluated.
   ok(
     "a short-circuited call on the walker journals NOTHING",
-    (await onWalker(`const o = { a: 1 };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] []',
+    (await onWalker(`const o = { a: 1 };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []',
   );
   ok(
     "while the same argument on a PRESENT method journals its effect",
-    (await onWalker(`const o = { m: (x) => x };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] ["sleep"]',
+    (await onWalker(`const o = { m: (x) => x };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] shapes [["string","null"]] ["sleep"]',
   );
   let evaluated = 0;
   const short = await h.inFrame(() =>
@@ -1298,7 +1364,7 @@ await parallel({
   // line: unawaited, `args()` handed the spread a Promise, so an ordinary `o.m?.(1)` died on "Spread
   // syntax requires ...iterable" and `xs.map?.(f)` reached the curated method with a Promise where
   // its argument list should be. Both shapes are below, each against the oracle.
-  ok("the walker calls a present member with a plain argument", (await onWalker(`const o = { m: (x) => x };\nlog("r", o.m?.(1));\n`)) === 'ok [["r",1]] []');
+  ok("the walker calls a present member with a plain argument", (await onWalker(`const o = { m: (x) => x };\nlog("r", o.m?.(1));\n`)) === 'ok [["r",1]] shapes [["string","number"]] []');
   // CAPTURED, like every other cell here whose subject is a refusal or a throw: unawaited the thunk
   // hands the spread a Promise, and that TypeError would leave the block and kill the suite
   // anonymously rather than failing the cell that names the rule.
@@ -1322,7 +1388,7 @@ await parallel({
     JSON.stringify(held.run.journal.entries().map((e) => e.kind)) === '["sleep"]',
     held.run.journal.entries().map((e) => e.kind),
   );
-  ok("the walker runs a curated method through the optional form", (await onWalker(`const xs = [1, 2];\nlog("r", xs.map?.((x) => x * 3));\n`)) === 'ok [["r",[3,6]]] []');
+  ok("the walker runs a curated method through the optional form", (await onWalker(`const xs = [1, 2];\nlog("r", xs.map?.((x) => x * 3));\n`)) === 'ok [["r",[3,6]]] shapes [["string","object"]] []');
   let curated: unknown;
   try {
     curated = await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", async () => [async (x: unknown) => (x as number) * 3], true));
@@ -1346,11 +1412,11 @@ await parallel({
   // absent member answers undefined and a member that RETURNS undefined refuses L4010, and both
   // give undefined to any guard written outside. Only the host knows which happened, so the rest of
   // the chain comes here as a closure and the host applies its own decision.
-  ok("the walker short-circuits the whole chain after an absent member", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x);\n`)) === 'ok [["r",null]] []');
+  ok("the walker short-circuits the whole chain after an absent member", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
   ok("and refuses L4010 when the member was PRESENT and returned undefined", (await onWalker(`const o = { m: () => undefined };\nlog("r", o.m?.().x);\n`)) === "refused L4010");
-  ok("and reads the field when it returned a record", (await onWalker(`const o = { m: () => ({ x: 7 }) };\nlog("r", o.m?.().x);\n`)) === 'ok [["r",7]] []');
-  ok("the walker swallows a DEEP chain too", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x.y);\n`)) === 'ok [["r",null]] []');
-  ok("and a trailing CALL", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().trim());\n`)) === 'ok [["r",null]] []');
+  ok("and reads the field when it returned a record", (await onWalker(`const o = { m: () => ({ x: 7 }) };\nlog("r", o.m?.().x);\n`)) === 'ok [["r",7]] shapes [["string","number"]] []');
+  ok("the walker swallows a DEEP chain too", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().x.y);\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
+  ok("and a trailing CALL", (await onWalker(`const o = { a: 1 };\nlog("r", o.z?.().trim());\n`)) === 'ok [["r",null]] shapes [["string","undefined"]] []');
 
   // CAPTURED: with the chain unguarded it runs against undefined and throws L4010, which awaited
   // into the assertion would leave the block and kill the suite anonymously.
@@ -1390,6 +1456,44 @@ await parallel({
     "a continuation without the optional flag is refused, not silently run",
     codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", [], false, (v) => v)))) === "L1000",
   );
+}
+
+// ---- 15b) the shape signature, and the pairs the rendering cannot separate ------------------------
+//
+// EVERY CELL THAT USES THE SHAPE LEG PASSES TODAY, which is exactly when a check cannot show that it
+// can fail: no program compared in this file logs an ambiguous value on one arm and a different one
+// on the other. So the leg is graded against pairs built to render IDENTICALLY and mean different
+// things - the whole reason it exists - and against a negative half, because a signature that
+// reported a difference between two equal lines would red the corpus for nothing.
+//
+// The live evidence is in section 15: two of its pins read `[["r",null]]`, one for a short-circuited
+// `undefined` and one for a real `null` that `sleep` answered through a present method.
+
+{
+  const blind = (a: unknown, b: unknown): boolean => JSON.stringify([[a]]) === JSON.stringify([[b]]);
+  const separated = (a: unknown, b: unknown): boolean => blind(a, b) && !sameShapes([[a]], [[b]]);
+
+  ok("absence and a literal null render the same and are told apart", separated(undefined, null), { rendered: JSON.stringify([[undefined]]), a: shapes([[undefined]]), b: shapes([[null]]) });
+  ok("absence and a live function too, which is the shape that killed the thread", separated(undefined, (x: unknown) => x), shapes([[(x: unknown) => x]]));
+  ok("NaN and absence too", separated(undefined, NaN), shapes([[NaN]]));
+  ok("NaN and Infinity, which JSON draws alike", separated(NaN, Infinity), { nan: shapes([[NaN]]), inf: shapes([[Infinity]]) });
+  ok("and the two infinities, which it draws alike as well", separated(Infinity, -Infinity), shapes([[-Infinity]]));
+  // THE NESTING CASE. A shallow `typeof` reads both of these as "object" - the same conflation one
+  // level down - and it is the NESTED closure, not the bare one, that a transport actually chokes on.
+  ok("an empty record and one carrying a closure, which a shallow signature could not", separated({}, { g: (x: unknown) => x }), shapes([[{ g: (x: unknown) => x }]]));
+  ok("and an array of absence against an array carrying code, which come free", separated([undefined], [(x: unknown) => x]), { rendered: JSON.stringify([[[undefined]]]), code: shapes([[[(x: unknown) => x]]]) });
+  // NEGATIVE ZERO is not a curiosity: `0 / -1` is an ordinary program, and JSON draws it as `0`.
+  ok("zero and negative zero, which an ordinary division reaches", separated(0, -0), { rendered: JSON.stringify([[-0]]), a: shapes([[0]]), b: shapes([[-0]]) });
+  // THE NEGATIVE HALF. A signature that separated two equal lines would red every comparison here.
+  const same: unknown[][] = [["v", 1, null, { a: [2] }]];
+  ok("while two arms that logged the SAME values report no shape difference at all", sameShapes(same, JSON.parse(JSON.stringify(same)) as unknown[][]), shapes(same));
+  // AND IT STAYS A SHAPE: no key names, no depth, no ordering, so it never becomes a second
+  // serializer with blind spots of its own.
+  ok("and the signature carries no key names, depth or ordering to argue about", shapes([[{ a: 1, b: 2 }]]) === shapes([[{ z: [[[3]]] }]]), shapes([[{ a: 1, b: 2 }]]));
+  // A CYCLE COSTS NOTHING: `assertNoCode` carries its own `seen` set, so this terminates.
+  const cyclic: Record<string, unknown> = { a: 1 };
+  cyclic.self = cyclic;
+  ok("a cyclic value is a shape like any other, not a hang", shapes([[cyclic]]) === '[["object"]]', shapes([[cyclic]]));
 }
 
 // ---- 16) the worker: one locked-down thread per run, RUN FROM `dist` -----------------------------
@@ -1650,6 +1754,11 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     });
     ok(`${label}: and the scope was actually journalled`, journal.entries().length > 1, journal.entries().length);
     ok(`${label}: the log is the same`, JSON.stringify(wLogs) === JSON.stringify(eLogs), { walker: wLogs, engine: eLogs });
+    // UNDER ITS OWN NAME, never folded into the cell above: the rendering is what is blind here, so
+    // reporting a shape difference under the name that just said the logs match is the worst place
+    // for it. No program compared here logs an ambiguous value TODAY, which is exactly why the leg
+    // needs the controls below rather than the corpus to prove it can fail.
+    ok(`${label}: and so are the log SHAPES, which the rendering cannot show`, sameShapes(wLogs, eLogs), { walker: shapes(wLogs), engine: shapes(eLogs) });
     return { walker, engine: engine as Awaited<ReturnType<typeof runOnEngine>> };
   };
 

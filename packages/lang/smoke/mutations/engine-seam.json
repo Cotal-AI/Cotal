@@ -815,6 +815,36 @@
       "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
       "cell": "an unknown message kind is refused, not read as the run's answer",
       "note": "The handler this branch replaced: one case for `log` and everything else read as the answer. A thread posting anything unexpected resolved the run with `undefined` - success, no value - and the real result arrived after nobody was listening. Found by a mutation that added a message kind, reproduced with a two-line worker entry the suite hands in, which is what the entry being an INPUT buys."
+    },
+    {
+      "name": "the shape leg is compared but never able to differ",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(b);",
+      "replace": "const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(a) && b !== null;",
+      "expectRed": "absence and a literal null render the same and are told apart",
+      "completionMarker": "ok and a trailing CALL",
+      "cell": "absence and a literal null render the same and are told apart",
+      "note": "The gate leg and the section-15b controls call ONE predicate, so this grades the predicate the gate actually uses rather than a second copy. Mutated to compare an arm against itself, every pair reads 'same' and the first control - the undefined/null pair, which is the distinction this wave leans on hardest - reds. Marker is the last cell of section 15, immediately above the controls."
+    },
+    {
+      "name": "the shape signature goes shallow again",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "          : typeof v === \"object\"\n            ? carriesCode(v)\n              ? \"object+code\"\n              : \"object\"\n            : typeof v;",
+      "replace": "          : typeof v;",
+      "expectRed": "an empty record and one carrying a closure, which a shallow signature could not",
+      "completionMarker": "ok and the two infinities, which it draws alike as well",
+      "cell": "an empty record and one carrying a closure, which a shallow signature could not",
+      "note": "The first spelling of this signature WAS shallow `typeof`, and shallow it fails the two rows it was added for: `{ g: (x) => x }` and `{}` both read 'object'. The four top-level pairs above survive shallow, which is exactly what made the first spelling look fine, so this reds only the two nesting controls and the nesting one comes first. `carriesCode` catches `assertNoCode` rather than re-implementing it, so this mutant also says the signature and the engine's log rule cannot drift apart."
+    },
+    {
+      "name": "negative zero stops being named",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "    : Object.is(v, -0)\n      ? \"-0\"\n",
+      "replace": "    : false\n      ? \"-0\"\n",
+      "expectRed": "zero and negative zero, which an ordinary division reaches",
+      "completionMarker": "ok and an array of absence against an array carrying code, which come free",
+      "cell": "zero and negative zero, which an ordinary division reaches",
+      "note": "JSON draws -0 as 0 and `0 / -1` is an ordinary program, so this is a hazard a run can reach rather than a curiosity. Unnamed, -0 falls through to `typeof` and reads 'number' exactly as 0 does, and the control that separates them reds."
     }
   ]
 }
