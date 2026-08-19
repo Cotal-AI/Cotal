@@ -308,9 +308,18 @@ check(
 // anything, so a `@returns` that drifted from what the function does was invisible here: the eng
 // review declared it `number`, returned a string, and the suite stayed green. It returns nothing,
 // which is a claim like any other and is asserted like any other.
-const reporterReturn = typeof reaperModule.reportReaped === "function"
-  ? reaperModule.reportReaped("the declaration check", dryReport)
-  : "the module exports no reportReaped to hold that declaration to";
+// The call is guarded because this cell reaches into the module, and a suite that DIES here stops
+// before the cells below it: a mutation elsewhere in the ledger makes this function throw on its
+// own argument, and an unguarded call turned that row from a graded kill into an unfinished run.
+// A throw is reported as what it is, a call that gave nothing back, and the run carries on.
+let reporterReturn: unknown;
+try {
+  reporterReturn = typeof reaperModule.reportReaped === "function"
+    ? reaperModule.reportReaped("the declaration check", dryReport)
+    : "the module exports no reportReaped to hold that declaration to";
+} catch (error) {
+  reporterReturn = `the call threw instead of returning: ${error instanceof Error ? error.message : String(error)}`;
+}
 const reporterMismatches = mismatches(surface.returns.reportReaped!, reporterReturn, "reportReaped()");
 check(
   "and the reporter's declared return is held to what the call actually gives back",
