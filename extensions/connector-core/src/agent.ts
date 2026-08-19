@@ -136,6 +136,15 @@ function sleep(ms: number): Promise<void> {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+/** The dedup key a received message id contributes to ingest's coalescing, or undefined when the id
+ *  is EMPTY: an empty id is never a dedup key (#624). Undefined means "no identity to coalesce on",
+ *  so every id-keyed lookup in {@link MeshAgent.ingest} is skipped for such a message and it flows to
+ *  the buffer on its own merits. Real ids are returned unchanged: their coalescing (live/durable
+ *  copies of one message, and redelivery after handle) is untouched. */
+function ingestDedupKey(id: string): string | undefined {
+  return id === "" ? undefined : id;
+}
+
 /**
  * A thin, mesh-native agent: a {@link CotalEndpoint} plus a buffered inbox and
  * name-based peer resolution. This is the shared core behind the MCP server
@@ -321,15 +330,24 @@ export class MeshAgent extends EventEmitter {
   // ---- inbox ---------------------------------------------------------------
 
   private ingest(m: CotalMessage, delivery: Delivery, meta?: MessageMeta): void {
+    // #624: an EMPTY id is never a dedup key. The id-keyed coalescing below exists to collapse the
+    // copies of ONE message across the live/durable paths, and identity is what makes that safe. A
+    // message that carries an empty id asserts no identity (SPEC §5 requires a unique id; the sender
+    // already violated it), so keying the coalescing on "" reads empty-equals-empty as a duplicate
+    // and silently drops every empty-id message after the first: measured live, two distinct
+    // empty-id messages arrived and only the first ever buffered. Treating an empty id as NO id
+    // costs the coalescing for those messages only (a redelivered copy can surface twice), which is
+    // the wire contract's at-least-once stance; collapsing distinct messages is not a stance at all.
+    const key = ingestDedupKey(m.id);
     // Already SURFACED and drained? This is a post-handle cross-path duplicate (the transition window's
     // second copy, arriving after the first was handled). Don't surface it again; if it's the durable
     // copy, ack it so JetStream stops redelivering — safe because the logical message was already
     // handled (handledIds is recorded at drain time, never at receive time).
-    if (this.handledIds.has(m.id) || this.handledIdsPrev.has(m.id)) {
+    if (key !== undefined && (this.handledIds.has(key) || this.handledIdsPrev.has(key))) {
       if (delivery.durable) delivery.ack();
       return;
     }
-    if (this.protectedPullOnlyIds.has(m.id) || this.protectedDropIds.has(m.id)) {
+    if (key !== undefined && (this.protectedPullOnlyIds.has(key) || this.protectedDropIds.has(key))) {
       if (delivery.durable) delivery.ack();
       return;
     }
@@ -342,7 +360,7 @@ export class MeshAgent extends EventEmitter {
     // dropped as-is. A durable duplicate also re-announces the still-pending item through the
     // ordinary `incoming` policy path. That turns JetStream redelivery into a timer-free retry for
     // a wake the host dropped, without bypassing quiet/attention or adapter in-flight guards.
-    const existing = this.inbox.find((p) => p.item.id === m.id);
+    const existing = key === undefined ? undefined : this.inbox.find((p) => p.item.id === key);
     if (existing) {
       if (delivery.durable) {
         existing.ack = delivery.ack;
@@ -504,6 +522,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private protectDisposition(id: string, disposition: "pull-only" | "drop"): void {
+    if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
     const ids = disposition === "drop" ? this.protectedDropIds : this.protectedPullOnlyIds;
     if ((disposition === "drop" ? this.dropUnsafe : this.classificationUnsafe) || ids.has(id)) return;
     if (ids.size >= PROTECTED_DISPOSITION_CAP) {
@@ -639,6 +658,7 @@ export class MeshAgent extends EventEmitter {
    *  two rotating windows: when the live set fills, it becomes the previous window and a fresh one
    *  starts — so memory stays ~2× the cap while the lookup horizon never shrinks below it. */
   private markHandled(id: string, pullOnly = false): void {
+    if (id === "") return; // #624: an empty id is never a dedup key, so it is never recorded as one
     if (pullOnly) this.protectDisposition(id, "pull-only");
     this.handledIds.add(id);
     if (this.handledIds.size >= 4096) {

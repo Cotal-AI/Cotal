@@ -239,6 +239,9 @@ here."
 A message delivered both live and durable is **one logical delivery**: receivers MUST deduplicate
 by `id` across classes (§8); the durable copy owns ack/commit; and a previously seen `id` MUST NOT
 be treated as authorization for a later durable copy (for example one that arrives after a leave).
+An empty `id` is never a dedup key: a message that carries one asserts no identity to coalesce on,
+so two distinct messages with empty ids are two deliveries, and their copies may surface more than
+once (delivery stays at-least-once for them).
 Receivers MUST tolerate the `live` gap and rely on the `durable` backstop for catch-up on
 `durable` channels. Malformed JSON, spoofed sender payloads, and unparseable delivery subjects are
 permanent anomalies and MUST be terminated, not retried.
@@ -421,7 +424,8 @@ Replay / catch-up on join:
    read.
 4. Surface backfilled messages with `MessageMeta.historical = true`.
 5. Deduplicate by `id` across the live tail, the backfill, and (on `durable` channels) the durable
-   backstop, so a message surfaces once.
+   backstop, so a message surfaces once. An empty `id` is not a dedup key (§4): distinct
+   id-less messages must not be collapsed.
 
 `replay=false` is noise control, not confidentiality. CHAT history is readable only within an
 instance's read ACL (`allowSubscribe`, §9); confidential content MUST use DM or anycast.
@@ -846,7 +850,8 @@ A conformant authenticated NATS client MUST:
     deployment assumption, and use one resolution across live join, durable fan-out, history read,
     and membership surfacing (§4, §7).
 12. On a `durable` channel, tolerate the at-most-once `live` gap and catch up via the durable
-    backstop; deduplicate by `id` across the live, backfill, and durable copies (§4, §8).
+    backstop; deduplicate by `id` across the live, backfill, and durable copies (§4, §8). An empty
+    `id` is not a dedup key (§4).
 13. Join and leave a channel's **live** subscription by subscribing/unsubscribing under `sub.allow`
     with no privileged mediation; treat a live join as effective only once the broker accepts the
     subscribe, and drop it on a late permission refusal. On a `durable` channel, additionally establish
