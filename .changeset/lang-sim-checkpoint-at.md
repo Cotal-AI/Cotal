@@ -40,5 +40,14 @@ two idioms a new author reaches for first; it does not close the loophole.
 Nothing about the value the simulator produces changes, because it was always stamped from virtual
 time.
 
-This is the whole of the shipped change. The rest of that work is test-tree only: the `packages/lang`
-smoke files now typecheck under a check-only project, which is a gate, not a behaviour.
+One more shipped type, and it moves in the same direction: `EngineCtx.call` declared
+`args: unknown[] | (() => unknown[])` while the implementation writes
+`typeof args === "function" ? await args() : args`. An async thunk is accepted at runtime and the
+engine suite passes one deliberately, to prove the arguments arrive as a list rather than as a
+promise, so the declaration was the half that was wrong. It is now
+`unknown[] | (() => unknown[] | Promise<unknown[]>)`. Nothing about what the engine accepts changes;
+a caller that was already passing an async thunk stops needing a cast to say so.
+
+Those two are the whole of the shipped change. The rest of that work is test-tree only: the
+`packages/lang` smoke files now typecheck under a check-only project, which is a gate, not a
+behaviour.
