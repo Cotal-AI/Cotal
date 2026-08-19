@@ -51,11 +51,14 @@ import {
   EventWal,
   FileSubjectFrontier,
   ensureEventWalDir,
+  eventWalLocation,
   resolveEventsStateRoot,
   type InboxItem,
+  type PrincipalLock,
 } from "@cotal-ai/connector-core";
 import { principalKey } from "@cotal-ai/core";
 import { randomUUID } from "node:crypto";
+import { rm, rmdir } from "node:fs/promises";
 import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodeRecord } from "./agui-source.js";
 import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
 import type { Plugin, Hooks, ToolDefinition } from "@opencode-ai/plugin";
@@ -81,6 +84,13 @@ const INTERRUPT_INTENT_TTL_MS = 30_000;
 export const SESSION_RETIRED = "opencode-session-retired";
 /** A bounded wait gave up. Exported so a cell keys on the token rather than on the sentence. */
 export const SETTLE_ABANDONED = "opencode-settle-abandoned";
+/** A retired session's write-ahead log was removed. Exported for the same reason as the two above:
+ *  a cell keys on the token, never on the sentence around it. */
+export const WAL_REAPED = "opencode-wal-reaped";
+/** A retired session's write-ahead log was KEPT, and the line says which of the reasons applied.
+ *  This is the token the reaping cell grades, because the lifetime is the claim and the deletion is
+ *  only the easy half of it. */
+export const WAL_KEPT = "opencode-wal-kept";
 /**
  * How long one swap step may hold the chain, or a teardown may hold the process, before it is
  * abandoned out loud rather than waited on forever.
@@ -134,6 +144,9 @@ export const cotal: Plugin = async () => {
    * a managed session.
    */
   let events: AguiEmitterHolder<OpenCodeRecord> | undefined;
+  /** This principal's event WAL lock, taken by whichever holder started first and held until the
+   *  FINAL event teardown. See the assignment site for why a retirement does not release it. */
+  let eventLock: PrincipalLock | undefined;
   /** Swaps run ONE AT A TIME (#600). The drain below suspends and the plugin bus does not await this
    *  handler (it dispatches `void hook.event(...)`), so without this a second top-level create lands
    *  mid-drain, reads the same holder to retire, and its replacement overwrites the first one. A
@@ -176,7 +189,22 @@ export const cotal: Plugin = async () => {
         const workspaceRoot = resolveEventsStateRoot(process.env);
         const threadId = id; // the native session IS the AG-UI thread
         const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
-        const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        const { walPath, subjectPath, lock } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        // HELD FOR THE PROCESS, NOT FOR THIS HOLDER, and holding it at all is the half #599 named
+        // that this connector did not do. `ensureEventWalDir` hands back the lock it actually took;
+        // dropping it on the floor here left `release()` with no caller anywhere in shipped source,
+        // so the file outlived every session and its record went on naming a pid that was alive but
+        // no longer publishing. A replacement process for the same principal and workspace then met
+        // a live owner and refused its own event plane. Reproduced across two processes: dispose the
+        // plugin with its host still up, start a second one, and the second one's emitter dies on
+        // this principal's lock.
+        //
+        // THE SWAP MUST NOT RELEASE IT. A lock is per PRINCIPAL and a holder is per THREAD, so a
+        // `/new` that released it would hand this principal to another process while this one is
+        // still publishing. `acquirePrincipalLock` returns the SAME object for the same path within
+        // a process, so every holder's start assigns the same lock here and the release below has
+        // exactly one thing to release.
+        eventLock = lock;
         // Per PRINCIPAL, not per thread: without it a second session of this agent opens virgin,
         // expects an empty subject its own first session filled, and halts for good.
         const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
@@ -211,6 +239,92 @@ export const cotal: Plugin = async () => {
     );
   }
   if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) events = newEventHolder();
+
+  /**
+   * Give this principal's event WAL lock back, ONCE, at the final event teardown.
+   *
+   * Idempotent by construction rather than by the lock's own tolerance: the field is cleared before
+   * the await, so a second teardown has nothing to release. A failure is logged and swallowed,
+   * because this runs inside a stop that must still reach `agent.stop()`; a lock file left behind by
+   * a failed unlink is reclaimable by the next start on this host, while a teardown that threw here
+   * would leave the endpoint up instead.
+   *
+   * THE RESIDUAL, STATED. Work abandoned by the bound above is not cancelled, so a straggler can
+   * still be writing this principal's log after the lock is gone and a replacement process could
+   * start beside it. That window is closed on the WRITE path, not here: `EventWal.write` refuses a
+   * handle whose generation the file has moved past. The lock decides who starts; the generation
+   * guard decides who may write.
+   */
+  const releaseEventLock = async (): Promise<void> => {
+    const lock = eventLock;
+    eventLock = undefined;
+    if (!lock) return;
+    try {
+      await lock.release();
+    } catch (e) {
+      log(`event WAL lock release failed: ${(e as Error).message}`);
+    }
+  };
+
+  /**
+   * REAP A RETIRED SESSION'S WRITE-AHEAD LOG, AND THE LIFETIME IS THE DECISION HERE, not the two
+   * unlinks that carry it out.
+   *
+   * A log exists so a later start can recover what its thread had NOT yet published: the one frame
+   * it froze before publishing, and the position it had reached. Removing it while either still
+   * matters destroys exactly what it is for, which is why the rule is a property of the log rather
+   * than a step in the swap:
+   *
+   *   a thread's log may be removed once (a) this connector has closed that thread's run on the wire
+   *   and the drain that did it SETTLED rather than spending its bound, and (b) the log on disk holds
+   *   no pending frame.
+   *
+   * (a) is the connector's half. An abandoned drain is uncancelled work that may still write here,
+   * and a directory removed out from under it turns a bounded delay into a lost frame. (b) is the
+   * log's own half and is the half that is actually about recovery: a pending frame is one whose
+   * fate the broker never confirmed, and only a start that reads this file can settle it.
+   *
+   * WHAT IS DELIBERATELY NOT REAPED, so the claim is not read wider than it is. The LIVE thread's
+   * directory survives teardown: a process leaves exactly ONE behind rather than one per `/new`,
+   * which is the accumulation #599 names, and that one is kept because a teardown is not a
+   * retirement, since no observer has been told the thread ended, and a start that adopts it again is
+   * precisely the case the log is for. The principal's own `subject.json` and `.lock` sit one level
+   * up, are shared by every thread, and are not this directory's to remove.
+   *
+   * The log is read back FROM DISK rather than from the retired emitter's object, because the
+   * emitter has been released by this point and the file is the only authority on what it left. A
+   * log that cannot be read is KEPT: this is a cleanup and never a repair.
+   */
+  async function reapRetiredWal(threadId: string): Promise<void> {
+    const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+    const { threadDir, walPath } = eventWalLocation({
+      workspaceRoot: resolveEventsStateRoot(process.env),
+      space: config.space,
+      principal,
+      threadId,
+    });
+    try {
+      const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+      if (wal.pending !== null) {
+        log(`${WAL_KEPT} ${threadId}: a frame is still pending, which is the one thing a later start recovers`);
+        return;
+      }
+    } catch (e) {
+      log(`${WAL_KEPT} ${threadId}: its log could not be read (${(e as Error).message})`);
+      return;
+    }
+    // NEVER A RECURSIVE REMOVE. `rm` here is `force` but NOT `recursive`, so it can only ever unlink
+    // the one file this layout puts in the directory, and `rmdir` then refuses outright if anything
+    // else is in there. A computed path plus a recursive delete is one wrong component away from
+    // taking a tree with it, and the components here are hashes of values from outside this process.
+    try {
+      await rm(walPath, { force: true });
+      await rmdir(threadDir);
+      log(`${WAL_REAPED} ${threadId}`);
+    } catch (e) {
+      log(`${WAL_KEPT} ${threadId}: ${(e as Error).message}`);
+    }
+  }
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -428,7 +542,17 @@ export const cotal: Plugin = async () => {
       );
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
-    await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
+    // `close` RATHER THAN `settled`, so the join and the release are one act. It waits on exactly
+    // the same chain the settle waited on, under the same bound, and adds the refusal: a hook that
+    // arrives while this wait is outstanding no longer starts or pumps an emitter the teardown has
+    // already decided it is done with.
+    await settleWithin(events?.close(), SWAP_SETTLE_MS, "event holder at teardown");
+    // THE FINAL EVENT TEARDOWN IS WHERE THE PRINCIPAL LOCK GOES BACK, and it is the only place: the
+    // swap deliberately keeps it, because the replacement holder publishes for the same principal.
+    // Both ways out of this plugin end here, so a dispose that leaves its host process alive
+    // releases it exactly as a supervised stop does. That was the reachable failure: the record went
+    // on naming a live pid, and a replacement process for this principal was refused its emitter.
+    await releaseEventLock();
     clearErrorRetry(true);
     await agent.stop();
   };
@@ -704,11 +828,24 @@ export const cotal: Plugin = async () => {
     // was parked for someone else alone.
     const tookFromSlot = override === undefined && carried !== undefined;
     const carriedSeq = overrideSeq;
-    const boot = carried === undefined && bootPending() ? bootPrompt : undefined;
+    // THE BOOT TEXT IS CARRIED WHENEVER THE BOOT IS PENDING, WITH OR WITHOUT A WAKE IN HAND, and
+    // the "with" is the whole correction. This line read `carried === undefined && bootPending()`,
+    // so a call holding a nudge took no boot text, fell into the branch below, and parked the nudge
+    // straight back. Nothing could then empty the slot: emptying it takes a submission, a submission
+    // takes `bootPrompt` cleared, and clearing it takes the boot submission this branch had just
+    // refused. A focus @mention landing while the boot task was parked at session creation therefore
+    // starved the boot prompt, the wake itself, and every later connector-submitted turn including a
+    // directed DM, silently and for the life of the process. Reproduced live against this plugin
+    // before it was changed: the seat stayed online, nothing was logged, and the operator's own
+    // spawn prompt was never submitted.
+    const boot = bootPending() ? bootPrompt : undefined;
     if (bootPrompt !== undefined && boot === undefined) {
       pendingOverride = carried;
       overrideSeq += 1;
-      return; // whatever this call was carrying waits for the boot turn, and is held, not dropped
+      // The boot text EXISTS but is not ready yet (no session, or the mesh link is still coming up),
+      // so there is nothing to compose with and whatever this call carried is held, not dropped. The
+      // boot task's own drive is what reaches the line above once the preconditions are met.
+      return;
     }
     driving = true;
     try {
@@ -736,7 +873,12 @@ export const cotal: Plugin = async () => {
       }
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];
-      const text = boot ?? carried;
+      // COMPOSED, NOT CHOSEN BETWEEN, and that is what lets a wake arrive at ANY point relative to
+      // the boot. The floor says the operator's prompt is the first turn this connector submits; a
+      // wake says nothing more than "go and look", and its body is recovered by the pull it triggers
+      // rather than carried here. Two claims that do not compete, so one turn answers both and
+      // neither has to wait for the other. Choosing one and re-parking the other is the deadlock.
+      const text = boot !== undefined && carried !== undefined ? `${boot}\n\n${carried}` : (boot ?? carried);
       if (text) {
         parts.push({ type: "text", text });
       } else {
@@ -1061,6 +1203,19 @@ export const cotal: Plugin = async () => {
               // AFTER the settle, never before it. Logged before, this line reports that the retire
               // path was ENTERED, and a cell keyed on it stays green even if the drain never finishes.
               log(`${SESSION_RETIRED} ${previous.path} superseded by ${created}; ${drained ? "drained before release" : "ABANDONED UNDRAINED"}`);
+              // RELEASED, NOT MERELY DROPPED, and that is the difference #599 is about. Overwriting
+              // `events` below makes this holder unreachable through `eventsFor`, which is not the
+              // same as making it inert: it is still reachable from this scope and from any work
+              // already on its chain, and a late pump would re-create the very log the next line may
+              // remove. `close` refuses that synchronously and then joins what was queued; it
+              // releases no durable state, because the log's lifetime and the lock's are not the
+              // holder's to decide. Bounded like every other join here, for the same reason.
+              const retired = previous.path;
+              await settleWithin(previous.close(), SWAP_SETTLE_MS, `release of ${retired}`);
+              // ONLY ON A SETTLED DRAIN. An abandoned one is uncancelled and may still be writing,
+              // so its log stays; see the lifetime stated on the reaper itself.
+              if (drained) await reapRetiredWal(retired);
+              else log(`${WAL_KEPT} ${retired}: its drain spent the bound, so it may still be writing`);
               events = newEventHolder();
             }
             // Adopt READS FROM HERE. A resumed session must not republish its history, and the

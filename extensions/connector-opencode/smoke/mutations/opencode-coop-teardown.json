@@ -137,13 +137,18 @@
     "@mention is an ordinary batch and there is no nudge to lose, which is why that precondition is",
     "graded rather than assumed: the first version of this leg set focus once at boot, before the link",
     "was up, the call did not take, and the cell graded the batch path twice while claiming to grade",
-    "nudges."
+    "nudges.",
+    "",
+    "C1's ANCHOR NOW CARRIES THE COMMENT BETWEEN THE TWO JOINS, because the event join became",
+    "`close()`, which is the same chain under the same bound plus the refusal that stops a late hook",
+    "starting an emitter the teardown has finished with. The mutation is unchanged in meaning: remove",
+    "both joins and the stop abandons event work it had already queued."
   ],
   "mutations": [
     {
       "name": "C1 the shared teardown stops joining the event work at all, so a stop abandons a drain that was already in flight",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    await settleWithin(events?.settled(), SWAP_SETTLE_MS, \"event holder at teardown\");\n",
+      "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    // `close` RATHER THAN `settled`, so the join and the release are one act. It waits on exactly\n    // the same chain the settle waited on, under the same bound, and adds the refusal: a hook that\n    // arrives while this wait is outstanding no longer starts or pumps an emitter the teardown has\n    // already decided it is done with.\n    await settleWithin(events?.close(), SWAP_SETTLE_MS, \"event holder at teardown\");\n",
       "replace": "",
       "expectRed": "cooperative stop joined the queued event work before exiting"
     },

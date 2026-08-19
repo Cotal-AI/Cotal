@@ -52,7 +52,20 @@
     "written it only restored the old clear-then-drive, and it SURVIVED: `drive` now holds an override",
     "it cannot submit, so the very text B1 destroys is caught by the general repair and the mutant",
     "stopped modelling a loss. That is the class fix subsuming an instance, not a coverage gap. B1 now",
-    "discards the held text as well, which is what the code did before either repair existed."
+    "discards the held text as well, which is what the code did before either repair existed.",
+    "",
+    "B4 AND B5 ARE ARM D, AND THEY ARE TWO CELLS BECAUSE THEY ARE TWO CLAIMS. A wake arriving before",
+    "the boot prompt's drive used to starve both of them permanently: the boot text was carried only",
+    "when the wake slot was empty, so a parked nudge sent the boot drive down the floor's early return",
+    "and back into the slot, and emptying the slot needed the very submission the floor had refused.",
+    "Silent and permanent, and a REGRESSION against the base, which lost only the wake and still",
+    "submitted the boot. Reproduced live against this plugin before the arm existed.",
+    "",
+    "B4 restores that carry condition, so the deadlock comes back and the boot is never submitted. B5",
+    "leaves the carry alone and takes the COMPOSITION away instead: the boot then goes out on its own",
+    "while the nudge is discarded by the slot's own success clear, which is the half-repair that would",
+    "pass an arm graded on the boot alone. Neither mutation touches arms A, B or C, so each reddens the",
+    "arm-D cell it names and nothing earlier."
   ],
   "mutations": [
     {
@@ -84,6 +97,23 @@
       "find": "  const bootPending = (): boolean => bootReady && bootPrompt !== undefined;\n",
       "replace": "  const bootPending = (): boolean => false;\n",
       "expectRed": "boot-race: the boot prompt survived the native turn and was submitted after it"
+    },
+    {
+      "name": "B4 the boot text is carried only into an empty wake slot again, so a focus @mention that lands before the boot drive starves the boot, the wake and every later connector-submitted turn",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    const boot = bootPending() ? bootPrompt : undefined;\n",
+      "replace": "    const boot = carried === undefined && bootPending() ? bootPrompt : undefined;\n",
+      "expectRed": "boot+wake: the boot prompt was submitted even though a wake arrived in front of it",
+      "cell": "boot+wake: the boot prompt was submitted even though a wake arrived in front of it",
+      "note": "The wedge as reviewed: no error, no retry, the seat online throughout. Everything else in the arm still happens: the seat joins, enters focus, the mention is delivered and acked at ingest, and only the two turns are missing."
+    },
+    {
+      "name": "B5 the boot turn stops composing with the wake it is carrying, so the boot goes out alone and the nudge is discarded by the slot's own success clear",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      const text = boot !== undefined && carried !== undefined ? `${boot}\\n\\n${carried}` : (boot ?? carried);\n",
+      "replace": "      const text = boot ?? carried;\n",
+      "expectRed": "boot+wake: the wake that arrived first was delivered rather than parked into the boot",
+      "cell": "boot+wake: the wake that arrived first was delivered rather than parked into the boot"
     }
   ]
 }

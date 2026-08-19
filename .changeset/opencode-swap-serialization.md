@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/connector-opencode": minor
+"@cotal-ai/connector-core": minor
 ---
 
 Serialize the top-level session swap. The plugin bus does not await the event handler, so a second
@@ -122,3 +123,43 @@ a guarantee: the publish itself has no deadline, so a slow write in the time the
 lost with everything else the kill takes. The other tradeoff is stated rather than implied: a
 straggler that outlives the bound is not cancelled, so it can still complete after departure has
 been published.
+
+A wake that arrived before the boot prompt used to starve both of them, permanently and silently.
+The two share one slot: the boot text was carried only when that slot was empty, so a focus
+@mention landing while the boot task was still waiting for the session parked the nudge, and the
+boot task's own request then read that nudge, put it straight back and returned. Nothing could
+empty the slot afterwards, because emptying it takes a submission, a submission takes the boot text
+cleared, and clearing it takes the submission that had just been refused. The seat stayed online
+with nothing logged and no retry scheduled, and it went deaf: the spawn prompt, the wake, and every
+later connector-submitted turn including a directed message were all lost for the life of the
+process. Against the previous release this was a regression, which lost the wake and still
+submitted the boot. The two now go out together in one turn rather than competing for the slot. The
+boot floor says the operator's prompt is the first turn this connector submits, and a wake says
+only that the seat should go and look, so there is nothing to order between them.
+
+The event plane also gives back what a session took on disk, which is the other half of a `/new`
+and the half that is not visible on the wire. Two things are created for a session that publishes
+events and they have different lifetimes, so they are released differently.
+
+The principal lock is per principal and per workspace, shared by every session of that agent. It
+was taken and never given back: the connector read the location it came with and dropped the lock
+itself, so nothing in shipped code released one. The record then went on naming a process that was
+alive and no longer publishing, and a REPLACEMENT process for the same principal was refused its
+own event plane. It is now released at the final event teardown and only there, since a `/new`
+must keep it for the session that follows. Both ways out reach that teardown, so the editor
+unloading the plugin while its host keeps running releases it exactly as a supervised stop does.
+
+A session's write-ahead log is per session and its lifetime is stated rather than assumed, because
+a log exists so a later start can recover what was not yet published and deleting one early
+destroys exactly that. A retired session's log is removed once its run has been closed on the wire
+AND the drain that closed it settled rather than spending its bound; an abandoned drain is
+uncancelled and may still be writing, so its log stays and the connector says so in the log. The
+live session's log survives teardown, because a teardown is not a retirement: nothing has told an
+observer that thread ended, and a start that adopts it again is the case the log is for. So a
+process leaves one log directory behind rather than one per `/new`.
+
+`@cotal-ai/connector-core` gains a close on the emitter holder to go with that. Retiring a holder
+was a dropped reference rather than an act: it refused nothing afterwards, and a late hook could
+still start or pump an emitter its owner had finished with. Closing refuses admission and then
+joins what is already queued. It cancels nothing and releases no durable state, because the log's
+lifetime and the lock's are the connector's to decide and not the holder's.

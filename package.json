@@ -126,6 +126,7 @@
     "smoke:agui-opencode-source": "tsx extensions/connector-opencode/smoke/agui-source.smoke.ts",
     "smoke:opencode-events-arm": "tsx extensions/connector-opencode/smoke/events-arm.smoke.ts",
     "smoke:opencode-events-reset": "tsx extensions/connector-opencode/smoke/agui-session-reset.smoke.ts",
+    "smoke:opencode-events-release": "tsx extensions/connector-opencode/smoke/events-release.smoke.ts",
     "smoke:spawn-foreground-events": "tsx implementations/cli/smoke/spawn-foreground-events.smoke.ts",
     "smoke:opencode": "tsx extensions/connector-opencode/smoke/turn-wedge.smoke.ts",
     "smoke:opencode-coop": "tsx extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
