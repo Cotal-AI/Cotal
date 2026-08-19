@@ -151,17 +151,26 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
   // `now()` stays at 1_500, and because the timebase is SHARED, every later sleep, turn or journal
   // stamp then starts from the stale time. Both cells stayed green under exactly that. So each one
   // reads the clock AFTER the call and requires it to have moved to where the stamp says it is.
+  // A THIRD survivor, and the reason each cell now runs a prior effect. On a fresh handler making a
+  // single call, `virtualNow` and `clock.start + clock.checkpoint` are the same number, so a
+  // `checkpoint()` that RECOMPUTED the stamp from the script instead of reading the running clock
+  // satisfied both the value and the `now()` check. It is wrong the moment anything moved the clock
+  // first: with a 5m sleep ahead of it, the recomputation is short by the whole sleep. So each path
+  // sleeps on its own handler first, which makes the running clock and the fixture arithmetic
+  // disagree, and only the running clock gives the expected number.
   const resolvedSim = simFrom(scriptWith("resolved", { start: 1_500, checkpoint: "3m" }));
+  await resolvedSim.sleep({ duration: "5m" }, ctxFor(new KeyScope().nextEffect("sleep", "warm")));
   const resolved = await resolvedSim
     .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
   ok("a scripted `at` is discarded on the RESOLVED path, which stamps the shared clock it has moved",
-    resolved.at === 1_500 + 3 * MINUTE && resolvedSim.now() === resolved.at, { ...resolved, now: resolvedSim.now() });
+    resolved.at === 1_500 + 5 * MINUTE + 3 * MINUTE && resolvedSim.now() === resolved.at, { ...resolved, now: resolvedSim.now() });
 
   const expiredSim = simFrom(scriptWith("expired", { start: 7_000, checkpoint: "2m" }));
+  await expiredSim.sleep({ duration: "9m" }, ctxFor(new KeyScope().nextEffect("sleep", "warm")));
   const expired = await expiredSim
     .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
   ok("a scripted `at` is discarded on the EXPIRED path too, which is the other return",
-    expired.at === 7_000 + 2 * MINUTE && expiredSim.now() === expired.at, { ...expired, now: expiredSim.now() });
+    expired.at === 7_000 + 9 * MINUTE + 2 * MINUTE && expiredSim.now() === expired.at, { ...expired, now: expiredSim.now() });
 }
 
 // ---- 6) a scripted timeout is a choice, and costs its full budget ------------------------------------
