@@ -76,8 +76,14 @@ const okEvictor: EvictPrincipal = async (principal) => ({ principal, kicked: 0, 
 // arrives while the first is still in flight. Pass-through (== okEvictor) whenever the gate is idle,
 // so phases A-D are unaffected.
 let gateArmed = false;
-let gateEntered: (() => void) | null = null;
-let gateRelease: (() => void) | null = null;
+// Declared WITHOUT an initializer on purpose. Both resolvers are handed over by a Promise executor,
+// and the checker does not follow an assignment made inside a callback, so a `= null` initializer
+// narrows the binding to `null` for the rest of the module: every later `gateRelease?.()` then
+// reports "this expression is not callable" on type `never`. Those release calls are the suite's
+// only liveness escape, and the checker could not see them reach anything. No initializer means the
+// declared type stands. Runtime behaviour is identical; neither is ever reset back.
+let gateEntered: (() => void) | undefined;
+let gateRelease: (() => void) | undefined;
 const gatedEvictor: EvictPrincipal = async (principal) => {
   if (gateArmed) {
     gateArmed = false; // only the first call after arming gates

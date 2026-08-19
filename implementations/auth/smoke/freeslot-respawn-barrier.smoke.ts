@@ -50,6 +50,7 @@ const SUBCOMMAND = process.argv[2] ?? "";
 if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
   await import("@cotal-ai/auth");
   const { registry } = await import("@cotal-ai/core");
+  type Command = import("@cotal-ai/core").Command;
   const rest = process.argv.slice(3);
   const values: Record<string, string | boolean | undefined> = {};
   const positionals: string[] = [];
@@ -62,9 +63,10 @@ if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
       else values[key] = true;
     } else positionals.push(a);
   }
-  const cmd = registry
-    .all<{ name: string; run: (a: { values: typeof values; positionals: string[]; raw: readonly string[] }) => Promise<void> }>("command")
-    .find((c) => c.name === SUBCOMMAND);
+  // The real contract, rather than a hand-written shape: `all` constrains its type argument to
+  // Extension, which the inline shape did not satisfy because it omitted `kind`, and ParsedArgs is
+  // exactly the values/positionals/raw triple this dispatcher already passes.
+  const cmd = registry.all<Command>("command").find((c) => c.name === SUBCOMMAND);
   if (!cmd) { console.error(`self-dispatch: command "${SUBCOMMAND}" is not registered`); process.exit(1); }
   try {
     await cmd.run({ values, positionals, raw: rest });
@@ -84,6 +86,14 @@ type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn } = await import("node:child_process");
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
+
+/** `Manager.list` is PRIVATE; the cells below assert the row shape `cotal ps` renders, so the reach
+ *  goes through one named view rather than a cast per call site, and the view names exactly the
+ *  fields those cells read. Widening the method to public would be a shipped-source change made for
+ *  a test's convenience, which is not this change's business. */
+type PsRow = { name: string; id: string; mesh: string; lifecycleUid: string; authHealth?: string; authReason?: string };
+const psList = (m: object, ownerFilter?: string): PsRow[] =>
+  (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -111,7 +121,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -155,6 +165,10 @@ const SPACE = `fsb-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const AGENT = "worker";
 const dir = userAuthStateDir(root, SPACE);
+// The provider's SECRET seam. `prepareServer` and `ownerForLogin` both REQUIRE it (callout account,
+// issuer keys, owner secret, service key projection all ride it); the calls below used to omit it,
+// so the provider was reached with `store` undefined. Same workspace-rooted store the CLI composes.
+const store = workspaceSecretStore(root);
 const credsDir = join(authDir(root), "creds");
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
 
@@ -279,6 +293,7 @@ try {
   };
 
   const prepared = await cotalAuthProvider.prepareServer({
+    store,
     space: SPACE,
     operatorSeed: auth.operator.seed,
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
@@ -340,7 +355,7 @@ try {
     dir: home, idpUrl: base, clientId: CLIENT_ID,
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
-  const OWNER = await cotalAuthProvider.ownerForLogin({ dir, space: SPACE });
+  const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
 
   // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding
@@ -422,7 +437,7 @@ try {
     brokerCalls.push({ name: a.name, gated: false, done });
     return done;
   };
-  const listNames = (): string[] => manager!.list().map((a: { name: string }) => a.name);
+  const listNames = (): string[] => psList(manager!).map((a: { name: string }) => a.name);
 
   const stopReply = await mAny.opStop({ name: AGENT, graceful: false }, mAny.ep.ref().id, true);
   check("despawn reply ok", stopReply.ok === true, stopReply);
@@ -576,7 +591,7 @@ try {
   const ex = await agentExchange(AGENT, replacementToken, OWNER);
   check("witness: replacement actor token still mints a bearer (exchange 200)", ex.status === 200 && typeof ex.body.token === "string", { status: ex.status, error: ex.body.error });
   check("witness: the manager still lists the replacement, child alive (the damage is silent)",
-    manager.list().some((a: { name: string }) => a.name === AGENT) && newHandle?.status() === "running",
+    psList(manager).some((a: { name: string }) => a.name === AGENT) && newHandle?.status() === "running",
     { listed: listNames(), child: childDiag() });
 
   console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌ (expected until the P2 alias reservation + lifecycle-keyed cleanup land)"}  (${pass} passed, ${fail} failed)`);

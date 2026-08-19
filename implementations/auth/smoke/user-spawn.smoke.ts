@@ -38,6 +38,7 @@ const SUBCOMMAND = process.argv[2] ?? "";
 if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
   await import("@cotal-ai/auth"); // self-registers `agent-bearer` / `auth-service` (+ the provider) into the registry
   const { registry } = await import("@cotal-ai/core");
+  type Command = import("@cotal-ai/core").Command;
   const rest = process.argv.slice(3);
   const values: Record<string, string | boolean | undefined> = {};
   const positionals: string[] = [];
@@ -50,9 +51,10 @@ if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
       else values[key] = true;
     } else positionals.push(a);
   }
-  const cmd = registry
-    .all<{ name: string; run: (a: { values: typeof values; positionals: string[]; raw: readonly string[] }) => Promise<void> }>("command")
-    .find((c) => c.name === SUBCOMMAND);
+  // The real contract, rather than a hand-written shape: `all` constrains its type argument to
+  // Extension, which the inline shape did not satisfy because it omitted `kind`, and ParsedArgs is
+  // exactly the values/positionals/raw triple this dispatcher already passes.
+  const cmd = registry.all<Command>("command").find((c) => c.name === SUBCOMMAND);
   if (!cmd) { console.error(`self-dispatch: command "${SUBCOMMAND}" is not registered`); process.exit(1); }
   try {
     await cmd.run({ values, positionals, raw: rest }); // agent-bearer prints its bearer + returns; auth-service never returns
@@ -72,6 +74,14 @@ type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn, execFile } = await import("node:child_process");
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
+
+/** `Manager.list` is PRIVATE; the cells below assert the row shape `cotal ps` renders, so the reach
+ *  goes through one named view rather than a cast per call site, and the view names exactly the
+ *  fields those cells read. Widening the method to public would be a shipped-source change made for
+ *  a test's convenience, which is not this change's business. */
+type PsRow = { name: string; id: string; mesh: string; lifecycleUid: string; authHealth?: string; authReason?: string };
+const psList = (m: object, ownerFilter?: string): PsRow[] =>
+  (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -398,7 +408,7 @@ try {
   await observer.start();
   const seen = await until(() => observer!.getRoster().some((p) => p.card.id === alphaPrincipal && p.card.name === "alpha"));
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
-  const listed = manager.list().find((a) => a.name === "alpha");
+  const listed = psList(manager).find((a) => a.name === "alpha");
   check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && listed?.mesh !== "absent", listed);
 
   // ---------- B1f. a spawn-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610) ----------
@@ -530,7 +540,15 @@ try {
   const shortEx = await agentExchange("alpha", alphaToken, OWNER, 10);
   check("direct agent exchange { owner, actorToken, ttlSec:10 } mints a bearer (200)", shortEx.status === 200 && typeof shortEx.body.token === "string", shortEx.status);
   const callout = (await loadCalloutAuth(store, SPACE))!;
-  let connected = false;
+  // Declared WITHOUT an initializer. The endpoint's connection callback is what moves this, and the
+  // checker does not follow an assignment made inside a callback, so a `= false` initializer narrows
+  // the binding to the literal `false` and `connected === true` below reports as a comparison
+  // between types with no overlap: the cell could not pass. Dropping the initializer also removes a
+  // false green further down, where `until(() => connected === false)` returned immediately if the
+  // endpoint never emitted at all, greening "the connection dies at its bearer expiry" for an
+  // endpoint that never connected. `undefined` now means "no connection event yet", which is what
+  // the pre-connect state actually is.
+  let connected: boolean | undefined;
   shortEp = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: shortEx.body.token!, sentinelCreds: callout.sentinelCreds,
     channels: [], consume: false, registerPresence: false, watchPresence: false,
@@ -556,7 +574,7 @@ try {
   let deadHealth: { state?: string; reason?: string } = {};
   try { deadHealth = JSON.parse(readFileSync(incFiles("alpha").health, "utf8")); } catch { /* */ }
   check("the health file records state=failed with the restart copy", deadHealth.state === "failed" && /restart it with `cotal up`/.test(deadHealth.reason ?? ""), deadHealth);
-  check("manager ps reports authHealth = auth-renewal-failed", manager.list().find((a) => a.name === "alpha")?.authHealth === "auth-renewal-failed", manager.list().find((a) => a.name === "alpha"));
+  check("manager ps reports authHealth = auth-renewal-failed", psList(manager).find((a) => a.name === "alpha")?.authHealth === "auth-renewal-failed", psList(manager).find((a) => a.name === "alpha"));
 
   console.log("G) spawning with the auth service down is refused at preflight (row rolled back)");
   const gReply = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER });
@@ -593,7 +611,7 @@ try {
   await oracle.stop();
   const healRun = await execBearer(alphaBearerArgv);
   check("the agent bearer command succeeds after the auth service heals", healRun.ok && healRun.stdout.trim().split(".").length === 3, { ok: healRun.ok, err: healRun.stderr.slice(0, 120) });
-  check("manager ps is auth-clean again (no authHealth flag)", manager.list().find((a) => a.name === "alpha")?.authHealth === undefined, manager.list().find((a) => a.name === "alpha"));
+  check("manager ps is auth-clean again (no authHealth flag)", psList(manager).find((a) => a.name === "alpha")?.authHealth === undefined, psList(manager).find((a) => a.name === "alpha"));
 
   // ---------- H. post-provision failure window (freelance blocker 1) ----------
   console.log("H) a spawn that provisions then FAILS at buildLaunch leaves no managed grant behind");
@@ -636,7 +654,7 @@ try {
   // a spawn-only cross-owner op is broker-DENIED at publish while an admin operator's is admitted
   // and the manager's fresh ledger read governs.
   type EpReply = { ok: boolean; data?: unknown; error?: string };
-  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop" | "input", name: string, forceMode?: "owner" | "any"): Promise<EpReply> => {
+  const epTargeted = async (ep: InstanceType<typeof CotalEndpoint>, op: "attach" | "stop" | "input", name: string, forceMode?: "owner" | "any"): Promise<EpReply> => {
     let info;
     try { info = await ep.invokeService("manager", "inspect", { name }); }
     catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
@@ -658,7 +676,7 @@ try {
       return r.reply.ok === true ? { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
-  const epPs = async (ep: CotalEndpoint): Promise<EpReply> => {
+  const epPs = async (ep: InstanceType<typeof CotalEndpoint>): Promise<EpReply> => {
     try {
       const r = await ep.invokeService("manager", "ps");
       return r.reply.ok === true ? { ok: true, data: r.reply.data } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
@@ -666,7 +684,7 @@ try {
   };
   // The target: `delta`, already live from the envelope section (spawned WITH spawner `u_….cli`),
   // so a DIFFERENT actor under the same owner is a true sibling — not the spawner, not the manager.
-  check("precondition: delta is live under the operator's owner", manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  check("precondition: delta is live under the operator's owner", psList(manager).some((a) => a.name === "delta"), psList(manager).map((a) => a.name));
   const opsmate = await ctlCaller("opsmate", OWNER, ["spawn"]);
   // delta's lifecycle uid, read off the same `inspect` the helper uses, so the retirement cells
   // below key on the incarnation that is actually stopped rather than on a name.
@@ -676,7 +694,7 @@ try {
   check("owner-domain: a spawn-scoped SIBLING actor attaches an agent under its owner (ep owner mode)", sibAttach.ok === true && typeof (sibAttach.data as { grant?: { sessionId?: string } })?.grant?.sessionId === "string", sibAttach);
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
-  check("delta is gone from the manager after the sibling stop", !manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  check("delta is gone from the manager after the sibling stop", !psList(manager).some((a) => a.name === "delta"), psList(manager).map((a) => a.name));
   // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
   // Read from STATE, never from the despawn's log copy. The defect this covers made the auth rail's
   // principal cross-check unsatisfiable, because the gate is bound to `principalKey(DEV_OWNER,
@@ -772,7 +790,7 @@ try {
   // Named for what it proves and no more. `input` never removes a seat, so this rules out a wild
   // despawn rather than a successful write; the load-bearing half is the pair above.
   check("the refused input did not take alpha with it (it never should; this is the belt, not the braces)",
-    manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
+    psList(manager).some((a) => a.name === "alpha"), psList(manager).map((a) => a.name));
   // A CROSS-OWNER caller with only spawn scope: the ep any-mode row it would need is broker-DENIED
   // at publish (a spawn bearer holds owner-mode rows only), so the op fails before the manager.
   const OWNER_B = "u_" + "b".repeat(26);
@@ -781,7 +799,7 @@ try {
   check("cross-owner attach is refused fail-closed (any-mode broker-denied for a spawn bearer)", crossAttach.ok === false, crossAttach);
   const crossStop = await epTargeted(intruder, "stop", "alpha");
   check("cross-owner stop is refused the same way", crossStop.ok === false, crossStop);
-  check("alpha survived the refused cross-owner stop", manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
+  check("alpha survived the refused cross-owner stop", psList(manager).some((a) => a.name === "alpha"), psList(manager).map((a) => a.name));
   // A cross-owner caller whose LEDGER row carries admin: the callout minted it the any-mode admin
   // instrument rows, so the broker admits the any-mode publish and the manager's fresh ledger read → allowed.
   const auditor = await ctlCaller("auditor", OWNER_B, ["spawn", "admin"]);
@@ -847,7 +865,7 @@ try {
   const VICTIM = eventChannel({ owner: OWNER_B, actor: "auditor" });
   const VICTIM_WILDCARD = `events.${OWNER_B}.>`;
   type Accepted = { ok: boolean; name?: string; error?: string };
-  const epSpawnAccept = async (ep: CotalEndpoint, args: Record<string, unknown>): Promise<Accepted> => {
+  const epSpawnAccept = async (ep: InstanceType<typeof CotalEndpoint>, args: Record<string, unknown>): Promise<Accepted> => {
     try {
       const r = await ep.invokeService("manager", "spawn", args, { deadlineMs: 15_000 });
       if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
@@ -863,7 +881,7 @@ try {
     ownChannelRefusal(readOverAsk), readOverAsk);
   await settle(1500);
   check("...and no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
-  check("...and no live agent by that name", !manager.list().some((a) => a.name === "epsilon"), manager.list().map((a) => a.name));
+  check("...and no live agent by that name", !psList(manager).some((a) => a.name === "epsilon"), psList(manager).map((a) => a.name));
   const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
   check("the same over-ask on the child's WRITE set is refused at the door too: publishing INTO another agent's plane is forgery, not eavesdropping",
     ownChannelRefusal(writeOverAsk), writeOverAsk);
