@@ -763,13 +763,21 @@ export const cotal: Plugin = async () => {
    * hook when the flag flips; that work is what the joins in `quiesce` cover, and a hook that had
    * already passed this point still runs. The two together are the claim, and neither is it alone.
    *
-   * AND IT FENCES THIS CONNECTOR, NOT THE EDITOR. `chat.message` is typed `=> Promise<void>`, so a
-   * fenced hook resolving early is that hook's ordinary successful completion: the host reads no
-   * refusal from it and continues, and a natively submitted prompt still starts a model turn. There
-   * is no refusal channel on that hook to use; the only hook in the contract carrying a decision is
-   * `permission.ask`. Cancelling the host would take the SDK's session `abort`, which this teardown
-   * deliberately does not call. What such a turn loses is lost to the teardown regardless, since
-   * `agent.stop()` closes the endpoint under it whether or not this fence exists.
+   * AND IT FENCES THIS CONNECTOR, NOT THE EDITOR. A hook influences OpenCode by MUTATING its
+   * `output` argument, not by what it returns: every hook returns `Promise<void>`, so returning
+   * early is ordinary successful completion and says nothing. `chat.message`'s output is
+   * `{ message, parts }`, which carries no field that cancels or skips the turn, so this fence
+   * cannot stop a natively submitted prompt from starting one. That is a fact about THIS hook and
+   * not about the contract: `permission.ask` decides with `status`, and
+   * `experimental.compaction.autocontinue` decides with `enabled`, documented as skipping a
+   * synthetic continue turn. Cancelling a native turn would take the SDK's session `abort`, which
+   * this teardown deliberately does not call.
+   *
+   * WHETHER SUCH A TURN'S EVENTS SURVIVE IS TIMING, NOT A RULE. The endpoint stays up until
+   * `agent.stop()` at the end of `quiesce`, so holder work admitted or queued before this flag
+   * flipped can still settle and publish, exactly as the drain note above says. Work arriving after
+   * it is refused here and does not reach the plane. This fence neither saves nor loses those
+   * events; it decides only what this connector admits.
    */
   const fence = <T extends Record<string, (...args: never[]) => Promise<unknown>>>(intake: T): T =>
     Object.fromEntries(

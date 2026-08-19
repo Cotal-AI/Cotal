@@ -36,11 +36,12 @@ its runtime's grace window, so presence queued behind a long drain is the thing 
 Queued event work is then given a bounded chance to settle inside whatever time the runtime leaves.
 
 Once that routine has begun, the connector starts no turn of its own, admits no hook work, and
-runs no `cotal_*` tool call. What it does NOT do is cancel the editor: OpenCode types
-`chat.message` as returning void, so a fenced hook resolving early is that hook's ordinary
-successful completion and signals nothing to the host, and a prompt submitted natively through
-the editor or its API still starts a model turn. What such a turn loses to the event plane it
-loses to the teardown itself, which is closing the endpoint under it either way. The refusals are stated as a condition on the state rather than as a list of the callers
+runs no `cotal_*` tool call. What it does NOT do is cancel the editor. A hook steers
+OpenCode by mutating its `output` argument rather than by what it returns, and `chat.message`'s
+output carries no field that cancels or skips a turn, so a prompt submitted natively through the
+editor or its API still starts one. Whether that turn's events reach the plane is timing rather
+than a rule: the endpoint stays up until the end of the routine, so work already queued can still
+settle, while work arriving after the fence closes is refused. The refusals are stated as a condition on the state rather than as a list of the callers
 they cover, which is what let the earlier versions through: a turn could still be started by the
 deferred drive a swap fires when its own cutover completes, a late presence event could put a seat
 back on the mesh it had just left, and a tool call already inside the model's turn had no way to
