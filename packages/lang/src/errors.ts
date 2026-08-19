@@ -302,3 +302,24 @@ export class RuntimeFault extends Error {
     this.name = "RuntimeFault";
   }
 }
+
+/** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
+export function messageOf(v: unknown): string {
+  if (v instanceof Error) return v.message;
+  const m = (v as { message?: unknown } | null | undefined)?.message;
+  return typeof m === "string" ? m : String(v);
+}
+
+/** A recorded step's inputs changed, so its recorded result may no longer be the truth. */
+export class RunDivergence extends Error {
+  constructor(
+    readonly stepKey: string,
+    readonly recordedHash: string,
+    readonly programHash: string,
+  ) {
+    super(
+      `L5001 Run divergence\n\n  step  ${stepKey}   INPUT CHANGED\n        recorded  ${recordedHash}\n        program   ${programHash}\n\nThe recorded result was produced from different inputs, so replaying it would hand the program an answer to a question it is no longer asking.\n\nOptions\n  fork(run, "${stepKey}")   re-run from this step, keeping everything before it\n  revert the inputs         keep the recorded result`,
+    );
+    this.name = "RunDivergence";
+  }
+}

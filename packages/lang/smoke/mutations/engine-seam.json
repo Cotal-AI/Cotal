@@ -1,0 +1,174 @@
+{
+  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side, and the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-engine",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
+  "why": [
+    "These cells are first-party rather than differential, because the walker cannot grade them: the",
+    "fuel unit changes in languageVersion 2, the thenable programs kill the walker's host process, and",
+    "the calling-convention adapter has no walker counterpart. A first-party cell with no mutant is a",
+    "cell nobody has shown can fail, so every law the seam claims to hold gets a mutation here."
+  ],
+  "mutations": [
+    {
+      "name": "a record answers the host prototype for a name it does not own",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        return Object.prototype.hasOwnProperty.call(obj, prop) ? (obj as Record<string, unknown>)[prop] : undefined;",
+      "replace": "        return (obj as Record<string, unknown>)[prop];",
+      "expectRed": "a record answers undefined for `constructor`",
+      "completionMarker": "ok a record answers its own field",
+      "cell": "a record answers undefined for `constructor`",
+      "note": "The walker's own member-access mutation guards this hole on its side. The engine reaches records through a different door, so the hole has to be closed and graded twice; it is not covered by the walker's config."
+    },
+    {
+      "name": "a method is handed out as a value instead of being resolved at the call",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (!asCallee) {",
+      "replace": "    if (false) {",
+      "expectRed": "a method read as a VALUE is L4020, not a bound function",
+      "completionMarker": "ok and a name outside that table is L4014",
+      "cell": "a method read as a VALUE is L4020, not a bound function",
+      "note": "Handing one out produces everything a bound-function factory produces: `xs.map !== xs.map` where JavaScript says equal, and an extracted `push` that writes to a receiver strict JavaScript refuses."
+    },
+    {
+      "name": "the birth-depth check is dropped, so a value born outside a branch is writable inside it",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (birthDepth(target) < frame.depth) {",
+      "replace": "    if (false) {",
+      "expectRed": "a value born outside a concurrent branch and written inside it is L2032",
+      "completionMarker": "ok a value that crossed an effect boundary is frozen and refuses a write (L2031)",
+      "cell": "a value born outside a concurrent branch and written inside it is L2032",
+      "note": "L2032's runtime half, reached through a VALUE rather than a binding. The static walk provably cannot see the alias path, so this door is the only one on it."
+    },
+    {
+      "name": "the thenable gate at birth is dropped",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      refuseThenable(v, \"this value\");",
+      "replace": "",
+      "expectRed": "a literal with an own callable `then` refuses at birth",
+      "completionMarker": "ok writing a member of null is L4010",
+      "cell": "a literal with an own callable `then` refuses at birth",
+      "note": "Measured: returning such a value out of any async function runs its `then` with the host's settlement functions as arguments, outside the run's frame. Birth is one of the two doors that close the whole value graph. The cell captures the outcome instead of returning the value through its own async boundary: written the other way, this mutant made the suite HANG rather than fail (the assimilated `then` ignores resolve, so the promise never settles, exit 13) — the hazard demonstrating itself inside the cell meant to grade it."
+    },
+    {
+      "name": "the thenable gate at a field write is dropped, so a record acquires one after birth",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");",
+      "replace": "",
+      "expectRed": "writing a callable into the field `then` refuses (L4018)",
+      "completionMarker": "ok a FUNCTION carrying an own callable `then` refuses at birth too",
+      "cell": "writing a callable into the field `then` refuses (L4018)",
+      "note": "The second door. Without it `x[\"th\" + \"en\"] = f` mints the hazard past any static spelling of the name, which is the shape no emitter-side check can see."
+    },
+    {
+      "name": "the thenable gate at await is dropped, so the host calls the closure first",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      refuseThenable(v, \"this awaited value\");",
+      "replace": "",
+      "expectRed": "awaiting an own-callable-`then` value is L4018",
+      "completionMarker": "ok writing a NON-callable into `then` stays legal",
+      "cell": "awaiting an own-callable-`then` value is L4018",
+      "note": "The cell's second conjunct is what this mutant really exposes: the gate has to run BEFORE the await, because once `await` has the value the host has already called its `then`."
+    },
+    {
+      "name": "the step budget never fires",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (steps > run.pins.stepBudget) {",
+      "replace": "    if (false) {",
+      "expectRed": "the step budget fires as L4013",
+      "completionMarker": "ok and a plain value awaits to itself",
+      "cell": "the step budget fires as L4013",
+      "note": "The effect ceiling is blind to a loop that performs nothing, by construction. This is the only bound on pure work, and a later cell in this suite relies on it to end a soft-cancelled spin, so under this mutant the suite would hang if the graded cell did not red first."
+    },
+    {
+      "name": "fuel never yields, so the macrotask queue is starved",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (steps < nextYield) return;",
+      "replace": "    return;",
+      "expectRed": "with yielding on, a host macrotask timer fires DURING the run",
+      "completionMarker": "ok and it fires AT the budget rather than after it",
+      "cell": "with yielding on, a host macrotask timer fires DURING the run",
+      "note": "A program that only ever yields microtasks takes the host down with it: a watchdog's setTimeout never fires, and the run kills the timer plane and every other run on that host. The cell is a PAIR, so this mutant reddens the claim while its control still passes."
+    },
+    {
+      "name": "the yield boundary ignores the cut",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (frame.signal.cutPure) throw new Cancelled(frame.signal.reason ?? \"cancelled\");",
+      "replace": "",
+      "expectRed": "a branch cut at the pure level is abandoned at its next yield",
+      "completionMarker": "ok and the control proves the cell can fail: with yielding off, it does not",
+      "cell": "a branch cut at the pure level is abandoned at its next yield",
+      "note": "The cut is the scope's call, not the yield's: an arm that cannot win is abandoned here, an arm that could still win runs its pure work to a settle. The cell beside this one grades the other arm of the same rule."
+    },
+    {
+      "name": "an own-field function is adapted as if it spoke the walker's convention",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      return await (found.value as (...a: unknown[]) => unknown)(...args);",
+      "replace": "      return await (found.value as unknown as Callable)(currentFrame(), adaptArgs(args));",
+      "expectRed": "and a member call through the seam agrees",
+      "completionMarker": "ok a record-shaped builtin hands out program-convention members",
+      "cell": "and a member call through the seam agrees",
+      "note": "This is the defect the cell was written from, not one invented for the config: collapsing the table path and the own-field path adapted twice, passed the frame in as the first argument, and shifted every real argument along by a position — `json.stringify([1,2])` refused its own array as an illegal second argument, a convention mismatch wearing a coercion error's name."
+    },
+    {
+      "name": "a seam call with no frame invents one instead of failing",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "  if (f === undefined) {",
+      "replace": "  if (false) {",
+      "expectRed": "a seam call outside any frame throws rather than inventing a root frame",
+      "completionMarker": "ok calling a non-function value is L4011",
+      "cell": "a seam call outside any frame throws rather than inventing a root frame",
+      "note": "No fallback frame, deliberately: a stray call given a root frame gets a key namespace, a clock and a depth belonging to no branch, and its step lands in the wrong place in the journal instead of failing."
+    },
+    {
+      "name": "the run is pinned to the MODULE's hash instead of the source's",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  const programHash = programHashOf(source);",
+      "replace": "  const programHash = programHashOf(module);",
+      "expectRed": "its programHash is the SOURCE's hash, not the module's",
+      "completionMarker": "ok runOnEngine answers the walker's RunResult shape",
+      "cell": "its programHash is the SOURCE's hash, not the module's",
+      "note": "A run record names the program an author wrote, not the string a compiler produced. Pinned to the module, a transform release would re-hash every open run and no walker-written journal could ever be resumed on the engine."
+    },
+    {
+      "name": "the source is never validated, so the engine executes what the walker would refuse",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  validate(source, options.file);",
+      "replace": "",
+      "expectRed": "invalid source is refused by the VALIDATOR",
+      "completionMarker": "ok the step COUNTS differ, which is the declared v2 pin-unit divergence",
+      "cell": "invalid source is refused by the VALIDATOR",
+      "note": "The validator's refusals have to arrive before anything is journalled, whichever engine is about to execute; without this the engine is a second, laxer front door onto the same journal. This mutant SURVIVED the cell's first form, which only asserted that something threw - with `validate` gone the program still threw, because its module performs an unscripted effect. The cell now asserts the refusal is a LangErrors AND that the evaluator was never called."
+    },
+    {
+      "name": "a resume with no pins re-resolves them instead of refusing",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (options.pins === undefined && options.journal !== undefined && options.journal.entries().length > 0) {",
+      "replace": "  if (false) {",
+      "expectRed": "a journal with entries and no pins is L5021, not a silently different run",
+      "completionMarker": "ok the caller's evaluator is what turns the module into a factory",
+      "cell": "a journal with entries and no pins is L5021, not a silently different run",
+      "note": "Silent by construction: the clock moves to the resuming host and the seed falls back to the runId default, and neither the epoch nor a pure draw is a recorded fact a replay could diverge on."
+    },
+    {
+      "name": "a run accepts another run's journal",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (options.journal !== undefined && options.journal.run !== options.runId) {",
+      "replace": "  if (false) {",
+      "expectRed": "and another run's journal is L5011",
+      "completionMarker": "ok a journal with entries and no pins is L5021, not a silently different run",
+      "cell": "and another run's journal is L5011",
+      "note": "Request ids derive from the runId while recorded results come from the journal, so a mismatch submits work under one identity and resolves it against another's history."
+    },
+    {
+      "name": "the effect ceiling counts per activation instead of per run",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    effectCount: run.journal.dispatchedEffects(),",
+      "replace": "    effectCount: 0,",
+      "expectRed": "a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one",
+      "completionMarker": "ok a run right up to its ceiling completes",
+      "cell": "a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one",
+      "note": "The engine builds its own EffectHost, so this seeding is engine-specific wiring the walker's effect-ceiling config does not reach. Under the mutant the resume gets a full fresh allowance, performs the two remaining sleeps and ends GREEN with six entries - a runaway loop that crashes periodically never reaches the ceiling at all."
+    }
+  ]
+}
