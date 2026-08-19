@@ -20,7 +20,7 @@ the window: with the id assigned before the drain, an event in the gap was carri
 into a holder still bound to the previous session, and that holder refuses a second session
 permanently, so the event plane died rather than skipping a frame. Event work is now routed by
 asking the holder what it is bound to, so an event reaches a holder only when that holder already
-serves its session or serves nothing yet. There is no ordering left to get wrong.
+serves its session or serves nothing yet. There is no ordering left for the route to get wrong.
 
 A session that OpenCode attaches to, rather than creates, is also covered. The first event of such
 a run arrives before any session was created, and it now reaches the event plane instead of being
@@ -45,7 +45,7 @@ Departure is also ordered behind the work the seat has already admitted, for as 
 bound allows. A presence write is not atomic, so a call admitted before the stop could be parked
 mid-write while the teardown published offline, and then put the seat back to work after it had
 announced it left; on the wire, a roster read `working` after `offline`. The teardown now waits,
-briefly, for interactive work it has already admitted before it publishes departure, and joins the
+briefly, for interactive work it has already admitted before it attempts departure, and joins the
 slower event work afterwards as it already did. Event work is deliberately not in that wait,
 because waiting on a drain is what publishing departure early exists to avoid.
 

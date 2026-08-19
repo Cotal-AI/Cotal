@@ -333,12 +333,15 @@ export const cotal: Plugin = async () => {
     } catch {
       /* ignore */
     }
-    // BEFORE DEPARTURE IS PUBLISHED, so that nothing this seat already admitted can act after it has
-    // said it left. Bounded, and the bound is the honest part: a straggler that outlives it is not
+    // BEFORE DEPARTURE IS ATTEMPTED, so that work this seat already admitted is ordered ahead of the
+    // departure it announces, for as long as the bound allows. NOT "nothing admitted can act after
+    // it said it left": the bound is the honest part, and a straggler that outlives it is not
     // cancelled, so the teardown goes on to ATTEMPT the departure publish and that straggler can
-    // still finish afterwards. Attempt is the accurate word: this publish is best effort, it has no
-    // deadline of its own, and a kill inside it takes it. Waiting unboundedly instead is the worse
-    // of the two, because departure would go back to being inferred from a dropped connection.
+    // still finish afterwards. Attempt is the accurate word throughout: safeStatus skips the write
+    // outright when the connection is already gone and swallows its failure when it is not, so this
+    // publish has no deadline of its own, no result anyone reads, and a kill inside it takes it.
+    // Waiting unboundedly instead is the worse of the two, because departure would go back to being
+    // inferred from a dropped connection.
     // EACH ONE ABSORBED SEPARATELY, which is the difference between waiting for the set and waiting
     // for the first thing to happen to it. The set holds the raw calls, and a bare Promise.all
     // rejects the moment ONE of them does, without waiting for the others; settleWithin then counts
