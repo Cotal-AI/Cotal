@@ -6,9 +6,9 @@
   "mutations": [
     {
       "name": "the ok-path scope settle is stamped with the handler's clock at append time",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      frame.clock.now(),\n      {",
-      "replace": "      this.options.handler.now(),\n      {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    frame.clock.now(),\n    {",
+      "replace": "    host.options.handler.now(),\n    {",
       "expectRed": "and the scope entry is stamped with that joined clock, not the handler's clock at append time",
       "completionMarker": "ok live, now() after a parallel is the join of the branch clocks",
       "cell": "and the scope entry is stamped with that joined clock, not the handler's clock at append time",

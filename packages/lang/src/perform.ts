@@ -8,8 +8,8 @@
  * calls it directly. ONE function over ONE table: a second copy of a projection would be a
  * divergence the differential suite could only find program-by-program.
  */
-import { RunDivergence, RuntimeFault, messageOf } from "./errors.js";
-import { digest, requestId, stepKeyString, type KeyScope } from "./keys.js";
+import { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
+import { digest, requestId, stepKeyString, type KeyScope, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
 import { NotCrossable, assertCrossable, deepFreeze } from "./values.js";
 import { PRIMITIVES, type EffectKind } from "./primitives.js";
@@ -23,6 +23,7 @@ import {
   type AgentHandleValue,
   type CancelSignal,
   type ChannelHandleValue,
+  type ConclaveRequest,
   type EffectContext,
   type CheckpointRaw,
   type EventDescriptor,
@@ -50,7 +51,7 @@ export interface EffectFrame {
   readonly signal: CancelSignal;
 }
 
-function option(bag: unknown, key: string): unknown {
+export function option(bag: unknown, key: string): unknown {
   return bag === null || typeof bag !== "object" ? undefined : (bag as Record<string, unknown>)[key];
 }
 
@@ -524,4 +525,663 @@ export function freeConstructors(run: RunIdentity): ReadonlyArray<readonly [stri
     ["idle", (a) => deepFreeze({ event: "idle", channel: (a[0] as ChannelHandleValue).channel, duration: a[1] as string })],
     ["down", (a) => deepFreeze({ event: "down", agent: (a[0] as AgentHandleValue).agent })],
   ];
+}
+
+// ---- concurrency scopes -------------------------------------------------------------------------
+//
+// ONE scope machinery, both engines. The walker's `callScope` evaluates the AST arguments and builds
+// the branch digester, then hands VALUES to the two functions below; the engine's seam does the same
+// from a transformed call site. Everything between - the scope's own journal entry, the replay,
+// divergence and migration paths, the branch frames, the cut and its re-decision, the loser
+// accounting - lives here once, because a second copy is a second answer to what a recorded scope IS.
+
+/**
+ * A frame, structurally.
+ *
+ * The walker's `Frame` and the engine's `EngineFrame` are different classes with the same shape, and
+ * neither imports the other: the walker's is private to interpret.ts, and the engine's belongs to a
+ * lane that does not edit it. This is the shape the scope machinery actually uses, and both satisfy
+ * it. `Frame` is the name the moved code already spells, so the move stays a move.
+ */
+export interface Frame {
+  readonly keys: KeyScope;
+  readonly clock: RunClock;
+  readonly signal: BranchSignal;
+  readonly depth: number;
+  branch(kind: ScopeKind, name: string | null, occurrence: number, branchKey: string): Frame;
+}
+
+/**
+ * A branch's cancellation as the SCOPE drives it.
+ *
+ * `CancelSignal` is the handler's view - what a running effect may observe. A scope also cancels,
+ * and in two degrees, so it needs the writing half as well.
+ */
+export interface BranchSignal extends CancelSignal {
+  /** The stronger cut, applied to an arm that can no longer win. Observed at a fuel yield. */
+  readonly cutPure: boolean;
+  cancel(reason: string, opts?: { readonly cutPure: boolean }): void;
+}
+
+/**
+ * What a concurrency scope produces, before it is journalled.
+ *
+ * `branches` is what the scope launched, `value` is what the program sees, and `cancel` is the
+ * intent a cancelling scope owes its losers — durable WITH the outcome, because a process dies
+ * between instructions and two appends are two network operations however few keywords separate
+ * them.
+ */
+export interface ScopeOutcome {
+  readonly branches: readonly string[];
+  readonly value: unknown;
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  /** A `conclave`'s membership disposition. See {@link JournalEntry.closed}. */
+  readonly closed?: boolean;
+}
+
+/** What the interpreter knows about a failing scope, beside whatever the program threw. */
+export interface ScopeFacts {
+  readonly cancel?: { readonly losers: readonly string[]; readonly issued: boolean };
+  readonly closed?: boolean;
+  /**
+   * The scope's ARM NAMES, carried as a fact rather than left inside the result.
+   *
+   * A successful scope records `result: { branches, value }`, and `settle` writes `result` only for
+   * `status: "ok"` — result and error are exclusive, correctly. So a scope that FAILED recorded no
+   * branch list at all, and a migration reconstructed an EMPTY winner set from it, entered nothing,
+   * and awaited `Promise.race([])`, which never settles. The branch names are not a result; they
+   * are what the scope was, and a scope that failed was still made of arms.
+   */
+  readonly branches?: readonly string[];
+}
+
+/**
+ * A `conclave` whose close did not acknowledge.
+ *
+ * It exists so the scope is NOT settled: the pending entry is the durable record that a close is
+ * still owed, and re-entry retries it. Settling on a close rejection would have the journal state a
+ * disposition the world never confirmed, which is the one thing this entry is for.
+ */
+class CloseOwed extends Error {
+  constructor(readonly reason: unknown) {
+    super(`conclave close did not acknowledge: ${(reason as Error)?.message ?? String(reason)}`);
+    this.name = "CloseOwed";
+  }
+}
+
+/**
+ * A scope's failure, carrying the interpreter's OWN facts about it.
+ *
+ * Attaching them to the thrown value with `Object.assign` works exactly as long as every program
+ * throws an object. `throw null` is valid, and `Object.assign(null, …)` is a TypeError, so a
+ * conclave whose body throws a primitive loses its closure fact AND hands the caller a manufactured
+ * type error in place of the body's failure, while the entry records
+ * `closed: undefined` for a room the handler had in fact closed. The facts belong to the
+ * interpreter, so they travel in the interpreter's own envelope and the program's value rides
+ * untouched inside it. Nothing outside `performScope` ever sees this class: it unwraps before it
+ * rethrows.
+ */
+class ScopeFailed extends Error {
+  constructor(
+    readonly reason: unknown,
+    readonly facts: ScopeFacts,
+  ) {
+    super(`scope failed: ${messageOf(reason)}`);
+    this.name = "ScopeFailed";
+  }
+}
+
+function unwrapScope(e: unknown): { reason: unknown; facts: ScopeFacts } {
+  return e instanceof ScopeFailed ? { reason: e.reason, facts: e.facts } : { reason: e, facts: {} };
+}
+
+/**
+ * The digest fact, written wherever the loser set is — a race that FAILED owes its losers exactly
+ * as a winning one does, so it carries the digest too, and `replay-failed` compares it.
+ */
+function digestFacts(
+  of: ((losers: readonly string[]) => string | undefined) | undefined,
+  losers: readonly string[] | undefined,
+): { branchDigest?: string } {
+  if (of === undefined || losers === undefined) return {};
+  const d = of(losers);
+  return d === undefined ? {} : { branchDigest: d };
+}
+
+/**
+ * A concurrency scope's own journal entry, and what replay does with it.
+ *
+ * The scope is journalled as ONE durable record carrying its outcome, and for a cancelling scope
+ * the intent to cancel its siblings. Without it a replayed `race` re-races: both branches may have
+ * settled before the cancellation reached the loser, so the journal holds two successful branches
+ * and nothing saying which one won, and a replayed run can take the other path and reach a step
+ * that was never recorded.
+ *
+ * A settled scope therefore ENTERS NO BRANCH, and the order below is normative rather than
+ * convenient: account for the subtree first, then discharge the cancellation, and only then
+ * deliver the outcome. Leading with the delivery is the defect — the next program step can share
+ * a worktree with a loser that is still writing.
+ */
+export async function performScope(
+  host: EffectHost,
+  scopeKey: StepKey,
+  frame: Frame,
+  body: (ctx: EffectContext, only?: ReadonlySet<string>) => Promise<ScopeOutcome>,
+  subject?: unknown,
+  /** The `branchDigest` over a named loser set. Absent where there is nothing to digest. */
+  branchDigest?: (losers: readonly string[]) => string | undefined,
+): Promise<unknown> {
+  const inputHash = digest(
+    subject === undefined
+      ? { kind: scopeKey.kind, name: scopeKey.name }
+      : { kind: scopeKey.kind, name: scopeKey.name, subject },
+  );
+  const verdict = host.journal.lookup(scopeKey, inputHash);
+
+  if (verdict.verdict === "diverged") {
+    throw new RunDivergence(stepKeyString(scopeKey), verdict.recordedHash, verdict.programHash);
+  }
+  if (verdict.verdict === "replay" || verdict.verdict === "replay-failed") {
+    const entry = verdict.entry;
+    const endedAt = entry.endedAt ?? host.options.handler.now();
+
+    // The comparison: `branchDigest` is checked whenever the entry carries one. The scope's own
+    // `inputHash` is `{kind, name}` — an arm's body is not in it — and a settled race is
+    // delivered from this entry without entering a branch, so without this comparison an edit
+    // inside a LOSING arm reaches nothing that could notice it. Both replay paths, not the
+    // migration path alone: a resume of edited source is exactly the case a divergence exists to
+    // make loud, and the run record carries no program hash to have refused it earlier.
+    if (entry.branchDigest !== undefined && branchDigest !== undefined) {
+      const now = branchDigest(entry.cancel?.losers ?? []);
+      if (now !== undefined && now !== entry.branchDigest) {
+        throw new RunDivergence(stepKeyString(scopeKey), entry.branchDigest, now);
+      }
+    }
+
+    // A MIGRATION MUST NOT TAKE THE SHORT-CIRCUIT ABOVE.
+    //
+    // Consuming the subtree wholesale is right for a resume — the program hash is unchanged, so
+    // nothing under this scope can have been removed, and the branches were DECIDED rather than
+    // deleted. Under a migration the source HAS changed, and marking every entry beneath the
+    // scope accounted for means an effect the new source removed never reaches `orphans()`: a
+    // resolved human checkpoint inside the winning branch disappears and L5004 never fires. A
+    // silent disappearance whose log line never fires is invisible in the artifact AND in the
+    // trace, which is the worst available failure.
+    //
+    // So the walk enters the RECORDED WINNING branches and runs the ordinary hash and orphan
+    // checks inside them, while the losers — decided, not removed — are accounted for as before.
+    if (host.options.migration === true) {
+      if (subject !== undefined) throw new UnwalkableScope(stepKeyString(scopeKey), "conclave");
+      // A SETTLED SCOPE CARRIES ITS ARM NAMES IN ONE OF TWO PLACES, and reading only the first
+      // is what made a failed scope look like a scope with no arms. `result` holds them when the
+      // scope succeeded; the `branches` FACT holds them when it failed, because `settle` writes
+      // no `result` for a failure.
+      const recorded = entry.result as { branches?: readonly string[] } | undefined;
+      const branches = recorded?.branches ?? entry.branches ?? [];
+      const losers = new Set(entry.cancel?.losers ?? []);
+      await host.journal.consumeScope(stepKeyString(scopeKey), endedAt, losers);
+      try {
+        await body(
+          {
+            key: scopeKey,
+            signal: frame.signal,
+            requestId: entry.requestId ?? requestId(host.options.runId, scopeKey, inputHash),
+            attempt: entry.attempt ?? 0,
+            bind: async () => {
+              throw new UnwalkableScope(stepKeyString(scopeKey), "bind");
+            },
+          },
+          new Set(branches.filter((b) => !losers.has(b))),
+        );
+      } catch (e) {
+        // UNWRAPPED, because the caller of a migration wants the step that diverged and not the
+        // scope that carried it. A live scope wraps a branch's failure so it can record the
+        // cancellation intent with it; a walk records nothing and cancels nobody, so the wrapper
+        // would only hide a `RunDivergence` behind a generic scope fault.
+        throw unwrapScope(e).reason;
+      }
+      if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
+      if (verdict.verdict === "replay-failed") {
+        const e = entry.error as EntryError;
+        throw new EffectError(e.code, e.kind, e.message, e.detail);
+      }
+      return (entry.result as { value: unknown }).value;
+    }
+
+    // (1) account for the subtree, settling any loser still pending as cancelled;
+    await host.journal.consumeScope(stepKeyString(scopeKey), endedAt);
+    // (2) the cancellation intent is the driver's to discharge against the world; a journal write
+    //     cancels nothing by itself, so an undischarged intent stays visible rather than silently
+    //     reading as done.
+    // (3) only now, the outcome.
+    if (entry.endedAt !== undefined) frame.clock.advance(entry.endedAt);
+    if (verdict.verdict === "replay-failed") {
+      const e = entry.error as EntryError;
+      throw new EffectError(e.code, e.kind, e.message, e.detail);
+    }
+    return (entry.result as { value: unknown }).value;
+  }
+  if (verdict.verdict === "replay-cancelled") {
+    throw new Cancelled("this scope was cancelled on the recorded run");
+  }
+
+  // `miss` and `pending` alike RE-ENTER the scope: there is no recorded outcome to return, and a
+  // pending scope's losers were never durably cancelled. Settling is idempotent, so the arm that
+  // finishes first wins again — except where the journal already knows better, which is what
+  // `runScope`'s replayed-branch tie-break is for.
+  // A scope that CALLS THE HANDLER owes a durable request id exactly as an effect does, and for
+  // the same reason: a crash between issuing the work and recording who issued it leaves real
+  // work — for `conclave`, a live channel with members joined — that nothing in the journal
+  // names. `subject` marks that scope, because `conclave` is the only one that dispatches from
+  // this path; the other three launch thunks and touch no handler of their own.
+  const dispatches = subject !== undefined;
+  const resume = verdict.verdict === "pending" ? verdict.entry.external : undefined;
+  const recorded = verdict.verdict === "pending" && verdict.entry.requestId !== undefined ? verdict.entry : undefined;
+  const reqId = recorded?.requestId ?? requestId(host.options.runId, scopeKey, inputHash);
+  if (verdict.verdict === "miss") {
+    await host.journal.begin(scopeKey, inputHash, host.options.handler.now(), dispatches ? reqId : undefined);
+    // The same gap as {@link Interpreter.performEffect}'s begin, for the scope that DISPATCHES: a
+    // conclave cancelled while its begin was in flight must not open a channel and join members.
+    // The non-dispatching scopes launch no work of their own — each branch effect re-checks its
+    // own signal — so only the dispatching path re-checks here.
+    if (dispatches && frame.signal.cancelled) {
+      await host.journal.settle(scopeKey, { status: "cancelled" }, frame.clock.now());
+      throw new Cancelled(frame.signal.reason ?? "cancelled");
+    }
+  }
+  const ctx: EffectContext = {
+    key: scopeKey,
+    signal: frame.signal,
+    requestId: reqId,
+    attempt: recorded?.attempt ?? 0,
+    ...(resume !== undefined ? { resume } : {}),
+    bind: async (external) => {
+      await host.journal.bind(scopeKey, external);
+    },
+  };
+  // The same two domains as {@link Interpreter.performEffect}, for the same reason: a scope whose
+  // branches all succeeded and whose settling append was refused must not be recorded as failed.
+  let outcome: ScopeOutcome;
+  try {
+    outcome = await body(ctx);
+  } catch (raw) {
+    // The interpreter's facts come out of the envelope; the program's thrown value comes out
+    // whole, and is what the caller sees. A value the program threw is never written on.
+    const { reason, facts } = unwrapScope(raw);
+    // THE SCOPE'S CLOCK AT SETTLE, not the host's clock at append. `runScope` joins the branch
+    // clocks before the outcome leaves it, so `frame.clock.now()` here is the greatest `endedAt`
+    // the scope's branches awaited — which is what `now()` answers after the scope, live. Replay
+    // advances the parent clock from this stamp and enters no branch, so stamping anything else
+    // (measured: the handler's clock at append time) makes live and replay disagree on `now()`
+    // after every scope whose last-to-land effect was not the handler's last stamp, and a program
+    // that branches on `now()` takes a path on resume that the live run never took.
+    const endedAt = frame.clock.now();
+    if (reason instanceof JournalAppendRejected) throw reason;
+    // A close that did not acknowledge settles NOTHING. The entry stays pending, which is exactly
+    // what "a close is still owed" looks like in a journal, and the underlying handler error is
+    // what the caller sees.
+    if (reason instanceof CloseOwed) throw reason.reason;
+    if (reason instanceof Cancelled) {
+      await host.journal.settle(scopeKey, { status: "cancelled" }, endedAt, facts);
+      throw reason;
+    }
+    const err: EntryError =
+      reason instanceof EffectError
+        ? {
+            code: reason.code,
+            kind: reason.kind,
+            message: reason.message,
+            ...(reason.detail !== undefined ? { detail: reason.detail } : {}),
+          }
+        : { code: "L4000", kind: "scope-fault", message: messageOf(reason) };
+    // A rejecting branch cancels its siblings and can crash before they hear it, so a FAILED scope
+    // carries the intent too — and a conclave that closed says so even when its body failed.
+    await host.journal.settle(scopeKey, { status: "failed", error: err }, endedAt, {
+      ...facts,
+      ...digestFacts(branchDigest, facts.cancel?.losers),
+    });
+    throw reason;
+  }
+
+  await host.journal.settle(
+    scopeKey,
+    { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
+    // The joined branch clock, for the same reason as the failure path above: this is the value
+    // `now()` answers after the scope, and the stamp replay hands back must be that value.
+    frame.clock.now(),
+    {
+      ...(outcome.cancel !== undefined ? { cancel: outcome.cancel } : {}),
+      ...(outcome.closed !== undefined ? { closed: outcome.closed } : {}),
+      ...digestFacts(branchDigest, outcome.cancel?.losers),
+    },
+  );
+  return outcome.value;
+}
+
+
+export async function runScope(
+  host: EffectHost,
+  name: string,
+  scopeKind: ScopeKind,
+  scopeName: string | null,
+  occurrence: number,
+  first: unknown,
+  /**
+   * The SECOND argument, DEFERRED: `fanOut`'s body, `conclave`'s body.
+   *
+   * A thunk rather than a value, so it is evaluated exactly where it was evaluated before: after
+   * the scope's entry has begun, not at the call. `parallel` and `race` never call it - their
+   * second argument is the options bag, which the caller evaluates.
+   */
+  second: () => Promise<unknown>,
+  bag: unknown,
+  frame: Frame,
+  ctx: EffectContext,
+  /** A migration's walk: enter exactly these branches, the ones the recorded run WON with. */
+  only?: ReadonlySet<string>,
+): Promise<ScopeOutcome> {
+  if (name === "parallel" || name === "race") {
+    const all: [string, (f: Frame, a: unknown[]) => Promise<unknown>][] = Array.isArray(first)
+      ? (first as ((f: Frame, a: unknown[]) => Promise<unknown>)[]).map((fn, i) => [String(i), fn])
+      : Object.entries(first as Record<string, (f: Frame, a: unknown[]) => Promise<unknown>>);
+    const entries = only === undefined ? all : all.filter(([k]) => only.has(k));
+
+    // THE WALK MUST FIND EVERY ARM IT WAS SENT TO ENTER.
+    //
+    // `only` is the set of RECORDED WINNING branch keys, and the whole "losers only" digest rule
+    // rests on the walk entering the winner: an edit there is supposed to diverge at the step it
+    // broke, which is a strictly better error than "some arm of this race changed". A RENAME
+    // removes the arm, so there is no step left to diverge at and the argument silently stops
+    // holding. What happened instead was worse than a silent pass. `entries` came back empty,
+    // `running` with it, and `Promise.race([])` NEVER SETTLES — a migration or a fork over a
+    // renamed winning arm hung rather than returning any verdict at all. `parallel` did not hang,
+    // because `Promise.all([])` resolves, and handed the program back the recorded value keyed by
+    // the arm the source no longer has.
+    //
+    // Narrow on purpose, and every neighbouring shape already has an answer: a renamed or deleted
+    // LOSER diverges through the branch digest, and an ADDED arm is not an edit to anything
+    // recorded, so neither reaches this.
+    if (only !== undefined) {
+      const present = new Set(all.map(([k]) => k));
+      const missing = [...only].filter((k) => !present.has(k));
+      if (missing.length > 0) {
+        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);
+      }
+      // AND THE EMPTY CASE, which the check above cannot see: with no recorded branches at all,
+      // "every recorded branch is present" is vacuously true, so the guard passed and the walk
+      // still entered nothing and still hung. A guard over an empty set grades nothing and is
+      // green forever. Journals written before scopes recorded their arm names on failure are
+      // exactly that shape, so this refuses them by name instead of hanging on them. It cannot
+      // fire on a scope that has no arms in the source either, because `all` is empty then too.
+      if (only.size === 0 && all.length > 0) {
+        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, [], [], all.map(([k]) => k));
+      }
+    }
+
+    const frames = entries.map(([k]) => frame.branch(scopeKind, scopeName, occurrence, k));
+    const running = entries.map(([, fn], i) => fn(frames[i] as Frame, []));
+
+    const branches = entries.map(([k]) => k);
+
+    if (name === "parallel") {
+      let failed: string | null = null;
+      const tracked = running.map((p, i) =>
+        p.catch((e: unknown) => {
+          if (failed === null) failed = entries[i]?.[0] as string;
+          throw e;
+        }),
+      );
+      try {
+        const results = await Promise.all(tracked);
+        frame.clock.join(frames.map((f) => f.clock));
+        return {
+          branches,
+          value: Array.isArray(first) ? results : Object.fromEntries(entries.map(([k], i) => [k, results[i]])),
+        };
+      } catch (e) {
+        // The first rejection cancels the rest, then rethrows. The intent travels WITH the
+        // failure, because a rejecting branch cancels its siblings and can crash before they
+        // hear it, so a failed scope owes its losers exactly as a winning one does.
+        for (const f of frames) f.signal.cancel("a sibling branch failed");
+        await Promise.allSettled(running);
+        frame.clock.join(frames.map((f) => f.clock));
+        const losers = branches.filter((k) => k !== failed);
+        throw new ScopeFailed(e, { branches, cancel: { losers, issued: false } });
+      }
+    }
+
+    // race: the earliest to settle wins, and the losers are cancelled BY SEMANTICS, not by an API
+    // the program calls. A cancelled branch performs no new effects; an agent reply already in
+    // flight completes and is ignored, which is the documented answer rather than an accident.
+    // THE WINNER IS THE EARLIEST BRANCH, NOT THE FIRST ONE SCHEDULING HAPPENED TO WAKE.
+    //
+    // An arm's logical settlement time is its branch clock: the max endedAt of the effects it
+    // awaited (the scope's entry clock if it awaited none), which is recorded. The winner is the
+    // least clock among the arms that settled; equal clocks fall to declaration order, which is
+    // recorded too. So the same journal resolves the same arm on every re-entry.
+    //
+    // AND LIVE, NO SCHEDULER AND NO `yieldEvery` VALUE CAN CHOOSE. When an arm settles, every
+    // sibling is cancelled (no new effects, the cancellation law), and each sibling is CUT, pure
+    // work included, only if it can no longer win: its clock is later, or equal and it is declared
+    // later. A sibling that could still win runs its pure work to a settle, and a sibling that
+    // reaches a new effect is cut there, having proven it would end after the settled arm's clock.
+    // Which arms settle is therefore a function of their effects and the declaration order, and
+    // so is the winner. A later settle with an earlier clock re-decides the cut for the rest.
+    // A FAILURE IS A SETTLE, so a rejecting arm is a candidate to win — it just wins by failing
+    // the scope. What is NOT a candidate is a branch that rejected with `Cancelled`, because that
+    // is not an outcome the branch reached, it is what losing did to it. Counting those would let
+    // a loser cut short at an early step outrank the winner that ran longer.
+    // The FRONTIER: the least clock among the arms that have settled as candidates, ties to the
+    // earlier declaration. The cut compares against it in both places below, because it is the
+    // bar an unsettled arm actually has to beat.
+    let bestAt = -1;
+    let bestIndex = -1;
+    const behindFrontier = (j: number): boolean => {
+      const other = (frames[j] as Frame).clock.now();
+      return !(other < bestAt || (other === bestAt && j < bestIndex));
+    };
+    const onSettle = (i: number, wasCancelled: boolean): void => {
+      if (wasCancelled) return;
+      const at = (frames[i] as Frame).clock.now();
+      if (bestIndex === -1 || at < bestAt || (at === bestAt && i < bestIndex)) {
+        bestAt = at;
+        bestIndex = i;
+      }
+      for (let j = 0; j < frames.length; j += 1) {
+        if (j === i) continue;
+        (frames[j] as Frame).signal.cancel("a sibling branch won the race", { cutPure: behindFrontier(j) });
+      }
+    };
+    running.forEach((p, i) => {
+      p.then(
+        () => onSettle(i, false),
+        (e: unknown) => onSettle(i, e instanceof Cancelled),
+      );
+    });
+    // AND THE CUT IS RE-DECIDED WHEN AN ARM'S OWN CLOCK MOVES. A cancelled arm with an effect
+    // already in flight is allowed to see it land — the work was issued before the cancellation
+    // — but landing advances the arm's clock, and an arm that lands PAST the frontier has just
+    // proven it cannot win. Deciding only at settles left that arm running its pure tail on a
+    // verdict reached from its old clock: measured, an infinite pure tail burned the whole step
+    // budget and killed a run whose race had already settled `ok`, while a resume of the same
+    // journal returned the winner — live and replay disagreeing on the run's outcome. An arm
+    // that lands BEFORE the frontier keeps running, because it can still win (its own cell).
+    frames.forEach((f, j) => {
+      f.clock.onAdvance(() => {
+        if (f.signal.cancelled && !f.signal.cutPure && bestIndex !== -1 && behindFrontier(j)) {
+          f.signal.cancel("a sibling branch won the race", { cutPure: true });
+        }
+      });
+    });
+    // BOTH HANDLERS, and the rejection handler is the whole point. `p.then(() => undefined)`
+    // propagates a rejection, so the first arm to FAIL threw straight out of this await: past the
+    // cancellation, past `allSettled`, and into a scope entry recorded as failed with no losers on
+    // it. The run terminated while a sibling was still performing effects, which is the exact
+    // defect the scope entry exists to prevent. A rejection is a settle.
+    await Promise.race(running.map((p) => p.then(() => undefined, () => undefined)));
+    const settled = await Promise.allSettled(running);
+    // Every arm has settled, so whatever cut it did not get earlier no longer matters; the
+    // signal still says cancelled, which is what a nested branch that outlives this line reads.
+    for (const f of frames) f.signal.cancel("a sibling branch won the race");
+    frame.clock.join(frames.map((f) => f.clock));
+
+    let winnerAt = -1;
+    let winnerIndex = -1;
+    for (let i = 0; i < settled.length; i += 1) {
+      const r = settled[i] as PromiseSettledResult<unknown>;
+      if (r.status === "rejected" && r.reason instanceof Cancelled) continue;
+      const at = (frames[i] as Frame).clock.now();
+      if (winnerIndex === -1 || at < winnerAt) {
+        winnerAt = at;
+        winnerIndex = i;
+      }
+    }
+    if (winnerIndex === -1) {
+      // Every arm was cancelled, so the race itself was: nothing here decided anything.
+      const first = settled.find((r) => r.status === "rejected") as PromiseRejectedResult | undefined;
+      throw first === undefined ? new Cancelled("every branch was cancelled") : (first.reason as Error);
+    }
+    const index = entries[winnerIndex]?.[0] as string;
+    const won = settled[winnerIndex] as PromiseSettledResult<unknown>;
+    if (won.status === "rejected") {
+      // The earliest branch to settle FAILED. The scope fails with it, carrying the siblings it
+      // cancelled — a losing arm can crash before the cancellation reaches it, so the intent has
+      // to travel with the outcome exactly as it does for a winning race.
+      throw new ScopeFailed(won.reason, {
+        branches,
+        cancel: { losers: branches.filter((k) => k !== index), issued: false },
+      });
+    }
+    return {
+      branches,
+      // BOTH the index and the value. The index alone is not enough: an edit to an arm's returned
+      // expression would resume as the new value with no divergence raised.
+      value: { index, value: (settled[winnerIndex] as PromiseFulfilledResult<unknown>).value },
+      cancel: { losers: branches.filter((k) => k !== index), issued: false },
+    };
+  }
+
+  if (name === "fanOut") {
+    const items = first as unknown[];
+    const fn = (await second()) as (f: Frame, a: unknown[]) => Promise<unknown>;
+    const keyFn = option(bag, "key") as ((f: Frame, a: unknown[]) => Promise<unknown>) | undefined;
+
+    const branchKeys: string[] = [];
+    for (let i = 0; i < items.length; i += 1) {
+      const item = items[i];
+      let k: unknown;
+      if (keyFn !== undefined) k = await keyFn(frame, [item]);
+      else if (item !== null && typeof item === "object" && typeof (item as { id?: unknown }).id === "string") {
+        k = (item as { id: string }).id;
+      } else {
+        throw new RuntimeFault(
+          "L3021",
+          `fanOut needs a stable key: without one, a reordered or filtered list silently reshuffles every journal key underneath it. Pass { key: (item) => ... }, or give items a string id.`,
+        );
+      }
+      branchKeys.push(String(k));
+    }
+    if (new Set(branchKeys).size !== branchKeys.length) {
+      throw new RuntimeFault(
+        "L3024",
+        `fanOut produced duplicate branch keys (${branchKeys.join(", ")}), so two branches would share one journal namespace and allocate the same step key with different inputs. Nothing has run yet: the keys are all evaluated before any branch launches, because rejecting after launch would be too late by exactly the side effects the check exists to prevent.`,
+      );
+    }
+
+    const frames = branchKeys.map((k) => frame.branch(scopeKind, scopeName, occurrence, k));
+    // A fanOut has no losers: every branch is a winner, so a migration's walk enters the ones the
+    // recorded run actually had. A branch the new source no longer produces is simply not walked,
+    // and its entries surface as orphans — which is the whole point of walking rather than
+    // consuming.
+    const walk = items
+      .map((item, i) => [item, i] as const)
+      .filter(([, i]) => only === undefined || only.has(branchKeys[i] as string));
+    // The same failure law as `parallel`: the first rejection cancels the siblings and the scope
+    // fails with it, carrying the losers. Measured before this block: a rejecting branch threw out
+    // of `Promise.all` alone, and every sibling went on performing effects against a scope whose
+    // entry had already settled failed.
+    let failed: string | null = null;
+    const launched = walk.map(([item, i]) =>
+      fn(frames[i] as Frame, [item, i]).catch((e: unknown) => {
+        if (failed === null) failed = branchKeys[i] as string;
+        throw e;
+      }),
+    );
+    try {
+      const results = await Promise.all(launched);
+      frame.clock.join(frames.map((f) => f.clock));
+      return { branches: branchKeys, value: results };
+    } catch (e) {
+      for (const f of frames) f.signal.cancel("a sibling branch failed");
+      await Promise.allSettled(launched);
+      frame.clock.join(frames.map((f) => f.clock));
+      const losers = branchKeys.filter((k) => k !== failed);
+      throw new ScopeFailed(e, { branches: branchKeys, cancel: { losers, issued: false } });
+    }
+  }
+
+  if (name === "conclave") {
+    // A conclave is a scope AND an effect, and it gets ONE entry, of kind `conclave`, carrying
+    // the durable answer to "is this sub-team still live". That answer is the explicit `closed`
+    // FACT, not the entry's state: a body that failed after a clean close settles `failed`
+    // exactly like one whose close never acknowledged, and only the fact separates them. Pending
+    // means a close is still owed. The migrate table reads that fact — an orphaned conclave is
+    // rejected unless the scope closed — so a second entry for the close would be a second thing
+    // to keep in agreement with the first, and nothing needs it.
+    const members = deepFreeze(first) as AgentHandleValue[];
+    const fn = (await second()) as (f: Frame, a: unknown[]) => Promise<unknown>;
+    const channel = option(bag, "channel") as string | undefined;
+    const req: ConclaveRequest = { members, ...(channel !== undefined ? { channel } : {}) };
+    const handler = host.options.handler;
+    const handle = deepFreeze(await handler.openConclave(req, ctx)) as ChannelHandleValue;
+
+    // One body, one branch, and the branch key is the fixed literal `in` rather than the channel
+    // name. The channel is HANDLER-DERIVED — the simulator and the mesh mint different ones — so
+    // keying the journal namespace by it would make a journal replayable only under the handler
+    // that wrote it, which is the one thing the effect seam exists to prevent.
+    // ONE constant, used for both the namespace and the recorded branch list, so the entry cannot
+    // claim a key the body's steps were not actually filed under.
+    const branchKey = "in";
+    const branch = frame.branch(scopeKind, scopeName, occurrence, branchKey);
+
+    // The body's outcome is decided FIRST, alone. The close is a separate act with a separate
+    // failure mode, and folding it into this try is what made a close rejection retry itself and
+    // then settle as an ordinary body failure — a `failed` entry indistinguishable from "the body
+    // failed and the room closed cleanly", which an orphan walk reads as closed while the members
+    // are still joined.
+    // `threw` is a separate flag rather than `bodyError !== undefined`, because `throw undefined`
+    // is a thing a program may do and "the body failed" must not depend on what it failed WITH.
+    let bodyError: unknown;
+    let threw = false;
+    let value: unknown;
+    try {
+      value = await fn(branch, [handle]);
+    } catch (e) {
+      bodyError = e;
+      threw = true;
+    }
+    frame.clock.join([branch.clock]);
+
+    // A CANCELLED branch performs no new effects, so a cancelled conclave does not close
+    // itself: releasing the membership travels the same recovery path as every other branch-local
+    // resource a race loser took. A conclave whose body merely FAILED is not cancelled —
+    // this process is live and the world is reachable — and walking away from live membership on
+    // an ordinary error would be the `spawn` leak in another shape.
+    if (bodyError instanceof Cancelled) throw new ScopeFailed(bodyError, { closed: false });
+
+    try {
+      await handler.closeConclave(req, ctx);
+    } catch (e) {
+      // THE CLOSE DID NOT ACKNOWLEDGE, so the scope does not settle at all. A pending entry IS
+      // the durable "a close is still owed" — re-entry retries it — and settling anything here
+      // would be the journal claiming a disposition the world never confirmed. The body's own
+      // error, if there was one, is subordinate: it did not leave members joined; this did.
+      throw new CloseOwed(e);
+    }
+
+    if (threw) throw new ScopeFailed(bodyError, { closed: true });
+    return { branches: [branchKey], value, closed: true };
+  }
+
+  throw new RuntimeFault("L1000", `${name} is not implemented in this interpreter`);
 }

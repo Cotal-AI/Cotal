@@ -15,18 +15,18 @@
   "mutations": [
     {
       "name": "every cancelled arm is cut at its next yield (the old behaviour)",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: behindFrontier(j) });",
-      "replace": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: true });",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: behindFrontier(j) });",
+      "replace": "        (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: true });",
       "expectRed": "a spinning arm that could still win is not cut: the step budget ends it (L4013)",
       "completionMarker": "ok and the arm declared first wins the tie",
       "cell": "a spinning arm that could still win is not cut: the step budget ends it (L4013)"
     },
     {
       "name": "no arm is ever cut at a yield (the naive repair)",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: behindFrontier(j) });",
-      "replace": "          (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: false });",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: behindFrontier(j) });",
+      "replace": "        (frames[j] as Frame).signal.cancel(\"a sibling branch won the race\", { cutPure: false });",
       "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
       "completionMarker": "ok so the timer is measuring the yield, not the runtime",
       "cell": "a spinning arm that cannot win is cut at its next yield and the run returns",
@@ -43,9 +43,9 @@
     },
     {
       "name": "the tie falls to the arm declared LATER",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        return !(other < bestAt || (other === bestAt && j < bestIndex));",
-      "replace": "        return !(other < bestAt || (other === bestAt && j > bestIndex));",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      return !(other < bestAt || (other === bestAt && j < bestIndex));",
+      "replace": "      return !(other < bestAt || (other === bestAt && j > bestIndex));",
       "expectRed": "a spinning arm that cannot win is cut at its next yield and the run returns",
       "completionMarker": "ok so the timer is measuring the yield, not the runtime",
       "cell": "a spinning arm that cannot win is cut at its next yield and the run returns",
