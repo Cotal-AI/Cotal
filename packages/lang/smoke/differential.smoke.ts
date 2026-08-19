@@ -241,6 +241,10 @@ log("rounds", rounds, r.status);`,
   ["the seeded pure draws", 'log(random(), randomInt(10), pick([1, 2, 3]), duration("1m"));', {}],
   ["a pure draw inside a function, twice", "const d = () => random(); log(await d(), await d());", {}],
   ["this run's own metadata", "const r = run(); log(r.startedAt > 0, len(r.programHash) > 0);", {}],
+  // The identical half of issue 647 below: `len` of a FREE builtin is 0 on both arms, so only a
+  // program-defined function diverges. Without this the divergence reads as "len of a function",
+  // which is wider than what was measured.
+  ["len of a free builtin", "log(len(map), len(len));", {}],
   [
     "the event constructors",
     'const a = await spawn("one"); const c = channel("t"); log(message(c), idle(a), down(a), replied(a));',
@@ -313,6 +317,12 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // rather than remembered.
   ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, "logs [[null]]", "L4018"],
   ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, "logs [[6]]", "L4018"],
+  // Ruling 1c's second declared divergence, issue 647: `len` of a PROGRAM-DEFINED function. Neither
+  // number is the program's arity — each arm reports the arity of its own closure wrapper, the
+  // walker's `(frame, args)` pair and the engine's rest parameter — which the cell below measures
+  // rather than asserts. Pinned to both answers, so whichever way the issue is settled this reds.
+  ["ruling 1c / issue 647: `len` of a program function", "log(len((x) => x));", {}, "logs [[2]]", "logs [[0]]"],
+  ["ruling 1c / issue 647: `len` of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, "logs [[2]]", "logs [[0]]"],
 ];
 
 {
@@ -326,6 +336,17 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
     });
   }
   console.log(`  (${DIVERGENT.length} declared divergence(s))`);
+
+  // WHY 647 IS A LEAK AND NOT A DISAGREEMENT ABOUT ARITY. Measured on the oracle: the walker answers
+  // 2 for a function of zero, one and three parameters alike, so it is reading its own wrapper and
+  // not the program's function; the engine's rest-parameter wrapper reads 0 the same way. The day
+  // the issue is settled, the cells above red — and this one says what the answer has to be about.
+  const arities: string[] = [];
+  for (const source of ["log(len(() => 1));", "log(len((x) => x));", "log(len((a, b, c) => 1));"]) {
+    const a = await arm("walker", source, {});
+    arities.push(a.error !== null ? a.error : j(a.logs));
+  }
+  ok("issue 647: neither arm's answer depends on the function's own arity", j(arities) === j([j([[2]]), j([[2]]), j([[2]])]), arities);
 }
 
 // ---- the step budget counts a different thing on each engine ------------------------------------
