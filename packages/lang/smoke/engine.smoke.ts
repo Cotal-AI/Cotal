@@ -20,15 +20,17 @@
 import { Journal, RunClock } from "../src/journal.js";
 import { KeyScope, programHashOf, stepKeyString } from "../src/keys.js";
 import { resolvePins } from "../src/pins.js";
-import { RuntimeFault } from "../src/errors.js";
+import { RuntimeFault, RunDivergence } from "../src/errors.js";
 import { Cancelled } from "../src/effects.js";
 import { LangErrors } from "../src/errors.js";
 import { SimHandler } from "../src/sim.js";
 import { arrayMethods, numberMethods, stringMethods } from "../src/library.js";
+import { parse } from "acorn";
+import { stripPositions } from "../src/interpret.js";
 import { BUILTINS } from "../src/primitives.js";
 import { Prng } from "../src/values.js";
-import { createCtx, createEngine, type EngineCtx, type EngineRun } from "../src/engine/ctx.js";
-import { runOnEngine } from "../src/engine/host.js";
+import { createCtx, createEngine, type EngineCtx, type EngineRun, type Site } from "../src/engine/ctx.js";
+import { runOnEngine, resumeOnEngine } from "../src/engine/host.js";
 import { runInWorker } from "../src/engine/worker.js";
 import { run as walkerRun } from "../src/interpret.js";
 import { EngineFrame, Signal, currentFrame, withFrame } from "../src/engine/frame.js";
@@ -706,17 +708,22 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   ok("and the ambient frame is what a framed call reads", (await h.inFrame(() => currentFrame())) === h.frame);
 }
 
-// ---- 10) the scope-openers refuse loudly until they are landed -----------------------------------
+// ---- 10) the scope-openers' emission contract ----------------------------------------------------
+//
+// `fanOut` and `conclave` take their body UNEVALUATED. The walker evaluates that argument INSIDE the
+// scope, after its entry has begun (measured; see `deferredBody`), so an emission that hands over an
+// already-evaluated body has journalled its effects in the wrong place and a resume would replay a
+// step the walker's run never recorded. The seam refuses rather than accepting the wrong shape.
 
 {
   const h = harness();
-  const e = await caught(() => h.inFrame(() => h.ctx.effect("parallel", [{}])));
-  ok(
-    "a concurrency combinator refuses rather than silently running sequentially",
-    codeOf(e) === "L1000" && (e as Error).message.includes("not landed yet"),
-    String(e),
-  );
-  ok("and no journal entry was written for it", h.run.journal.entries().length === 0, h.run.journal.entries().length);
+  const e = await caught(() => h.inFrame(() => h.ctx.effect("fanOut", [[], 5, h.ctx.born({ name: "f" })])));
+  ok("a scope body handed over already evaluated is refused", codeOf(e) === "L1000" && (e as Error).message.includes("UNEVALUATED"), String(e));
+  ok("and the refusal says what the order costs", (e as Error).message.includes("journalled its effects in the wrong place"), String(e).slice(0, 200));
+  // The entry HAS begun by then, and settles failed: the refusal happens inside the scope, which is
+  // exactly where the walker evaluates that argument.
+  const entries = h.run.journal.entries();
+  ok("the scope's entry was begun and settled failed, not skipped", entries.length === 1 && entries[0]?.kind === "fanOut" && entries[0]?.status === "failed", entries.map((x) => `${x.kind}/${x.status}`));
 }
 
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
@@ -1471,6 +1478,211 @@ await parallel({
     "and its journal is the first run's, entry for entry",
     JSON.stringify(back.entries) === JSON.stringify(recorded.entries),
     { first: recorded.entries.length, again: back.entries.length },
+  );
+}
+
+// ---- 17) the concurrency scopes -----------------------------------------------------------------
+//
+// The engine calls the SAME `performScope` and `runScope` the walker calls, with the same arguments
+// in the same order. So these cells are comparisons, not re-derivations: what they have to show is
+// that the two things this side owns - the calling convention and the missing AST - leave the
+// journal byte-identical.
+
+{
+  /**
+   * The call site's static payload, computed the way the emitter will compute it: the arm bodies
+   * with positions stripped, keyed by branch name. Parsed from the SOURCE here rather than written
+   * out by hand, because a hand-written copy of a stripped AST is a second answer to what the
+   * walker digests.
+   */
+  const siteFor = (source: string, combinator: string): Site | undefined => {
+    const program = parse(source, { ecmaVersion: "latest", sourceType: "module", allowAwaitOutsideFunction: true }) as unknown as Record<string, unknown>;
+    let arms: Record<string, unknown> | undefined;
+    const walk = (node: unknown): void => {
+      if (node === null || typeof node !== "object") return;
+      if (Array.isArray(node)) {
+        for (const c of node) walk(c);
+        return;
+      }
+      const n = node as Record<string, unknown>;
+      if (n.type === "CallExpression" && (n.callee as { name?: string } | undefined)?.name === combinator) {
+        const first = (n.arguments as unknown[])[0] as Record<string, unknown> | undefined;
+        if (first?.type === "ObjectExpression") {
+          const out: Record<string, unknown> = {};
+          for (const prop of first.properties as Record<string, unknown>[]) {
+            const key = prop.key as { name?: string; value?: string } | undefined;
+            const named = key?.name ?? key?.value;
+            if (named !== undefined) out[named] = stripPositions(prop.value);
+          }
+          arms = out;
+        }
+      }
+      for (const v of Object.values(n)) walk(v);
+    };
+    walk(program);
+    return arms === undefined ? undefined : { branchDigests: arms };
+  };
+
+  /** The site as the emitter writes it INTO the module: a literal, because the engine has no AST. */
+  const siteLiteral = (source: string, combinator: string): string => JSON.stringify(siteFor(source, combinator) ?? {});
+
+  /** One program on both engines, compared on what a run IS: its value, its log, and its journal. */
+  const both = async (
+    label: string,
+    source: string,
+    module: string,
+    script: ConstructorParameters<typeof SimHandler>[0] = {},
+  ): Promise<{ walker: Awaited<ReturnType<typeof walkerRun>>; engine: Awaited<ReturnType<typeof runOnEngine>> }> => {
+    const wLogs: unknown[][] = [];
+    const eLogs: unknown[][] = [];
+    const walker = await walkerRun(source, { runId: "scope-1", handler: new SimHandler(script), onLog: (l) => wLogs.push([...l.values]) });
+    const engine = await runOnEngine(source, module, {
+      runId: "scope-1",
+      handler: new SimHandler(script),
+      evaluate: plainly,
+      onLog: (l) => eLogs.push([...l.values]),
+    });
+    ok(`${label}: the journals are IDENTICAL, entry for entry`, JSON.stringify(walker.journal.entries()) === JSON.stringify(engine.journal.entries()), {
+      walker: walker.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+      engine: engine.journal.entries().map((e) => `${e.kind}:${e.name}#${e.occurrence}/${e.status}`),
+    });
+    ok(`${label}: and the scope was actually journalled`, engine.journal.entries().length > 1, engine.journal.entries().length);
+    ok(`${label}: the log is the same`, JSON.stringify(wLogs) === JSON.stringify(eLogs), { walker: wLogs, engine: eLogs });
+    return { walker, engine };
+  };
+
+  // ---- parallel ---------------------------------------------------------------------------------
+  const PARALLEL = `
+const r = await parallel({
+  a: async () => { await sleep("1s", { name: "s" }); return 1; },
+  b: async () => { await sleep("2s", { name: "t" }); return 2; },
+}, { name: "both" });
+log("a", r.a);
+`;
+  await both(
+    "parallel",
+    PARALLEL,
+    `(ctx) => async () => {
+      await ctx.fuel();
+      const r = await ctx.effect("parallel", [
+        ctx.born({
+          a: async () => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "s" })]); return 1; },
+          b: async () => { await ctx.fuel(); await ctx.effect("sleep", ["2s", ctx.born({ name: "t" })]); return 2; },
+        }),
+        ctx.born({ name: "both" }),
+      ]);
+      await ctx.free("log", ["a", ctx.get(r, "a")]);
+    }`,
+  );
+
+  // ---- race, and the digest the engine has no AST to compute --------------------------------------
+  const RACE = `
+const r = await race({
+  quick: async () => { await sleep("1s", { name: "q" }); return "quick"; },
+  slow: async () => { await sleep("9s", { name: "w" }); return "slow"; },
+}, { name: "first" });
+log("won", r.index);
+`;
+  const RACE_MODULE = `(ctx) => async () => {
+      await ctx.fuel();
+      const r = await ctx.effect("race", [
+        ctx.born({
+          quick: async () => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "q" })]); return "quick"; },
+          slow: async () => { await ctx.fuel(); await ctx.effect("sleep", ["9s", ctx.born({ name: "w" })]); return "slow"; },
+        }),
+        ctx.born({ name: "first" }),
+      ], ${siteLiteral(RACE, "race")});
+      await ctx.free("log", ["won", ctx.get(r, "index")]);
+    }`;
+  const raced = await both("race", RACE, RACE_MODULE);
+  const scopeEntry = raced.engine.journal.entries().find((e) => e.kind === "race");
+  ok("a settled race records a branchDigest over its unwalked arms", typeof scopeEntry?.branchDigest === "string", scopeEntry?.branchDigest);
+  ok(
+    "and it is the WALKER'S digest, computed from the site rather than from an AST",
+    scopeEntry?.branchDigest === raced.walker.journal.entries().find((e) => e.kind === "race")?.branchDigest,
+    { engine: scopeEntry?.branchDigest, walker: raced.walker.journal.entries().find((e) => e.kind === "race")?.branchDigest },
+  );
+
+  // THE DIGEST'S ONLY JOB, and it is asserted rather than assumed from the entry's presence: a
+  // settled race is delivered from its entry WITHOUT entering a branch, so an edit inside a losing
+  // arm reaches nothing that could notice it. The winner needs no digest - its arm is walked entry
+  // by entry and an edit there diverges at the step it broke, which is a better error than this one.
+  const EDITED = RACE.replace('return "slow";', 'return "slower, by a lot";');
+  const editedModule = RACE_MODULE.replace(siteLiteral(RACE, "race"), siteLiteral(EDITED, "race"));
+  ok("the edited arm really did change the site", editedModule !== RACE_MODULE);
+  const diverged = await caught(() =>
+    resumeOnEngine(RACE, editedModule, raced.engine.journal, {
+      runId: "scope-1",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+      pins: raced.engine.pins,
+    }),
+  );
+  ok("an edit inside a LOSING arm diverges on resume", diverged instanceof RunDivergence, String(diverged));
+  // The control: the same site resumes clean, so the cell above is grading the edit and not the
+  // resume itself.
+  const clean = await resumeOnEngine(RACE, RACE_MODULE, raced.engine.journal, {
+    runId: "scope-1",
+    handler: new SimHandler({}),
+    evaluate: plainly,
+    pins: raced.engine.pins,
+  });
+  ok("while the unedited race resumes clean", JSON.stringify(clean.journal.entries()) === JSON.stringify(raced.walker.journal.entries()));
+  // A RENAMED loser is an edit too: the site no longer carries that name, and the walker digests a
+  // name it cannot find as `null`, so the two answers differ.
+  const renamedModule = RACE_MODULE.replace(siteLiteral(RACE, "race"), siteLiteral(RACE.replace(/slow:/g, "sluggish:"), "race"));
+  const renamed = await caught(() =>
+    resumeOnEngine(RACE, renamedModule, raced.engine.journal, {
+      runId: "scope-1",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+      pins: raced.engine.pins,
+    }),
+  );
+  ok("a RENAMED losing arm diverges too", renamed instanceof RunDivergence, String(renamed));
+
+  // ---- fanOut ------------------------------------------------------------------------------------
+  const FANOUT = `
+const xs = [{ id: "a" }, { id: "b" }];
+const out = await fanOut(xs, async (item) => { await sleep("1s", { name: "each" }); return item.id; }, { name: "f", key: (i) => i.id });
+log("out", out);
+`;
+  await both(
+    "fanOut",
+    FANOUT,
+    `(ctx) => async () => {
+      await ctx.fuel();
+      const xs = ctx.born([ctx.born({ id: "a" }), ctx.born({ id: "b" })]);
+      const out = await ctx.effect("fanOut", [
+        xs,
+        // THE BODY, UNEVALUATED. See \`deferredBody\`: the walker evaluates this argument after the
+        // scope's entry has begun, so an already-evaluated one journals its effects in the wrong place.
+        async () => async (item) => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "each" })]); return ctx.get(item, "id"); },
+        ctx.born({ name: "f", key: (i) => ctx.get(i, "id") }),
+      ]);
+      await ctx.free("log", ["out", out]);
+    }`,
+  );
+
+  // ---- conclave ----------------------------------------------------------------------------------
+  const CONCLAVE = `
+const a = await spawn("a", { name: "hire" });
+const out = await conclave([a], async (room) => { await sleep("1s", { name: "in" }); return 1; }, { name: "c" });
+log("out", out);
+`;
+  await both(
+    "conclave",
+    CONCLAVE,
+    `(ctx) => async () => {
+      await ctx.fuel();
+      const a = await ctx.effect("spawn", ["a", ctx.born({ name: "hire" })]);
+      const out = await ctx.effect("conclave", [
+        ctx.born([a]),
+        async () => async (room) => { await ctx.fuel(); await ctx.effect("sleep", ["1s", ctx.born({ name: "in" })]); return 1; },
+        ctx.born({ name: "c" }),
+      ]);
+      await ctx.free("log", ["out", out]);
+    }`,
   );
 }
 

@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/engine.smoke.ts",
-  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
   "why": [
@@ -19,7 +19,14 @@
     "THE COLD-START CELL HAS NO MUTANT EITHER, and for the same kind of reason as the drift alarm above:",
     "it REPORTS the number in its own name and bounds it only loosely, because a tight bound on a shared",
     "machine is a flaky cell rather than a rule. What the worker must actually do is graded by the eleven",
-    "mutants below it, every one of which leaves a run that still answers."
+    "mutants below it, every one of which leaves a run that still answers.",
+    "",
+    "THE TWO DIVERGENCE CELLS IN THE SCOPE SECTION HAVE NO MUTANT HERE, and the reason is worth writing",
+    "down rather than leaving as a gap. `an edit inside a LOSING arm diverges on resume` grades the",
+    "COMPARISON, which lives in perform.ts and belongs to the shared machinery's own ledger. What this",
+    "file owns is that the digest handed to it is the walker's, and any mutation of that is caught one",
+    "cell earlier, as a journal difference on the live run - which is why both digest mutants below",
+    "name the journal cell rather than the divergence cell they would also break."
   ],
   "mutations": [
     {
@@ -491,6 +498,86 @@
       "completionMarker": "ok a run completes in its own locked-down thread",
       "cell": "and its log lines reached the host",
       "note": "`log` is a free builtin: it is not journalled, so a line that does not cross while the run is alive is a line nobody ever sees. The run still answers, still with the right journal and the right value."
+    },
+    {
+      "name": "an arm is called without being adapted to the scope machinery's convention",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (name !== \"parallel\" && name !== \"race\") return first;",
+      "replace": "    return first;",
+      "expectRed": "parallel: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok and its journal is the first run's, entry for entry",
+      "cell": "parallel: the journals are IDENTICAL, entry for entry",
+      "note": "The scope machinery calls an arm `(frame, args)`; the program's arms are its own closures. Unadapted, an arm still RUNS - it ignores the arguments it was handed - but it runs outside its branch frame, so every effect inside it is keyed under the scope's parent instead of under the branch. The value is right and the journal is a different run's."
+    },
+    {
+      "name": "a scope body handed over already evaluated is accepted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (typeof thunk !== \"function\") {",
+      "replace": "    if (false) {",
+      "expectRed": "a scope body handed over already evaluated is refused",
+      "completionMarker": "ok and the ambient frame is what a framed call reads",
+      "cell": "a scope body handed over already evaluated is refused",
+      "note": "The refusal is what stops a wrong emission from becoming a wrong journal quietly. Without it the seam calls whatever it was handed, and what a reader gets is a host TypeError from inside the scope machinery rather than a sentence saying which argument arrived in the wrong shape."
+    },
+    {
+      "name": "the scope body is not deferred at all",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    return asArm(await (thunk as () => unknown)());",
+      "replace": "    return asArm(thunk);",
+      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
+      "note": "Measured on the walker: `fanOut(xs, await choose(), bag)` journals `[fanOut, sleep]` and `fanOut(xs, fn, { key: await choose() })` journals `[sleep, fanOut]`. The body is evaluated INSIDE the scope and the bag before it, so the body arrives as a thunk and the seam is what calls it there."
+    },
+    {
+      "name": "fanOut's key function is not adapted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    setOwn(out, \"key\", asArm(key));",
+      "replace": "    setOwn(out, \"key\", key);",
+      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
+      "note": "`key` is called by the scope machinery too, and by the same convention as an arm. Unadapted it receives the FRAME where the program wrote its item, so a branch key is computed from the host's own object - and branch keys are journal namespaces, not decoration."
+    },
+    {
+      "name": "a settled race records no branchDigest",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (bodies === undefined) return undefined;",
+      "replace": "    return undefined;",
+      "expectRed": "race: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok parallel: the log is the same",
+      "cell": "race: the journals are IDENTICAL, entry for entry",
+      "note": "The engine has no AST, so the one journal field that is a function of the source arrives as the call site's static payload. Drop it and the entry is missing a field the walker's has, which is a journal difference before it is ever a divergence question."
+    },
+    {
+      "name": "the branch digest is over the arm NAMES and not their bodies",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          .map((n) => [n, Object.prototype.hasOwnProperty.call(bodies, n) ? bodies[n] : null]),",
+      "replace": "          .map((n) => [n, null]),",
+      "expectRed": "race: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok parallel: the log is the same",
+      "cell": "race: the journals are IDENTICAL, entry for entry",
+      "note": "A digest over the names alone is green for every edit anyone would make INSIDE a losing arm, which is the only thing it exists to catch. It is graded here as a journal difference because the digest is compared against the walker's own, byte for byte, on a race that settled."
+    },
+    {
+      "name": "a conclave's identity leaves out its members",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const subject = spec.hashesSubject",
+      "replace": "    const subject = false",
+      "expectRed": "conclave: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok fanOut: the log is the same",
+      "cell": "conclave: the journals are IDENTICAL, entry for entry",
+      "note": "A conclave is the one scope whose identity includes a SUBJECT: the members are what the sub-team IS. Without it, editing the member list resumes into a different room rather than diverging, and the entry's inputHash stops matching the walker's on the very first run."
+    },
+    {
+      "name": "the options bag is read at a fixed argument position",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const bag = args[spec.optionsAt];",
+      "replace": "    const bag = args[1];",
+      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
+      "note": "`parallel` and `race` take their bag second, `fanOut` and `conclave` third, and the position is declared in primitives.ts rather than remembered here. Read at a fixed position, a fanOut's bag is its body: the scope loses its name (so its step key changes) and its `key` function (so it refuses L3021)."
     }
   ]
 }
