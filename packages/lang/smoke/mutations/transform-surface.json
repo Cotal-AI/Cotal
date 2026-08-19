@@ -1,0 +1,78 @@
+{
+  "suite": "packages/lang/smoke/transform.smoke.ts",
+  "guard": "The emitted module is closed over the seam, routes each law through it, and carries the binding-depth rule the walker keeps at run time. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-transform",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/transform-surface.json",
+  "mutations": [
+    {
+      "name": "the context parameter takes a fixed name, so a program that declares it shadows the seam",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "return { ctx: free(\"__ctx\"), temp: prefix(\"__t\"), label: prefix(\"__l\") };",
+      "replace": "return { ctx: \"__ctx\", temp: prefix(\"__t\"), label: prefix(\"__l\") };",
+      "expectRed": "a program that declares `__ctx` does not get the context's name",
+      "completionMarker": "ok transform is a pure function of its source, byte for byte",
+      "cell": "a program that declares `__ctx` does not get the context's name",
+      "note": "The validator ADMITS a program-declared `__ctx` (measured at 9dc154f8), so a fixed name is not a naming preference: the program's binding shadows the endowment for the rest of its scope and every seam call in that region reaches a program value."
+    },
+    {
+      "name": "the cell rule never fires, so a binding written from a deeper function stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "if (b.funcId !== funcId && b.kind !== \"const\") b.cell = true;",
+      "replace": "if (false) b.cell = true;",
+      "expectRed": "a mutable binding written from a nested function is a born cell",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a mutable binding written from a nested function is a born cell",
+      "note": "L2032's binding half. Native bindings carry no depth, so without the cell the write from inside a concurrent branch is not refused anywhere - the shape scopes.smoke's fixture proves the validator cannot see."
+    },
+    {
+      "name": "the declaring identifier is not recorded, so no declaration can ever be a cell",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind));",
+      "replace": "        this.declare(scope, node.name as string, kind);",
+      "expectRed": "a mutable binding written from a nested function is a born cell",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a mutable binding written from a nested function is a born cell",
+      "note": "The subtler half of the same rule, and the defect this file actually had: the emitter asks 'is this a cell?' at the DECLARATION as well as at each use, and a declaration missing from the map answers no - so the cell is marked and then emitted as a plain binding."
+    },
+    {
+      "name": "an object literal's keys are emitted verbatim, so `__proto__` can reach a prototype again",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "`[${this.propertyKey(p)}]: ${this.expr(p.value as AnyNode)}`",
+      "replace": "`${this.propertyKey(p)}: ${this.expr(p.value as AnyNode)}`",
+      "expectRed": "an object literal's keys are emitted computed",
+      "completionMarker": "ok a const captured by a nested function is not a cell",
+      "cell": "an object literal's keys are emitted computed",
+      "note": "A literal `__proto__:` key sets a prototype in JavaScript and names an own field in this language. The validator refuses that spelling today (L1028, measured); the computed form means the emitted code cannot express the hazard whatever the validator does later."
+    },
+    {
+      "name": "a member read is emitted as a native index, so it reaches the host prototype",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
+      "replace": "      return `${obj}[${this.memberKey(node)}]`;",
+      "expectRed": "a member read is one get",
+      "completionMarker": "ok and every surfaced member carries its reason",
+      "cell": "a member read is one get",
+      "note": "The member law (L4014, L4020, the curated tables, no prototype reach) is the host's, and a native index is exactly the read the walker refuses to perform."
+    },
+    {
+      "name": "a `while` header stops charging fuel, so a pure loop cannot be bounded or cancelled",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return `${b}: for (;;) {\\n${this.fuel()}if (!(${test})) break ${b};\\n${c}: {\\n${body}}\\n}\\n`;",
+      "replace": "        return `${b}: for (;;) {\\nif (!(${test})) break ${b};\\n${c}: {\\n${body}}\\n}\\n`;",
+      "expectRed": "a loop header charges fuel",
+      "completionMarker": "ok and every surfaced member carries its reason",
+      "cell": "a loop header charges fuel",
+      "note": "The step check is the only cancellation point the engine has: no wall-clock timeout, no terminate. A loop that charges nothing is a run nothing can stop."
+    },
+    {
+      "name": "`undefined` is emitted as the global name, so the module is no longer closed",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "if (VALUE_NAMES.includes(name)) return VOID;",
+      "replace": "if (VALUE_NAMES.includes(name)) return \"undefined\";",
+      "expectRed": "the emitted module has no unbound reference: the undefined value",
+      "completionMarker": "ok and reaches no seam member outside the ruling: empty statement",
+      "cell": "the emitted module has no unbound reference: the undefined value",
+      "note": "Seam ruling 1: the host evaluates the module with ZERO endowments. `undefined` is a global binding, so spelling it is an unbound reference - one the compartment happens to satisfy today, which is why only a resolver over the emitted code can see it."
+    }
+  ]
+}
