@@ -822,7 +822,9 @@ export const cotal: Plugin = async () => {
           // then the first invocation adopts the same holder and the one-thread-per-holder refusal
           // fires. Measured: that turns a silent leak into a dead event plane. Serializing the whole
           // swap is what actually closes the window, because each swap then reads a holder that is
-          // already settled rather than one mid-retirement.
+          // installed and no longer being retired underneath it. INSTALLED, NOT NECESSARILY SETTLED:
+          // a swap awaits the holder it RETIRES, and the replacement's adopt below only enqueues its
+          // start, so the next swap can read a holder whose own start is still pending.
           const swap = swapChain.then(async () => {
             swapping = true;
             try {
