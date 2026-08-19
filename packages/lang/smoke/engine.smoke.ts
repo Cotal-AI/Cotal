@@ -564,10 +564,6 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
       [pushed, unshifted, spliced, joined, written].map((xs) => (h.ctx.get(xs, 0) === f ? "===" : "adapted")),
     );
 
-    // The second half of the invariant: it still CALLS. Before the fix this was
-    // `args is not iterable` - the stored walker view read its second argument as the argument list.
-    ok("and it still calls, in the program's own convention", (await h.ctx.call(pushed, 0, ["z"])) === "z");
-
     // THE ELEMENT DOOR. Classifying a member by what it answered rather than by its NAME made an
     // array element that happens to be a closure look like a curated method: measured, `fs[0]("a")`
     // answered the EngineFrame and the callback saw `EngineFrame` where it expected `"a"`.
@@ -580,6 +576,10 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
       seen.length === 1 && seen[0] === "a",
       seen.map((v) => (v === null || typeof v !== "object" ? String(v) : (v as object).constructor.name)),
     );
+
+    // The second half of the invariant: it still CALLS. Before the fix this was
+    // `args is not iterable` - the stored walker view read its second argument as the argument list.
+    ok("and it still calls, in the program's own convention", (await h.ctx.call(pushed, 0, ["z"])) === "z");
     return undefined;
   });
 }
@@ -690,75 +690,6 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     extra: found.filter((k) => !expected.includes(k)),
   });
   ok("and the probe found something to compare", found.length === 17, found.length);
-}
-
-// ---- 8c) the free VALUE constructors: the two pure primitives and the four events ----------------
-//
-// Design §3A: `channel`, `run`, `replied`, `message`, `idle` and `down` are free values, not
-// journalled effects, and `free()` serves them. They are the walker's own table (perform.ts) rather
-// than a second copy, and the cell that says so compares the SHAPES both engines produce, because a
-// fork here is a fork in what a handle or an event descriptor IS on the wire.
-
-{
-  const CONSTRUCTOR_SOURCE = `
-const c = channel("ops");
-const a = await spawn("builder", { name: "hire" });
-log("shapes", [c, run(), replied(a), message(c, { from: a, matches: "hi" }), idle(c, "5m"), down(a)]);
-`;
-  const CONSTRUCTOR_MODULE = `(ctx) => async () => {
-  await ctx.fuel();
-  const c = ctx.free("channel", ["ops"]);
-  const a = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
-  await ctx.free("log", ["shapes", ctx.born([
-    c,
-    ctx.free("run", []),
-    ctx.free("replied", [a]),
-    ctx.free("message", [c, ctx.born({ from: a, matches: "hi" })]),
-    ctx.free("idle", [c, "5m"]),
-    ctx.free("down", [a]),
-  ])]);
-}`;
-  const script = {};
-  const engineLogs: unknown[][] = [];
-  const walkerLogs: unknown[][] = [];
-  // The outcome is CAPTURED: a name `free()` does not serve throws L2001 out of the run, and a cell
-  // that let it through would kill the suite anonymously instead of failing by its own name.
-  let served: unknown;
-  try {
-    served = await runOnEngine(CONSTRUCTOR_SOURCE, CONSTRUCTOR_MODULE, {
-      runId: "free-1",
-      handler: new SimHandler(script),
-      evaluate: plainly,
-      onLog: (l) => engineLogs.push([...l.values]),
-    });
-  } catch (e) {
-    served = e;
-  }
-  const walker = await walkerRun(CONSTRUCTOR_SOURCE, {
-    runId: "free-1",
-    handler: new SimHandler(script),
-    onLog: (l) => walkerLogs.push([...l.values]),
-  });
-
-  ok("free() serves the pure primitives and the event constructors", engineLogs.length === 1, String(served));
-  const engine = served as Awaited<ReturnType<typeof runOnEngine>>;
-  ok("and every shape is the walker's, field for field", JSON.stringify(engineLogs) === JSON.stringify(walkerLogs), {
-    engine: engineLogs,
-    walker: walkerLogs,
-  });
-  ok(
-    "and there were six shapes to compare",
-    Array.isArray(engineLogs[0]?.[1]) && (engineLogs[0]?.[1] as unknown[]).length === 6,
-    engineLogs[0]?.[1],
-  );
-  ok("the journals stay identical across them", JSON.stringify(engine.journal.entries()) === JSON.stringify(walker.journal.entries()));
-  // A constructor is a VALUE, so reading one without calling it has to work as well.
-  const read = await runOnEngine("log(\"x\", 1);", `(ctx) => async () => { await ctx.fuel(); return typeof ctx.free("channel"); }`, {
-    runId: "free-2",
-    handler: new SimHandler({}),
-    evaluate: plainly,
-  });
-  ok("a constructor read as a VALUE is a function, not L2001", read.value === "function", read.value);
 }
 
 // ---- 9) a seam call with no frame fails loudly ---------------------------------------------------
@@ -1013,6 +944,76 @@ await sleep("1m", { name: "s3" });
   ok("the step count is NOT a member of the seam", !("steps" in (e.ctx as unknown as Record<string, unknown>)));
   ok("and it is not enumerable on the object the program holds", !Object.keys(e.ctx).includes("steps"));
   ok("but the host can read it", typeof e.steps() === "number");
+}
+
+
+// ---- 13) the free VALUE constructors: the two pure primitives and the four events ----------------
+//
+// Design §3A: `channel`, `run`, `replied`, `message`, `idle` and `down` are free values, not
+// journalled effects, and `free()` serves them. They are the walker's own table (perform.ts) rather
+// than a second copy, and the cell that says so compares the SHAPES both engines produce, because a
+// fork here is a fork in what a handle or an event descriptor IS on the wire.
+
+{
+  const CONSTRUCTOR_SOURCE = `
+const c = channel("ops");
+const a = await spawn("builder", { name: "hire" });
+log("shapes", [c, run(), replied(a), message(c, { from: a, matches: "hi" }), idle(c, "5m"), down(a)]);
+`;
+  const CONSTRUCTOR_MODULE = `(ctx) => async () => {
+  await ctx.fuel();
+  const c = ctx.free("channel", ["ops"]);
+  const a = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
+  await ctx.free("log", ["shapes", ctx.born([
+    c,
+    ctx.free("run", []),
+    ctx.free("replied", [a]),
+    ctx.free("message", [c, ctx.born({ from: a, matches: "hi" })]),
+    ctx.free("idle", [c, "5m"]),
+    ctx.free("down", [a]),
+  ])]);
+}`;
+  const script = {};
+  const engineLogs: unknown[][] = [];
+  const walkerLogs: unknown[][] = [];
+  // The outcome is CAPTURED: a name `free()` does not serve throws L2001 out of the run, and a cell
+  // that let it through would kill the suite anonymously instead of failing by its own name.
+  let served: unknown;
+  try {
+    served = await runOnEngine(CONSTRUCTOR_SOURCE, CONSTRUCTOR_MODULE, {
+      runId: "free-1",
+      handler: new SimHandler(script),
+      evaluate: plainly,
+      onLog: (l) => engineLogs.push([...l.values]),
+    });
+  } catch (e) {
+    served = e;
+  }
+  const walker = await walkerRun(CONSTRUCTOR_SOURCE, {
+    runId: "free-1",
+    handler: new SimHandler(script),
+    onLog: (l) => walkerLogs.push([...l.values]),
+  });
+
+  ok("free() serves the pure primitives and the event constructors", engineLogs.length === 1, String(served));
+  const engine = served as Awaited<ReturnType<typeof runOnEngine>>;
+  ok("and every shape is the walker's, field for field", JSON.stringify(engineLogs) === JSON.stringify(walkerLogs), {
+    engine: engineLogs,
+    walker: walkerLogs,
+  });
+  ok(
+    "and there were six shapes to compare",
+    Array.isArray(engineLogs[0]?.[1]) && (engineLogs[0]?.[1] as unknown[]).length === 6,
+    engineLogs[0]?.[1],
+  );
+  ok("the journals stay identical across them", JSON.stringify(engine.journal.entries()) === JSON.stringify(walker.journal.entries()));
+  // A constructor is a VALUE, so reading one without calling it has to work as well.
+  const read = await runOnEngine("log(\"x\", 1);", `(ctx) => async () => { await ctx.fuel(); return typeof ctx.free("channel"); }`, {
+    runId: "free-2",
+    handler: new SimHandler({}),
+    evaluate: plainly,
+  });
+  ok("a constructor read as a VALUE is a function, not L2001", read.value === "function", read.value);
 }
 
 console.log(`engine.smoke: ${pass} checks passed`);
