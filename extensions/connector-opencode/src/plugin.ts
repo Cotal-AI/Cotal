@@ -228,11 +228,13 @@ export const cotal: Plugin = async () => {
   let errorRetryMs = ERROR_RETRY_INITIAL_MS;
   let interruptIntent: { sessionID?: string; expires: number } | undefined;
   let stopping = false; // dispose/shutdown ran — stop waiting on anything that may never arrive
-  // The auto-submitted first turn (`cotal spawn --prompt`), handed over by the connector in the
+  // The auto-submitted boot turn (`cotal spawn --prompt`), handed over by the connector in the
   // child env. Undelivered, it HOLDS THE FLOOR in drive(): peer traffic that lands during boot stays
-  // buffered (completeTurn drives it when the boot turn ends), so the operator's prompt is genuinely
-  // this session's first turn rather than a batch that raced it. Cleared by the one drive that
-  // carries it, so no later readiness event can issue a second boot turn.
+  // buffered (completeTurn drives it when the boot turn ends), so the operator's prompt is the first
+  // CONNECTOR-SUBMITTED turn rather than a batch that raced it. It holds connector-driven traffic
+  // only. This flag is read in drive() and nowhere else, so a prompt submitted natively in the host
+  // does not consult it and can start a turn while the boot task is still waiting below. Cleared by
+  // the one drive that carries it, so no later readiness event can issue a second boot turn.
   let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
   /**
    * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
@@ -602,7 +604,7 @@ export const cotal: Plugin = async () => {
     // caller that reaches this line is refused by it. A prompt submitted natively in the host does
     // not route through `drive` at all; the fence note on the hook table below covers that path.
     if (stopping || driving || busy || swapping) return;
-    if (bootPrompt !== undefined) return; // the boot turn goes first; this batch waits in the inbox
+    if (bootPrompt !== undefined) return; // the boot turn leads the connector's own; this batch waits
     driving = true;
     try {
       const id = await ensureSession();
@@ -646,12 +648,20 @@ export const cotal: Plugin = async () => {
     }
   }
 
-  /** Submit the boot prompt as this session's FIRST turn — exactly one, ever. It waits for the
-   *  session to exist (there is nothing to prompt into before that) and for the mesh link to be up,
-   *  because that turn also orients the agent on the mesh and answers back there. `bootPrompt` is
-   *  cleared in the same synchronous step that drives it — nothing awaits in between — so a later
-   *  readiness event cannot issue a second boot turn, and the floor is released even when there is
-   *  no session to drive into. drive() itself never prompts into a running turn. */
+  /** Submit the boot prompt as the first CONNECTOR-SUBMITTED turn, and only ever one of those. It
+   *  waits for the session to exist (there is nothing to prompt into before that) and for the mesh
+   *  link to be up, because that turn also orients the agent on the mesh and answers back there.
+   *
+   *  THAT WAIT IS A WINDOW, and it is not closed here. A prompt submitted natively in the host
+   *  starts a turn without passing through drive(), which is the only reader of `bootPrompt`, so
+   *  such a turn can run ahead of this one. A reviewer reproduced that order live against this
+   *  plugin with the broker held down so the loop below parked. What this guard orders is the
+   *  connector's own submissions against each other, not the host's against the connector's.
+   *
+   *  `bootPrompt` is cleared in the same synchronous step that drives it, with nothing awaited in
+   *  between, so a later readiness event cannot issue a second boot turn, and the floor is released
+   *  even when there is no session to drive into. drive() itself never prompts into a running
+   *  turn. */
   void (async () => {
     if (bootPrompt === undefined) return;
     const id = await sessionReady;
