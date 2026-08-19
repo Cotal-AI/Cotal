@@ -383,10 +383,13 @@ function extractBackfillFunction(src: string, file: string): string | undefined 
   return found.length === 1 ? found[0] : undefined;
 }
 
-/** Executes an extracted async backfill function by NAME and returns the entry list it mutated.
+/** Executes an extracted async backfill function by its own CALL EXPRESSION and returns the entry
+ *  list it mutated. A call expression rather than a bare name because the two shipped surfaces do
+ *  not take the batch the same way: `app.js` fetches it inside `refresh()`, while `graph.js` seeds
+ *  from a batch handed in. Both are still the shipped function, driven.
  *  The stubs are deliberately inert: every one of them is a no-op or an empty collection, so the
  *  only thing that can put a channel on a message is the shipped code under test. */
-async function runBackfillFunction(code: string, fnName: string, file: string, entries: unknown[]) {
+async function runBackfillFunction(code: string, call: string, file: string, entries: unknown[]) {
   const json = (u: string): unknown =>
     u.includes("/api/activity") ? entries : u.includes("/api/membership") ? { members: [] } : [];
   const ctx: Record<string, unknown> = {
@@ -394,8 +397,9 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
     // trusting the body reads `r.ok`, and a response object without it is a stub that reports every
     // fetch as failed. That drives the refusal arm of a caller this suite is not testing.
     fetch: async (u: string) => ({ ok: true, json: async () => json(u) }),
+    __entries: entries,
     // app.js
-    refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {},
+    refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {}, setStale() {},
     roster: [], channels: null, dms: [], activity: [], agentSel: null, dmSel: null, selected: "*",
     // graph.js
     $: () => ({ textContent: "" }), ensureHub: () => ({}), updateRoster() {}, applyMembership() {},
@@ -414,6 +418,10 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
   };
   const c = createContext(ctx);
   runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });
+  // Keep-last-good + the refusal guard: both backfill paths read every source through it, so it is a
+  // collaborator here for the same reason the order machine is, and it is READ OFF DISK rather than
+  // stubbed so a change to what a refused read does cannot pass unnoticed.
+  runInContext(read("../src/web/snapshot.js"), c, { filename: "snapshot.js" });
   if (file.includes("app.js")) {
     // The single-flight state the shipped backfill reads. TAKEN FROM THE FILE, not restated here: one
     // bootstrap must pair with one settle, so coalescing overlapping callers is part of the backfill
@@ -423,7 +431,7 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
     assert.equal(decls.length, 2, "app.js must declare the single-flight state this harness runs");
     runInContext(decls.join("\n"), c, { filename: "app.js (state)" });
   }
-  runInContext(`${code}\n__p = ${fnName}();`, c, { filename: file });
+  runInContext(`${code}\n__p = ${call};`, c, { filename: file });
   await (ctx.__p as Promise<void>);
   // `entries` is returned rather than `ctx.activity` ON PURPOSE. In `app.js` the backfill assigns
   // to a page-global and the two are the same array; in `graph.js` `activity` is a LOCAL from a
@@ -538,7 +546,7 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
     file: "app.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "app.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "refresh", "app.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "refresh()", "app.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },
@@ -551,7 +559,7 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
     file: "graph.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "graph.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "load", "graph.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "seedActivity(__entries)", "graph.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },
@@ -596,7 +604,7 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
     file: "app.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "app.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "refresh", "app.js", [{ msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "refresh()", "app.js", [{ msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },
@@ -609,7 +617,7 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
     file: "graph.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "graph.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "load", "graph.js", [{ msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "seedActivity(__entries)", "graph.js", [{ msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },

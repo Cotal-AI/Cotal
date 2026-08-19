@@ -119,6 +119,19 @@ function setConn(live) {
   el.querySelector(".t").textContent = live ? "live" : "disconnected";
 }
 
+/** Say WHICH sources are showing their last good value, and why. Visible, not a console line: the
+ *  whole point of keeping the snapshot is that the reader knows they are looking at it. Cleared by
+ *  the next refresh in which everything landed, which is what recovery looks like from here. */
+function setStale(stale) {
+  const el = $("stale");
+  if (!el) return;
+  const label = window.COTAL_SNAPSHOT.staleLabel(stale);
+  el.hidden = !label;
+  if (!label) return;
+  el.querySelector(".t").textContent = label;
+  el.title = stale.map((s) => `${s.name}: ${s.reason}`).join("\n");
+}
+
 // ── Header: golden-signal tiles ───────────────────────────────────────────────
 // Fifth tile is last-heartbeat freshness (Presence.ts), NOT blocked-duration — we cannot know
 // how long someone has been waiting (no statusSince on the wire). Label it honestly.
@@ -886,53 +899,89 @@ async function refresh() {
   // empty, which is the machine's specified empty-history arm rather than a shortcut.
   let batch = [];
   try {
-    roster = await (await fetch("/api/roster")).json();
-    refreshDerived();
-    const list = await (await fetch("/api/channels")).json();
-    // L2 shape is flat {channel,messages,description?,replay,replayWindow?,deliveryClass}.
-    // Tolerate a nested-config server briefly (pre-restart) without re-deriving defaults.
-    channels = new Map(
-      list.map((c) => {
-        if (c.replay !== undefined || c.deliveryClass !== undefined || (c.description && !c.config))
-          return [c.channel, c];
-        const cfg = c.config || {};
-        return [
-          c.channel,
-          {
-            messages: c.messages,
-            description: cfg.description,
-            replay: cfg.replay,
-            replayWindow: cfg.replayWindow,
-            deliveryClass: cfg.deliveryClass,
-          },
-        ];
-      }),
-    );
-    dms = await (await fetch("/api/dms?limit=500")).json();
+    // ── A FAILED READ KEEPS WHAT IS ON SCREEN ─────────────────────────────────────────────────────
+    //
+    // This was a sequential chain of `(await fetch(u)).json()`, and both of its properties were
+    // wrong on a slow link. A 500 body is valid JSON and `fetch` does not reject on one, so the
+    // REFUSAL was assigned into `roster` / `channels` / `dms` as if it were the snapshot; and the
+    // first read that did throw skipped every read after it, so one slow route emptied the feed and
+    // left the rest of the page un-refreshed with nothing saying so. Measured against a broker
+    // behind a 160ms link: `/api/activity` 500 `{"error":"timeout"}` produced
+    // `Uncaught TypeError: activity is not iterable` fifteen times in twenty-five seconds.
+    //
+    // `refreshAll` reads all four concurrently, applies ONLY the ones that succeeded, and returns
+    // what did not land. `apply` is the only writer, so a refusal cannot reach page state at all.
+    const SNAP = window.COTAL_SNAPSHOT;
+    const stale = await SNAP.refreshAll([
+      {
+        name: "peers",
+        read: async () => SNAP.readJson(await fetch("/api/roster"), "peers"),
+        apply: (v) => { roster = v; refreshDerived(); },
+      },
+      {
+        name: "channels",
+        read: async () => SNAP.readJson(await fetch("/api/channels"), "channels"),
+        // L2 shape is flat {channel,messages,description?,replay,replayWindow?,deliveryClass}.
+        // Tolerate a nested-config server briefly (pre-restart) without re-deriving defaults.
+        apply: (list) => {
+          channels = new Map(
+            list.map((c) => {
+              if (c.replay !== undefined || c.deliveryClass !== undefined || (c.description && !c.config))
+                return [c.channel, c];
+              const cfg = c.config || {};
+              return [
+                c.channel,
+                {
+                  messages: c.messages,
+                  description: cfg.description,
+                  replay: cfg.replay,
+                  replayWindow: cfg.replayWindow,
+                  deliveryClass: cfg.deliveryClass,
+                },
+              ];
+            }),
+          );
+        },
+      },
+      {
+        name: "direct messages",
+        read: async () => SNAP.readJson(await fetch("/api/dms?limit=500"), "direct messages"),
+        apply: (v) => { dms = v; },
+      },
+      // The all-activity backfill is read here with the others rather than in the branch below, so a
+      // refusal on it is reported in the same place as the other three instead of being swallowed.
+      // It is only APPLIED when the reader is on all-activity; the other lenses settle on empty,
+      // which is the order machine's specified empty-history arm rather than a shortcut.
+      {
+        name: "activity",
+        read: async () =>
+          agentSel || dmSel || selected !== "*"
+            ? []
+            : SNAP.readJson(await fetch(`/api/activity?limit=200`), "activity"),
+        apply: (v) => { batch = v; },
+      },
+    ]);
+    setStale(stale);
+    // The order machine's own failure arm keeps its own note: a refused history read is what makes a
+    // backfill incomplete, and the notice that draws it is about ordering. The other three sources
+    // are carried by the stale pill and are not backfill failures, so they are not reported as ones.
+    const backfillRefused = stale.find((s) => s.name === "activity");
+    if (backfillRefused) noteOrder([{ type: "backfill-failed", reason: backfillRefused.reason }]);
     renderSidebarNav();
-    if (agentSel) {
-      renderCenter();
-    } else if (dmSel) {
+    // THE BOUNDARY MUST PASS EVEN WHEN THE FETCH DOES NOT, and this is not a soft failure mode
+    // invented here. `pending` is drained only by the settle, so a rejected request used to mean the
+    // machine never settled and every frame held during it stayed invisible for the life of the page,
+    // with nothing on screen saying so. That is strictly worse than what this code replaced, where a
+    // failed fetch simply left the live arrivals in place.
+    //
+    // A failed history read IS an empty history batch: the machine already specifies that case, and
+    // specifies that the baseline then comes from the earliest BUFFERED frame. So the boundary is
+    // settled on empty rather than skipped, and the refusal is SURFACED (as a stale mark above and a
+    // note here) instead of being swallowed. Reporting it is what keeps this from being a silent degrade.
+    if (agentSel || dmSel) {
       renderCenter();
     } else if (selected !== "*") {
       select(selected);
-    } else {
-      // THE BOUNDARY MUST PASS EVEN WHEN THE FETCH DOES NOT, and this is not a soft failure mode
-      // invented here. `pending` is drained only by the settle, so a rejected request used to mean the
-      // machine never settled and every frame held during it stayed invisible for the life of the page,
-      // with nothing on screen saying so. That is strictly worse than what this code replaced, where a
-      // failed fetch simply left the live arrivals in place.
-      //
-      // A failed history read IS an empty history batch: the machine already specifies that case, and
-      // specifies that the baseline then comes from the earliest BUFFERED frame. So the boundary is
-      // settled on empty rather than skipped, and the failure is SURFACED as a note instead of being
-      // swallowed. Reporting it is what keeps this from being a silent degrade.
-      try {
-        batch = await (await fetch("/api/activity?limit=200")).json();
-      } catch (err) {
-        batch = [];
-        noteOrder([{ type: "backfill-failed", reason: err && err.message ? err.message : String(err) }]);
-      }
     }
   } finally {
     // ── THE SETTLE, ON EVERY EXIT PATH ────────────────────────────────────────────────────────────

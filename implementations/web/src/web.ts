@@ -120,6 +120,11 @@ export const PAGE: Record<string, { path: string; type: string }> = {
   // has no merge to order; giving it the machine anyway would imply an ordering guarantee on a
   // surface where nothing consumes one.
   "/event-order.js": { path: join(here, "web/event-order.js"), type: jsType },
+  // Keep-last-good + the refusal guard, shared by BOTH pages so they cannot disagree about what a
+  // failed poll does to what is already on screen. Served to `/` and `/graph` alike: the wipe was
+  // measured on the graph page and the corrupted feed on the console page, and one page keeping its
+  // snapshot while the other drops it is the state this file exists to prevent.
+  "/snapshot.js": { path: join(here, "web/snapshot.js"), type: jsType },
   "/md.js": { path: join(here, "web/md.js"), type: jsType },
   "/app.js": { path: join(here, "web/app.js"), type: jsType },
   "/graph": { path: join(here, "web/graph.html"), type: "text/html; charset=utf-8" },

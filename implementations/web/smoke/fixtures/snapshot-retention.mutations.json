@@ -1,0 +1,54 @@
+{
+  "command": "pnpm smoke:web-snapshot",
+  "mutations": [
+    {
+      "name": "W1 the state-retention is reverted: a refused read applies anyway, with an empty value standing in for the snapshot it could not fetch, which is the wipe the issue reports written as a fallback",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "        stale.push({ name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        continue;\n",
+      "replace": "        stale.push({ name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n        sources[i].apply([]);\n        continue;\n",
+      "expectRed": "2.1 a refused source's apply is NEVER called"
+    },
+    {
+      "name": "W2 the refusal stops being reported, so the page keeps its last good snapshot and never says so: the reader is shown stale data as though it were current",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "        stale.push({ name: sources[i].name, reason: e && e.message ? e.message : String(e) });\n",
+      "replace": "",
+      "expectRed": "2.3 the refusal is REPORTED, by source name"
+    },
+    {
+      "name": "W3 the status gate is dropped, so a 500 body parses and is handed back AS DATA, which is exactly how the shipped pages stored a refusal as a snapshot",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "    if (!res.ok) {",
+      "replace": "    if (false) {",
+      "expectRed": "1.1 a 500 whose body is valid JSON is a REFUSAL, not a value"
+    },
+    {
+      "name": "W4 the refusal loses the server's own error text, so the one line naming WHY the refresh did not land says only that something returned a status",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "        if (body && typeof body.error === \"string\") detail = `: ${body.error}`;",
+      "replace": "        if (false) detail = `: ${body.error}`;",
+      "expectRed": "1.3 and carries the server's own error text"
+    },
+    {
+      "name": "W5 the reads go back to running one after another, so on a slow link every source waits for the slowest and a page with four sources pays four link costs to draw one screen",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "    const settled = await Promise.all(\n      sources.map(async (s) => {\n        try {\n          return { value: await s.read() };\n        } catch (e) {\n          return { error: e };\n        }\n      }),\n    );",
+      "replace": "    const settled = [];\n    for (const s of sources) {\n      try {\n        settled.push({ value: await s.read() });\n      } catch (e) {\n        settled.push({ error: e });\n      }\n    }",
+      "expectRed": "2.11 all three reads are in flight together"
+    },
+    {
+      "name": "W6 the graph page goes back to gating its live feed behind a clean boot, so one refused read leaves it permanently disconnected with nothing on it - the measured wipe",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "  load().catch((err) => console.error(err)).then(connect);",
+      "replace": "  load().then(connect).catch((err) => { console.error(err); setConn(false); });",
+      "expectRed": "3.11 the graph page connects whatever the boot reported"
+    },
+    {
+      "name": "W7 the stale marker stops naming anything, so the page keeps its data and the reader is never told which half of it is old",
+      "file": "implementations/web/src/web/snapshot.js",
+      "find": "    return `stale: ${stale.map((s) => s.name).join(\", \")}`;",
+      "replace": "    return \"stale\";",
+      "expectRed": "3.2 a stale set NAMES its sources"
+    }
+  ]
+}

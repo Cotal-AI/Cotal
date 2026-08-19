@@ -402,7 +402,7 @@ console.log("event-order smoke");
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
   const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml"]);
+  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml", "setStale"]);
   // The single-flight state the shipped functions read. TAKEN FROM THE FILE, not restated: a
   // hand-written `let refreshing = null` here would let the harness keep passing after the real
   // declaration changed, and a bootstrap that coalesces is the whole of blocker 1.
@@ -416,7 +416,7 @@ console.log("event-order smoke");
         if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
   });
   // Pinned first: a short extraction would make every cell below vacuous.
-  ok("12.1 all five shipped functions are extractable", fns.length === 5, fns.length);
+  ok("12.1 all six shipped functions are extractable", fns.length === 6, fns.length);
   ok("12.1b and the in-flight state they coalesce on", state.length === 2, state);
 
   type Ctx = Record<string, unknown> & {
@@ -437,6 +437,9 @@ console.log("event-order smoke");
         if (isBackfill && mode === "reject") throw new Error("network down");
         return { ok: true, json: async () => [] };
       },
+      // The stale pill's element, so the shipped `setStale` runs rather than being stubbed out: it is
+      // on the same path as the note this section measures and a missing stub would throw there.
+      $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => ({ textContent: "" }) } : null),
       refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, renderChannels() {},
       renderDMs() {}, renderRoster() {}, renderRail() {}, rosterRows: () => [],
       roster: [], channels: new Map(), dms: [], activity: [] as unknown[], agentSel: null,
@@ -448,6 +451,10 @@ console.log("event-order smoke");
     };
     const c = createContext(ctx);
     runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
+    // Keep-last-good + the refusal guard, READ OFF DISK like the order machine beside it: `refresh()`
+    // reads every source through it, so a restatement here would let these cells pass against a
+    // version that no longer ships.
+    runInContext(readFileSync(join(webSrc, "snapshot.js"), "utf8"), c, { filename: "snapshot.js" });
     runInContext("feedOrder = window.COTAL_EVENT_ORDER.create(); channelOrder = window.COTAL_EVENT_ORDER.create();", c);
     runInContext([...state, ...fns].join("\n"), c, { filename: "app.js" });
     (ctx as Record<string, unknown>).__ctx = c;

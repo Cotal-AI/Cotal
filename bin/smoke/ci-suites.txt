@@ -304,3 +304,4 @@ smoke:agui-map
 smoke:attach-reconnect
 smoke:agui-multi-session
 smoke:subject-frontier
+smoke:web-snapshot

@@ -217,12 +217,15 @@ check("an unreadable feed reports unreadable EVEN THOUGH it is also unavailable 
 //
 // A cell that stops one step short of the surface under test is the same defect as the one being
 // fixed: it reports success for a path it never reached.
-const bootFetch = liftStmt(graphJs, 'fetch("/api/membership")', ",");
+// The membership SOURCE as the boot now declares it: `{ name, read, apply }`, where `read` carries
+// the status gate (`readJson`) that used to be spelled inline here. Lifting the whole source rather
+// than the bare fetch keeps this suite on the shipped path after the boot became a source table.
+const bootFetch = lift(graphJs, '{ name: "membership"');
 // The dispatch is an if/else PAIR across two lines, so it is matched as a pair. Lifting to the
 // first newline silently captured the `if` alone — the 200 cases then rendered nothing at all and
 // the empty-snapshot cell reddened. That is what an over-narrow extraction looks like when a cell
 // is watching; the same mistake in a cell nobody checks is a green that measures half a statement.
-const bootDispatch = /if \(membership && membership\.unreadable\) membershipUnreadable\(\);\s*\n\s*else applyMembership\(membership\);/.exec(graphJs)?.[0] ?? null;
+const bootDispatch = /if \(stale\.some\(\(s\) => s\.name === "membership"\)\) membershipUnreadable\(\);/.exec(graphJs)?.[0] ?? null;
 const ssePush = liftStmt(webTs, "void ep.readMembership()", ";", 0);
 const sseSeed = liftStmt(webTs, "void ep.readMembership()", ";", 1);
 
@@ -233,6 +236,8 @@ check("the SSE seed statement was lifted out of web.ts (a DIFFERENT one from the
   Boolean(sseSeed) && sseSeed !== ssePush);
 check("CONTROL: liftStmt on an absent anchor returns null (its miss is reachable)",
   liftStmt(graphJs, 'fetch("/api/not-a-route")', ",") === null);
+check("CONTROL: lift on an absent source name returns null (its miss is reachable too)",
+  lift(graphJs, '{ name: "not-a-source"') === null);
 
 /** Drive the SHIPPED boot fetch against a response of our choosing, then the SHIPPED dispatch, then
  *  the SHIPPED pill — the whole browser path, end to end, with nothing hand-seeded. */
@@ -260,9 +265,14 @@ const bootPill = async (fetchImpl: () => Promise<{ ok: boolean; json: () => unkn
     },
     out: undefined,
   };
+  ctx.window = {};
   const ctxRef = createContext(ctx);
+  runInContext(readFileSync(fileURLToPath(new URL("../src/web/snapshot.js", import.meta.url)), "utf8"), ctxRef, { filename: "snapshot.js" });
   runInContext(`${pill}\n${lift(graphJs, "function membershipUnreadable()")}`, ctxRef, { filename: "graph.js" });
-  runInContext(`(async () => { const membership = await (${bootFetch}); ${bootDispatch} })()`, ctxRef, { filename: "graph.js (boot)" })
+  // The SHIPPED source, run through the SHIPPED `refreshAll`: a read that refuses leaves `apply`
+  // uncalled and lands in `stale`, and the dispatch below reads `stale`. Driving the source without
+  // `refreshAll` would test a fetch and not the retention rule the dispatch depends on.
+  runInContext(`(async () => { const SNAP = window.COTAL_SNAPSHOT; const stale = await SNAP.refreshAll([${bootFetch}]); ${bootDispatch} })()`, ctxRef, { filename: "graph.js (boot)" })
     ;
   await new Promise((r) => setImmediate(r));
   return text;
