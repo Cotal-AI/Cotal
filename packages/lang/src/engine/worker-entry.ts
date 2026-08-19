@@ -119,18 +119,30 @@ async function run(): Promise<WorkerRunResult> {
   };
 }
 
-run().then(
-  (result) => port.postMessage({ kind: "result", result }),
-  (e: unknown) => {
-    const err = e as { code?: string; name?: string; message?: string };
-    port.postMessage({
-      kind: "result",
-      result: {
-        ok: false,
-        ...(typeof err?.code === "string" ? { code: err.code } : {}),
-        name: typeof err?.name === "string" ? err.name : "Error",
-        message: typeof err?.message === "string" ? err.message : String(e),
-      } satisfies WorkerRunResult,
-    });
-  },
-);
+/** The answer a thread owes when it cannot give the one it was asked for. */
+const answerWith = (e: unknown): void => {
+  const err = e as { code?: string; name?: string; message?: string };
+  port.postMessage({
+    kind: "result",
+    result: {
+      ok: false,
+      ...(typeof err?.code === "string" ? { code: err.code } : {}),
+      name: typeof err?.name === "string" ? err.name : "Error",
+      message: typeof err?.message === "string" ? err.message : String(e),
+    } satisfies WorkerRunResult,
+  });
+};
+
+// `.catch` AFTER `.then(f, g)`, AND THAT IS THE WHOLE POINT: `g` is `f`'s SIBLING, not its handler,
+// so a throw inside `f` was not caught by it. The result post is the throw that matters — it
+// structured-clones the whole journal — and when it threw, this thread died on an unhandled
+// rejection and exited 0 without answering. The host could then say only "exited before the run
+// answered", which is the wrong cause every time, and MEASURED: a handler binding a function
+// produced exactly that, a DataCloneError naming a host algorithm reported as a silent exit.
+//
+// UNREACHABLE TODAY, ON PURPOSE, and said here rather than left for a reader to assume. Every value
+// that crosses back is fenced: `value` by `assertCrossable` above, `external` and `error.detail` by
+// the guards in perform.ts, entries' `result` at settle, and `pins`/`programHash`/`steps` are
+// primitives. That fence is by ENUMERATION, so it holds until a field is added to the answer and
+// nobody checks it — and this line is what makes that day LOUD instead of silent.
+run().then((result) => port.postMessage({ kind: "result", result }), answerWith).catch(answerWith);
