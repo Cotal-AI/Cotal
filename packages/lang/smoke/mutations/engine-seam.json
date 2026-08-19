@@ -773,7 +773,7 @@
       "expectRed": "and it never presents as a module-resolution failure",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
       "cell": "and it never presents as a module-resolution failure",
-      "note": "Keeps both the version it found and the floor, so the cell above it stays green, and puts back the one thing this whole change removed: a sub-floor run presenting as node failing to resolve a file that is right there. That was the developer-visible symptom on node 22, and the panel asked for a cell that says it can never come back."
+      "note": "Keeps both the version it found and the floor, so the cell above it stays green, and puts back the one thing this whole change removed: a sub-floor run presenting as node failing to resolve a file that is right there. That was the developer-visible symptom on node 22, and the cell exists to say it can never come back."
     },
     {
       "name": "the thenable gate runs ahead of the member rule",
@@ -823,7 +823,7 @@
       "expectRed": "an empty record and one carrying a closure, which a shallow signature could not",
       "completionMarker": "ok and the two infinities, which it draws alike as well",
       "cell": "an empty record and one carrying a closure, which a shallow signature could not",
-      "note": "`assertNoCode` has TWO dependents now and this grades the predicate itself, which is why it moved twice. It was aimed at the worker leg, then at the engine's log sink when the fold moved the rule there (src/engine/ctx.ts became its only caller), and the rendering remedy then made the shape signature's `carriesCode` catch the SAME predicate on purpose - so that the signature and the log rule cannot drift apart. The cost of that choice is this mutant's aim: measured at 7f2cd1a2 it reds in section 15b, upstream of section 20b, because a shape control asks the predicate a question before any log line does. Re-aimed at the cell that actually reds first, and the log rule keeps a mutant of its own on the sink in ctx.ts, which nothing shadows. Marker is the control immediately above."
+      "note": "`assertNoCode` has TWO dependents now and this grades the predicate itself, which is why it moved twice. It was aimed at the worker leg, then at the engine's log sink when the rule moved there (src/engine/ctx.ts became its only caller), and the rendering remedy then made the shape signature's `carriesCode` catch the SAME predicate on purpose - so that the signature and the log rule cannot drift apart. The cost of that choice is this mutant's aim: measured at 7f2cd1a2 it reds in section 15b, upstream of section 20b, because a shape control asks the predicate a question before any log line does. Re-aimed at the cell that actually reds first, and the log rule keeps a mutant of its own on the sink in ctx.ts, which nothing shadows. Marker is the control immediately above."
     },
     {
       "name": "the engine's log sink stops asking whether a value carries code",

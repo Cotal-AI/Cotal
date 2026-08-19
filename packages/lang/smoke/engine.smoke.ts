@@ -177,7 +177,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
 // it lands on whichever cell crosses first. If that cell awaits its run into an assertion, the
 // refusal leaves the block and kills the file: the suite exits non-zero having named nothing, and
 // every boundary-class mutant grades as "the process died somewhere" instead of "red, and named".
-// That is not hypothetical - it cost a fold round, from a cell inserted four sections above the one
+// That is not hypothetical - it happened once, from a cell inserted four sections above the one
 // that used to be first, and a crash cannot say which cell it belonged to.
 //
 // So the first crossing is THIS one, captured rather than awaited into a cell, and section 23
@@ -2700,7 +2700,7 @@ let n = 1;
 {
   // AND THE FILE'S OWN SHAPE: the first BOUNDARY CROSSING must still be the guarded one in section 0,
   // compared by OFFSET in this file's source, so a crossing inserted above it reds here rather than
-  // at a fold.
+  // when the ledger runs.
   //
   // THE NEEDLE IS BUILT AT RUN TIME so this check's own source does not contain the string it looks
   // for - otherwise the first match would be this line and the audit would grade itself.

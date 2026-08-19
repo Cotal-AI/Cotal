@@ -21,7 +21,7 @@
       "replace": "  \"suite\": \"implementations/runtime/smoke/journal-store.smoke.ts\",",
       "expectRed": "the cited-cells file names this suite, so it is this file's seam and not another's",
       "cell": "the cited-cells file names this suite, so it is this file's seam and not another's",
-      "note": "The artefact is shared with another package, so it can be edited by a lane that does not run this suite. Without this cell a seam file re-pointed at another suite would be read here anyway and its list checked against the wrong run's cells - green, and about the wrong file."
+      "note": "The artefact is shared with another package, so it can be edited by someone who does not run this suite. Without this cell a seam file re-pointed at another suite would be read here anyway and its list checked against the wrong run's cells - green, and about the wrong file."
     }
   ],
   "why": [

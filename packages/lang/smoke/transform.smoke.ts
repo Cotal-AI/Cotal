@@ -725,7 +725,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
  *
  * A mutation config's `expectRed` is matched as a SUBSTRING of the run's output, which fails toward
  * confidence in three different ways and did: a sentence that no longer exists after a cell is
- * renamed grades WRONG-RED at fold time rather than at authoring time (one of mine did, in the very
+ * renamed grades WRONG-RED at run time rather than at authoring time (one of mine did, in the very
  * commit that argued anchors must identify one thing); a sentence that is a PREFIX of a sibling
  * cell can report a kill off the wrong one (one of mine matched three); and a sentence that is not
  * a cell at all but a THROW MESSAGE grades a crash as a kill (one of mine did, for as long as it
@@ -792,7 +792,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // an EARLIER cell's name is satisfied by a run that stopped at that earlier one: the guard weakens
   // from "reached the cell I named" to "reached whichever cell shares its wording", and a death in
   // between is graded rather than reported. That is not hypothetical: it was live in the sibling
-  // seam config this week, with every verdict it produced still correct, which is how an ambiguous
+  // seam config itself, with every verdict it produced still correct, which is how an ambiguous
   // instrument survives being read. The other half fails the opposite way: a marker AT or AFTER its
   // own aim cannot print on a kill at all, so a textbook kill grades INCONCLUSIVE (measured here at
   // 0b7db8b0). Cells are checked in the order they printed, which is the only order that answers

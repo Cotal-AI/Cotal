@@ -12,7 +12,7 @@
       "expectRed": "the walker that is current replays it: same entries, same log lines, no dispatch",
       "completionMarker": "ok the checked-in recording is a language version 1 record with journalled effects",
       "cell": "the walker that is current replays it: same entries, same log lines, no dispatch",
-      "note": "This is the exact shape that landed at 59b5d6bd and was caught by the panel: correct for the engine, retroactive on every v1 record whose program logs a builtin. Measured then: the recording failed L4016 one line after its first recorded sleep."
+      "note": "This is the exact shape that landed at 59b5d6bd and was caught in review: correct for the engine, retroactive on every v1 record whose program logs a builtin. Measured then: the recording failed L4016 one line after its first recorded sleep."
     },
     {
       "name": "code is dropped from the trace on the replay path, and the rendering cannot see it",

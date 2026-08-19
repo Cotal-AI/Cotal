@@ -1,8 +1,8 @@
 /**
- * The primary gate of the engine wave: the same program, through both engines, one journal.
+ * The primary gate of the compiled engine: the same program, through both engines, one journal.
  *
  * `surface.smoke` holds what the emitted module IS and `engine.smoke` holds what the host's seam
- * DOES. Neither can answer the question this wave exists to answer, which is whether the second
+ * DOES. Neither can answer the question this suite exists to answer, which is whether the second
  * engine is the same engine: a transform can emit a closed module that reaches every ruled member
  * and still walk a program in a different order, and order is exactly what a step key records. So
  * each program here runs on the walker and on the engine with nothing between them, and the arms
@@ -138,12 +138,12 @@ const versionOf = { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VER
  *
  * `JSON.stringify` draws `undefined`, `null`, a FUNCTION, NaN and both infinities all as `null`, so
  * a comparison over the rendering answers "identical" for five different facts, including the one
- * this wave cares about most, a live closure handed to a host where the other arm handed absence.
+ * this suite cares about most, a live closure handed to a host where the other arm handed absence.
  * Measured, not reasoned: `log((x) => x)` and `log(o.b)` both render `[[null]]` on the walker.
  *
  * Five decisions here, each on purpose, and the fourth and fifth came from the engine host after it
  * ran the first spelling against the pairs it has to separate. `null` is NAMED rather than left as
- * "object", because undefined-versus-null is the distinction this wave leans on hardest (it is why
+ * "object", because undefined-versus-null is the distinction the engine leans on hardest (it is why
  * `get`'s cell test is `hasOwn` and not truthiness). NaN and the infinities are named for the same
  * reason they are the problem: JSON draws them as `null` too. NEGATIVE ZERO is named, because JSON
  * draws it as `0` and `0 / -1` is an ordinary program. A container that CARRIES CODE anywhere
@@ -1359,7 +1359,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // without a second file asserting the same law twice.
   //
   // The citation is CHECKED rather than written down. A row list in a comment is a promise that goes
-  // stale the first time a cell is renamed, and this wave has spent the week deleting checks that
+  // stale the first time a cell is renamed, and an unchecked list is one more check that
   // could not fail. So each row names the exact sentence that carries it, this suite proves its own
   // rows printed, and the driver rows are looked up in the runtime suite's source. That does couple
   // the two files: renaming a cell there reds this cell here. Deliberately: an index whose entries
@@ -1567,7 +1567,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
  *
  * `expectRed` is matched as a SUBSTRING of the run's output, which fails toward confidence three
  * ways and did, all three in these two configs: a sentence left behind by a renamed cell grades
- * WRONG-RED at fold time; a sentence that is a PREFIX of a sibling can report a kill off the wrong
+ * WRONG-RED at run time; a sentence that is a PREFIX of a sibling can report a kill off the wrong
  * cell; and a sentence that is a THROW MESSAGE rather than a cell grades a crash as a kill. Exactly
  * one printed cell per aim catches all three. Cells are recorded whether they passed or FAILED,
  * because this suite counts rather than exits, and an aim naming a cell that fails is still an aim

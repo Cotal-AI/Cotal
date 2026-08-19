@@ -324,14 +324,14 @@
       "note": "Measured rather than aimed at the cell that reads best: the READ program's declaration is the first one emitted, and its cell already pins the three-argument spelling, so it is what reds. The rule is the same one either way - the write that ENDS a dead zone can never be the write that refuses for it."
     },
     {
-      "name": "a cell is renamed and its aim is left behind, which is the fault that reached a fold",
+      "name": "a cell is renamed and its aim is left behind, which is the fault that reached a ledger run",
       "file": "packages/lang/smoke/transform.smoke.ts",
       "find": "  [\"a member read is one get\", \"const o = { a: 1 }; log(o.a);\", { fuel: 1, born: 1, get: 1, free: 1 }],",
       "replace": "  [\"a member read is one fetch\", \"const o = { a: 1 }; log(o.a);\", { fuel: 1, born: 1, get: 1, free: 1 }],",
       "completionMarker": "ok and no declared range is wider than the emission that justifies it",
       "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
       "cell": "every mutation's expectRed names exactly one cell this suite printed",
-      "note": "The exact fault that reached a fold: a rename leaves a config aim pointing at a sentence nothing prints, and nothing notices until the ledger runs and reports WRONG-RED. A corpus row's name IS a cell's name here, and renaming one breaks NO assertion by itself - the audit is the only thing in the file that can see it - so this mutant is the whole evidence that the audit works rather than merely runs. The rename REPLACES a word rather than appending one, and that is the whole difference between a kill and a survivor: the audit matches expectRed as a substring, so `... get, renamed` still contains `... get` and the stale aim keeps matching. Measured as a SURVIVOR in that spelling before this one."
+      "note": "The exact fault that reached a ledger run: a rename leaves a config aim pointing at a sentence nothing prints, and nothing notices until the ledger runs and reports WRONG-RED. A corpus row's name IS a cell's name here, and renaming one breaks NO assertion by itself - the audit is the only thing in the file that can see it - so this mutant is the whole evidence that the audit works rather than merely runs. The rename REPLACES a word rather than appending one, and that is the whole difference between a kill and a survivor: the audit matches expectRed as a substring, so `... get, renamed` still contains `... get` and the stale aim keeps matching. Measured as a SURVIVOR in that spelling before this one."
     },
     {
       "name": "a transform is run above the guard, so the file's first one is unguarded again",

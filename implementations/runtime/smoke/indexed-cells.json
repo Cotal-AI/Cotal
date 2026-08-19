@@ -1,16 +1,16 @@
 {
   "suite": "implementations/runtime/smoke/run-driver.smoke.ts",
-  "what": "The cells of the suite above that another package's index cites. A SEAM BETWEEN TWO LANES, and a data file rather than a list inside either suite because neither lane should be scraping structure out of the other's source.",
+  "what": "The cells of the suite above that another package's index cites. A SEAM BETWEEN TWO PACKAGES, and a data file rather than a list inside either suite because neither package should be scraping structure out of the other's source.",
   "readBy": [
     "implementations/runtime/smoke/run-driver.smoke.ts -- asserts every sentence here is a cell THAT RUN EXECUTED, exactly once. That is the half source text cannot answer: `c` is silent on success, so a cell commented out or left dead behind a condition keeps its sentence in the file while the claim stops being made.",
     "packages/lang/smoke/differential.smoke.ts -- asserts SET EQUALITY, both directions, between its version-split matrix's driver rows and this list. Containment either way alone leaves a hole, and the direction the runtime suite cannot see is a row added to that matrix whose sentence never reached this file."
   ],
   "why": [
-    "MEASURED, from both lanes independently: with one cited cell commented out, a source-text",
+    "MEASURED, on both sides independently: with one cited cell commented out, a source-text",
     "containment check still passes -- grep finds the sentence TWICE, because the commented-out line",
     "still carries it -- and the language package's index printed `every one resolved by name` about a",
     "cell that no longer ran. Neither cell above can be satisfied by a quotation.",
-    "OWNED BY THE RUNTIME LANE, because these are its cells' names and it is the lane that renames",
+    "OWNED BY THE RUNTIME PACKAGE, because these are its cells' names and it is the package that renames",
     "them. A rename lands here in the same commit or the suite that owns the rename reds first."
   ],
   "cells": [
