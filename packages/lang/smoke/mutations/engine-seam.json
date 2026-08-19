@@ -311,11 +311,11 @@
       "name": "a soft cancellation can never be escalated to the cut",
       "file": "packages/lang/src/engine/frame.ts",
       "find": "    const escalated = cut && !this.cutPure;",
-      "replace": "    const escalated = false;",
+      "replace": "    const escalated = first && cut && !this.cutPure;",
       "expectRed": "and the ESCALATION reaches an already-cancelled child",
       "completionMarker": "ok softly, when the parent cancelled softly",
       "cell": "and the ESCALATION reaches an already-cancelled child",
-      "note": "The walker re-decides the cut when a cancelled arm's own clock lands past the frontier - measured there as an infinite pure tail burning the whole step budget and killing a run whose race had already settled ok, while a resume of the same journal returned the winner. Without the escalation the engine cannot re-decide it either."
+      "note": "The walker re-decides the cut when a cancelled arm's own clock lands past the frontier - measured there as an infinite pure tail burning the whole step budget and killing a run whose race had already settled ok, while a resume of the same journal returned the winner. Without the escalation the engine cannot re-decide it either. The mutant is conditioned on `first` on purpose: dropping the escalation outright also breaks the FIRST cut, so it reddened the yield-boundary cell four sections earlier and graded a rule it was not aimed at. Conditioned, it leaves a fresh cut working and removes only the escalation of a signal already cancelled softly."
     },
     {
       "name": "a later cancellation overwrites the reason the branch was cancelled for",
