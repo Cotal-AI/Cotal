@@ -117,7 +117,7 @@ const HANDWRITTEN = eventChannel({ owner: "local", actor: "someone_elses_seat" }
   // that matters is that there is exactly one place the subject is decided. The value cell below would
   // pass a clone that returns the right string for `ollie`; only this fails the moment the assignment
   // is replaced by a re-implementation.
-  check("and the declared channel IS core's own derivation, not a re-implementation, so no clone can pass the value cell below",
+  check("and the declared channel IS core's own derivation, not a re-implementation: a clone that passes the value cell below still fails here",
     opencodeConnector.eventChannel === eventChannel);
   // BY VALUE, not by existence. A method that exists is another predicate proved against itself: it
   // says nothing about whether the channel the manager mints the grant for and the subject the
