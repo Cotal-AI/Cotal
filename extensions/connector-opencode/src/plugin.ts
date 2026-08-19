@@ -17,6 +17,20 @@
  *
  * Identity comes from COTAL_* env (the plugin runs in the opencode process and inherits it).
  * No identity → inert, so an operator's own `opencode` never joins as a stray peer.
+ *
+ * WHAT THIS CONNECTOR GATES, AND WHAT IT DOES NOT. Every guard below sits on the connector's own
+ * submission path: `drive` is where this connector starts a turn, and `swapping`, `stopping`,
+ * `busy` and `bootPrompt` decide whether IT submits one. The host's own prompt path is a different
+ * road. A human typing in the attached TUI, or an API caller hitting the server directly, reaches
+ * `chat.message` as a notification the connector cannot refuse: its hooks return `Promise<void>`
+ * and influence the host by MUTATING the output object it is handed, and `chat.message`'s output
+ * names no cancel and no skip. So a natively submitted prompt starts a model turn whether or not
+ * this connector is stopping, cutting over, busy, or still holding the boot floor.
+ *
+ * Read every ordering and precedence claim in this file with that scope: they are claims about
+ * connector-submitted turns against each other, not about the host's turns. Where a specific
+ * comment says "connector-submitted" it is inheriting this paragraph, not adding a new caveat.
+ * Refusing or deferring native submission is separate work, tracked in #687.
  */
 import { loadAgentFile, type PresenceStatus } from "@cotal-ai/core";
 import {
