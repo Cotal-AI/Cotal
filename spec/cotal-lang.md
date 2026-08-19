@@ -299,14 +299,22 @@ that wants concurrency says so with `parallel` or `fanOut` (§7).
 
 `f` in `map`, `filter`, `find`, `some`, `every` receives `(item, index)`. `sort` returns a new
 array ordered by a **total order** (§5.3) over `keyFn(item, index)` when given, else over the
-items; a returned array or record is a fresh value the calling frame owns. `log` is not journalled
-and MUST NOT influence control flow: it exists for a human reading the trace, and each line carries
-the scope path it was written from.
+items; a returned array or record is a fresh value the calling frame owns. `log` is not journalled,
+and a `log` that succeeds MUST NOT influence control flow: it exists for a human reading the trace,
+and each line carries the scope path it was written from. A `log` that is *refused* is a refusal
+like any other, which under version `2` is a case a program can meet: uncaught it ends the run, and
+caught it skips the rest of its `try`. Under version `1` no `log` refuses, so the question does not
+arise there.
 
-Under language version `2`, `log` is **data**: a value that cannot cross an effect boundary cannot
-be logged either, and a logged function is refused with L4016 (§8.4). Version `1` prints what it is
-given. This is one of the differences a version exists to separate, and it is why a log line written
-by one engine is not a log line the other would have written.
+Under language version `2`, `log` is **data**, and the rule is about code rather than about
+crossing: a function anywhere inside a logged value is refused with L4016 (§8.4), naming the value
+and the path, whether it arrives as the argument itself, inside a record, or as a namespace.
+Everything else a program can build reaches the trace as it is, `undefined` and the non-finite
+numbers included, because the trace is not the journal and a human wants to see them. This is
+deliberately **not** the effect-crossing rule of §4.4, which refuses those same values and which
+`json.stringify` does apply. Version `1` prints what it is given. This is one of the differences a
+version exists to separate, and it is why a log line written by one engine is not a log line the
+other would have written.
 
 ### 5.2 Methods
 
