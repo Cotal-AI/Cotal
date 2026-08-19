@@ -763,11 +763,21 @@ const reachedKinds = new Set<string>();
     }
   };
 
+  // A RED HERE HAS THREE SHAPES AND ONLY ONE OF THEM IS THE GOOD NEWS, so the cell says which is
+  // which rather than leaving the next reader to infer it from two words. Measured on a prototype
+  // of the guard before it landed: the refusing shape is what a working guard looks like, and it
+  // refuses BEFORE the write — the entry keeps the earlier good bind and the bad one never lands.
   const [wn, en] = [await externalOf("walker"), await externalOf("engine")];
+  const shapeOfRed =
+    typeof wn === "string" && typeof en === "string"
+      ? "the guard landed and refuses at the bind: retire this block per the recipe, and rewrite the two sentences that call `external` unguarded"
+      : wn === undefined && en === undefined
+        ? "NOT the guard working: nothing carried the value at all. Either this probe stopped binding — check that first, it is the cheaper fault and it has its own mutation — or the bind DROPPED the value silently, which is worse than no guard. Either way, do not retire this block"
+        : "the two arms answered differently on a path they share, which neither a guard nor its absence explains. A finding: stop and measure before touching anything";
   ok("a NaN still reaches a journal entry through `bind`, on both arms, because nothing checks that path", Number.isNaN(wn) && Number.isNaN(en), {
     walker: String(wn),
     engine: String(en),
-    ifThisRed: "the bind guard landed: retire this block and rewrite the two sentences that call `external` unguarded",
+    ifThisRed: shapeOfRed,
   });
   // AND IT IS THE SHARED PATH RATHER THAN AN ENGINE DIVERGENCE, which is why the gate's own
   // two-arm comparison can never be the thing that catches it: both arms answer the same.
