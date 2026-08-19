@@ -670,8 +670,10 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         // or behind the clock are ordered by timestamp and move the mark, and items ahead of it are
         // handed over once, tracked by id, and never move it. The ahead lane needs no gap rule for the
         // same reason it needs no mark, since each of its items is accounted for on its own.
+        // Ties break by receive key (#624): an empty wire id cannot order two distinct id-less
+        // recall items, while a minted key can, and a minted key never equals a real wire id.
         const byTsThenId = (a: InboxItem, b: InboxItem): number =>
-          a.ts !== b.ts ? a.ts - b.ts : a.id < b.id ? -1 : a.id > b.id ? 1 : 0;
+          a.ts !== b.ts ? a.ts - b.ts : a.recvKey < b.recvKey ? -1 : a.recvKey > b.recvKey ? 1 : 0;
         const clocked: InboxItem[] = [];
         const aheadFresh: InboxItem[] = [];
         const aheadWithheld: InboxItem[] = [];
@@ -682,11 +684,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
             // that was ahead of it. It was handed over by id while it was ahead, and the mark never
             // moved for it, so the mark alone would offer it a second time the moment it decays into
             // this lane. The record it was handed over under is what closes that.
-            if (agent.recallAheadSeen(i.id)) continue;
-            if (afterRecallMark({ ts: i.ts, id: i.id }, agent.recallCursor)) clocked.push(i);
+            if (agent.recallAheadSeen(i.recvKey)) continue;
+            if (afterRecallMark({ ts: i.ts, id: i.recvKey }, agent.recallCursor)) clocked.push(i);
             continue;
           }
-          if (agent.recallAheadSeen(i.id)) continue;
+          if (agent.recallAheadSeen(i.recvKey)) continue;
           // Never show what cannot be recorded: an unrecorded item comes back on every call forever.
           if (aheadRoom <= 0) aheadWithheld.push(i);
           else {
@@ -697,7 +699,7 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
         clocked.sort(byTsThenId);
         aheadFresh.sort(byTsThenId);
         const fresh = [...clocked, ...aheadFresh];
-        const aheadIds = new Set(aheadFresh.map((i) => i.id));
+        const aheadIds = new Set(aheadFresh.map((i) => i.recvKey));
         const warning = [droppedNote(recall.droppedChannels), aheadNote(aheadWithheld)]
           .filter(Boolean)
           .join(" ");
@@ -733,11 +735,11 @@ export function cotalToolSpecs(config: AgentConfig, source = "connector"): Cotal
           // of it IS an unbroken prefix: the last recall item shown is the end of that prefix, and
           // the mark is exactly it. A walk over the prefix would compute the same value, which is why
           // the mutation for it survived and the code went rather than the test being weakened.
-          const shownRecall = all.filter((i) => !bufferedIds.has(i.id));
-          for (const i of shownRecall) if (aheadIds.has(i.id)) agent.noteRecalledAhead(i.id);
+          const shownRecall = all.filter((i) => !bufferedIds.has(i.recvKey));
+          for (const i of shownRecall) if (aheadIds.has(i.recvKey)) agent.noteRecalledAhead(i.recvKey);
           const shownClocked = shownRecall.filter((i) => !aheadIds.has(i.id));
           const last = shownClocked[shownClocked.length - 1];
-          if (last) agent.noteRecalled({ ts: last.ts, id: last.id });
+          if (last) agent.noteRecalled({ ts: last.ts, id: last.recvKey });
           void stuck;
         }
         return ok(text);

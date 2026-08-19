@@ -512,3 +512,4 @@ smoke:jcode-retry-policy
 # cannot see the exit must say so rather than print a fabricated code 0.
 smoke:seat-exit-cause
 smoke:empty-id-ingest
+smoke:hermes-empty-id

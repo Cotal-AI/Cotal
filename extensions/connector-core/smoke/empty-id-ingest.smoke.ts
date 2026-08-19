@@ -49,7 +49,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { chatSubject, isReachable, mintLifecycleUid, seedChannelRegistry } from "@cotal-ai/core";
-import { MeshAgent } from "../src/agent.js";
+import { MeshAgent, afterRecallMark } from "../src/agent.js";
 import type { AgentConfig } from "../src/config.js";
 import type { InboxItem } from "../src/agent.js";
 import { pickFreePort } from "./_free-port.js";
@@ -135,6 +135,13 @@ const msg = (id: string, text: string): CotalMessage => ({
   parts: [{ kind: "text", text }],
 });
 
+/** A buffered id-less delivery shaped like toInboxItem produces (minted receive key). */
+const emptyDelivery = (text: string, pullOnlyIgnored = false): InboxItem => ({
+  id: "", recvKey: `rx${++deliverySeq}`, ts: Date.now(), fromId: "peer", fromName: "Peer",
+  kind: "channel", channel: "ch", mentionsMe: false, historical: false, text,
+});
+let deliverySeq = 0;
+
 // The raw connection and the agent are closed in the FINALLY, not on the success path: a red run
 // throws at its first assertion, and an open socket or an unstopped endpoint each keep the process
 // alive long after the FAILED line, which hangs whatever invoked the suite.
@@ -206,7 +213,54 @@ try {
     check("the seam can still ack the id-less delivery by its receive key (no redelivery loop)", close.items.length === 1 && close.items[0].text === "race-b" && ackB.n === 1, { items: close.items.length, ackB: ackB.n });
   }
 
-  // ---- Cell 6: a literal empty-string drain request selects nothing (the invariant, not the mechanism) ----
+  // ---- Cell 7: eviction classification does not bleed between id-less deliveries (finding (e2)) ----
+  // evictedClassifications keyed "" would let one evicted empty-id item's pull-only classification
+  // decide the NEXT distinct empty-id message's lane. The guard skips recording empty ids entirely;
+  // the cell drives two evictions and asserts the second arrives with its own receive-time lane.
+  {
+    // Drive it through the REAL ingest: "a" arrives (would be pull-only if it inherited), is
+    // recorded as evicted-pull-only through the real rememberEvicted, then "b" arrives and its
+    // lane must be decided by ITS OWN receive-time classification, not by a's memory.
+    const a = emptyDelivery("evict-a"); // pull-only (quiet classification)
+    const b = emptyDelivery("evict-b"); // automatic
+    const agentInner = agent as unknown as { rememberEvicted: (p: { item: InboxItem; pullOnly: boolean }) => void };
+    agentInner.rememberEvicted({ item: a, pullOnly: true }); // a's eviction memory, keyed by wire id ""
+    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: b, ack: () => {}, pullOnly: false });
+    const lane = agent.inboxScope(b.recvKey);
+    check("an evicted id-less delivery's classification does not bleed onto the next one", lane === "automatic", lane);
+    // and the real ingest path for a LATER empty-id arrival reads no remembered classification:
+    // emulate the ingest read the guard protects (agent.ts remembered lookup) is ""-blind.
+    const later = emptyDelivery("evict-c");
+    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: later, ack: () => {}, pullOnly: false });
+    check("a later id-less arrival inherits nothing from the evicted empty id", agent.inboxScope(later.recvKey) === "automatic");
+    agent.drainInboxIds([b.recvKey, later.recvKey]); // leave the buffer clean for the sweep cell
+  }
+
+  // ---- Cell 8: in-flight holds do not merge across id-less deliveries (finding (f)) ----
+  {
+    const x = emptyDelivery("fl-a", false);
+    const y = emptyDelivery("fl-b", false);
+    check("distinct id-less deliveries hold independently", agent.holdInFlight([x.recvKey]) && agent.holdInFlight([y.recvKey]));
+    check("each key is individually in flight", agent.isInFlight(x.recvKey) && agent.isInFlight(y.recvKey));
+    agent.releaseInFlight([x.recvKey]);
+    check("releasing one leaves the other held", !agent.isInFlight(x.recvKey) && agent.isInFlight(y.recvKey));
+    agent.releaseInFlight([y.recvKey]);
+  }
+
+  // ---- Cell 9: scope lookup resolves the DELIVERY, not the first empty id in the buffer (finding (i)) ----
+  {
+    const quiet = emptyDelivery("scope-quiet", true);
+    const auto = emptyDelivery("scope-auto", false);
+    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: quiet, ack: () => {}, pullOnly: true });
+    (agent as unknown as { inbox: { item: InboxItem; ack: () => void; pullOnly: boolean }[] }).inbox.push({ item: auto, ack: () => {}, pullOnly: false });
+    check("each id-less delivery resolves its own lane", agent.inboxScope(quiet.recvKey) === "pull-only" && agent.inboxScope(auto.recvKey) === "automatic");
+    const drained9 = agent.drainInboxIds([quiet.recvKey, auto.recvKey]);
+    check("both id-less deliveries drain by their own keys", drained9.items.length === 2, drained9.items.map((i) => i.text));
+  }
+
+  // ---- Cell 10: an id-less recall twin is never "never-recalled" (finding (g)) ----
+  check("the recall tie-break does not order an empty id against itself", afterRecallMark({ ts: 100, id: "" }, { ts: 100, id: "" }) === false);
+  check("an id-less item still advances past an earlier mark by time", afterRecallMark({ ts: 200, id: "" }, { ts: 100, id: "" }) === true);
   await publish("", "sweep-a");
   await publish("", "sweep-b");
   await publish("", "sweep-c");

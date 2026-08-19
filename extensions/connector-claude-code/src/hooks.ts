@@ -144,9 +144,10 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
    *  the message), because the label is a courtesy and the message is the product. */
   const unconfirmed = new Set<string>();
 
-  /** Flag ids whose delivery this process could not confirm, so a re-surface is labelled a possible
-   *  repeat. Past the cap the labels go, never the messages: an unlabelled repeat is cosmetic, a
-   *  dropped message is not. */
+  /** Flag deliveries whose confirmation this process could not obtain (keyed by receive key, #624:
+   *  an id-less item's wire id is "", so raw-id keying would label EVERY later id-less message a
+   *  repeat), so a re-surface is labelled a possible repeat. Past the cap the labels go, never the
+   *  messages: an unlabelled repeat is cosmetic, a dropped message is not. */
   const markUnconfirmed = (ids: readonly string[]): void => {
     if (unconfirmed.size + ids.length <= REPEAT_LABEL_CAP) for (const id of ids) unconfirmed.add(id);
     else unconfirmed.clear();

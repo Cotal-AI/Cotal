@@ -82,9 +82,12 @@ class CotalAdapter(BasePlatformAdapter):
         do NOT relax it to ack-on-queue (a mesh message that never reaches the model must redeliver
         after a crash). Until proven, this acks on the inject coroutine completing without error.
         """
-        mid = msg.get("id")
-        if mid and not fut.cancelled() and fut.exception() is None:
-            self._client.delivered(mid)
+        recv_key = msg.get("recvKey")
+        if recv_key and not fut.cancelled() and fut.exception() is None:
+            # Address the bridge by the per-delivery receive key (#624): the wire id of an id-less
+            # message is "", which the truthiness check below would silently never deliver-ack, and
+            # the bridge's own guard would then never clear its in-flight slot.
+            self._client.delivered(recv_key)
 
     async def _inject(self, msg: dict) -> None:
         kind = msg.get("kind")

@@ -116,6 +116,11 @@ export interface RecallMark {
 
 /** Total order on {@link RecallMark}: by time, then by id, so items sharing a millisecond still queue. */
 export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
+  // #624: an empty id breaks no tie. Two distinct id-less recall items sharing a millisecond are
+  // unordered against each other, so the comparison falls back to time alone for them: the mark
+  // still advances past the pair only when the clock does, and neither is silently never-recalled
+  // by losing an equality comparison to the other's empty string.
+  if (a.id === "" || b.id === "") return a.ts > b.ts;
   return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;
 }
 
@@ -411,7 +416,7 @@ export class MeshAgent extends EventEmitter {
         delivery.ack();
         return;
       }
-      const remembered = this.evictedClassifications.get(item.id);
+      const remembered = item.id === "" ? undefined : this.evictedClassifications.get(item.id); // #624: an empty id never carries a remembered classification
       if (remembered) this.evictedClassifications.delete(item.id);
       const snapshottedPullOnly = !item.mentionsMe && (remembered?.pullOnly ?? cm === "quiet");
       if (cm === "quiet" || snapshottedPullOnly) this.excludeFromFocus(item);
@@ -602,6 +607,11 @@ export class MeshAgent extends EventEmitter {
    *  valve free to ack them. Declining to surface costs a deferral: the messages stay buffered and go
    *  out on a later frame, once a verdict releases capacity. */
   holdInFlight(ids: readonly string[]): boolean {
+    // #624: the keys here are RECEIVE keys. An id-less delivery's wire id is "", so raw-id keying
+    // merged the counts of DISTINCT empty-id deliveries, and the eviction valve's in-flight check
+    // then deferred acking an evicted id-less item while any other id-less batch was held:
+    // cross-delivery interference in the safe direction, but interference. Receive keys are unique
+    // per delivery, so each is protected exactly for the frames holding it.
     let fresh = 0;
     for (const id of ids) if (!this.inFlightIds.has(id)) fresh++;
     if (this.inFlightIds.size + fresh > MAX_INBOX * 2) return false;

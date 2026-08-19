@@ -1,6 +1,6 @@
 {
   "suite": "extensions/connector-core/smoke/empty-id-ingest.smoke.ts",
-  "guard": "an empty message id is never a dedup key at ingest and never a selectable address at the drain seam: two distinct id-less messages are both delivered (a third still delivers after a drain), the framed race (later arrival after the snapshot, before the verdict) is neither drained nor acked and a drained id-less delivery commits by its receive key, while real-id coalescing is unchanged",
+  "guard": "an empty message id is never a dedup key and never a delivery address: two distinct id-less messages are both delivered, the framed race (later arrival after the snapshot, before the verdict) is neither drained nor acked, an id-less delivery commits by its receive key at the seam, eviction classification and in-flight holds do not bleed across id-less deliveries, and real-id coalescing is unchanged",
   "command": "pnpm smoke:empty-id-ingest",
   "completionMarker": "EMPTY-ID INGEST SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/empty-id-ingest.json",
@@ -38,6 +38,9 @@
     "One further residual is named in the PR body rather than here: Plane-3 durable fan-out derives",
     "its publish msgID from msg.id, so distinct empty-id messages can publish-dedupe inside the",
     "broker's duplicate window on a durable channel before this receiver ever sees them. It is its",
+    "K6 and K7 are the lane findings folded from the round-2 lists: the eviction",
+    "classification memory (K6) and the recall tie-break (K7), both keyed on the raw",
+    "empty id in ways that let one id-less delivery's state decide another's.",
     "own issue; the receiver guarantee here stops at what this layer can see."
   ],
   "mutations": [
@@ -85,6 +88,24 @@
       "expectRed": "the same REAL id twice still collapses to one entry",
       "cell": "the same REAL id twice still collapses to one entry",
       "note": "The bars cut both ways: the fix must not weaken dedup for real ids. Disable the key entirely and every empty-id cell still passes while the live/durable coalescing the transition window depends on is gone; the real-id cell is the one that notices."
+    },
+    {
+      "name": "K6 the eviction classification memory keys on the empty id again",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "      const remembered = item.id === \"\" ? undefined : this.evictedClassifications.get(item.id); // #624: an empty id never carries a remembered classification",
+      "replace": "      const remembered = this.evictedClassifications.get(item.id);",
+      "expectRed": "an evicted id-less delivery's classification does not bleed onto the next one",
+      "cell": "an evicted id-less delivery's classification does not bleed onto the next one",
+      "note": "Finding (e2): with the write side also restored (rememberEvicted recording \"\"), one evicted id-less pull-only item's classification decides the next distinct id-less arrival's lane. The cell pushes a pull-only eviction memory through the real rememberEvicted and asserts the next automatic id-less delivery is still automatic."
+    },
+    {
+      "name": "K7 the recall tie-break orders empty ids against each other",
+      "file": "extensions/connector-core/src/agent.ts",
+      "find": "  if (a.id === \"\" || b.id === \"\") return a.ts > b.ts;",
+      "replace": "",
+      "expectRed": "the recall tie-break does not order an empty id against itself",
+      "cell": "the recall tie-break does not order an empty id against itself",
+      "note": "Finding (g): the (ts,id) comparator on two id-less items sharing a millisecond resolved by the id, so the second was silently never recalled. The guard returns time-only for empty ids; removing it makes an empty id compare equal-and-not-greater against another empty id, and the twin strand returns."
     }
   ]
 }
