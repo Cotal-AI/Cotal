@@ -176,6 +176,7 @@ try {
   const marker = join(dir, "coop-read-finished");
   const trigger = join(dir, "coop-start-drain");
   const violation = join(dir, "coop-turn-in-cutover");
+  const markerQueued = join(dir, "coop-queued-swap-ran");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -186,6 +187,7 @@ try {
       COOP_MARKER: marker,
       COOP_TRIGGER: trigger,
       COOP_VIOLATION: violation,
+      COOP_MARKER_QUEUED: markerQueued,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -238,6 +240,11 @@ try {
 
   // The other half of the same window. The drain covers the event plane; this covers turns.
   check("no turn was started while the cutover was open", !existsSync(violation), { violation });
+
+  // The case the running-drain cell cannot reach. A swap queued behind the one in flight has not
+  // begun when the stop arrives, so the holder join does not cover it and only joining the chain
+  // does. Without this, removing the chain join alone stays green.
+  check("a swap still QUEUED at the stop was allowed to run before exit", existsSync(markerQueued), { markerQueued });
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);

@@ -27,6 +27,11 @@ let draining = false;
 // not installed yet, so the probe records the violation where the parent can see it.
 let inCutover = false;
 const violation = process.env.COOP_VIOLATION?.trim() || undefined;
+// The SECOND drain, belonging to a swap that was still queued when the stop arrived. It is
+// marked separately because it is a different case from the first: the holder join covers work
+// already running, and only the chain join covers a swap that has not begun.
+const marker2 = process.env.COOP_MARKER_QUEUED?.trim() || undefined;
+let drainReads = 0;
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== auth) {
     res.writeHead(401).end();
@@ -42,7 +47,9 @@ const oc = createServer((req, res) => {
   // fresh adopt at bind time and slowing it would only delay setup.
   if (req.method === "GET" && /^\/session\/[^/]+\/message$/.test(req.url ?? "")) {
     const answer = (): void => {
-      if (marker && draining) writeFileSync(marker, "the drain's read completed\n");
+      if (draining) drainReads += 1;
+      if (marker && draining && drainReads === 1) writeFileSync(marker, "the running drain's read completed\n");
+      if (marker2 && draining && drainReads === 2) writeFileSync(marker2, "the queued swap's drain ran\n");
       inCutover = false;
       res.writeHead(200, { "content-type": "application/json" }).end("[]");
     };
@@ -87,6 +94,10 @@ if (marker) {
     while (trigger && !existsSync(trigger)) await new Promise((r) => setTimeout(r, 25).unref?.());
     draining = true;
     void fire({ type: "session.created", properties: { info: { id: "ses_next" } } });
+    // Queued BEHIND the one above, which is the whole point: when the stop lands, this swap has not
+    // started, so only a teardown that joins the CHAIN will let it run. Joining the holder alone
+    // covers the drain already in flight and leaves this one abandoned.
+    void fire({ type: "session.created", properties: { info: { id: "ses_third" } } });
   })();
 }
 

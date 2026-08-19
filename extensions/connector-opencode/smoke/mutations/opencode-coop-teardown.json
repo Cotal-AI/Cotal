@@ -10,12 +10,10 @@
     "manager's stop ran a separate routine that exited without joining, so the claim was false exactly",
     "where it mattered. Both ways out now call one bounded teardown.",
     "",
-    "C1 REMOVES BOTH JOINS RATHER THAN ONE, and that is a statement about what this grades. The two",
-    "cover different cases: the holder join covers work already running, and the swap-chain join covers",
-    "a swap that is queued but has not begun. This cell exercises the first, so removing the chain join",
-    "alone leaves the holder join to catch it and the suite stays green. Removing either one",
-    "individually is therefore NOT graded here; what is graded is that the teardown joins the event",
-    "work at all. The queued-but-not-started case has no cell."
+    "THE TWO JOINS COVER DIFFERENT CASES AND ARE GRADED SEPARATELY. The holder join covers event work",
+    "already running; the chain join covers a swap queued but not yet begun. C1 removes both and grades",
+    "that the teardown joins anything at all. C3 removes only the chain join, which the running case",
+    "cannot detect because the holder join catches it, and is reddened by the queued case instead."
   ],
   "mutations": [
     {
@@ -31,6 +29,13 @@
       "find": "    if (driving || busy || swapping) return;\n",
       "replace": "    if (driving || busy) return;\n",
       "expectRed": "no turn was started while the cutover was open"
+    },
+    {
+      "name": "C3 the teardown joins only the holder, so a swap that was still QUEUED when the stop arrived is abandoned unrun",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n",
+      "replace": "",
+      "expectRed": "a swap still QUEUED at the stop was allowed to run before exit"
     }
   ]
 }
