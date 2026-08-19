@@ -47,8 +47,8 @@
     {
       "name": "a member read is emitted as a native index, so it reaches the host prototype",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
-      "replace": "      return `${obj}[${this.memberKey(node)}]`;",
+      "find": "        return done(this.seam(\"get\", `${obj}, ${this.memberKey(node)}`), g);",
+      "replace": "        return done(`${obj}[${this.memberKey(node)}]`, g);",
       "expectRed": "a member read is one get",
       "completionMarker": "ok and every surfaced member carries its reason",
       "cell": "a member read is one get",
@@ -77,8 +77,8 @@
     {
       "name": "a declaring identifier is not recorded, so the emitter cannot resolve a name it declared",
       "file": "packages/lang/src/transform/scope.ts",
-      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind));",
-      "replace": "        this.declare(scope, node.name as string, kind);",
+      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind, declEnd));",
+      "replace": "        this.declare(scope, node.name as string, kind, declEnd);",
       "expectRed": "resolves to nothing, which a validated program cannot contain",
       "completionMarker": "ok the emitted module has no unbound reference: array and object literals",
       "cell": "the emitted module has no unbound reference: for with per-iteration closures",
@@ -137,8 +137,8 @@
     {
       "name": "a call on a value is emitted natively, so a non-function callee is a host TypeError",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "      return `(await ((${f} = ${fn}), typeof ${f} === \"function\" ? ${f} : ${this.seam(\"callee\", f)})(${args}))`;",
-      "replace": "      return `(await ((${f} = ${fn}))(${args}))`;",
+      "find": "        return done(`(await ((${f} = ${fn}), typeof ${f} === \"function\" ? ${f} : ${this.seam(\"callee\", f)})(${args}))`, g);",
+      "replace": "        return done(`(await ((${f} = ${fn}))(${args}))`, g);",
       "expectRed": "a call on a value charges the callee law",
       "completionMarker": "ok a for-of is one iter",
       "cell": "a call on a value charges the callee law",
@@ -147,32 +147,182 @@
     {
       "name": "an optional call is emitted without the flag, so the host resolves a name it should not",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
-      "replace": "        const optional = \"\";",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}]${cont}`)})`;",
       "expectRed": "a tail optional call is emitted through the ruled flag",
-      "completionMarker": "ok every program the seam cannot yet express refuses loudly, and is listed",
+      "completionMarker": "ok an object literal's keys are emitted computed",
       "cell": "a tail optional call is emitted through the ruled flag",
       "note": "Ruling 1d's flag is what makes `o.z?.()` short-circuit to undefined with nothing called. Without it the host resolves the method name unconditionally and refuses, where the walker answers undefined."
     },
     {
       "name": "every method call carries the optional flag, so a missing method stops refusing",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
-      "replace": "        const optional = \", true\";",
+      "find": "          if (node.optional !== true) return done(`(await ${this.seam(\"call\", `${obj}, ${key}, [${args}]`)})`, g);",
+      "replace": "          if (node.optional !== true) return done(`(await ${this.seam(\"call\", `${obj}, ${key}, [${args}], true`)})`, g);",
       "expectRed": "an ordinary method call carries no flag",
       "completionMarker": "ok a tail optional call is emitted through the ruled flag",
       "cell": "an ordinary method call carries no flag",
       "note": "The mirror. `xs.nope()` is L4020 on the walker; flagged optional it would quietly answer undefined, which turns a refusal into a value the program carries on with."
     },
     {
-      "name": "an optional call with a chain after it is emitted instead of refused",
+      "name": "an optional call keeps the rest of its chain to itself",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "        if (node.optional === true && !tail) {",
-      "replace": "        if (false) {",
-      "expectRed": "every program the seam cannot yet express refuses loudly, and is listed",
+      "find": "          const cont = rest === undefined ? \"\" : `, ${this.continuation(rest)}`;",
+      "replace": "          const cont = \"\";",
+      "expectRed": "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
       "completionMarker": "ok an object literal's keys are emitted computed",
-      "cell": "every program the seam cannot yet express refuses loudly, and is listed",
-      "note": "The host makes the short-circuit decision and cannot tell the transform it made one. Measured on the walker: `o.z?.().x` on an absent member is undefined, `o.m?.().x` on a member returning undefined is L4010 - so emitting the continuation would answer undefined for both and silently drop a refusal."
+      "cell": "an optional call hands the rest of its chain to the host, as the ruled fifth argument",
+      "note": "Only the host knows an optional call short-circuited: measured on the walker, `o.z?.().x` on an absent member is undefined while `o.m?.().x` on a member that returns undefined is L4010. Dropping the fifth argument drops the rest of the chain, so `.x` is never read at all."
+    },
+    {
+      "name": "an optional call hands over an evaluated argument list, so a short-circuit runs its arguments anyway",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;",
+      "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${key}, [${args}], true${cont}`)})`;",
+      "expectRed": "an optional call hands its arguments over as a thunk",
+      "completionMarker": "ok a tail optional call is emitted through the ruled flag",
+      "cell": "an optional call hands its arguments over as a thunk",
+      "note": "The walker checks the member BEFORE evaluating the argument list, so `o.m?.(await sleep(\"1s\"))` on an absent member journals nothing while the same argument on a present method journals a sleep. An array here has already run them, and a resume of that entry replays a step the walker's run never recorded."
+    },
+    {
+      "name": "a tail optional call is handed a continuation it has nothing to continue",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          const cont = rest === undefined ? \"\" : `, ${this.continuation(rest)}`;",
+      "replace": "          const cont = `, ${this.continuation(rest ?? ((v) => v))}`;",
+      "expectRed": "a tail optional call carries no continuation",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a tail optional call carries no continuation: there is nothing written after it",
+      "note": "The mirror. The fifth argument only ever accompanies the fourth, and the host refuses a continuation on a call that is not optional (L1000); one on a tail call is an emitter mistake wearing a valid shape."
+    },
+    {
+      "name": "the continuation's guards leak out into the chain's",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `async (${value}) => ${this.short(body, guards)}`;",
+      "replace": "    return `async (${value}) => ${body}`;",
+      "expectRed": "a `?.` after the optional call is guarded inside the continuation",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a `?.` after the optional call is guarded inside the continuation, where the call answered",
+      "note": "A link written after the optional call is guarded only where the call answered. Collecting its guards and never applying them emits the body with a temp the guard never assigned, so `o.m?.()?.x` reads a member of undefined instead of short-circuiting."
+    },
+    {
+      "name": "a scope-opener's body is evaluated at the call instead of inside the scope",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = false;",
+      "expectRed": "a fan-out's body travels unevaluated",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a fan-out's body travels unevaluated",
+      "note": "The walker evaluates the body INSIDE the scope, after the entry has begun. Eager, the host's `deferredBody` calls the body function itself with no arguments (measured before the fix: `fanOut` answered L3041 `argument 1 of turn is undefined`, and `conclave` ran its body's `notify` and then died on `fn is not a function`), so the body runs once, outside its scope, and journals where the walker's run never did."
+    },
+    {
+      "name": "the branch bag of a combinator with no deferred argument is wrapped in a thunk",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = spec !== undefined && spec.opensScope;",
+      "expectRed": "a combinator with no deferred argument wraps nothing at all",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a combinator with no deferred argument wraps nothing at all",
+      "note": "The mirror, and it is not symmetric: `parallel` and `race` take a bag of branches at index 0 and have NO deferred argument, so a thunk in position 1 is the options bag wrapped - the host answers L1000 for asking a combinator for a deferred body it does not have."
+    },
+    {
+      "name": "the hoisted-function clause is dropped, so a function declaration's early read stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "replace": "    if ((path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "expectRed": "a hoisted function's read makes a cell wherever the declaration sits",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "a hoisted function's read makes a cell wherever the declaration sits",
+      "note": "A hoisted `function` declaration is reachable before anything textually after it has run, so the rule takes it at any depth and wherever the declaration sits. Aimed at the cell whose programs reach clause (i) ALONE: every dead-zone program also satisfies the textual clause, and against those this mutant SURVIVED."
+    },
+    {
+      "name": "the textual clause is dropped, so a closure written before the declaration stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {",
+      "replace": "    if (path.some((f) => f.hoisted)) {",
+      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
+      "note": "The other clause: a function EXPRESSION whose enclosing statement is not after the end of the declarator, which includes an arrow inside the binding's own initializer (`const x = (() => x)()` is L2004, measured)."
+    },
+    {
+      "name": "every captured binding becomes a dead-zone cell",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    if (path.length === 0) return;",
+      "replace": "    if (path.length === 0) return;\n    if (path.length > 0) {\n      b.cell = true;\n      b.deadZone = true;\n      return;\n    }",
+      "expectRed": "a captured binding no closure can read early stays native",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "a captured binding no closure can read early stays native",
+      "note": "The predicate is a rule, not a preference: making every captured binding a record costs a seam call on every read of a binding nothing can reach early. The first cell to notice is the one that says a captured `const` is not a cell, which is the same claim read from the site counts."
+    },
+    {
+      "name": "a dead-zone cell's record is built at its declaration instead of at the top of the block",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          if (b?.deadZone !== true || this.hoisted.has(b)) continue;",
+      "replace": "          if (b?.cell !== true || this.hoisted.has(b)) continue;",
+      "expectRed": "a cell for the write rule alone is not hoisted",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "a cell for the write rule alone is not hoisted",
+      "note": "The two cell classes are kept apart on purpose: hoisting the write-rule class costs a second seam call on a path that runs. Hoisting it turns its one `born({ v: init })` into a `born({})` plus a second `set`, which is what the site-count cell reads."
+    },
+    {
+      "name": "a cell read is emitted without the binding's name",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    if (b !== undefined) return b.cell ? this.seam(\"get\", `${name}, ${q(\"v\")}, ${q(b.name)}`) : name;",
+      "replace": "    if (b !== undefined) return b.cell ? this.seam(\"get\", `${name}, ${q(\"v\")}`) : name;",
+      "expectRed": "every clause of the ruled dead-zone predicate makes a cell",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "cell": "every clause of the ruled dead-zone predicate makes a cell, hoisted and read by name",
+      "note": "The name is what lets the host answer L2004 FOR THAT BINDING when the record's `v` is absent. Without it an absent field is just undefined, and the dead zone becomes a value the program carries on with."
+    },
+    {
+      "name": "the declared arity stops covering the argument F7 added, so a site sits outside the table",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "  get: [2, 3],",
+      "replace": "  get: [2, 2],",
+      "expectRed": "every seam call site passes an argument count the contract declares",
+      "cell": "every seam call site passes an argument count the contract declares",
+      "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
+      "note": "The names-only check cannot see this: every site still reaches `get`. Only the argument COUNT says the emitter and the contract have drifted, which is the drift that produced the eager-argument divergence."
+    },
+    {
+      "name": "the declared arity is widened past every site, granting a shape no ruling covers",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "  call: [3, 5],",
+      "replace": "  call: [3, 6],",
+      "expectRed": "and no declared range is wider than the emission that justifies it",
+      "cell": "and no declared range is wider than the emission that justifies it",
+      "completionMarker": "ok and reaches no seam member outside the ruling: the undefined value",
+      "note": "The other direction, and the one a table alone would never notice: a bound nothing reaches is a permission for a future emission with no ruling behind it, and every site stays inside it forever."
+    },
+    {
+      "name": "the dead-zone rule never looks at writes, so an early write is emitted against a record that does not exist yet",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    this.deadZone(b);\n  }",
+      "replace": "  }",
+      "expectRed": "a write that can land in the dead zone hoists its record",
+      "cell": "a write that can land in the dead zone hoists its record",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "Without the hoist the cell record is itself in a temporal dead zone when the early write evaluates its arguments, so the failure is a native ReferenceError the seam never sees - the exact shape the read half was ruled to remove."
+    },
+    {
+      "name": "a dead-zone write is emitted without the binding's name, so the host has nothing to refuse on",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const named = b !== undefined && b.deadZone;",
+      "replace": "    const named = false;",
+      "expectRed": "and carries the binding name, which is what the host refuses on",
+      "cell": "and carries the binding name, which is what the host refuses on",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "The record is hoisted, so nothing throws: the write lands in a binding whose declaration has not run, silently, and the program logs the walker's refusal as a value."
+    },
+    {
+      "name": "the declaration's own write carries the name too, so a binding refuses its own initialisation",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (b?.cell === true && this.hoisted.has(b)) return `${this.seam(\"set\", `${name}, ${q(\"v\")}, ${valueCode}`)};\\n`;",
+      "replace": "        if (b?.cell === true && this.hoisted.has(b)) return `${this.cellWrite(b, name, valueCode)};\\n`;",
+      "expectRed": "and the declaration writes into that record rather than building one",
+      "cell": "and the declaration writes into that record rather than building one",
+      "completionMarker": "ok the resolver names a free identifier when one exists",
+      "note": "Measured rather than aimed at the cell that reads best: the READ program's declaration is the first one emitted, and its cell already pins the three-argument spelling, so it is what reds. The rule is the same one either way - the write that ENDS a dead zone can never be the write that refuses for it."
     }
   ]
 }

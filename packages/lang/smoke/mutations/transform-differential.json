@@ -25,11 +25,20 @@
     {
       "name": "a member read is emitted as a native index, so the host prototype is reachable on the engine",
       "file": "packages/lang/src/transform/emit.ts",
-      "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
-      "replace": "      return `${obj}[${this.memberKey(node)}]`;",
+      "find": "        return done(this.seam(\"get\", `${obj}, ${this.memberKey(node)}`), g);",
+      "replace": "        return done(`${obj}[${this.memberKey(node)}]`, g);",
       "expectRed": "identical on both engines: refusals: a prototype member of a string",
       "cell": "identical on both engines: refusals: a prototype member of a string",
       "note": "A record has NO prototype to reach - `o.constructor` is undefined on both arms - so the cell that catches this is a string's, whose curated table refuses the name L4020. A native index answers the host String constructor there, which is a live capability inside a program that is supposed to have none."
+    },
+    {
+      "name": "a member WRITE is emitted as a native index, so the write path's own refusals stop happening",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "const write = (value: string): string => this.seam(\"set\", `${obj}, ${key}, ${value}`);",
+      "replace": "const write = (value: string): string => `${obj}[${key}] = ${value}`;",
+      "expectRed": "identical on both engines: refusals: a curated key on the write path",
+      "cell": "identical on both engines: refusals: a curated key on the write path",
+      "note": "The mirror of the read mutant above. A native write silently succeeds where the walker refuses: `__proto__` reaches the real prototype and a member onto a string is dropped on the floor. Measured before it was aimed: with the write native, these two corpus programs are the first to red, and the callable-then divergences below red with them."
     },
     {
       "name": "a catch binds the raw thrown value, so a program reads a different error record",
@@ -48,6 +57,87 @@
       "expectRed": "identical on both engines: refusals: not iterable",
       "cell": "identical on both engines: refusals: not iterable",
       "note": "L4015 says arrays and strings and nothing else. A native spread of a record throws a host TypeError instead, which is a different class the program cannot catch the same way."
+    },
+    {
+      "name": "an object literal's properties are emitted in reverse, so two effects journal backwards",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return this.seam(\"born\", `{ ${parts.join(\", \")} }`);",
+      "replace": "        return this.seam(\"born\", `{ ${[...parts].reverse().join(\", \")} }`);",
+      "expectRed": "identical on both engines: two effects in one object literal",
+      "cell": "identical on both engines: two effects in one object literal",
+      "note": "A record's own key order is observable through `keys`, `entries` and `json.stringify`, and the order its property values were EVALUATED in is observable only in the journal. This moves both."
+    },
+    {
+      "name": "a template's interpolations are emitted in reverse, so two effects journal backwards",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return this.seam(\"template\", `[${quasis.join(\", \")}], [${exprs.join(\", \")}]`);",
+      "replace": "        return this.seam(\"template\", `[${quasis.join(\", \")}], [${[...exprs].reverse().join(\", \")}]`);",
+      "expectRed": "identical on both engines: two effects in one template",
+      "cell": "identical on both engines: two effects in one template",
+      "note": "Interpolation is the seam's law, but WHICH value goes into which hole, and in what order the holes were evaluated, is the transform's."
+    },
+    {
+      "name": "an array literal's elements are emitted in reverse",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return this.seam(\"born\", `[${parts.join(\", \")}]`);",
+      "replace": "        return this.seam(\"born\", `[${[...parts].reverse().join(\", \")}]`);",
+      "expectRed": "identical on both engines: two effects in one array literal",
+      "cell": "identical on both engines: two effects in one array literal",
+      "note": "The third of the three literal positions where two effects can sit side by side."
+    },
+    {
+      "name": "a corpus program refuses before it reaches its subject, and the gate calls it identical",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "[\"curated methods\", 'const xs = [3, 1, 2]; log(xs.map((x) => x + 1), sort(xs), \"AB\".toLowerCase(), \"a,b\".split(\",\"), (2.6).toFixed(1), json.stringify({ a: 1 }));', {}],",
+      "replace": "[\"curated methods\", 'const xs = [3, 1, 2]; log(xs.map((x) => x + 1), sort(xs), \"AB\".lower(), (2.6).round(), json.stringify({ a: 1 }));', {}],",
+      "expectRed": "every corpus program completes, or refuses the code it declares",
+      "cell": "every corpus program completes, or refuses the code it declares",
+      "note": "The defect this cell was written for, restored: `lower` and `round` are free builtins and not method names, so the program refuses L4014 on BOTH arms before its first log. `identical on both engines` stays green - two arms agreeing on a refusal neither program was written to produce - which is exactly how the string and number tables came to have no passing cell. This is a fixture-discipline cell, so its mutant is in the fixture."
+    },
+    {
+      "name": "a scope body evaluated at the call, so its effects journal outside the scope",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;",
+      "replace": "    const defers = false;",
+      "expectRed": "identical on both engines: a fan-out whose body is awaited",
+      "cell": "identical on both engines: a fan-out whose body is awaited",
+      "note": "The behavioural half of the same rule: both arms journal `fanOut:f` BEFORE the `sleep` inside the body, because the body is evaluated inside the scope. Evaluated at the call, the engine journals the sleep first - a journal the walker's run never wrote, which a resume would then replay against."
+    },
+    {
+      "name": "the options bag is deferred along with the body, so the key is computed inside the scope",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "return defers && i === 1 ? `async () => (${code})` : code;",
+      "replace": "return defers && i >= 1 ? `async () => (${code})` : code;",
+      "expectRed": "identical on both engines: a fan-out whose key is awaited",
+      "cell": "identical on both engines: a fan-out whose key is awaited",
+      "note": "The mirror of the rule above: `sleep:warm` lands BEFORE `fanOut:f` on both arms because the options bag is evaluated at the call, outside the scope. Wrapped in a thunk it is computed inside, and the two entries swap. The ruled position is the BODY alone, so this mutant keeps every eager-body program green and shows up only as journal order in the program whose key awaits."
+    },
+    {
+      "name": "a primitive is spelled in a corpus program the run never reaches, so a kind is covered on paper",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "'const a = await spawn(\"one\");\\nawait notify([a], { decision: \"build\", outcome: \"blocked\" });\\nawait monitor([a], { name: \"m\" });\\nlog(\"done\");'",
+      "replace": "'const a = await spawn(\"one\");\\nawait notify([a], { decision: \"build\", outcome: \"blocked\" });\\nif (len([]) > 0) { await monitor([a], { name: \"m\" }); }\\nlog(\"done\");'",
+      "expectRed": "and a corpus program journals every kind the engine can write",
+      "cell": "and a corpus program journals every kind the engine can write",
+      "note": "A coverage-discipline cell, so its mutant is in the fixture. The name is still SPELLED, so the free-name cell stays green and both arms still agree; only a kind the engine actually wrote to a journal counts here, and `monitor` stops being one. Measured before it was aimed: this is the only cell that reds."
+    },
+    {
+      "name": "the dead-zone rule never looks at writes, so an early write dies as a native ReferenceError",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "    this.deadZone(b);\n  }",
+      "replace": "  }",
+      "expectRed": "identical on both engines: a dead-zone write",
+      "cell": "identical on both engines: a dead-zone write",
+      "note": "The behavioural half of the surface cell: the walker answers a CATCHABLE L2004 and the program still reads the declared value afterwards, where the mutant's engine dies on an engine fault the program cannot see. Measured before it was aimed."
+    },
+    {
+      "name": "a quarantined program is one the walker actually survives, so the exclusion is a comment",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "    'const o = {}; o.then = (r) => { r(1); }; log(\"t\", typeof o.then);',\n    \"L4011\",",
+      "replace": "    'const o = {}; o.then = (r) => { r(1); }; log(\"after\");',\n    \"L4011\",",
+      "expectRed": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door",
+      "cell": "quarantined, and the walker's own process still does not survive it: issue 642 through the set door: a callable then, then any later reference to the record",
+      "note": "A quarantine-discipline cell, so its mutant is in the fixture. Drop the later reference and the walker COMPLETES: the child prints it, and the cell that would otherwise be a comment saying 'we left this out' reds. This is the direction that matters - a list of exclusions nobody re-measures is how a program stays outside the gate after the reason expires."
     }
   ],
   "completionMarker": "differential.smoke:"

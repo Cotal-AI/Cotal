@@ -9,7 +9,20 @@
  */
 
 /**
- * The members seam ruling 1 grants.
+ * The members seam ruling 1 grants, each with the range of ARGUMENT COUNTS the emitter may pass.
+ *
+ * The arity is written here rather than left implicit in the emitter because a member's shape is as
+ * much of the contract as its name, and the two that vary are exactly where a divergence hid from a
+ * names-only comparison: `call` grew a fourth and then a fifth argument for F6 against a host member
+ * declared with three, and the differential found it rather than the surface. `transform.smoke`
+ * checks every emitted call site against this range in both directions - no site outside it, and no
+ * bound without a site that reaches it - and `engine.smoke` checks the host's `ctx` against the same
+ * table: names by set-equality, and `ctx[name].length === max` for each. That last is the ruled
+ * spelling, and it is `max` rather than `min` for a measured reason: a TypeScript optional parameter
+ * is a plain parameter after erasure and still counts toward `Function.length`, so a `<= min` rule
+ * would be vacuous on every fixed member and false on all four variadic ones. The MIN end cannot be
+ * read from a function at all - erasure has discarded which parameters were optional - so it is
+ * behavioural on the host's side: each variadic member has a cell calling it in its shortest form.
  *
  * `fuel` is the step check (budget L4013 + yield); `get`/`set`/`call` are the member law
  * (L4014/L4018/L4020, curated tables, birth depth L2032, freeze L2031); `born` stamps a literal;
@@ -19,26 +32,35 @@
  * iterability law (L4015); `caught` heads every emitted catch clause (rethrow the six uncatchable
  * classes, else the walker's frozen `{code, kind, message}` record).
  */
-export const SEAM_RULED: ReadonlySet<string> = new Set([
-  "fuel",
-  "get",
-  "set",
-  "call",
-  "born",
-  "effect",
-  "free",
-  "await",
-  "template",
-  "binary",
-  "unary",
-  "iter",
-  "caught",
+export const SEAM_MEMBERS: Readonly<Record<string, readonly [number, number]>> = Object.freeze({
+  fuel: [0, 0],
+  // 2, or 3 with F7's binding name, which is what turns an absent own `v` into L2004 by name.
+  get: [2, 3],
+  // 3, or 4 with F7's binding name on a write that can land in the dead zone (ruling: the
+  // declaration's own initializing write never carries it).
+  set: [3, 4],
+  // 3 ordinary; 4 with F6's optional-call flag, where the arguments arrive as a thunk; 5 when the
+  // chain continues past the optional call and the rest of it travels as a continuation.
+  call: [3, 5],
+  born: [1, 1],
+  effect: [3, 3],
+  // 1 for a free name in value position, 2 for a call to one.
+  free: [1, 2],
+  await: [1, 1],
+  template: [2, 2],
+  binary: [3, 3],
+  unary: [2, 2],
+  iter: [1, 1],
+  caught: [1, 1],
   // Ruling 1c, member 14: L4011 at a non-function callee. `const f = 1; f()` is a program the
   // validator ADMITS (measured at 9dc154f8), and the walker answers L4011 where a native call
   // answers a host TypeError. Emitted behind a `typeof` fast path, so a call to a real function
   // never reaches the host.
-  "callee",
-]);
+  callee: [1, 1],
+});
+
+/** The member NAMES ruling 1 grants. Derived from the table above, so the two cannot disagree. */
+export const SEAM_RULED: ReadonlySet<string> = new Set(Object.keys(SEAM_MEMBERS));
 
 /**
  * Members the emitter reaches that are SURFACED but not yet ruled.
@@ -62,19 +84,6 @@ export const SEAM_PROPOSED: Readonly<Record<string, string>> = Object.freeze({})
  * than left implicit in the emitter.
  */
 export const UNARY_OPS: readonly string[] = Object.freeze(["-", "+", "~", "update"]);
-
-/** A site whose law has no ruled member and no surfaced proposal yet: refuse rather than invent one. */
-export class SeamPending extends Error {
-  constructor(
-    readonly item: string,
-    readonly site: string,
-  ) {
-    super(
-      `${site} needs a seam decision that has not been made (${item}). It is surfaced on #fix.lang-transform; the emitter refuses rather than inventing an answer, because inventing one IS widening the seam.`,
-    );
-    this.name = "SeamPending";
-  }
-}
 
 /** Names chosen against the program's own identifier universe, so nothing the emitter needs can be shadowed. */
 export interface Names {

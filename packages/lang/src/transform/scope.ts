@@ -23,12 +23,25 @@ export type AnyNode = Record<string, unknown> & { type: string };
 
 export interface Binding {
   readonly name: string;
-  /** `const` can never be a cell: the binding cannot be written at all (L2003, static). */
+  /** `const` can never be a cell BY THE WRITE RULE: the binding cannot be written at all (L2003, static). */
   readonly kind: "const" | "let" | "param" | "function";
   /** Which function scope declared it. A write from a different (deeper) one is what makes a cell. */
   readonly funcId: number;
-  /** Written from inside a deeper function: this binding carries its depth through `__ctx.born`. */
+  /**
+   * The end of this binding's own declarator, for F7's textual clause. Null where the question
+   * cannot arise: a parameter is bound at the call and a `function` declaration is hoisted, so
+   * neither can be read before it holds a value.
+   */
+  readonly declEnd: number | null;
+  /** A record rather than a native binding: L2032's binding half, or F7's dead zone. */
   cell: boolean;
+  /**
+   * A cell because it can be READ BEFORE ITS DECLARATION (F7), which the L2032 write rule cannot
+   * see. It is kept apart from {@link cell} because only this class needs its record hoisted to the
+   * top of the block: a binding that is a cell only for the write rule cannot be read early, so its
+   * record is still built where it is declared, with its value already in it.
+   */
+  deadZone: boolean;
 }
 
 export interface Analysis {
@@ -57,13 +70,26 @@ class Scope {
   }
 }
 
+/** One function between a read and the binding it reads, as F7's predicate needs to see it. */
+interface Enclosing {
+  readonly funcId: number;
+  /** A hoisted `function` declaration: reachable before anything textually after it has run. */
+  readonly hoisted: boolean;
+  /** Where the STATEMENT holding this function literal starts. */
+  readonly stmtStart: number;
+}
+
 class Walk {
   readonly bindingOf = new Map<AnyNode, Binding>();
   readonly bindings: Binding[] = [];
   private nextFunc = 0;
+  /** The functions currently open, outermost first. F7 reads the path from a use out to its binding. */
+  private readonly fns: Enclosing[] = [];
+  /** The statement being walked. A function literal's "enclosing statement" is this one. */
+  private stmtStart = 0;
 
-  private declare(scope: Scope, name: string, kind: Binding["kind"]): Binding {
-    const b: Binding = { name, kind, funcId: scope.funcId, cell: false };
+  private declare(scope: Scope, name: string, kind: Binding["kind"], declEnd: number | null = null): Binding {
+    const b: Binding = { name, kind, funcId: scope.funcId, declEnd, cell: false, deadZone: false };
     this.bindings.push(b);
     scope.declare(b);
     return b;
@@ -74,7 +100,40 @@ class Walk {
     const b = scope.resolve(node.name as string);
     // A name the program never declared is a free name (a builtin, a primitive, `undefined`). The
     // validator refuses shadowing a reserved name, so resolution cannot disagree with that table.
-    if (b !== undefined) this.bindingOf.set(node, b);
+    if (b !== undefined) {
+      this.bindingOf.set(node, b);
+      this.deadZone(b);
+    }
+  }
+
+  /**
+   * F7, ruled: which captured bindings can be READ BEFORE THEY HOLD A VALUE, and so must be cells.
+   *
+   * The walker refuses that read L2004 — a code a program can catch and read — while a native
+   * JavaScript binding answers a host ReferenceError, which `caught` can only report as L4000/host.
+   * So a binding a closure could read early becomes a record, `get` answers L2004 for it by name,
+   * and the two engines agree. Same-block direct reads never reach here: the validator refuses them
+   * (measured, `log(x); const x = 1;` is a validation error).
+   *
+   * The rule, as ruled, over the path from the read out to the binding's own scope:
+   *   (i)  ANY hoisted `function` declaration on the path — at any depth, because an arrow inside a
+   *        hoisted function called early is reachable just the same (measured: `const r = f()` with
+   *        `function f() { const g = () => x; return g(); }` and `const x = 1` after is L2004); or
+   *   (ii) the OUTERMOST function on the path is an expression whose enclosing statement is not
+   *        textually after the end of the declarator — which deliberately includes an arrow inside
+   *        the binding's own initializer, since `const x = (() => x)()` is L2004 (measured).
+   * Every other captured binding stays native, and that class keeps its own evidence: `const x = 1`
+   * followed by a closure reading it answers 1 on both engines.
+   */
+  private deadZone(b: Binding): void {
+    if (b.declEnd === null) return;
+    const at = this.fns.findIndex((f) => f.funcId === b.funcId);
+    const path = this.fns.slice(at + 1);
+    if (path.length === 0) return;
+    if (path.some((f) => f.hoisted) || (path[0] as Enclosing).stmtStart < b.declEnd) {
+      b.cell = true;
+      b.deadZone = true;
+    }
   }
 
   /** A write to a binding. The cell rule is here and nowhere else. */
@@ -83,6 +142,13 @@ class Walk {
     if (b === undefined) return;
     this.bindingOf.set(node, b);
     if (b.funcId !== funcId && b.kind !== "const") b.cell = true;
+    // AND F7 OVER WRITES, ruled after the read half landed. A write reaches the dead zone by the
+    // same path a read does — measured on the walker, `n = 2` inside a hoisted `function` called
+    // before `let n = 1` is a CATCHABLE L2004 and `n` still reads 1 afterwards — so the same
+    // predicate decides it, and the record has to be hoisted for the same reason: an unhoisted one
+    // is still in its own temporal dead zone when the early write evaluates the argument, and the
+    // native ReferenceError never reaches the seam.
+    this.deadZone(b);
   }
 
   /**
@@ -93,25 +159,25 @@ class Walk {
    * "no" for every declaration because the node was not in the map is a cell that is emitted as a
    * plain binding — the L2032 refusal silently gone.
    */
-  private declarePattern(node: AnyNode, scope: Scope, kind: Binding["kind"]): void {
+  private declarePattern(node: AnyNode, scope: Scope, kind: Binding["kind"], declEnd: number | null = null): void {
     switch (node.type) {
       case "Identifier":
-        this.bindingOf.set(node, this.declare(scope, node.name as string, kind));
+        this.bindingOf.set(node, this.declare(scope, node.name as string, kind, declEnd));
         return;
       case "AssignmentPattern":
-        this.declarePattern(node.left as AnyNode, scope, kind);
+        this.declarePattern(node.left as AnyNode, scope, kind, declEnd);
         return;
       case "RestElement":
-        this.declarePattern(node.argument as AnyNode, scope, kind);
+        this.declarePattern(node.argument as AnyNode, scope, kind, declEnd);
         return;
       case "ObjectPattern":
         for (const p of (node.properties as AnyNode[]) ?? []) {
-          this.declarePattern((p.type === "RestElement" ? p.argument : p.value) as AnyNode, scope, kind);
+          this.declarePattern((p.type === "RestElement" ? p.argument : p.value) as AnyNode, scope, kind, declEnd);
         }
         return;
       case "ArrayPattern":
         for (const el of (node.elements as (AnyNode | null)[]) ?? []) {
-          if (el !== null && el !== undefined) this.declarePattern(el, scope, kind);
+          if (el !== null && el !== undefined) this.declarePattern(el, scope, kind, declEnd);
         }
         return;
       default:
@@ -194,6 +260,15 @@ class Walk {
     this.nextFunc += 1;
     const funcId = this.nextFunc;
     const scope = new Scope(outer, funcId);
+    this.fns.push({ funcId, hoisted: node.type === "FunctionDeclaration", stmtStart: this.stmtStart });
+    try {
+      this.fnBody(node, scope, funcId);
+    } finally {
+      this.fns.pop();
+    }
+  }
+
+  private fnBody(node: AnyNode, scope: Scope, funcId: number): void {
     // A named function expression sees its own name, exactly as the walker's `makeFunction` binds it.
     if (node.type === "FunctionExpression" && node.id !== null && node.id !== undefined) {
       this.declare(scope, (node.id as AnyNode).name as string, "function");
@@ -215,13 +290,23 @@ class Walk {
     for (const s of body) {
       if (s.type !== "VariableDeclaration") continue;
       for (const d of (s.declarations as AnyNode[]) ?? []) {
-        this.declarePattern(d.id as AnyNode, scope, s.kind === "let" ? "let" : "const");
+        this.declarePattern(d.id as AnyNode, scope, s.kind === "let" ? "let" : "const", d.end as number);
       }
     }
     for (const s of body) this.stmt(s, scope, funcId);
   }
 
   stmt(node: AnyNode, scope: Scope, funcId: number): void {
+    const outer = this.stmtStart;
+    this.stmtStart = node.start as number;
+    try {
+      this.statement(node, scope, funcId);
+    } finally {
+      this.stmtStart = outer;
+    }
+  }
+
+  private statement(node: AnyNode, scope: Scope, funcId: number): void {
     switch (node.type) {
       case "ExpressionStatement":
         this.expr(node.expression as AnyNode, scope, funcId);

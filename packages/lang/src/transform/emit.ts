@@ -13,7 +13,7 @@
 import { BUILTINS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES, VALUE_NAMES } from "../primitives.js";
 import { analyze, type Analysis, type AnyNode, type Binding } from "./scope.js";
 import { stripPositions } from "../interpret.js";
-import { SeamPending, pickNames, type Names } from "./seam.js";
+import { pickNames, type Names } from "./seam.js";
 
 /** Free names that are VALUES as well as callees: the walker declares each as a binding (`installGlobals`). */
 const FREE_VALUES: ReadonlySet<string> = new Set([
@@ -36,6 +36,9 @@ const q = (s: string): string => JSON.stringify(s);
 /** `undefined` is a GLOBAL binding; the emitted module has no unbound references, so it spells the value. */
 const VOID = "void 0";
 
+/** Everything written after a chain link: its value, and the guards in force where that value is read. */
+type Rest = (value: string, guards: string[]) => string;
+
 /** Every identifier the source spells, so the emitter's own names can be picked around them. */
 function identifiers(node: unknown, out: Set<string>): void {
   if (Array.isArray(node)) {
@@ -51,12 +54,41 @@ function identifiers(node: unknown, out: Set<string>): void {
   }
 }
 
+/** Every Identifier a declaration pattern binds, in source order. */
+function declaredNames(pattern: AnyNode, out: AnyNode[] = []): AnyNode[] {
+  switch (pattern.type) {
+    case "Identifier":
+      out.push(pattern);
+      break;
+    case "AssignmentPattern":
+      declaredNames(pattern.left as AnyNode, out);
+      break;
+    case "RestElement":
+      declaredNames(pattern.argument as AnyNode, out);
+      break;
+    case "ObjectPattern":
+      for (const p of (pattern.properties as AnyNode[]) ?? []) {
+        declaredNames((p.type === "RestElement" ? p.argument : p.value) as AnyNode, out);
+      }
+      break;
+    case "ArrayPattern":
+      for (const el of (pattern.elements as (AnyNode | null)[]) ?? []) if (el !== null && el !== undefined) declaredNames(el, out);
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
 class Emitter {
   private readonly sites = new Map<string, number>();
   private readonly proposed = new Set<string>();
   private tempTop = 0;
   private tempMax = 0;
   private labels = 0;
+  private conts = 0;
+  /** Cells whose record was created at the top of a block, so the declaration only writes into it. */
+  private readonly hoisted = new Set<Binding>();
   /** The innermost loop's break and continue labels, and the innermost switch's break label. */
   private breakTo: string | null = null;
   private continueTo: string | null = null;
@@ -114,7 +146,11 @@ class Emitter {
   private readName(node: AnyNode): string {
     const b = this.binding(node);
     const name = node.name as string;
-    if (b !== undefined) return b.cell ? this.seam("get", `${name}, ${q("v")}`) : name;
+    // A CELL READ CARRIES THE BINDING'S NAME (F7, ruled). An absent own `v` is a read before the
+    // declaration ran, and the host answers L2004 for the binding it names — the code the walker
+    // gives, and one a program can catch and read, where a native binding gives a host
+    // ReferenceError that `caught` can only report as L4000/host.
+    if (b !== undefined) return b.cell ? this.seam("get", `${name}, ${q("v")}, ${q(b.name)}`) : name;
     if (VALUE_NAMES.includes(name)) return VOID;
     // A builtin is a BINDING in this language, so it has to be readable as a value: `const f = trim`,
     // `map(xs, upper)`, and `json.stringify(x)` (whose callee's object is the free name `json`).
@@ -144,8 +180,43 @@ class Emitter {
 
   /** A block's statements. `bare` emits them without braces (the program body, a function body). */
   private block(node: AnyNode, bare = false): string {
-    const body = ((node.body as AnyNode[]) ?? []).map((s) => this.stmt(s)).join("");
-    return bare ? body : `{\n${body}}\n`;
+    const stmts = (node.body as AnyNode[]) ?? [];
+    // THE CELLS FIRST: a closure written before the declaration can read the binding, so the record
+    // has to exist before that closure is made. See {@link hoistCells}.
+    const head = this.hoistCells(stmts);
+    const body = stmts.map((s) => this.stmt(s)).join("");
+    return bare ? head + body : `{\n${head}${body}}\n`;
+  }
+
+  /**
+   * The cell RECORDS a statement list declares, created empty at its top.
+   *
+   * F7's shape, ruled: `born({})` at the top of the block, `set(cell, "v", init)` where the
+   * declaration is, and every read through `get(cell, "v", name)`. The record must exist before the
+   * closures that capture it, and its `v` must be ABSENT until the declaration runs — that absence
+   * IS the dead zone, and it is what lets the host answer L2004 by name instead of a native
+   * ReferenceError. `v: undefined` is a present key, so the host asks `hasOwn` and not truthiness.
+   *
+   * A `for (let ...)` head is not here: its carrier gives each iteration its own record, and a
+   * binding declared in a loop head cannot be read before that head has run.
+   */
+  private hoistCells(stmts: readonly AnyNode[]): string {
+    let out = "";
+    for (const s of stmts) {
+      if (s.type !== "VariableDeclaration") continue;
+      for (const d of (s.declarations as AnyNode[]) ?? []) {
+        for (const id of declaredNames(d.id as AnyNode)) {
+          const b = this.binding(id);
+          // ONLY THE DEAD-ZONE CLASS. A binding that is a cell for the write rule alone cannot be
+          // read before its declaration, so its record is still built where it is declared, with
+          // its value already in it — one seam call rather than two on a path that runs.
+          if (b?.deadZone !== true || this.hoisted.has(b)) continue;
+          this.hoisted.add(b);
+          out += `const ${id.name as string} = ${this.seam("born", "{}")};\n`;
+        }
+      }
+    }
+    return out;
   }
 
   private stmt(node: AnyNode): string {
@@ -345,6 +416,10 @@ class Emitter {
     const b = this.label("b");
     const save = this.breakTo;
     this.breakTo = b;
+    // A SWITCH'S CASES SHARE ONE BLOCK SCOPE, and no statement inside it runs before the jump, so a
+    // cell declared in a case is created in a block AROUND the switch instead of at its top. That
+    // block holds nothing else, so it scopes exactly as the switch's own block does.
+    const cells = this.hoistCells(((node.cases as AnyNode[]) ?? []).flatMap((c) => (c.consequent as AnyNode[]) ?? []));
     const disc = this.expr(node.discriminant as AnyNode);
     let out = `${b}: switch (${disc}) {\n`;
     for (const c of (node.cases as AnyNode[]) ?? []) {
@@ -352,10 +427,24 @@ class Emitter {
       for (const s of (c.consequent as AnyNode[]) ?? []) out += this.stmt(s);
     }
     this.breakTo = save;
-    return `${out}}\n`;
+    return cells === "" ? `${out}}\n` : `{\n${cells}${out}}\n}\n`;
   }
 
   // ---- bindings ---------------------------------------------------------------------------------
+
+  /**
+   * Write a cell's field: `set(cell, "v", value)`, with F7's binding NAME where the write can land
+   * in the binding's dead zone.
+   *
+   * The name is passed on every write to a hoisted (dead-zone) cell and on NO other, which is what
+   * the host reads as "refuse if the declaration has not run". The declaration's own initializing
+   * write is the one that ends the dead zone, so it never carries it — passing it there would make
+   * a binding refuse its own initialisation.
+   */
+  private cellWrite(b: Binding | undefined, target: string, value: string): string {
+    const named = b !== undefined && b.deadZone;
+    return this.seam("set", `${target}, ${q("v")}, ${value}${named ? `, ${q((b as Binding).name)}` : ""}`);
+  }
 
   /**
    * Bind a pattern, declaring (`const`/`let`) or assigning.
@@ -371,8 +460,12 @@ class Emitter {
         const b = this.binding(pattern);
         const name = pattern.name as string;
         if (mode === "assign") {
-          return b?.cell === true ? `${this.seam("set", `${name}, ${q("v")}, ${valueCode}`)};\n` : `${name} = ${valueCode};\n`;
+          return b?.cell === true ? `${this.cellWrite(b, name, valueCode)};\n` : `${name} = ${valueCode};\n`;
         }
+        // A hoisted cell's record already exists (see hoistCells): the declaration is the write that
+        // ends its dead zone. A cell that was NOT hoisted is a loop head's carrier, which builds a
+        // fresh record per iteration.
+        if (b?.cell === true && this.hoisted.has(b)) return `${this.seam("set", `${name}, ${q("v")}, ${valueCode}`)};\n`;
         if (b?.cell === true) return `const ${name} = ${this.seam("born", `{ v: ${valueCode} }`)};\n`;
         return `${mode === "let" ? "let" : "const"} ${name} = ${valueCode};\n`;
       }
@@ -617,7 +710,7 @@ class Emitter {
       const read = this.readName(arg);
       const write = (value: string): string => {
         const b = this.binding(arg);
-        return b?.cell === true ? this.seam("set", `${arg.name as string}, ${q("v")}, ${value}`) : `(${arg.name as string} = ${value})`;
+        return b?.cell === true ? this.cellWrite(b, arg.name as string, value) : `(${arg.name as string} = ${value})`;
       };
       return `((${old} = ${this.toNumber(read)}), (${next} = ${old} ${delta}), ${write(next)}, ${prefix ? next : old})`;
     }
@@ -645,7 +738,7 @@ class Emitter {
       const b = this.binding(left);
       const name = left.name as string;
       const write = (value: string): string =>
-        b?.cell === true ? this.seam("set", `${name}, ${q("v")}, ${value}`) : `(${name} = ${value})`;
+        b?.cell === true ? this.cellWrite(b, name, value) : `(${name} = ${value})`;
       const t = this.temp();
       // The READ is taken only where the operator needs one. Taking it unconditionally emitted a
       // `get` a plain `=` never uses, and charged the site count for it.
@@ -704,69 +797,131 @@ class Emitter {
    */
   private chain(node: AnyNode): string {
     const guards: string[] = [];
-    const body = this.chainLink(node.type === "ChainExpression" ? (node.expression as AnyNode) : node, guards, true);
+    const body = this.chainLink(node.type === "ChainExpression" ? (node.expression as AnyNode) : node, guards, undefined);
+    return this.short(body, guards);
+  }
+
+  /** A body under the guards in force where it is written: nullish at any of them and nothing after runs. */
+  private short(body: string, guards: string[]): string {
     if (guards.length === 0) return body;
     return `((${guards.join(") || (")}) ? ${VOID} : ${body})`;
   }
 
   /**
-   * One link of an optional chain. `tail` is true for the OUTERMOST link, the one whose value is the
-   * chain's value.
+   * One link of a chain, with everything written AFTER it handed down as {@link Rest}.
    *
-   * It exists for the optional CALL. `o.m?.()` short-circuits on whether the member is nullish, and
-   * the seam resolves a method name and calls it in one step — the one place a method name may be
-   * resolved at all — so the transform cannot see the answer and the host makes it, through ruling
-   * 1d's optional flag. What the host cannot then tell the transform is WHETHER it short-circuited,
-   * and the chain needs that as soon as anything follows: measured on the walker, `o.z?.().x` on an
-   * absent member is undefined while `o.m?.().x` on a member that returns undefined is L4010. A
-   * guard on the returned value would answer undefined for both. So a tail optional call is emitted
-   * and one with a continuation refuses, loudly and listed.
+   * The chain is emitted from the inside out — the innermost value first, each link wrapping what it
+   * produced — but the OPTIONAL CALL needs the opposite direction. `o.m?.()` short-circuits on
+   * whether the member is nullish, and the seam resolves a method name and calls it in one step, the
+   * one place a method name may be resolved at all, so the host makes that decision and the
+   * transform never sees the answer. What the host cannot then tell the transform is WHETHER it
+   * short-circuited: measured on the walker, `o.z?.().x` on an absent member is undefined while
+   * `o.m?.().x` on a member that RETURNS undefined is L4010, and a guard on the returned value
+   * answers undefined for both, so it would drop a refusal in silence. Ruling 1d's fifth argument
+   * hands the rest of the chain to the call that made the decision instead.
+   *
+   * So `rest` travels down to every link, and each one applies it to its own value — except the
+   * optional call, which compiles it into a closure the host applies or skips.
    */
-  private chainLink(node: AnyNode, guards: string[], tail = false): string {
+  private chainLink(node: AnyNode, guards: string[], rest: Rest | undefined): string {
+    const done = (code: string, g: string[]): string => (rest === undefined ? code : rest(code, g));
+
     if (node.type === "MemberExpression") {
-      let obj = this.chainLink(node.object as AnyNode, guards);
-      if (node.optional === true) obj = this.guard(obj, guards);
-      return this.seam("get", `${obj}, ${this.memberKey(node)}`);
+      return this.chainLink(node.object as AnyNode, guards, (objCode, g) => {
+        const obj = node.optional === true ? this.guard(objCode, g) : objCode;
+        return done(this.seam("get", `${obj}, ${this.memberKey(node)}`), g);
+      });
     }
     if (node.type === "CallExpression") {
       const callee = node.callee as AnyNode;
-      const args = this.args(node);
 
-      if (callee.type === "Identifier" && this.binding(callee) === undefined) {
+      // A primitive is dispatched by NAME, never by value: the validator forbids shadowing one, so a
+      // call spelled `turn` is always the effect. It is emitted BEFORE the ordinary argument list is
+      // built, because a primitive that defers its body hands that argument over differently.
+      if (callee.type === "Identifier" && this.binding(callee) === undefined && PRIMITIVES[callee.name as string] !== undefined) {
         const name = callee.name as string;
-        // A primitive is dispatched by NAME, never by value: the validator forbids shadowing one, so
-        // a call spelled `turn` is always the effect.
-        if (PRIMITIVES[name] !== undefined) return `(await ${this.seam("effect", `${q(name)}, [${args}], ${this.site(name, node)}`)})`;
-        if (FREE_VALUES.has(name)) return `(await ${this.seam("free", `${q(name)}, [${args}]`)})`;
+        return done(`(await ${this.seam("effect", `${q(name)}, [${this.effectArgs(name, node)}], ${this.site(name, node)}`)})`, guards);
+      }
+
+      const args = this.args(node);
+      if (callee.type === "Identifier" && this.binding(callee) === undefined && FREE_VALUES.has(callee.name as string)) {
+        return done(`(await ${this.seam("free", `${q(callee.name as string)}, [${args}]`)})`, guards);
       }
 
       if (callee.type === "MemberExpression") {
-        let obj = this.chainLink(callee.object as AnyNode, guards);
-        if (callee.optional === true) obj = this.guard(obj, guards);
-        if (node.optional === true && !tail) {
-          throw new SeamPending("an optional call with a chain after it (`o.m?.().x`)", "CallExpression");
-        }
-        // The one place a method NAME may be resolved: at the call. That is what lets `get` refuse
-        // the same name everywhere else (L4020). Ruling 1d's fourth argument asks the host to
-        // short-circuit to undefined when the member is nullish, calling nothing.
-        const optional = node.optional === true ? ", true" : "";
-        return `(await ${this.seam("call", `${obj}, ${this.memberKey(callee)}, [${args}]${optional}`)})`;
+        return this.chainLink(callee.object as AnyNode, guards, (objCode, g) => {
+          const obj = callee.optional === true ? this.guard(objCode, g) : objCode;
+          const key = this.memberKey(callee);
+          // The one place a method NAME may be resolved: at the call. That is what lets `get` refuse
+          // the same name everywhere else (L4020). An ordinary call's chain is written natively —
+          // nothing in it waits on a decision only the host made.
+          if (node.optional !== true) return done(`(await ${this.seam("call", `${obj}, ${key}, [${args}]`)})`, g);
+          // AND THE OPTIONAL FORM HANDS ITS ARGUMENTS OVER UNEVALUATED. The walker checks the member
+          // BEFORE it evaluates the argument list, so `o.m?.(await sleep("1s"))` on an absent member
+          // journals nothing while the same argument on a present method journals a sleep (lane H
+          // measured both). An emitted array has already run them, and a resume would replay a step
+          // the walker's run never recorded — so it is a thunk, and `async` because an argument may
+          // await. The ordinary form is unchanged and still hands over a plain array.
+          const cont = rest === undefined ? "" : `, ${this.continuation(rest)}`;
+          return `(await ${this.seam("call", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;
+        });
       }
 
-      let fn = this.chainLink(callee, guards);
-      if (node.optional === true) fn = this.guard(fn, guards);
-      const f = this.temp();
-      // L4011 at a non-function callee, behind a `typeof` so a call to a real function never leaves
-      // the compartment. `const f = 1; f()` is admitted by the validator (measured).
-      return `(await ((${f} = ${fn}), typeof ${f} === "function" ? ${f} : ${this.seam("callee", f)})(${args}))`;
+      return this.chainLink(callee, guards, (fnCode, g) => {
+        const fn = node.optional === true ? this.guard(fnCode, g) : fnCode;
+        const f = this.temp();
+        // L4011 at a non-function callee, behind a `typeof` so a call to a real function never leaves
+        // the compartment. `const f = 1; f()` is admitted by the validator (measured).
+        return done(`(await ((${f} = ${fn}), typeof ${f} === "function" ? ${f} : ${this.seam("callee", f)})(${args}))`, g);
+      });
     }
-    return this.expr(node);
+    return done(this.expr(node), guards);
+  }
+
+  /**
+   * The rest of a chain, as the closure ruling 1d's fifth argument takes.
+   *
+   * Its guards are its OWN: a link after the optional call is guarded only where the call answered,
+   * because a short-circuit already skipped everything here. `async` because a continuation may hold
+   * another call, and the host awaits what it applies.
+   */
+  private continuation(rest: Rest): string {
+    const value = `${this.n.temp}c${this.conts}`;
+    this.conts += 1;
+    const guards: string[] = [];
+    const body = rest(value, guards);
+    return `async (${value}) => ${this.short(body, guards)}`;
   }
 
   private guard(code: string, guards: string[]): string {
     const t = this.temp();
     guards.push(`(${t} = ${code}) === null || ${t} === ${VOID}`);
     return t;
+  }
+
+  /**
+   * A primitive's arguments, with the DEFERRED BODY handed over unevaluated.
+   *
+   * `fanOut` and `conclave` take their body at index 1, and the walker evaluates it INSIDE the
+   * scope, after the entry has begun — measured on the oracle: the same awaited effect journals
+   * after the scope entry in the body position and before it in the options bag. A body handed over
+   * already evaluated has journalled its effects in the wrong place, and a resume would replay a
+   * step the walker's run never recorded; it is the same rule as the optional call's arguments, and
+   * the host refuses a body that is not a thunk (L1000).
+   *
+   * WHICH primitives defer comes from the table — a scope-opener whose options sit at 2 — rather
+   * than from a list of names spelled here, so a fifth combinator cannot arrive with its body
+   * silently eager.
+   */
+  private effectArgs(name: string, node: AnyNode): string {
+    const spec = PRIMITIVES[name];
+    const defers = spec !== undefined && spec.opensScope && spec.optionsAt === 2;
+    return ((node.arguments as AnyNode[]) ?? [])
+      .map((a, i) => {
+        const code = a.type === "SpreadElement" ? `...${this.seam("iter", this.expr(a.argument as AnyNode))}` : this.expr(a);
+        return defers && i === 1 ? `async () => (${code})` : code;
+      })
+      .join(", ");
   }
 
   private args(node: AnyNode): string {
