@@ -2,9 +2,9 @@
  * The shape of an EMITTED module, as the two suites that ask about it both need to ask.
  *
  * Shared rather than copied because the property it measures became load-bearing in a way it was
- * not when it was written: lane H measured that inside the shipped SES compartment an unbound READ
- * evaluates to `undefined` and throws nothing (the scope proxy answers `has` for every name), while
- * an unbound WRITE still refuses. So the host's loud free-identifier clause is a backstop for the
+ * not when it was written: the engine host measured that inside the shipped SES compartment a free
+ * READ evaluates to `undefined` and throws nothing (the scope proxy answers `has` for every name),
+ * while a free WRITE still refuses. So the host's loud free-identifier clause is a backstop for the
  * write only, and the thing holding the read closed is this: that the emitted module has no free
  * identifier at all. A second copy of this walk could drift and still report an empty set, which is
  * exactly the answer a broken walk gives.

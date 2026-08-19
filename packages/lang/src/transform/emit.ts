@@ -106,10 +106,10 @@ class Emitter {
   }
 
   /**
-   * Reach a member that is SURFACED but not yet ruled. Empty at ruling 1c (`callee` was granted as
-   * member 14), and kept because it is the only route into `TransformMeta.proposed`: a member added
+   * Reach a member that is SURFACED but not yet in the contract. Empty once `callee` was granted as
+   * member 14, and kept because it is the only route into `TransformMeta.proposed`: a member added
    * here shows up as measured debt, where one added straight to {@link seam} is caught instead by
-   * the suite's unruled-member check — loudly, but after the fact.
+   * the suite's unruled-member check, loudly, but after the fact.
    */
   private propose(member: string, args: string): string {
     this.proposed.add(member);
@@ -146,8 +146,8 @@ class Emitter {
   private readName(node: AnyNode): string {
     const b = this.binding(node);
     const name = node.name as string;
-    // A CELL READ CARRIES THE BINDING'S NAME (F7, ruled). An absent own `v` is a read before the
-    // declaration ran, and the host answers L2004 for the binding it names — the code the walker
+    // A CELL READ CARRIES THE BINDING'S NAME (F7, contracted). An absent own `v` is a read before
+    // the declaration ran, and the host answers L2004 for the binding it names: the code the walker
     // gives, and one a program can catch and read, where a native binding gives a host
     // ReferenceError that `caught` can only report as L4000/host.
     if (b !== undefined) return b.cell ? this.seam("get", `${name}, ${q("v")}, ${q(b.name)}`) : name;
@@ -191,9 +191,9 @@ class Emitter {
   /**
    * The cell RECORDS a statement list declares, created empty at its top.
    *
-   * F7's shape, ruled: `born({})` at the top of the block, `set(cell, "v", init)` where the
+   * F7's shape, as contracted: `born({})` at the top of the block, `set(cell, "v", init)` where the
    * declaration is, and every read through `get(cell, "v", name)`. The record must exist before the
-   * closures that capture it, and its `v` must be ABSENT until the declaration runs — that absence
+   * closures that capture it, and its `v` must be ABSENT until the declaration runs. That absence
    * IS the dead zone, and it is what lets the host answer L2004 by name instead of a native
    * ReferenceError. `v: undefined` is a present key, so the host asks `hasOwn` and not truthiness.
    *
@@ -209,7 +209,7 @@ class Emitter {
           const b = this.binding(id);
           // ONLY THE DEAD-ZONE CLASS. A binding that is a cell for the write rule alone cannot be
           // read before its declaration, so its record is still built where it is declared, with
-          // its value already in it — one seam call rather than two on a path that runs.
+          // its value already in it: one seam call rather than two on a path that runs.
           if (b?.deadZone !== true || this.hoisted.has(b)) continue;
           this.hoisted.add(b);
           out += `const ${id.name as string} = ${this.seam("born", "{}")};\n`;
@@ -305,7 +305,7 @@ class Emitter {
    * `for`, in the shape the specification and the walker both give it.
    *
    * A `for (let ...)` head gives EACH ITERATION its own binding, and the copy happens after the body
-   * and before the update — so a closure made in one iteration keeps that iteration's value, and the
+   * and before the update, so a closure made in one iteration keeps that iteration's value, and the
    * update applies to the NEXT iteration's binding. Native `for (let ...)` does exactly this, but a
    * cell (see scope.ts) is a record, not a binding, and copying a reference per iteration would let
    * every closure watch the counter move. The carrier form below reproduces the walker's order for
@@ -327,8 +327,8 @@ class Emitter {
     }
 
     // THE CARRIERS ARE ALLOCATED FIRST, before any expression inside the loop is emitted. They are
-    // the one place a temporary outlives its own expression — they hold the binding's value ACROSS
-    // an iteration — so an expression emitted before them would take their slots and the loop would
+    // the one place a temporary outlives its own expression (they hold the binding's value ACROSS
+    // an iteration), so an expression emitted before them would take their slots and the loop would
     // overwrite its own counter. Measured, before this order: `for (let i = 0; i < 3; i = i + 1)`
     // never terminated and the run died on the step budget.
     const first = this.temp();
@@ -406,9 +406,9 @@ class Emitter {
   /**
    * `switch`, native.
    *
-   * The walker reproduces JavaScript's selection by hand — tests in source order, `default` skipped
+   * The walker reproduces JavaScript's selection by hand (tests in source order, `default` skipped
    * during matching and entered only when nothing matched, then fall-through from the selected
-   * clause — because a walker has to. Emitting a native `switch` is that same meaning, not an
+   * clause) because a walker has to. Emitting a native `switch` is that same meaning, not an
    * approximation of it, and a hand-rolled two-pass form here would be a second implementation of a
    * rule the engine already has.
    */
@@ -438,7 +438,7 @@ class Emitter {
    *
    * The name is passed on every write to a hoisted (dead-zone) cell and on NO other, which is what
    * the host reads as "refuse if the declaration has not run". The declaration's own initializing
-   * write is the one that ends the dead zone, so it never carries it — passing it there would make
+   * write is the one that ends the dead zone, so it never carries it, and passing it there would make
    * a binding refuse its own initialisation.
    */
   private cellWrite(b: Binding | undefined, target: string, value: string): string {
@@ -542,7 +542,7 @@ class Emitter {
    * A function.
    *
    * Parameters arrive as one rest array and are bound in the body, in order, exactly as the walker's
-   * `makeFunction` binds them — which is what makes a default, a pattern and a rest parameter one
+   * `makeFunction` binds them, which is what makes a default, a pattern and a rest parameter one
    * rule rather than three. Nothing observes a function's arity here: a function has no members.
    */
   private fn(node: AnyNode, name: string | null): string {
@@ -633,7 +633,7 @@ class Emitter {
         // `===`/`!==` are taken before the coercion refusal in the walker, so they are native here.
         if (op === "===" || op === "!==") return `(${l} ${op} ${this.expr(node.right as AnyNode)})`;
         // THE OPERAND TEMPORARIES ARE ALLOCATED BEFORE THE RIGHT SIDE IS EMITTED. A temporary's life
-        // is its own expression, so a sibling may reuse the slot — but `a` outlives the right
+        // is its own expression, so a sibling may reuse the slot, but `a` outlives the right
         // operand's evaluation, and emitting the right side first let it reuse `a`'s slot and
         // overwrite the left value in place. Measured: `(5 + 1) + (3 + 4)` answered 10 for 13.
         const a = this.temp();
@@ -641,7 +641,7 @@ class Emitter {
         const r = this.expr(node.right as AnyNode);
         // BOTH operands are assigned before the test. A `&&` between the assignments would
         // short-circuit past the right-hand one, so its effects would vanish and the host leg would
-        // refuse a stale value (lane H caught this in the design sketch).
+        // refuse a stale value (the engine host caught this in the design sketch).
         const native = `${a} ${op} ${b}`;
         const fast = STRING_SAFE.has(op)
           ? `(typeof ${a} === "number" && typeof ${b} === "number") || (typeof ${a} === "string" && typeof ${b} === "string")`
@@ -686,11 +686,11 @@ class Emitter {
 
   /** `x++`, `--o.count`: JavaScript's meaning, with the read charged through `Number` as the walker charges it. */
   /**
-   * `x++`'s operand, coerced under seam ruling 1c's `update` selector.
+   * `x++`'s operand, coerced through the seam's `update` selector.
    *
    * The walker reads the old value with a bare `Number(...)` and NO refusal: `o.c++` on a record is
-   * NaN there, while `-o.c` on the same record is L4018. Ruling 1c reproduced that and declined to
-   * rebuild it — silent coercion is the class the language exists to refuse, so `update` refuses a
+   * NaN there, while `-o.c` on the same record is L4018. The transform reproduces that and declines
+   * to rebuild it: silent coercion is the class the language exists to refuse, so `update` refuses a
    * non-number operand and the walker's answer is a DECLARED divergence (issue 646) with its own
    * cells, not a fidelity target. A number never reaches the host: the fast path keeps every counter
    * native, which is what makes the numeric corpus identical on both arms.
@@ -810,17 +810,17 @@ class Emitter {
   /**
    * One link of a chain, with everything written AFTER it handed down as {@link Rest}.
    *
-   * The chain is emitted from the inside out — the innermost value first, each link wrapping what it
-   * produced — but the OPTIONAL CALL needs the opposite direction. `o.m?.()` short-circuits on
+   * The chain is emitted from the inside out (the innermost value first, each link wrapping what it
+   * produced) but the OPTIONAL CALL needs the opposite direction. `o.m?.()` short-circuits on
    * whether the member is nullish, and the seam resolves a method name and calls it in one step, the
    * one place a method name may be resolved at all, so the host makes that decision and the
    * transform never sees the answer. What the host cannot then tell the transform is WHETHER it
    * short-circuited: measured on the walker, `o.z?.().x` on an absent member is undefined while
    * `o.m?.().x` on a member that RETURNS undefined is L4010, and a guard on the returned value
-   * answers undefined for both, so it would drop a refusal in silence. Ruling 1d's fifth argument
-   * hands the rest of the chain to the call that made the decision instead.
+   * answers undefined for both, so it would drop a refusal in silence. The seam's fifth argument to
+   * `call` hands the rest of the chain to the call that made the decision instead.
    *
-   * So `rest` travels down to every link, and each one applies it to its own value — except the
+   * So `rest` travels down to every link, and each one applies it to its own value, except the
    * optional call, which compiles it into a closure the host applies or skips.
    */
   private chainLink(node: AnyNode, guards: string[], rest: Rest | undefined): string {
@@ -853,15 +853,15 @@ class Emitter {
           const obj = callee.optional === true ? this.guard(objCode, g) : objCode;
           const key = this.memberKey(callee);
           // The one place a method NAME may be resolved: at the call. That is what lets `get` refuse
-          // the same name everywhere else (L4020). An ordinary call's chain is written natively —
-          // nothing in it waits on a decision only the host made.
+          // the same name everywhere else (L4020). An ordinary call's chain is written natively,
+          // and nothing in it waits on a decision only the host made.
           if (node.optional !== true) return done(`(await ${this.seam("call", `${obj}, ${key}, [${args}]`)})`, g);
           // AND THE OPTIONAL FORM HANDS ITS ARGUMENTS OVER UNEVALUATED. The walker checks the member
           // BEFORE it evaluates the argument list, so `o.m?.(await sleep("1s"))` on an absent member
-          // journals nothing while the same argument on a present method journals a sleep (lane H
-          // measured both). An emitted array has already run them, and a resume would replay a step
-          // the walker's run never recorded — so it is a thunk, and `async` because an argument may
-          // await. The ordinary form is unchanged and still hands over a plain array.
+          // journals nothing while the same argument on a present method journals a sleep (the
+          // engine host measured both). An emitted array has already run them, and a resume would
+          // replay a step the walker's run never recorded, so it is a thunk, and `async` because an
+          // argument may await. The ordinary form is unchanged and still hands over a plain array.
           const cont = rest === undefined ? "" : `, ${this.continuation(rest)}`;
           return `(await ${this.seam("call", `${obj}, ${key}, async () => [${args}], true${cont}`)})`;
         });
@@ -879,7 +879,7 @@ class Emitter {
   }
 
   /**
-   * The rest of a chain, as the closure ruling 1d's fifth argument takes.
+   * The rest of a chain, as the closure the seam's fifth argument to `call` takes.
    *
    * Its guards are its OWN: a link after the optional call is guarded only where the call answered,
    * because a short-circuit already skipped everything here. `async` because a continuation may hold
@@ -903,13 +903,13 @@ class Emitter {
    * A primitive's arguments, with the DEFERRED BODY handed over unevaluated.
    *
    * `fanOut` and `conclave` take their body at index 1, and the walker evaluates it INSIDE the
-   * scope, after the entry has begun — measured on the oracle: the same awaited effect journals
+   * scope, after the entry has begun. Measured on the oracle: the same awaited effect journals
    * after the scope entry in the body position and before it in the options bag. A body handed over
    * already evaluated has journalled its effects in the wrong place, and a resume would replay a
    * step the walker's run never recorded; it is the same rule as the optional call's arguments, and
    * the host refuses a body that is not a thunk (L1000).
    *
-   * WHICH primitives defer comes from the table — a scope-opener whose options sit at 2 — rather
+   * WHICH primitives defer comes from the table (a scope-opener whose options sit at 2) rather
    * than from a list of names spelled here, so a fifth combinator cannot arrive with its body
    * silently eager.
    */
@@ -943,7 +943,7 @@ class Emitter {
    * A settled `race` journals a `branchDigest` over the arms it will never walk into, and that
    * digest is a function of the SOURCE. The walker computes it from the object literal in hand;
    * the engine has to be handed the same material, so the branch bodies travel here with their
-   * positions stripped by `interpret.ts`'s OWN function — imported, never copied, because a second
+   * positions stripped by `interpret.ts`'s OWN function, imported and never copied, because a second
    * implementation of "what the code IS" is a second answer to whether a resumed run diverged.
    *
    * WHAT TRAVELS IS THE STRIPPED BODY, NOT A PER-BRANCH DIGEST. The walker hashes one array of

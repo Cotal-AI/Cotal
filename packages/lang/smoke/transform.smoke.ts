@@ -3,8 +3,8 @@
  *
  * The differential suite is the primary gate and it needs an engine to run against. This one holds
  * the properties that are true of the emitted string alone, and they are not small: the module has
- * NO unbound references (seam ruling 1 — the host evaluates it with zero endowments and passes the
- * context as the call argument), it reaches no seam member that has not been ruled, it is a pure
+ * NO unbound references (the host evaluates it with zero endowments and passes the context as the
+ * call argument), it reaches no seam member the contract has not granted, it is a pure
  * function of its source, and every node type the language admits has a rule.
  *
  * Each cell reports a COUNT. A parity check that silently walked an empty corpus would be green
@@ -105,18 +105,18 @@ const nodeTypes = (root: Node): Set<string> => {
 /**
  * A cell for an emitter fault to land on, and it has to be the first transform the file runs.
  *
- * The emitter throws on a name that resolves to nothing — a plain `Error`, not a language refusal,
+ * The emitter throws on a name that resolves to nothing: a plain `Error`, not a language refusal,
  * because a validated program cannot contain one. Every other transform in this file is awaited
  * straight into an assertion, so that throw left the block and killed the process: measured, the
  * suite dies with an uncaught Error after 30 named cells and ZERO failed cells. The mutation config
  * then graded the mutant that causes it by matching the THROW MESSAGE, which is a kill graded on a
- * crash rather than on a cell — the same illegible shape the engine suite closed at its own run
+ * crash rather than on a cell, the same illegible shape the engine suite closed at its own run
  * boundary. Captured here, the identical break reds by name, and the config aims at that name.
  */
 {
   // THE PROGRAM IS CHOSEN, NOT ARBITRARY, and the first one here was wrong. `const a = 1; log(a);`
-  // does NOT reach the emitter's throw when a declarator goes unrecorded — an unresolved plain read
-  // falls through to the free-name route — so the guard passed under the mutant and the file died
+  // does NOT reach the emitter's throw when a declarator goes unrecorded (an unresolved plain read
+  // falls through to the free-name route) so the guard passed under the mutant and the file died
   // 31 cells later exactly as before. Measured on both trees: a `for` header's declarator does
   // reach it. A guard whose subject cannot produce the fault is a cell that only looks like one.
   let thrown: unknown;
@@ -241,9 +241,9 @@ const CORPUS: readonly (readonly [string, string])[] = [
 {
   const reached = new Set<string>();
   for (const [, source] of CORPUS) for (const m of transform(source).meta.proposed) reached.add(m);
-  // PINNED, not asserted empty. It IS empty at ruling 1c — `callee` became member 14 and moved to
-  // SEAM_RULED — but the pin is what makes a future proposal visible: a member reached without a
-  // ruling reds here rather than sitting indistinguishable from a granted one, which is the
+  // PINNED, not asserted empty. It IS empty here (`callee` became member 14 and moved to
+  // SEAM_RULED) but the pin is what makes a future proposal visible: a member reached without a
+  // grant reds here rather than sitting indistinguishable from a granted one, which is the
   // forbidden move wearing a passing test.
   const expected: string[] = [];
   ok("the emission's unruled seam debt is exactly the surfaced list", JSON.stringify([...reached].sort()) === JSON.stringify(expected), {
@@ -258,8 +258,8 @@ const CORPUS: readonly (readonly [string, string])[] = [
 /**
  * What each rule COSTS, derived by hand and then held.
  *
- * A shape check can pass while a rule quietly stops firing — the module still parses, still has no
- * free names, still reaches only ruled members. The counts are what notice: a member read that
+ * A shape check can pass while a rule quietly stops firing, and the module still parses, still has
+ * no free names, still reaches only granted members. The counts notice: a member read that
  * stopped going through `get`, a loop header that stopped charging fuel, and a literal that stopped
  * being born all move a number here.
  */
@@ -282,7 +282,7 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   ["a spread is one iter", "const xs = [1]; log([...xs]);", { iter: 1 }],
   ["a for-of is one iter", "for (const x of [1]) { log(x); }", { iter: 1 }],
   // A bare callee is the one call shape the member law cannot cover: `call` resolves a name and
-  // calls in one step, and there is no name here. `callee` is member 14 (ruling 1c) and it carries
+  // calls in one step, and there is no name here. `callee` is member 14 and it carries
   // L4011, so a call on a value charges it once and a call on a member never does.
   ["a call on a value charges the callee law", "const f = (x) => x; log(f(1));", { callee: 1, call: 0 }],
   ["a method call charges no callee law", "const xs = [1]; log(xs.map((x) => x));", { callee: 0, call: 1 }],
@@ -328,9 +328,9 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
 ];
 
 {
-  // F7, RULED option (b). A binding a closure can read BEFORE ITS DECLARATION HAS RUN is refused
-  // L2004 by the walker — a code a program can catch and read — where a native JavaScript binding
-  // answers a host ReferenceError, which `caught` can only report as L4000/host. So that class
+  // F7, CONTRACTED option (b). A binding a closure can read BEFORE ITS DECLARATION HAS RUN is
+  // refused L2004 by the walker (a code a program can catch and read) where a native JavaScript
+  // binding answers a host ReferenceError, which `caught` reports as L4000/host. So that class
   // becomes a record: `born({})` at the top of its block, `set` at the declaration, and every read
   // through `get(cell, "v", name)` so the host answers L2004 for the binding by name.
   const shape = (source: string) => {
@@ -382,7 +382,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   const write = transform("let seen = 0; const bump = () => { seen = seen + 1; }; bump(); log(seen);").module;
   // ONLY THE HOISTING HALF, on purpose: whether that program has a cell at all is section 8's claim,
   // and asserting it here too would make this cell the first to red for every mutation about the
-  // write rule — a true red that names the wrong rule.
+  // write rule: a true red that names the wrong rule.
   ok("a cell for the write rule alone is not hoisted", !write.includes("born({})"), write.slice(0, 220));
 
   // AND F7 OVER WRITES, ruled after the read half. The same predicate decides a WRITE that can land
@@ -401,7 +401,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
 
   // AND THE ORACLE SAYS SO, for every clause: measured, not quoted. Each dead-zone program refuses
   // L2004 on the walker and each native one answers its value, which is what the classification is
-  // reproducing — and what the differential suite will hold the engine to once `get` takes the name.
+  // reproducing, and what the differential suite will hold the engine to once `get` takes the name.
   const answers: string[] = [];
   for (const [, source] of [...DEAD_ZONE, ...HOISTED_ONLY, ...NATIVE_CAPTURE]) {
     try {
@@ -444,7 +444,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
 {
   // `{ __proto__: x }` sets a prototype in JavaScript and names an own field in this language. The
   // validator refuses the literal spelling (L1028), and a COMPUTED key cannot reach a prototype at
-  // all — so the emitted form cannot express the hazard whatever the validator does later.
+  // all, so the emitted form cannot express the hazard whatever the validator does later.
   const { module } = transform("const o = { a: 1 }; log(o);");
   ok("an object literal's keys are emitted computed", module.includes('{ ["a"]: 1 }'), module.slice(0, 200));
 }
@@ -455,7 +455,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // THE DECLARED DIVERGENCE OF RULING 1c, held by its oracle rather than by a sentence. The walker
   // reads `x++`'s old value through a bare `Number(...)` with no refusal, so a record answers NaN
   // there; the engine refuses it L4018 through `unary("update")`. That is a deliberate departure
-  // (issue 646 — silent coercion is the class the language refuses everywhere else), and this cell
+  // (issue 646: silent coercion is the class the language refuses everywhere else), and this cell
   // measures the walker's side of it. When 646 lands, the walker starts refusing, this cell reds,
   // and the divergence is retired in the same change instead of being remembered.
   const logs: unknown[] = [];
@@ -487,7 +487,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
 
 {
   // The engine has NO AST at run time, and a settled `race` journals a `branchDigest` over the arms
-  // it never walked. So the branch bodies travel in the call site's payload — and the property that
+  // it never walked. So the branch bodies travel in the call site's payload, and the property that
   // matters is not that they travel but that they SURVIVE the trip: the walker hashes the value it
   // holds in memory, the engine hashes what arrived as JSON, and a journal entry that differs by a
   // byte is a divergence. This cell hashes both and requires the same string.
@@ -616,7 +616,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   );
 
   // AND A `?.` WRITTEN AFTER IT IS GUARDED INSIDE the closure. Its guard must not run when the call
-  // short-circuited — there is nothing to test then — so the continuation carries its own guards
+  // short-circuited (there is nothing to test then) so the continuation carries its own guards
   // rather than adding them to the chain's.
   const nested = transform("const o = { m: () => ({ x: 1 }) }; log(o.m?.()?.x);").module;
   const at = nested.indexOf('.call(o, "m"');
@@ -696,7 +696,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   }
   // THE SENTENCE NAMES THE SET THE LOOP WALKS, and here that matters more than usual because the
   // set cannot be everything: the property is about the EMITTER, and no loop enumerates every
-  // program the language admits. So this is a SAMPLE — this suite's corpus, written to reach every
+  // program the language admits. So this is a SAMPLE: this suite's corpus, written to reach every
   // node type, plus the seven programs above that reach the arities the corpus does not. Named as
   // if it were universal it would read as a guarantee about the emitter, which nothing here can
   // give. The cell below is what keeps the sample honest in the other direction.
@@ -729,7 +729,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
  * commit that argued anchors must identify one thing); a sentence that is a PREFIX of a sibling
  * cell can report a kill off the wrong one (one of mine matched three); and a sentence that is not
  * a cell at all but a THROW MESSAGE grades a crash as a kill (one of mine did, for as long as it
- * had existed). Exactly one printed cell, per aim, catches all three — zero is a stale sentence or
+ * had existed). Exactly one printed cell, per aim, catches all three: zero is a stale sentence or
  * a throw, more than one is the prefix trap.
  *
  * It also asserts the section-0 guard is still the file's first transform, BY OFFSET in this file's
@@ -755,8 +755,8 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   };
   ok("the config audited here is the one that names this suite", cfg.suite.endsWith("transform.smoke.ts"), cfg.suite);
   // THIS BLOCK'S OWN CELLS COUNT THEMSELVES, and they have to: a config aims mutants at both of
-  // them, and neither name is in `CELLS` yet when the audit runs — `ok` records after it decides.
-  // Left out, an aim at either reads as a stale sentence and the audit reds over its own existence.
+  // them, and neither name is in `CELLS` yet when the audit runs, since `ok` records after it
+  // decides. Left out, an aim at either reads as a stale sentence and the audit reds over itself.
   // Both are named here rather than at their `ok`, so the list and the cells cannot drift.
   const AUDIT = "every mutation's expectRed names exactly one cell this suite printed";
   const EXCEPTION = "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why";
@@ -773,7 +773,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   //
   // Every mutation here declares a `completionMarker` naming a cell UPSTREAM of its aim, so a run
   // that died early cannot be counted as its kill. Exactly one cannot: the cell that aim moved onto
-  // is the file's FIRST cell, and nothing prints before it — left in place, the marker turned a
+  // is the file's FIRST cell, and nothing prints before it. Left in place, the marker turned a
   // textbook kill into INCONCLUSIVE, because by that rule the run had not finished. The exception is
   // right and it is also the kind of thing that becomes a habit if it is only a comment, so it is
   // three assertions rather than a note: there is exactly ONE bare mutant, its aim IS the first cell
@@ -791,7 +791,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // The harness tests a marker as a SUBSTRING of the whole run, so a marker that also occurs inside
   // an EARLIER cell's name is satisfied by a run that stopped at that earlier one: the guard weakens
   // from "reached the cell I named" to "reached whichever cell shares its wording", and a death in
-  // between is graded rather than reported. That is not hypothetical — it was live in the sibling
+  // between is graded rather than reported. That is not hypothetical: it was live in the sibling
   // seam config this week, with every verdict it produced still correct, which is how an ambiguous
   // instrument survives being read. The other half fails the opposite way: a marker AT or AFTER its
   // own aim cannot print on a kill at all, so a textbook kill grades INCONCLUSIVE (measured here at

@@ -1,15 +1,15 @@
 /**
  * The seam, as data: the members the emitted module may reach, and the names it may not collide with.
  *
- * The contract (`.internal/plans/cotal-lang-engine-wave.md`, "The transform/host contract", plus
- * seam ruling 1) says neither lane widens the seam alone. That is mechanized from this file:
- * `transform.smoke` re-parses the emitted string, resolves its scopes, and requires ZERO unbound
- * references and every `<ctx>.<member>` it reaches to be listed here. A member added without a
- * ruling is a change a reader sees in one place, not a call buried in an emitter.
+ * The transform and its host share this seam, and neither side widens it on its own. That is
+ * mechanized from this file: `transform.smoke` re-parses the emitted string, resolves its scopes,
+ * and requires ZERO unbound references and every `<ctx>.<member>` it reaches to be listed here. A
+ * member added without changing this table is a change a reader sees in one place, not a call
+ * buried in an emitter.
  */
 
 /**
- * The members seam ruling 1 grants, each with the range of ARGUMENT COUNTS the emitter may pass.
+ * The members the seam grants, each with the range of ARGUMENT COUNTS the emitter may pass.
  *
  * The arity is written here rather than left implicit in the emitter because a member's shape is as
  * much of the contract as its name, and the two that vary are exactly where a divergence hid from a
@@ -59,7 +59,7 @@ export const SEAM_MEMBERS: Readonly<Record<string, readonly [number, number]>> =
   callee: [1, 1],
 });
 
-/** The member NAMES ruling 1 grants. Derived from the table above, so the two cannot disagree. */
+/** The member NAMES the seam grants. Derived from the table above, so the two cannot disagree. */
 export const SEAM_RULED: ReadonlySet<string> = new Set(Object.keys(SEAM_MEMBERS));
 
 /**
@@ -77,8 +77,8 @@ export const SEAM_PROPOSED: Readonly<Record<string, string>> = Object.freeze({})
  * Every operator selector the emitter hands `unary`, and no other.
  *
  * `!` and `typeof` never reach here: neither can refuse, so both are emitted natively. `update` is
- * `UpdateExpression`'s operand read, and ruling 1c gave it the coercion refusal rather than the
- * walker's bare `Number(...)` — the walker's answer there (NaN for a record, 6 for `"5"++`) is the
+ * `UpdateExpression`'s operand read, and it carries the coercion refusal rather than the walker's
+ * bare `Number(...)`. The walker's answer there (NaN for a record, 6 for `"5"++`) is the
  * silent-coercion class, filed as issue 646 and carried as a declared divergence with named cells.
  * An op set is as much a contract as a member name, which is why it is written down here rather
  * than left implicit in the emitter.
@@ -98,10 +98,10 @@ export interface Names {
 /**
  * Pick emitter names that cannot collide with anything the program spells.
  *
- * Seam ruling 1 amended the module shape to a CLOSED function expression with zero free
- * identifiers, after default_agent falsified the premise this file first carried: the validator
- * admits `$x`, `__y`, and a program-declared `__ctx`. So the ctx parameter's name is derived from
- * the source rather than assumed, and the derivation is deterministic — the same source picks the
+ * The module shape is a CLOSED function expression with zero free identifiers. That replaced an
+ * earlier premise this file carried, which a review falsified: the validator admits `$x`, `__y`,
+ * and a program-declared `__ctx`. So the ctx parameter's name is derived from the source rather
+ * than assumed, and the derivation is deterministic: the same source picks the
  * same names on every run, which is what makes `transform` byte-reproducible.
  */
 export function pickNames(identifiers: ReadonlySet<string>): Names {

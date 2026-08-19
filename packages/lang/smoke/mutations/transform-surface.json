@@ -72,7 +72,7 @@
       "expectRed": "the emitted module has no unbound reference: the undefined value",
       "completionMarker": "ok and reaches no seam member outside the ruling: empty statement",
       "cell": "the emitted module has no unbound reference: the undefined value",
-      "note": "Seam ruling 1: the host evaluates the module with ZERO endowments. `undefined` is a global binding, so spelling it is an unbound reference - one the compartment happens to satisfy today, which is why only a resolver over the emitted code can see it."
+      "note": "The host evaluates the module with ZERO endowments. `undefined` is a global binding, so spelling it is an unbound reference - one the compartment happens to satisfy today, which is why only a resolver over the emitted code can see it."
     },
     {
       "name": "a declaring identifier is not recorded, so the emitter cannot resolve a name it declared",

@@ -1,7 +1,7 @@
 /**
  * `transform(source, opts)`: validated cotal-lang source in, a JavaScript module string out.
  *
- * PURE. No clock, no filesystem, no randomness, no counter that outlives a call — the same source
+ * PURE. No clock, no filesystem, no randomness, no counter that outlives a call: the same source
  * produces the same bytes, which is what lets a run pin to its program and a host cache the result.
  * `transform.smoke` holds that as a cell rather than a claim.
  *

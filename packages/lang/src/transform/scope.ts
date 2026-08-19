@@ -4,7 +4,7 @@
  *
  * A cell is L2032's binding half, and it exists because the walker's rule is a runtime one. `Env.set`
  * refuses a write whose binding was declared at a shallower concurrency depth than the frame doing
- * the writing, and the depth travels with the BINDING — which is what catches the shape the
+ * the writing, and the depth travels with the BINDING, which is what catches the shape the
  * validator provably cannot see (`scopes.smoke` §8: a record of thunks returned from a function, so
  * there is no function node at the combinator call to check). Native JavaScript bindings carry no
  * depth, so a transform that emits them verbatim loses that refusal.
@@ -12,7 +12,7 @@
  * The fix needs no new seam member. A binding written from inside a DEEPER function than the one
  * that declared it becomes a one-field record built with `__ctx.born({v})`: birth depth is stamped
  * at the declaration, `__ctx.set` refuses the write from a deeper frame, and L2032's binding half
- * lands on the same door as its value half. Every other binding stays a native `const`/`let` —
+ * lands on the same door as its value half. Every other binding stays a native `const`/`let`,
  * which is sound rather than merely fast: a binding no nested function writes can only be written
  * at the depth it was declared at, so there is nothing for the check to refuse.
  */
@@ -109,18 +109,18 @@ class Walk {
   /**
    * F7, ruled: which captured bindings can be READ BEFORE THEY HOLD A VALUE, and so must be cells.
    *
-   * The walker refuses that read L2004 — a code a program can catch and read — while a native
+   * The walker refuses that read L2004 (a code a program can catch and read) while a native
    * JavaScript binding answers a host ReferenceError, which `caught` can only report as L4000/host.
    * So a binding a closure could read early becomes a record, `get` answers L2004 for it by name,
    * and the two engines agree. Same-block direct reads never reach here: the validator refuses them
    * (measured, `log(x); const x = 1;` is a validation error).
    *
    * The rule, as ruled, over the path from the read out to the binding's own scope:
-   *   (i)  ANY hoisted `function` declaration on the path — at any depth, because an arrow inside a
+   *   (i)  ANY hoisted `function` declaration on the path, at any depth, because an arrow inside a
    *        hoisted function called early is reachable just the same (measured: `const r = f()` with
    *        `function f() { const g = () => x; return g(); }` and `const x = 1` after is L2004); or
    *   (ii) the OUTERMOST function on the path is an expression whose enclosing statement is not
-   *        textually after the end of the declarator — which deliberately includes an arrow inside
+   *        textually after the end of the declarator, which deliberately includes an arrow inside
    *        the binding's own initializer, since `const x = (() => x)()` is L2004 (measured).
    * Every other captured binding stays native, and that class keeps its own evidence: `const x = 1`
    * followed by a closure reading it answers 1 on both engines.
@@ -143,8 +143,8 @@ class Walk {
     this.bindingOf.set(node, b);
     if (b.funcId !== funcId && b.kind !== "const") b.cell = true;
     // AND F7 OVER WRITES, ruled after the read half landed. A write reaches the dead zone by the
-    // same path a read does — measured on the walker, `n = 2` inside a hoisted `function` called
-    // before `let n = 1` is a CATCHABLE L2004 and `n` still reads 1 afterwards — so the same
+    // same path a read does. Measured on the walker, `n = 2` inside a hoisted `function` called
+    // before `let n = 1` is a CATCHABLE L2004 and `n` still reads 1 afterwards, so the same
     // predicate decides it, and the record has to be hoisted for the same reason: an unhoisted one
     // is still in its own temporal dead zone when the early write evaluates the argument, and the
     // native ReferenceError never reaches the seam.
@@ -157,7 +157,7 @@ class Walk {
    * The declaring Identifier node is recorded in `bindingOf` too, not only its references: the
    * emitter asks the same question at a declaration as at a use (is this a cell?), and answering
    * "no" for every declaration because the node was not in the map is a cell that is emitted as a
-   * plain binding — the L2032 refusal silently gone.
+   * plain binding, with the L2032 refusal silently gone.
    */
   private declarePattern(node: AnyNode, scope: Scope, kind: Binding["kind"], declEnd: number | null = null): void {
     switch (node.type) {
@@ -252,7 +252,7 @@ class Walk {
   }
 
   /**
-   * A function: its own scope, its own id. The id is what the cell rule compares — a write from a
+   * A function: its own scope, its own id. The id is what the cell rule compares: a write from a
    * different function id than the declaration's is a write from a frame the walker would have
    * charged a deeper depth.
    */

@@ -164,7 +164,7 @@
       "replace": "    if (VALUE_NAMES.includes(name)) return name;",
       "expectRed": "every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch",
       "cell": "every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch",
-      "note": "Measured: NOT ONE behavioural cell in this suite reds. The free name resolves to the real global in the harness's evaluator, and lane H measured that inside the shipped SES compartment an unbound READ answers `undefined` and throws nothing either - so both arms agree, every journal matches, and the only thing that notices is the resolver over the emitted text. That is the whole argument for running it over the corpus this gate actually executes."
+      "note": "Measured: NOT ONE behavioural cell in this suite reds. The free name resolves to the real global in the harness's evaluator, and the engine host measured that inside the shipped SES compartment an unbound READ answers `undefined` and throws nothing either - so both arms agree, every journal matches, and the only thing that notices is the resolver over the emitted text. That is the whole argument for running it over the corpus this gate actually executes."
     },
     {
       "name": "the shape leg is never compared, so the gate is back to comparing renderings",
@@ -182,7 +182,7 @@
       "replace": "          : typeof v;",
       "expectRed": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function",
       "cell": "the comparator finds a difference the rendering cannot show: an empty record against one carrying a function, which is the nesting a shallow signature missed",
-      "note": "The first spelling of this signature WAS shallow, and lane H measured that it failed the two rows it had been added for: `{ g: (x) => x }` and `{}` both read `object`, and it is the NESTED closure rather than the bare one that killed the worker with a DataCloneError. The top-level pairs still pass shallow, so only the nesting controls red."
+      "note": "The first spelling of this signature WAS shallow, and the engine host measured that it failed the two rows it had been added for: `{ g: (x) => x }` and `{}` both read `object`, and it is the NESTED closure rather than the bare one that killed the worker with a DataCloneError. The top-level pairs still pass shallow, so only the nesting controls red."
     },
     {
       "name": "negative zero loses its sign in the signature, so `0 / -1` reads as zero",
@@ -277,7 +277,7 @@
     {
       "name": "a matrix row is dropped, and every surviving citation still resolves",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "    [\"3. a v2 record with entries, on the walker: refused L5008 — the defence behind the dispatch, for a caller who reaches past it\", HERE, [\"and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock\"]],\n",
+      "find": "    [\"3. a v2 record with entries, on the walker: refused L5008, the defence behind the dispatch, for a caller who reaches past it\", HERE, [\"and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock\"]],\n",
       "replace": "",
       "expectRed": "the index carries all eight rows, in order, and none of them can be dropped quietly",
       "cell": "the index carries all eight rows, in order, and none of them can be dropped quietly",
@@ -313,8 +313,8 @@
     {
       "name": "a retired divergence is repaired by re-pinning both arms instead of being deleted",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "  [\"ruling 1c / issue 646: an update's operand is a numeric string\", 'let n = \"5\"; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', \"L4018 logs [] shapes []\"],\n",
-      "replace": "  [\"ruling 1c / issue 646: an update's operand is a numeric string\", 'let n = 5; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', 'logs [[6]] shapes [[\"number\"]]'],\n",
+      "find": "  [\"issue 646: an update's operand is a numeric string\", 'let n = \"5\"; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', \"L4018 logs [] shapes []\"],\n",
+      "replace": "  [\"issue 646: an update's operand is a numeric string\", 'let n = 5; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', 'logs [[6]] shapes [[\"number\"]]'],\n",
       "expectRed": "every declared divergence names two different answers",
       "cell": "every declared divergence names two different answers, so a retired one cannot be re-pinned into a permanent row",
       "note": "The failure this list is built to prevent, in the shape it actually arrives in. Issue 646 lands, the walker stops coercing, the row reds - and the repair that costs least is to re-pin BOTH sides to the new common answer, which leaves a program that agrees on both arms sitting inside the declared-divergence list, passing forever and counted as a divergence in the line printed above it. The mutant is exactly that repair: the row's own cell still passes by construction, and only the guard sees it."

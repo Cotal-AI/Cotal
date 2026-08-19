@@ -6,13 +6,13 @@
  * engine is the same engine: a transform can emit a closed module that reaches every ruled member
  * and still walk a program in a different order, and order is exactly what a step key records. So
  * each program here runs on the walker and on the engine with nothing between them, and the arms
- * must agree on the value, the log, the refusal, AND the journal entry for entry — the step keys
+ * must agree on the value, the log, the refusal, AND the journal entry for entry: the step keys
  * and their sequence, not merely the output.
  *
  * THREE LISTS, AND THE TWO SMALL ONES ARE THE HONEST PART. `CORPUS` must be identical on both
- * arms. `DIVERGENT` is what a ruling deliberately made different, each with the answer BOTH arms
+ * arms. `DIVERGENT` is what a decision deliberately made different, each with the answer BOTH arms
  * give, so the day the divergence is retired this suite reds instead of quietly passing. `HELD` is
- * what the engine cannot run yet, each pinned to the way it fails — landing the missing member
+ * what the engine cannot run yet, each pinned to the way it fails, so landing the missing member
  * reds the hold rather than leaving a program silently outside the gate. A suite that dropped
  * either list would report the same green over a smaller universe.
  *
@@ -26,8 +26,8 @@
  * below, because a reader who takes "both engines" from this header will not go looking for the
  * qualification. Every arm here reaches `runOnEngine`/`resumeOnEngine` directly and nothing in this
  * file crosses a worker boundary; the confined evaluator is `engine.smoke`'s worker leg. In-process
- * is the right seam for a journal diff — entries compare entry for entry only when nothing
- * serializes between them — but the two transports are NOT the same function, measured rather than
+ * is the right seam for a journal diff (entries compare entry for entry only when nothing
+ * serializes between them) but the two transports are NOT the same function, measured rather than
  * assumed: a structured clone keeps a Date a Date, NaN as NaN, -0 negative and an own `undefined`
  * present, while the durable journal's `JSON.stringify` flattens every one of those to a string,
  * null, 0, and an absent key. So a divergence introduced by the WORKER transport could not red this
@@ -75,7 +75,7 @@ const failures: string[] = [];
  * COUNTING, NOT FAIL-FAST, and that is a property of what this suite is for.
  *
  * A differential run's answer is "which programs disagree", and a suite that exits at the first one
- * reports a single divergence where there may be nine — the other lane reads this output to know
+ * reports a single divergence where there may be nine, and the engine host reads this output to know
  * what to fix. It also makes the mutation proof honest: with a fail-fast suite every mutation is
  * graded on whichever cell happens to be earliest, so a mutation aimed at ORDER is judged by a cell
  * about member reads. The summary line at the bottom prints on both outcomes, which is what lets
@@ -130,24 +130,24 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
 
 const j = (v: unknown) => JSON.stringify(v);
 
-/** Which language each engine speaks — the pin every cross-engine refusal below is named for. */
+/** Which language each engine speaks: the pin every cross-engine refusal below is named for. */
 const versionOf = { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VERSION };
 
 /**
  * What a logged value IS, where JSON cannot say.
  *
  * `JSON.stringify` draws `undefined`, `null`, a FUNCTION, NaN and both infinities all as `null`, so
- * a comparison over the rendering answers "identical" for five different facts — including the one
+ * a comparison over the rendering answers "identical" for five different facts, including the one
  * this wave cares about most, a live closure handed to a host where the other arm handed absence.
  * Measured, not reasoned: `log((x) => x)` and `log(o.b)` both render `[[null]]` on the walker.
  *
- * Five decisions here, each on purpose, and the fourth and fifth were lane H's after they ran the
- * first spelling against the pairs it has to separate. `null` is NAMED rather than left as
+ * Five decisions here, each on purpose, and the fourth and fifth came from the engine host after it
+ * ran the first spelling against the pairs it has to separate. `null` is NAMED rather than left as
  * "object", because undefined-versus-null is the distinction this wave leans on hardest (it is why
  * `get`'s cell test is `hasOwn` and not truthiness). NaN and the infinities are named for the same
  * reason they are the problem: JSON draws them as `null` too. NEGATIVE ZERO is named, because JSON
  * draws it as `0` and `0 / -1` is an ordinary program. A container that CARRIES CODE anywhere
- * inside it is named apart from one that does not — a shallow `typeof` drew `{ g: (x) => x }` and
+ * inside it is named apart from one that does not: a shallow `typeof` drew `{ g: (x) => x }` and
  * `{}` alike, which is the exact pair these rows exist to separate, and it is the NESTED closure
  * rather than the bare one that killed the worker with a DataCloneError. Everything else is bare
  * `typeof`: this stays a SHAPE, one bit per hazard, with no key names, depth or ordering in it, so
@@ -156,7 +156,7 @@ const versionOf = { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VER
  * ONE OF THESE FIVE DECISIONS HAS NO MUTANT BEHIND IT, and the reason is worth more than the note.
  * Naming `null` is descriptive, not discriminating: a control can only grade this signature where
  * the RENDERING already calls both arms identical, so a pair that could grade the `null` clause has
- * to be `null` against a value JSON also draws as `null` — and that set is exactly undefined, a
+ * to be `null` against a value JSON also draws as `null`, and that set is exactly undefined, a
  * function, NaN, +Infinity and -Infinity, every one of them separately named already. `null`
  * against a record diverges a leg earlier, on the rendering. So an unnamed `null` falling to typeof
  * "object" cannot collide with anything, and no mutant for this clause can exist. That is a
@@ -167,7 +167,7 @@ const versionOf = { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VER
  *
  * `carriesCode` CATCHES `assertNoCode` rather than re-implementing it, which is the load-bearing
  * part: that predicate is what the log rule itself is built on, so the signature and the rule
- * cannot drift apart. A hand-rolled walk here — which is what the first version of this file had —
+ * cannot drift apart. A hand-rolled walk here (which is what the first version of this file had)
  * is a second answer to "does this carry code", and the first one to change is the one nobody
  * re-reads. It carries its own `seen` set, so a cyclic value costs nothing extra, and arrays come
  * along for free because `typeof []` is "object": `[fn]` and `[undefined]` both render `[null]`.
@@ -210,7 +210,7 @@ const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((li
  * while" is a premise, so it is measured over the corpus below rather than asserted here.
  *
  * THE LIST IS BY MECHANISM, NOT BY THE FIVE THAT CAME TO MIND. The first spelling named -0, NaN,
- * the infinities, absence and code — the five the log leg's signature names — and would have called
+ * the infinities, absence and code (the five the log leg's signature names) and would have called
  * an entry faithful while it carried a `Date` (drawn as its own ISO string, so the date and the
  * string compare equal), a `Map` or a `Set` (drawn as `{}`, so a full one and an empty record
  * compare equal), or a HOLE in an array (`Object.entries` skips holes, so the walk never reached
@@ -242,11 +242,11 @@ const jsonBlind = (v: unknown, path: string): string[] => {
  *
  * THE LOGS ARE HERE FOR REFUSING ARMS TOO, and they were not, which cost a whole leg of every
  * declared divergence that ends in an abort. Collapsed to the bare code, a row pinned to "L4016"
- * says the engine refused and says NOTHING about when — so a sink that hands the line to the host
+ * says the engine refused and says NOTHING about when, so a sink that hands the line to the host
  * and refuses afterwards satisfies the pin exactly. Measured: with the old spelling, moving
  * `run.onLog?.(line)` above the walk in the engine's log sink left all three L4016 rows BYTE
  * IDENTICAL while the closure the rule promises never to hand over reached the host on every one.
- * The corpus never had this hole — `differences` compares logs whether or not an arm refused — so
+ * The corpus never had this hole (`differences` compares logs whether or not an arm refused) so
  * this was a divergence-only blind spot, which is the half of the file with the fewest readers.
  */
 const answer = (a: Arm): string => `${a.error !== null ? `${a.error} ` : ""}logs ${j(a.logs)} shapes ${shapes(a.logs)}`;
@@ -256,7 +256,7 @@ const differences = (a: Arm, b: Arm): string[] => {
   const out: string[] = [];
   // NO PROGRAM REACHES THIS LEG TODAY: a top-level `return` is a validation refusal (L1024), so a
   // validated program's run value is always absence. Kept rather than deleted, because the cell
-  // below MEASURES that over the whole corpus — the day a program can produce a value, that cell
+  // below MEASURES that over the whole corpus: the day a program can produce a value, that cell
   // reds and this line is live evidence again instead of a comparison nobody restored.
   if (j(a.value) !== j(b.value)) out.push("value");
   if (j(a.logs) !== j(b.logs)) out.push("logs");
@@ -294,7 +294,7 @@ const WORKFLOW_SCRIPT = {
  * Without that split, "identical on both engines" is satisfied by two arms refusing the same thing
  * for a reason nobody wrote the program to test. Measured, and this is why the split exists:
  * `"AB".lower()` and `(2.6).round()` are FREE builtins and not method names, so the curated-methods
- * program errored L4014 on both arms before its first log — a green cell whose subject was never
+ * program errored L4014 on both arms before its first log: a green cell whose subject was never
  * reached, and the only passing cell the string and number tables had.
  */
 const CORPUS: readonly (readonly [string, string, object, string?])[] = [
@@ -384,8 +384,8 @@ log("rounds", rounds, r.status);`,
   ["a captured mutable binding", "let seen = 0; const bump = () => { seen = seen + 1; }; await bump(); log(seen);", {}],
   ["a recursive named function expression", "const fact = function walk(n) { return n === 0 ? 1 : n * walk(n - 1); }; log(await fact(4));", {}],
   // MEASURED, not assumed: `lower` and `round` are free builtins and not method names, so the
-  // program this cell used to run refused L4014 at `"AB".lower()` before its first log — the string
-  // and number tables had no passing cell at all. These are their real entries.
+  // program this cell used to run refused L4014 at `"AB".lower()` before its first log, and the
+  // string and number tables had no passing cell at all. These are their real entries.
   ["curated methods", 'const xs = [3, 1, 2]; log(xs.map((x) => x + 1), sort(xs), "AB".toLowerCase(), "a,b".split(","), (2.6).toFixed(1), json.stringify({ a: 1 }));', {}],
   ["optional chains", "const o = { a: { b: 1 } }; log(o.a?.b, o.z?.b, o.z?.b.c);", {}],
   // ORDER, WHICH IS WHAT A STEP KEY RECORDS. Both of these journal two sleeps, and the only thing
@@ -430,7 +430,7 @@ log("rounds", rounds, r.status);`,
   ["the seeded pure draws", 'log(random(), randomInt(10), pick([1, 2, 3]), duration("1m"));', {}],
   ["a pure draw inside a function, twice", "const d = () => random(); log(await d(), await d());", {}],
   ["this run's own metadata", "const r = run(); log(r.startedAt > 0, len(r.programHash) > 0);", {}],
-  // F6, ALL OF IT, held out of this corpus until lane H's host landed (d556c504) and moved up here
+  // F6, ALL OF IT, held out of this corpus until the engine host landed (d556c504) and moved up here
   // in the same change: the flag, the chain the host finishes, and the argument that must not run.
   ["an optional call on a member", "const o = { m: () => 1 }; log(await o.m?.(), await o.z?.());", {}],
   [
@@ -571,7 +571,7 @@ log("rounds", rounds, r.status);`,
   ["a scope combinator", 'await parallel({ one: () => sleep("1m", { name: "one" }), two: () => sleep("2m", { name: "two" }) }, { name: "both" });', {}],
   // ISSUE 647, SETTLED UPSTREAM, AND KEPT HERE RATHER THAN DELETED. `len` used to read the host's
   // `.length` off whatever it was handed, so a function answered the arity of each engine's own
-  // closure wrapper — 2 on the walker's `(frame, args)` pair, 0 on the engine's rest parameter —
+  // closure wrapper (2 on the walker's `(frame, args)` pair, 0 on the engine's rest parameter)
   // and the two arms disagreed on a value no program had written. It now counts an array's
   // elements and a string's units and refuses every other kind with L4016 in the language, before
   // the host is reached. So these three agree and belong in the corpus rather than in DIVERGENT;
@@ -634,7 +634,7 @@ const reachedKinds = new Set<string>();
   // stops being a comparison nobody can reach.
   ok("no validated program produces a run value, so the comparator's value leg is exercised by hand alone", valued.length === 0, valued);
   // AND THE ENTRY LEG'S PREMISE, measured the same way. `differences` walks the journal entry by
-  // entry through `JSON.stringify` and nothing else — no shape signature, unlike the log leg — so a
+  // entry through `JSON.stringify` and nothing else (no shape signature, unlike the log leg) so a
   // journal that differed only by a negative zero, a NaN, an infinity or a hole in an array would
   // compare IDENTICAL, and identical journals is the whole claim of this gate. That is sound today
   // and only today: it holds because no effect records such a value, which is a fact about the
@@ -674,8 +674,8 @@ const reachedKinds = new Set<string>();
   // been from the start.
   //
   // AND THIS IS THE ONE CELL HERE THAT IS NOT A COMPARISON, WHICH IS WHY IT IS NEEDED. Both arms
-  // reach `Journal.bind` through the same two call sites in `perform.ts` — the engine has no bind
-  // wiring of its own — so a handler that binds a `Date` binds it identically on both, and
+  // reach `Journal.bind` through the same two call sites in `perform.ts` (the engine has no bind
+  // wiring of its own) so a handler that binds a `Date` binds it identically on both, and
   // `differences` reports two arms in perfect agreement. A gate built out of two arms cannot see a
   // defect on the path they share, by construction. So this sweep INSPECTS entries rather than
   // comparing them, and that is the reason it belongs in the file whose every other cell compares.
@@ -686,7 +686,7 @@ const reachedKinds = new Set<string>();
   // belongs at the bind seam and not in this file; what belongs here is that the day a bind starts
   // carrying such a value, something says so.
   //
-  // THE ONE THAT CROSSES IS NEGATIVE ZERO, because it is finite — and if this ever reds on `-0`
+  // THE ONE THAT CROSSES IS NEGATIVE ZERO, because it is finite, and if this ever reds on `-0`
   // alone, a shape signature for the entry leg is the WRONG repair. The canonical form equates -0
   // with 0 (RFC 8785), so the step key's own input hash already does: measured, `digest({ n: -0 })`
   // and `digest({ n: 0 })` are the same sha256, with 1-vs-2 and -1-vs-1 differing as controls. Two
@@ -700,7 +700,7 @@ const reachedKinds = new Set<string>();
     blind,
   });
   // AND THE SWEEP REACHES THE UNGUARDED FIELD, which the paragraph above claims and nothing else
-  // asserts. `external` is reached here only because entries are swept WHOLE — strip it on the way
+  // asserts. `external` is reached here only because entries are swept WHOLE: strip it on the way
   // in, the way one would to quiet a noisy diff, and the zero above survives while the field that
   // arrives by its own path stops being watched at all.
   const bound = entries.filter((e) => (e as { external?: unknown }).external !== undefined);
@@ -716,7 +716,7 @@ const reachedKinds = new Set<string>();
   // AN EMPTY DIFFERENCE LIST MEANS "NONE", NEVER "THE COMPARISON DID NOT LOOK". Every cell above is
   // an assertion that a list is empty, so a comparator that returned `[]` for two unrelated runs
   // would report a perfect gate over nothing. These perturb one field at a time and require it to
-  // be found — including a journal that agrees as a set and disagrees on ORDER, which is the exact
+  // be found, including a journal that agrees as a set and disagrees on ORDER, which is the exact
   // failure the entry-by-entry walk exists for and the one a length check would miss.
   const [source, script] = ['const a = await spawn("one"); const b = await spawn("two"); log(a.agent, b.agent);', {}];
   const base = await arm("walker", source, script);
@@ -734,9 +734,9 @@ const reachedKinds = new Set<string>();
   found("entry order", { ...base, entries: [...base.entries].reverse() }, "entry 0");
   found("step key", { ...base, entries: [{ ...(base.entries[0] as JournalEntry), name: "perturbed" }, base.entries[1] as JournalEntry] }, "entry 0");
 
-  // AND THE LEG THAT ONLY EXISTS BECAUSE THE RENDERING LIES. These four pairs render IDENTICALLY —
-  // `JSON.stringify` draws undefined, null, a function, NaN and both infinities all as `null`, and
-  // a record carrying a function exactly as an empty one — so the `logs` leg says nothing and the
+  // AND THE LEG THAT ONLY EXISTS BECAUSE THE RENDERING LIES. These four pairs render IDENTICALLY
+  // (`JSON.stringify` draws undefined, null, a function, NaN and both infinities all as `null`, and
+  // a record carrying a function exactly as an empty one) so the `logs` leg says nothing and the
   // whole difference has to be found by shape. Without this cell the new leg would be a claim about
   // an empty set: every corpus row passes it today, which is precisely when a check cannot show it
   // can fail. The pairs are the five values, and the nesting the shallow version could not see.
@@ -763,7 +763,7 @@ const reachedKinds = new Set<string>();
 
   // AND THE SCAN BEHIND THE ENTRY LEG'S PREMISE, which is a ZERO and therefore worth nothing on its
   // own: a scan that found nothing anywhere would report the same zero over a journal full of NaN.
-  // So it is shown finding one of each kind, nested, in the shape an entry actually has — and the
+  // So it is shown finding one of each kind, nested, in the shape an entry actually has, and the
   // negative arm alongside, because a scan that flagged ordinary data would make the premise
   // unfalsifiable in the other direction.
   const holed = [1, 2];
@@ -790,11 +790,11 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // Ruling 1c's one declared divergence, in both of its shapes. The walker reads an update's
   // operand through a bare `Number(...)`, so a record is NaN and the string "5" increments to 6;
   // the engine refuses L4018, because silent coercion is the class this language refuses
-  // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646 — and
+  // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646, and
   // when it lands the walker starts refusing, these cells red, and the divergence is retired here
   // rather than remembered.
-  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018 logs [] shapes []"],
-  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018 logs [] shapes []"],
+  ["issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018 logs [] shapes []"],
+  ["issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018 logs [] shapes []"],
   // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
   // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
   // even clone one - measured, it died on a host DataCloneError with the emitted module body in the
@@ -810,14 +810,14 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // AND THE SAME RULE SEEN FROM INSIDE THE PROGRAM, which is not the fact the three above hold.
   // `answer` collapses a refusing arm to its code and throws its log lines away, so on those three
   // rows the engine's log leg was never compared at all until `answer` above started carrying a
-  // refusing arm's lines — which it does BECAUSE of this row: the mutant written for it (the
+  // refusing arm's lines, which it does BECAUSE of this row: the mutant written for it (the
   // handover moved above the sink's walk) left all three byte identical, and rather than leave
   // this row as the list's only witness to that, the collapse was removed and all four now see it.
   // The engine suite holds the position in two cells of its own, so it was never unguarded; what
   // this suite had was a divergence whose engine half only ever appeared as an abort.
   // Caught, it appears as behaviour: the refusal is the program's to catch, it carries the code
   // every other refusal carries, the line that raised it was never emitted, and the run continues
-  // past it — so both arms COMPLETE and disagree, and the disagreement is in the log rather than
+  // past it, so both arms COMPLETE and disagree, and the disagreement is in the log rather than
   // in the outcome.
   [
     "a log line is data on the engine: caught by the program, which then continues",
@@ -841,7 +841,7 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
 
   // AND EVERY ROW HERE ACTUALLY DIVERGES. A row pinned to the same answer on both arms is a corpus
   // program wearing this list's label: it passes forever, it inflates the count printed above, and
-  // it defeats the one promise the list makes — that a divergence retired upstream REDS here the day
+  // it defeats the one promise the list makes, that a divergence retired upstream REDS here the day
   // it lands. The way that promise gets broken is not a typo, it is a repair: the row reds, and the
   // next reader re-pins BOTH sides to the new common answer instead of deleting the row, and the
   // retired divergence is then remembered exactly as the header above says it must not be. Nothing
@@ -854,7 +854,7 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // answered 2 for a function of zero, one and three parameters alike, so it was reading its own
   // wrapper rather than the program's function, and the engine's rest-parameter wrapper read 0 the
   // same way. The three sources below still differ only in arity, and the cell now requires the
-  // same REFUSAL from each — an answer that varied with arity would mean a host property is being
+  // same REFUSAL from each: an answer that varied with arity would mean a host property is being
   // read again, whichever number came back. This is the cell that says so; the rows above say the
   // two arms agree, which is a different claim.
   const arities: string[] = [];
@@ -870,7 +870,7 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
 {
   // languageVersion 2's pin-unit change, held by measurement rather than by a sentence. `stepBudget`
   // bounds ONE WALK and is not journalled, so the walker counts its own dispatches while the engine
-  // counts transformed-site hits — the same program, two numbers, neither wrong. What must be true
+  // counts transformed-site hits: the same program, two numbers, neither wrong. What must be true
   // is that the difference NEVER REACHES THE JOURNAL, and that a budget between the two numbers is a
   // divergence that is declared rather than discovered.
   const source = "let n = 0; while (n < 20) { n = n + 1; } log(n);";
@@ -939,7 +939,7 @@ const HELD: readonly (readonly [string, string, object, readonly string[], HeldA
     const [w, e] = [await arm("walker", source, script), await arm("engine", source, script)];
     const diff = differences(w, e);
     // BOTH ARMS' ANSWERS, not only the field names that differ. Pinned to the fields alone, a hold
-    // stays green when the engine starts refusing something ELSE and still differs — the hold would
+    // stays green when the engine starts refusing something ELSE and still differs, and the hold would
     // then be recording a fact about the wrong defect. This is the same rule DIVERGENT carries.
     ok(`held out of the corpus, and still differing exactly as it is held: ${name}`, j(diff) === j(expected) && answer(w) === pinned.walker && answer(e) === pinned.engine, {
       differs: diff,
@@ -955,7 +955,7 @@ const HELD: readonly (readonly [string, string, object, readonly string[], HeldA
 // ---- what the ORACLE's own process used to not survive -------------------------------------------
 
 /**
- * The three programs ruling 1a quarantined, checked from OUTSIDE the suite for the opposite fact.
+ * The three programs the quarantine held, checked from OUTSIDE the suite for the opposite fact.
  *
  * The quarantine is empty: #657 gave the walker its record-member rule, and all three now refuse
  * L4021 to their caller instead of taking the interpreter's own process down - so they are corpus
@@ -982,7 +982,7 @@ const SURVIVED: readonly (readonly [string, string])[] = [
   const child = new URL("./walker-child.ts", import.meta.url).pathname;
   for (const [name, row] of SURVIVED) {
     // THE SECOND ELEMENT IS A CORPUS ROW'S NAME, NOT A PROGRAM. Written out as a literal it was a
-    // second copy of the same source, and nothing made the copies stay equal — so an edit to the
+    // second copy of the same source, and nothing made the copies stay equal, so an edit to the
     // corpus row would leave this checking a program the gate no longer runs, and PASSING while it
     // did. That is the worst shape available here: what this section guards is the corpus row
     // hanging the suite, so a silent drift turns the guard into a green cell above a hang. One copy
@@ -1005,13 +1005,13 @@ const SURVIVED: readonly (readonly [string, string])[] = [
  * The strongest form of "the same journal", and the one equality alone cannot reach.
  *
  * Two journals can compare equal and still not be interchangeable, because a journal is not a
- * transcript — it is what a RESUMED run reads instead of dispatching. So each program runs on one
+ * transcript: it is what a RESUMED run reads instead of dispatching. So each program runs on one
  * engine and is then resumed on the OTHER from the journal it wrote, against a handler that
  * REFUSES EVERY EFFECT. A resume that reached the handler at all therefore fails loudly rather
  * than quietly re-dispatching and agreeing by luck.
  *
  * The refusing handler is written here rather than reached for: an empty `SimHandler` looks like
- * one and is not — measured, four of the five programs below RUN TO COMPLETION against it (only the
+ * one and is not: measured, four of the five programs below RUN TO COMPLETION against it (only the
  * unscripted turn refuses, L6001), so eight of the ten crossings would have proved nothing while
  * reading as though they proved everything.
  */
@@ -1093,7 +1093,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       const journal = new Journal({ run: "d" });
       const first = { runId: "d", handler: new SimHandler(script as never), journal, seed: SEED, startedAt: AT, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };
       // THE FIRST RUN IS GUARDED TOO. Unguarded, an engine that cannot finish the program takes the
-      // whole suite down before it prints its summary — which reads to `mutation-proof` as a run
+      // whole suite down before it prints its summary, which reads to `mutation-proof` as a run
       // that died rather than a cell that went red, and discards the evidence it was there to
       // collect. Measured: the argument-order mutant graded INCONCLUSIVE for exactly this.
       let original: Awaited<ReturnType<typeof walk>>;
@@ -1118,7 +1118,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       replays += 1;
 
       // AND THE OTHER ENGINE REFUSES IT, saying which version wrote the record and which one is
-      // reading — a bare code would be satisfied by any refusal on the path, including one that
+      // reading, where a bare code would be satisfied by any refusal on the path, including one that
       // never looked at the version.
       const across: unknown[][] = [];
       const crossed = await resumeOn(other, source, original.journal, original.pins, across);
@@ -1209,7 +1209,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   }
   const [a, b] = finished as [(typeof finished)[0], (typeof finished)[0]];
   // TWO SYMMETRIC DEATHS ARE NOT AGREEMENT. A crossing whose resume throws still pushes a
-  // placeholder above — empty entries, empty logs, an undefined value — so comparing two FAILED
+  // placeholder above (empty entries, empty logs, an undefined value) so comparing two FAILED
   // crossings compares two identical nothings and passes. Measured, at 29f861c2 and with no version
   // split in play: hand both resumes a record the replaying engine does not speak and both finish
   // cells red with L5008 while this comparison printed `ok`, entries [0, 0]. The cell that carries
@@ -1218,7 +1218,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // So a comparison whose subjects may not exist has to say they exist FIRST. `produced` is the
   // predicate, named rather than inlined because it outlived the cell it was written for: the two
   // journals compared here are now each engine finishing its OWN paused run, since the crossing that
-  // used to produce them is refused, and the hazard came across unchanged — two runs that both
+  // used to produce them is refused, and the hazard came across unchanged: two runs that both
   // failed to produce a journal agree perfectly. The property this carries is the one the split does
   // not touch: the same program, paused at the same place, finishes to the SAME journal on either
   // engine, entry for entry, which is what makes "the same journal" mean a journal and not a
@@ -1260,7 +1260,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // WHICH ENGINE MAY REPLAY A RECORD IS A FACT THE RECORD CARRIES, not one the caller supplies.
   //
   // The resumes above prove the behaviour: a journal replays on the engine that wrote it and is
-  // refused by the other. What they do not say is WHY the refusal is possible — that each engine
+  // refused by the other. What they do not say is WHY the refusal is possible: that each engine
   // stamps its own language into the record it writes, so the pin has something to disagree with
   // later. A version split whose engines both stamped the same constant would pass every cell
   // above and refuse nothing at all, which is the naive bump measured on the way here (2 suites
@@ -1279,7 +1279,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // A JOURNAL WITH NO ENTRIES IS A STORE, NOT A HISTORY, and it is two rules rather than one.
   //
   // `L5021` refuses a journal carrying recorded steps with NO pins, because re-resolving them would
-  // make it a different run wearing this one's history — the epoch moves to the resuming host and
+  // make it a different run wearing this one's history, since the epoch moves to the resuming host and
   // every pure draw changes. An EMPTY journal is the opposite case: a fresh run handed somewhere to
   // write. So it must not be refused when no pins come with it, and its pins must not be re-resolved
   // when they do. Both halves on both engines, because a rule that holds on one engine and not the
@@ -1326,7 +1326,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // AND THE TWO ENGINES REMAIN TELLABLE APART, which is the control every dispatch cell rests on.
   //
   // A cell that watches which engine ran something is worthless the day the two become
-  // indistinguishable, and it goes quiet rather than red — it keeps passing while observing
+  // indistinguishable, and it goes quiet rather than red: it keeps passing while observing
   // nothing. So the difference itself is asserted, here, outside any driver: the same program
   // charges a different number of steps on each, because a walker dispatch and a transformed-site
   // hit are different units. The numbers are printed rather than pinned: an exact count moves
@@ -1340,7 +1340,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       walker: w.steps,
       engine: e.steps,
     });
-    console.log(`  (the same loop charges ${w.steps} steps on the walker and ${e.steps} on the engine — different units, not a discrepancy)`);
+    console.log(`  (the same loop charges ${w.steps} steps on the walker and ${e.steps} on the engine: different units, not a discrepancy)`);
   }
 }
 
@@ -1350,7 +1350,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // THE EIGHT ROWS EXIST AS CELLS, NOT AS A TABLE IN A PLAN.
   //
   // The matrix spans two packages because its subject does: rows about a record meeting an ENGINE
-  // are here, and rows about a record meeting the DISPATCHER can only be in the runtime suite —
+  // are here, and rows about a record meeting the DISPATCHER can only be in the runtime suite:
   // `implementations/runtime` depends on this package, never the other way round, so a lang suite
   // cannot drive the driver. Splitting them and citing across is what keeps one index authoritative
   // without a second file asserting the same law twice.
@@ -1359,7 +1359,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // stale the first time a cell is renamed, and this wave has spent the week deleting checks that
   // could not fail. So each row names the exact sentence that carries it, this suite proves its own
   // rows printed, and the driver rows are looked up in the runtime suite's source. That does couple
-  // the two files: renaming a cell there reds this cell here. Deliberately — an index whose entries
+  // the two files: renaming a cell there reds this cell here. Deliberately: an index whose entries
   // can vanish silently is not an index, and a rename that has to be made in two places is a rename
   // someone noticed.
   const HERE = "here";
@@ -1367,7 +1367,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const MATRIX: readonly (readonly [string, string, readonly string[]])[] = [
     ["1. a v1 record with entries, on the walker: it resumes", HERE, ["the walker resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock"]],
     ["2. a v1 record with entries, on the engine host: refused L5008", HERE, ["and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
-    ["3. a v2 record with entries, on the walker: refused L5008 — the defence behind the dispatch, for a caller who reaches past it", HERE, ["and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
+    ["3. a v2 record with entries, on the walker: refused L5008, the defence behind the dispatch, for a caller who reaches past it", HERE, ["and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
     ["4. a v2 record with entries, on the engine host: it resumes", HERE, ["the engine resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock"]],
     ["5. a record at a version no engine here serves, and one naming none at all, at the driver: released, L5023, run untouched", DRIVER, [
       "a record no engine here serves is RELEASED, not failed and not thrown",
@@ -1396,7 +1396,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // between those two codes IS the arm observation. That is row 3's cell, cited twice on purpose.
   // AND THE ROW SET IS CHECKED BEFORE THE CITATIONS ARE. Both cells below are satisfied by an EMPTY
   // matrix: drop a row and every remaining citation still resolves, so the index shrinks in silence
-  // and the row nobody asserts is the row that stops being true. The ordinals are the guard — they
+  // and the row nobody asserts is the row that stops being true. The ordinals are the guard: they
   // are what a dropped row cannot fake, and they are why the labels are numbered at all.
   const misnumbered = MATRIX.map(([label], i) => [i, label] as const).filter(([i, label]) => !label.startsWith(`${i + 1}. `));
   ok("the index carries all eight rows, in order, and none of them can be dropped quietly", MATRIX.length === 8 && misnumbered.length === 0, {
@@ -1474,7 +1474,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // there reds this cell until a program reaches it on both engines.
   //
   // Names are collected as identifiers the source spells. That over-counts a program that declares
-  // a local of the same name, which none of these do — and the direction of the error is the one
+  // a local of the same name, which none of these do, and the direction of the error is the one
   // that matters here: it can only make the cell pass, so the list below is checked to empty rather
   // than trusted to be right.
   const spelled = new Set<string>();
@@ -1536,7 +1536,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   // that suite, where a positive control requires it to name a free name that does exist.
   //
   // AND IT WALKS EVERY LIST THE GATE RUNS, not just the corpus. It used to iterate `CORPUS` alone
-  // while this comment claimed the wider set — a sentence naming a universe its loop did not walk,
+  // while this comment claimed the wider set: a sentence naming a universe its loop did not walk,
   // which is the shape that hides a gap rather than reporting one. The divergences and the
   // crossings are transformed and executed on the engine exactly as corpus rows are, so a free
   // identifier in one of them is the same silent read, and the twelve of them were outside the only
@@ -1567,7 +1567,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
  * WRONG-RED at fold time; a sentence that is a PREFIX of a sibling can report a kill off the wrong
  * cell; and a sentence that is a THROW MESSAGE rather than a cell grades a crash as a kill. Exactly
  * one printed cell per aim catches all three. Cells are recorded whether they passed or FAILED,
- * because this suite counts rather than exits — an aim naming a cell that fails is still an aim
+ * because this suite counts rather than exits, and an aim naming a cell that fails is still an aim
  * naming a cell, and the alternative would make this red for the wrong reason on a real divergence.
  */
 {
@@ -1577,7 +1577,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   };
   ok("the config audited here is the one that names this suite", cfg.suite.endsWith("differential.smoke.ts"), cfg.suite);
   // THIS CELL COUNTS ITSELF, and it has to: a config may aim a mutant at the audit, and the audit's
-  // own name is not in `CELLS` yet when it runs — `ok` records after it decides. Left out, an aim at
+  // own name is not in `CELLS` yet when it runs, since `ok` records after it decides. Left out, an aim at
   // this cell reads as a stale sentence and the audit reds over its own existence.
   const AUDIT = "every mutation's expectRed names exactly one cell this suite printed";
   const known = [...CELLS, AUDIT];
