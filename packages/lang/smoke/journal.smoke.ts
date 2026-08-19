@@ -92,6 +92,48 @@ const H = (v: unknown) => digest(v);
   );
 }
 
+// ---- 3b) ...and it recovers the resource for THAT effect, not for whichever ran first ----------
+//
+// Cell 3 keeps one row, so the row it reads is also the only row a bind could have written, and a
+// `bind` that ignored its key entirely would satisfy it. Measured, not argued: with
+// `Journal.bind` targeting `this.byKey.keys().next().value` instead of the key it was handed, all
+// fifteen lang suites stayed green at 788 checks while the fact landed on an unrelated settled
+// row. That is worse than a missing bind, because the row the resume reads has no external and the
+// row that does have one describes work that is already finished, so recovery re-creates the
+// resource AND the record points somewhere that will never be resumed.
+//
+// Two rows are the whole repair: the effect that binds is not the first one, so the target and the
+// default stop being the same row.
+{
+  const j = new Journal({ run: "r-3b" });
+  const s = new KeyScope();
+  const first = s.nextEffect("turn", "warm");
+  const second = s.nextEffect("turn", "build");
+  const h1 = H({ agent: "warmer" });
+  const h2 = H({ agent: "builder" });
+  await j.begin(first, h1, 1000);
+  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.begin(second, h2, 1000);
+  await j.bind(second, { goalId: "g-88" });
+
+  const resumed = new Journal({ run: "r-3b", entries: j.entries() });
+  const s2 = new KeyScope();
+  const vFirst = resumed.lookup(s2.nextEffect("turn", "warm"), h1);
+  const vSecond = resumed.lookup(s2.nextEffect("turn", "build"), h2);
+  ok(
+    "the bind lands on the effect that asked for it, not on whichever row came first",
+    vSecond.verdict === "pending"
+      && (vSecond.entry.external as { goalId?: string } | undefined)?.goalId === "g-88",
+    JSON.stringify(resumed.entries().map((e) => ({ name: e.name, external: e.external }))),
+  );
+  const firstExternal = vFirst.verdict === "replay" ? vFirst.entry.external : "not replayable";
+  ok(
+    "and the row that did not bind is left alone, so no settled effect carries a live resource",
+    vFirst.verdict === "replay" && firstExternal === undefined,
+    JSON.stringify({ verdict: vFirst.verdict, external: firstExternal }),
+  );
+}
+
 // ---- 4) failures and cancellations replay as themselves ---------------------------------------
 
 {
