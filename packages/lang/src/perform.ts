@@ -11,7 +11,7 @@
 import { RunDivergence, RuntimeFault, ScopeBranchMissing, UnwalkableScope, messageOf } from "./errors.js";
 import { digest, requestId, stepKeyString, type KeyScope, type ScopeKind, type StepKey } from "./keys.js";
 import { Journal, JournalAppendRejected, RunClock, type EntryError } from "./journal.js";
-import { NotCrossable, assertCrossable, deepFreeze } from "./values.js";
+import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { PRIMITIVES, type EffectKind } from "./primitives.js";
 import { parseDuration } from "./duration.js";
 import { notifyFactViolation } from "./notify-fact.js";
@@ -902,17 +902,50 @@ export async function performScope(
     throw reason;
   }
 
+  // THE FACTS A SETTLED SCOPE CARRIES, assembled ONCE. Both the fence below and the success settle
+  // write them, and a scope that fails its own value rule still owes the cancel intent it issued.
+  // Assembling them twice is how the two settles would drift the day a fourth fact is added.
+  const settledFacts = {
+    ...(outcome.cancel !== undefined ? { cancel: outcome.cancel } : {}),
+    ...(outcome.closed !== undefined ? { closed: outcome.closed } : {}),
+    ...digestFacts(branchDigest, outcome.cancel?.losers),
+  };
+
+  // THE VALUE A SCOPE SETTLES IS A VALUE, and answers to the same rule as an effect's result. The
+  // effect path fences its handler's result at its own settle; this one was left open, and the two
+  // engines then disagreed about one legal program: the walker and the in-process engine recorded a
+  // FUNCTION in `result.value` and completed, while the worker died on a structured-clone error
+  // naming a host algorithm. Worse than either divergence, the durable store encodes with
+  // `JSON.stringify` (core's `encodeRecord`), so `{ a: fn }` went to the wire as `{}` with NO error
+  // and the resume replayed a value the live run never produced. All four measured before this
+  // existed: walker completes with a function, engine completes with a function, worker
+  // DataCloneError, and live `function` against replayed `undefined` with nothing raised.
+  //
+  // RECORDED AS A FAULT RATHER THAN THROWN BARE, for the effect path's reason. A scope whose
+  // branches already ran has done work the world can see, and leaving its entry pending invites a
+  // resume to run those branches a second time. The facts the success settle would have carried
+  // travel with the failure, because a cancel intent this scope issued is owed whether or not its
+  // value could be written.
+  try {
+    assertScopeValueCrossable(outcome.value, `the value of ${stepKeyString(scopeKey)}`);
+  } catch (e) {
+    if (!(e instanceof NotCrossable)) throw e;
+    await host.journal.settle(
+      scopeKey,
+      { status: "failed", error: { code: "L4000", kind: "scope-fault", message: e.message } },
+      frame.clock.now(),
+      settledFacts,
+    );
+    throw e;
+  }
+
   await host.journal.settle(
     scopeKey,
     { status: "ok", result: { branches: outcome.branches, value: deepFreeze(outcome.value) } },
     // The joined branch clock, for the same reason as the failure path above: this is the value
     // `now()` answers after the scope, and the stamp replay hands back must be that value.
     frame.clock.now(),
-    {
-      ...(outcome.cancel !== undefined ? { cancel: outcome.cancel } : {}),
-      ...(outcome.closed !== undefined ? { closed: outcome.closed } : {}),
-      ...digestFacts(branchDigest, outcome.cancel?.losers),
-    },
+    settledFacts,
   );
   return outcome.value;
 }

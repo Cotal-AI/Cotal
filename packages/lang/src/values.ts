@@ -205,3 +205,40 @@ export class Prng {
     return v / 2 ** 48;
   }
 }
+
+/**
+ * The value rule over a SCOPE's assembled value, with one narrow exemption: ABSENCE.
+ *
+ * A scope's value is not the program's, it is the interpreter's assembly of its branches: a record
+ * or array of branch values for `parallel` and `fanOut`, `{ index, value }` for `race`, and the
+ * body's own value for `conclave`. A branch or body whose last line is a statement produced NO
+ * VALUE, which is legal and ordinary, so `undefined` in that position is ABSENCE and not a value
+ * that failed the rule. Measured, before this exemption existed: fencing the assembled value whole
+ * refused ordinary `parallel` scopes whose branch merely ended in a statement, on both the write
+ * side and the load side.
+ *
+ * THE EXEMPTION IS EXACTLY ONE LEVEL DEEP, where the assembly puts branch outcomes, and nowhere
+ * else. A branch that returns `{ x: undefined }` is refused exactly as an effect result carrying
+ * the same record is: that `undefined` is a field the program wrote, not a branch that answered
+ * nothing, and the effect path has always refused it.
+ *
+ * It lives here rather than beside either caller because BOTH doors need the same rule: the write
+ * fence in `perform.ts` and the load scan in `journal.ts`. Two copies of a rule this fiddly is how
+ * the two ends stop agreeing.
+ */
+export function assertScopeValueCrossable(value: unknown, where: string): void {
+  if (value === undefined) return;
+  if (Array.isArray(value)) {
+    value.forEach((el, i) => {
+      if (el !== undefined) assertCrossable(el, `${where}[${i}]`);
+    });
+    return;
+  }
+  if (typeof value === "object" && value !== null && Object.getPrototypeOf(value) === Object.prototype) {
+    for (const [k, el] of Object.entries(value as Record<string, unknown>)) {
+      if (el !== undefined) assertCrossable(el, `${where}.${k}`);
+    }
+    return;
+  }
+  assertCrossable(value, where);
+}

@@ -12,7 +12,7 @@
  * miss that quietly re-runs the effect and lets two versions of the truth coexist.
  */
 
-import { NotCrossable, assertCrossable, deepFreeze } from "./values.js";
+import { NotCrossable, assertCrossable, assertScopeValueCrossable, deepFreeze } from "./values.js";
 import { RuntimeFault } from "./errors.js";
 import { type JournalKind, type StepKey, stepKeyString } from "./keys.js";
 import { EFFECT_KINDS } from "./primitives.js";
@@ -249,18 +249,40 @@ export function journalEntryKeyString(entry: JournalEntry): string {
  * `workerData` is a structured clone, which preserves `Date`, `NaN`, `-0`, an own `undefined` key
  * and a `Map`.
  */
-function bindingWithoutCanonicalForm(entry: JournalEntry, field: "external" | "error.detail", cause: NotCrossable): RuntimeFault {
+type RecordedField = "external" | "error.detail" | "result";
+
+/**
+ * WHY EACH FIELD MATTERS, said in its own words. One sentence for all three would have to be vague
+ * enough to fit the loosest, and the operator reading this is deciding whether to repair a store.
+ */
+const WHAT_THE_FIELD_IS: Record<RecordedField, string> = {
+  external: "`external` is what a resume re-binds the handler's own record to",
+  "error.detail": "`error.detail` is how a failed step explains itself, and a resume hands it to the program that catches it",
+  result: "`result` is what a resume hands back INSTEAD of running the step again",
+};
+
+function bindingWithoutCanonicalForm(entry: JournalEntry, field: RecordedField, cause: NotCrossable): RuntimeFault {
   const step = `${entry.scope}/${entry.name === "" ? entry.kind : `${entry.kind}:${entry.name}`}#${entry.occurrence}`;
   return new RuntimeFault(
     "L5024",
-    `A recorded binding has no canonical form\n\n  entry seq ${entry.seq}   ${entry.kind}   \`${field}\` UNREADABLE\n`
+    `A recorded value has no canonical form\n\n  entry seq ${entry.seq}   ${entry.kind}   \`${field}\` UNREADABLE\n`
       + `        step      ${step}\n        cause     ${cause.message}\n\n`
-      + "`external` is what a resume re-binds the handler's own record to, so a value the language cannot express is one "
+      + `${WHAT_THE_FIELD_IS[field]}, so a value the language cannot express is one `
       + "this run would hand back to the program as if it had been recorded. The entry cannot be read, and reading it as "
       + `anything else would invent a fact.\n\nOptions\n  repair the entry at seq ${entry.seq} in the store, so its `
       + `\`${field}\` is a value an effect boundary can carry\n  fork(run, "${step}")   start again from before this step`,
   );
 }
+
+/** The entry kinds whose `result` is an assembly of branches rather than one handler's value. */
+const SCOPE_KINDS: ReadonlySet<string> = new Set(["parallel", "race", "fanOut", "conclave"]);
+
+/** What the crossing rule calls the value it is refusing, so its path reads as the record's own. */
+const LABEL_OF: Record<RecordedField, string> = {
+  external: "the recorded binding",
+  "error.detail": "the recorded failure detail",
+  result: "the recorded result",
+};
 
 export class Journal {
   readonly run: string;
@@ -308,10 +330,29 @@ export class Journal {
       for (const [field, value] of [["external", e.external], ["error.detail", e.error?.detail]] as const) {
         if (value === undefined) continue;
         try {
-          assertCrossable(value, field === "external" ? "the recorded binding" : "the recorded failure detail");
+          assertCrossable(value, LABEL_OF[field]);
         } catch (cause) {
           if (!(cause instanceof NotCrossable)) throw cause;
           throw bindingWithoutCanonicalForm(e, field, cause);
+        }
+      }
+      // `result` IS THE THIRD FIELD, AND IT IS NOT READ LIKE THE OTHER TWO. An effect's result is
+      // the handler's own value and answers to the rule whole. A SCOPE's result is the
+      // interpreter's assembly `{ branches, value }`, and its branch positions may legitimately be
+      // absent, so it answers to the same absence-exempt rule its write fence uses. `branches` is a
+      // list of branch NAMES (strings) and needs no exemption.
+      if (e.result !== undefined) {
+        try {
+          if (SCOPE_KINDS.has(e.kind)) {
+            const assembled = e.result as { readonly branches?: unknown; readonly value?: unknown };
+            if (assembled.branches !== undefined) assertCrossable(assembled.branches, "the recorded branch list");
+            assertScopeValueCrossable(assembled.value, "the recorded result.value");
+          } else {
+            assertCrossable(e.result, LABEL_OF.result);
+          }
+        } catch (cause) {
+          if (!(cause instanceof NotCrossable)) throw cause;
+          throw bindingWithoutCanonicalForm(e, "result", cause);
         }
       }
       const full = `${e.scope}/${e.name === "" ? e.kind : `${e.kind}:${e.name}`}#${e.occurrence}`;

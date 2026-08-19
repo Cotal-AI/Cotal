@@ -165,7 +165,7 @@ export const CATALOG = {
   // code: a handler that binds such a value fails inside its own dispatch, where L4000 handler-fault
   // already says exactly that, and a second name for one fact is the defect the L5017..L5020 note
   // above was written about.
-  L5024: "A recorded binding has no canonical form",
+  L5024: "A recorded value has no canonical form",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",

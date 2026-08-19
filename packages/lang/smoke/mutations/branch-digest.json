@@ -22,11 +22,11 @@
     {
       "name": "the digest is never written",
       "file": "packages/lang/src/perform.ts",
-      "find": "      ...digestFacts(branchDigest, outcome.cancel?.losers),",
+      "find": "    ...digestFacts(branchDigest, outcome.cancel?.losers),",
       "replace": "",
       "expectRed": "because the recorded scope entry carries a `branchDigest` over the arms the walk skips",
       "cell": "because the recorded scope entry carries a `branchDigest` over the arms the walk skips",
-      "note": "An entry with no digest is compared against nothing -- `if (entry.branchDigest !== undefined)` is how a journal written before this rule stays readable -- so this also silently restores the old blind spot. That is why the WRITE is graded separately from the COMPARISON."
+      "note": "An entry with no digest is compared against nothing -- `if (entry.branchDigest !== undefined)` is how a journal written before this rule stays readable -- so this also silently restores the old blind spot. That is why the WRITE is graded separately from the COMPARISON. RE-AIMED when the scope grew a second settle: the fence that refuses a value the record cannot hold writes the same facts, so this line briefly appeared twice and the anchor went AMBIGUOUS. The repair was in the CODE, not the anchor: the facts are now assembled once into `settledFacts` and both settles write that, which removes the duplication a second copy would have drifted from. The anchor follows the surviving line."
     },
     {
       "name": "the digest is written but never compared",

@@ -2740,6 +2740,53 @@ let n = 1;
   }
 }
 
+// ---- 22c) a SCOPE's settled value is a value, on every engine that runs it ----------------------
+//
+// The last value a host could hand the record with no domain check on it. An effect's result is
+// fenced at its own settle; a scope's was not, and the same legal program then meant three
+// different things: the walker and the in-process engine RECORDED A FUNCTION in `result.value` and
+// completed, the worker died on a structured-clone error naming a host algorithm and quoting the
+// emitted module body back at the operator, and the durable store (core's `encodeRecord`, plain
+// `JSON.stringify`) wrote the function away as `{}` with no error at all, so a resume replayed a
+// value the live run never produced and said nothing. That fourth arm is the reason this is a
+// refusal and not a polish item: a silent false replay is the class this rule exists to stop.
+//
+// THE ASSERTION IS THAT ALL THREE ENGINES SAY THE SAME THING, not merely that each refuses. Three
+// refusals with three different messages would be three languages again.
+{
+  const scopeSrc = `const r = await parallel({ a: async () => (x) => x }, { name: "p" });`;
+  const scopeModule = transform(scopeSrc).module;
+  const messageOfRefusal = (e: unknown): string => String((e as Error)?.message ?? e);
+
+  const walkerSaid = await walkerRun(scopeSrc, { runId: "sv-w", handler: new SimHandler({}), journal: new Journal({ run: "sv-w" }) } as never)
+    .then(() => ({ refused: false as const }), (e: Error) => ({ refused: true as const, name: e.name, message: messageOfRefusal(e) }));
+  const engineSaid = await runOnEngine(scopeSrc, scopeModule, { runId: "sv-e", handler: new SimHandler({}), journal: new Journal({ run: "sv-e" }), evaluate: plainly } as never)
+    .then(() => ({ refused: false as const }), (e: Error) => ({ refused: true as const, name: e.name, message: messageOfRefusal(e) }));
+  const workerAnswer = await runInWorker(
+    { source: scopeSrc, module: scopeModule, runId: "sv-t", handler: { module: SIM_HANDLER, config: {} } },
+    { entry: WORKER_ENTRY },
+  ).done.then((a) => a as { ok?: boolean; name?: string; message?: string }, (e: Error) => ({ ok: false, name: e.name, message: messageOfRefusal(e) }));
+
+  ok(
+    "a scope whose settled value carries a function is refused, and not recorded and carried on from",
+    walkerSaid.refused && engineSaid.refused && workerAnswer.ok === false,
+    { walker: walkerSaid.refused, engine: engineSaid.refused, worker: workerAnswer.ok },
+  );
+  ok(
+    "and the walker, the in-process engine and a REAL THREAD all refuse it with the same rule and the same words",
+    walkerSaid.refused && engineSaid.refused
+      && walkerSaid.name === "NotCrossable" && engineSaid.name === "NotCrossable" && workerAnswer.name === "NotCrossable"
+      && walkerSaid.message === engineSaid.message && engineSaid.message === workerAnswer.message,
+    { walker: walkerSaid.name, engine: engineSaid.name, worker: workerAnswer.name, same: walkerSaid.message === workerAnswer.message },
+  );
+  ok(
+    "so the thread answers the LANGUAGE's refusal instead of a clone algorithm quoting the emitted module back",
+    !/DataCloneError/.test(String(workerAnswer.name)) && !/could not be cloned/.test(String(workerAnswer.message))
+      && !/__ctx\.fuel/.test(String(workerAnswer.message)),
+    { name: workerAnswer.name, message: String(workerAnswer.message).slice(0, 120) },
+  );
+}
+
 // ---- 23) the mutation config, audited against this suite's own cells -----------------------------
 //
 // A mutation config is an instrument, and this one had four failure modes that all LOOK like a

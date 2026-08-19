@@ -13,6 +13,7 @@ import { resume, run } from "../src/interpret.js";
 import { readFileSync } from "node:fs";
 import { SimHandler } from "../src/sim.js";
 import { assertNoCode } from "../src/values.js";
+import { WALKER_LANGUAGE_VERSION, resolvePins } from "../src/pins.js";
 import { EffectError, type EffectHandler } from "../src/effects.js";
 
 let pass = 0;
@@ -950,6 +951,99 @@ await sleep("3h", { name: "after-the-catch" });
     "so a journal PARSED from durable text is refused on load too, and the driver's door is not insurance against a future store",
     (caughtProto as { code?: string })?.code === "L5024" && /__proto__/.test(String((caughtProto as Error)?.message)),
     (caughtProto as { code?: string })?.code ?? String(caughtProto).slice(0, 90),
+  );
+}
+
+// ---- a SCOPE's settled value answers to the same rule, and the durable arm is why --------------
+//
+// The write fence and the load door meet here on the one route that produced a SILENT wrong answer
+// rather than a loud failure. Before the fence: this program completed on the walker with a
+// function sitting in `result.value.a`, the durable store encoded the record with `JSON.stringify`
+// exactly as core's `encodeRecord` does, the function went to the wire as `{}` with no error, and
+// the resume replayed `undefined` where the live run had a function and raised NOTHING. Measured,
+// all of it, before any of this existed.
+//
+// SO THE CELL BELOW IS ABOUT WHAT THE STORE CARRIES, not only about what the fence throws. It runs
+// the program, round trips the journal the way the store does, and resumes: the recorded step must
+// be a FAULT the resume reports, never an ok entry whose value quietly changed shape in transit.
+{
+  const src = `const r = await parallel({ a: async () => (x) => x }, { name: "p" });\nlog("a is", r.a);`;
+  const pins = resolvePins({ runId: "scope-dur", seed: "scope-dur", startedAt: 0 }, 0, WALKER_LANGUAGE_VERSION);
+  const live = new Journal({ run: "scope-dur" });
+  const liveLogs: unknown[][] = [];
+  const liveOutcome = await run(src, {
+    runId: "scope-dur", handler: new SimHandler({}), journal: live, pins,
+    onLog: (l) => liveLogs.push([...l.values]),
+  } as never).then(() => ({ completed: true as const }), (e: Error) => ({ completed: false as const, name: e.name }));
+
+  const settled = live.entries()[0];
+  ok(
+    "the scope is RECORDED as a fault rather than completing with a value the record cannot hold",
+    liveOutcome.completed === false && liveOutcome.name === "NotCrossable"
+      && settled?.status === "failed" && settled?.error?.code === "L4000" && settled?.kind === "parallel",
+    { outcome: liveOutcome, status: settled?.status, code: settled?.error?.code },
+  );
+  ok(
+    "and the program never saw the value either, because the refusal lands before the scope returns",
+    liveLogs.length === 0,
+    liveLogs,
+  );
+
+  // THE STORE'S OWN ENCODING, not a stand-in for it: `encodeRecord` is `JSON.stringify` over the
+  // record, so this is the transit that used to lose the function without saying so.
+  const onTheWire = JSON.parse(new TextDecoder().decode(new TextEncoder().encode(JSON.stringify({ entries: live.entries() })))) as { entries: readonly JournalEntry[] };
+  const resumed = await resume(src, new Journal({ run: "scope-dur", entries: onTheWire.entries }), {
+    runId: "scope-dur", handler: new SimHandler({}), pins, onLog: () => undefined,
+  } as never).then(() => ({ replayed: true as const }), (e: Error & { code?: string }) => ({ replayed: false as const, code: e.code, name: e.name }));
+  ok(
+    "and a resume from the round-tripped record REPORTS that fault, where before this rule it replayed a silent `undefined` and completed",
+    resumed.replayed === false,
+    resumed,
+  );
+}
+
+// ---- and a record written by something else, with a function in `result`, is refused on load ----
+{
+  const withFunction = [
+    {
+      v: 1, seq: 3, run: "r-res", scope: "", kind: "parallel", name: "p", occurrence: 0,
+      inputHash: H({ persona: "b" }), state: "settled", status: "done",
+      result: { branches: ["a"], value: { a: () => 1 } },
+    },
+  ] as unknown as readonly JournalEntry[];
+  let caughtResult: unknown;
+  try {
+    new Journal({ run: "r-res", entries: withFunction });
+  } catch (e) {
+    caughtResult = e;
+  }
+  ok(
+    "a hand-built record carrying a function in `result` is refused ON LOAD, by name",
+    (caughtResult as { code?: string })?.code === "L5024",
+    (caughtResult as { code?: string })?.code ?? String(caughtResult).slice(0, 90),
+  );
+  ok(
+    "and it names the entry, the kind and the FIELD, so the operator knows which of the three doors refused",
+    /entry seq 3/.test(String((caughtResult as Error)?.message))
+      && /parallel/.test(String((caughtResult as Error)?.message))
+      && /`result` UNREADABLE/.test(String((caughtResult as Error)?.message)),
+    String((caughtResult as Error)?.message).slice(0, 170),
+  );
+  // THE MIRROR, and it is the one that keeps the absence exemption honest: a branch that produced
+  // NO value is ordinary, and a scan that refused it would refuse most `parallel` records ever
+  // written. Measured: fencing the assembled value whole did exactly that, on this suite's siblings.
+  const absentBranch = [
+    {
+      v: 1, seq: 0, run: "r-res-m", scope: "", kind: "parallel", name: "p", occurrence: 0,
+      inputHash: H({ persona: "b" }), state: "settled", status: "done",
+      result: { branches: ["a", "b"], value: { a: undefined, b: 2 } },
+    },
+  ] as unknown as readonly JournalEntry[];
+  const loadedScope = new Journal({ run: "r-res-m", entries: absentBranch });
+  ok(
+    "while a branch that answered NOTHING still loads, because absence is not a value that failed the rule",
+    loadedScope.entries().length === 1,
+    (loadedScope.entries()[0]?.result as { value?: unknown })?.value,
   );
 }
 
