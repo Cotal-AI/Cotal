@@ -135,23 +135,21 @@
       "name": "a declared field drifts to a type the reducer cannot check",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
       "find": " * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: boolean }} ReapReport\n",
-      "replace": " * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: object }} ReapReport\n",
+      "replace": " * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: boolean, meta?: object }} ReapReport\n",
       "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
       "afterRestore": "pnpm gen:reaper-dts",
       "expectRed": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
       "cell": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
-      "note": "Two reviews built this green: an irreducible declared type used to satisfy the conformance cells by being unreadable. The declaration is regenerated so the drift is the ONLY difference."
+      "note": "Two reviews built the same hole green: a declared type the reducer cannot reduce used to satisfy the conformance cells by being unreadable. Their drifts needed a double cast to get past the module's own `@ts-check`; an OPTIONAL field typed as a bare object is the one-edit version that compiles, so the declaration is regenerated and the unverifiable leaf is the only difference."
     },
     {
       "name": "the reporter's declared return drifts from the nothing it gives back",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": " * @param {ReapReport} result\n * @returns {void}\n",
-      "replace": " * @param {ReapReport} result\n * @returns {number}\n",
-      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
-      "afterRestore": "pnpm gen:reaper-dts",
+      "find": "    console.log(`  [reaper] no leaked smoke brokers after ${label} (${result.inspected} nats-server live, ${result.unclaimable} not claimed${owned}${old})`);\n    return;\n",
+      "replace": "    console.log(`  [reaper] no leaked smoke brokers after ${label} (${result.inspected} nats-server live, ${result.unclaimable} not claimed${owned}${old})`);\n    return /** @type {*} */ (result.inspected);\n",
       "expectRed": "and the reporter's declared return is held to what the call actually gives back",
       "cell": "and the reporter's declared return is held to what the call actually gives back",
-      "note": "Its declared return was read out of the declaration and then held to nothing."
+      "note": "Its declared return was read out of the declaration and then held to nothing, so the value it gives back could drift freely."
     }
   ]
 }

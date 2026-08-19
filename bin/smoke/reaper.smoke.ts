@@ -25,7 +25,12 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
+import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
+// A NAMESPACE import for the reporter, deliberately: a named import of every export makes this
+// suite die at LOAD when a mutation renames one, which turns a graded row into an unexplained
+// crash and cost exactly that here. Reached through the namespace, a renamed export is a missing
+// property the cell below reports, and the declaration cell still reddens for its own reason.
+import * as reaperModule from "./reap-smoke-brokers.mjs";
 import { DECLARATION_PATH, MODULE_PATH, type DeclaredShape, checkDeclarationConsumer, declaredModuleSurface, readCommittedDeclaration, renderReaperDeclaration, transpileConsumer } from "./gen-reaper-dts.mjs";
 
 let pass = 0, fail = 0;
@@ -303,7 +308,10 @@ check(
 // anything, so a `@returns` that drifted from what the function does was invisible here: the eng
 // review declared it `number`, returned a string, and the suite stayed green. It returns nothing,
 // which is a claim like any other and is asserted like any other.
-const reporterMismatches = mismatches(surface.returns.reportReaped!, reportReaped("the declaration check", dryReport), "reportReaped()");
+const reporterReturn = typeof reaperModule.reportReaped === "function"
+  ? reaperModule.reportReaped("the declaration check", dryReport)
+  : "the module exports no reportReaped to hold that declaration to";
+const reporterMismatches = mismatches(surface.returns.reportReaped!, reporterReturn, "reportReaped()");
 check(
   "and the reporter's declared return is held to what the call actually gives back",
   reporterMismatches.length === 0,
