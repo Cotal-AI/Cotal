@@ -786,10 +786,10 @@ try {
   });
   const rolloutE = /publishing thread \S+ from (\S+)/.exec(errE)?.[1] ?? "";
   const threadE = publishedThreads(errE)[0] ?? "";
+  const framesOfThread = (t: string): AguiFramePart[] => (t === "" ? [] : frames.filter((f) => f.threadId === t));
   // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
   // fake blocks on this file unbounded by design, so a failed cell above stays a failed cell
   // instead of becoming a suite that hangs somewhere else.
-  const framesOfThread = (t: string): AguiFramePart[] => (t === "" ? [] : frames.filter((f) => f.threadId === t));
   const releasedAt = Date.now();
   writeFileSync(goE, "go");
   const turnOnDisk = await settle(
@@ -798,27 +798,39 @@ try {
     60_000,
   );
   const spentInWindow = Date.now() - releasedAt;
-  // READ AT THE MOMENT THE TURN LANDS, and this is the cell that proves the window was OPEN rather
-  // than merely asserted to be. Nothing above can tell a widened setup from a setup that finished
-  // instantly: with no delay at all the emitter is already reading, the turn's own boundaries flush
-  // it, and the graded cell below would still pass while grading a race instead of a window. So the
-  // observable is emptiness at a named instant. The turn is complete on disk and this seat has
-  // published NOTHING for its thread, which is only true while the emitter has not read yet.
-  const publishedWhenTurnLanded = framesOfThread(threadE).length;
+  // HELD FOR A BOUNDED TIME, NOT SAMPLED AT AN INSTANT, and the difference is the whole cell.
+  //
+  // An earlier version of this read the frame count once, at the moment the turn landed, and
+  // claimed emptiness there could only mean a sleeping emitter. That was WRONG and it is the same
+  // overclaim this change corrects elsewhere. `task_complete` is observed by POLLING THE ROLLOUT
+  // FILE, while frames arrive on a separate subscriber callback: two clocks. An AWAKE emitter that
+  // has already published looks exactly the same at that instant, for as long as the frame is still
+  // in flight. One sample of two clocks discriminates nothing.
+  //
+  // Holding does. With the window genuinely open there are seconds of it left, so emptiness
+  // persists for as long as this waits. With no widening at all a frame on a loopback broker lands
+  // in single-digit milliseconds, so emptiness sustained across this hold cannot be explained by
+  // subscriber latency. The hold is charged against the window by the guard below, so it cannot
+  // quietly eat the margin it depends on.
+  const EMPTY_HOLD_MS = 1_500;
+  await sleep(EMPTY_HOLD_MS);
+  const publishedAfterHold = framesOfThread(threadE).length;
   // THE CELL THAT KEEPS THE ONE BELOW HONEST. The graded cell only means what it says if the turn
   // really did land while the emitter had not read yet. If the machine was slow enough that the
   // setup finished first, this reds and names the measurement rather than letting a pass stand on
   // a window that had already closed.
-  check("window:setup:the turn RAN and COMPLETED inside the widened window, so the cell below judges records the emitter had not read", turnOnDisk && spentInWindow + WINDOW_UNSEEN_MS < WINDOW_MS, {
+  check("window:setup:the turn and the hold BOTH fit inside the widened window, so the cells here judge records the emitter had not read", turnOnDisk && spentInWindow + EMPTY_HOLD_MS + WINDOW_UNSEEN_MS < WINDOW_MS, {
     ...margin("E:the window turn is complete on disk"),
     spentMs: spentInWindow,
+    holdMs: EMPTY_HOLD_MS,
     unseenMs: WINDOW_UNSEEN_MS,
     windowMs: WINDOW_MS,
     path: rolloutE,
   });
-  check("window:setup:the seat had published NOTHING for this thread when the turn landed, so the window was OPEN and not merely assumed", threadE !== "" && turnOnDisk && publishedWhenTurnLanded === 0, {
+  check("window:setup:the seat published NOTHING for this thread across a held interval after the turn landed, so the window was OPEN rather than sampled at a lucky instant", threadE !== "" && turnOnDisk && publishedAfterHold === 0, {
     threadE,
-    publishedWhenTurnLanded,
+    publishedAfterHold,
+    holdMs: EMPTY_HOLD_MS,
     windowMs: WINDOW_MS,
     spentMs: spentInWindow,
   });
