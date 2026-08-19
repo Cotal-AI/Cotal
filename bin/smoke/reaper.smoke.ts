@@ -358,6 +358,19 @@ check(
   unchecked.length === 0,
   unchecked.join(" | "),
 );
+// The same rule on the other half of every signature. An arm this suite passes a value of is only
+// as verified as the reducer's reading of it: `boolean` is `true | false` to the checker, so an
+// optional boolean parameter arrives as two arms whose only member is an opaque `valueOf`, and an
+// arm that reduces to nothing checkable is a promise this suite cannot hold the code to. Measured
+// on this tree: the declared parameters have no unverifiable leaf, so this is a live assertion and
+// not a tautology, and the ledger row that stops the reducer reading a literal reddens it.
+const uncheckedParams = Object.entries(surface.params).flatMap(([name, shapes]) =>
+  shapes.flatMap((shape, index) => unverifiable(shape, `${name}(#${index})`)));
+check(
+  "and no leaf of a parameter the declaration admits is a type the reducer cannot check either",
+  uncheckedParams.length === 0,
+  uncheckedParams.join(" | "),
+);
 
 // `reportReaped`'s declared return was read out of the declaration and then never held to
 // anything, so a `@returns` that drifted from what the function does was invisible here: the eng

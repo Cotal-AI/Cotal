@@ -132,13 +132,13 @@
       "note": "A second return-field drift, on a field no hand-written consumer read. It is here because the fixed consumer that preceded the surface reader was beaten twice on exactly this axis, once on supported and once on this counter, by two different reviews. Since the shape is read out of the declaration rather than named here, both die to the same cell."
     },
     {
-      "name": "the reducer stops reducing a primitive, so a checked leaf becomes unverifiable",
+      "name": "the reducer stops reading a LITERAL, so a checked parameter arm becomes unverifiable",
       "file": "bin/smoke/gen-reaper-dts.mts",
-      "find": "const PRIMITIVES = new Set([\"string\", \"number\", \"boolean\", \"undefined\", \"void\", \"null\", \"never\", \"any\", \"unknown\"]);\n",
-      "replace": "const PRIMITIVES = new Set([\"string\", \"number\", \"undefined\", \"void\", \"null\", \"never\", \"any\", \"unknown\"]);\n",
-      "expectRed": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
-      "cell": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
-      "note": "Both lenses proved the hole from the DECLARATION side, with a field declared `() => void` or `object` while the runtime returned a boolean. That drift cannot be a row here: its only anchor is a JSDoc line, and `smoke:mutation-fixtures` refuses a `find` that spans prose, for the reason the namespace-merge row documents. It is verified by hand instead (an OPTIONAL field declared as a bare `object` regenerates cleanly and reds this cell alone). The row severs the same property from the side that has a code anchor: the reducer stops being able to check a leaf, and the suite must say so rather than pass more."
+      "find": "    if (type.flags & ts.TypeFlags.BooleanLiteral) return { kind: \"primitive\", name: \"boolean\" };\n",
+      "replace": "",
+      "expectRed": "and no leaf of a parameter the declaration admits is a type the reducer cannot check either",
+      "cell": "and no leaf of a parameter the declaration admits is a type the reducer cannot check either",
+      "note": "Both lenses proved the hole from the DECLARATION side, with a field declared `() => void` or `object` while the runtime returned a boolean. That drift cannot be a row here: its only anchor is a JSDoc line, and `smoke:mutation-fixtures` refuses a `find` that spans prose, for the reason the namespace-merge row documents. It is verified by hand instead (an OPTIONAL field declared as a bare `object` regenerates cleanly and reds the return-side cell alone). This row severs the same property from the side that has a code anchor. It used to drop `boolean` from the PRIMITIVES set, which stopped severing anything once literals began reducing to their base primitive: `boolean` is `true | false` to the checker, so the union path reached the same answer and the harness correctly reported a mutant that applied and changed nothing. It now removes the literal reduction itself, which is what an optional boolean PARAMETER depends on: without it that arm is an object whose only member is an opaque `valueOf`, and the parameter-side cell says so."
     },
     {
       "name": "the reporter's declared return drifts from the nothing it gives back",
