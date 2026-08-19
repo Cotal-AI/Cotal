@@ -2146,6 +2146,52 @@ let n = 1;
   ok(`this run is on node ${process.versions.node}, which the boundary check accepted`, (await caught(() => assertNodeFloor(process.versions.node))) === undefined);
 }
 
+// ---- 20b) a log line is DATA on this engine ---------------------------------------------------------
+//
+// The engine's log sink (ctx.ts) refuses a function anywhere inside a logged value BEFORE the line
+// reaches any transport: measured before the rule, the worker died on the host's DataCloneError with the
+// emitted module body in its message (the worker leg in section 16 holds that end). This is a rule of
+// the ENGINE, declared as a divergence in the differential suite: the walker replays every run recorded
+// under language version 1 and hands its log values to the host as they are (surface.smoke pins that,
+// journal.smoke replays a checked-in v1 recording that logs a builtin). Each program below runs source
+// through the transform onto the in-process engine, so what is graded is the sink, not a hand-built call.
+
+{
+  const onEngine = async (source: string): Promise<{ readonly outcome: string; readonly raw: unknown[][] }> => {
+    const raw: unknown[][] = [];
+    const outcome = await runOnEngine(source, transform(source).module, {
+      runId: "log-data",
+      handler: new SimHandler({}),
+      evaluate: plainly,
+      onLog: (l) => raw.push([...l.values]),
+    }).then(() => "ran", (e: unknown) => (e as Error).message); // a RuntimeFault's message opens with its code
+    return { outcome, raw };
+  };
+  const fn = await onEngine("log((x) => x);");
+  ok("the engine refuses a log line carrying a function (L4016) and names the value", fn.outcome.startsWith("L4016 log: value 1 is a function") && fn.raw.length === 0, fn);
+  const nested = await onEngine('log("v", { g: (x) => x });');
+  const deep = await onEngine("log([[1, (x) => x]]);");
+  const ns = await onEngine("log(json);");
+  ok(
+    "and a function nested in a logged record, array or namespace, naming the path",
+    nested.outcome.startsWith("L4016 log: value 2.g is a function") && deep.outcome.startsWith("L4016 log: value 1[0][1] is a function") && ns.outcome.startsWith("L4016 log: value 1."),
+    { nested: nested.outcome, deep: deep.outcome, ns: ns.outcome },
+  );
+  const caughtByProgram = await onEngine('try { log((x) => x); } catch (e) { log("caught", e.code); }');
+  ok("the refusal is the program's to catch", caughtByProgram.outcome === "ran" && JSON.stringify(caughtByProgram.raw) === '[["caught","L4016"]]', caughtByProgram);
+  // Deliberately NOT the crossing rule: the trace is not the journal, and a human wants to see these.
+  const data = await onEngine("const o = { a: 1 }; log(o.b, 0 / 0, 1 / 0, [1, [2, { b: 3 }]], null);");
+  ok(
+    "and `undefined`, a non-finite number and plain data cross to the trace as they are",
+    data.outcome === "ran" && data.raw.length === 1 && data.raw[0][0] === undefined && Number.isNaN(data.raw[0][1]) && data.raw[0][2] === Infinity && JSON.stringify(data.raw[0][3]) === '[1,[2,{"b":3}]]' && data.raw[0][4] === null,
+    data,
+  );
+  // Held whether or not the host listens: a program's outcome never depends on who is watching.
+  const unheard = await runOnEngine("log((x) => x);", transform("log((x) => x);").module, { runId: "log-data", handler: new SimHandler({}), evaluate: plainly })
+    .then(() => "ran", (e: unknown) => codeOf(e) ?? (e as Error).name);
+  ok("and the refusal stands with no host listening for log lines at all", unheard === "L4016", unheard);
+}
+
 // ---- 22) the worker boundary: every crossing, enumerated -----------------------------------------
 //
 // The differential suite compares the walker against the IN-PROCESS engine, by construction: it
