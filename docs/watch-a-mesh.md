@@ -112,6 +112,15 @@ DMs), the selected content in the centre, the NEEDS-YOU lane always on the right
   collapses durable-but-away members. Broker-sourced membership needs the delivery daemon (auth
   mode) and is provisioned on a fresh `cotal up`.
 
+**When a read does not land.** A poll that fails never blanks the page. The dashboard keeps the
+last values it actually read and marks them stale in the header, naming which source is stale and
+why (`stale: peers, activity`, with the server's own reason on hover); the next successful read
+replaces the data and clears the mark. The all-activity read is bounded, so on a slow link it can
+come back SHORT rather than late: the header then says `partial: activity`, and the page reports how
+many sources answered out of how many were asked and names the ones that did not. A short page and a
+complete one are never the same bytes. On a link too slow to finish anything the honest answer is
+zero sources answered, and you keep looking at the last good data with the marker up.
+
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
 raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines

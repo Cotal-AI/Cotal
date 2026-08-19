@@ -683,31 +683,72 @@
   $("legendToggle").onclick = () => $("legend").classList.toggle("collapsed");
   function setConn(live) { const el = $("conn"); el.classList.toggle("down", !live); el.querySelector(".t").textContent = live ? "live" : "disconnected"; }
 
+  /** Say which sources are showing their last good value. Visible, not a console line. */
+  function setStale(stale) {
+    const el = $("stale");
+    if (!el) return;
+    const label = window.COTAL_SNAPSHOT.staleLabel(stale);
+    el.hidden = !label;
+    if (!label) return;
+    el.querySelector(".t").textContent = label;
+    el.title = stale.map((s) => `${s.name}: ${s.reason}`).join("\n");
+  }
+
   // ── boot ──
   async function load() {
-    const [meta, roster, chans, membership, activity, dmHist] = await Promise.all([
-      fetch("/api/meta").then((r) => r.json()), fetch("/api/roster").then((r) => r.json()), fetch("/api/channels").then((r) => r.json()),
+    // ── ONE REFUSED READ MUST NOT EMPTY THE PAGE ────────────────────────────────────────────────
+    //
+    // This was a six-way `Promise.all` of `fetch(u).then((r) => r.json())`. `fetch` does not reject
+    // on a 500 and this server's 500 body is `{"error": "..."}`, which parses, so the refusal
+    // arrived as DATA and the first `for (const c of chans)` threw `chans is not iterable` out of
+    // the whole bootstrap. The `.catch(() => [])` guards on activity and dms never fired for the
+    // same reason: there was nothing to catch. Because `load()` rejected, `connect()`, which runs
+    // as `load().then(connect)`, was never called, so the page sat at `disconnected` with no peers
+    // and no channel hubs and could not recover without a reload. Measured against a broker behind
+    // a 160ms link, where `/api/channels` and `/api/activity` both returned 500 `timeout`.
+    //
+    // Now every source is read independently, only successful reads are applied, and what did not
+    // land is named on screen. Nothing here can prevent `connect()` from running.
+    const SNAP = window.COTAL_SNAPSHOT;
+    let activityPage = null;
+    const stale = await SNAP.refreshAll([
+      { name: "space", read: async () => SNAP.readJson(await fetch("/api/meta"), "space"),
+        apply: (meta) => { $("space").textContent = "· " + meta.space; } },
+      { name: "channels", read: async () => SNAP.readJson(await fetch("/api/channels"), "channels"),
+        apply: (chans) => { for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; } } },
+      { name: "peers", read: async () => SNAP.readJson(await fetch("/api/roster"), "peers"),
+        apply: (roster) => updateRoster(roster) },
       // `.catch(() => ({members: []}))` here turned a failed fetch into an empty snapshot, which the
       // pill then reported as "traffic-only" — the client half of the same defect the server had.
       // A non-200 is not a snapshot either: `r.json()` on the refusal body would parse fine and
-      // arrive as data, so the status is checked before the body is trusted.
-      fetch("/api/membership")
-        .then((r) => (r.ok ? r.json() : { unreadable: true }))
-        .catch(() => ({ unreadable: true })),
-      fetch("/api/activity?limit=400").then((r) => r.json()).catch(() => []), fetch("/api/dms?limit=400").then((r) => r.json()).catch(() => []),
+      // arrive as data, so the status is checked before the body is trusted. That check now lives in
+      // `readJson`, and an unreadable feed reaches `membershipUnreadable()` through the stale path.
+      { name: "membership", read: async () => SNAP.readJson(await fetch("/api/membership"), "membership"),
+        apply: (m) => applyMembership(m) },
+      // `/api/activity` answers an ENVELOPE, never a bare array; a caller that ignored `partial`
+      // would break here rather than seed a short page as though it were the whole backfill.
+      { name: "activity", read: async () => SNAP.readJson(await fetch("/api/activity?limit=400"), "activity"),
+        apply: (page) => { activityPage = page; seedActivity(page.entries); } },
+      { name: "direct messages", read: async () => SNAP.readJson(await fetch("/api/dms?limit=400"), "direct messages"),
+        apply: (dmHist) => seedDms(dmHist) },
     ]);
-    $("space").textContent = "· " + meta.space;
-    for (const c of chans) { const h = ensureHub(c.channel); h.msgs = c.messages || 0; h.desc = c.description || ""; h.deliveryClass = c.deliveryClass; h.replay = c.replay; h.replayWindow = c.replayWindow; }
-    updateRoster(roster);
-    // authoritative spokes BEFORE traffic seeding (no skeleton flicker) — unless the read refused,
-    // in which case there are no spokes to draw and the pill has to say so rather than imply a mesh
-    // with no feed.
-    if (membership && membership.unreadable) membershipUnreadable();
-    else applyMembership(membership);
+    if (activityPage && activityPage.partial)
+      stale.push({
+        kind: "partial",
+        name: "activity",
+        reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
+      });
+    setStale(stale);
+    if (stale.some((s) => s.name === "membership")) membershipUnreadable();
+    alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout
+    const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.scale = f.scale;
+  }
+
+  /** Seed traffic glow + the `recent` buffer from the activity backfill so the channel detail's
+   *  "recently active" tags and the "recent" section aren't empty until the first live SSE message
+   *  arrives. Its own function so the read that feeds it can fail without taking the boot with it. */
+  function seedActivity(activity) {
     for (const e of activity) { const m = e.msg; if (m) m.channel = e.channel; const a = m?.from?.id && agents.get(m.from.id); if (e.mode === "chat" && m?.channel && a) chatHit(a, m.channel, m.ts || now()); }
-    for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
-    // Seed the `recent` buffer from the activity backfill so the channel detail's "recently active" tags +
-    // the "recent" section aren't empty until the first live SSE message arrives (norman).
     for (const e of activity.slice(-80)) {
       const m = e.msg; if (!m) continue;
       const to = e.mode === "unicast" ? (typeof m.to === "string" ? (agents.get(m.to)?.name || shortId(m.to)) : m.to?.name) : e.mode === "anycast" ? "@" + (m.toService || "") : null;
@@ -715,13 +756,18 @@
     }
     recent.sort((a, b) => a.ts - b.ts);
     if (recent.length > 80) recent.splice(0, recent.length - 80);
-    alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout
-    const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.scale = f.scale;
+  }
+
+  function seedDms(dmHist) {
+    for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
   }
   function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => updateRoster(JSON.parse(e.data))); es.addEventListener("membership", (e) => applyMembership(JSON.parse(e.data))); es.addEventListener("membership-read-failed", () => membershipUnreadable()); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
 
   resize();
   setInterval(setFeed, 5000); // age "live" → "stale" even without new events
-  load().then(connect).catch((err) => { console.error(err); setConn(false); });
+  // `connect()` runs whatever `load()` reported. It used to be gated behind `load()` resolving, so a
+  // single refused read left the page permanently disconnected with nothing on it; the live feed is
+  // exactly what a page showing stale data needs most.
+  load().catch((err) => console.error(err)).then(connect);
   requestAnimationFrame(frame);
 })();

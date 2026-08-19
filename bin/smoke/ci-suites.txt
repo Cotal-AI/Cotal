@@ -348,3 +348,10 @@ smoke:codex-rollout-path
 # The same plane through the seam a spawn actually takes: a real broker, the real host process, a
 # real rollout on disk, and a subscriber reading the frames off the channel.
 smoke:codex-events-lifecycle
+
+# The web dashboard's resilience to a link that stalls: what the pages keep when a poll refuses,
+# what the activity aggregation returns when it runs out of time, and whether a presence watch
+# rebuild can clean up after itself.
+smoke:web-snapshot
+smoke:web-bounded-aggregation
+smoke:presence-watch-rebuild:auth

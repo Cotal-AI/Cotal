@@ -268,7 +268,10 @@ const check = (name: string, cond: boolean, extra?: unknown): void => {
  *  floor; see the population cells for why. */
 type Seam = { fn: string; key: string; sites: number; untypecheckedSites: number };
 const SEAMS: Seam[] = [
-  { fn: "standaloneConnectOpts", key: "tls", sites: 94, untypecheckedSites: 67 },
+  // 94/67 -> 95/68: one call site added under `smoke/`, in
+  // `packages/core/smoke/presence-watch-rebuild.smoke.ts`, which opens its own client to read the
+  // consumers a presence watch leaves behind. It states `tls`, so only the population moved.
+  { fn: "standaloneConnectOpts", key: "tls", sites: 95, untypecheckedSites: 68 },
 ];
 
 /**
