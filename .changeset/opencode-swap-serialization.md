@@ -10,7 +10,8 @@ with an open handle and the session it held left a run open on the wire with not
 The holder they both replaced was drained twice.
 
 Swaps now run one at a time, so each reads a holder that is installed and no longer being retired
-underneath it, and a rejected swap is absorbed so one failed drain cannot wedge every later swap.
+underneath it, and the chain carries the absorbed tail of each swap, so the next one still runs
+after a failed drain.
 Installed rather than settled: a swap waits for the holder it RETIRES, not for the one it installs,
 whose adoption is still starting when the swap resolves.
 The connector also logs a retirement the way it already logs an adoption, which is what makes a
@@ -22,7 +23,7 @@ the window: with the id assigned before the drain, an event in the gap was carri
 into a holder still bound to the previous session, and that holder refuses a second session
 permanently, so the event plane died rather than skipping a frame. Event work is now routed by
 asking the holder what it is bound to, so an event reaches a holder only when that holder already
-serves its session or serves nothing yet. There is no ordering left for the route to get wrong.
+serves its session or serves nothing yet.
 
 A session that OpenCode attaches to, rather than creates, is also covered. The first event of such
 a run arrives before any session was created, and it now reaches the event plane instead of being

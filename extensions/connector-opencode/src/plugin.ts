@@ -763,21 +763,19 @@ export const cotal: Plugin = async () => {
    * hook when the flag flips; that work is what the joins in `quiesce` cover, and a hook that had
    * already passed this point still runs. The two together are the claim, and neither is it alone.
    *
-   * AND IT FENCES THIS CONNECTOR, NOT THE EDITOR. A hook influences OpenCode by MUTATING its
-   * `output` argument, not by what it returns: every hook returns `Promise<void>`, so returning
-   * early is ordinary successful completion and says nothing. `chat.message`'s output is
-   * `{ message, parts }`, which carries no field that cancels or skips the turn, so this fence
-   * cannot stop a natively submitted prompt from starting one. That is a fact about THIS hook and
-   * not about the contract: `permission.ask` decides with `status`, and
-   * `experimental.compaction.autocontinue` decides with `enabled`, documented as skipping a
-   * synthetic continue turn. Cancelling a native turn would take the SDK's session `abort`, which
-   * this teardown deliberately does not call.
+   * AND IT FENCES THIS CONNECTOR, NOT THE EDITOR. `@opencode-ai/plugin`'s `index.d.ts` types
+   * `chat.message` as `(input, output: { message; parts }) => Promise<void>`. A fenced hook
+   * returning early is that hook completing, and the `output` it was handed names no cancel and no
+   * skip, so this table does not stop a prompt submitted through the editor. Two hooks in that same
+   * file are handed one: `permission.ask` gets `status`, and `experimental.compaction.autocontinue`
+   * gets `enabled`, its doc comment saying `false` skips the synthetic continue turn. This
+   * connector implements neither. Cancelling a native turn would take the SDK's session `abort`,
+   * which this teardown does not call.
    *
-   * WHETHER SUCH A TURN'S EVENTS SURVIVE IS TIMING, NOT A RULE. The endpoint stays up until
-   * `agent.stop()` at the end of `quiesce`, so holder work admitted or queued before this flag
-   * flipped can still settle and publish, exactly as the drain note above says. Work arriving after
-   * it is refused here and does not reach the plane. This fence neither saves nor loses those
-   * events; it decides only what this connector admits.
+   * WHETHER SUCH A TURN'S EVENTS SURVIVE IS TIMING. `quiesce` calls `agent.stop()` last, after the
+   * intake wait, the offline publish and the two settles, so holder work already queued when this
+   * flag flipped can still settle and publish through an endpoint that is still up. Work arriving
+   * afterwards is refused at this table.
    */
   const fence = <T extends Record<string, (...args: never[]) => Promise<unknown>>>(intake: T): T =>
     Object.fromEntries(
