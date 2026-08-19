@@ -33,6 +33,15 @@
       "note": "Severs the bind alone rather than every key in the package: parallel branches run the SAME step, so a leaf match takes the first sibling."
     },
     {
+      "name": "the bind matches the scope and the name but discards which iteration asked",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const base = Journal.keyOf(key).replace(/#\\d+$/, \"\");\n    const hit = [...this.byKey.entries()].find(([kk]) => kk.replace(/#\\d+$/, \"\") === base);\n    const k = hit?.[0] ?? Journal.keyOf(key);\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands on the iteration that asked for it, and the earlier one running the same step under the same scope is untouched",
+      "cell": "the bind lands on the iteration that asked for it, and the earlier one running the same step under the same scope is untouched",
+      "note": "A loop runs the same step twice under one scope, so the two rows differ only by occurrence and the scope cell cannot see this."
+    },
+    {
       "name": "the first attempt's record says it resolved when it expired",
       "file": "packages/lang/src/interpret.ts",
       "find": "                { attempt: 0, requestId: ctx.requestId, settled: \"expired\" },\n",

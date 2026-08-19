@@ -169,6 +169,41 @@ const H = (v: unknown) => digest(v);
   );
 }
 
+// ---- 3d) ...and so is the occurrence, which neither the scope nor the leaf name pins down -------
+//
+// 3b's two rows differ by NAME and 3c's by SCOPE, so a bind that matched on (scope, kind, name) and
+// discarded the occurrence lands on the right row in both and both cells stay green. A loop is the
+// case that collides: one scope runs `turn:build` twice, so the two rows differ ONLY by occurrence.
+// Measured by a review, not argued: with `Journal.bind` selecting the first entry that matches
+// scope, kind and name alone, all fifteen lang suites stayed green while the second iteration's
+// reference landed on the first iteration's settled row. Recovery then resumes the iteration that
+// is still pending with no external at all and re-creates the resource, while the iteration that
+// already finished carries a live reference to work nobody will resume.
+{
+  const j = new Journal({ run: "r-3d" });
+  const s = new KeyScope();
+  const first = s.nextEffect("turn", "build");
+  const second = s.nextEffect("turn", "build");
+  const h = H({ agent: "builder" });
+  await j.begin(first, h, 1000);
+  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.begin(second, h, 1200);
+  await j.bind(second, { goalId: "g-second" });
+
+  const resumed = new Journal({ run: "r-3d", entries: j.entries() });
+  const s2 = new KeyScope();
+  const vFirst = resumed.lookup(s2.nextEffect("turn", "build"), h);
+  const vSecond = resumed.lookup(s2.nextEffect("turn", "build"), h);
+  const firstExternal = vFirst.verdict === "replay" ? vFirst.entry.external : "not replayable";
+  ok(
+    "the bind lands on the iteration that asked for it, and the earlier one running the same step under the same scope is untouched",
+    vSecond.verdict === "pending"
+      && (vSecond.entry.external as { goalId?: string } | undefined)?.goalId === "g-second"
+      && vFirst.verdict === "replay" && firstExternal === undefined,
+    JSON.stringify(resumed.entries().map((e) => ({ occurrence: e.occurrence, external: e.external }))),
+  );
+}
+
 // ---- 4) failures and cancellations replay as themselves ---------------------------------------
 
 {
