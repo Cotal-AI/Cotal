@@ -1,0 +1,54 @@
+{
+  "grades": "bin/smoke/reaper.smoke.ts",
+  "guard": "the reaper's hand written declaration file agrees with the module it describes, in both directions",
+  "command": "pnpm smoke:reaper",
+  "progressPattern": "\u2713",
+  "completionMarker": "cells ran)",
+  "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its types live in a hand written .d.mts beside it. A declaration file is believed, not checked: the typecheck gate cannot tell that it describes the module it sits next to. These mutations break the agreement from BOTH sides, because the drift can start in either artifact: the module changing without the declaration following, and the declaration changing without the module following. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching these cells grades INCONCLUSIVE rather than passing as a kill.",
+  "mutations": [
+    {
+      "name": "an export is RENAMED in the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {",
+      "replace": "export function reportReapedResult(label, result) {",
+      "expectRed": "every name the declaration exports exists on the module",
+      "cell": "every name the declaration exports exists on the module",
+      "note": "Three cells move together here, which is honest rather than sloppy: the declared name is gone, an undeclared name has appeared, and the arity cell finds no function to measure. The named cell is the one the issue is about."
+    },
+    {
+      "name": "an export is ADDED to the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport const REAPER_VERSION = 2;",
+      "expectRed": "the module exports nothing the declaration omits",
+      "cell": "the module exports nothing the declaration omits",
+      "note": "The MIRROR direction of the rename. A guard that only checks declared-implies-present would call an undeclared export fine, and an undeclared export is exactly what an untyped consumer then reads with no type at all."
+    },
+    {
+      "name": "a REQUIRED parameter is added to the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {",
+      "replace": "export function reportReaped(label, result, verbose) {",
+      "expectRed": "reportReaped takes the number of required parameters the declaration gives it",
+      "cell": "reportReaped takes the number of required parameters the declaration gives it"
+    },
+    {
+      "name": "a REQUIRED parameter is added to the declaration and the module does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.d.mts",
+      "find": "export declare function reportReaped(label: string, result: ReapReport): void;",
+      "replace": "export declare function reportReaped(label: string, result: ReapReport, verbose: boolean): void;",
+      "expectRed": "reportReaped takes the number of required parameters the declaration gives it",
+      "cell": "reportReaped takes the number of required parameters the declaration gives it",
+      "note": "Drift can start in the DECLARATION too, and that direction is the more dangerous one: it compiles a call the module cannot honour."
+    },
+    {
+      "name": "a declared field disappears from the report the module actually returns",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    unclaimable: rows.length - reaped.length,\n    supported: true,",
+      "replace": "    unclaimable: rows.length - reaped.length,",
+      "expectRed": "a real ReapReport carries every field the declaration gives it",
+      "cell": "a real ReapReport carries every field the declaration gives it",
+      "note": "supported is the field that lets a caller tell \"nothing leaked\" from \"nothing was looked at\", so a report that silently stops carrying it turns an unenumerable platform into a clean bill of health. A later scenario cell also reads it, but these cells run first, so the named cell is the one that moves first."
+    }
+  ]
+}
