@@ -229,8 +229,14 @@ Two writes are refused:
 - **L2032, a value born outside a concurrent branch and written inside it** (§7.7), whether it is
   reached through its binding or through an alias.
 
-Records take any own field name except `__proto__` (L4014); arrays take an index or `length`
-(L4014). A record literal, a spread, and a rest pattern always define **own** fields.
+Records take any own field name except `__proto__` (L4014) and a callable `then` (L4021); arrays
+take an index or `length` (L4014). A record literal, a spread, and a rest pattern always define
+**own** fields. The `then` refusal holds wherever a record member is written, on a literal key or
+a computed one, in a literal, a spread, a rest pattern, or a member assignment: an object with a
+callable `then` is a thenable, which the host's promise machinery would adopt in place of the
+value the program built, its `then` running with the machinery's own continuations while one that
+throws or rejects escapes the run as an unowned rejection. The language carries no thenable values
+at all; a `then` that is not callable is data like any other member.
 
 ### 4.4 Canonical form, and what may cross an effect boundary
 
@@ -924,6 +930,7 @@ time, L5xxx durability, L6xxx simulation.
 | L4018 | No implicit conversion |
 | L4019 | Array write past the end |
 | L4020 | A method is not a value |
+| L4021 | A callable `then` is not a record member |
 | L5001 | Run divergence |
 | L5002 | Program hash not available |
 | L5003 | Orphaned `spawn` on migrate |
@@ -965,3 +972,4 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-18 | First normative reference, language version `1`, alongside SPEC.md v0.5 §14. |
 | 2026-08-18 | Review folds, same revision: the PRNG separator is U+0000 (§8.2, the earlier text said a space and was wrong; the code never changed); `any`/`all` are no longer reserved (§3); `xs.length = n` truncates only, L4017 (§4.3); the L2013 rule states where the validator can see (§2.3); `fanOut` fails like `parallel` (§7.4); L5022 is a walk refusal, not a resume stop (§11.1); no lineage on a fork's child (§11.3); `schema` is opaque and concurrent turns on one handle are the handler's (§6.5); the checkpoint entry's `attempts` chain (§6.5). |
 | 2026-08-18 | Language-lane folds, same revision: operators, computed member keys and the library's primitive parameters coerce primitives only, an array, record or function operand is refused (L4018, §4.5, §5.4); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
+| 2026-08-19 | A record may not carry a callable `then`, on a literal, a spread, a rest pattern or a member write alike, literal key or computed (L4021, §4.3): an object with a callable `then` is a thenable, the host's promise machinery adopts it in place of the value the program built, and its failure escaped the run as an unowned rejection that killed the host. |
