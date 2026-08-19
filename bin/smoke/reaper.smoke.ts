@@ -192,34 +192,66 @@ const PRIMITIVE_SAMPLES: Readonly<Record<string, string>> = {
   undefined: "undefined",
   null: "null",
 };
-// The arms a primitive sample cannot stand in for, keyed by export, position and kind. These are
-// values, not types: `reapSmokeBrokers` is the one export here that DOES something, so its object
-// arm is pinned to a dry run rather than generated, and nothing in this file may generate a call
-// that reaps.
+// The arms a primitive sample cannot stand in for, keyed by export, position and the arm's STRUCTURE
+// rather than its kind. Structure, because kind is not identity: an engineering review widened
+// `reportReaped`'s report parameter to `ReapReport | { supported: true, reaped: null }`, held the body
+// to a real report behind a double cast, regenerated, and this suite stayed at 36 of 36. Both arms
+// were of kind `object`, so the pin written for the report answered for the new arm as well, and the
+// widened one was never passed; a consumer written to it compiled with zero diagnostics and then
+// threw `Cannot read properties of null` at runtime. Reproduced first-party at 36 of 36 before this
+// key carried structure. A widened arm now has a key nobody pinned, so it reds the cell below.
+const armKey = (arm: DeclaredShape): string =>
+  arm.kind === "primitive" ? arm.name
+    : arm.kind === "array" ? `array<${armKey(arm.of)}>`
+      : arm.kind === "object" ? `object{${Object.keys(arm.props).sort().map((k) => `${k}:${armKey(arm.props[k]!)}`).join(",")}}`
+        : arm.kind === "union" ? `union(${arm.of.map(armKey).sort().join("|")})`
+          : `opaque(${arm.text})`;
+// These are values, not types.
 const NAMED_ARMS: Readonly<Record<string, string>> = {
-  "reapSmokeBrokers#0#object": "{ dryRun: true }",
-  "reportReaped#1#object": "report",
+  "reapSmokeBrokers#0#object{dryRun:union(boolean|undefined)}": "{ dryRun: true }",
+  "reportReaped#1#object{inspected:number,ownedLive:number,reaped:array<object{args:string,owner:number,pid:number}>,supported:boolean,unclaimable:number,unparseable:number}": "report",
+};
+// And the arms that are COMPILED but not RUN, each named with the reason it cannot be run.
+// `reapSmokeBrokers` is the one export here that does something, and its parameter is optional, so
+// `undefined` is an arm whose single inhabitant the module reads as `dryRun` false: a live SIGKILL of
+// every orphaned smoke broker on the box. A security review found the generated
+// `reapSmokeBrokers(undefined);` sitting in the executed half and demonstrated the kill. Reproduced
+// first-party: the orphan fixture died to that exact call while `{ dryRun: true }` left it alive, and
+// all 36 cells stayed green throughout, because "nothing here may generate a call that reaps" was a
+// comment and no cell. On a shared box it is another lane's fixture that dies. So the call is held to
+// the compiled half, where it still proves the declaration admits the arm, and the executed half is
+// held to the property the comment used to only assert.
+const COMPILE_ONLY_ARMS: Readonly<Record<string, string>> = {
+  "reapSmokeBrokers#0#undefined": "its one inhabitant is a live reap: the module reads a missing argument as dryRun false",
 };
 const armsOf = (shape: DeclaredShape): readonly DeclaredShape[] => (shape.kind === "union" ? shape.of : [shape]);
+const keyOfArm = (name: string, index: number, arm: DeclaredShape): string => `${name}#${index}#${armKey(arm)}`;
 const expressionFor = (name: string, index: number, arm: DeclaredShape): string | undefined =>
-  arm.kind === "primitive" ? PRIMITIVE_SAMPLES[arm.name] : NAMED_ARMS[`${name}#${index}#${arm.kind}`];
+  NAMED_ARMS[keyOfArm(name, index, arm)] ?? (arm.kind === "primitive" ? PRIMITIVE_SAMPLES[arm.name] : undefined);
 // One call per arm, varying a single parameter at a time and holding the others at their first arm,
 // so the call count is the number of arms rather than their product.
 const generatedCalls: string[] = [];
+const executedCalls: string[] = [];
 const unexercisedArms: string[] = [];
+// The value the OTHER parameters are held at is never a compile-only arm, or holding one would carry
+// the call that cannot run into every other parameter's call as well.
+const holdArm = (name: string, index: number, shape: DeclaredShape): DeclaredShape =>
+  armsOf(shape).find((arm) => COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) ?? armsOf(shape)[0]!;
 for (const [name, params] of Object.entries(surface.params)) {
-  if (params.length === 0) { generatedCalls.push(`${name}();`); continue; }
-  const first = params.map((shape, i) => expressionFor(name, i, armsOf(shape)[0]!));
+  if (params.length === 0) { generatedCalls.push(`${name}();`); executedCalls.push(`${name}();`); continue; }
+  const first = params.map((shape, i) => expressionFor(name, i, holdArm(name, i, shape)));
   params.forEach((shape, index) => {
     for (const arm of armsOf(shape)) {
       const expression = expressionFor(name, index, arm);
       if (expression === undefined) {
-        unexercisedArms.push(`${name}(#${index}) admits ${arm.kind === "primitive" ? arm.name : arm.kind}, and nothing here passes one`);
+        unexercisedArms.push(`${name}(#${index}) admits ${armKey(arm)}, and nothing here passes one`);
         continue;
       }
       const args = first.map((value, i) => (i === index ? expression : value));
       if (args.some((value) => value === undefined)) continue;
-      generatedCalls.push(`${name}(${args.join(", ")});`);
+      const call = `${name}(${args.join(", ")});`;
+      generatedCalls.push(call);
+      if (COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) executedCalls.push(call);
     }
   });
 }
@@ -228,7 +260,7 @@ check(
   unexercisedArms.length === 0,
   unexercisedArms.join(" | "),
 );
-const CONSUMER = `import type { NatsServerRow, ReapReport, ReapedBroker } from "./reap-smoke-brokers.mjs";
+const consumerText = (calls: readonly string[]): string => `import type { NatsServerRow, ReapReport, ReapedBroker } from "./reap-smoke-brokers.mjs";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 
 const rows: NatsServerRow[] | undefined = listNatsServers();
@@ -236,24 +268,38 @@ const report: ReapReport = reapSmokeBrokers({ dryRun: true });
 const owners: number[] = report.reaped.map((r: ReapedBroker) => r.owner);
 const label: string = \`contract probe \${SMOKE_BROKER_PREFIX}\`;
 reportReaped(label, report);
-${[...new Set(generatedCalls)].join("\n")}
+${calls.join("\n")}
 console.log(\`__CONSUMER_RAN__ rows=\${rows === undefined ? "none" : rows.length} inspected=\${report.inspected} owners=\${owners.length}\`);
 `;
+const CONSUMER = consumerText([...new Set(generatedCalls)]);
+const EXECUTED_CONSUMER = consumerText([...new Set(executedCalls)]);
 const consumerDiagnostics = checkDeclarationConsumer(CONSUMER);
 check(
   "a consumer written to what the declaration promises compiles against the declaration alone",
   consumerDiagnostics.length === 0,
   consumerDiagnostics.slice(0, 3).join(" | "),
 );
-// `dryRun` so the executed half claims nothing: it enumerates and reports, and signals no process.
+// The executed half claims nothing: it enumerates and reports, and signals no process. That is read
+// off the text about to run rather than asserted about it, and it names the one call shape allowed.
+// It GATES the run rather than only recording, because a report that a live reap was executed is not
+// a guard against executing it: by the time the cell fails, another lane's orphan is already dead.
+const liveReaps = EXECUTED_CONSUMER.split("\n")
+  .filter((line) => /\breapSmokeBrokers\(/.test(line) && !/\breapSmokeBrokers\(\{ dryRun: true \}\)/.test(line));
+check(
+  "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
+  liveReaps.length === 0,
+  liveReaps.map((line) => line.trim()).join(" | "),
+);
 const ranPath = join(dirname(MODULE_PATH), `.declaration-consumer.${process.pid}.mjs`);
-let ran = { status: -1, output: "" };
-try {
-  writeFileSync(ranPath, transpileConsumer(CONSUMER));
-  const r = spawnSync(process.execPath, [ranPath], { encoding: "utf8" });
-  ran = { status: r.status ?? -1, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
-} finally {
-  rmSync(ranPath, { force: true });
+let ran = { status: -1, output: `not run: the generated consumer would have reaped [${liveReaps.map((line) => line.trim()).join(" | ")}]` };
+if (liveReaps.length === 0) {
+  try {
+    writeFileSync(ranPath, transpileConsumer(EXECUTED_CONSUMER));
+    const r = spawnSync(process.execPath, [ranPath], { encoding: "utf8" });
+    ran = { status: r.status ?? -1, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  } finally {
+    rmSync(ranPath, { force: true });
+  }
 }
 check(
   "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",

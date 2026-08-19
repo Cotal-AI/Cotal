@@ -2,7 +2,7 @@
   "grades": "bin/smoke/reaper.smoke.ts",
   "guard": "the declaration beside the reaper is what the compiler emits from the reaper, so the two cannot describe different modules",
   "command": "pnpm smoke:reaper",
-  "progressPattern": "\u2713",
+  "progressPattern": "✓",
   "completionMarker": "cells ran)",
   "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its .ts consumers need a declaration beside it. Two hand written guards over a hand written declaration each passed GREEN over real drift, because each was an enumeration of the shapes its author thought of. The declaration is now emitted from the module and compared byte for byte, so there is no shape to recognise. Mutations 1 through 9 are each a shape that beat one of those guards, or the mirror of one, and every one of those must move the SAME cell: that is the property, that the kind of change does not matter. Row 10 is deliberately not one of them and moves a different cell on purpose: it turns the module's type checking OFF, which the first nine all silently depend on, and it is named by the guard that reads the property rather than the one that compares bytes. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching the cell grades INCONCLUSIVE rather than passing as a kill.",
   "mutations": [
@@ -159,6 +159,28 @@
       "note": "Row 11 is the runtime moving under a fixed declaration. This is the other direction and it beat the suite: the declaration grows an arm the code never accepted, and because the consumer still passes the arm it always passed, nothing ever calls the new one. A security review widened this to `string | number`, kept the body string-only behind a double cast, and the whole suite stayed at 34 of 34 while a consumer written to the `number` arm compiled with zero diagnostics and threw at runtime. The consumer's calls are now generated from the declared arms, so a widened parameter is called with a value of its new arm and this cell reds. Reproduced first-party at 34 of 34 before the generated calls existed. The row regenerates the declaration from the mutated module, because the point IS the declaration widening; `afterRestore` regenerates it again from the restored source, so the committed bytes come back. The anchor is the signature line alone: an inline parameter type overrides the leading `@param`, so the widening rides in the replacement and the `find` stays code only, which `pnpm smoke:mutation-fixtures` requires.",
       "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
       "afterRestore": "pnpm gen:reaper-dts"
+    },
+    {
+      "name": "the declaration widens a parameter to a SHAPE the code never accepted, beside a shape it does",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {\n",
+      "replace": "export function reportReaped(label, /** @type {ReapReport | { supported: true, reaped: null }} */ result) {\n  result = /** @type {ReapReport} */ (/** @type {unknown} */ (result));\n",
+      "expectRed": "every arm the declaration admits for a parameter is one this consumer passes a value of, so a widened parameter cannot arrive unexercised",
+      "cell": "every arm the declaration admits for a parameter is one this consumer passes a value of, so a widened parameter cannot arrive unexercised",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "note": "Row 17 widens a parameter to a new PRIMITIVE arm, and the generated calls catch it because a primitive names its own sample. This is the same widening one level in, where the new arm is an object beside an object. An engineering review found that the arms were keyed by KIND, so the value pinned for the report answered for the new arm too: the suite stayed at 36 of 36 while a consumer written to `{ supported: true, reaped: null }` compiled with zero diagnostics and threw `Cannot read properties of null` against the real module. The key is structural now, so the widened arm is one nobody pinned and it is reported as unexercised rather than silently covered. The row regenerates the declaration from the mutated module, because the emitted declaration is what the consumer is written against."
+    },
+    {
+      "name": "a new arm of the DESTRUCTIVE export's parameter, whose generated call would kill brokers",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reapSmokeBrokers({ dryRun = false } = {}) {\n",
+      "replace": "export function reapSmokeBrokers(/** @type {{ dryRun?: boolean } | boolean} */ opts = {}) {\n  const { dryRun = false } = /** @type {{ dryRun?: boolean }} */ (/** @type {unknown} */ (opts));\n",
+      "expectRed": "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
+      "cell": "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "note": "The generated calls are what make a widened parameter reachable, and for the one export that SIGKILLs a process they are also a hazard: a security review found the generated `reapSmokeBrokers(undefined);` in the half that runs, and the module reads a missing argument as `dryRun` false. Reproduced first-party: an orphan fixture died to that exact call while `{ dryRun: true }` left it alive, and all 36 cells stayed green, because `nothing here may generate a call that reaps` was a comment and no cell. On a shared box the broker that dies belongs to another lane. The `undefined` arm is compiled but not run now, and this row grows a NEW arm the generator would sample live: the cell reads the text before it runs and gates the run on it, so the mutant reds without reaping anything."
     }
   ]
 }
