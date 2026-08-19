@@ -87,7 +87,7 @@ try {
     Object.hasOwn(specialReg.channels ?? {}, "__proto__")
       && specialReg.channels?.__proto__?.description === "Prototype token"
       && Object.hasOwn(specialReg.channels ?? {}, "constructor")
-      && specialReg.channels?.constructor?.description === "Constructor token");
+      && (specialReg.channels?.["constructor"] as { description?: string } | undefined)?.description === "Constructor token");
   check("registry read keeps the normal object prototype", Object.getPrototypeOf(specialReg.channels) === Object.prototype);
   assert.throws(() => validateChannelConfig({ description: "x".repeat(1000) }), /too long/);
   check("validation rejects oversize", true);
@@ -132,7 +132,9 @@ try {
   {
     const nc = await connect({ servers });
     const js = jetstream(nc);
-    const forged: CotalMessage = {
+    // Deliberately NOT annotated `CotalMessage`: the union is exclusive, and a frame carrying both
+    // `channel` and `to` is precisely the forgery under test. The wire is bytes; this is those bytes.
+    const forged = {
       id: randomUUID(),
       ts: Date.now(),
       space,
