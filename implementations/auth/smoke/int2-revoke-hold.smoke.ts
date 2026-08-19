@@ -76,11 +76,11 @@ type ControlReply = import("@cotal-ai/core").ControlReply;
 const { spawn } = await import("node:child_process");
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, chmodSync } = await import("node:fs");
 
-/** `Manager.list` is PRIVATE; the cells below assert the row shape `cotal ps` renders, so the reach
- *  goes through one named view rather than a cast per call site, and the view names exactly the
- *  fields those cells read. Widening the method to public would be a shipped-source change made for
- *  a test's convenience, which is not this change's business. */
-type PsRow = { name: string; id: string; mesh: string; lifecycleUid: string; authHealth?: string; authReason?: string };
+/** `Manager.list` is PRIVATE; the cells below read one field off the row `cotal ps` renders, so the
+ *  reach goes through one named view rather than a cast per call site, and the view names that field
+ *  and no other. Widening the method to public would be a shipped-source change made for a test's
+ *  convenience, which is not this change's business. */
+type PsRow = { name: string };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
@@ -400,7 +400,7 @@ try {
     ep: { ref: () => { id: string } };
     retiring: Map<string, { agentId: string; lifecycleUid: string; userOwner?: string; standingAuthorityLive?: boolean; lastError?: string }>;
   };
-  const listNames = (): string[] => psList(manager!).map((a: { name: string }) => a.name);
+  const listNames = (): string[] => psList(manager!).map((a) => a.name);
 
   // Capture the manager's despawn/terminal logs (console.error) so we can read the RED vs GREEN
   // terminal face directly ("name stays held" = GREEN; "free for reuse" = RED/pristine).
@@ -467,7 +467,7 @@ try {
   check("GREEN: a same-name spawn is REFUSED while the mint authority stands (alias not reassigned)",
     respawn.ok === false, respawn);
   check("GREEN: no successor managed record took the alias (the manager lists no live agent under the held name)",
-    !psList(manager).some((a: { name: string }) => a.name === AGENT), listNames());
+    !psList(manager).some((a) => a.name === AGENT), listNames());
   check("GREEN: the SAME hold is still in place after the refused respawn (unchanged lifecycleUid, no ABA swap)",
     mAny.retiring.get(AGENT)?.lifecycleUid === heldUidBeforeRespawn && heldUidBeforeRespawn !== undefined,
     { before: heldUidBeforeRespawn, after: mAny.retiring.get(AGENT)?.lifecycleUid });
@@ -525,10 +525,10 @@ try {
   // nudge may already have spawned `worker` once the hold cleared; if not, do it here. Assert the EXACT
   // alias is live -- a suffixed sibling (worker-2) or an unrelated failure would BOTH leave the exact
   // alias absent from the roster, so this rejects both.
-  if (!psList(manager!).some((a: { name: string }) => a.name === AGENT))
+  if (!psList(manager!).some((a) => a.name === AGENT))
     await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
   check("GREEN: a same-name spawn takes the EXACT alias after recovery (no suffix, no lingering reservation)",
-    psList(manager!).some((a: { name: string }) => a.name === AGENT), { live: listNames() });
+    psList(manager!).some((a) => a.name === AGENT), { live: listNames() });
 
   console.error = origErr;
   console.log(`\nINT-2 SWALLOWED-REVOKE ${fail === 0 ? "GREEN ✅ (fix present: failed revoke holds the name; retry re-drives)" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
@@ -538,8 +538,9 @@ try {
   process.exitCode = 1;
 } finally {
   // `chmodSync` used to be pulled in by a block-scoped import several hundred lines above, so this
-  // line threw ReferenceError into its own `catch` on every run: the ledger dir stayed 0o000 and the
-  // `rmSync` below could not clear it. Imported at the top now, with the same best-effort intent.
+  // line threw ReferenceError into its own `catch` on every run: the ledger dir stayed at the 0o500
+  // the fault arms above, and the `rmSync` below could not clear it. Imported at the top now, with
+  // the same best-effort intent.
   try { chmodSync(managedActorLedgerDir(dir), 0o700); } catch { /* best-effort restore before rm */ }
   try { await manager?.stop(); } catch { /* already stopped */ }
   try { await delivery?.stop(); } catch { /* already stopped */ }

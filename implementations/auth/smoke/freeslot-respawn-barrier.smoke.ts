@@ -87,11 +87,11 @@ type ControlReply = import("@cotal-ai/core").ControlReply;
 const { spawn } = await import("node:child_process");
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
 
-/** `Manager.list` is PRIVATE; the cells below assert the row shape `cotal ps` renders, so the reach
- *  goes through one named view rather than a cast per call site, and the view names exactly the
- *  fields those cells read. Widening the method to public would be a shipped-source change made for
- *  a test's convenience, which is not this change's business. */
-type PsRow = { name: string; id: string; mesh: string; lifecycleUid: string; authHealth?: string; authReason?: string };
+/** `Manager.list` is PRIVATE; the cells below read one field off the row `cotal ps` renders, so the
+ *  reach goes through one named view rather than a cast per call site, and the view names that field
+ *  and no other. Widening the method to public would be a shipped-source change made for a test's
+ *  convenience, which is not this change's business. */
+type PsRow = { name: string };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
@@ -437,7 +437,7 @@ try {
     brokerCalls.push({ name: a.name, gated: false, done });
     return done;
   };
-  const listNames = (): string[] => psList(manager!).map((a: { name: string }) => a.name);
+  const listNames = (): string[] => psList(manager!).map((a) => a.name);
 
   const stopReply = await mAny.opStop({ name: AGENT, graceful: false }, mAny.ep.ref().id, true);
   check("despawn reply ok", stopReply.ok === true, stopReply);
@@ -591,7 +591,7 @@ try {
   const ex = await agentExchange(AGENT, replacementToken, OWNER);
   check("witness: replacement actor token still mints a bearer (exchange 200)", ex.status === 200 && typeof ex.body.token === "string", { status: ex.status, error: ex.body.error });
   check("witness: the manager still lists the replacement, child alive (the damage is silent)",
-    psList(manager).some((a: { name: string }) => a.name === AGENT) && newHandle?.status() === "running",
+    psList(manager).some((a) => a.name === AGENT) && newHandle?.status() === "running",
     { listed: listNames(), child: childDiag() });
 
   console.log(`\nFREESLOT RESPAWN BARRIER ${fail === 0 ? "OK ✅" : "RED ❌ (expected until the P2 alias reservation + lifecycle-keyed cleanup land)"}  (${pass} passed, ${fail} failed)`);

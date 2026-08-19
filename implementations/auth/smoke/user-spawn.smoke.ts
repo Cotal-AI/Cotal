@@ -77,9 +77,13 @@ const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdir
 
 /** `Manager.list` is PRIVATE; the cells below assert the row shape `cotal ps` renders, so the reach
  *  goes through one named view rather than a cast per call site, and the view names exactly the
- *  fields those cells read. Widening the method to public would be a shipped-source change made for
- *  a test's convenience, which is not this change's business. */
-type PsRow = { name: string; id: string; mesh: string; lifecycleUid: string; authHealth?: string; authReason?: string };
+ *  fields those cells read, at exactly the width the real method returns them: `mesh` is a roster
+ *  status or the absent sentinel, never an arbitrary string, and `authHealth` is the non-ok half of
+ *  `agentAuthState`. A local view WIDER than the real return would let a cell certify a value
+ *  production cannot emit. Widening the method to public would be a shipped-source change made for a
+ *  test's convenience, which is not this change's business. */
+type PresenceStatus = import("@cotal-ai/core").PresenceStatus;
+type PsRow = { name: string; id: string; mesh: PresenceStatus | "absent"; authHealth?: "auth-renewal-failed" | "auth-unknown" | "auth-stale" };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
@@ -409,7 +413,11 @@ try {
   const seen = await until(() => observer!.getRoster().some((p) => p.card.id === alphaPrincipal && p.card.name === "alpha"));
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
   const listed = psList(manager).find((a) => a.name === "alpha");
-  check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && listed?.mesh !== "absent", listed);
+  // `mesh !== "absent"` accepted ANY other string, so a row carrying a value no roster can produce
+  // read as live. The reach is a cast through `unknown`, which severs the local view from the real
+  // return type, so no width declared above can catch that: the closed set has to be asserted here.
+  const LIVE_PRESENCE: readonly string[] = ["idle", "waiting", "working", "offline"];
+  check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && LIVE_PRESENCE.includes(listed?.mesh ?? "absent"), listed);
 
   // ---------- B1f. a spawn-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610) ----------
   // The end-to-end half of the goal-follow contract. `epCallerGrantRows` returns `{pub, sub}` and
