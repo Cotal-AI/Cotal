@@ -119,8 +119,8 @@ export const cotal: Plugin = async () => {
   /** Swaps run ONE AT A TIME (#600). The drain below suspends and the plugin bus does not await this
    *  handler (it dispatches `void hook.event(...)`), so without this a second top-level create lands
    *  mid-drain, reads the same holder to retire, and its replacement overwrites the first one. A
-   *  rejected swap is absorbed here rather than propagated, so one failed drain cannot wedge every
-   *  later swap and take the event plane down permanently. */
+   *  rejected swap is absorbed here rather than propagated, so a failed drain does not reach the
+   *  chain and the swap queued behind it still runs. */
   let swapChain: Promise<void> = Promise.resolve();
   /**
    * A cutover is in progress. Read by `drive`, which is where this connector submits a turn, so a
@@ -244,9 +244,9 @@ export const cotal: Plugin = async () => {
    * two and the parked call then puts the seat back to work after it has announced it left.
    * Reproduced on the real plugin and broker, not reasoned: the roster read `working` after offline.
    *
-   * TRACKED HERE AND AT THE TOOL WRAPPER, which between them is every write that CHOOSES a status:
-   * the hooks all go through this helper, and the tools bypass it and reach the agent directly, so
-   * they are tracked whole. Tracking a list of the agent's presence-writing METHODS instead would be
+   * TRACKED HERE AND AT THE TOOL WRAPPER: the hooks go through this helper, and the tools bypass it
+   * to reach the agent directly, so each of those two routes is tracked whole rather than by naming
+   * the methods it calls. Tracking a list of the agent's presence-writing METHODS instead would be
    * the same enumeration this file has already got wrong twice, and it would miss a tool that sends
    * rather than publishes, which no amount of repairing presence afterwards can take back.
    *
@@ -467,10 +467,12 @@ export const cotal: Plugin = async () => {
    * THIS IS NOT ATOMIC WITH BINDING, and does not need to be. `flush` enqueues, and the binding is
    * taken on the holder's own chain, so two calls in one synchronous block could both read an
    * unbound holder and the second would be refused terminally. Nothing here would stop that. What
-   * stops it is that every flush/close site is fed the AMBIENT id below, one variable holding one
-   * value, so two events present the SAME path and a repeat for one path is allowed rather than
-   * refused; the only site fed an event-carried id is the swap's adopt, which is serialized on the
-   * swap chain. Feed a site an event-carried id off that chain and this becomes reachable.
+   * stops it is that every flush/close site in this file today is fed the AMBIENT id below, one
+   * variable holding one value, so two events present the SAME path and a repeat for one path is
+   * allowed rather than refused; the one site fed an event-carried id today is the swap's adopt,
+   * which is serialized on the swap chain. Like the presence tracking above, that is coverage by
+   * CALL SITE and not by membership, so a site added later is not covered by it. Feed a site an
+   * event-carried id off that chain and this becomes reachable.
    */
   function eventsFor(id: string | undefined): AguiEmitterHolder<OpenCodeRecord> | undefined {
     const holder = events;
@@ -533,7 +535,7 @@ export const cotal: Plugin = async () => {
    * The guard for that is `swapping`, inside `drive`, NOT a parameter here. An earlier version took
    * a `drivePending` flag so the swap could ask this function not to drive, which closed this door
    * and left the inbox, wake and mention-wake doors open beside it, because adopting also clears
-   * `busy`. One guard where the turn actually starts covers all of them.
+   * `busy`. One guard where this connector submits the turn covers those doors together.
    */
   function adoptSession(id: string, reason: string): void {
     if (sessionID === id) return;
@@ -750,10 +752,12 @@ export const cotal: Plugin = async () => {
   };
 
   /**
-   * EVERY WAY IN THROUGH THIS PLUGIN, FENCED IN ONE PLACE. Once teardown has begun, admitting more
-   * work undoes the teardown: a late `permission.asked` or tool hook republishes presence over the offline record
-   * `quiesce` exists to publish, a part or idle enqueues holder work after the join has already
-   * snapshotted it, and a late `session.created` extends the very chain the join is waiting on.
+   * EVERY WAY IN THROUGH THIS HOOK TABLE, FENCED BY MEMBERSHIP IN IT. The tool map is intake too, it
+   * does not arrive through this table, and it is fenced separately at its own wrap below. Once
+   * teardown has begun, admitting more work undoes the teardown: a late `permission.asked` or tool
+   * hook republishes presence over the offline record `quiesce` exists to publish, a part or idle
+   * enqueues holder work after the join has already snapshotted it, and a late `session.created`
+   * extends the very chain the join is waiting on.
    *
    * The refusal is applied by CONSTRUCTION rather than written at each entry, because writing it at
    * each entry is the mistake this file has now made twice: the guard was correct for every caller
