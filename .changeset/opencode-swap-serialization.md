@@ -37,7 +37,19 @@ its runtime's grace window, so presence queued behind a long drain is the thing 
 Queued event work is then given a bounded chance to settle inside whatever time the runtime leaves.
 
 Once that routine has begun, the connector starts no turn of its own, admits no hook work, and
-runs no `cotal_*` tool call. What it does NOT do is cancel the editor. A hook steers
+runs no `cotal_*` tool call. That first part now holds for a drive that was ALREADY PAST the check
+as well, which it did not before: the guards were read once, session creation was awaited, and
+nothing looked again, so a turn admitted while the seat was healthy could be submitted after
+departure had published. The phase condition is one predicate now, read on the way in and again on
+the way back from that await, and a drive refused there consumes nothing, so the batch is still in
+the inbox for a later wake in the same process.
+
+Separately, the operator's spawn prompt is no longer lost when something else gets in front of it.
+The boot task used to clear the prompt and then ask for a turn; if a natively submitted prompt had
+already made the session busy, that request returned early and the text was gone. The text is now
+cleared only once it has actually been submitted, and it counts as pending work everywhere the
+connector asks whether there is anything to drive, so being beaten to the session costs a retry
+rather than the prompt. What it does NOT do is cancel the editor. A hook steers
 OpenCode by mutating its `output` argument rather than by what it returns, and `chat.message`'s
 output carries no field that cancels or skips a turn, so a prompt submitted natively through the
 editor or its API still starts one. Whether that turn's events reach the plane is timing rather
