@@ -789,6 +789,7 @@ try {
   // RELEASED WHETHER THAT WAIT SUCCEEDED OR EXPIRED, for the reason seat D releases its own: the
   // fake blocks on this file unbounded by design, so a failed cell above stays a failed cell
   // instead of becoming a suite that hangs somewhere else.
+  const framesOfThread = (t: string): AguiFramePart[] => (t === "" ? [] : frames.filter((f) => f.threadId === t));
   const releasedAt = Date.now();
   writeFileSync(goE, "go");
   const turnOnDisk = await settle(
@@ -797,6 +798,13 @@ try {
     60_000,
   );
   const spentInWindow = Date.now() - releasedAt;
+  // READ AT THE MOMENT THE TURN LANDS, and this is the cell that proves the window was OPEN rather
+  // than merely asserted to be. Nothing above can tell a widened setup from a setup that finished
+  // instantly: with no delay at all the emitter is already reading, the turn's own boundaries flush
+  // it, and the graded cell below would still pass while grading a race instead of a window. So the
+  // observable is emptiness at a named instant. The turn is complete on disk and this seat has
+  // published NOTHING for its thread, which is only true while the emitter has not read yet.
+  const publishedWhenTurnLanded = framesOfThread(threadE).length;
   // THE CELL THAT KEEPS THE ONE BELOW HONEST. The graded cell only means what it says if the turn
   // really did land while the emitter had not read yet. If the machine was slow enough that the
   // setup finished first, this reds and names the measurement rather than letting a pass stand on
@@ -808,7 +816,13 @@ try {
     windowMs: WINDOW_MS,
     path: rolloutE,
   });
-  const framesE = (): AguiFramePart[] => frames.filter((f) => f.threadId === threadE);
+  check("window:setup:the seat had published NOTHING for this thread when the turn landed, so the window was OPEN and not merely assumed", threadE !== "" && turnOnDisk && publishedWhenTurnLanded === 0, {
+    threadE,
+    publishedWhenTurnLanded,
+    windowMs: WINDOW_MS,
+    spentMs: spentInWindow,
+  });
+  const framesE = (): AguiFramePart[] => framesOfThread(threadE);
   const arrivedE = await settle(
     "E:the window turn reaches the wire",
     () => framesE().some((f) => f.events.some((e) => e.type === "RUN_FINISHED")),
