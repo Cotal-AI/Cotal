@@ -539,6 +539,17 @@ function reportValidateBudget(what: "args" | "output", startedCpu: NodeJS.CpuUsa
   );
 }
 
+/** The first AJV error as refusal prose: where (`instancePath`, root as "/"), its message, and -
+ *  when the keyword is `additionalProperties` - WHICH property was rejected, which AJV carries
+ *  only in `params.additionalProperty`. A closed-contract refusal that does not name the key turns
+ *  a caller/manager version skew into a guessing game: the operator cannot tell which key to drop
+ *  or which side to upgrade. Shared by the args and output sides so the two render in lockstep. */
+function firstErrorDetail(first: { instancePath?: string; message?: string; params?: Record<string, unknown> } | undefined | null): string {
+  if (!first) return "";
+  const extra = typeof first.params?.additionalProperty === "string" ? `: ${JSON.stringify(first.params.additionalProperty)}` : "";
+  return `: ${first.instancePath || "/"} ${first.message ?? ""}${extra}`;
+}
+
 /** Validate `args` against the command's compiled input schema BEFORE any effect: failure is the
  *  invocation-time `bad-request` (registration-time violations are `contract-invalid`,
  *  {@link import("./schema-profile.js").ContractInvalidError}). Against the void schema the
@@ -560,7 +571,7 @@ export function assertArgsValid(validate: ValidateFunction, args: Record<string,
   reportValidateBudget("args", startedCpu, started);
   if (!okValid) {
     const first = validate.errors?.[0];
-    fail("bad-request", `args do not validate against the input schema${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
+    fail("bad-request", `args do not validate against the input schema${firstErrorDetail(first)}`);
   }
   return value;
 }
@@ -580,6 +591,6 @@ export function assertOutputValid(validate: ValidateFunction, data: unknown): vo
   reportValidateBudget("output", startedCpu, started);
   if (!okValid) {
     const first = validate.errors?.[0];
-    fail("internal", `output does not validate against the pinned output schema; an invalid reply is a responder bug, never success (SPEC 13.7)${first ? `: ${first.instancePath || "/"} ${first.message ?? ""}` : ""}`);
+    fail("internal", `output does not validate against the pinned output schema; an invalid reply is a responder bug, never success (SPEC 13.7)${firstErrorDetail(first)}`);
   }
 }
