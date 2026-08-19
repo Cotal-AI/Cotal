@@ -532,7 +532,7 @@ export async function runCodexHost(): Promise<void> {
       } else {
         const items = agent.peekInbox("automatic");
         if (items.length === 0) return;
-        ids = items.map((i) => i.id);
+        ids = items.map((i) => i.recvKey);
         const inj = formatInjection(items);
         if (inj) parts.push(inj);
       }
@@ -585,7 +585,7 @@ export async function runCodexHost(): Promise<void> {
         steerSettled = rpc.catch(() => false);
         if (!(await rpc)) return; // declined — the boundary drive handles them
         if (!awaitingTurnEnd) return; // turn closed while the accept was in flight — redeliver
-        surfaced.push(...items.map((i) => i.id));
+        surfaced.push(...items.map((i) => i.recvKey));
       }
     } finally {
       steering = false;
@@ -963,7 +963,7 @@ export async function runCodexHost(): Promise<void> {
   // directed message always drives; ambient drives only in `open` (dnd/focus hold it for the next
   // boundary). Receive-time pull-only never reaches "incoming" as automatic; `muted` never at all.
   agent.on("incoming", (item: InboxItem) => {
-    const automatic = agent.inboxScope(item.id) === "automatic";
+    const automatic = agent.inboxScope(item.recvKey) === "automatic";
     if (!automatic) return;
     const directed = item.kind !== "channel" || item.mentionsMe;
     if (driver.busy || awaitingTurnEnd) {

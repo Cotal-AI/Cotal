@@ -167,7 +167,7 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
     if (!items.length) return undefined;
     const body = formatInjection(items);
     if (!body) return undefined;
-    const ids = items.map((i) => i.id);
+    const ids = items.map((i) => i.recvKey);
     // These stay in the inbox until the verdict, so the overflow valve could otherwise ack one out
     // from under us mid-delivery — unrecoverable, since an acked id is never redelivered. If the
     // agent cannot protect the whole batch (too many frames already open), DO NOT SURFACE IT: an
@@ -402,7 +402,7 @@ export function createWakePolicy(agent: MeshAgent, notify: ChannelNotify, log: (
   // receive-time pull-only ambient never nudges (a quiet @mention remains automatic). `muted` never reaches
   // here (ack-dropped at ingest); in `focus`, ambient/mentions never reach "incoming" either.
   agent.on("incoming", (item: InboxItem) => {
-    const automatic = agent.inboxScope(item.id) === "automatic";
+    const automatic = agent.inboxScope(item.recvKey) === "automatic";
     const directedOrMention = item.kind !== "channel" || item.mentionsMe;
     const ambientWakes = agent.attention === "open" && agent.status !== "working";
     if (automatic && (directedOrMention || ambientWakes)) nudge(item);

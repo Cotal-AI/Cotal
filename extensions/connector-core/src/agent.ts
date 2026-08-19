@@ -71,6 +71,14 @@ function execBearerCmd(argv: string[]): Promise<string> {
 /** A message that has arrived for us, normalized for the agent to read. */
 export interface InboxItem {
   id: string;
+  /** Opaque per-delivery RECEIVE key (#624): the address a host uses to drain/ack THIS buffered
+   *  delivery. It is the wire `id` for every message that carries one; a message whose `id` is the
+   *  empty string gets a minted key, because an empty id is never a dedup key and never a
+   *  selectable one. It is NOT wire identity and NOT dedup authority: nothing coalesces on it, so
+   *  a redelivered copy of an id-less message mints its own key and surfaces again (at-least-once,
+   *  the disclosed cost). It exists so the exact-id drains and in-flight protection can select the
+   *  DELIVERY rather than an id value that two distinct messages share. */
+  recvKey: string;
   ts: number;
   fromId: string;
   fromName: string;
@@ -213,6 +221,12 @@ export class MeshAgent extends EventEmitter {
   /** IDs received under quiet/muted while focused must never reappear through stream recall after a
    *  mode toggle. If this bounded exclusion history fills, recall for the affected channel fails
    *  closed and reports the channel as incomplete. */
+  private recvKeySeq = 0;
+  /** Receive keys this session minted for id-less deliveries (#624). Not authority: a lookup set,
+   *  so an exact-drain request can be told apart from a wire id and never recorded as handled-authority
+   *  for an id it does not own. Bounded; past the bound a minted key is simply not recognized, which
+   *  degrades to the at-least-once stance instead of to a wrong authority. */
+  private mintedRecvKeys = new Set<string>();
   private focusExcludedIds = new Map<string, string>();
   private focusRecallUnsafeChannels = new Set<string>();
   private stopping = false;
@@ -423,6 +437,7 @@ export class MeshAgent extends EventEmitter {
   }
 
   private buffer(item: InboxItem, ack: () => void, pullOnly: boolean): void {
+    if (item.id === "" && this.mintedRecvKeys.size < 4096) this.mintedRecvKeys.add(item.recvKey);
     this.inbox.push({ item, ack, pullOnly });
     if (this.inbox.length > MAX_INBOX) {
       // Prefer sacrificing pull-only backlog so it cannot crowd out DMs/mentions. Overflow remains
@@ -462,28 +477,30 @@ export class MeshAgent extends EventEmitter {
         // ...but a delay only helps if it ENDS. An un-acked id is one the broker may hand straight
         // back, into an inbox that is still full, to be evicted again - a cycle that spends broker
         // and connector throughput while every seat involved looks healthy. So the reprieve is
-        // counted: after OVERFLOW_REDELIVERY_LIMIT evictions of the SAME id we stop hoping for room
-        // and ack it, recording the loss loudly. A message lost with a log line beats a mesh that
-        // quietly stops moving (#807).
+        // counted: after OVERFLOW_REDELIVERY_LIMIT evictions of the SAME message we stop hoping for
+        // room and ack it, recording the loss loudly. A message lost with a log line beats a mesh
+        // that quietly stops moving (#807).
         //
-        // The counter is keyed on the id and cleared whenever that id is actually handled
-        // ({@link drainInboxIds}), so an id that eventually lands never accumulates toward the cap.
+        // The counter is keyed on the RECEIVE key — the wire id for real messages, the minted key
+        // for id-less ones — so two id-less deliveries never share one tally (#624). It is cleared
+        // whenever the message is actually handled ({@link drainInboxIds}), so one that eventually
+        // lands never accumulates toward the cap.
         let giveUp = false;
         if (sacrificingDirected) {
-          const seen = (this.overflowEvictions.get(evicted.item.id) ?? 0) + 1;
+          const seen = (this.overflowEvictions.get(evicted.item.recvKey) ?? 0) + 1;
           if (seen >= OVERFLOW_REDELIVERY_LIMIT) {
             giveUp = true;
-            this.overflowEvictions.delete(evicted.item.id);
+            this.overflowEvictions.delete(evicted.item.recvKey);
             // Reported on stderr via the existing log path, NOT emit("error"): an EventEmitter with
             // no "error" listener turns an emit into an unhandled exception that takes the process
             // down, so announcing a dropped message would kill the seat that was trying to survive
             // the flood. Nothing else in this class emits "error" either.
             this.log(
-              `overflow: dropping directed message ${evicted.item.id} after ${seen} evictions - ` +
+              `overflow: dropping directed message ${evicted.item.recvKey} after ${seen} evictions - ` +
                 `the inbox has stayed full across every redelivery, so the reprieve is not helping`,
             );
           } else {
-            this.overflowEvictions.set(evicted.item.id, seen);
+            this.overflowEvictions.set(evicted.item.recvKey, seen);
             if (this.overflowEvictions.size > OVERFLOW_EVICTION_CAP) {
               // Bounded bookkeeping: the map must not become its own leak under a sustained flood.
               // Dropping the oldest entry only forgives a message, never destroys one.
@@ -492,7 +509,7 @@ export class MeshAgent extends EventEmitter {
             }
           }
         }
-        if (!this.inFlightIds.has(evicted.item.id) && (!sacrificingDirected || giveUp)) evicted.ack();
+        if (!this.inFlightIds.has(evicted.item.recvKey) && (!sacrificingDirected || giveUp)) evicted.ack();
       }
     }
     this.emit("incoming", item);
@@ -500,6 +517,7 @@ export class MeshAgent extends EventEmitter {
 
   private rememberEvicted(p: Pending): void {
     if (p.item.kind !== "channel" || p.item.mentionsMe || !p.item.channel) return;
+    if (p.item.id === "") return; // #624: an empty id is never a key; one delivery's classification must not inherit to another
     if (this.classificationUnsafe) return;
     if (!this.evictedClassifications.has(p.item.id) && this.evictedClassifications.size >= CLASSIFICATION_CAP) {
       this.classificationUnsafe = true;
@@ -543,6 +561,10 @@ export class MeshAgent extends EventEmitter {
     const text = partsToText(m.parts);
     return {
       id: m.id,
+      // The wire id when there is one; a minted opaque key when the id is the empty string (#624:
+      // an empty id is never a dedup key, so it is never an address either; but the delivery still
+      // needs to be individually drainable/ackable, or it can never clear and never commit).
+      recvKey: m.id !== "" ? m.id : `rx${++this.recvKeySeq}`,
       ts: m.ts,
       fromId: m.from.id,
       fromName: m.from.name,
@@ -616,30 +638,37 @@ export class MeshAgent extends EventEmitter {
     return this.commitPending(selected);
   }
 
-  /** Ack exact surfaced ids without assuming they still form the physical inbox prefix. Every
-   *  requested id is marked handled, including an item overflow-evicted during the turn.
-   *  #624: an empty id is never a dedup key, so it is not a requestable one either: a host that
-   *  drains by a surfaced "" would otherwise sweep EVERY pending empty-id item in one call, acking
-   *  and marking handled messages it never surfaced. Such a request is dropped here (no selection,
-   *  no missing report), and the items stay buffered for a scope drain. */
+  /** Ack exact surfaced deliveries without assuming they still form the physical inbox prefix.
+   *  Takes RECEIVE keys ({@link InboxItem.recvKey}): the wire id for real messages, a minted key
+   *  for id-less ones: and selects by them, so a host that surfaced one empty-id item drains THAT
+   *  delivery, never its neighbors: the sweep the raw id produced (every pending empty-id item
+   *  acked and marked handled in one call) is closed by construction, not by filtering. Every
+   *  requested key whose item is present is acked and (for a real id) marked handled, including an
+   *  item overflow-evicted during the turn. */
   drainInboxIds(ids: readonly string[]): ExactDrainResult {
-    const requested = [...new Set(ids)].filter((id) => id !== "");
+    const requested = [...new Set(ids)];
     const wanted = new Set(requested);
-    const selected = this.inbox.filter((p) => wanted.has(p.item.id));
-    const present = new Set(selected.map((p) => p.item.id));
-    const pullOnly = new Map(selected.map((p) => [p.item.id, p.pullOnly]));
+    const selected = this.inbox.filter((p) => wanted.has(p.item.recvKey));
+    const present = new Set(selected.map((p) => p.item.recvKey));
+    const pullOnly = new Map(selected.map((p) => [p.item.recvKey, p.pullOnly]));
     for (const id of requested) {
-      const remembered = this.evictedClassifications.get(id);
+      const remembered = id !== "" ? this.evictedClassifications.get(id) : undefined;
       if (!pullOnly.has(id) && remembered) pullOnly.set(id, remembered.pullOnly);
     }
-    this.inbox = this.inbox.filter((p) => !present.has(p.item.id));
+    this.inbox = this.inbox.filter((p) => !present.has(p.item.recvKey));
     const items = this.commitPending(selected);
     for (const id of requested) {
-      if (!present.has(id)) this.markHandled(id, pullOnly.get(id) ?? false);
-      this.evictedClassifications.delete(id);
-      // An id that actually landed is not churning, whatever it survived on the way here: clear its
-      // overflow tally so a message that is redelivered, evicted, then finally handled never carries
-      // history toward the give-up cap.
+      // A MINTED key (an id-less delivery) is never handled-authority: its wire id is "", which
+      // markHandled already refuses, so skipping it here is the same at-least-once stance rather
+      // than a new one. Recording the minted key itself would pollute handledIds with a string a
+      // future REAL id could legitimately equal, arming the exact suppression this change removes.
+      if (!present.has(id) && !this.mintedRecvKeys.has(id)) {
+        this.markHandled(id, pullOnly.get(id) ?? false);
+        this.evictedClassifications.delete(id);
+      }
+      // A message that actually landed is not churning, whatever it survived on the way here: clear
+      // its overflow tally so one that is redelivered, evicted, then finally handled never carries
+      // history toward the give-up cap. Keyed on the receive key, like the tally itself.
       this.overflowEvictions.delete(id);
     }
     return { items, missingIds: requested.filter((id) => !present.has(id)) };
@@ -775,9 +804,10 @@ export class MeshAgent extends EventEmitter {
     this.aheadDelivered.clear();
   }
 
-  /** Buffered receive-time lane for one id. Undefined means it is no longer pending. */
-  inboxScope(id: string): Exclude<InboxScope, "all"> | undefined {
-    const pending = this.inbox.find((p) => p.item.id === id);
+  /** Buffered receive-time lane for one delivery, addressed by its receive key. Undefined means it
+   *  is no longer pending. */
+  inboxScope(key: string): Exclude<InboxScope, "all"> | undefined {
+    const pending = this.inbox.find((p) => p.item.recvKey === key);
     return pending ? (pending.pullOnly ? "pull-only" : "automatic") : undefined;
   }
 

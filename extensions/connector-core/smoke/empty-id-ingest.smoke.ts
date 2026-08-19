@@ -21,6 +21,14 @@
  * wire contract's at-least-once stance (handlers are idempotent), and it is the same stance every
  * conformant message already has on the transport below this layer.
  *
+ * THE SEAM MECHANISM (round 3, from review): a per-delivery opaque RECEIVE key, assigned where a
+ * wire message becomes an inbox item. It is the wire id when there is one and a minted key when
+ * the id is empty, and the exact-id drains plus in-flight protection select by it. Without it an
+ * id-less delivery could never be individually drained or acked: it would be re-shown on every
+ * inbox read and redelivered forever on the durable path. It is never dedup authority - nothing
+ * coalesces on it - so a redelivered copy of an id-less message mints its own key and surfaces
+ * again, which is the same disclosed at-least-once cost, not a new one.
+ *
  * WHAT WOULD MAKE THIS THE WRONG EXPERIMENT:
  *
  *   - If the cells only counted inbox entries, a fix that double-buffered one message would pass.
@@ -115,6 +123,17 @@ const rawMsg = (id: string, text: string) =>
     channel: "ch",
     parts: [{ kind: "text", text }],
   });
+const meta: MessageMeta = { historical: false, kind: "channel" };
+/** A conformant-shaped message for the ep.emit-driven durable cells (the cross-path-dedup house
+ *  pattern): the race needs counting acks, which only a durable Delivery exposes. */
+const msg = (id: string, text: string): CotalMessage => ({
+  id,
+  ts: Date.now(),
+  space,
+  from: { id: `${PUB_OWNER}.${PUB_ACTOR}`, name: "RawPub", kind: "agent" },
+  channel: "ch",
+  parts: [{ kind: "text", text }],
+});
 
 // The raw connection and the agent are closed in the FINALLY, not on the success path: a red run
 // throws at its first assertion, and an open socket or an unstopped endpoint each keep the process
@@ -166,19 +185,36 @@ try {
   const c4 = drainedTexts();
   check("two distinct REAL ids are both delivered", c4.includes("ra") && c4.includes("rb") && c4.length === 2, c4);
 
-  // ---- Cell 5: an exact-id drain by a surfaced "" sweeps nothing (the drainInboxIds twin, #624) ----
-  // A host frame that surfaced one empty-id item drains by the ids it surfaced, and "" is the only
-  // name it holds for it. Before the fold that request selected EVERY pending empty-id item at once:
-  // acked, marked handled, gone, while the host showed one. Guarded, the request is not a key on the
-  // write side either: nothing is swept, and a scope drain still delivers all three.
+  // ---- Cell 5: THE RACE (framed by the grader): empty-b arrives after empty-a's snapshot, before its verdict ----
+  // The receive key is what makes this safe: the host frame holds empty-a's key, a LATER distinct
+  // empty-id arrival mints its own, and the exact drain selects the DELIVERY, not an id value two
+  // messages share. Durable deliveries (counting acks) so "neither drained nor acked" is observable.
+  {
+    const ackA = { n: 0 }, ackB = { n: 0 };
+    agent.ep.emit("message", msg("", "race-a"), { ack: () => ackA.n++, nak: () => {}, durable: true }, meta);
+    const snapshot = agent.peekInbox("all");
+    check("the race: the snapshot holds exactly empty-a", snapshot.length === 1 && snapshot[0].text === "race-a", snapshot.map((i) => i.text));
+    agent.ep.emit("message", msg("", "race-b"), { ack: () => ackB.n++, nak: () => {}, durable: true }, meta); // arrives after the snapshot
+    await waitFor(() => agent.inboxCount() === 2, "both race messages to buffer");
+    const drained = agent.drainInboxIds(snapshot.map((i) => i.recvKey)); // the verdict: drain exactly what was surfaced
+    check("the race: the verdict drains exactly the snapshot's delivery", drained.items.length === 1 && drained.items[0].text === "race-a", drained.items.map((i) => i.text));
+    check("the race: the later arrival is neither drained nor acked", agent.inboxCount() === 1 && ackB.n === 0, { inbox: agent.inboxCount(), ackB: ackB.n });
+    check("the race: the snapshot's delivery was acked exactly once", ackA.n === 1, ackA);
+    const again = agent.peekInbox("all");
+    check("a drained empty-id item is not re-shown on the next read", again.length === 1 && again[0].text === "race-b", again.map((i) => i.text));
+    const close = agent.drainInboxIds(again.map((i) => i.recvKey));
+    check("the seam can still ack the id-less delivery by its receive key (no redelivery loop)", close.items.length === 1 && close.items[0].text === "race-b" && ackB.n === 1, { items: close.items.length, ackB: ackB.n });
+  }
+
+  // ---- Cell 6: a literal empty-string drain request selects nothing (the invariant, not the mechanism) ----
   await publish("", "sweep-a");
   await publish("", "sweep-b");
   await publish("", "sweep-c");
   await waitFor(() => agent.inboxCount() === 3, "three empty-id messages to buffer");
   const exact = agent.drainInboxIds([""]);
-  check("drainInboxIds([\"\"]) sweeps nothing", agent.inboxCount() === 3 && exact.items.length === 0, { inbox: agent.inboxCount(), items: exact.items.length });
-  const c5 = drainedTexts();
-  check("a scope drain still delivers all three empty-id messages", c5.length === 3 && c5.includes("sweep-a") && c5.includes("sweep-b") && c5.includes("sweep-c"), c5);
+  check("drainInboxIds([\"\"]) selects nothing: no item's receive key is the empty string", agent.inboxCount() === 3 && exact.items.length === 0, { inbox: agent.inboxCount(), items: exact.items.length });
+  const c6 = drainedTexts();
+  check("a scope drain still delivers all three empty-id messages", c6.length === 3 && c6.includes("sweep-a") && c6.includes("sweep-b") && c6.includes("sweep-c"), c6);
 
   console.log(`\nEMPTY-ID INGEST SMOKE OK ✅  (${pass} checks)`);
 } catch (e) {
