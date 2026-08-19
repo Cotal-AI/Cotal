@@ -21,6 +21,17 @@
  * today. It is kept rather than deleted because the next member to land needs somewhere to be
  * pinned while it is landing, and its count is printed so the emptiness is a number rather than a
  * thing a reader has to notice.
+ *
+ * AND ITS SUBJECT IS THE IN-PROCESS ENGINE, stated here rather than only beside the evaluator
+ * below, because a reader who takes "both engines" from this header will not go looking for the
+ * qualification. Every arm here reaches `runOnEngine`/`resumeOnEngine` directly and nothing in this
+ * file crosses a worker boundary; the confined evaluator is `engine.smoke`'s worker leg. In-process
+ * is the right seam for a journal diff — entries compare entry for entry only when nothing
+ * serializes between them — but the two transports are NOT the same function, measured rather than
+ * assumed: a structured clone keeps a Date a Date, NaN as NaN, -0 negative and an own `undefined`
+ * present, while the durable journal's `JSON.stringify` flattens every one of those to a string,
+ * null, 0, and an absent key. So a divergence introduced by the WORKER transport could not red this
+ * suite, and each green below is a statement about the two engines rather than about confinement.
  */
 import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
@@ -168,8 +179,56 @@ const shapeOf = (v: unknown): string =>
 
 const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((line) => line.map(shapeOf)));
 
-/** What an arm answered, as one string: the refusal it raised, or the lines it logged AND their shapes. */
-const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)} shapes ${shapes(a.logs)}`);
+/**
+ * Where a value would NOT SURVIVE a round trip through `JSON.stringify`, as paths. Empty means the
+ * rendering is faithful and a comparison over it answers about the value.
+ *
+ * The log leg has a shape signature because its values are program data and a closure handed to a
+ * host renders as `null`. The ENTRY leg has none: it compares renderings, entry by entry. That is
+ * only sound while no journal entry can carry a value the rendering flattens, and "only sound
+ * while" is a premise, so it is measured over the corpus below rather than asserted here.
+ *
+ * THE LIST IS BY MECHANISM, NOT BY THE FIVE THAT CAME TO MIND. The first spelling named -0, NaN,
+ * the infinities, absence and code — the five the log leg's signature names — and would have called
+ * an entry faithful while it carried a `Date` (drawn as its own ISO string, so the date and the
+ * string compare equal), a `Map` or a `Set` (drawn as `{}`, so a full one and an empty record
+ * compare equal), or a HOLE in an array (`Object.entries` skips holes, so the walk never reached
+ * it). A journal entry is plain data by contract, so the rule here is that shape: anything that is
+ * not a plain record, an array or a primitive JSON draws faithfully is named, whatever it is.
+ */
+const jsonBlind = (v: unknown, path: string): string[] => {
+  if (Object.is(v, -0)) return [`${path} = -0`];
+  if (typeof v === "number" && (Number.isNaN(v) || !Number.isFinite(v))) return [`${path} = ${v}`];
+  if (v === undefined) return [`${path} = undefined`];
+  if (typeof v === "function" || typeof v === "symbol" || typeof v === "bigint") return [`${path} = ${typeof v}`];
+  if (v === null || typeof v !== "object") return [];
+  if (Array.isArray(v)) {
+    const out: string[] = [];
+    for (let i = 0; i < v.length; i += 1) out.push(...(i in v ? jsonBlind(v[i], `${path}[${i}]`) : [`${path}[${i}] = hole`]));
+    return out;
+  }
+  // A RECORD OR NOTHING. `Object.entries` walks a `Date`, a `Map` and a class instance alike and
+  // finds no own enumerable keys on any of them, so recursing past this line would report every one
+  // of them faithful. The language's own records are prototype-less, which is why null passes here.
+  const proto = Object.getPrototypeOf(v) as object | null;
+  if (proto !== Object.prototype && proto !== null) return [`${path} = ${(v as { constructor?: { name?: string } }).constructor?.name ?? "exotic"}`];
+  return Object.entries(v as object).flatMap(([k, x]) => jsonBlind(x, `${path}.${k}`));
+};
+
+/**
+ * What an arm answered, as one string: its refusal if it raised one, AND the lines it logged before
+ * it did, with their shapes.
+ *
+ * THE LOGS ARE HERE FOR REFUSING ARMS TOO, and they were not, which cost a whole leg of every
+ * declared divergence that ends in an abort. Collapsed to the bare code, a row pinned to "L4016"
+ * says the engine refused and says NOTHING about when — so a sink that hands the line to the host
+ * and refuses afterwards satisfies the pin exactly. Measured: with the old spelling, moving
+ * `run.onLog?.(line)` above the walk in the engine's log sink left all three L4016 rows BYTE
+ * IDENTICAL while the closure the rule promises never to hand over reached the host on every one.
+ * The corpus never had this hole — `differences` compares logs whether or not an arm refused — so
+ * this was a divergence-only blind spot, which is the half of the file with the fewest readers.
+ */
+const answer = (a: Arm): string => `${a.error !== null ? `${a.error} ` : ""}logs ${j(a.logs)} shapes ${shapes(a.logs)}`;
 
 /** Where two arms differ, as the field names. Empty means identical. */
 const differences = (a: Arm, b: Arm): string[] => {
@@ -518,6 +577,7 @@ const reachedKinds = new Set<string>();
   let completes = 0;
   const wrong: string[] = [];
   const valued: string[] = [];
+  const scanned: [string, readonly unknown[]][] = [];
   for (const [name, source, script, refuses] of CORPUS) {
     const [w, e] = [await arm("walker", source, script), await arm("engine", source, script)];
     const diff = differences(w, e);
@@ -533,6 +593,7 @@ const reachedKinds = new Set<string>();
       wrong.push(`${name}: declared ${refuses}, got ${w.error} / ${e.error}`);
     }
     for (const entry of e.entries) reachedKinds.add(entry.kind);
+    scanned.push([`${name} / walker`, w.entries], [`${name} / engine`, e.entries]);
     if (w.value !== undefined || e.value !== undefined) valued.push(`${name}: ${j(w.value)} / ${j(e.value)}`);
     identical += 1;
   }
@@ -544,7 +605,72 @@ const reachedKinds = new Set<string>();
   // here rather than reasoned: when a program can produce a value this reds, and the leg it guards
   // stops being a comparison nobody can reach.
   ok("no validated program produces a run value, so the comparator's value leg is exercised by hand alone", valued.length === 0, valued);
+  // AND THE ENTRY LEG'S PREMISE, measured the same way. `differences` walks the journal entry by
+  // entry through `JSON.stringify` and nothing else — no shape signature, unlike the log leg — so a
+  // journal that differed only by a negative zero, a NaN, an infinity or a hole in an array would
+  // compare IDENTICAL, and identical journals is the whole claim of this gate. That is sound today
+  // and only today: it holds because no effect records such a value, which is a fact about the
+  // effects rather than about the comparison. Measured over every corpus program, both arms.
+  // THE ZERO IS PAIRED WITH THE COUNT IT CAME FROM, in one cell and over one array, because those
+  // are the two ways it lies: a sweep that looked at nothing reports the same zero as a clean
+  // journal, and a count alone says nothing about what was in them. Both read `scanned`, so a sweep
+  // that stopped collecting reds here instead of going quiet.
+  //
+  // THREE PATHS REACH AN ENTRY, AND ONLY TWO OF THEM HAVE A CROSSING RULE IN FRONT.
+  //
+  // `assertCrossable` runs on every effect ARGUMENT and every effect RESULT (`perform.ts`), and it
+  // refuses — measured against this sweep's own list, one probe per row — a non-finite number,
+  // absence, a function, a symbol, a bigint, a cycle, a hole in an array, and anything whose
+  // prototype is neither `Object.prototype` nor null, which is every `Date`, `Map` and `Set`. On
+  // those two paths all but one of the kinds swept for here cannot reach an entry at all, and this
+  // cell reds the day that boundary moves. (`surface.smoke` holds the boundary itself as L3041 and
+  // L3042; this holds the consequence the journal comparison depends on.)
+  //
+  // THE THIRD IS `external`, AND NOTHING GUARDS IT. `ctx.bind` reaches `Journal.bind`, which
+  // spreads the record into the entry with no crossing check — the only `assertCrossable` call
+  // sites in the package are the two above, the run's return value, and `json.stringify`. Measured
+  // rather than read: a handler that binds a `Date`, a `-0`, a NaN and an absent field puts all
+  // four into an entry ALIVE on both arms, where this comparison draws them as an ISO string, 0,
+  // null, and a key that is simply gone. It does not fire today because every shipped bind is
+  // JSON-faithful — four strings in `sim.ts`, one number in the mesh handler — so on this path the
+  // zero below is a statement about those five call sites rather than about a boundary, and this
+  // sweep is the only thing in the repo watching them.
+  //
+  // AND THIS IS THE ONE CELL HERE THAT IS NOT A COMPARISON, WHICH IS WHY IT IS NEEDED. Both arms
+  // reach `Journal.bind` through the same two call sites in `perform.ts` — the engine has no bind
+  // wiring of its own — so a handler that binds a `Date` binds it identically on both, and
+  // `differences` reports two arms in perfect agreement. A gate built out of two arms cannot see a
+  // defect on the path they share, by construction. So this sweep INSPECTS entries rather than
+  // comparing them, and that is the reason it belongs in the file whose every other cell compares.
+  //
+  // AND THERE IT IS NOT A COMPARISON ARTEFACT. The durable record is encoded with
+  // `JSON.stringify`, and a started-but-unsettled entry resumes by RE-BINDING to `entry.external`,
+  // so a bound `Date` would come back from a restart as a string. The guard, if one is wanted,
+  // belongs at the bind seam and not in this file; what belongs here is that the day a bind starts
+  // carrying such a value, something says so.
+  //
+  // THE ONE THAT CROSSES IS NEGATIVE ZERO, because it is finite — and if this ever reds on `-0`
+  // alone, a shape signature for the entry leg is the WRONG repair. The canonical form equates -0
+  // with 0 (RFC 8785), so the step key's own input hash already does: measured, `digest({ n: -0 })`
+  // and `digest({ n: 0 })` are the same sha256, with 1-vs-2 and -1-vs-1 differing as controls. Two
+  // journals differing only there are not a divergence the replay contract can see, so the question
+  // that red asks is how an uncanonicalized -0 reached an entry, not how to make this comparison
+  // sharper than the contract underneath it.
+  const entries = scanned.flatMap(([, es]) => es);
+  const blind = scanned.flatMap(([where, es]) => es.flatMap((entry, i) => jsonBlind(entry, `${where} entry[${i}]`)));
+  ok("no journal entry the corpus produces carries a value JSON cannot draw, and the sweep that says so visited every one", entries.length > 0 && blind.length === 0, {
+    entries: entries.length,
+    blind,
+  });
+  // AND THE SWEEP REACHES THE UNGUARDED FIELD, which the paragraph above claims and nothing else
+  // asserts. `external` is reached here only because entries are swept WHOLE — strip it on the way
+  // in, the way one would to quiet a noisy diff, and the zero above survives while the one path
+  // with no crossing rule in front of it stops being watched at all.
+  const bound = entries.filter((e) => (e as { external?: unknown }).external !== undefined);
+  ok("and the corpus binds, so the sweep covers the one field no crossing rule guards", bound.length > 0, bound.length);
+  console.log(`  (${bound.length} of them carry a bound \`external\`, the field nothing checks on the way in)`);
   console.log(`  (${identical} programs identical on both engines: ${completes} complete, ${identical - completes} refuse a declared code)`);
+  console.log(`  (${entries.length} journal entries swept across both arms of all ${identical} programs, ${blind.length} carrying a value JSON cannot draw)`);
 }
 
 // ---- the comparator's own positive control -------------------------------------------------------
@@ -597,6 +723,92 @@ const reachedKinds = new Set<string>();
   // AND THE NEGATIVE HALF: the shape leg must not report a difference where there is none, or it
   // would red every row in the suite and mean nothing.
   ok("and reports no shape difference between two arms that logged the same values", !differences({ ...base, logs: [[1, "a", null]] }, { ...base, logs: [[1, "a", null]] }).includes("log shapes"));
+
+  // AND THE SCAN BEHIND THE ENTRY LEG'S PREMISE, which is a ZERO and therefore worth nothing on its
+  // own: a scan that found nothing anywhere would report the same zero over a journal full of NaN.
+  // So it is shown finding one of each kind, nested, in the shape an entry actually has — and the
+  // negative arm alongside, because a scan that flagged ordinary data would make the premise
+  // unfalsifiable in the other direction.
+  const holed = [1, 2];
+  delete holed[0];
+  const planted = {
+    kind: "turn",
+    key: "k",
+    result: { a: -0, b: [Number.NaN, 1 / 0, -1 / 0], c: [undefined], d: { e: (x: number) => x }, f: holed, g: new Date(0), h: new Map([["k", 1]]), i: new Set([1]), j: Symbol("s"), k: 1n },
+  };
+  const flattened = jsonBlind(planted, "entry");
+  ok("the sweep behind that premise finds everything a rendering flattens, nested where an entry would carry it", flattened.length === 12, flattened);
+  ok("and finds nothing in an entry JSON draws faithfully", jsonBlind({ kind: "turn", key: "k", result: { a: 0, b: [1, "s", null], c: { d: true }, e: Object.create(null) as object } }, "entry").length === 0);
+}
+
+// ---- the one path into an entry that has no crossing rule, pinned so it cannot go stale quietly ----
+
+{
+  // A RESIDUAL, WRITTEN THE WAY THIS FILE WRITES A DIVERGENCE: pinned to the answer it gives TODAY,
+  // so the day it is fixed this cell reds and the sentences around it are corrected in the same
+  // change rather than left as folklore. Two cells above call `external` "the one field no crossing
+  // rule guards"; a guard at the bind seam is proposed and, when it lands, both of those sentences
+  // become false with nothing to say so. This is what says so.
+  //
+  // It asserts a DEFECT PERSISTS, which is only honest when the assertion names its own remedy: if
+  // this reds, the bind guard has landed — retire this block and rewrite the sentences it names, do
+  // not "fix" it by loosening the pin.
+  //
+  // AND THE REMEDY IS SPELLED OUT HERE RATHER THAN KEPT IN SOMEONE'S NOTES, because a repair that
+  // lives outside the tree is gone the day its author is. Four edits, and which of them the machine
+  // would catch was MEASURED on a copy at this commit rather than assumed:
+  //   1. delete this block. Miss it and two independent instruments red: `smoke:mutation-fixtures`
+  //      on a dead anchor, and this suite's own expectRed audit naming the orphaned mutation.
+  //   2. drop the mutation underneath this block's probe — that is the same dead anchor.
+  //   3. rename the cell ending "the one field no crossing rule guards" and follow it in the
+  //      mutation config. Miss the config half and the audit reds alone; fixtures stay green,
+  //      because no anchor happens to contain that name.
+  //   4. rewrite the three sentences that still say the path is unguarded: the paragraph heading the
+  //      entry sweep, the `console.log` detail beside the bind count, and the comment above that
+  //      cell. NOTHING CHECKS THESE — with the first three done and these three left stale the
+  //      suite is 206/206 green, 40 anchors, tsc clean, and the file simply lies.
+  // So a retirement cannot half-land, except in exactly the half that is prose. Which is the half
+  // that survives to be read.
+  class BindsUncrossable extends SimHandler {
+    override async spawn(req: Parameters<SimHandler["spawn"]>[0], ctx: Parameters<SimHandler["spawn"]>[1]) {
+      const handle = await super.spawn(req, ctx);
+      await ctx.bind({ n: Number.NaN });
+      return handle;
+    }
+  }
+
+  const externalOf = async (kind: "walker" | "engine"): Promise<unknown> => {
+    const source = 'const a = await spawn("one"); log(a.agent);';
+    const journal = new Journal({ run: "r" });
+    const options = { runId: "r", handler: new BindsUncrossable({}), journal, seed: SEED, startedAt: AT, onLog: () => {} };
+    try {
+      const r = kind === "walker" ? await walk(source, options) : await runOnEngine(source, transform(source).module, { ...options, evaluate });
+      const bound = r.journal.entries().find((e) => (e as { external?: unknown }).external !== undefined) as { external?: Record<string, unknown> } | undefined;
+      return bound?.external?.n;
+    } catch (e) {
+      return `refused ${(e as { code?: string }).code ?? (e as Error).message.slice(0, 40)}`;
+    }
+  };
+
+  // A RED HERE HAS THREE SHAPES AND ONLY ONE OF THEM IS THE GOOD NEWS, so the cell says which is
+  // which rather than leaving the next reader to infer it from two words. Measured on a prototype
+  // of the guard before it landed: the refusing shape is what a working guard looks like, and it
+  // refuses BEFORE the write — the entry keeps the earlier good bind and the bad one never lands.
+  const [wn, en] = [await externalOf("walker"), await externalOf("engine")];
+  const shapeOfRed =
+    typeof wn === "string" && typeof en === "string"
+      ? "the guard landed and refuses at the bind: retire this block by the four edits above, and do not stop at the three the machine would have caught"
+      : wn === undefined && en === undefined
+        ? "NOT the guard working: nothing carried the value at all. Either this probe stopped binding — check that first, it is the cheaper fault and it has its own mutation — or the bind DROPPED the value silently, which is worse than no guard. Either way, do not retire this block"
+        : "the two arms answered differently on a path they share, which neither a guard nor its absence explains. A finding: stop and measure before touching anything";
+  ok("a NaN still reaches a journal entry through `bind`, on both arms, because nothing checks that path", Number.isNaN(wn) && Number.isNaN(en), {
+    walker: String(wn),
+    engine: String(en),
+    ifThisRed: shapeOfRed,
+  });
+  // AND IT IS THE SHARED PATH RATHER THAN AN ENGINE DIVERGENCE, which is why the gate's own
+  // two-arm comparison can never be the thing that catches it: both arms answer the same.
+  ok("and both arms answer the same, so no comparison of the two could ever report it", j(wn) === j(en), { walker: String(wn), engine: String(en) });
 }
 
 // ---- what a ruling made different, on purpose ----------------------------------------------------
@@ -614,8 +826,8 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646 — and
   // when it lands the walker starts refusing, these cells red, and the divergence is retired here
   // rather than remembered.
-  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018"],
-  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018"],
+  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018 logs [] shapes []"],
+  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018 logs [] shapes []"],
   // Ruling 1c's second declared divergence, issue 647: `len` of a PROGRAM-DEFINED function. Neither
   // number is the program's arity — each arm reports the arity of its own closure wrapper, the
   // walker's `(frame, args)` pair and the engine's rest parameter — which the cell below measures
@@ -631,9 +843,28 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // the engine, declared here with both answers - the walker's is what the comparator's JSON view
   // makes of a live closure. Three doors: the value itself, a function nested in a record, and a
   // namespace, which is a record of them.
-  ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016"],
-  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+code"]]', "L4016"],
-  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+code"]]', "L4016"],
+  ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016 logs [] shapes []"],
+  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+code"]]', "L4016 logs [] shapes []"],
+  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+code"]]', "L4016 logs [] shapes []"],
+  // AND THE SAME RULE SEEN FROM INSIDE THE PROGRAM, which is not the fact the three above hold.
+  // `answer` collapses a refusing arm to its code and throws its log lines away, so on those three
+  // rows the engine's log leg was never compared at all until `answer` above started carrying a
+  // refusing arm's lines — which it does BECAUSE of this row: the mutant written for it (the
+  // handover moved above the sink's walk) left all three byte identical, and rather than leave
+  // this row as the list's only witness to that, the collapse was removed and all four now see it.
+  // The engine suite holds the position in two cells of its own, so it was never unguarded; what
+  // this suite had was a divergence whose engine half only ever appeared as an abort.
+  // Caught, it appears as behaviour: the refusal is the program's to catch, it carries the code
+  // every other refusal carries, the line that raised it was never emitted, and the run continues
+  // past it — so both arms COMPLETE and disagree, and the disagreement is in the log rather than
+  // in the outcome.
+  [
+    "a log line is data on the engine: caught by the program, which then continues",
+    'try { log((x) => x); } catch (e) { log("caught", e.code); } log("after");',
+    {},
+    'logs [[null],["after"]] shapes [["function"],["string"]]',
+    'logs [["caught","L4016"],["after"]] shapes [["string","string"],["string"]]',
+  ],
 ];
 
 {
@@ -646,6 +877,16 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
     });
   }
   console.log(`  (${DIVERGENT.length} declared divergence(s))`);
+
+  // AND EVERY ROW HERE ACTUALLY DIVERGES. A row pinned to the same answer on both arms is a corpus
+  // program wearing this list's label: it passes forever, it inflates the count printed above, and
+  // it defeats the one promise the list makes — that a divergence retired upstream REDS here the day
+  // it lands. The way that promise gets broken is not a typo, it is a repair: the row reds, and the
+  // next reader re-pins BOTH sides to the new common answer instead of deleting the row, and the
+  // retired divergence is then remembered exactly as the header above says it must not be. Nothing
+  // else here can see that, because a re-pinned row satisfies its own cell by construction.
+  const agreeing = DIVERGENT.filter(([, , , walkerAnswer, engineAnswer]) => walkerAnswer === engineAnswer).map(([name]) => name);
+  ok("every declared divergence names two different answers, so a retired one cannot be re-pinned into a permanent row", agreeing.length === 0, agreeing);
 
   // WHY 647 IS A LEAK AND NOT A DISAGREEMENT ABOUT ARITY. Measured on the oracle: the walker answers
   // 2 for a function of zero, one and three parameters alike, so it is reading its own wrapper and
@@ -1202,11 +1443,33 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const missingHere = mine.filter((c) => !CELLS.includes(c));
   ok("every row this suite owns is a sentence this suite printed", missingHere.length === 0, missingHere);
 
-  const driverSuite = readFileSync(new URL("../../../implementations/runtime/smoke/run-driver.smoke.ts", import.meta.url), "utf8");
+  // THE DISPATCHER HALF READS A SEAM FILE, NOT THE OTHER SUITE'S SOURCE. Containment in source text
+  // was satisfied by a sentence that merely APPEARS: a commented-out call, a cell behind a dead
+  // condition, or the sentence quoted in a comment all passed it. Measured rather than reasoned - a
+  // cited call commented out left this cell green while printing that every row resolved. So the two
+  // halves asked different questions: `CELLS` records EXECUTION, source text records spelling.
+  //
+  // The division now: the runtime suite owns "every sentence in this list is a cell THIS RUN
+  // executed, exactly once", which is the half only that process can see. This file owns "the list
+  // and my rows name the same sentences" - SET EQUALITY, both directions, because containment either
+  // way leaves a hole and the one the other side cannot see is a row added HERE whose sentence never
+  // reached the list. Neither cell can be satisfied by a quotation, and the seam is a parsed artefact
+  // rather than a regex over someone else's TypeScript.
+  const seam = JSON.parse(readFileSync(new URL("../../../implementations/runtime/smoke/indexed-cells.json", import.meta.url), "utf8")) as {
+    suite: string;
+    cells: readonly string[];
+  };
+  ok("the seam file this half trusts is the one the dispatcher's own suite writes", seam.suite.endsWith("run-driver.smoke.ts"), seam.suite);
   const theirs = MATRIX.filter(([, where]) => where === DRIVER).flatMap(([, , cells]) => cells);
-  const missingThere = theirs.filter((c) => !driverSuite.includes(c));
-  ok("every row the dispatcher owns names a cell the runtime suite still has", missingThere.length === 0, missingThere);
-  console.log(`  (${MATRIX.length} matrix rows: ${mine.length} cells here, ${theirs.length} in the runtime suite, every one resolved by name)`);
+  const twice = theirs.filter((c, i) => theirs.indexOf(c) !== i);
+  const unlisted = theirs.filter((c) => !seam.cells.includes(c));
+  const uncited = seam.cells.filter((c) => !theirs.includes(c));
+  ok("the dispatcher rows and that suite's own list name the same sentences, each exactly once", twice.length === 0 && unlisted.length === 0 && uncited.length === 0, {
+    twice,
+    unlisted,
+    uncited,
+  });
+  console.log(`  (${MATRIX.length} matrix rows: ${mine.length} cells here, ${theirs.length} matched to the runtime suite's list of ${seam.cells.length}, set-equal)`);
 }
 
 // ---- every program in every list is a program, and does something -------------------------------
