@@ -17,9 +17,9 @@ error if it passes `at`. Delete the field.
 Know the limit before you decide whether you have to act, because it is narrower than it sounds.
 Excess-property checking fires only on fresh literals, so a script assembled into a named `const`
 and then passed by name, or passed through a cast, still compiles with `at` present and still has it
-discarded, silently, exactly as before. Two fixtures in this repo are in that position and this
-change leaves them alone. The type closes the idiom that a new author reaches for first; it does not
-close the loophole.
+discarded, silently, exactly as before. Any fixture that assembles its script into a `const`, or
+passes it through a cast, is in that position and this change leaves it alone. The type closes the
+idiom that a new author reaches for first; it does not close the loophole.
 
 Nothing about the value the simulator produces changes, because it was always stamped from virtual
 time.
