@@ -288,6 +288,14 @@ log("rounds", rounds, r.status);`,
     { turns: { t: { status: "done", at: 0 } } },
   ],
   ["a fan-out with no stable key", 'const a = await spawn("one");\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f" });', { turns: { t: { status: "done", at: 0 } } }, "L3021"],
+  // AND THE MIRROR: the OPTIONS BAG is evaluated BEFORE the scope. `sleep:warm` lands ahead of
+  // `fanOut:f` here, so an emission that deferred everything (rather than the ruled position alone)
+  // reds on order in this program while the one below stays green.
+  [
+    "a fan-out whose key is awaited",
+    'const a = await spawn("one");\nconst keyer = async () => { await sleep("1m", { name: "warm" }); return (m) => m.agent; };\nawait fanOut([a], (m) => turn(m, { name: "t" }), { name: "f", key: await keyer() });\nlog("done");',
+    { turns: { t: { status: "done", at: 0 } } },
+  ],
   // AND THE BODY IS EVALUATED INSIDE THE SCOPE. Both arms journal `fanOut:f` BEFORE `sleep:warm`,
   // which is what says the body travelled unevaluated: an eager one would have journalled its sleep
   // before the scope entry it belongs inside.

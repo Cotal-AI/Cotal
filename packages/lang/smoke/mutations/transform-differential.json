@@ -93,6 +93,16 @@
       "expectRed": "identical on both engines: a fan-out whose body is awaited",
       "cell": "identical on both engines: a fan-out whose body is awaited",
       "note": "The behavioural half of the same rule: both arms journal `fanOut:f` BEFORE the `sleep` inside the body, because the body is evaluated inside the scope. Evaluated at the call, the engine journals the sleep first - a journal the walker's run never wrote, which a resume would then replay against."
+    },
+    {
+      "name": "the options bag is deferred along with the body, so the key is computed inside the scope",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "return defers && i === 1 ? `async () => (${code})` : code;",
+      "replace": "return defers && i >= 1 ? `async () => (${code})` : code;",
+      "expectRed": "identical on both engines: a fan-out whose key is awaited",
+      "cell": "identical on both engines: a fan-out whose key is awaited",
+      "note": "The mirror of the rule above: `sleep:warm` lands BEFORE `fanOut:f` on both arms because the options bag is evaluated at the call, outside the scope. Wrapped in a thunk it is computed inside, and the two entries swap.",
+      "why": "The ruled position is the BODY alone; the bag is evaluated before the scope entry. Deferring it too keeps every eager-body program green and only shows up as journal order in the program whose key awaits."
     }
   ],
   "completionMarker": "differential.smoke:"
