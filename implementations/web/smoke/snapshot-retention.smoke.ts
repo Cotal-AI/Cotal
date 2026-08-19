@@ -35,6 +35,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createContext, runInContext } from "node:vm";
+import ts from "typescript";
 import { PAGE } from "../src/web.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -203,7 +204,15 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
   ok("3.7 the graph page reads every source through it", graphJs.includes("SNAP.refreshAll(") && graphJs.includes("SNAP.readJson("));
   // The shape that caused the wipe, in the files that had it: a response body consumed with no
   // status check. A survivor here is a poll that can still store a refusal as data.
-  const rawJson = /fetch\([^)]*\)\s*\)\s*\.json\(\)|fetch\([^)]*\)\.then\(\s*\(?r\)?\s*=>\s*r\.json\(\)/g;
+  // BALANCED ARGUMENTS, NOT "ANYTHING BUT A PAREN", and the difference was a live wipe. The first
+  // cut spelled the fetch argument `[^)]*`, so the class ended at the FIRST `)` in the URL. Every
+  // route this scan actually has to police is built with `encodeURIComponent(key)`, whose own `)`
+  // sits inside that argument, so the pattern died there and reported zero on the one unguarded read
+  // on either page: the selected channel's history. The guard was green because it could not see the
+  // shape it exists to forbid. Two nesting levels are enough for every call form in these files, and
+  // 3.10c/3.10d execute that rather than asserting it.
+  const ARGS = String.raw`\((?:[^()]|\((?:[^()]|\([^()]*\))*\))*\)`;
+  const rawJson = new RegExp(`fetch${ARGS}\\s*\\)\\s*\\.json\\(\\)|fetch${ARGS}\\.then\\(\\s*\\(?r\\)?\\s*=>\\s*r\\.json\\(\\)`, "g");
   ok("3.8 no unguarded `fetch(...).json()` survives on the console page", (appJs.match(rawJson) ?? []).length === 0, appJs.match(rawJson));
   ok("3.9 no unguarded `fetch(...).json()` survives on the graph page", (graphJs.match(rawJson) ?? []).length === 0, graphJs.match(rawJson));
   // CONTROL for 3.8/3.9: the pattern must be able to find the shape it is looking for.
@@ -211,9 +220,149 @@ const codeOnly = (src: string): string => src.replace(/\/\*[\s\S]*?\*\//g, " ").
     ('const x = await (await fetch("/api/roster")).json();'.match(rawJson) ?? []).length === 1);
   ok("3.10b CONTROL: and the comment stripper does not eat code (a scan over an empty string finds nothing)",
     codeOnly('a(); // fetch(x).json()\nconst u = "http://x";').includes("a();") && !codeOnly('a(); // fetch(x).json()').includes("fetch"));
+  // THE CONTROL THAT WAS MISSING, and its absence is why this suite reported a clean page while the
+  // selected channel's history read was still consuming a 500 body. The forbidden shape written with
+  // a CALL inside the fetch argument is the shape the real code uses.
+  ok("3.10c CONTROL: the pattern sees the shape when the URL contains a nested call (the disarm that hid a real wipe)",
+    ("const x = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();".match(rawJson) ?? []).length === 1);
+  ok("3.10d CONTROL: and when that nesting is two deep",
+    ("const x = await (await fetch(`/a/${enc(f(k))}/b`)).json();".match(rawJson) ?? []).length === 1);
   // The graph page's boot must not be able to skip the live feed again.
   ok("3.11 the graph page connects whatever the boot reported (the wipe was `load().then(connect)`)",
     /load\(\)\s*\.catch\([\s\S]{0,80}?\)\s*\.then\(connect\)/.test(graphJs) && !/load\(\)\.then\(connect\)/.test(graphJs));
+}
+
+// -- 4. THE SELECTED CHANNEL'S HISTORY, DRIVEN --------------------------------------------------
+// The read behind the OPEN channel, which the structural cells above missed for as long as their
+// pattern could not see a nested paren. It is not on the poll's source table, because `refresh()`
+// reaches it indirectly: it calls `select(selected)` whenever a channel is open, and `select()`
+// clears `channelMsgs` before it fetches. So on a link where this read keeps being refused, the
+// channel the reader is looking at emptied once per poll.
+//
+// Measured on the shipped code before the fix, driving the real `select()` against a 500 whose body
+// is `{"error":"timeout"}`: `channelMsgs` ended `[]`, the last good message was gone, and NO
+// backfill-failed note was raised, because a 500 does not reject and the catch never ran. The same
+// stimulus as a THROW did raise the note. That gap between the two endings is the whole defect.
+//
+// These cells run the SHIPPED function out of the file rather than a restatement of it, for the same
+// reason the sections above read `snapshot.js` off disk.
+{
+  const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
+  const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
+  const wantedFns = new Set(["select", "noteOrder", "markStale", "setStale", "renderStale"]);
+  const wantedState = new Set(["selecting", "loadSeq", "shownChannel", "staleNow"]);
+  const fns: string[] = [];
+  const state: string[] = [];
+  sf.forEachChild((n) => {
+    if (ts.isFunctionDeclaration(n) && n.name && wantedFns.has(n.name.text)) fns.push(appSrc.slice(n.getStart(sf), n.end));
+    if (ts.isVariableStatement(n))
+      for (const d of n.declarationList.declarations)
+        if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
+  });
+  // Pinned first: a short extraction would make every cell below vacuous, which is the failure mode
+  // that let the old structural cell pass.
+  ok("4.1 all five shipped functions are extractable", fns.length === 5, fns.length);
+  ok("4.1b and the four pieces of state they read", state.length === 4, state.length);
+
+  type Msg = { id: string; seq: number };
+  type Page = Record<string, unknown> & { channelMsgs: Msg[]; orderNotes: { type: string }[]; __p?: Promise<void> };
+  // Per page, not shared: a marker left over from a previous case would let a cell pass on someone
+  // else's text. `textContent` because that is the property the shipped `renderStale` writes.
+  let label = { textContent: "" };
+  const page = (): { ctx: Page; c: ReturnType<typeof createContext> } => {
+    label = { textContent: "" };
+    const ctx: Record<string, unknown> = {
+      console,
+      fetch: async () => ({ ok: true, status: 200, json: async () => [] }),
+      renderCenter() {}, renderSidebarNav() {}, refreshDerived() {}, renderRoster() {},
+      renderChannels() {}, renderDMs() {}, renderRail() {}, rosterRows: () => [],
+      // The real marker element, so the shipped `renderStale` runs rather than being stubbed: what a
+      // reader is TOLD is half of this rule and a stub would assert only the half that is kept.
+      $: (id: string) => (id === "stale" ? { hidden: true, title: "", querySelector: () => label } : null),
+      isDemo: false, orderNotes: [], channelMsgs: [], channelOrder: undefined, selected: "*",
+      unread: new Map(), agentSel: null, dmSel: null, roster: [], channels: new Map(), dms: [],
+      window: {}, __p: undefined,
+    };
+    const c = createContext(ctx);
+    runInContext(readFileSync(join(webSrc, "event-order.js"), "utf8"), c, { filename: "event-order.js" });
+    runInContext(readFileSync(join(webSrc, "snapshot.js"), "utf8"), c, { filename: "snapshot.js" });
+    runInContext([...state, ...fns].join("\n"), c, { filename: "app.js" });
+    return { ctx: ctx as Page, c };
+  };
+  const good = (msgs: Msg[]) => async () => ({ ok: true, status: 200, json: async () => msgs });
+  const refuse500 = async () => ({ ok: false, status: 500, json: async () => ({ error: "timeout" }) });
+  const throws = async () => { throw new Error("network down"); };
+  const drive = async (ctx: Page, c: ReturnType<typeof createContext>, key: string) => {
+    runInContext(`__p = select(${JSON.stringify(key)});`, c);
+    await (ctx.__p as Promise<void>);
+  };
+
+  // A 500 WITH A JSON BODY, on the channel the reader is already looking at.
+  {
+    const { ctx, c } = page();
+    ctx.fetch = good([{ id: "m1", seq: 1 }]);
+    await drive(ctx, c, "team.backend");
+    const afterGood = ctx.channelMsgs.map((m) => m.id);
+    ctx.orderNotes = [];
+    ctx.fetch = refuse500;
+    await drive(ctx, c, "team.backend");
+    ok("4.2 a good read puts the channel's history on screen", JSON.stringify(afterGood) === JSON.stringify(["m1"]), afterGood);
+    ok("4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes",
+      ctx.channelMsgs.some((m) => m && m.id === "m1"), ctx.channelMsgs);
+    ok("4.4 and the refusal is SURFACED as a backfill failure, not swallowed",
+      ctx.orderNotes.some((n) => n.type === "backfill-failed"), ctx.orderNotes);
+    ok("4.5 and the marker NAMES the channel whose history is stale",
+      label.textContent.includes("team.backend"), label.textContent);
+  }
+  // CONTROL: the throwing ending must behave the same. Before the fix these two diverged, and that
+  // divergence is exactly what a status gate removes.
+  {
+    const { ctx, c } = page();
+    ctx.fetch = good([{ id: "m1", seq: 1 }]);
+    await drive(ctx, c, "team.backend");
+    ctx.orderNotes = [];
+    ctx.fetch = throws;
+    await drive(ctx, c, "team.backend");
+    ok("4.6 CONTROL: a THROWN refusal keeps it too, so the two endings agree",
+      ctx.channelMsgs.some((m) => m && m.id === "m1") && ctx.orderNotes.some((n) => n.type === "backfill-failed"),
+      { msgs: ctx.channelMsgs, notes: ctx.orderNotes });
+  }
+  // THE HAZARD RETENTION CREATES, executed rather than reasoned: keeping the last good messages must
+  // never show one channel's history under another channel's name.
+  {
+    const { ctx, c } = page();
+    ctx.fetch = good([{ id: "a1", seq: 1 }]);
+    await drive(ctx, c, "chan.A");
+    ctx.fetch = refuse500;
+    await drive(ctx, c, "chan.B");
+    ok("4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)",
+      !ctx.channelMsgs.some((m) => m && m.id === "a1"), ctx.channelMsgs);
+  }
+  // RECOVERY: the next read that lands replaces the data and clears THIS channel's mark.
+  {
+    const { ctx, c } = page();
+    ctx.fetch = good([{ id: "m1", seq: 1 }]);
+    await drive(ctx, c, "team.backend");
+    ctx.fetch = refuse500;
+    await drive(ctx, c, "team.backend");
+    const markedWhileRefused = label.textContent.includes("team.backend");
+    ctx.fetch = good([{ id: "m2", seq: 2 }]);
+    await drive(ctx, c, "team.backend");
+    ok("4.8 the mark is up while the read is refused", markedWhileRefused, label.textContent);
+    ok("4.9 and a read that lands clears it", !label.textContent.includes("team.backend"), label.textContent);
+    ok("4.10 and replaces the data rather than merging the stale copy forward",
+      ctx.channelMsgs.some((m) => m && m.id === "m2"), ctx.channelMsgs);
+  }
+  // ONE SOURCE'S MARK MUST NOT ERASE ANOTHER'S. `refresh()` marks the four polled sources, then calls
+  // `select()`, which marks a fifth. A whole-set write in either place drops the other's findings.
+  {
+    const { ctx, c } = page();
+    runInContext(`setStale([{ kind: "refused", name: "peers", reason: "boom" }]);`, c);
+    ctx.fetch = refuse500;
+    await drive(ctx, c, "team.backend");
+    ok("4.11 a refused channel history does not erase the poll's other marks",
+      label.textContent.includes("peers") && label.textContent.includes("team.backend"), label.textContent);
+  }
 }
 
 console.log(`\nweb snapshot-retention smoke: ${cells - failed} passed, ${failed} failed`);

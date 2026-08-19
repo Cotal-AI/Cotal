@@ -67,8 +67,8 @@
     {
       "name": "O10 the selected-channel history loses the same arm, so a channel whose history read failed is presented as a channel whose history was empty",
       "file": "implementations/web/src/web/app.js",
-      "find": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();\n    } catch (err) {\n      msgs = [];\n      noteOrder([{ type: \"backfill-failed\", channel: key, reason: err && err.message ? err.message : String(err) }]);\n    } finally {",
-      "replace": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();\n    } finally {",
+      "find": "      noteOrder([{ type: \"backfill-failed\", channel: key, reason: refused }]);\n",
+      "replace": "",
       "expectRed": "12.11 and it too surfaces the failure"
     },
     {

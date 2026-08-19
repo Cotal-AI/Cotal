@@ -122,14 +122,32 @@ function setConn(live) {
 /** Say WHICH sources are showing their last good value, and why. Visible, not a console line: the
  *  whole point of keeping the snapshot is that the reader knows they are looking at it. Cleared by
  *  the next refresh in which everything landed, which is what recovery looks like from here. */
+/** What the marker is currently saying, so a source read OUTSIDE the poll can add to it without
+ *  erasing the poll's own findings. `refresh()` sets the four polled sources; the open channel's
+ *  history is read later, inside `select()`, and a bare `setStale([channel])` there would drop the
+ *  roster/channels/dms/activity refusals from the same label. */
+let staleNow = [];
 function setStale(stale) {
+  staleNow = stale;
+  renderStale();
+}
+/** Mark ONE source, or clear it, leaving every other source's mark alone. A successful read clears
+ *  its own mark and nobody else's, which is what makes recovery per source rather than all-or-nothing. */
+function markStale(name, entry) {
+  const rest = staleNow.filter((s) => s.name !== name);
+  setStale(entry ? [...rest, entry] : rest);
+}
+function renderStale() {
   const el = $("stale");
   if (!el) return;
-  const label = window.COTAL_SNAPSHOT.staleLabel(stale);
+  const label = window.COTAL_SNAPSHOT.staleLabel(staleNow);
   el.hidden = !label;
-  if (!label) return;
+  // CLEARED, NOT JUST HIDDEN. Returning early on recovery left the previous label and its tooltip
+  // sitting in the element. Hidden text is invisible until something else unhides it, and then the
+  // reader is told a source is stale that recovered some time ago. Recovery has to erase the claim,
+  // not park it.
   el.querySelector(".t").textContent = label;
-  el.title = stale.map((s) => `${s.name}: ${s.reason}`).join("\n");
+  el.title = staleNow.map((s) => `${s.name}: ${s.reason}`).join("\n");
 }
 
 // ── Header: golden-signal tiles ───────────────────────────────────────────────
@@ -803,6 +821,12 @@ function refreshDerived() {
 }
 
 let loadSeq = 0;
+/** The channel `channelMsgs` currently holds, so a refused re-read of THE SAME channel can keep what
+ *  is on screen. `selected` cannot answer this: `select()` assigns it before the clear below, so by
+ *  then it already names the channel being opened rather than the one being displayed. Without this,
+ *  retention would show the previous channel's messages under the new channel's name, which is worse
+ *  than an empty view. */
+let shownChannel = null;
 /** The in-flight channel bootstrap: `{key, promise}`, so a second call for the same channel shares it. */
 let selecting = null;
 async function select(key) {
@@ -821,6 +845,9 @@ async function select(key) {
     // because returning early is exactly what left the buffer undrained.
     if (selecting && selecting.key === key) return selecting.promise;
     const seq = ++loadSeq;
+    // HELD BEFORE THE CLEAR, and only when it belongs to THIS channel. A fresh selection must not
+    // inherit the last channel's messages, so a switch holds nothing and starts empty as before.
+    const held = shownChannel === key ? channelMsgs : [];
     channelMsgs = [];
     // ARMED BEFORE THE FETCH IS ISSUED, which is the whole ordering. Re-armed on every selection
     // because each one is a fresh two-phase bootstrap: a new history read, and a live tap that is
@@ -831,15 +858,32 @@ async function select(key) {
     let release;
     selecting = { key, promise: new Promise((r) => (release = r)) };
     renderCenter();
-    // Same reason as the activity feed: a failed history read is an empty batch, not a reason to
-    // leave the boundary unpassed and the frames of this channel held out of the view that was
-    // opened to look at them.
+    // Same reason as the activity feed: a failed history read must not leave the boundary unpassed
+    // and the frames of this channel held out of the view that was opened to look at them. What it
+    // is NOT any more is an empty batch: it is the last history that was actually read, so a refused
+    // poll on the open channel keeps what is on screen instead of emptying it.
     let msgs = [];
+    let refused = null;
     try {
-      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();
+      // READ THROUGH THE SAME GATE AS EVERY OTHER SOURCE. This was the one read on either page that
+      // still consumed a body without consulting the status, and it is the read behind the open
+      // channel. A 500 here answers `{"error":"..."}`, which is valid JSON that `fetch` does not
+      // reject, so the catch below never fired: the object was handed to the order machine as a
+      // history, the channel drew empty, and nothing said why. Measured on the shipped code before
+      // this line changed: last-good gone, no backfill-failed note, no stale mark.
+      msgs = await window.COTAL_SNAPSHOT.readJson(
+        await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`),
+        `#${key} history`,
+      );
     } catch (err) {
-      msgs = [];
-      noteOrder([{ type: "backfill-failed", channel: key, reason: err && err.message ? err.message : String(err) }]);
+      // A REFUSED READ KEEPS WHAT THE READER ALREADY HAD, for the same reason the four polled
+      // sources do. `refresh()` re-selects the open channel on EVERY poll, so on a link where the
+      // read keeps missing, an empty batch here emptied the open channel once per poll. The held
+      // messages take the place of the history that could not be read, which keeps the merge and
+      // the ordering below identical to the successful path.
+      refused = err && err.message ? err.message : String(err);
+      msgs = held;
+      noteOrder([{ type: "backfill-failed", channel: key, reason: refused }]);
     } finally {
       // SETTLED ON EVERY PATH, INCLUDING THE STALE ONE. A superseded load must not rebind the view it
       // no longer owns, and it must still drain the machine it armed; skipping the settle is what
@@ -855,6 +899,12 @@ async function select(key) {
         const ids = new Set(merged.map((m) => m && m.id));
         for (const m of channelMsgs) if (m && !ids.has(m.id)) merged.push(m);
         channelMsgs = merged.slice(-500);
+        shownChannel = key;
+        // SAID, NOT JUST KEPT. Retention without the mark shows old messages as though they were
+        // current, which is the half of this rule that turns a silent wipe into a silent lie. Marked
+        // per source: a refused history does not erase the poll's other marks, and a read that lands
+        // clears this one without touching theirs.
+        markStale(`#${key} history`, refused ? { kind: "refused", name: `#${key} history`, reason: refused } : null);
       }
       if (selecting && selecting.key === key) selecting = null;
       release();

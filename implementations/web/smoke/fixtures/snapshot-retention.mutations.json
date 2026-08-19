@@ -49,6 +49,41 @@
       "find": "    if (refused.length) parts.push(`stale: ${refused.join(\", \")}`);",
       "replace": "    if (refused.length) parts.push(\"stale\");",
       "expectRed": "3.2 a stale set NAMES its sources"
+    },
+    {
+      "name": "W8 the selected channel's history goes back to consuming a body without consulting the status, which is the one unguarded read left on either page and the wipe behind the OPEN channel: a 500 answers valid JSON, does not reject, and is handed to the order machine as a history",
+      "file": "implementations/web/src/web/app.js",
+      "find": "      msgs = await window.COTAL_SNAPSHOT.readJson(\n        await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`),\n        `#${key} history`,\n      );",
+      "replace": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();",
+      "expectRed": "4.4 and the refusal is SURFACED as a backfill failure, not swallowed"
+    },
+    {
+      "name": "W9 a refused history goes back to an empty batch, so the channel the reader is looking at is emptied once per poll on a link where that read keeps missing",
+      "file": "implementations/web/src/web/app.js",
+      "find": "      msgs = held;\n",
+      "replace": "      msgs = [];\n",
+      "expectRed": "4.3 a REFUSED read (HTTP 500, JSON body) KEEPS it, which is the wipe this closes"
+    },
+    {
+      "name": "W10 retention stops being per channel, so switching to a channel whose read is refused shows the PREVIOUS channel's messages under the new channel's name, which is worse than the empty view it replaced",
+      "file": "implementations/web/src/web/app.js",
+      "find": "    const held = shownChannel === key ? channelMsgs : [];",
+      "replace": "    const held = channelMsgs;",
+      "expectRed": "4.7 a refused read on a DIFFERENT channel inherits nothing (retention is per channel)"
+    },
+    {
+      "name": "W11 marking one source overwrites the whole set again, so a refused channel history erases the poll's own findings and the reader is told about one stale source instead of all of them",
+      "file": "implementations/web/src/web/app.js",
+      "find": "  const rest = staleNow.filter((s) => s.name !== name);\n  setStale(entry ? [...rest, entry] : rest);",
+      "replace": "  setStale(entry ? [entry] : []);",
+      "expectRed": "4.11 a refused channel history does not erase the poll's other marks"
+    },
+    {
+      "name": "W12 recovery only HIDES the marker instead of clearing it, so the previous label and tooltip sit in the element and anything that unhides it tells the reader a source is stale that recovered long ago",
+      "file": "implementations/web/src/web/app.js",
+      "find": "  el.hidden = !label;\n",
+      "replace": "  el.hidden = !label;\n  if (!label) return;\n",
+      "expectRed": "4.9 and a read that lands clears it"
     }
   ]
 }

@@ -402,11 +402,16 @@ console.log("event-order smoke");
 {
   const appSrc = readFileSync(join(webSrc, "app.js"), "utf8");
   const sf = ts.createSourceFile("app.js", appSrc, ts.ScriptTarget.ESNext, true, ts.ScriptKind.JS);
-  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml", "setStale"]);
+  // `markStale` and `renderStale` join the set because `select()` now reports a refused channel
+  // history through them. Extracted rather than stubbed: a stub would let these cells keep passing
+  // against a version that stopped reporting, which is the failure this lane already hit once.
+  const wanted = new Set(["refresh", "onMessage", "noteOrder", "select", "orderNoticeHtml", "setStale", "markStale", "renderStale"]);
   // The single-flight state the shipped functions read. TAKEN FROM THE FILE, not restated: a
   // hand-written `let refreshing = null` here would let the harness keep passing after the real
   // declaration changed, and a bootstrap that coalesces is the whole of blocker 1.
-  const wantedState = new Set(["refreshing", "selecting"]);
+  // `shownChannel` and `staleNow` are the state those two read. TAKEN FROM THE FILE for the same
+  // reason as the rest: a hand-written copy here would drift from what ships.
+  const wantedState = new Set(["refreshing", "selecting", "shownChannel", "staleNow"]);
   const fns: string[] = [];
   const state: string[] = [];
   sf.forEachChild((n) => {
@@ -416,8 +421,8 @@ console.log("event-order smoke");
         if (ts.isIdentifier(d.name) && wantedState.has(d.name.text)) state.push(appSrc.slice(n.getStart(sf), n.end));
   });
   // Pinned first: a short extraction would make every cell below vacuous.
-  ok("12.1 all six shipped functions are extractable", fns.length === 6, fns.length);
-  ok("12.1b and the in-flight state they coalesce on", state.length === 2, state);
+  ok("12.1 all eight shipped functions are extractable", fns.length === 8, fns.length);
+  ok("12.1b and the in-flight state they coalesce on, plus the marker state", state.length === 4, state.length);
 
   type Ctx = Record<string, unknown> & {
     activity: unknown[];
@@ -435,6 +440,10 @@ console.log("event-order smoke");
       fetch: async (u: string) => {
         const isBackfill = u.includes("/api/activity") || u.includes("/history");
         if (isBackfill && mode === "reject") throw new Error("network down");
+        // The channel history read is gated on status now, like every other read on this page, so the
+        // stub answers a Response shape rather than a bare body. `ok: true` is load-bearing: without
+        // it the gate refuses and these cells would be driving the refusal arm they do not test.
+        if (u.includes("/history")) return { ok: true, status: 200, json: async () => [] };
         // `/api/activity` answers a BOUNDED PAGE, not a bare array, and the stub says so: a stub
         // that still served the old shape would keep these cells green against a client that could
         // no longer read what the server sends.
