@@ -76,6 +76,15 @@
       "expectRed": "and the refusal names both the version it met and the set this build serves",
       "cell": "and the refusal names both the version it met and the set this build serves",
       "note": "The narrowness twin of the mutation above. Collapsing the other way satisfies the absent-record cell perfectly and loses the recorded version out of every other refusal, which is the half an operator needs to find the build that serves it. Graded on the version-9 arm, so the two mutations differ by exactly which branch they delete."
+    },
+    {
+      "name": "the guard is deleted, so the run is TAKEN before anything refuses it",
+      "file": "implementations/runtime/src/run-driver.ts",
+      "find": "    if (served === undefined) return { status: \"released\", reason: unservedLanguage(pins.languageVersion) };",
+      "replace": "    if (served === undefined && false) return { status: \"released\", reason: unservedLanguage(pins.languageVersion) };",
+      "expectRed": "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
+      "cell": "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
+      "note": "POSITION, mutated as its own fact. Every other mutation here grades WHAT the refusal says; this one grades WHERE it happens. Deleting the guard lets the drive reach `activateRun`, which takes the lease and writes a second activation into the run's subject - so the record has been touched by a build that cannot run it, and \"refused\" would describe the message and not the effect. It is distinct from the fallback mutation: that one substitutes an engine and runs the program under the wrong semantics, this one takes the run and then dies with no engine at all."
     }
   ],
   "unkillable": [

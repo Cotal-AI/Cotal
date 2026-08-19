@@ -584,10 +584,41 @@ try {
     refused.status === "released" && /language version 9/.test(refused.reason.message)
     && refused.reason.message.includes(`this build serves ${WALKER_LANGUAGE_VERSION}`),
     refused.status === "released" ? refused.reason.message.slice(0, 120) : why(refused));
-  // THE TEETH. A refusal that had already activated the run would have taken the lease, written the
-  // activation and moved the journal - "refused" would then describe the message and not the effect.
+  // THE TEETH, AND THEY NEEDED A REAL JOURNAL TO HAVE ANY. A refusal that had already activated the
+  // run would have taken the lease and written the activation, and "refused" would then describe the
+  // message and not the effect. Asserted on `d-v9` alone that claim was OVERDETERMINED: that run has
+  // no journal, so an activation would have been refused as not-resumable whatever the dispatcher
+  // did, and no mutation of the dispatch could ever have redded it. So this record is built the way
+  // one really arrives - activated once by a first holder and carrying a step - and what the cell
+  // watches is whether the SECOND holder took it.
+  const first = await activateRun(js, jsm, {
+    space: SPACE, runId: "d-v9j", holder: "m1", fencingToken: 1, epoch: 1, takeoverId: `x${(takeovers += 1)}`, at: 1, expect: "new",
+  });
+  await new RunJournalStore(first).append({
+    v: 1, seq: 0, run: "d-v9j", scope: "", kind: "sleep", name: "first", occurrence: 0,
+    inputHash: "h", state: "settled", startedAt: 1, endedAt: 2, result: null,
+  } as never);
+  await createRunSpec(kv, EP, "d-v9j", { pins: foreign, createdAt: 1_000 });
+  const held = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v9j", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a foreign-version record WITH a journal is refused the same way",
+    held.status === "released" && (held.reason as { code?: string }).code === "L5023",
+    held.status === "released" ? (held.reason as { code?: string }).code : why(held));
+  // WATCHED ON THE JOURNAL, not on the record: `activateRun` writes an activation RECORD into the
+  // run's subject and does not write the run record's status - measured, the first attempt at this
+  // cell asked for a status that is written by `startRun` and read back `undefined`, so it failed
+  // for a reason that had nothing to do with the claim. A second holder taking this run would leave
+  // a SECOND activation behind it, and that is the mark this cell looks for.
+  const after = await replayRunJournal(js, jsm, SPACE, "d-v9j", `r${(takeovers += 1)}`);
+  const activations = after.records.filter((r) => r.record.kind === "activation").length;
+  c("and the run was not touched: the refusal came before the activation, so only the first holder's is there",
+    activations === 1, after.records.map((r) => r.record.kind));
+
+  // The narrow original, kept: a record with NO journal is refused without being activated either.
   const untouched = await readRunRecord(kv, EP, "d-v9");
-  c("and the run was not touched: no activation, no status, nothing appended",
+  c("and a record with no journal is refused with no status written at all",
     untouched?.status === undefined, untouched?.status?.value);
 
   // THE RECORD THIS BUILD WILL ACTUALLY MEET, as opposed to a version nobody wrote: one stamped by
