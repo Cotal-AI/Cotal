@@ -20,17 +20,13 @@
  */
 import { strict as assert } from "node:assert";
 import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { fileURLToPath } from "node:url";
-import ts from "typescript";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
-// The whole namespace as well, because the declaration is checked against the module's ACTUAL
-// export set and a named import list would only ever confirm the names already written here.
-import * as reaper from "./reap-smoke-brokers.mjs";
+import { DECLARATION_PATH, readCommittedDeclaration, renderReaperDeclaration } from "./gen-reaper-dts.mjs";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -55,87 +51,41 @@ check("the reaper's prefix literal is the one the kit mints", SMOKE_BROKER_PREFI
 // And the minted token must actually carry this process's pid, or the owner check has nothing to read.
 check("the kit's token stamps the owning pid into the dir name", SMOKE_BROKER_TOKEN === `${KIT_PREFIX}${process.pid}-`, SMOKE_BROKER_TOKEN);
 
-// ── the declaration file is a second source of truth, so check it against the module ──────────
+// ── the declaration beside the module is emitted from it, so it cannot describe a different one ──
 //
 // `reap-smoke-brokers.mjs` stays plain JavaScript because it runs on the CI runner before any
-// workspace build, so its types live in a hand written `reap-smoke-brokers.d.mts` beside it. A
-// declaration file is BELIEVED, never checked: rename an export, add a required parameter, or drop
-// a field from `ReapReport` and the declaration keeps compiling, this suite keeps passing, and the
-// mismatch surfaces only at runtime in the one job whose purpose is to clean up after other jobs.
-// The typecheck gate cannot close this; only reading the declaration back and comparing it to the
-// live module can.
+// workspace build, so its `.ts` consumers need a declaration beside it. A hand written declaration
+// is a SECOND source of truth, and a guard that reads one is an enumeration of the shapes whoever
+// wrote it thought of. This suite shipped two such guards and both failed GREEN over real drift: a
+// regex version scored `(cb: () => void, n: number)` as zero required parameters and called an arity
+// mismatch agreement, and the AST version that replaced it walked variable statements and function
+// declarations only, so `export { X as Y }`, `export default`, a namespace and a declaration merge
+// landed in neither the parse NOR `Object.keys(module)` and agreed by both being absent. Neither
+// version compared a single TYPE, so a `pid` that became a string was agreement too.
 //
-// The declaration is PARSED rather than transcribed. A hand copied list of expected names here
-// would be a THIRD source of truth, free to agree with neither file.
-//
-// Parsed with the compiler that consumes the file, not with regexes over its text. The regex
-// version this replaces matched `export declare function NAME(`, so a generic signature slid past
-// the name, `export declare const A, B` yielded only A, and required parameters were counted by
-// looking for an `=`, which an arrow type in a parameter's own annotation supplies: it scored
-// `(cb: () => void, n: number)` as ZERO required and would have called a real arity drift agreement.
-// A guard that can fail GREEN is the defect it exists to catch, so the shapes are read off the AST
-// instead. Re-exports and a default export need no case of their own: they land on the module and
-// not in this parse, which is exactly what the two set cells below redden on.
-const declPath = fileURLToPath(new URL("./reap-smoke-brokers.d.mts", import.meta.url));
-const declSource = ts.createSourceFile(declPath, readFileSync(declPath, "utf8"), ts.ScriptTarget.ESNext, true, ts.ScriptKind.TS);
-const isExported = (node: ts.Node): boolean =>
-  (ts.getCombinedModifierFlags(node as ts.Declaration) & ts.ModifierFlags.Export) !== 0;
-const declaredValues: string[] = [];
-const declaredFns: Array<{ name: string; required: number }> = [];
-let reportFields: string[] = [];
-for (const stmt of declSource.statements) {
-  if (ts.isVariableStatement(stmt) && isExported(stmt.declarationList.declarations[0])) {
-    // Every declarator, because `export declare const A, B: string` declares two of them.
-    for (const d of stmt.declarationList.declarations) if (ts.isIdentifier(d.name)) declaredValues.push(d.name.text);
-  } else if (ts.isFunctionDeclaration(stmt) && stmt.name && isExported(stmt)) {
-    // `Function.length` counts parameters that are neither optional, defaulted, nor rest, and a
-    // `this` parameter is a type annotation rather than an argument. Read off the AST, so a
-    // parameter whose own TYPE contains a `?`, an `=` or a comma cannot be miscounted.
-    const required = stmt.parameters.filter((param) =>
-      !param.questionToken && !param.initializer && !param.dotDotDotToken
-      && !(ts.isIdentifier(param.name) && param.name.text === "this")).length;
-    declaredFns.push({ name: stmt.name.text, required });
-  } else if (ts.isInterfaceDeclaration(stmt) && stmt.name.text === "ReapReport") {
-    reportFields = stmt.members.filter(ts.isPropertySignature)
-      .map((member) => (ts.isIdentifier(member.name) ? member.name.text : ""))
-      .filter(Boolean);
-  }
-}
-
-// THE PARSER IS AN INSTRUMENT, so prove it read something before trusting what it did not find.
-// An expression that silently yields nothing passes every set comparison below.
-check("the declaration parser found the declared value exports", declaredValues.length > 0, `${declaredValues.length}`);
-check("the declaration parser found the declared function exports", declaredFns.length > 0, `${declaredFns.length}`);
-check("the declaration parser found ReapReport's fields", reportFields.length > 0, `${reportFields.length}`);
-
-const declaredNames = [...declaredValues, ...declaredFns.map((f) => f.name)].sort();
-const actualNames = Object.keys(reaper).sort();
-check("every name the declaration exports exists on the module", declaredNames.every((n) => actualNames.includes(n)), `missing: ${declaredNames.filter((n) => !actualNames.includes(n)).join(", ") || "none"}`);
-check("the module exports nothing the declaration omits", actualNames.every((n) => declaredNames.includes(n)), `undeclared: ${actualNames.filter((n) => !declaredNames.includes(n)).join(", ") || "none"}`);
-
-// EMPTY is not the only way an instrument reads short. A function the parser sorts into
-// `declaredValues` instead is still in `declaredNames`, so both set cells above stay green while
-// the arity loop below skips it in silence. The cover is asserted against the MODULE's own
-// function-valued exports, so it is derived rather than transcribed and there is no third list to
-// keep in step.
-const liveFnNames = actualNames.filter((n) => typeof (reaper as unknown as Record<string, unknown>)[n] === "function").sort();
-check("the arity loop covers every function the module exports", declaredFns.map((f) => f.name).sort().join(",") === liveFnNames.join(","), `loop: ${declaredFns.map((f) => f.name).sort().join(", ") || "none"} vs module: ${liveFnNames.join(", ") || "none"}`);
-
-// Arity is compared on REQUIRED parameters, because that is what `Function.length` counts: a
-// parameter with a default is not in it. `reapSmokeBrokers({ dryRun = false } = {})` therefore has
-// length 0 and its declaration `(opts?: { dryRun?: boolean })` has zero required parameters, which
-// agree. Adding a required parameter on either side breaks that agreement, which is the drift worth
-// catching.
-for (const fn of declaredFns) {
-  const live = (reaper as unknown as Record<string, unknown>)[fn.name];
-  check(`${fn.name} takes the number of required parameters the declaration gives it`, typeof live === "function" && (live as (...a: unknown[]) => unknown).length === fn.required, `declared ${fn.required}, module ${typeof live === "function" ? (live as (...a: unknown[]) => unknown).length : "not a function"}`);
-}
-
-// And the report shape, from a REAL call rather than a literal written here. `dryRun` reads the
-// process table and signals nothing, so this is safe to run before the scenario builds its brokers.
-const shape = Object.keys(reapSmokeBrokers({ dryRun: true })).sort();
-check("a real ReapReport carries every field the declaration gives it", reportFields.every((f) => shape.includes(f)), `missing: ${reportFields.filter((f) => !shape.includes(f)).join(", ") || "none"}`);
-check("a real ReapReport carries no field the declaration omits", shape.every((f) => reportFields.includes(f)), `undeclared: ${shape.filter((f) => !reportFields.includes(f)).join(", ") || "none"}`);
+// So the declaration is no longer written by hand and there is nothing left to recognise. It is
+// emitted from the module by the compiler, and this asserts the committed file is exactly what the
+// compiler emits today. Any change to the module that the declaration does not follow changes these
+// bytes, whatever kind of change it is: a renamed export, a parameter added after a defaulted one, a
+// re-export under an alias, a default export, a merged namespace, a field whose type moved. The
+// generator refuses to emit over a type error, so `// @ts-check` in the module makes its own JSDoc
+// part of what this cell defends.
+const committed = readCommittedDeclaration();
+// A module that no longer typechecks has no declaration to compare, and that is a RED rather than a
+// crash: the generator refuses to emit over a type error, and this cell is where that refusal is
+// read. Throwing here would end the run before the banner, which grades INCONCLUSIVE instead.
+let emitted: string | undefined;
+let emitError = "";
+try { emitted = renderReaperDeclaration(); } catch (e) { emitError = (e as Error).message; }
+check(
+  "the committed declaration is what the compiler emits from the module",
+  emitted !== undefined && emitted === committed,
+  emitted === undefined
+    ? emitError
+    : committed === undefined
+      ? `${DECLARATION_PATH} is missing; run \`pnpm gen:reaper-dts\``
+      : `run \`pnpm gen:reaper-dts\`; first difference at byte ${[...emitted].findIndex((c, i) => committed[i] !== c)}`,
+);
 
 const dirs: string[] = [];
 const kids: ChildProcess[] = [];

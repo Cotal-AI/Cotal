@@ -1,72 +1,81 @@
 {
   "grades": "bin/smoke/reaper.smoke.ts",
-  "guard": "the reaper's hand written declaration file agrees with the module it describes, in both directions",
+  "guard": "the declaration beside the reaper is what the compiler emits from the reaper, so the two cannot describe different modules",
   "command": "pnpm smoke:reaper",
   "progressPattern": "✓",
   "completionMarker": "cells ran)",
-  "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its types live in a hand written .d.mts beside it. A declaration file is believed, not checked: the typecheck gate cannot tell that it describes the module it sits next to. These mutations break the agreement from BOTH sides, because the drift can start in either artifact: the module changing without the declaration following, and the declaration changing without the module following. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching these cells grades INCONCLUSIVE rather than passing as a kill.",
+  "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its .ts consumers need a declaration beside it. Two hand written guards over a hand written declaration each passed GREEN over real drift, because each was an enumeration of the shapes its author thought of. The declaration is now emitted from the module and compared byte for byte, so there is no shape to recognise. Every mutation below is a shape that beat one of those guards, or the mirror of one, and every one must move the SAME cell: that is the property, that the kind of change does not matter. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching the cell grades INCONCLUSIVE rather than passing as a kill.",
   "mutations": [
     {
       "name": "an export is RENAMED in the module and the declaration does not follow",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
       "find": "export function reportReaped(label, result) {",
       "replace": "export function reportReapedResult(label, result) {",
-      "expectRed": "every name the declaration exports exists on the module",
-      "cell": "every name the declaration exports exists on the module",
-      "note": "Three cells move together here, which is honest rather than sloppy: the declared name is gone, an undeclared name has appeared, and the arity cell finds no function to measure. The named cell is the one the issue is about."
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module"
     },
     {
       "name": "an export is ADDED to the module and the declaration does not follow",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
       "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
       "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport const REAPER_VERSION = 2;",
-      "expectRed": "the module exports nothing the declaration omits",
-      "cell": "the module exports nothing the declaration omits",
-      "note": "The MIRROR direction of the rename. A guard that only checks declared-implies-present would call an undeclared export fine, and an undeclared export is exactly what an untyped consumer then reads with no type at all."
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The MIRROR of the rename. A guard that only checks declared-implies-present calls an undeclared export fine, and an undeclared export is what an untyped consumer then reads with no type at all."
     },
     {
-      "name": "a REQUIRED parameter is added to the module and the declaration does not follow",
+      "name": "a REQUIRED parameter is added AFTER a defaulted one, so Function.length does not move",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
       "find": "export function reportReaped(label, result) {",
-      "replace": "export function reportReaped(label, result, verbose) {",
-      "expectRed": "reportReaped takes the number of required parameters the declaration gives it",
-      "cell": "reportReaped takes the number of required parameters the declaration gives it"
+      "replace": "export function reportReaped(label, result, onDone = () => {}, finalRequired) {",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The exact input that beat the previous guard, and the reason arity is no longer compared at all. Function.length is the count of parameters BEFORE THE FIRST DEFAULT, not the count of parameters that are required: this mutant needs four arguments and reports length 2, so a guard comparing it against a declaration that says two printed agreement while the real call site, shard.mjs reportReaped(cmd, after), threw TypeError at runtime. Nothing here counts parameters, so there is nothing to count wrongly."
     },
     {
-      "name": "a REQUIRED parameter is added to the declaration and the module does not follow",
-      "file": "bin/smoke/reap-smoke-brokers.d.mts",
-      "find": "export declare function reportReaped(label: string, result: ReapReport): void;",
-      "replace": "export declare function reportReaped(label: string, result: ReapReport, verbose: boolean): void;",
-      "expectRed": "reportReaped takes the number of required parameters the declaration gives it",
-      "cell": "reportReaped takes the number of required parameters the declaration gives it",
-      "note": "Drift can start in the DECLARATION too, and that direction is the more dangerous one: it compiles a call the module cannot honour."
-    },
-    {
-      "name": "a declared field disappears from the report the module actually returns",
+      "name": "an alias RE-EXPORT is added to the module and the declaration does not follow",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": "    unclaimable: rows.length - reaped.length,\n    supported: true,",
-      "replace": "    unclaimable: rows.length - reaped.length,",
-      "expectRed": "a real ReapReport carries every field the declaration gives it",
-      "cell": "a real ReapReport carries every field the declaration gives it",
-      "note": "supported is the field that lets a caller tell \"nothing leaked\" from \"nothing was looked at\", so a report that silently stops carrying it turns an unenumerable platform into a clean bill of health. A later scenario cell also reads it, but these cells run first, so the named cell is the one that moves first."
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport { SMOKE_BROKER_PREFIX as PREFIX_ALIAS };",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "One of three forms that landed in NEITHER side of the previous guard's comparison: the alias is not a variable statement so the parse missed it, and it is a declaration-only name so the module key set missed it too. Both directions agreed by being equally blind, which is the worst way for a comparison to pass."
     },
     {
-      "name": "a REQUIRED parameter whose TYPE is an arrow is added to the declaration and the module does not follow",
-      "file": "bin/smoke/reap-smoke-brokers.d.mts",
-      "find": "export declare function reportReaped(label: string, result: ReapReport): void;",
-      "replace": "export declare function reportReaped(label: string, result: ReapReport, onDone: () => void): void;",
-      "expectRed": "reportReaped takes the number of required parameters the declaration gives it",
-      "cell": "reportReaped takes the number of required parameters the declaration gives it",
-      "note": "The same drift as the mutation above it, written in the shape that broke the first version of this guard. That version counted required parameters by splitting the parameter text on top level commas and treating any part containing an `=` as defaulted, so the `=>` inside a parameter's own type read as a default and the parameter was not counted: against this exact mutant it printed `declared 2, module 2` and PASSED. Five mutations were green against that parser and none of them said so, because every one of them was written in a shape it could read. An instrument cannot verify its own boundary, so the boundary gets a mutant of its own."
+      "name": "a DEFAULT export is added to the module and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";",
+      "replace": "export const SMOKE_BROKER_PREFIX = \"cotal-smoke-broker-\";\nexport default reapSmokeBrokers;",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The previous guard's own comment claimed re-exports and default exports needed no case because the set comparison caught them. It did not: this is the second of the three forms that both sides missed."
     },
     {
-      "name": "a declared function is written as a value, so the arity loop stops covering it",
+      "name": "a NAMESPACE MERGE is added to an exported function and the declaration does not follow",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "/**\n * One line when there is nothing to say, a named list when there is.",
+      "replace": "reportReaped.version = \"1\";\n\n/**\n * One line when there is nothing to say, a named list when there is.",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The third form. A merged member reads as declared and resolves to undefined at runtime, which is the failure a declaration is supposed to prevent."
+    },
+    {
+      "name": "a field's TYPE drifts in the module while its name stays",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "rows.push({ pid: Number(pid), args });",
+      "replace": "rows.push({ pid: String(pid), args });",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "Neither previous guard compared a single type, so a pid that became a string was agreement: names matched, arity matched, the report's field set matched. This one is killed by the module's own JSDoc under // @ts-check rather than by the bytes, and the cell reports the compiler's message instead of a diff, because the generator refuses to emit a declaration it could not typecheck."
+    },
+    {
+      "name": "the generated declaration is hand edited and the module does not follow",
       "file": "bin/smoke/reap-smoke-brokers.d.mts",
-      "find": "export declare function listNatsServers(): NatsServerRow[] | undefined;",
-      "replace": "export declare const listNatsServers: () => NatsServerRow[] | undefined;",
-      "expectRed": "the arity loop covers every function the module exports",
-      "cell": "the arity loop covers every function the module exports",
-      "note": "This is the PARTIAL emptiness case, and it is the reason a cell exists for it. The name is still exported and still on the module, so both set cells stay green and nothing looks wrong; only the arity loop's input has quietly lost a function, and its parameters stop being compared at all. The three parser cells cannot see it either, because they ask whether the parser found SOMETHING and it did. A cell that only asks whether an instrument returned a non-empty answer cannot tell a complete read from a short one, so the cover is asserted against the module's own function valued exports."
+      "find": "export function reportReaped(label: string, result: ReapReport): void;",
+      "replace": "export function reportReaped(label: string, result: ReapReport, onDone: () => void): void;",
+      "expectRed": "the committed declaration is what the compiler emits from the module",
+      "cell": "the committed declaration is what the compiler emits from the module",
+      "note": "The mirror direction, and the more dangerous one: it compiles a call the module cannot honour. The file carries a do-not-edit banner, and this is what makes the banner enforceable rather than advisory."
     }
   ]
 }
