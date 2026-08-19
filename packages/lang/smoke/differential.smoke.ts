@@ -35,19 +35,24 @@
  *
  * AND ITS ARMS ARE UNSERIALIZED, which is the second half of the same qualification and the half
  * that is easier to misread, because it limits a number this file PRINTS rather than a path it
- * declines to take. A differential is blind to SYMMETRIC loss by construction. `differences` walks
- * a journal entry by entry through `JSON.stringify`, so two arms that flatten a value the same way
- * compare equal; and the encoder that flattens it is shared by both arms, also by construction.
- * Both of those are load-bearing, and neither is a property this suite can test, because a suite
- * cannot see a difference its own comparison erases.
+ * declines to take. TWO DIFFERENT ZEROS SIT NEAR EACH OTHER HERE AND THEY ARE NOT THE SAME CLAIM.
  *
- * So read the entry leg's zero for what it is. "No journal entry the corpus produces carries a
- * value JSON cannot draw" is a statement about what the EFFECTS record, and about two arms
- * agreeing. It is NOT evidence that the durable path is faithful: a value that the encoder drops
- * on the way in is gone identically on both arms, so it is drawn identically, compared equal, and
- * counted in that zero. A record that lost a field before it was ever stored looks canonical
- * coming back. Nothing here could report that, and this number should not be cited as though it
- * could.
+ * THE FIRST IS THIS SUITE'S OWN VERDICT. `differences` compares the two arms entry by entry
+ * through `JSON.stringify` and nothing else, so a value both arms flatten the same way compares
+ * EQUAL. A differential is blind to symmetric loss by construction, and the flattener doing it
+ * here is the comparator's own stringify. That is not a property this suite can test, because a
+ * suite cannot see a difference its own comparison erases.
+ *
+ * THE SECOND IS THE ENTRY SWEEP'S ZERO, AND IT IS CORPUS-LIMITED RATHER THAN DEFEATED BY ANYTHING.
+ * `jsonBlind` runs over `journal.entries()`, which are LIVE in-process values: no encoding happens
+ * on that path at all, and it flags a function directly, as its own planted control requires. A
+ * corpus program whose entry carried a function would therefore have RED that cell, before any
+ * rule refused it. The zero says the corpus holds no such program. It does not say the sweep could
+ * not have seen one.
+ *
+ * KEEPING THEM APART MATTERS BECAUSE THE DURABLE ENCODER IS ON NEITHER PATH. A record is flattened
+ * when a store writes it, which this suite never does. So neither zero speaks to whether the
+ * durable path is faithful, and neither should be cited as though it did.
  */
 import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
@@ -639,24 +644,34 @@ const reachedKinds = new Set<string>();
   // journal, and a count alone says nothing about what was in them. Both read `scanned`, so a sweep
   // that stopped collecting reds here instead of going quiet.
   //
-  // THREE PATHS REACH AN ENTRY, AND ONLY TWO OF THEM HAVE A CROSSING RULE IN FRONT.
+  // EVERY VALUE PATH INTO AN ENTRY NOW HAS A CROSSING RULE IN FRONT OF IT. There are six of them
+  // in `perform.ts`: every effect ARGUMENT, every effect RESULT, the EXTERNAL a handler binds from
+  // inside an effect's dispatch, the EXTERNAL a handler binds from inside a scope's dispatch, the
+  // DETAIL a failure carries, and the scope's own VALUE at the settle. Named by path rather than by
+  // line, because a line number in a sentence like this goes stale inside a commit.
   //
-  // `assertCrossable` runs on every effect ARGUMENT and every effect RESULT (`perform.ts`), and it
-  // refuses — measured against this sweep's own list, one probe per row — a non-finite number,
-  // absence, a function, a symbol, a bigint, a cycle, a hole in an array, and anything whose
-  // prototype is neither `Object.prototype` nor null, which is every `Date`, `Map` and `Set`. On
-  // those two paths all but one of the kinds swept for here cannot reach an entry at all, and this
-  // cell reds the day that boundary moves. (`surface.smoke` holds the boundary itself as L3041 and
-  // L3042; this holds the consequence the journal comparison depends on.)
+  // The rule refuses, measured against this sweep's own list with one probe per row, a non-finite
+  // number, absence, a function, a symbol, a bigint, a cycle, a hole in an array, and anything
+  // whose prototype is neither `Object.prototype` nor null, which is every `Date`, `Map` and `Set`.
+  // So all but one of the kinds swept for below cannot reach an entry at all, and this cell reds
+  // the day that boundary moves. (`surface.smoke` holds the boundary itself as L3041 and L3042;
+  // this holds the consequence the journal comparison depends on.)
   //
-  // THE THIRD IS `external`, AND AS OF THE BIND GUARD IT IS GUARDED TOO. `ctx.bind` reaches
-  // `Journal.bind` through both wrappers in `perform.ts`, and a record that is not plain data is
-  // refused there — BEFORE the write, so a refused bind leaves the entry holding the last good one
-  // rather than the bad one sitting beside an error. It was not always so, and the way it stopped
-  // being so is recorded rather than forgotten: this file carried a tripwire pinned to a NaN still
-  // reaching an entry through that path, and that cell reding is what retired it. So the sweep
-  // below is no longer the only thing watching this path. It is a second and independent witness,
-  // which is what it should have been from the start.
+  // THAT COUNT IS A STATEMENT ABOUT `perform.ts` AT THIS SHA, NOT A STANDING FACT, and whoever adds
+  // a path into an entry re-derives it from the call sites rather than citing this sentence. That
+  // is exactly how the sentence this replaces went wrong: it said three paths with two rules, which
+  // was true when it was written and false by the time the guards landed, while reading as durable.
+  //
+  // WHAT IS LEFT AFTER THEM IS SMALL AND NAMED. Of the kinds this sweep looks for, only negative
+  // zero can still reach an entry, and the canonical form equates it anyway. The real residual is
+  // records ALREADY WRITTEN, which no door can reach because they were flattened before any rule
+  // existed, and which the spec discloses at §10.6.
+  //
+  // `external` GOT ITS RULE THE WAY THIS FILE PREFERS. It was the third path and the only one with
+  // nothing in front of it, and this suite carried a tripwire pinned to a NaN still reaching an
+  // entry through it: that cell going red is what retired it. So the sweep below is not the only
+  // thing watching that path. It is a second and independent witness, which is what it should have
+  // been from the start.
   //
   // AND THIS IS THE ONE CELL HERE THAT IS NOT A COMPARISON, WHICH IS WHY IT IS NEEDED. Both arms
   // reach `Journal.bind` through the same two call sites in `perform.ts` — the engine has no bind
