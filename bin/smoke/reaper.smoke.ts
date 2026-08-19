@@ -323,6 +323,35 @@ try {
   check("the orphan's owner is dead", !alive(ownerPid!), `owner ${ownerPid}`);
   check("the orphan's broker outlived its owner, which is what makes it an orphan", alive(orphanPid!), `broker ${orphanPid}`);
 
+  // `dryRun` is the reaper's read-only mode, and the executed consumer above CALLS it, so a dryRun
+  // that signalled would make this suite a killer of live brokers rather than a test of one. It had
+  // no cell at all: an engineering review dropped the `continue` from the dryRun branch, so the
+  // call fell through to SIGKILL while the JSDoc, the declaration bytes and all 25 cells were
+  // unchanged and green. Reproduced first-party before this trio. The claim and the silence are
+  // separate properties, so they are separate cells: a dryRun that claimed nothing would satisfy
+  // "killed nothing" for the wrong reason.
+  const dry = reapSmokeBrokers({ dryRun: true });
+  check(
+    "a dry run CLAIMS the orphan, so the two cells below are not vacuous",
+    dry.reaped.some((r) => r.pid === orphanPid),
+    JSON.stringify(dry.reaped.map((r) => r.pid)),
+  );
+  // The wait is load-bearing and was measured: a child SIGKILLed a moment ago still answers
+  // `kill(pid, 0)` until its parent reaps it, so checking immediately reported a killed broker as
+  // alive and this cell stayed green under the very mutant it exists for. Half a second is past
+  // that window on this suite's own children.
+  await wait(500);
+  check(
+    "and it SIGNALS nothing: the broker it claimed is still alive after it",
+    alive(orphanPid!),
+    `pid ${orphanPid} was killed by a run that promised to kill nothing`,
+  );
+  check(
+    "and it names each claim once, so a fall-through into the kill path shows as a double count",
+    new Set(dry.reaped.map((r) => r.pid)).size === dry.reaped.length,
+    JSON.stringify(dry.reaped.map((r) => r.pid)),
+  );
+
   const result = reapSmokeBrokers();
   await wait(500);
 

@@ -112,6 +112,24 @@
       "expectRed": "and every field the declaration promises of a report is the type the report actually carries",
       "cell": "and every field the declaration promises of a report is the type the report actually carries",
       "note": "The row above covers a PARAMETER the declaration lies about; this covers a RETURN FIELD, which the fixed consumer could not see. A security review proved that gap by declaring ReapReport.supported as a string, double casting the returned booleans so the module still typechecked, and regenerating: the declaration promised a string, the runtime returned a boolean, and the suite stayed at 25 of 25 because the consumer read reaped[].owner and never supported. The surface is now read out of the declaration by the compiler, so this mutant reds without anyone having named the field."
+    },
+    {
+      "name": "a DRY RUN falls through into the kill path",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    if (dryRun) { reaped.push({ pid, args, owner: Number(owner[1]) }); continue; }",
+      "replace": "    if (dryRun) { reaped.push({ pid, args, owner: Number(owner[1]) }); }",
+      "expectRed": "and it SIGNALS nothing: the broker it claimed is still alive after it",
+      "cell": "and it SIGNALS nothing: the broker it claimed is still alive after it",
+      "note": "Dropping one `continue` turns the read-only mode into a killer while every type, every JSDoc line and every declaration byte stays identical, so nothing in this config could see it and the suite had no cell for dryRun at all. An engineering review measured 25 of 25 green under it. The suite now calls dryRun against its own orphan fixture and requires the broker to survive; the wait before that check is load-bearing, since a child SIGKILLed a moment ago still answers kill(pid, 0)."
+    },
+    {
+      "name": "a COUNTER in the returned report stops being a number",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "    unparseable,\n",
+      "replace": "    unparseable: /** @type {any} */ (\"not-a-count\"),\n",
+      "expectRed": "and every field the declaration promises of a report is the type the report actually carries",
+      "cell": "and every field the declaration promises of a report is the type the report actually carries",
+      "note": "A second return-field drift, on a field no hand-written consumer read. It is here because the fixed consumer that preceded the surface reader was beaten twice on exactly this axis, once on supported and once on this counter, by two different reviews. Since the shape is read out of the declaration rather than named here, both die to the same cell."
     }
   ]
 }
