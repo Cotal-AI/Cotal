@@ -1048,6 +1048,167 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   ok("both engines refuse a journal handed back without its pins", j(refusals) === j(["L5021", "L5021"]), refusals);
 }
 
+// ---- the replay matrix: which record, on which engine, answered how ----------------------------
+
+{
+  // WHICH ENGINE MAY REPLAY A RECORD IS A FACT THE RECORD CARRIES, not one the caller supplies.
+  //
+  // The resumes above prove the behaviour: a journal replays on the engine that wrote it and is
+  // refused by the other. What they do not say is WHY the refusal is possible — that each engine
+  // stamps its own language into the record it writes, so the pin has something to disagree with
+  // later. A version split whose engines both stamped the same constant would pass every cell
+  // above and refuse nothing at all, which is the naive bump measured on the way here (2 suites
+  // red, both of them v1 RECORDS, and every crossing still green).
+  for (const engine of ["walker", "engine"] as const) {
+    const source = 'await sleep("1m", { name: "s" }); log(now() > 0);';
+    const journal = new Journal({ run: "m" });
+    const options = { runId: "m", handler: new SimHandler({}), journal, seed: SEED, startedAt: AT };
+    const r = engine === "walker" ? await walk(source, options) : await runOnEngine(source, transform(source).module, { ...options, evaluate });
+    ok(`the record the ${engine} writes is stamped with the ${engine}'s own language, which is what the other one later disagrees with`, r.pins.languageVersion === versionOf[engine], {
+      stamped: r.pins.languageVersion,
+      expected: versionOf[engine],
+    });
+  }
+
+  // A JOURNAL WITH NO ENTRIES IS A STORE, NOT A HISTORY, and it is two rules rather than one.
+  //
+  // `L5021` refuses a journal carrying recorded steps with NO pins, because re-resolving them would
+  // make it a different run wearing this one's history — the epoch moves to the resuming host and
+  // every pure draw changes. An EMPTY journal is the opposite case: a fresh run handed somewhere to
+  // write. So it must not be refused when no pins come with it, and its pins must not be re-resolved
+  // when they do. Both halves on both engines, because a rule that holds on one engine and not the
+  // other is exactly what this gate exists to catch.
+  for (const engine of ["walker", "engine"] as const) {
+    const source = 'await sleep("1m", { name: "s" }); log(now() > 0);';
+    const bare = { runId: "m0", handler: new SimHandler({}), journal: new Journal({ run: "m0" }), seed: "a-seed-of-its-own", startedAt: AT };
+    let fault: { code?: string } | null = null;
+    let out: Awaited<ReturnType<typeof walk>> | null = null;
+    try {
+      out = engine === "walker" ? await walk(source, bare) : await runOnEngine(source, transform(source).module, { ...bare, evaluate });
+    } catch (e) {
+      fault = e as { code?: string };
+    }
+    // UNGRADED BY THIS CONFIG, AND NAMED RATHER THAN LEFT AS A GAP: the only mutation that breaks
+    // this rule is `entries().length > 0` -> `>= 0`, and measured, it refuses every corpus run too
+    // (133 reds and the run died before its summary line), so it grades a corpse rather than this
+    // cell. The rule is load-bearing for the whole corpus, which is what makes a narrow mutant for
+    // it impossible: every row above hands a journal and no pins.
+    ok(`the ${engine} takes a journal with no entries and no pins as a fresh run's store rather than as a resume it must refuse`, fault === null && out !== null && out.journal.entries().length === 1 && out.pins.languageVersion === versionOf[engine], {
+      fault: fault === null ? null : fault.code,
+      entries: out === null ? null : out.journal.entries().length,
+      stamped: out === null ? null : out.pins.languageVersion,
+    });
+
+    // The budget is deliberately not a default: pins that are KEPT and pins that are re-resolved
+    // from the same options are otherwise identical, so the cell would pass either way and grade
+    // nothing. One value no resolver would produce is what makes "kept" observable.
+    const given = { ...resolvePins({ runId: "m1", seed: "a-seed-of-its-own", startedAt: AT }, AT, versionOf[engine]), stepBudget: 12_345 };
+    const held = { runId: "m1", handler: new SimHandler({}), journal: new Journal({ run: "m1" }), pins: given, seed: "a-seed-of-its-own", startedAt: AT };
+    let kept: Awaited<ReturnType<typeof walk>> | null = null;
+    let heldFault: { code?: string } | null = null;
+    try {
+      kept = engine === "walker" ? await walk(source, held) : await runOnEngine(source, transform(source).module, { ...held, evaluate });
+    } catch (e) {
+      heldFault = e as { code?: string };
+    }
+    ok(`and when pins DO come with that empty journal the ${engine} keeps them rather than resolving its own`, heldFault === null && kept !== null && j(kept.pins) === j(given), {
+      fault: heldFault === null ? null : heldFault.code,
+      pins: { given, kept: kept === null ? null : kept.pins },
+    });
+  }
+
+  // AND THE TWO ENGINES REMAIN TELLABLE APART, which is the control every dispatch cell rests on.
+  //
+  // A cell that watches which engine ran something is worthless the day the two become
+  // indistinguishable, and it goes quiet rather than red — it keeps passing while observing
+  // nothing. So the difference itself is asserted, here, outside any driver: the same program
+  // charges a different number of steps on each, because a walker dispatch and a transformed-site
+  // hit are different units. The numbers are printed rather than pinned: an exact count moves
+  // whenever either engine's charging moves, and a cell pinned to one gets relaxed instead of read.
+  {
+    const source = "let n = 0; for (let i = 0; i < 5; i = i + 1) { n = n + i; } log(n);";
+    const options = { runId: "m1", handler: new SimHandler({}), journal: new Journal({ run: "m1" }), seed: SEED, startedAt: AT };
+    const w = await walk(source, options);
+    const e = await runOnEngine(source, transform(source).module, { ...options, journal: new Journal({ run: "m1" }), evaluate });
+    ok("the same program charges a different number of steps on each engine, so which one ran is observable at all", w.steps !== e.steps && w.steps > 0 && e.steps > 0, {
+      walker: w.steps,
+      engine: e.steps,
+    });
+    console.log(`  (the same loop charges ${w.steps} steps on the walker and ${e.steps} on the engine — different units, not a discrepancy)`);
+  }
+}
+
+// ---- the matrix index: eight rows, and where each one is asserted ------------------------------
+
+{
+  // THE EIGHT ROWS EXIST AS CELLS, NOT AS A TABLE IN A PLAN.
+  //
+  // The matrix spans two packages because its subject does: rows about a record meeting an ENGINE
+  // are here, and rows about a record meeting the DISPATCHER can only be in the runtime suite —
+  // `implementations/runtime` depends on this package, never the other way round, so a lang suite
+  // cannot drive the driver. Splitting them and citing across is what keeps one index authoritative
+  // without a second file asserting the same law twice.
+  //
+  // The citation is CHECKED rather than written down. A row list in a comment is a promise that goes
+  // stale the first time a cell is renamed, and this wave has spent the week deleting checks that
+  // could not fail. So each row names the exact sentence that carries it, this suite proves its own
+  // rows printed, and the driver rows are looked up in the runtime suite's source. That does couple
+  // the two files: renaming a cell there reds this cell here. Deliberately — an index whose entries
+  // can vanish silently is not an index, and a rename that has to be made in two places is a rename
+  // someone noticed.
+  const HERE = "here";
+  const DRIVER = "implementations/runtime/smoke/run-driver.smoke.ts §12";
+  const MATRIX: readonly (readonly [string, string, readonly string[]])[] = [
+    ["1. a v1 record with entries, on the walker: it resumes", HERE, ["the walker resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock"]],
+    ["2. a v1 record with entries, on the engine host: refused L5008", HERE, ["and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
+    ["3. a v2 record with entries, on the walker: refused L5008 — the defence behind the dispatch, for a caller who reaches past it", HERE, ["and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
+    ["4. a v2 record with entries, on the engine host: it resumes", HERE, ["the engine resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock"]],
+    ["5. a record at a version no engine here serves, and one naming none at all, at the driver: released, L5023, run untouched", DRIVER, [
+      "a record no engine here serves is RELEASED, not failed and not thrown",
+      "and it is refused by name, L5023",
+      "and the refusal names both the version it met and the set this build serves",
+      "and the run was not touched: no activation, no status, nothing appended",
+      "a record that names no language version at all is refused the same way",
+      "and the refusal says the record names none, rather than interpolating the missing value",
+    ]],
+    ["6. a journal with no entries, on either engine: a store, not a resume, and its pins are its own", HERE, [
+      "the walker takes a journal with no entries and no pins as a fresh run's store rather than as a resume it must refuse",
+      "and when pins DO come with that empty journal the walker keeps them rather than resolving its own",
+    ]],
+    ["7. which ARM ran, observed by the refusal it produces rather than by the answer it returns", DRIVER, [
+      "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+      "while the same spec at a version this build DOES serve gets past the table",
+    ]],
+    ["8. a fresh run at the driver: stamped with the engine it dispatched to, which is not the current language", DRIVER, [
+      "a fresh run completes on the engine this build serves",
+      "and it is stamped with the version of the ENGINE that ran it, not with the current language",
+    ]],
+  ];
+
+  // Row 7's other half is the one only this package can own: the same v2 record forced onto the
+  // walker's own entry point answers L5008 where the dispatcher answers L5023, and the disagreement
+  // between those two codes IS the arm observation. That is row 3's cell, cited twice on purpose.
+  // AND THE ROW SET IS CHECKED BEFORE THE CITATIONS ARE. Both cells below are satisfied by an EMPTY
+  // matrix: drop a row and every remaining citation still resolves, so the index shrinks in silence
+  // and the row nobody asserts is the row that stops being true. The ordinals are the guard — they
+  // are what a dropped row cannot fake, and they are why the labels are numbered at all.
+  const misnumbered = MATRIX.map(([label], i) => [i, label] as const).filter(([i, label]) => !label.startsWith(`${i + 1}. `));
+  ok("the index carries all eight rows, in order, and none of them can be dropped quietly", MATRIX.length === 8 && misnumbered.length === 0, {
+    rows: MATRIX.length,
+    misnumbered: misnumbered.map(([i, label]) => `slot ${i + 1}: ${label}`),
+  });
+
+  const mine = MATRIX.filter(([, where]) => where === HERE).flatMap(([, , cells]) => cells);
+  const missingHere = mine.filter((c) => !CELLS.includes(c));
+  ok("every row this suite owns is a sentence this suite printed", missingHere.length === 0, missingHere);
+
+  const driverSuite = readFileSync(new URL("../../../implementations/runtime/smoke/run-driver.smoke.ts", import.meta.url), "utf8");
+  const theirs = MATRIX.filter(([, where]) => where === DRIVER).flatMap(([, , cells]) => cells);
+  const missingThere = theirs.filter((c) => !driverSuite.includes(c));
+  ok("every row the dispatcher owns names a cell the runtime suite still has", missingThere.length === 0, missingThere);
+  console.log(`  (${MATRIX.length} matrix rows: ${mine.length} cells here, ${theirs.length} in the runtime suite, every one resolved by name)`);
+}
+
 // ---- every program in every list is a program, and does something -------------------------------
 
 {
