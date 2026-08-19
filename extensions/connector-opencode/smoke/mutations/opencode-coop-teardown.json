@@ -119,7 +119,14 @@
     "resume, so the seat went green on a tree with the defect still in it. The seat now parks a tool",
     "call as well, which is what holds the teardown open long enough for the window to be real. That is",
     "also why the precondition is its own cell: if the parked call is not there, the result below grades",
-    "nothing. A SURVIVED on C18 means the window closed again, not that the code is safe."
+    "nothing. A SURVIVED on C18 means the window closed again, not that the code is safe.",
+    "",
+    "C19 SEPARATES REFUSED FROM DROPPED, which no prompt count can do on its own: not submitting and",
+    "losing the caller's input are both zero prompts. It is graded on the CUTOVER arm of the refusal and",
+    "not the stop arm, and that is measured rather than stylistic. A cross-incarnation version was built",
+    "and removed: a replacement seat, on a fresh lifecycle uid and then on the same one, drove at once on",
+    "a newly sent DM but never received the refused one, so a batch held at teardown does not survive the",
+    "process. Durability across a stop is a delivery question and is not claimed here."
   ],
   "mutations": [
     {
@@ -247,6 +254,13 @@
       "find": "      if (phaseClosed()) return;\n",
       "replace": "",
       "expectRed": "resume-seat: a drive already past the guard submitted no turn after teardown began"
+    },
+    {
+      "name": "C19 the phase refusal consumes the batch on its way out, so a message refused mid-cutover is acked and never driven: refused becomes dropped",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    if (phaseClosed() || driving || busy) return;\n",
+      "replace": "    if (driving || busy) return;\n    if (phaseClosed()) { surfaced = agent.peekInbox(\"automatic\").map((i) => i.id); ackSurfaced(); return; }\n",
+      "expectRed": "carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed"
     }
   ]
 }

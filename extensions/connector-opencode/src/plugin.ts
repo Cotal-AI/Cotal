@@ -661,8 +661,11 @@ export const cotal: Plugin = async () => {
       // then is the defect this change exists to stop, arriving through the one door that was
       // already past the check rather than through a door that was never guarded. A reviewer
       // reproduced it live by holding POST /session and disposing while a real DM was parked here.
-      // Nothing has been consumed at this point (peekInbox has not run and `surfaced` is unset), so
-      // returning leaves the batch to be redelivered on the next wake.
+      // Nothing has been consumed at this point: `peekInbox` has not run and `surfaced` is unset, so
+      // returning leaves the batch in the inbox for a later wake IN THIS PROCESS. That is the whole
+      // of the promise. A batch still held when the seat tears down does not survive the process:
+      // measured, by restarting the identity on a fresh uid and then on the same one and finding the
+      // message was owed to neither. Durability across a stop is a delivery question, not this one.
       if (phaseClosed()) return;
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];

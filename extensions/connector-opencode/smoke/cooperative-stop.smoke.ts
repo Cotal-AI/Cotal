@@ -115,6 +115,7 @@ let modelProbe: ReturnType<typeof spawn> | undefined;
 let mirrorProbe: ReturnType<typeof spawn> | undefined;
 let interiorProbe: ReturnType<typeof spawn> | undefined;
 let resumeProbe: ReturnType<typeof spawn> | undefined;
+let carryProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -749,6 +750,79 @@ try {
     : [];
   check("resume-seat: a drive already past the guard submitted no turn after teardown began",
     resumeSubmitted.length === 0, { resumeSubmitted });
+
+  // ---- A SEVENTH SEAT: THE REFUSED BATCH IS STILL THERE AFTERWARDS.
+  //
+  // No stop in this seat until the assertion is done, which is the whole point. The refusal under
+  // test is the same `phaseClosed()` line, taken on its CUTOVER arm, because that is the arm a
+  // process outlives: a stop ends the process, so there is no later wake to watch.
+  const cyId = newIdentity();
+  const cyUid = mintLifecycleUid();
+  const cyCreds = await provisionAgent(mgr, auth, cyId, { ...acl, role: "worker", lifecycleUid: cyUid });
+  const cyCredsFile = join(dir, "carry.creds");
+  writeFileSync(cyCredsFile, cyCreds);
+  const carrySpec = opencodeConnector.buildLaunch({
+    space, name: "Carrie", role: "worker", id: cyId.id, lifecycleUid: cyUid, creds: cyCredsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const carryMarker = join(dir, "carry-read-finished");
+  const carryTrigger = join(dir, "carry-start-drain");
+  const carryPrompts = join(dir, "carry-prompts");
+  mkdirSync(join(dir, "ws-carry"), { recursive: true });
+  carryProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...carrySpec.env,
+      COTAL_EVENTS: "1",
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-carry"),
+      COOP_MARKER: carryMarker,
+      COOP_TRIGGER: carryTrigger,
+      COOP_PROMPTS: carryPrompts,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  let carrieLive = false;
+  for (let i = 0; i < 100 && !carrieLive; i++) {
+    await wait(100);
+    const c = watcher.getRoster().find((p) => p.card.name === "Carrie");
+    carrieLive = c !== undefined && c.status !== "offline";
+  }
+  check("carry-seat: the seventh seat came online, so this leg grades a live one", carrieLive);
+
+  // Open a cutover, then send during it. The connector must refuse the turn while the replacement
+  // holder is not installed, which is the same refusal the stop path takes.
+  writeFileSync(carryTrigger, "go\n");
+  await wait(400);
+  const carrie = watcher.getRoster().find((pr) => pr.card.name === "Carrie");
+  if (carrie) await watcher.unicast(carrie.card.id, "a message refused mid-cutover");
+  await wait(600);
+  const duringCutover = existsSync(carryPrompts) ? readFileSync(carryPrompts, "utf8").split("\n").filter(Boolean).length : 0;
+  check("carry-seat: no turn was started while the cutover was open", duringCutover === 0, { duringCutover });
+
+  // The cutover closes. The batch was refused, not consumed, so a later wake in THIS process has to
+  // carry it. Without that, "refused" and "dropped" are the same observation.
+  let carried = false;
+  for (let i = 0; i < 150 && !carried; i++) {
+    await wait(100);
+    carried = existsSync(carryPrompts) && readFileSync(carryPrompts, "utf8").trim().length > 0;
+  }
+  check("carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed",
+    carried, { carryPrompts, carryMarker });
+  await sendShutdown(carrySpec.control!.path, carrySpec.control!.token);
+  await awaitExit(carryProbe, 15_000);
+
+  // ---- REFUSED IS NOT THE SAME AS DROPPED, and the cell above cannot tell them apart: not
+  // submitting and losing the input are both zero prompts. The refusal returns before `peekInbox`
+  // runs and before `surfaced` is assigned, so nothing is consumed and a later wake in the SAME
+  // process carries the batch. That is the property, and it is graded on the cutover arm of
+  // `phaseClosed()` rather than the stop arm, for a measured reason: at a stop the process exits,
+  // so there is no later wake to observe.
+  //
+  // A CROSS-INCARNATION VERSION WAS TRIED AND REMOVED. A replacement seat, on a fresh lifecycle uid
+  // and then on the SAME one, drove immediately on a newly sent DM but never received the refused
+  // one. So a batch held at teardown does not survive the process, on either uid. That is a
+  // durability question about delivery rather than a property of this refusal, and asserting it
+  // here would have claimed something this change does not deliver.
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
@@ -760,6 +834,7 @@ try {
     if (mirrorProbe && mirrorProbe.exitCode === null) mirrorProbe.kill("SIGKILL");
     if (interiorProbe && interiorProbe.exitCode === null) interiorProbe.kill("SIGKILL");
     if (resumeProbe && resumeProbe.exitCode === null) resumeProbe.kill("SIGKILL");
+    if (carryProbe && carryProbe.exitCode === null) carryProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }
