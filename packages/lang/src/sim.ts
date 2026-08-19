@@ -48,10 +48,15 @@ export interface SimScript {
   readonly turns?: Readonly<Record<string, Scripted<TurnResultValue>>>;
   readonly asks?: Readonly<Record<string, Scripted<unknown>>>;
   /**
-   * ⚠️ `at` IS NOT SCRIPTABLE, AND THE TYPE NOW SAYS SO. The handler stamps it from virtual time —
-   * `{ ...scripted, at: this.virtualNow }` — so a value written here was required by the type and
+   * ⚠️ `at` IS NOT SCRIPTABLE. Both of `checkpoint()`'s return paths stamp it from virtual time
+   * and neither one reads a scripted value, so anything written here was required by the type and
    * then silently discarded. Demanding a field the implementation overwrites makes every fixture
    * carry a number that means nothing, and reads to the next author as though it were honoured.
+   *
+   * The type now refuses it, but only where TypeScript checks excess properties, which is a fresh
+   * literal in the call itself. A script assembled into a named `const` and passed by name, or
+   * passed through a cast, still compiles with `at` present and still has it discarded. This closes
+   * the idiom a new author reaches for first; it does not close the loophole.
    */
   readonly checkpoints?: Readonly<Record<string, Scripted<Omit<CheckpointResultValue, "at">>>>;
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
