@@ -196,7 +196,8 @@ const OTHER_UID = "z".repeat(26);
 const prC7 = { owner: "u_abc", actor: "cli", connId: "connid01234567", lifecycleUid: UID };
 throws("permissionsFor fails loud when opts.lifecycleUid disagrees with the principal's (no dual-uid caller rail, C7)",
   () => permissionsFor("agent", "demo", prC7 as never, { endpointCapabilities: [spawnCap], lifecycleUid: OTHER_UID }));
-const agreed = permissionsFor("agent", "demo", prC7 as never, { endpointCapabilities: [spawnCap], lifecycleUid: UID });
+const agreed = permissionsFor("agent", "demo", prC7 as never, { endpointCapabilities: [spawnCap], lifecycleUid: UID }) as
+  { pub: { allow: string[] }; sub: { allow: string[] } };
 c("permissionsFor with an AGREEING opts.lifecycleUid mints, and every caller-rail row carries the ONE uid",
   agreed.pub.allow.concat(agreed.sub.allow).filter((r: string) => r.includes(".ep.")).every((r: string) => r.includes(`.${UID}.`) || r.includes(`.${UID}`))
   && !agreed.pub.allow.some((r: string) => r.includes(OTHER_UID)));

@@ -58,17 +58,17 @@
       "expectRed": "10.1 a frame whose seq is a string passes through rather than being held"
     },
     {
-      "name": "O9 the activity backfill loses its failure arm, so a rejected request degrades the ordering with nothing on screen saying so: the settle still happens, and the reader is told the frames are complete when the half that would have proved it was never read",
+      "name": "O9 the activity backfill loses its failure arm, so a refused request degrades the ordering with nothing on screen saying so: the settle still happens, and the reader is told the frames are complete when the half that would have proved it was never read",
       "file": "implementations/web/src/web/app.js",
-      "find": "      try {\n        batch = await (await fetch(\"/api/activity?limit=200\")).json();\n      } catch (err) {\n        batch = [];\n        noteOrder([{ type: \"backfill-failed\", reason: err && err.message ? err.message : String(err) }]);\n      }",
-      "replace": "      batch = await (await fetch(\"/api/activity?limit=200\")).json();",
+      "find": "    const backfillRefused = stale.find((s) => s.name === \"activity\" && s.kind !== \"partial\");\n    if (backfillRefused) noteOrder([{ type: \"backfill-failed\", reason: backfillRefused.reason }]);\n",
+      "replace": "",
       "expectRed": "12.5 and the failure is SURFACED rather than swallowed"
     },
     {
       "name": "O10 the selected-channel history loses the same arm, so a channel whose history read failed is presented as a channel whose history was empty",
       "file": "implementations/web/src/web/app.js",
-      "find": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();\n    } catch (err) {\n      msgs = [];\n      noteOrder([{ type: \"backfill-failed\", channel: key, reason: err && err.message ? err.message : String(err) }]);\n    } finally {",
-      "replace": "      msgs = await (await fetch(`/api/channels/${encodeURIComponent(key)}/history?limit=200`)).json();\n    } finally {",
+      "find": "      noteOrder([{ type: \"backfill-failed\", channel: key, reason: refused }]);\n",
+      "replace": "",
       "expectRed": "12.11 and it too surfaces the failure"
     },
     {
@@ -93,11 +93,11 @@
       "expectRed": "14.1 the boundary passes with a channel open"
     },
     {
-      "name": "O14 the settle moves off the failure path and back into the normal tail, so a throw from any request before the backfill leaves the boundary unpassed: the roster read was one of those, and no failure arm around the backfill covers it",
+      "name": "O14 the settle moves off the failure path and back into the normal tail, so a throw between the arm and the settle leaves the boundary unpassed and every frame held during the poll stranded for the life of the page",
       "file": "implementations/web/src/web/app.js",
       "find": "\n  } finally {\n",
       "replace": "\n  } catch (__e) {\n    throw __e;\n  }\n  {\n",
-      "expectRed": "14.7 a throw from the FIRST request still settles the boundary"
+      "expectRed": "14.7 a throw between the arm and the settle still settles the boundary"
     },
     {
       "name": "O15 the retained range is no longer audited, only its ends, so a batch whose middle is missing reads healthy forever: the baseline is right, the frontier is right, every later frame follows contiguously, and nothing on the live path can ever reveal it",

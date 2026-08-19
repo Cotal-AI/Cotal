@@ -2190,6 +2190,27 @@ export class CotalEndpoint extends EventEmitter {
     before?: number,
   ): Promise<CotalMessage[]> {
     if (!this.nc) throw new Error("endpoint not started");
+    // A LIMIT THAT IS NOT A FINITE NUMBER HAS NO ANSWER, AND THE SEARCH BELOW CANNOT REFUSE IT.
+    // Every comparison against NaN is false, so `limit <= 0` does not fire for one, and neither of
+    // the widening loop's exits can ever be true either: `page.length >= NaN` is false forever and
+    // `start === 1` compares against a `start` that is itself NaN. The loop does not return
+    // everything, it never returns. Measured through the dashboard on a real broker: no answer
+    // after 30s, and the abandoned read still consuming half a core fifteen seconds after its
+    // caller had gone, while the process kept serving every other route so nothing announced it.
+    // `Infinity` reaches the other end of the same hole: it passes the guard, `start` collapses to
+    // 1, and `slice(-Infinity)` is the subject's whole retained set.
+    // A caller that computed a limit it cannot state is told so, rather than handed a process that
+    // quietly spins. `0` and negatives keep their existing meaning, an empty page.
+    // A COUNT OF MESSAGES IS A WHOLE NUMBER THIS SERVER CAN COUNT EXACTLY, and the check sits ABOVE
+    // the zero check on purpose: `-Infinity <= 0` is true, so a guard placed below it would fold a
+    // limit nobody can answer into a silent empty page. `NaN` never returns (both widening exits
+    // compare against it and are false forever). `Infinity` and any magnitude past the safe range
+    // collapse `start` to 1. A fraction is the quietest of the set: the page is taken with
+    // `slice(-limit)` and slice truncates toward zero, so any limit in (0,1) becomes `slice(0)` and
+    // hands back the ENTIRE retained history. Measured on 30 retained: 0.5 and 0.9 both returned all
+    // 30, and 2.5 returned 2, a page nobody asked for.
+    if (!Number.isSafeInteger(limit))
+      throw new Error(`history limit must be a whole number of messages this server can count exactly, received ${limit}`);
     if (limit <= 0) return [];
     const js = jetstream(this.nc);
     try {

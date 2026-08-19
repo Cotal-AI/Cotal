@@ -725,8 +725,8 @@ const step = (run: string, n: number, ord: number) => ({ v: 1, kind: "step", run
       // is not the one WFJ stores.
       (replay.records as { record: RunJournalRecord; seq: number }[]).push(replay.records[0]!);
       const inner = replay.records[0]!.record as RunJournalActivation;
-      inner.holder = "impostor";
-      inner.n = 99;
+      (inner as { holder: string; n: number }).holder = "impostor";
+      (inner as { holder: string; n: number }).n = 99;
       const step0 = replay.records[1]!.record as { entry: { marker: string } };
       step0.entry.marker = "rewritten";
     },

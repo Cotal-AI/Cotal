@@ -8,7 +8,7 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { jetstream, jetstreamManager } from "@nats-io/jetstream";
+import { jetstream, jetstreamManager, type ConsumerInfo } from "@nats-io/jetstream";
 import { connect } from "@nats-io/transport-node";
 import {
   anycastSubject,
@@ -112,7 +112,7 @@ try {
   const taskProvisionerNc = await connect({ servers, ...standaloneConnectOpts({ creds: provisionerCreds, tls: false }) });
   const taskProvisionerManager = await jetstreamManager(taskProvisionerNc);
   const task = await taskProvisionerManager.consumers.add(taskStream(space), taskDurableConfig(space, "worker"));
-  const consumersByStream = Object.fromEntries(spaceBackupInventory(space).full.map((stream) => [stream, []]));
+  const consumersByStream: Record<string, ConsumerInfo[]> = Object.fromEntries(spaceBackupInventory(space).full.map((stream) => [stream, []]));
   consumersByStream[chatStream(space)] = [fanout];
   consumersByStream[taskStream(space)] = [task];
   const streamStates = Object.fromEntries(await Promise.all(spaceBackupInventory(space).full.map(async (stream) => [
@@ -168,7 +168,7 @@ try {
   const chunks: Uint8Array[] = [];
   const snapshot = await downloadStreamSnapshot(backupNc, chatStream(space), {
     deliverSubject: snapshotSubject,
-    onChunk: (chunk) => chunks.push(chunk),
+    onChunk: (chunk) => { chunks.push(chunk); },
   });
   validateCanonicalBackupStreamConfig(space, chatStream(space), snapshot.config);
   assert.ok(chunks.length >= 3, "snapshot payload spans multiple native chunks");
@@ -230,7 +230,7 @@ try {
     space,
     chatStream(space),
     canonicalBackupStreamConfig(space, chatStream(space)),
-    snapshot.state,
+    { ...snapshot.state }, // the door takes a raw blob and validates it itself
   );
   await restoreInitNc.drain();
 
