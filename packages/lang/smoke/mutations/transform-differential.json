@@ -1,0 +1,58 @@
+{
+  "suite": "packages/lang/smoke/differential.smoke.ts",
+  "guard": "The same program on the walker and on the engine produces the same value, the same log, the same refusal, and the same journal entry for entry - the step keys AND their order. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-differential",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/transform-differential.json",
+  "mutations": [
+    {
+      "name": "a binary expression evaluates its right operand first, so two effects journal in the wrong order",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return `((${a} = ${l}), (${b} = ${r}), (${fast}) ? (${native}) : ${this.seam(\"binary\", `${q(op)}, ${a}, ${b}`)})`;",
+      "replace": "        return `((${b} = ${r}), (${a} = ${l}), (${fast}) ? (${native}) : ${this.seam(\"binary\", `${q(op)}, ${a}, ${b}`)})`;",
+      "expectRed": "identical on both engines: two effects in one binary expression",
+      "completionMarker": "ok identical on both engines: optional chains",
+      "cell": "identical on both engines: two effects in one binary expression",
+      "note": "The value is 2 whichever operand ran first, so nothing about the OUTPUT notices. What notices is the journal: a step key's occurrence is allocated where the effect is reached, so swapping the operands swaps two entries and a resumed run replays into the wrong one."
+    },
+    {
+      "name": "an argument list is evaluated right to left, so two effects journal in the wrong order",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      .map((a) => (a.type === \"SpreadElement\" ? `...${this.seam(\"iter\", this.expr(a.argument as AnyNode))}` : this.expr(a)))\n      .join(\", \");",
+      "replace": "      .reverse()\n      .map((a) => (a.type === \"SpreadElement\" ? `...${this.seam(\"iter\", this.expr(a.argument as AnyNode))}` : this.expr(a)))\n      .reverse()\n      .join(\", \");",
+      "expectRed": "identical on both engines: two effects in one argument list",
+      "completionMarker": "ok identical on both engines: two effects in one binary expression",
+      "cell": "identical on both engines: two effects in one argument list",
+      "note": "The emitted call still passes its arguments in the right positions - the two `reverse()` calls cancel in the output - so the program's VALUE is unchanged and only the order the arguments were emitted (and so evaluated) moves. That is exactly the class of defect a value comparison cannot see."
+    },
+    {
+      "name": "a member read is emitted as a native index, so the host prototype is reachable on the engine",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
+      "replace": "      return `${obj}[${this.memberKey(node)}]`;",
+      "expectRed": "identical on both engines: refusals: a host prototype is not a member",
+      "completionMarker": "ok identical on both engines: optional chains",
+      "cell": "identical on both engines: refusals: a host prototype is not a member",
+      "note": "`o.constructor` is L4014 on the walker. A native index answers the host's Object constructor, which is a live capability inside a program that is supposed to have none."
+    },
+    {
+      "name": "a catch binds the raw thrown value, so a program reads a different error record",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      const caught = this.seam(\"caught\", raw);",
+      "replace": "      const caught = raw;",
+      "expectRed": "identical on both engines: try/catch/finally and completions",
+      "completionMarker": "ok identical on both engines: switch",
+      "cell": "identical on both engines: try/catch/finally and completions",
+      "note": "`__ctx.caught` rethrows the six classes no program may catch and otherwise hands the walker's frozen {code, kind, message} record. A native binding also lets a program catch a host fault the walker never lets it see."
+    },
+    {
+      "name": "a spread iterates natively, so a record stops being refused",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "          return el.type === \"SpreadElement\" ? `...${this.seam(\"iter\", this.expr(el.argument as AnyNode))}` : this.expr(el);",
+      "replace": "          return el.type === \"SpreadElement\" ? `...${this.expr(el.argument as AnyNode)}` : this.expr(el);",
+      "expectRed": "identical on both engines: refusals: not iterable",
+      "completionMarker": "ok identical on both engines: switch",
+      "cell": "identical on both engines: refusals: not iterable",
+      "note": "L4015 says arrays and strings and nothing else. A native spread of a record throws a host TypeError instead, which is a different class the program cannot catch the same way."
+    }
+  ]
+}
