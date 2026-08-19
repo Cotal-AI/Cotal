@@ -372,6 +372,26 @@
       "expectRed": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
       "cell": "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why",
       "note": "The third clause, and the one a reader meets first: the exemption has to say the word where the next person looks, in the note, not in a channel post or a commit body. Rewording the note past the term leaves the config still correct and still silently exceptional - which is how a named exception becomes a precedent."
+    },
+    {
+      "name": "a marker is truncated to wording its cell shares with a family, so an earlier stop counts as arrival",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"completionMarker\": \"ok and reaches no seam member outside the ruling: empty statement\",",
+      "replace": "      \"completionMarker\": \"ok and reaches no seam member outside the ruling:\",",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "cell": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "note": "H's fault, manufactured here rather than waited for: the marker keeps naming a real cell and loses the words that made it one cell. Truncated this way it occurs in 32 printed names, the first of them far upstream of the aim, so any run that reached THAT cell satisfies a guard that claims the run reached a much later one. The config still parses, every verdict it produces still looks right, and only this cell counts the matches."
+    },
+    {
+      "name": "a marker is moved onto a cell downstream of its own aim, where a kill can never print it",
+      "file": "packages/lang/smoke/mutations/transform-surface.json",
+      "find": "      \"completionMarker\": \"ok an update's fast path keeps a numeric counter native\",",
+      "replace": "      \"completionMarker\": \"ok and no declared range is wider than the emission that justifies it\",",
+      "completionMarker": "ok and no declared range is wider than the emission that justifies it",
+      "expectRed": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "cell": "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards",
+      "note": "The opposite failure, and the one measured on this config at 0b7db8b0: a marker at or after the cell it guards cannot print on a kill, because the suite is fail-fast and stops at the red. The verdict flips from KILLED to INCONCLUSIVE - evidence discarded by the check added to protect it. The replacement is a REAL cell, so nothing else notices; upstreamness is the only property that changed."
     }
   ]
 }

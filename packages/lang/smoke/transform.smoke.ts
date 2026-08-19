@@ -760,7 +760,8 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // Both are named here rather than at their `ok`, so the list and the cells cannot drift.
   const AUDIT = "every mutation's expectRed names exactly one cell this suite printed";
   const EXCEPTION = "exactly one mutation names no upstream marker, it is the one aimed at this file's first cell, and it says why";
-  const known = [...CELLS, AUDIT, EXCEPTION];
+  const MARKERS = "every marker a mutation declares matches exactly one printed cell, and that cell prints before the aim it guards";
+  const known = [...CELLS, AUDIT, EXCEPTION, MARKERS];
   const wrong = cfg.mutations
     .map((m) => ({ m, hits: known.filter((c) => c.includes(m.expectRed)).length }))
     .filter(({ hits }) => hits !== 1)
@@ -784,6 +785,30 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
     firstCell,
   });
   console.log(`  (${cfg.mutations.length - bare.length} of ${cfg.mutations.length} mutations name an upstream marker, and the one that cannot is the first-cell guard)`);
+
+  // AND EVERY MARKER IT DOES DECLARE POINTS AT ONE CELL, UPSTREAM OF THE AIM IT GUARDS.
+  //
+  // The harness tests a marker as a SUBSTRING of the whole run, so a marker that also occurs inside
+  // an EARLIER cell's name is satisfied by a run that stopped at that earlier one: the guard weakens
+  // from "reached the cell I named" to "reached whichever cell shares its wording", and a death in
+  // between is graded rather than reported. That is not hypothetical — it was live in the sibling
+  // seam config this week, with every verdict it produced still correct, which is how an ambiguous
+  // instrument survives being read. The other half fails the opposite way: a marker AT or AFTER its
+  // own aim cannot print on a kill at all, so a textbook kill grades INCONCLUSIVE (measured here at
+  // 0b7db8b0). Cells are checked in the order they printed, which is the only order that answers
+  // "did the run get this far".
+  const printed = known.map((c) => `ok ${c}`);
+  const where = (needle: string) => printed.flatMap((line, i) => (line.includes(needle) ? [i] : []));
+  const markerFaults = cfg.mutations.flatMap((m) => {
+    if (m.completionMarker === undefined) return [];
+    const at = where(m.completionMarker);
+    if (at.length !== 1) return [`${m.name}: ${at.length} printed cell(s) match its marker ${JSON.stringify(m.completionMarker)}`];
+    const aim = where(m.expectRed);
+    if (aim.length === 1 && at[0] < aim[0]) return [];
+    return [`${m.name}: its marker prints at cell ${at[0] + 1}, its aim at ${aim.map((i) => i + 1).join(",") || "no cell"}`];
+  });
+  ok(MARKERS, markerFaults.length === 0, markerFaults);
+  console.log(`  (${cfg.mutations.length - bare.length} markers resolved to a single cell each, every one upstream of its aim, across ${printed.length} printed cells)`);
 }
 
 console.log(`\ntransform.smoke: ${pass} cells passed`);
