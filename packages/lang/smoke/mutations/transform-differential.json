@@ -48,6 +48,33 @@
       "expectRed": "identical on both engines: refusals: not iterable",
       "cell": "identical on both engines: refusals: not iterable",
       "note": "L4015 says arrays and strings and nothing else. A native spread of a record throws a host TypeError instead, which is a different class the program cannot catch the same way."
+    },
+    {
+      "name": "an object literal's properties are emitted in reverse, so two effects journal backwards",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return this.seam(\"born\", `{ ${parts.join(\", \")} }`);",
+      "replace": "        return this.seam(\"born\", `{ ${[...parts].reverse().join(\", \")} }`);",
+      "expectRed": "identical on both engines: two effects in one object literal",
+      "cell": "identical on both engines: two effects in one object literal",
+      "note": "A record's own key order is observable through `keys`, `entries` and `json.stringify`, and the order its property values were EVALUATED in is observable only in the journal. This moves both."
+    },
+    {
+      "name": "a template's interpolations are emitted in reverse, so two effects journal backwards",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return this.seam(\"template\", `[${quasis.join(\", \")}], [${exprs.join(\", \")}]`);",
+      "replace": "        return this.seam(\"template\", `[${quasis.join(\", \")}], [${[...exprs].reverse().join(\", \")}]`);",
+      "expectRed": "identical on both engines: two effects in one template",
+      "cell": "identical on both engines: two effects in one template",
+      "note": "Interpolation is the seam's law, but WHICH value goes into which hole, and in what order the holes were evaluated, is the transform's."
+    },
+    {
+      "name": "an array literal's elements are emitted in reverse",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return this.seam(\"born\", `[${parts.join(\", \")}]`);",
+      "replace": "        return this.seam(\"born\", `[${[...parts].reverse().join(\", \")}]`);",
+      "expectRed": "identical on both engines: two effects in one array literal",
+      "cell": "identical on both engines: two effects in one array literal",
+      "note": "The third of the three literal positions where two effects can sit side by side."
     }
   ],
   "completionMarker": "differential.smoke:"
