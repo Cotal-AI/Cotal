@@ -21,8 +21,8 @@
   "mutations": [
     {
       "name": "the digest is never written",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        ...digestFacts(branchDigest, outcome.cancel?.losers),",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      ...digestFacts(branchDigest, outcome.cancel?.losers),",
       "replace": "",
       "expectRed": "because the recorded scope entry carries a `branchDigest` over the arms the walk skips",
       "cell": "because the recorded scope entry carries a `branchDigest` over the arms the walk skips",
@@ -30,8 +30,8 @@
     },
     {
       "name": "the digest is written but never compared",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      if (entry.branchDigest !== undefined && branchDigest !== undefined) {\n        const now = branchDigest(entry.cancel?.losers ?? []);\n        if (now !== undefined && now !== entry.branchDigest) {\n          throw new RunDivergence(stepKeyString(scopeKey), entry.branchDigest, now);\n        }\n      }",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (entry.branchDigest !== undefined && branchDigest !== undefined) {\n      const now = branchDigest(entry.cancel?.losers ?? []);\n      if (now !== undefined && now !== entry.branchDigest) {\n        throw new RunDivergence(stepKeyString(scopeKey), entry.branchDigest, now);\n      }\n    }",
       "replace": "",
       "expectRed": "REPAIRED: an edit inside a branch the race decided now refuses the migration",
       "cell": "REPAIRED: an edit inside a branch the race decided now refuses the migration"
@@ -56,9 +56,9 @@
     },
     {
       "name": "the comparison is restricted to the migration walk",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      if (entry.branchDigest !== undefined && branchDigest !== undefined) {",
-      "replace": "      if (this.options.migration === true && entry.branchDigest !== undefined && branchDigest !== undefined) {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (entry.branchDigest !== undefined && branchDigest !== undefined) {",
+      "replace": "    if (host.options.migration === true && entry.branchDigest !== undefined && branchDigest !== undefined) {",
       "expectRed": "a RESUME of the same edited source diverges as well, rather than replaying past it",
       "cell": "a RESUME of the same edited source diverges as well, rather than replaying past it",
       "note": "The specified placement is the migrate walk only, so this mutation restores the narrower rule and is still a defect: the run record carries no program hash, so nothing upstream refused edited source before a resume got here, and a settled race is delivered from its entry without entering an arm. The wider placement is deliberate and is graded rather than assumed."

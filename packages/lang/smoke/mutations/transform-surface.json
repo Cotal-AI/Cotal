@@ -1,0 +1,178 @@
+{
+  "suite": "packages/lang/smoke/transform.smoke.ts",
+  "guard": "The emitted module is closed over the seam, routes each law through it, and carries the binding-depth rule the walker keeps at run time. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-transform",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/transform-surface.json",
+  "mutations": [
+    {
+      "name": "the context parameter takes a fixed name, so a program that declares it shadows the seam",
+      "file": "packages/lang/src/transform/seam.ts",
+      "find": "return { ctx: free(\"__ctx\"), temp: prefix(\"__t\"), label: prefix(\"__l\") };",
+      "replace": "return { ctx: \"__ctx\", temp: prefix(\"__t\"), label: prefix(\"__l\") };",
+      "expectRed": "a program that declares `__ctx` does not get the context's name",
+      "completionMarker": "ok transform is a pure function of its source, byte for byte",
+      "cell": "a program that declares `__ctx` does not get the context's name",
+      "note": "The validator ADMITS a program-declared `__ctx` (measured at 9dc154f8), so a fixed name is not a naming preference: the program's binding shadows the endowment for the rest of its scope and every seam call in that region reaches a program value."
+    },
+    {
+      "name": "the cell rule never fires, so a binding written from a deeper function stays native",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "if (b.funcId !== funcId && b.kind !== \"const\") b.cell = true;",
+      "replace": "if (false) b.cell = true;",
+      "expectRed": "a mutable binding written from a nested function is a born cell",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a mutable binding written from a nested function is a born cell",
+      "note": "L2032's binding half. Native bindings carry no depth, so without the cell the write from inside a concurrent branch is not refused anywhere - the shape scopes.smoke's fixture proves the validator cannot see."
+    },
+    {
+      "name": "the cell is marked and then emitted as a plain binding",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (b?.cell === true) return `const ${name} = ${this.seam(\"born\", `{ v: ${valueCode} }`)};\\n`;",
+      "replace": "        if (false) return `const ${name} = ${this.seam(\"born\", `{ v: ${valueCode} }`)};\\n`;",
+      "expectRed": "a mutable binding written from a nested function is a born cell",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a mutable binding written from a nested function is a born cell",
+      "note": "The analysis marking a cell and the emitter honouring it are two steps, and only the second one produces code. This is the half that would leave the mark correct and the emission native."
+    },
+    {
+      "name": "an object literal's keys are emitted verbatim, so `__proto__` can reach a prototype again",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "`[${this.propertyKey(p)}]: ${this.expr(p.value as AnyNode)}`",
+      "replace": "`${this.propertyKey(p)}: ${this.expr(p.value as AnyNode)}`",
+      "expectRed": "an object literal's keys are emitted computed",
+      "completionMarker": "ok a const captured by a nested function is not a cell",
+      "cell": "an object literal's keys are emitted computed",
+      "note": "A literal `__proto__:` key sets a prototype in JavaScript and names an own field in this language. The validator refuses that spelling today (L1028, measured); the computed form means the emitted code cannot express the hazard whatever the validator does later."
+    },
+    {
+      "name": "a member read is emitted as a native index, so it reaches the host prototype",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      return this.seam(\"get\", `${obj}, ${this.memberKey(node)}`);",
+      "replace": "      return `${obj}[${this.memberKey(node)}]`;",
+      "expectRed": "a member read is one get",
+      "completionMarker": "ok and every surfaced member carries its reason",
+      "cell": "a member read is one get",
+      "note": "The member law (L4014, L4020, the curated tables, no prototype reach) is the host's, and a native index is exactly the read the walker refuses to perform."
+    },
+    {
+      "name": "a `while` header stops charging fuel, so a pure loop cannot be bounded or cancelled",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return `${b}: for (;;) {\\n${this.fuel()}if (!(${test})) break ${b};\\n${c}: {\\n${body}}\\n}\\n`;",
+      "replace": "        return `${b}: for (;;) {\\nif (!(${test})) break ${b};\\n${c}: {\\n${body}}\\n}\\n`;",
+      "expectRed": "a loop header charges fuel",
+      "completionMarker": "ok and every surfaced member carries its reason",
+      "cell": "a loop header charges fuel",
+      "note": "The step check is the only cancellation point the engine has: no wall-clock timeout, no terminate. A loop that charges nothing is a run nothing can stop."
+    },
+    {
+      "name": "`undefined` is emitted as the global name, so the module is no longer closed",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "if (VALUE_NAMES.includes(name)) return VOID;",
+      "replace": "if (VALUE_NAMES.includes(name)) return \"undefined\";",
+      "expectRed": "the emitted module has no unbound reference: the undefined value",
+      "completionMarker": "ok and reaches no seam member outside the ruling: empty statement",
+      "cell": "the emitted module has no unbound reference: the undefined value",
+      "note": "Seam ruling 1: the host evaluates the module with ZERO endowments. `undefined` is a global binding, so spelling it is an unbound reference - one the compartment happens to satisfy today, which is why only a resolver over the emitted code can see it."
+    },
+    {
+      "name": "a declaring identifier is not recorded, so the emitter cannot resolve a name it declared",
+      "file": "packages/lang/src/transform/scope.ts",
+      "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind));",
+      "replace": "        this.declare(scope, node.name as string, kind);",
+      "expectRed": "resolves to nothing, which a validated program cannot contain",
+      "completionMarker": "ok the emitted module has no unbound reference: array and object literals",
+      "cell": "the emitted module has no unbound reference: for with per-iteration closures",
+      "note": "GRADED ON THE REFUSAL, not on a cell, and deliberately: the emitter asks the analysis the same question at a declaration as at a use, and an unrecorded declaration makes a per-iteration `for` head unresolvable. It fails LOUD (the emitter refuses to emit) rather than quietly emitting a plain binding for a cell, which is the outcome worth pinning - the quiet half is covered by the mutation above."
+    },
+    {
+      "name": "an update's operand loses its numeric fast path, so every counter crosses the seam",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `((${t} = ${code}), typeof ${t} === \"number\" ? ${t} : ${this.seam(\"unary\", `${q(\"update\")}, ${t}`)})`;",
+      "replace": "    return `((${t} = ${code}), ${this.seam(\"unary\", `${q(\"update\")}, ${t}`)})`;",
+      "expectRed": "an update's fast path keeps a numeric counter native",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "an update's fast path keeps a numeric counter native",
+      "note": "`n++` is the hot path of every counted loop in the language. Without the fast path each increment is a host call, and the numeric corpus stops being the part of the differential that is identical for free."
+    },
+    {
+      "name": "an update's slow leg is emitted natively, so a non-number operand is coerced instead of refused",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "    return `((${t} = ${code}), typeof ${t} === \"number\" ? ${t} : ${this.seam(\"unary\", `${q(\"update\")}, ${t}`)})`;",
+      "replace": "    return `((${t} = ${code}), typeof ${t} === \"number\" ? ${t} : ${t})`;",
+      "expectRed": "an update's operand charges the coercion law when it is not a number",
+      "completionMarker": "ok an update's fast path keeps a numeric counter native",
+      "cell": "an update's operand charges the coercion law when it is not a number",
+      "note": "The mirror of the mutation above, and it keeps the `typeof` test in place on purpose so the fast-path cell still passes and this one is what reds. Ruling 1c gave `update` the L4018 refusal; a native else branch silently answers NaN, which is the walker behaviour the ruling declined to rebuild (issue 646)."
+    },
+    {
+      "name": "every unary operator is emitted natively, so `-record` stops refusing",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        return `((${t} = ${v}), typeof ${t} === \"number\" ? ${op}${t} : ${this.seam(\"unary\", `${q(op)}, ${t}`)})`;",
+      "replace": "        return `((${t} = ${v}), ${op}${t})`;",
+      "expectRed": "a unary operator that can refuse still charges it",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "a unary operator that can refuse still charges it",
+      "note": "The mirror of the mutation above. `-o` on a record is L4018 in the walker and NaN in native JavaScript, so the fast path may only cover what it has already proved is a number."
+    },
+    {
+      "name": "a race ships no branch bodies, so the engine cannot digest its losers",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      if (named !== undefined) bodies[named] = stripPositions(p.value);",
+      "replace": "      if (false) bodies[named as string] = stripPositions(p.value);",
+      "expectRed": "every branch travels, because which one loses is the run's answer",
+      "completionMarker": "ok a race call site ships exactly one branch payload",
+      "cell": "every branch travels, because which one loses is the run's answer",
+      "note": "The engine has no AST at run time, so a branch that does not travel is one the host can only digest as null - a settled race would journal a branchDigest the walker never wrote."
+    },
+    {
+      "name": "a race ships a derived form of each branch instead of the body the walker hashes",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      if (named !== undefined) bodies[named] = stripPositions(p.value);",
+      "replace": "      if (named !== undefined) bodies[named] = JSON.stringify(stripPositions(p.value));",
+      "expectRed": "the shipped payload digests as the walker's value over every loser set",
+      "completionMarker": "ok every branch travels, because which one loses is the run's answer",
+      "cell": "the shipped payload digests as the walker's value over every loser set",
+      "note": "The keys still all travel, so the cell above stays green: this is the half that survives a shape check. The walker hashes ONE array of [loserName, body] pairs over a loser set only the run knows, so any per-branch derivation makes the host hash a hash and write a different byte string into a journal entry that has to be identical."
+    },
+    {
+      "name": "a call on a value is emitted natively, so a non-function callee is a host TypeError",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "      return `(await ((${f} = ${fn}), typeof ${f} === \"function\" ? ${f} : ${this.seam(\"callee\", f)})(${args}))`;",
+      "replace": "      return `(await ((${f} = ${fn}))(${args}))`;",
+      "expectRed": "a call on a value charges the callee law",
+      "completionMarker": "ok a for-of is one iter",
+      "cell": "a call on a value charges the callee law",
+      "note": "`const f = 1; f()` is admitted by the validator (measured at 9dc154f8). The walker answers L4011, a refusal the program can catch; a native call answers a host TypeError, which is a different class entirely."
+    },
+    {
+      "name": "an optional call is emitted without the flag, so the host resolves a name it should not",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
+      "replace": "        const optional = \"\";",
+      "expectRed": "a tail optional call is emitted through the ruled flag",
+      "completionMarker": "ok every program the seam cannot yet express refuses loudly, and is listed",
+      "cell": "a tail optional call is emitted through the ruled flag",
+      "note": "Ruling 1d's flag is what makes `o.z?.()` short-circuit to undefined with nothing called. Without it the host resolves the method name unconditionally and refuses, where the walker answers undefined."
+    },
+    {
+      "name": "every method call carries the optional flag, so a missing method stops refusing",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        const optional = node.optional === true ? \", true\" : \"\";",
+      "replace": "        const optional = \", true\";",
+      "expectRed": "an ordinary method call carries no flag",
+      "completionMarker": "ok a tail optional call is emitted through the ruled flag",
+      "cell": "an ordinary method call carries no flag",
+      "note": "The mirror. `xs.nope()` is L4020 on the walker; flagged optional it would quietly answer undefined, which turns a refusal into a value the program carries on with."
+    },
+    {
+      "name": "an optional call with a chain after it is emitted instead of refused",
+      "file": "packages/lang/src/transform/emit.ts",
+      "find": "        if (node.optional === true && !tail) {",
+      "replace": "        if (false) {",
+      "expectRed": "every program the seam cannot yet express refuses loudly, and is listed",
+      "completionMarker": "ok an object literal's keys are emitted computed",
+      "cell": "every program the seam cannot yet express refuses loudly, and is listed",
+      "note": "The host makes the short-circuit decision and cannot tell the transform it made one. Measured on the walker: `o.z?.().x` on an absent member is undefined, `o.m?.().x` on a member returning undefined is L4010 - so emitting the continuation would answer undefined for both and silently drop a refusal."
+    }
+  ]
+}

@@ -6,9 +6,9 @@
   "mutations": [
     {
       "name": "the live pick takes the first settled arm in declaration order and ignores the clocks",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        if (winnerIndex === -1 || at < winnerAt) {",
-      "replace": "        if (winnerIndex === -1) {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (winnerIndex === -1 || at < winnerAt) {",
+      "replace": "      if (winnerIndex === -1) {",
       "expectRed": "a live race is decided by the recorded clocks, not by which arm woke first",
       "completionMarker": "ok the live pass records a winner (a simulator tie, broken by declaration order)",
       "cell": "a live race is decided by the recorded clocks, not by which arm woke first",
@@ -16,9 +16,9 @@
     },
     {
       "name": "the live pick takes the GREATEST clock",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        if (winnerIndex === -1 || at < winnerAt) {",
-      "replace": "        if (winnerIndex === -1 || at > winnerAt) {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (winnerIndex === -1 || at < winnerAt) {",
+      "replace": "      if (winnerIndex === -1 || at > winnerAt) {",
       "expectRed": "a live race is decided by the recorded clocks, not by which arm woke first",
       "completionMarker": "ok the live pass records a winner (a simulator tie, broken by declaration order)",
       "cell": "a live race is decided by the recorded clocks, not by which arm woke first",

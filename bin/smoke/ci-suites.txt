@@ -340,3 +340,13 @@ smoke:goal-follow
 smoke:required-arg-seam
 smoke:attach-stdin
 smoke:lang-engine
+
+# The source transform (engine wave, lane T): the emitted module's surface — closed over the seam,
+# reaching no unruled member, pure in its source, one rule per admitted node type. The differential
+# suite against the walker is the primary gate and lands with the engine host's `__ctx`.
+smoke:lang-transform
+
+# The primary gate of the engine wave: the same program through the walker and through the engine,
+# compared on value, log, refusal and journal entry for entry. What a ruling made divergent, and
+# what the engine cannot run yet, are two named lists inside it rather than programs left out.
+smoke:lang-differential

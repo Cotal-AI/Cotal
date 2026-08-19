@@ -323,3 +323,65 @@ export class RunDivergence extends Error {
     this.name = "RunDivergence";
   }
 }
+
+/**
+ * A migration's walk reached a settled scope it cannot enter.
+ *
+ * A `conclave` is the case that exists today: its channel handle is HANDLER-DERIVED — the mint
+ * returns it and nothing journals it — so a walk cannot re-enter the body without inventing a
+ * handle, and an invented one would re-hash every step inside that used the channel into a
+ * divergence the run never had. Refusing is the honest exit. Consuming the subtree instead would
+ * hide exactly the orphans a migration exists to find, which is a silent wrong answer in place of
+ * a loud refusal.
+ */
+export class UnwalkableScope extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly why: string,
+  ) {
+    super(
+      `a migration cannot walk inside the settled ${why} at ${scopeKey}: its handle is handler-derived and was never journalled, so the walk would have to invent one. Fork from this step instead, or migrate a run that does not contain it.`,
+    );
+    this.name = "UnwalkableScope";
+  }
+}
+
+/**
+ * A migration's walk was sent into a recorded branch the new source does not have.
+ *
+ * Its own code rather than `RunDivergence`, for the reason the L5005/L5006/L5007 collision in the
+ * orphan table bought: `RunDivergence` is a HASH comparison and says so in both its fields and its
+ * message, and putting branch NAMES in fields called `recordedHash`/`programHash` would be a lie in
+ * the payload a repair loop reads. The author's repair differs too — this one is fixed by looking at
+ * an arm's NAME, not at its body.
+ */
+export class ScopeBranchMissing extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly scope: string,
+    readonly missing: readonly string[],
+    readonly recorded: readonly string[],
+    readonly source: readonly string[],
+  ) {
+    super(recorded.length === 0
+      // THE EMPTY CASE IS NOT THE SAME SENTENCE. "A recorded branch is not in the source" is false
+      // here: no branch was recorded at all, and saying "missing: " with nothing after it would
+      // send a reader looking through their source for an arm that was never named. The cause is
+      // the entry, not the edit, and the repair is different too.
+      ? `L5022 A settled scope recorded no branch names\n\n  step  ${scopeKey}   BRANCH NAMES ABSENT\n`
+        + `        source    ${source.join(", ")}\n\n`
+        + `This ${scope} settled before scopes recorded their arm names on failure, so the walk has `
+        + `nothing to tell it which arm ran. It cannot enter one, and entering none would wait `
+        + `forever on a scope with no branches in it.\n\nOptions\n  resume(run)   replay it rather `
+        + `than walking it\n  fork(run, "${scopeKey}")   re-run this scope on the current arms`
+      : `L5022 A recorded branch is not in the migrated source\n\n  step  ${scopeKey}   BRANCH MISSING\n`
+        + `        recorded  ${recorded.join(", ")}\n        source    ${source.join(", ")}\n`
+        + `        missing   ${missing.join(", ")}\n\n`
+        + `This ${scope} settled on ${missing.length === 1 ? "a branch" : "branches"} the new source no longer declares, so the walk `
+        + `cannot enter ${missing.length === 1 ? "it" : "them"} to check what ran inside. Migrating anyway would hand the program a `
+        + `result produced by an arm it does not have.\n\nOptions\n  restore the branch ${missing.map((k) => `\`${k}\``).join(", ")}   `
+        + `keep the recorded result\n  fork(run, "${scopeKey}")   re-run this scope on the new arms`,
+    );
+    this.name = "ScopeBranchMissing";
+  }
+}
