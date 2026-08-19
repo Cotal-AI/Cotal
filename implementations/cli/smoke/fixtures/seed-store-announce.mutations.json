@@ -1,0 +1,49 @@
+{
+  "suite": "implementations/cli/smoke/seed.smoke.ts",
+  "guard": "the operator-global seed-store payload write announces its path, and only on a real materialization",
+  "command": "pnpm smoke:seed",
+  "proveWith": "node scripts/mutation-proof.mjs --config implementations/cli/smoke/fixtures/seed-store-announce.mutations.json",
+  "why": [
+    "TWO MUTATIONS, ONE PER HALF OF THE PROPERTY, because the announce has a shape and not just a",
+    "presence: it must fire when bytes are written and stay quiet when nothing is written. A cell",
+    "that only proves the line appears would be held by an announce on every boot, which is the",
+    "noise this change is careful not to add, and a cell that only proves the quiet path would be",
+    "held by no announce at all.",
+    "",
+    "M1 deletes the announce, which is the defect #593 reports restored exactly: the machine-wide",
+    "store write happens and nothing in the output names a path outside the current directory.",
+    "",
+    "M2 does not delete anything. It moves the same announce onto the idempotent reuse path, so the",
+    "line appears on a boot that copied no bytes. That is the failure the second cell exists for and",
+    "it cannot be caught by M1, since M1 leaves the reuse path exactly as it is.",
+    "",
+    "ORDER, because the suite is fail-fast and a red on the wrong leg is not a kill of the assertion",
+    "named. The announce cell runs on the FIRST boot and the quiet cell on the SECOND, so M1 reddens",
+    "the earlier of the two and M2 leaves the first boot untouched and reddens only the later one.",
+    "Each mutation's named assertion is the first assertion its mutation can reach.",
+    "",
+    "WHAT THIS DOES NOT PROVE. It grades the announce, not the isolation. Nothing here shows that",
+    "XDG_CONFIG_HOME actually relocates the store: that is existing behaviour this change documents",
+    "rather than adds, and remedy 3 of the issue (what `up` should DO when its packages differ from",
+    "the published ones at that generation key) is the design question the issue itself declines to",
+    "answer and this change does not touch."
+  ],
+  "mutations": [
+    {
+      "name": "the machine-wide store write is silent again (the announce is deleted)",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "  provenance.wrote(`operator-global seed store payload (${name})`, dest);\n  return dest;",
+      "replace": "  return dest;",
+      "expectRed": "\u2717 FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)",
+      "cell": "\u2717 FAIL: provenance: the machine-wide seed-store write is announced with its path (not silent)"
+    },
+    {
+      "name": "the announce tracks boots rather than writes (the idempotent reuse path announces too)",
+      "file": "implementations/cli/src/seed/store.ts",
+      "find": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) return dest;",
+      "replace": "  if (!opts.force && existsSync(join(dest, \"package.json\"))) {\n    provenance.wrote(`operator-global seed store payload (${name})`, dest);\n    return dest;\n  }",
+      "expectRed": "\u2717 FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)",
+      "cell": "\u2717 FAIL: provenance: the idempotent no-op boot announces no seed-store write (announce tracks writes, not boots)"
+    }
+  ]
+}
