@@ -256,10 +256,15 @@ export const cotal: Plugin = async () => {
    * runtime and 1.5s for the tmux and cmux ones. The join is bounded far above that on purpose,
    * because a backstop that fires on a healthy drain would turn a slow publish into a dropped one,
    * so this routine can be killed part way through and that is expected. What must NOT depend on
-   * finishing is the cheap step that matters most: publishing offline presence. Behind the join it
-   * would be lost whenever a drain outlived the grace window, and the roster would keep a live
-   * entry for a process that is gone. In front of it, it always lands, and the queued work then
-   * gets whatever time the runtime allows.
+   * finishing is the cheap step: publishing offline presence. Behind the join it is lost whenever a
+   * drain outlives the grace window; in front of it, it always lands, and the queued work then gets
+   * whatever time the runtime allows.
+   *
+   * WHAT THAT BUYS IS DELIBERATELY UNDERSTATED HERE. Departure becomes an EXPLICIT publish rather
+   * than something a reader has to infer, and that is the whole of the claim. It is NOT that a stale
+   * live entry would otherwise survive: losing the connection purges the presence record on its own,
+   * so that outcome is not this ordering's to take credit for. A cell built to grade the difference
+   * passed with the order reversed, twice, which is how the overclaim was caught rather than shipped.
    *
    * So this is best effort by construction, and says so rather than claiming the work completes.
    * The endpoint stays up until `agent.stop()`, so a drain that does finish still publishes.
