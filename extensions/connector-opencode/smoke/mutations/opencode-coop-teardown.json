@@ -34,8 +34,8 @@
     {
       "name": "C2 a turn may start mid-cutover again, so an ordinary inbound message prompts the new session before its replacement holder is installed",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    if (driving || busy || swapping) return;\n",
-      "replace": "    if (driving || busy) return;\n",
+      "find": "    if (stopping || driving || busy || swapping) return;\n",
+      "replace": "    if (stopping || driving || busy) return;\n",
       "expectRed": "no turn was started while the cutover was open"
     },
     {
@@ -51,6 +51,13 @@
       "find": "    await safeStatus(\"offline\");\n    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n",
       "replace": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    await safeStatus(\"offline\");\n",
       "expectRed": "the seat left the mesh BEFORE the drain finished, not behind it"
+    },
+    {
+      "name": "C5 teardown stops being a refusal, so the swap's deferred drive starts a NEW turn while the stop is still joining the chain, after presence has gone offline",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    if (stopping || driving || busy || swapping) return;\n",
+      "replace": "    if (driving || busy || swapping) return;\n",
+      "expectRed": "the teardown started no turn of its own after the stop began"
     }
   ]
 }

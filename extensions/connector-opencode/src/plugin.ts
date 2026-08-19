@@ -482,9 +482,17 @@ export const cotal: Plugin = async () => {
    *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
    *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
   async function drive(override?: string): Promise<void> {
-    // `swapping` is the mid-cutover refusal, and it lives here rather than at each caller so that
-    // every door is covered by one line: the inbox, the wake, the mention-wake, and the adopt.
-    if (driving || busy || swapping) return;
+    // THE REFUSALS LIVE HERE, at the one place a turn can start, rather than at each caller.
+    //
+    // Two of them are about WHEN rather than who, and the earlier version of this line named the
+    // callers instead and so missed one. `swapping` refuses mid-cutover, because a turn started
+    // then runs against a session whose replacement holder is not installed. `stopping` refuses
+    // once teardown has begun: the swap's own deferred drive fires after its cutover completes,
+    // which can be while `quiesce` is still joining the chain, so a stop that carefully drained the
+    // old work would start NEW work behind its own back, after presence had already gone offline.
+    // Listing which callers are covered is what let that through; the condition is the state, and
+    // every caller is covered because there is nowhere else a turn begins.
+    if (stopping || driving || busy || swapping) return;
     if (bootPrompt !== undefined) return; // the boot turn goes first; this batch waits in the inbox
     driving = true;
     try {

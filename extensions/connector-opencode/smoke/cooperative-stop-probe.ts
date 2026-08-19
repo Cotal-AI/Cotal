@@ -7,7 +7,7 @@
  * plugin's cooperative shutdown ends in process.exit, which would otherwise tear down the test itself.
  */
 import { once } from "node:events";
-import { existsSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { cotal } from "../src/plugin.js";
 
@@ -27,6 +27,9 @@ let draining = false;
 // not installed yet, so the probe records the violation where the parent can see it.
 let inCutover = false;
 const violation = process.env.COOP_VIOLATION?.trim() || undefined;
+// EVERY prompt, not only the ones inside a cutover. A turn started during teardown is a
+// different fault from one started mid-cutover, and the in-cutover flag cannot see it.
+const prompts = process.env.COOP_PROMPTS?.trim() || undefined;
 // The SECOND drain, belonging to a swap that was still queued when the stop arrived. It is
 // marked separately because it is a different case from the first: the holder join covers work
 // already running, and only the chain join covers a swap that has not begun.
@@ -61,6 +64,7 @@ const oc = createServer((req, res) => {
   }
   // A turn being submitted. Nothing may start one while the cutover is open.
   if (req.method === "POST" && /\/prompt_async$/.test(req.url ?? "")) {
+    if (prompts) appendFileSync(prompts, `${req.url}\n`);
     if (violation && inCutover) writeFileSync(violation, `a turn was started mid-cutover: ${req.url}\n`);
     res.writeHead(200, { "content-type": "application/json" }).end("{}");
     return;

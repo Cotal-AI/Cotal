@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
-import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -176,6 +176,7 @@ try {
   const marker = join(dir, "coop-read-finished");
   const trigger = join(dir, "coop-start-drain");
   const violation = join(dir, "coop-turn-in-cutover");
+  const prompts = join(dir, "coop-prompts");
   const markerQueued = join(dir, "coop-queued-swap-ran");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
@@ -187,6 +188,7 @@ try {
       COOP_MARKER: marker,
       COOP_TRIGGER: trigger,
       COOP_VIOLATION: violation,
+      COOP_PROMPTS: prompts,
       COOP_MARKER_QUEUED: markerQueued,
     },
     stdio: ["ignore", "inherit", "inherit"],
@@ -215,6 +217,10 @@ try {
   const otto = watcher.getRoster().find((pr) => pr.card.name === "Otto");
   if (otto) await watcher.unicast(otto.card.id, "a message arriving mid-cutover");
   await wait(600);
+
+  // Sampled at the ACK, because the question is whether teardown STARTS anything, and by the end of
+  // the run a prompt from before the stop is indistinguishable from one after it.
+  const promptsAtStop = existsSync(prompts) ? readFileSync(prompts, "utf8").split("\n").filter(Boolean).length : 0;
 
   // Drive the cooperative shutdown — exactly what the manager sends on a win32 graceful stop.
   const reply = await sendShutdown(ep.path, ep.token);
@@ -253,6 +259,16 @@ try {
 
   // The other half of the same window. The drain covers the event plane; this covers turns.
   check("no turn was started while the cutover was open", !existsSync(violation), { violation });
+
+  // AND NONE WAS STARTED BY THE TEARDOWN ITSELF, which is a different fault. The mid-cutover
+  // refusal does not cover it: the swap fires a deferred drive once its own cutover completes,
+  // and that can land while the stop is still joining the chain, so a teardown that carefully
+  // drained the old work would start new work behind its own back after going offline. The
+  // buffered message from the cell above is what makes it reachable, since it leaves pending
+  // input for that deferred drive to pick up.
+  const promptsAtEnd = existsSync(prompts) ? readFileSync(prompts, "utf8").split("\n").filter(Boolean).length : 0;
+  check("the teardown started no turn of its own after the stop began",
+    promptsAtEnd === promptsAtStop, { promptsAtStop, promptsAtEnd });
 
   // The case the running-drain cell cannot reach. A swap queued behind the one in flight has not
   // begun when the stop arrives, so the holder join does not cover it and only joining the chain
