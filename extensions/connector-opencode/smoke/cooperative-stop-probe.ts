@@ -111,6 +111,10 @@ if (cross) {
   };
 }
 const lateFired = process.env.COOP_LATE_FIRED?.trim() || undefined;
+// Focus turns an @mention into a WAKE rather than an injected batch: the body is acked-and-dropped
+// at ingest and stays recallable, so the nudge string handed to drive is the only copy of the wake.
+const focus = process.env.COOP_FOCUS?.trim() || undefined;
+const focusReady = process.env.COOP_FOCUS_READY?.trim() || undefined;
 // THE RESUME SEAT. `drive` reads its phase guards and THEN awaits session creation, so a drive
 // admitted while the seat was healthy is parked inside a server round trip when the stop lands.
 // Holding POST /session here is what puts it there: the plugin's `ensureSession` awaits the boot
@@ -125,6 +129,10 @@ const oc = createServer((req, res) => {
     res.writeHead(401).end();
     return;
   }
+  let raw = "";
+  req.setEncoding("utf8");
+  req.on("data", (d) => (raw += d));
+  req.on("end", () => {
   if (req.method === "POST" && req.url === "/session") {
     const answer = (): void => {
       res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: "ses_coop" }));
@@ -161,12 +169,19 @@ const oc = createServer((req, res) => {
   }
   // A turn being submitted. Nothing may start one while the cutover is open.
   if (req.method === "POST" && /\/prompt_async$/.test(req.url ?? "")) {
-    if (prompts) appendFileSync(prompts, `${req.url}\n`);
+    // The BODY as well as the url. A count answers "did a turn start"; only the text answers "which
+    // input was carried", and the nudge cell below is about a specific one surviving.
+    if (prompts) {
+      const body = raw ? (JSON.parse(raw) as { parts?: { text?: string }[] }) : {};
+      const said = (body.parts ?? []).map((p) => p.text ?? "").join(" ").replace(/\s+/g, " ").slice(0, 300);
+      appendFileSync(prompts, `${req.url} :: ${said}\n`);
+    }
     if (violation && inCutover) writeFileSync(violation, `a turn was started mid-cutover: ${req.url}\n`);
     res.writeHead(200, { "content-type": "application/json" }).end("{}");
     return;
   }
-  res.writeHead(404).end();
+    res.writeHead(404).end();
+  });
 });
 oc.listen(0, "127.0.0.1");
 await once(oc, "listening");
@@ -176,6 +191,32 @@ process.env.OPENCODE_SERVER_USERNAME = "opencode";
 process.env.OPENCODE_SERVER_PASSWORD = "test-secret";
 
 const hooks = await bootPlugin();
+
+if (focus) {
+  // Through the seat's own tool, not by reaching into the agent: this is how a real seat enters
+  // focus, and the cell is about what the connector does in that mode.
+  //
+  // RETRIED UNTIL IT REPORTS FOCUS, because `agent.start()` connects in the background and a status
+  // write before the link is up does not take. The first version called this once at boot, the call
+  // did not stick, and the @mention arrived as an ordinary inbox item instead of a wake: the cell
+  // then graded the batch path twice and said nothing about nudges. Failing loudly here is the
+  // point, since a seat that is not in focus makes the whole leg vacuous.
+  const statusTool = (
+    hooks as unknown as { tool: Record<string, { execute: (a: unknown, c?: unknown) => Promise<string> }> }
+  ).tool.cotal_status;
+  let inFocus = false;
+  for (let i = 0; i < 60 && !inFocus; i++) {
+    try {
+      const said = await statusTool.execute({ attention: "focus" });
+      inFocus = /focus/i.test(said);
+    } catch {
+      /* not connected yet */
+    }
+    if (!inFocus) await new Promise((r) => setTimeout(r, 100).unref?.());
+  }
+  if (!inFocus) throw new Error("probe could not enter focus, so the nudge leg would grade nothing");
+  if (focusReady) writeFileSync(focusReady, "the seat is in focus\n");
+}
 
 // QUEUE REAL EVENT WORK, so the parent's shutdown lands while a drain is in flight. The first
 // create binds the holder to this session; the second is NOT awaited, so it leaves a swap on the

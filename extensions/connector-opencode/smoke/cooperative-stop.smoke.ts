@@ -768,6 +768,7 @@ try {
   const carryMarker = join(dir, "carry-read-finished");
   const carryTrigger = join(dir, "carry-start-drain");
   const carryPrompts = join(dir, "carry-prompts");
+  const carryFocus = join(dir, "carry-in-focus");
   mkdirSync(join(dir, "ws-carry"), { recursive: true });
   carryProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -778,6 +779,8 @@ try {
       COOP_MARKER: carryMarker,
       COOP_TRIGGER: carryTrigger,
       COOP_PROMPTS: carryPrompts,
+      COOP_FOCUS: "1",
+      COOP_FOCUS_READY: carryFocus,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -788,6 +791,15 @@ try {
     carrieLive = c !== undefined && c.status !== "offline";
   }
   check("carry-seat: the seventh seat came online, so this leg grades a live one", carrieLive);
+  // PRECONDITION FOR THE NUDGE LEG. Outside focus an @mention is an ordinary inbox item and there is
+  // no nudge to lose, so without this the leg grades the batch path twice.
+  let carryFocused = false;
+  for (let i = 0; i < 80 && !carryFocused; i++) {
+    await wait(100);
+    carryFocused = existsSync(carryFocus);
+  }
+  check("carry-seat: the seat is in focus, so an @mention becomes a wake rather than a batch",
+    carryFocused, { carryFocus });
 
   // Open a cutover, then send during it. The connector must refuse the turn while the replacement
   // holder is not installed, which is the same refusal the stop path takes.
@@ -795,6 +807,14 @@ try {
   await wait(400);
   const carrie = watcher.getRoster().find((pr) => pr.card.name === "Carrie");
   if (carrie) await watcher.unicast(carrie.card.id, "a message refused mid-cutover");
+  // AND AN @MENTION, which in focus is a different kind of input: its body is acked-and-dropped at
+  // ingest and stays recallable, so the WAKE is the only thing the connector still holds, and it
+  // holds it in a single string handed to `drive`. A drive refused mid-cutover used to drop that
+  // string, and no later wake could reconstruct it, so the seat was never told to go and look.
+  await watcher.multicast("@Carrie you were named while the cutover was open", {
+    channel: "general",
+    mentions: ["Carrie"],
+  });
   await wait(600);
   const duringCutover = existsSync(carryPrompts) ? readFileSync(carryPrompts, "utf8").split("\n").filter(Boolean).length : 0;
   check("carry-seat: no turn was started while the cutover was open", duringCutover === 0, { duringCutover });
@@ -808,6 +828,17 @@ try {
   }
   check("carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed",
     carried, { carryPrompts, carryMarker });
+
+  // The nudge is a SEPARATE claim from the batch and cannot be read off the same cell: the inbox
+  // batch survives because it was never consumed, while the nudge survives only if `drive` puts it
+  // back. Graded on the text, because a prompt count cannot tell the two inputs apart.
+  let nudged = false;
+  for (let i = 0; i < 100 && !nudged; i++) {
+    await wait(100);
+    nudged = existsSync(carryPrompts) && /mentioned by/i.test(readFileSync(carryPrompts, "utf8"));
+  }
+  check("carry-seat: the wake nudge refused mid-cutover was held, and delivered once the cutover closed",
+    nudged, { carryPrompts, body: existsSync(carryPrompts) ? readFileSync(carryPrompts, "utf8").slice(0, 400) : "" });
   await sendShutdown(carrySpec.control!.path, carrySpec.control!.token);
   await awaitExit(carryProbe, 15_000);
 

@@ -126,7 +126,18 @@
     "not the stop arm, and that is measured rather than stylistic. A cross-incarnation version was built",
     "and removed: a replacement seat, on a fresh lifecycle uid and then on the same one, drove at once on",
     "a newly sent DM but never received the refused one, so a batch held at teardown does not survive the",
-    "process. Durability across a stop is a delivery question and is not claimed here."
+    "process. Durability across a stop is a delivery question and is not claimed here.",
+    "",
+    "C20 IS THE THIRD INSTANCE OF THE SAME CLASS, found by a reviewer after the first two were fixed:",
+    "drive losing its caller's input on an early return. It is the narrowest of the three and the one",
+    "with no second copy anywhere. A focus @mention is acked-and-dropped at ingest, so it is not in the",
+    "inbox and pendingForWake() cannot see it; the nudge string exists only in the call that carries it.",
+    "What is lost is the WAKE and not the message, whose body stays recallable through cotal_inbox, so",
+    "the seat is simply never told to go and look. The cell needs the seat to be IN FOCUS or an",
+    "@mention is an ordinary batch and there is no nudge to lose, which is why that precondition is",
+    "graded rather than assumed: the first version of this leg set focus once at boot, before the link",
+    "was up, the call did not take, and the cell graded the batch path twice while claiming to grade",
+    "nudges."
   ],
   "mutations": [
     {
@@ -261,6 +272,13 @@
       "find": "    if (phaseClosed() || driving || busy) return;\n",
       "replace": "    if (driving || busy) return;\n    if (phaseClosed()) { surfaced = agent.peekInbox(\"automatic\").map((i) => i.id); ackSurfaced(); return; }\n",
       "expectRed": "carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed"
+    },
+    {
+      "name": "C20 a drive that cannot run drops the wake nudge it was handed instead of putting it back, so a focus @mention arriving mid-cutover is never delivered and the seat is never told to look",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    if (phaseClosed() || driving || busy) {\n      if (override !== undefined) pendingOverride = override;\n      return;\n    }\n",
+      "replace": "    if (phaseClosed() || driving || busy) return;\n",
+      "expectRed": "carry-seat: the wake nudge refused mid-cutover was held, and delivered once the cutover closed"
     }
   ]
 }

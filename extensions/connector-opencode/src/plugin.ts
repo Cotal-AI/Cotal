@@ -259,6 +259,13 @@ export const cotal: Plugin = async () => {
   // The boot turn's preconditions are met (session exists, mesh link up). Kept separate from the
   // text itself because the text must OUTLIVE a failed attempt: see `bootPending` below.
   let bootReady = false;
+  /** A wake nudge that has been handed to `drive` and not yet submitted. A focus @mention is
+   *  acked-and-dropped at ingest, so it is not in the inbox and `pendingForWake()` does not count
+   *  it; the nudge string exists only in the call that carries it. What is lost when that call
+   *  returns early is therefore the WAKE, not the message, whose body stays recallable through
+   *  `cotal_inbox`. The seat simply never learns to go and look. Held here for the same reason the
+   *  boot text is held: an early return must cost a retry, not the input. */
+  let pendingOverride: string | undefined;
   /**
    * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
    * attempts departure, which is a different thing from refusing new work: the fence closes the
@@ -462,12 +469,12 @@ export const cotal: Plugin = async () => {
   }
 
   function scheduleErrorRetry(): void {
-    if (errorRetryTimer || pendingForWake() === 0) return;
+    if (errorRetryTimer || !workPending()) return;
     const delay = errorRetryMs;
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
-      if (!busy && (bootPending() || pendingForWake() > 0)) void drive();
+      if (!busy && workPending()) void drive();
     }, delay);
     errorRetryTimer.unref?.();
   }
@@ -577,7 +584,7 @@ export const cotal: Plugin = async () => {
     clearErrorRetry(true);
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
-      if (bootPending() || pendingForWake() > 0) void drive();
+      if (workPending()) void drive();
     }
   }
 
@@ -632,6 +639,11 @@ export const cotal: Plugin = async () => {
    *  makes the ordinary wake paths pick it up again. */
   const bootPending = (): boolean => bootReady && bootPrompt !== undefined;
 
+  /** Is there anything at all for a drive to carry? Three sources, and a caller that asks only about
+   *  the inbox misses two of them: the boot text and a held wake nudge are both real work that
+   *  `pendingForWake()` cannot see. */
+  const workPending = (): boolean => bootPending() || pendingOverride !== undefined || pendingForWake() > 0;
+
   async function drive(override?: string): Promise<void> {
     // THE REFUSALS LIVE HERE, at the one place this connector submits a turn, rather than at each
     // caller.
@@ -645,16 +657,28 @@ export const cotal: Plugin = async () => {
     // Listing which callers are covered is what let that through; the condition is the state, so a
     // caller that reaches this line is refused by it. A prompt submitted natively in the host does
     // not route through `drive` at all; the fence note on the hook table below covers that path.
-    if (phaseClosed() || driving || busy) return;
+    if (phaseClosed() || driving || busy) {
+      if (override !== undefined) pendingOverride = override;
+      return;
+    }
     // THE BOOT TURN GOES FIRST AND IS RETRIED HERE. While it is pending an ordinary batch waits;
     // once its preconditions are met, whichever wake reaches this line carries it, so one early
     // return no longer decides whether the operator's prompt is ever submitted.
-    const boot = override === undefined && bootPending() ? bootPrompt : undefined;
-    if (bootPrompt !== undefined && boot === undefined) return; // this batch waits for the boot turn
+    // CARRIED, not just passed: a nudge handed to an earlier call that could not run is picked up
+    // here rather than dropped, and a nudge this call cannot submit is put back before returning.
+    const carried = override ?? pendingOverride;
+    const boot = carried === undefined && bootPending() ? bootPrompt : undefined;
+    if (bootPrompt !== undefined && boot === undefined) {
+      pendingOverride = carried;
+      return; // this batch waits for the boot turn
+    }
     driving = true;
     try {
       const id = await ensureSession();
-      if (!id) return; // no visible session yet — retry on the next event/wake
+      if (!id) {
+        pendingOverride = carried;
+        return; // no visible session yet — retry on the next event/wake
+      }
       // RECHECKED AFTER THE AWAIT, because the guard above is a read and this is a resume. Session
       // creation is a server round trip, so a drive admitted while the seat was running can park
       // here and come back after `quiesce` has set `stopping` and published departure. Submitting
@@ -666,10 +690,13 @@ export const cotal: Plugin = async () => {
       // of the promise. A batch still held when the seat tears down does not survive the process:
       // measured, by restarting the identity on a fresh uid and then on the same one and finding the
       // message was owed to neither. Durability across a stop is a delivery question, not this one.
-      if (phaseClosed()) return;
+      if (phaseClosed()) {
+        pendingOverride = carried;
+        return;
+      }
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];
-      const text = boot ?? override;
+      const text = boot ?? carried;
       if (text) {
         parts.push({ type: "text", text });
       } else {
@@ -679,11 +706,10 @@ export const cotal: Plugin = async () => {
         const inj = formatInjection(items);
         if (inj) parts.push({ type: "text", text: inj });
       }
-      if (!briefed) {
-        briefed = true;
-        const brief = agent.channelBriefing();
-        if (brief) parts.unshift({ type: "text", text: brief });
-      }
+      // NOT marked consumed here. Setting the flag before the submission meant a throw below cost
+      // the briefing permanently, on this turn and every later one.
+      const brief = briefed ? undefined : agent.channelBriefing();
+      if (brief) parts.unshift({ type: "text", text: brief });
       if (parts.length === 0) return;
       const body: { parts: typeof parts; system?: string } = { parts };
       // persona once, as system (no --append-system-prompt). Append the orientation bootstrap so the
@@ -699,6 +725,8 @@ export const cotal: Plugin = async () => {
       // throw into the catch below, the text is still set and still pending, so the next wake
       // carries it rather than it being lost.
       if (boot !== undefined) bootPrompt = undefined;
+      if (carried !== undefined) pendingOverride = undefined;
+      briefed = true;
       primed = true;
     } catch (e) {
       busy = false;
@@ -791,7 +819,7 @@ export const cotal: Plugin = async () => {
     }
     clearInterruptIntent();
     clearErrorRetry(true);
-    if (bootPending() || pendingForWake() > 0) void drive();
+    if (workPending()) void drive();
   }
 
   // Inbound mesh → drive (never interrupt a running turn — matches Claude). A directed message
@@ -968,7 +996,7 @@ export const cotal: Plugin = async () => {
             // turn is allowed to start and produces records the holder publishes rather than records
             // it adopted past. Drained is not guaranteed, only waited for: a predecessor that
             // outlived the bound is released undrained and this line still runs.
-            if (bootPending() || pendingForWake() > 0) void drive();
+            if (workPending()) void drive();
           });
           // The chain carries the SUCCESSFUL tail only: a rejected swap is absorbed so the next one
           // still runs, while this invocation still sees its own failure.
