@@ -256,6 +256,9 @@ export const cotal: Plugin = async () => {
   // does not consult it and can start a turn while the boot task is still waiting below. Cleared by
   // the one drive that carries it, so no later readiness event can issue a second boot turn.
   let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
+  // The boot turn's preconditions are met (session exists, mesh link up). Kept separate from the
+  // text itself because the text must OUTLIVE a failed attempt: see `bootPending` below.
+  let bootReady = false;
   /**
    * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
    * attempts departure, which is a different thing from refusing new work: the fence closes the
@@ -464,7 +467,7 @@ export const cotal: Plugin = async () => {
     errorRetryMs = Math.min(errorRetryMs * 2, ERROR_RETRY_MAX_MS);
     errorRetryTimer = setTimeout(() => {
       errorRetryTimer = undefined;
-      if (!busy && pendingForWake() > 0) void drive();
+      if (!busy && (bootPending() || pendingForWake() > 0)) void drive();
     }, delay);
     errorRetryTimer.unref?.();
   }
@@ -574,7 +577,7 @@ export const cotal: Plugin = async () => {
     clearErrorRetry(true);
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
-      if (pendingForWake() > 0) void drive();
+      if (bootPending() || pendingForWake() > 0) void drive();
     }
   }
 
@@ -620,6 +623,15 @@ export const cotal: Plugin = async () => {
    *  was added, and they discriminate again now that there is one predicate to break. */
   const phaseClosed = (): boolean => stopping || swapping;
 
+  /** THE BOOT TURN IS WAITING WORK, exactly like a buffered inbox batch, so every place that asks
+   *  "is there anything to drive?" has to count it. It used to be driven by one shot from the boot
+   *  task, which cleared the flag and THEN called `drive`; if that call returned early because a
+   *  natively submitted prompt had already made the session busy, the operator's spawn prompt was
+   *  gone, with nothing holding it and nothing to retry it. A reviewer reproduced that loss live.
+   *  The flag is now cleared only where the submission actually happens, and this predicate is what
+   *  makes the ordinary wake paths pick it up again. */
+  const bootPending = (): boolean => bootReady && bootPrompt !== undefined;
+
   async function drive(override?: string): Promise<void> {
     // THE REFUSALS LIVE HERE, at the one place this connector submits a turn, rather than at each
     // caller.
@@ -634,7 +646,11 @@ export const cotal: Plugin = async () => {
     // caller that reaches this line is refused by it. A prompt submitted natively in the host does
     // not route through `drive` at all; the fence note on the hook table below covers that path.
     if (phaseClosed() || driving || busy) return;
-    if (bootPrompt !== undefined) return; // the boot turn leads the connector's own; this batch waits
+    // THE BOOT TURN GOES FIRST AND IS RETRIED HERE. While it is pending an ordinary batch waits;
+    // once its preconditions are met, whichever wake reaches this line carries it, so one early
+    // return no longer decides whether the operator's prompt is ever submitted.
+    const boot = override === undefined && bootPending() ? bootPrompt : undefined;
+    if (bootPrompt !== undefined && boot === undefined) return; // this batch waits for the boot turn
     driving = true;
     try {
       const id = await ensureSession();
@@ -650,8 +666,9 @@ export const cotal: Plugin = async () => {
       if (phaseClosed()) return;
       const parts: { type: "text"; text: string }[] = [];
       let ids: string[] = [];
-      if (override) {
-        parts.push({ type: "text", text: override });
+      const text = boot ?? override;
+      if (text) {
+        parts.push({ type: "text", text });
       } else {
         const items = agent.peekInbox("automatic");
         if (items.length === 0) return;
@@ -675,6 +692,10 @@ export const cotal: Plugin = async () => {
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
       awaitingTurnEnd = true;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
+      // CLEARED ONLY HERE, once the submission actually landed. On any earlier return, and on a
+      // throw into the catch below, the text is still set and still pending, so the next wake
+      // carries it rather than it being lost.
+      if (boot !== undefined) bootPrompt = undefined;
       primed = true;
     } catch (e) {
       busy = false;
@@ -706,13 +727,15 @@ export const cotal: Plugin = async () => {
     const id = await sessionReady;
     while (!stopping && !agent.connected) await new Promise((r) => setTimeout(r, 100).unref?.());
     if (stopping || bootPrompt === undefined) return;
-    const text = bootPrompt;
-    bootPrompt = undefined;
     if (!id) {
       log("initial prompt not submitted — this session was never created");
+      bootPrompt = undefined; // release the floor: nothing can carry it, so nothing may wait on it
       return;
     }
-    await drive(text);
+    // This task no longer OWNS the submission, it only opens the gate. `drive` carries the text and
+    // clears it, so a return here costs a retry rather than the prompt.
+    bootReady = true;
+    await drive();
   })();
 
   /** Ack exactly the surfaced ids. Quiet ambient may be physically interleaved ahead of them, and
@@ -765,7 +788,7 @@ export const cotal: Plugin = async () => {
     }
     clearInterruptIntent();
     clearErrorRetry(true);
-    if (pendingForWake() > 0) void drive();
+    if (bootPending() || pendingForWake() > 0) void drive();
   }
 
   // Inbound mesh → drive (never interrupt a running turn — matches Claude). A directed message
@@ -942,7 +965,7 @@ export const cotal: Plugin = async () => {
             // turn is allowed to start and produces records the holder publishes rather than records
             // it adopted past. Drained is not guaranteed, only waited for: a predecessor that
             // outlived the bound is released undrained and this line still runs.
-            if (pendingForWake() > 0) void drive();
+            if (bootPending() || pendingForWake() > 0) void drive();
           });
           // The chain carries the SUCCESSFUL tail only: a rejected swap is absorbed so the next one
           // still runs, while this invocation still sees its own failure.

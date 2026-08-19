@@ -99,6 +99,8 @@ const auth = `Basic ${Buffer.from("opencode:test-secret").toString("base64")}`;
 let sessionSeq = 0;
 let sessionID = "";
 const prompts: { session: string; text: string }[] = [];
+let sessionGate: Promise<void> | undefined;
+let forcedSessionId: string | undefined;
 const oc = createHttpServer((req, res) => {
   if (req.headers.authorization !== auth) {
     res.writeHead(401).end();
@@ -109,8 +111,14 @@ const oc = createHttpServer((req, res) => {
   req.on("data", (d) => (raw += d));
   req.on("end", () => {
     if (req.method === "POST" && req.url === "/session") {
-      sessionID = `ses_boot_${++sessionSeq}`;
-      res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: sessionID }));
+      // GATED FOR ARM C ONLY. The boot task awaits session creation, so holding this is what lets a
+      // native turn get in front of the boot prompt deterministically instead of by racing it.
+      const reply = (): void => {
+        sessionID = forcedSessionId ?? `ses_boot_${++sessionSeq}`;
+        res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: sessionID }));
+      };
+      if (sessionGate) void sessionGate.then(reply);
+      else reply();
       return;
     }
     const m = req.url?.match(/^\/session\/([^/]+)\/prompt_async$/);
@@ -150,6 +158,7 @@ const waitForPrompts = async (n: number, ms = 8000): Promise<void> => {
 
 let armA: PluginHooks | undefined;
 let armB: PluginHooks | undefined;
+let armC: PluginHooks | undefined;
 try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
   await seedChannelRegistry({ servers, space, file: { defaults: { replay: false }, channels: { general: { replay: false } } } });
@@ -178,6 +187,48 @@ try {
   await armA.dispose?.();
   armA = undefined;
 
+  // ARM C — A NATIVE TURN GETS IN FRONT OF THE BOOT PROMPT, and the prompt must still be delivered.
+  //
+  // This is a LOSS, not an ordering question, and it is why the boot text is no longer cleared by
+  // the task that starts it. The task used to clear the flag and then call `drive`; a natively
+  // submitted prompt that had already made the session busy sent `drive` down its early return, and
+  // the operator's spawn prompt was gone with nothing holding it and nothing to retry it. A reviewer
+  // reproduced that against the real plugin before this cell existed.
+  //
+  // The gate is what makes it deterministic rather than a race: session creation is held, so the
+  // boot task is certainly still waiting when the native turn is announced.
+  const cText = "the operator's prompt, behind a native turn";
+  forcedSessionId = "ses_boot_native";
+  let releaseSession: () => void = () => undefined;
+  sessionGate = new Promise<void>((r) => (releaseSession = r));
+  const beforeC = prompts.length;
+  process.env.COTAL_NAME = "Racey";
+  process.env.COTAL_ID = "racey";
+  process.env.COTAL_OPENCODE_PROMPT = cText;
+  clearPluginGuard();
+  armC = await bootPlugin();
+  await sleep(400);
+
+  // The host started a turn of its own. `ours` adopts the id and the handler sets `busy`.
+  await fire(armC, { type: "session.status", properties: { sessionID: forcedSessionId, status: { type: "busy" } } });
+  releaseSession();
+  await sleep(600);
+  // Nothing may have been submitted yet: the connector does not prompt into a running turn.
+  check("boot-race: the boot prompt was not submitted into the running native turn",
+    prompts.length === beforeC, prompts.slice(beforeC));
+
+  // The native turn ends. THIS is where the prompt must appear: it was kept, not dropped.
+  await fire(armC, { type: "session.idle", properties: { sessionID: forcedSessionId } });
+  await waitForPrompts(beforeC + 1);
+  check("boot-race: the boot prompt survived the native turn and was submitted after it",
+    prompts.length === beforeC + 1 && prompts[beforeC]?.text.includes(cText) === true,
+    prompts.slice(beforeC));
+
+  await armC.dispose?.();
+  armC = undefined;
+  sessionGate = undefined;
+  forcedSessionId = undefined;
+
   // ARM B — booted WITHOUT a prompt. The connector's `--prompt`-less spawn must stay silent: the
   // control that says arm A measured the prompt and not merely "the plugin prompts at boot".
   delete process.env.COTAL_OPENCODE_PROMPT;
@@ -192,6 +243,7 @@ try {
   console.log(`\nOPENCODE BOOT-PROMPT TEST PASSED ✅  (${pass} checks)`);
 } finally {
   await armA?.dispose?.();
+  await armC?.dispose?.();
   await armB?.dispose?.();
   nats.kill("SIGKILL");
   oc.close();

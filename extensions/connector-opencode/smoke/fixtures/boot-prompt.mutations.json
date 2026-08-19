@@ -24,17 +24,55 @@
     "",
     "SPECIFIER BOUNDARY: the suite imports `../src/plugin.js` and `../src/extension.js` and runs",
     "under tsx, so the bytes mutated are the bytes executed. No dist is built by the command, and no",
-    "`afterRestore` is needed to undo one."
+    "`afterRestore` is needed to undo one.",
+    "",
+    "THE BOOT PROMPT IS THE ONE INPUT THIS CONNECTOR CANNOT REDELIVER. An inbox batch that is not driven",
+    "stays in the inbox and arrives on the next wake; the spawn prompt lives in one variable in one",
+    "process, so a path that clears it without submitting it destroys it. B1 to B3 are about that loss.",
+    "",
+    "B1 IS THE DEFECT AS IT SHIPPED: the boot task cleared the flag and then called drive, so a natively",
+    "submitted prompt that had already made the session busy sent drive down its early return and the",
+    "operator's prompt was gone, with nothing holding it and no later wake looking for it. A reviewer",
+    "reproduced that against the real plugin, broker held down so the boot task parked, before the cell",
+    "existed. B1 restores exactly that ordering.",
+    "",
+    "B2 ASKS THE OPPOSITE QUESTION, and it is needed because B1 alone would pass an implementation that",
+    "never clears the flag at all: keeping the text after a successful submission turns every later",
+    "readiness event into a second boot turn.",
+    "",
+    "B3 REMOVES THE RETRY RATHER THAN THE KEEP. Holding the text is only half the repair, since",
+    "something has to come back for it; with the predicate dead the text survives and is never carried."
   ],
   "mutations": [
     {
       "name": "the boot drive is dropped, so the prompt is carried over the env and then never submitted",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    await drive(text);",
-      "replace": "    void text;",
+      "find": "    await drive();\n",
+      "replace": "",
       "expectRed": "a boot prompt drives a turn without any peer traffic",
       "cell": "a boot prompt drives a turn without any peer traffic",
       "note": "The defect as it shipped, minus the parts that were never the problem. Everything around it survives: the connector still writes the carrier, the plugin still reads and clears it, the session is still created, the mesh is still joined, and the seat still answers a directed message seconds later. Only the first turn is missing, which is exactly how the drop escaped notice for as long as it did."
+    },
+    {
+      "name": "B1 the boot task clears the prompt before it is submitted, so a native turn that made the session busy sends drive down its early return and the operator's prompt is destroyed",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    bootReady = true;\n    await drive();\n",
+      "replace": "    bootReady = true;\n    const text = bootPrompt;\n    bootPrompt = undefined;\n    await drive(text);\n",
+      "expectRed": "boot-race: the boot prompt survived the native turn and was submitted after it"
+    },
+    {
+      "name": "B2 the prompt is never cleared once submitted, so every later readiness event issues the boot turn again",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      if (boot !== undefined) bootPrompt = undefined;\n",
+      "replace": "",
+      "expectRed": "no later readiness event re-issues the boot prompt"
+    },
+    {
+      "name": "B3 the pending predicate goes dead, so the boot text is kept but nothing ever comes back to carry it",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "  const bootPending = (): boolean => bootReady && bootPrompt !== undefined;\n",
+      "replace": "  const bootPending = (): boolean => false;\n",
+      "expectRed": "boot-race: the boot prompt survived the native turn and was submitted after it"
     }
   ]
 }
