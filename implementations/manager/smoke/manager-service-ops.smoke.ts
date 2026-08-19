@@ -45,7 +45,7 @@ import {
   type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
+import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -111,7 +111,9 @@ const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string } }>;
-  startAgent: (opts: Record<string, unknown>, spawner?: string) => Promise<ControlReply>;
+  // The real signature takes the spawn hooks as a third parameter; this hand-written view had
+  // only two, so the mock below could pass `hooks` that the type said would never arrive.
+  startAgent: (opts: Record<string, unknown>, spawner?: string, hooks?: SpawnHooks) => Promise<ControlReply>;
 };
 
 /** A caller instrument: mint an agent cred with the given ep capabilities (+ ctl privileged via
@@ -161,7 +163,7 @@ try {
   let launchInputDigest: string | undefined;
   {
     const replies: unknown[] = [];
-    const sub = A.nc.subscribe(epCallerReplyFilter(space, A.caller), { callback: (_e, m) => replies.push(JSON.parse(dec.decode(m.data))) });
+    const sub = A.nc.subscribe(epCallerReplyFilter(space, A.caller), { callback: (_e, m) => { replies.push(JSON.parse(dec.decode(m.data))); } });
     const subj = epRequestSubject(space, { route: { mode: "one" }, endpoint: MANAGER_ENDPOINT, command: "describe", caller: A.caller, nonce: `n${String(Date.now()).padStart(23, "0")}` });
     A.nc.publish(subj, enc.encode(JSON.stringify({ v: 1, id: "d1", op: { endpoint: MANAGER_ENDPOINT, command: "describe" }, class: "ephemeral", replyExpected: true, deadlineMs: 5000, from: { id: A.principal, name: "smoke" } })));
     await A.nc.flush();

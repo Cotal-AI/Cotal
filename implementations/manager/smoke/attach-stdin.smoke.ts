@@ -431,8 +431,14 @@ function attachFromFile(root: string, contents: string, extra: readonly string[]
   });
   let buf = "";
   let code: number | undefined;
-  child.stdout.on("data", (d) => { buf += String(d); });
-  child.stderr.on("data", (d) => { buf += String(d); });
+  // The sibling spawn above passes a literal ["pipe","pipe","pipe"], which node's overloads type as
+  // non-null streams; a file descriptor on 0 drops this call to the general signature, where both
+  // are nullable even though 1 and 2 are still pipes. A `?.` here would swallow a genuinely absent
+  // stream and leave `buf` silently empty, so the absence throws instead.
+  const { stdout, stderr } = child;
+  if (stdout === null || stderr === null) throw new Error("the attach child was spawned with piped stdout and stderr");
+  stdout.on("data", (d) => { buf += String(d); });
+  stderr.on("data", (d) => { buf += String(d); });
   child.on("close", (c) => { code = c ?? 0; });
   const p: Piped = {
     seen: () => buf,
