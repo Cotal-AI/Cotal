@@ -32,8 +32,8 @@
     {
       "name": "B5 a failing source takes the whole page with it again, which is the `Promise.all` shape that turned one channel's rejection into the route's 500 while every channel that had already answered was discarded",
       "file": "implementations/web/src/web.ts",
-      "find": "        } catch {\n          // A source that FAILED is missing for the same reason a late one is: it has nothing to\n          // contribute. It is named the same way, and it no longer takes the whole page with it.\n        }",
-      "replace": "        } catch (e) {\n          throw e;\n        }",
+      "find": "        try {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;\n        } catch {",
+      "replace": "        {\n          const r = await within(sources[i].read(), clock.until);\n          if (r !== LATE) settled[i] = r;\n        }\n        if (false) {",
       "expectRed": "4.0 one failing channel does not make the whole aggregation throw"
     },
     {

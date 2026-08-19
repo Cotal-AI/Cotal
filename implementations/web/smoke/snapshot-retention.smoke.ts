@@ -9,7 +9,7 @@
  * `Uncaught TypeError: activity is not iterable` fifteen times in twenty-five seconds.
  *
  * BOTH ARE ONE BUG WITH TWO ENDINGS, and it is not "the page mishandles an error". `fetch()` does
- * NOT reject on a 500, and this server's 500 body is `{"error": "..."}` — valid JSON. So
+ * NOT reject on a 500, and this server's 500 body is `{"error": "..."}`, which is valid JSON. So
  * `fetch(u).then((r) => r.json())` RESOLVES, with the refusal, and the page stores it as the
  * snapshot. Nothing on either page ever consulted `r.status`, so the only fact that separated a
  * refusal from data never reached the code, and the `.catch(() => [])` guards that look like they
@@ -17,7 +17,7 @@
  *
  * SO TWO RULES, AND THE ORDER IS THE FIX. A non-200 becomes a THROW that names its condition; a
  * throwing read leaves the value the page already holds alone and is reported STALE. Either alone is
- * not enough — the status check without retention converts a silent corruption into a visible wipe,
+ * not enough: the status check without retention converts a silent corruption into a visible wipe,
  * and retention without the status check keeps nothing, because the refusal was never a failure.
  *
  * WHAT THIS SUITE DRIVES. `snapshot.js` is READ OFF DISK and evaluated in a `vm` context with a stub
@@ -26,7 +26,7 @@
  *
  * WHAT IT DOES NOT CLAIM. No DOM and no browser: it measures the state transition and its seam, not
  * the pixels. That both page scripts REACH this module is asserted structurally (§3) rather than by
- * executing them here — `event-order`, `channel-authority` and `membership-refusal` each drive the
+ * executing them here. `event-order`, `channel-authority` and `membership-refusal` each drive the
  * shipped `refresh()` / boot source through this file, which is where that reachability is executed.
  *
  * Run: pnpm smoke:web-snapshot

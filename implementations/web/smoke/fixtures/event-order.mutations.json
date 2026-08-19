@@ -60,7 +60,7 @@
     {
       "name": "O9 the activity backfill loses its failure arm, so a refused request degrades the ordering with nothing on screen saying so: the settle still happens, and the reader is told the frames are complete when the half that would have proved it was never read",
       "file": "implementations/web/src/web/app.js",
-      "find": "    const backfillRefused = stale.find((s) => s.name === \"activity\");\n    if (backfillRefused) noteOrder([{ type: \"backfill-failed\", reason: backfillRefused.reason }]);\n",
+      "find": "    const backfillRefused = stale.find((s) => s.name === \"activity\" && s.kind !== \"partial\");\n    if (backfillRefused) noteOrder([{ type: \"backfill-failed\", reason: backfillRefused.reason }]);\n",
       "replace": "",
       "expectRed": "12.5 and the failure is SURFACED rather than swallowed"
     },
