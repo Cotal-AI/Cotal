@@ -548,10 +548,17 @@ log("rounds", rounds, r.status);`,
   ],
   ["a race, whose losers are digested", 'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);', {}],
   ["a scope combinator", 'await parallel({ one: () => sleep("1m", { name: "one" }), two: () => sleep("2m", { name: "two" }) }, { name: "both" });', {}],
-  // The identical half of issue 647 below: `len` of a FREE builtin is 0 on both arms, so only a
-  // program-defined function diverges. Without this the divergence reads as "len of a function",
-  // which is wider than what was measured.
-  ["len of a free builtin", "log(len(map), len(len));", {}],
+  // ISSUE 647, SETTLED UPSTREAM, AND KEPT HERE RATHER THAN DELETED. `len` used to read the host's
+  // `.length` off whatever it was handed, so a function answered the arity of each engine's own
+  // closure wrapper — 2 on the walker's `(frame, args)` pair, 0 on the engine's rest parameter —
+  // and the two arms disagreed on a value no program had written. It now counts an array's
+  // elements and a string's units and refuses every other kind with L4016 in the language, before
+  // the host is reached. So these three agree and belong in the corpus rather than in DIVERGENT;
+  // they stay because a leak that has been closed once is exactly what a later change re-opens
+  // without anyone noticing.
+  ["len of a free builtin", "log(len(map), len(len));", {}, "L4016"],
+  ["len of a program function", "log(len((x) => x));", {}, "L4016"],
+  ["len of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, "L4016"],
   [
     "the event constructors",
     'const a = await spawn("one"); const c = channel("t"); log(message(c), idle(a), down(a), replied(a));',
@@ -757,12 +764,6 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // rather than remembered.
   ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018 logs [] shapes []"],
   ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018 logs [] shapes []"],
-  // Ruling 1c's second declared divergence, issue 647: `len` of a PROGRAM-DEFINED function. Neither
-  // number is the program's arity — each arm reports the arity of its own closure wrapper, the
-  // walker's `(frame, args)` pair and the engine's rest parameter — which the cell below measures
-  // rather than asserts. Pinned to both answers, so whichever way the issue is settled this reds.
-  ["ruling 1c / issue 647: `len` of a program function", "log(len((x) => x));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
-  ["ruling 1c / issue 647: `len` of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
   // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
   // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
   // even clone one - measured, it died on a host DataCloneError with the emitted module body in the
@@ -817,16 +818,20 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   const agreeing = DIVERGENT.filter(([, , , walkerAnswer, engineAnswer]) => walkerAnswer === engineAnswer).map(([name]) => name);
   ok("every declared divergence names two different answers, so a retired one cannot be re-pinned into a permanent row", agreeing.length === 0, agreeing);
 
-  // WHY 647 IS A LEAK AND NOT A DISAGREEMENT ABOUT ARITY. Measured on the oracle: the walker answers
-  // 2 for a function of zero, one and three parameters alike, so it is reading its own wrapper and
-  // not the program's function; the engine's rest-parameter wrapper reads 0 the same way. The day
-  // the issue is settled, the cells above red — and this one says what the answer has to be about.
+  // WHY 647 WAS A LEAK AND NOT A DISAGREEMENT ABOUT ARITY, kept now that it is settled because the
+  // fix is only worth what still watches it. Measured on the oracle before it landed: the walker
+  // answered 2 for a function of zero, one and three parameters alike, so it was reading its own
+  // wrapper rather than the program's function, and the engine's rest-parameter wrapper read 0 the
+  // same way. The three sources below still differ only in arity, and the cell now requires the
+  // same REFUSAL from each — an answer that varied with arity would mean a host property is being
+  // read again, whichever number came back. This is the cell that says so; the rows above say the
+  // two arms agree, which is a different claim.
   const arities: string[] = [];
   for (const source of ["log(len(() => 1));", "log(len((x) => x));", "log(len((a, b, c) => 1));"]) {
     const a = await arm("walker", source, {});
     arities.push(a.error !== null ? a.error : j(a.logs));
   }
-  ok("issue 647: neither arm's answer depends on the function's own arity", j(arities) === j([j([[2]]), j([[2]]), j([[2]])]), arities);
+  ok("issue 647: neither arm's answer depends on the function's own arity", j(arities) === j(["L4016", "L4016", "L4016"]), arities);
 }
 
 // ---- the step budget counts a different thing on each engine ------------------------------------
