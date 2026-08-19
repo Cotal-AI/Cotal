@@ -36,6 +36,20 @@
       "find": "      const to = typeof msg.to === \"string\" ? agents.get(msg.to) : msg.to && agents.get(msg.to.id);",
       "replace": "      const to = typeof msg.to === \"string\" ? ensureAgent(msg.to) : msg.to && ensureAgent(msg.to.id);",
       "expectRed": "4.2 and the unknown recipient did NOT become a node on the graph"
+    },
+    {
+      "name": "G6 a live membership REFUSAL stops marking its source live, so the successful bootstrap read issued before it applies on top and the pill drops the refusal it had already reported",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "es.addEventListener(\"membership-read-failed\", () => { liveApplied.add(\"membership\"); membershipUnreadable(); });",
+      "replace": "es.addEventListener(\"membership-read-failed\", () => membershipUnreadable());",
+      "expectRed": "5.2 AND THE REFUSAL SURVIVES the older successful bootstrap read landing on top of it"
+    },
+    {
+      "name": "G7 the bootstrap's own membership refusal stops deferring to the live feed, so one read that could not answer overrules a live snapshot that did and the pill calls the whole source unreadable",
+      "file": "implementations/web/src/web/graph.js",
+      "find": "    if (stale.some((s) => s.name === \"membership\")) supersededByFeed(\"membership\", membershipUnreadable)();",
+      "replace": "    if (stale.some((s) => s.name === \"membership\")) membershipUnreadable();",
+      "expectRed": "5.4 AND THE SNAPSHOT SURVIVES the bootstrap read refusing after it, which is a fact about that one read"
     }
   ]
 }

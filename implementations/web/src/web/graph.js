@@ -283,6 +283,13 @@
   // Both channels carry a FULL snapshot through the SAME apply function, so a live event does not
   // need merging with the older read, it REPLACES it. Once the feed has spoken for a source, that
   // source's bootstrap value is stale on arrival and is dropped rather than applied.
+  //
+  // WHAT IS SUPERSEDED IS THE SOURCE, NOT THE SNAPSHOT. `membership` speaks in two sentences, a
+  // snapshot and a REFUSAL, and each side can say either one. Writing the rule only onto the apply
+  // wrappers covered the snapshots and left both refusals loose, in opposite directions: a live
+  // refusal erased by an older successful read, and a successful live snapshot overruled by a
+  // bootstrap read that refused after it. Both end in the header pill making a claim about the mesh
+  // that is really a claim about one read, which is the one thing this pill exists not to do.
   const liveApplied = new Set();
   const supersededByFeed = (name, apply) => (value) => { if (!liveApplied.has(name)) apply(value); };
 
@@ -756,7 +763,11 @@
         reason: `${activityPage.read} of ${activityPage.of} sources answered within ${activityPage.deadlineMs}ms; missing ${activityPage.missing.join(", ")}`,
       });
     setStale(stale);
-    if (stale.some((s) => s.name === "membership")) membershipUnreadable();
+    // A bootstrap read that REFUSED is a sentence about the membership source like any other, so it
+    // obeys the same rule as the snapshot beside it: it is a fact about that one read, and the live
+    // feed may already have said something newer. Routed through `supersededByFeed` rather than a
+    // second copy of the condition, because two spellings of one rule is how two halves drift apart.
+    if (stale.some((s) => s.name === "membership")) supersededByFeed("membership", membershipUnreadable)();
     alpha = 1; for (let i = 0; i < 200; i++) physics(); // pre-warm to a settled layout
     const f = fitTarget(); cam.x = f.x; cam.y = f.y; cam.scale = f.scale;
   }
@@ -778,7 +789,7 @@
   function seedDms(dmHist) {
     for (const m of dmHist) { const a = m.from?.id && agents.get(m.from.id), b = typeof m.to === "string" && agents.get(m.to); if (a && b && a !== b) dmHit(a, b, m.ts || now()); }
   }
-  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => { liveApplied.add("peers"); updateRoster(JSON.parse(e.data)); }); es.addEventListener("membership", (e) => { liveApplied.add("membership"); applyMembership(JSON.parse(e.data)); }); es.addEventListener("membership-read-failed", () => membershipUnreadable()); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
+  function connect() { const es = new EventSource("/feed"); es.onopen = () => setConn(true); es.onerror = () => setConn(false); es.addEventListener("roster", (e) => { liveApplied.add("peers"); updateRoster(JSON.parse(e.data)); }); es.addEventListener("membership", (e) => { liveApplied.add("membership"); applyMembership(JSON.parse(e.data)); }); es.addEventListener("membership-read-failed", () => { liveApplied.add("membership"); membershipUnreadable(); }); es.addEventListener("message", (e) => onMessage(JSON.parse(e.data))); }
 
   resize();
   setInterval(setFeed, 5000); // age "live" → "stale" even without new events

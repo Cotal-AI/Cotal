@@ -19,3 +19,9 @@ old as the moment it was requested, while a live event is newer than that moment
 membership arriving mid-bootstrap was therefore reverted when the older snapshot landed, and the
 agent the feed had just announced disappeared from the graph. Both channels carry a full snapshot
 through the same apply, so a live event now replaces the read rather than being overwritten by it.
+
+What is superseded is the source, not the snapshot. Membership speaks in two sentences, a snapshot
+and a refusal, and either side can say either one, so the rule covers all four: a live refusal is no
+longer erased by an older successful read, and a startup read that refuses no longer overrules a
+newer live snapshot. Both of those ended with the header pill making a claim about the mesh that was
+really a claim about one read, which is the one thing that pill exists not to do.
