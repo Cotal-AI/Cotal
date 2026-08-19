@@ -134,6 +134,11 @@ rather than guessed at. The same holds for the channel name in the URL: an escap
 read is the caller's typo, not a broken server. Either way a malformed request is answered as a bad
 request and never as the dashboard having broken.
 
+A refusal names the value it received, and it renders that value so you can read it. Characters that
+would otherwise be invisible or would rearrange the text around them come back as their escape
+(`\u007f`, `\u2028`) in both the response and the line printed in the terminal, so what you read is
+what was actually sent. Ordinary text, accents and non-Latin scripts included, is left alone.
+
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
 raw HTML is stripped and only http(s)/mailto links survive. Long bodies still clamp to a few lines

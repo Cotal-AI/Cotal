@@ -261,6 +261,36 @@ export class BadRequest extends Error {}
  *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
  *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
  *  asked for. */
+/** Codepoints `JSON.stringify` leaves RAW that change what a reader sees. C0 is not here because
+ *  `JSON.stringify` already escapes all of it, so the terminal-escape class was closed before this
+ *  existed; what is left is everything that renders as nothing, renders as something else, or
+ *  reorders its neighbours: DEL and the C1 controls, the soft hyphen, the zero-width and bidi marks,
+ *  the line and paragraph separators, the bidi embedding/override/isolate family, and the BOM. */
+const INVISIBLE_AFTER_JSON = /[\u007f-\u009f\u00ad\u200b-\u200f\u2028\u2029\u202a-\u202e\u2066-\u2069\ufeff]/g;
+
+/** QUOTE A CALLER'S OWN VALUE SO AN OPERATOR CAN READ IT.
+ *
+ *  `JSON.stringify` was doing two jobs at every site below and only claims one of them. It builds
+ *  valid JSON, and on the way it escapes every C0 control, so `ESC` arrives as the six characters
+ *  `\u001b` and a newline as `\n`. It is not a renderer for humans and never said it was: DEL, the
+ *  C1 range, `U+2028`/`U+2029`, the bidi controls and the zero-width characters are all valid JSON
+ *  string content and pass through untouched.
+ *
+ *  MEASURED against the shipped `web()` entry before this existed, driving `/api/activity?limit=`
+ *  with each codepoint percent-encoded and reading the answer as BYTES rather than through a JSON
+ *  parse (a parse decodes the very thing under test and hands the input back whatever the server
+ *  wrote). Six of eight arrived raw in BOTH the 400 body and the operator's stderr line: DEL,
+ *  `U+0085`, `U+009B`, `U+202E`, `U+2028`, `U+2029`. `ESC` and `LF` came back escaped, which is
+ *  what makes the other six a finding rather than a property of the harness.
+ *
+ *  The escape is emitted as `\uXXXX`, so the message stays valid JSON on the body path and reads as
+ *  the codepoint it is on the terminal path. Applied where the value is QUOTED rather than where it
+ *  is written out, because the untrusted thing is the value and the message is derived from it: a
+ *  guard at the two exits fences those two exits, while a guard here travels with the sentence. */
+export function quoteForOperator(value: string): string {
+  return JSON.stringify(value).replace(INVISIBLE_AFTER_JSON, (ch) => "\\u" + ch.codePointAt(0)!.toString(16).padStart(4, "0"));
+}
+
 /** The channel name out of the path. A percent escape the decoder cannot read is the caller having
  *  typed a bad one, so it is refused as a bad request like any other malformed input. Left as a
  *  bare `URIError` it reached the request frame unrecognised and was reported as a server fault,
@@ -269,7 +299,7 @@ export function channelNameFromPath(raw: string): string {
   try {
     return decodeURIComponent(raw);
   } catch {
-    throw new BadRequest(`channel name ${JSON.stringify(raw)} is not valid percent-encoded text`);
+    throw new BadRequest(`channel name ${quoteForOperator(raw)} is not valid percent-encoded text`);
   }
 }
 
@@ -277,10 +307,14 @@ export function historyLimit(query: URLSearchParams, fallback: number): number {
   const raw = query.get("limit");
   if (raw === null || raw === "") return fallback;
   if (!/^[0-9]+$/.test(raw))
-    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);
+    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);
   const n = Number(raw);
+  // Reachable only through the digits-only test above, so this value cannot carry anything the
+  // quoter would escape today. It quotes anyway: the guarantee that a refusal renders its input
+  // unambiguously should hold because the quoting site holds it, not because a regex two lines up
+  // stays exactly as narrow as it is this morning.
   if (!Number.isSafeInteger(n))
-    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);
+    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);
   return n;
 }
 

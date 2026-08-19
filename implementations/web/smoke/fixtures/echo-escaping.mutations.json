@@ -1,0 +1,40 @@
+{
+  "command": "pnpm smoke:web-echo-escaping",
+  "mutations": [
+    {
+      "name": "E1 the quoter stops escaping anything and becomes the bare `JSON.stringify` that shipped, so DEL, the C1 controls, the bidi marks and the line/paragraph separators go back to arriving raw in the value an operator reads",
+      "file": "implementations/web/src/web.ts",
+      "find": "  return JSON.stringify(value).replace(INVISIBLE_AFTER_JSON, (ch) => \"\\\\u\" + ch.codePointAt(0)!.toString(16).padStart(4, \"0\"));",
+      "replace": "  return JSON.stringify(value);",
+      "expectRed": "0.4 every codepoint in the class comes back as a JSON unicode escape, none of them raw"
+    },
+    {
+      "name": "E2 the class is widened to every codepoint above ASCII, which closes #711 and opens its mirror: a refusal naming a channel with an accented or CJK character renders as escapes instead of as the name the caller typed",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[^\\u0000-\\u007e]/g;",
+      "expectRed": "0.2 CONTROL: a non-ASCII LETTER stays a readable letter, never a unicode escape"
+    },
+    {
+      "name": "E3 the escape is emitted in a form that reads fine on a terminal but is not JSON, so the body stops parsing and a caller who asked what was wrong with their request gets a broken document instead of an answer",
+      "file": "implementations/web/src/web.ts",
+      "find": "  return JSON.stringify(value).replace(INVISIBLE_AFTER_JSON, (ch) => \"\\\\u\" + ch.codePointAt(0)!.toString(16).padStart(4, \"0\"));",
+      "replace": "  return JSON.stringify(value).replace(INVISIBLE_AFTER_JSON, (ch) => \"<U+\" + ch.codePointAt(0)!.toString(16).padStart(4, \"0\") + \">\");",
+      "expectRed": "0.7 the quoted form is still valid JSON and round-trips to the ORIGINAL value"
+    },
+    {
+      "name": "E4 the helper is left correct and the SHIPPED CALL SITE is reverted to `JSON.stringify`, so every cell about the quoter stays green while the route an operator actually hits goes back to echoing raw codepoints",
+      "file": "implementations/web/src/web.ts",
+      "find": "    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);",
+      "replace": "    throw new BadRequest(`limit must be a whole number of messages, received ${JSON.stringify(raw)}`);",
+      "expectRed": "1.3 the OPERATOR's line carries no raw codepoint from the class either"
+    },
+    {
+      "name": "E5 the low bound of the control range moves one codepoint down, so the printable tilde is escaped as well: the kind of off-by-one that makes a refusal about ordinary text unreadable and that a mid-range test cannot see",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\u007f-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\u007e-\\u009f\\u00ad\\u200b-\\u200f\\u2028\\u2029\\u202a-\\u202e\\u2066-\\u2069\\ufeff]/g;",
+      "expectRed": "0.6 the bounds are exact: the codepoint on each side of every range is left alone"
+    }
+  ]
+}
