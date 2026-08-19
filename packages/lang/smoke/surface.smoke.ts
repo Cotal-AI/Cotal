@@ -547,34 +547,26 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
 // ---- 6) the language reference and the guide parse ------------------------------------------------------
 
 for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
-  const path = `${here}/../../../${rel}`;
-  let text: string | null = null;
-  try {
-    // Read with the repository's line endings: on a CRLF checkout the fence regex below would find
-    // no block at all, and a cell over zero blocks is green without having validated anything.
-    text = readFileSync(path, "utf8").replace(/\r\n/g, "\n");
-  } catch {
-    text = null;
-  }
-  if (text !== null) {
-    const blocks = [...text.matchAll(/```js\n([\s\S]*?)```/g)].map((m) => m[1] as string);
-    const bad: string[] = [];
-    for (const [i, block] of blocks.entries()) {
-      // A block marked as an example of a REFUSAL states its code on the first line.
-      const refusal = /^\/\/ refused: (L\d{4})/.exec(block);
-      const codes = codesOf(block);
-      if (refusal !== null) {
-        if (!codes.includes(refusal[1] as string)) bad.push(`block ${i + 1}: expected ${refusal[1]}, got ${codes.join(",") || "accepted"}`);
-      } else if (codes.length > 0) {
-        bad.push(`block ${i + 1}: ${codes.join(",")}`);
-      }
+  // Both documents are part of the repository, so an unreadable one throws here and fails the suite
+  // rather than skipping its cell. The read folds CRLF to LF: on a CRLF checkout the fence regex
+  // below would find no block at all, and a cell over zero blocks is green without having validated
+  // anything.
+  const text = readFileSync(`${here}/../../../${rel}`, "utf8").replace(/\r\n/g, "\n");
+  const blocks = [...text.matchAll(/```js\n([\s\S]*?)```/g)].map((m) => m[1] as string);
+  const bad: string[] = [];
+  for (const [i, block] of blocks.entries()) {
+    // A block marked as an example of a REFUSAL states its code on the first line.
+    const refusal = /^\/\/ refused: (L\d{4})/.exec(block);
+    const codes = codesOf(block);
+    if (refusal !== null) {
+      if (!codes.includes(refusal[1] as string)) bad.push(`block ${i + 1}: expected ${refusal[1]}, got ${codes.join(",") || "accepted"}`);
+    } else if (codes.length > 0) {
+      bad.push(`block ${i + 1}: ${codes.join(",")}`);
     }
-    // Both documents carry js blocks, so a count of zero is a document this cell no longer reads,
-    // not a pass: the cell requires at least one block to have been validated.
-    ok(`every js block in ${rel} validates as written (${blocks.length} blocks)`, blocks.length > 0 && bad.length === 0, bad);
-  } else {
-    console.log(`  (${rel} not present; its cells skipped)`);
   }
+  // Both documents carry js blocks, so a count of zero is a document this cell no longer reads,
+  // not a pass: the cell requires at least one block to have been validated.
+  ok(`every js block in ${rel} validates as written (${blocks.length} blocks)`, blocks.length > 0 && bad.length === 0, bad);
 }
 
 // ---- 7) Appendix A IS the catalog, rendered ------------------------------------------------------
