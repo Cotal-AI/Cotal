@@ -303,6 +303,11 @@ items; a returned array or record is a fresh value the calling frame owns. `log`
 and MUST NOT influence control flow: it exists for a human reading the trace, and each line carries
 the scope path it was written from.
 
+Under language version `2`, `log` is **data**: a value that cannot cross an effect boundary cannot
+be logged either, and a logged function is refused with L4016 (§8.4). Version `1` prints what it is
+given. This is one of the differences a version exists to separate, and it is why a log line written
+by one engine is not a log line the other would have written.
+
 ### 5.2 Methods
 
 | Receiver | Methods |
