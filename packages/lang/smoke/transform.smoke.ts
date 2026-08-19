@@ -488,6 +488,20 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
   // write rule — a true red that names the wrong rule.
   ok("a cell for the write rule alone is not hoisted", !write.includes("born({})"), write.slice(0, 220));
 
+  // AND F7 OVER WRITES, ruled after the read half. The same predicate decides a WRITE that can land
+  // in the dead zone, the record is hoisted for it too, and `set` carries the binding NAME so the
+  // host refuses L2004 instead of the write landing silently in a record the declaration has not
+  // reached. The declaration's own write never carries the name: it is the one that ends the dead
+  // zone, and naming it there would make a binding refuse its own initialisation.
+  const dzWrite = shape("function f() { n = 2; } f(); let n = 1; log(n);");
+  ok("a write that can land in the dead zone hoists its record", dzWrite.module.includes("born({})"), dzWrite.module.slice(0, 240));
+  ok("and carries the binding name, which is what the host refuses on", /\.set\(n, "v", [^)]*, "n"\)/.test(dzWrite.module), dzWrite.module.slice(0, 400));
+  ok(
+    "while the declaration's own write does not, so it still initialises the binding",
+    /\.set\(n, "v", 1\)/.test(dzWrite.module),
+    dzWrite.module.slice(0, 400),
+  );
+
   // AND THE ORACLE SAYS SO, for every clause: measured, not quoted. Each dead-zone program refuses
   // L2004 on the walker and each native one answers its value, which is what the classification is
   // reproducing — and what the differential suite will hold the engine to once `get` takes the name.
@@ -765,6 +779,7 @@ const NATIVE_CAPTURE: readonly (readonly [string, string])[] = [
     ["an optional call whose chain continues", "const o = { m: () => ({ x: { y: 1 } }) }; log(o.m?.().x.y);"],
     ["an optional call at the tail of its chain", "const o = { m: () => 1 }; log(o.m?.());"],
     ["a dead-zone read, which carries its binding name", "const f = () => x; const r = f(); const x = 1; log(r);"],
+    ["a dead-zone write, which carries its binding name too", "function f() { n = 2; } f(); let n = 1; log(n);"],
     ["a non-function callee", "const f = 1; f();"],
     ["a catch clause", 'try { log(1); } catch (e) { log(e.code); }'],
     ["a template and an iteration", "const xs = [1, 2]; for (const x of xs) { log(`v${x}`); }"],

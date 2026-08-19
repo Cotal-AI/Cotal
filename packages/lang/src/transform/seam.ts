@@ -31,7 +31,9 @@ export const SEAM_MEMBERS: Readonly<Record<string, readonly [number, number]>> =
   fuel: [0, 0],
   // 2, or 3 with F7's binding name, which is what turns an absent own `v` into L2004 by name.
   get: [2, 3],
-  set: [3, 3],
+  // 3, or 4 with F7's binding name on a write that can land in the dead zone (ruling: the
+  // declaration's own initializing write never carries it).
+  set: [3, 4],
   // 3 ordinary; 4 with F6's optional-call flag, where the arguments arrive as a thunk; 5 when the
   // chain continues past the optional call and the rest of it travels as a continuation.
   call: [3, 5],

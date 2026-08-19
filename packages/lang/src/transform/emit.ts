@@ -433,6 +433,20 @@ class Emitter {
   // ---- bindings ---------------------------------------------------------------------------------
 
   /**
+   * Write a cell's field: `set(cell, "v", value)`, with F7's binding NAME where the write can land
+   * in the binding's dead zone.
+   *
+   * The name is passed on every write to a hoisted (dead-zone) cell and on NO other, which is what
+   * the host reads as "refuse if the declaration has not run". The declaration's own initializing
+   * write is the one that ends the dead zone, so it never carries it — passing it there would make
+   * a binding refuse its own initialisation.
+   */
+  private cellWrite(b: Binding | undefined, target: string, value: string): string {
+    const named = b !== undefined && b.deadZone;
+    return this.seam("set", `${target}, ${q("v")}, ${value}${named ? `, ${q((b as Binding).name)}` : ""}`);
+  }
+
+  /**
    * Bind a pattern, declaring (`const`/`let`) or assigning.
    *
    * Native destructuring is NOT used: `const { a } = o` reaches the prototype chain, and the
@@ -446,7 +460,7 @@ class Emitter {
         const b = this.binding(pattern);
         const name = pattern.name as string;
         if (mode === "assign") {
-          return b?.cell === true ? `${this.seam("set", `${name}, ${q("v")}, ${valueCode}`)};\n` : `${name} = ${valueCode};\n`;
+          return b?.cell === true ? `${this.cellWrite(b, name, valueCode)};\n` : `${name} = ${valueCode};\n`;
         }
         // A hoisted cell's record already exists (see hoistCells): the declaration is the write that
         // ends its dead zone. A cell that was NOT hoisted is a loop head's carrier, which builds a
@@ -696,7 +710,7 @@ class Emitter {
       const read = this.readName(arg);
       const write = (value: string): string => {
         const b = this.binding(arg);
-        return b?.cell === true ? this.seam("set", `${arg.name as string}, ${q("v")}, ${value}`) : `(${arg.name as string} = ${value})`;
+        return b?.cell === true ? this.cellWrite(b, arg.name as string, value) : `(${arg.name as string} = ${value})`;
       };
       return `((${old} = ${this.toNumber(read)}), (${next} = ${old} ${delta}), ${write(next)}, ${prefix ? next : old})`;
     }
@@ -724,7 +738,7 @@ class Emitter {
       const b = this.binding(left);
       const name = left.name as string;
       const write = (value: string): string =>
-        b?.cell === true ? this.seam("set", `${name}, ${q("v")}, ${value}`) : `(${name} = ${value})`;
+        b?.cell === true ? this.cellWrite(b, name, value) : `(${name} = ${value})`;
       const t = this.temp();
       // The READ is taken only where the operator needs one. Taking it unconditionally emitted a
       // `get` a plain `=` never uses, and charged the site count for it.

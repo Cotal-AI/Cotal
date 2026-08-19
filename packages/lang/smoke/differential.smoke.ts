@@ -296,10 +296,22 @@ log("rounds", rounds, r.status);`,
   // law on a non-record - and neither is reachable from a read.
   ["refusals: a curated key on the write path", 'const o = {}; o.__proto__ = { a: 1 }; log("after");', {}, "L4014"],
   ["refusals: a member written onto a non-record", 'const s = "ab"; s.x = 1; log("after");', {}, "L4010"],
+  // AND THE SAME RECEIVER WITH THE ONE KEY THAT HAS A RULE OF ITS OWN: measured identical, both
+  // arms L4010, so the receiver law is decided before the thenable law and the order is not a
+  // divergence here. It is one line above, where the receiver IS a record.
+  ["refusals: a callable then written onto a non-record", '"x".then = () => 1; log("after");', {}, "L4010"],
   // The one admitted node type the gate never spelled, found by the coverage cell below rather than
   // by reading the corpus. An unbraced body is L1009, so a stray `;` between statements is the only
   // spelling the validator admits, and it is what the emitter has to carry through unchanged.
   ["an empty statement", "; let i = 0; while (i < 2) { i = i + 1; }; log(i);", {}],
+  // F7 OVER WRITES, ruled after the read half: the same predicate, the same hoisted record, and
+  // `set` carrying the binding name so the early write refuses instead of landing silently. Held
+  // until 4f7b994c, and all four shapes the walker distinguishes are compared, not just the loud one.
+  ["a dead-zone write", "const f = () => { n = 1; }; f(); let n = 0; log(n);", {}, "L2004"],
+  ["a dead-zone write from a hoisted function", "function f() { n = 2; } f(); let n = 1; log(n);", {}, "L2004"],
+  ["a dead-zone write the program catches, after which the declaration still initialises", 'function f() { n = 2; } try { f(); } catch (e) { log(e.code, e.kind); } let n = 1; log(n);', {}],
+  ["a compound dead-zone write, refused after its read", 'function f() { n += 2; } try { f(); } catch (e) { log(e.code); } let n = 1; log(n);', {}],
+  ["the same write once the declaration has run", "function f() { n = 2; } let n = 1; f(); log(n);", {}],
   // F7 RETIRED, both halves landed: the transform classifies the dead zone as a cell and reads it by
   // name, the host answers L2004 for an absent own `v`. Held until 93bab769, compared from here on.
   ["a temporal dead zone", "const f = () => x; const r = f(); const x = 1; log(r);", {}, "L2004"],
@@ -447,6 +459,11 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   ["the value law through `set`: a callable then, written plainly", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
   ["the value law through `set`: a callable then, written computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
   ["the value law through `set`: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, "logs []", "L4018"],
+  // AND THE ORDER THE TWO RULES ARE ASKED IN, which is a divergence rather than a coincidence: the
+  // walker reaches the curated-key rule first and answers L4014 for a record `keys()` minted, where
+  // the engine reaches the value law and answers L4018. Ruled: `set` is to ask target-kind, then the
+  // array-member rule, then the thenable rule; when H reorders, this cell reds and the row moves up.
+  ["the value law through `set`: which rule answers first on a minted record", 'keys({ a: 1 }).then = () => 1; log("after");', {}, "L4014", "L4018"],
 ];
 
 {
@@ -540,14 +557,6 @@ interface HeldAnswers {
  * in the same change. A held list with no assertion is a coverage cap nobody can see.
  */
 const HELD: readonly (readonly [string, string, object, readonly string[], HeldAnswers, string])[] = [
-  [
-    "a dead-zone WRITE, which the ruling did not spell",
-    "const f = () => { n = 1; }; f(); let n = 0; log(n);",
-    {},
-    ["error"],
-    { walker: "L2004", engine: "EngineFault: the engine broke its own contract: Cannot access 'n' before initialization. The " },
-    "MEASURED, and it is the write half of F7, which the ruled predicate does not cover: it quantifies over READS, and nothing reads `n` early here. The walker refuses `n is assigned before its declaration was reached` L2004; the binding is a cell for the WRITE rule, so its record is built at the declaration, and the early `set` reaches the record's own native binding first - a ReferenceError, which lane H's loud clause now refuses as an ENGINE fault carrying the native message along (the pin is the 80 characters this harness keeps). Left LOUD on purpose: extending the classifier to writes would hoist the record and the early write would land in it silently, so the program would log 0 where the walker refuses. The fix is the mirror of `get`'s third argument - `set` taking the binding name where the write is not the declaration's - and that is a ruling, not an emitter choice",
-  ],
 ];
 {
   for (const [name, source, script, expected, pinned, why] of HELD) {

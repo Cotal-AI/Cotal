@@ -142,6 +142,13 @@ class Walk {
     if (b === undefined) return;
     this.bindingOf.set(node, b);
     if (b.funcId !== funcId && b.kind !== "const") b.cell = true;
+    // AND F7 OVER WRITES, ruled after the read half landed. A write reaches the dead zone by the
+    // same path a read does — measured on the walker, `n = 2` inside a hoisted `function` called
+    // before `let n = 1` is a CATCHABLE L2004 and `n` still reads 1 afterwards — so the same
+    // predicate decides it, and the record has to be hoisted for the same reason: an unhoisted one
+    // is still in its own temporal dead zone when the early write evaluates the argument, and the
+    // native ReferenceError never reaches the seam.
+    this.deadZone(b);
   }
 
   /**
