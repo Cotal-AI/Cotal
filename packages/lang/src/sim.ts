@@ -53,10 +53,11 @@ export interface SimScript {
    * then silently discarded. Demanding a field the implementation overwrites makes every fixture
    * carry a number that means nothing, and reads to the next author as though it were honoured.
    *
-   * The type now refuses it, but only where TypeScript checks excess properties, which is a fresh
-   * literal in the call itself. A script assembled into a named `const` and passed by name, or
-   * passed through a cast, still compiles with `at` present and still has it discarded. This closes
-   * the idiom a new author reaches for first; it does not close the loophole.
+   * The type refuses it wherever the literal takes its type from here, which is two shapes: written
+   * inline in the call, and written under an explicit `SimScript` annotation. A literal whose type
+   * is inferred first and only then passed by name, or one put through a cast, still compiles with
+   * `at` present and still has it discarded. This closes the two idioms a new author reaches for
+   * first; it does not close the loophole.
    */
   readonly checkpoints?: Readonly<Record<string, Scripted<Omit<CheckpointResultValue, "at">>>>;
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
