@@ -442,7 +442,10 @@ log("rounds", rounds, r.status);`,
   // F7 OVER WRITES, ruled after the read half: the same predicate, the same hoisted record, and
   // `set` carrying the binding name so the early write refuses instead of landing silently. Held
   // until 4f7b994c, and all four shapes the walker distinguishes are compared, not just the loud one.
-  ["a dead-zone write", "const f = () => { n = 1; }; f(); let n = 0; log(n);", {}, "L2004"],
+  // NAMED "plainly" ON PURPOSE: bare, this row's name is a PREFIX of the two below it, and an
+  // expectRed is matched as a substring - so a mutant aimed here would report a kill off either of
+  // them. A cell name that is a prefix of a sibling is an ambiguous anchor, not just an untidy one.
+  ["a dead-zone write, plainly", "const f = () => { n = 1; }; f(); let n = 0; log(n);", {}, "L2004"],
   ["a dead-zone write from a hoisted function", "function f() { n = 2; } f(); let n = 1; log(n);", {}, "L2004"],
   ["a dead-zone write the program catches, after which the declaration still initialises", 'function f() { n = 2; } try { f(); } catch (e) { log(e.code, e.kind); } let n = 1; log(n);', {}],
   ["a compound dead-zone write, refused after its read", 'function f() { n += 2; } try { f(); } catch (e) { log(e.code); } let n = 1; log(n);', {}],

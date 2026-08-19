@@ -126,8 +126,8 @@
       "file": "packages/lang/src/transform/scope.ts",
       "find": "    this.deadZone(b);\n  }",
       "replace": "  }",
-      "expectRed": "identical on both engines: a dead-zone write",
-      "cell": "identical on both engines: a dead-zone write",
+      "expectRed": "identical on both engines: a dead-zone write, plainly",
+      "cell": "identical on both engines: a dead-zone write, plainly",
       "note": "The behavioural half of the surface cell: the walker answers a CATCHABLE L2004 and the program still reads the declared value afterwards, where the mutant's engine dies on an engine fault the program cannot see. Measured before it was aimed."
     },
     {
@@ -162,8 +162,8 @@
       "file": "packages/lang/src/transform/emit.ts",
       "find": "    if (VALUE_NAMES.includes(name)) return VOID;",
       "replace": "    if (VALUE_NAMES.includes(name)) return name;",
-      "expectRed": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
-      "cell": "every corpus program emits a module with no free identifier, which is what the compartment cannot catch",
+      "expectRed": "every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch",
+      "cell": "every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch",
       "note": "Measured: NOT ONE behavioural cell in this suite reds. The free name resolves to the real global in the harness's evaluator, and lane H measured that inside the shipped SES compartment an unbound READ answers `undefined` and throws nothing either - so both arms agree, every journal matches, and the only thing that notices is the resolver over the emitted text. That is the whole argument for running it over the corpus this gate actually executes."
     },
     {
