@@ -21,7 +21,7 @@ import { Journal, RunClock } from "../journal.js";
 import { KeyScope, programHashOf } from "../keys.js";
 import { bindPins, resolvePins } from "../pins.js";
 import type { RunOptions, RunResult } from "../interpret.js";
-import { createEngine, type EngineCtx } from "./ctx.js";
+import { EngineFault, createEngine, type EngineCtx } from "./ctx.js";
 import { EngineFrame, Signal, withFrame } from "./frame.js";
 
 /** What the transform emits: a closed expression taking the context as its call argument. */
@@ -93,7 +93,17 @@ export async function runOnEngine(source: string, module: string, options: Engin
   const frame = new EngineFrame(new KeyScope(), new RunClock(pins.startedAt), new Signal());
 
   const factory = options.evaluate(module);
-  const value = await withFrame(frame, async () => await factory(engine.ctx)());
+  // THE RUN BOUNDARY IS THE SECOND PLACE A NATIVE ReferenceError CAN SURFACE - the first is an
+  // emitted catch, and `caught` refuses it there. A program with no `try` around the bad read has
+  // nothing to route it through, so it arrives here, and here it must not look like a program error
+  // either. See `EngineFault`: zero free identifiers means this can only be the engine's own bug.
+  const value = await withFrame(frame, async () => {
+    try {
+      return await factory(engine.ctx)();
+    } catch (e) {
+      throw e instanceof ReferenceError ? new EngineFault(e) : e;
+    }
+  });
 
   return { value, journal, programHash, pins, steps: engine.steps() };
 }

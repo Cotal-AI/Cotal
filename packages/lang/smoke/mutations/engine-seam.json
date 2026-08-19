@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/engine.smoke.ts",
-  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and ruling 1c's invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), F7's cell read (get's third argument, hasOwn rather than truthiness) and the loud clause that a native ReferenceError is the ENGINE's fault, and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
   "command": "pnpm smoke:lang-engine",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
   "why": [
@@ -26,7 +26,14 @@
     "COMPARISON, which lives in perform.ts and belongs to the shared machinery's own ledger. What this",
     "file owns is that the digest handed to it is the walker's, and any mutation of that is caught one",
     "cell earlier, as a journal difference on the live run - which is why both digest mutants below",
-    "name the journal cell rather than the divergence cell they would also break."
+    "name the journal cell rather than the divergence cell they would also break.",
+    "",
+    "RULING 1b'S CLOSURE-OBLIGATION SECTION HAS NO MUTANT OF ITS OWN, for the same reason as the drift",
+    "alarm above: what it holds is a property of library.ts, which this lane may not edit, and it probes",
+    "the WHOLE builtin table behaviourally rather than reading a declaration - so nothing in the seam can",
+    "be mutated to break it. Its own failure mode, probing nothing, is graded by the count in the first",
+    "cell's name. The two gates that actually keep the door shut, born() and set() refusing a callable",
+    "`then`, are mutated where they live, further up this file."
   ],
   "mutations": [
     {
@@ -578,6 +585,66 @@
       "completionMarker": "ok a RENAMED losing arm diverges too",
       "cell": "fanOut: the journals are IDENTICAL, entry for entry",
       "note": "`parallel` and `race` take their bag second, `fanOut` and `conclave` third, and the position is declared in primitives.ts rather than remembered here. Read at a fixed position, a fanOut's bag is its body: the scope loses its name (so its step key changes) and its `key` function (so it refuses L3021)."
+    },
+    {
+      "name": "a cell's presence is decided by truthiness instead of hasOwn",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "Object.prototype.hasOwnProperty.call(o, prop)",
+      "replace": "(o as Record<string, unknown>)[prop] !== undefined",
+      "expectRed": "a cell holding `undefined` is INITIALISED, and reads as undefined",
+      "completionMarker": "ok with the WALKER'S message, word for word",
+      "cell": "a cell holding `undefined` is INITIALISED, and reads as undefined",
+      "note": "The two rules agree on every value except the one that matters: a binding initialised to `undefined` HAS been initialised, and a truthiness test refuses it as unreached. `let x = undefined;` then reading `x` from a closure would answer L2004 on a line the declaration already ran."
+    },
+    {
+      "name": "the binding name is accepted and ignored",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (binding !== undefined && !(o !== null && typeof o === \"object\" && Object.prototype.hasOwnProperty.call(o, prop))) {",
+      "replace": "      if (false) {",
+      "expectRed": "and so does the engine, when the cell has no own key yet",
+      "completionMarker": "ok the walker refuses a TDZ read at run time with L2004",
+      "cell": "and so does the engine, when the cell has no own key yet",
+      "note": "The whole of F7's host clause is this check. Without it a TDZ read answers `undefined` instead of refusing, which is the silent-answer class: the program takes a branch on a binding that does not have a value yet, and no journal entry ever disagrees with the walker's, because the walker refused before it wrote one."
+    },
+    {
+      "name": "the cell refusal drifts from the walker's words",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "is used before its declaration was reached: the binding exists for the whole block",
+      "replace": "is used before its declaration was reached: the binding exists for the block",
+      "expectRed": "with the WALKER'S message, word for word",
+      "completionMarker": "ok and so does the engine, when the cell has no own key yet",
+      "cell": "with the WALKER'S message, word for word",
+      "note": "The sentence lives inside interpret.ts's `Env.get` and is not exported, so this side carries a copy and the cell takes the original FROM THE ORACLE at run time to compare against. That is what keeps a copy from quietly becoming a second answer."
+    },
+    {
+      "name": "a native ReferenceError is converted into a program error",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (e instanceof ReferenceError) throw new EngineFault(e);",
+      "replace": "      void 0;",
+      "expectRed": "a native ReferenceError reaching the catch head is an ENGINE fault, rethrown",
+      "completionMarker": "ok and the engine's catch head answers the same record",
+      "cell": "a native ReferenceError reaching the catch head is an ENGINE fault, rethrown",
+      "note": "The emitted module has zero free identifiers, so a ReferenceError can only be a binding the transform did not classify as a cell or an emitter temporary read before it was bound. Converted, a compiler bug arrives at the program as an ordinary catchable error and the program handles it - which is how a missed classification ships."
+    },
+    {
+      "name": "an engine fault is catchable",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "  \"EngineFault\",\n  \"Cancelled\",",
+      "replace": "  \"Cancelled\",",
+      "expectRed": "an emitted catch around it rethrows rather than catching",
+      "completionMarker": "ok while it carries what actually happened",
+      "cell": "an emitted catch around it rethrows rather than catching",
+      "note": "Loud is not enough on its own: a program with a `try` around the bad read would catch the engine's own fault and carry on, which is the same outcome as converting it, reached one line later."
+    },
+    {
+      "name": "the run boundary lets a ReferenceError through as the program's",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "      throw e instanceof ReferenceError ? new EngineFault(e) : e;",
+      "replace": "      throw e;",
+      "expectRed": "a ReferenceError escaping the whole run is an ENGINE fault too",
+      "completionMarker": "ok an emitted catch around it rethrows rather than catching",
+      "cell": "a ReferenceError escaping the whole run is an ENGINE fault too",
+      "note": "The catch head is only ONE of the two places this can surface. A program with no `try` around the bad read has nothing to route it through, so it arrives here - and a bare ReferenceError reaching a caller is indistinguishable from a host crash."
     }
   ]
 }
