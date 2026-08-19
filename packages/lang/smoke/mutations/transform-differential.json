@@ -101,8 +101,7 @@
       "replace": "return defers && i >= 1 ? `async () => (${code})` : code;",
       "expectRed": "identical on both engines: a fan-out whose key is awaited",
       "cell": "identical on both engines: a fan-out whose key is awaited",
-      "note": "The mirror of the rule above: `sleep:warm` lands BEFORE `fanOut:f` on both arms because the options bag is evaluated at the call, outside the scope. Wrapped in a thunk it is computed inside, and the two entries swap.",
-      "why": "The ruled position is the BODY alone; the bag is evaluated before the scope entry. Deferring it too keeps every eager-body program green and only shows up as journal order in the program whose key awaits."
+      "note": "The mirror of the rule above: `sleep:warm` lands BEFORE `fanOut:f` on both arms because the options bag is evaluated at the call, outside the scope. Wrapped in a thunk it is computed inside, and the two entries swap. The ruled position is the BODY alone, so this mutant keeps every eager-body program green and shows up only as journal order in the program whose key awaits."
     }
   ],
   "completionMarker": "differential.smoke:"
