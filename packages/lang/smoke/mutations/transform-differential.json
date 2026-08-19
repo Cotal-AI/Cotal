@@ -1,6 +1,6 @@
 {
   "suite": "packages/lang/smoke/differential.smoke.ts",
-  "guard": "The same program on the walker and on the engine produces the same value, the same log, the same refusal, and the same journal entry for entry - the step keys AND their order. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "guard": "The same program on the walker and on the engine produces the same value, the same log, the same refusal, and the same journal entry for entry - the step keys AND their order. (COUNTING suite, not fail-fast: every cell prints, so an aim is graded by NAME rather than by whichever cell is earliest.)",
   "command": "pnpm smoke:lang-differential",
   "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/transform-differential.json",
   "mutations": [
@@ -192,6 +192,15 @@
       "expectRed": "the comparator finds a difference the rendering cannot show: zero against negative zero",
       "cell": "the comparator finds a difference the rendering cannot show: zero against negative zero, which `0 / -1` produces in an ordinary program",
       "note": "Lane H's second hole in the first spelling. JSON draws -0 as `0` and so does a bare `typeof`, and `0 / -1`, `-0` and `0 * -1` are three ordinary programs that produce a true one, measured on both arms - they are corpus rows now, so this bit has live evidence and not only a control."
+    },
+    {
+      "name": "a cell is renamed and its aim is left behind, on this suite's config",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  [\"a dead-zone write, plainly\", \"const f = () => { n = 1; }; f(); let n = 0; log(n);\", {}, \"L2004\"],",
+      "replace": "  [\"a dead-zone write, plainly enough\", \"const f = () => { n = 1; }; f(); let n = 0; log(n);\", {}, \"L2004\"],",
+      "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
+      "cell": "every mutation's expectRed names exactly one cell this suite printed",
+      "note": "A corpus row's name IS a cell's name here, so renaming a row is how this suite's aims go stale - and it changes no behaviour, so no other cell reds. Aimed at the row this config already anchors on, which is the pair most likely to drift together in a future edit."
     }
   ],
   "completionMarker": "differential.smoke:"

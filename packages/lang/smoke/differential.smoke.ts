@@ -34,6 +34,7 @@ import { ADMITTED_NODES } from "../src/syntax.js";
 import { assertNoCode } from "../src/values.js";
 import { parseModule, unbound } from "./_module-shape.js";
 import { parse } from "acorn";
+import { readFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 
 let pass = 0;
@@ -48,7 +49,10 @@ const failures: string[] = [];
  * about member reads. The summary line at the bottom prints on both outcomes, which is what lets
  * `mutation-proof` tell a real red from a run that died early.
  */
+/** Every cell this suite printed, passed or failed, in order. The config audit at the bottom reads it. */
+const CELLS: string[] = [];
 const ok = (name: string, cond: boolean, extra?: unknown) => {
+  CELLS.push(name);
   if (cond) {
     pass++;
     console.log(`  ok ${name}`);
@@ -1095,6 +1099,38 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   }
   ok("every program the gate runs emits a module with no free identifier, which is what the compartment cannot catch", open.length === 0, open);
   console.log(`  (${RAN.length} emitted modules resolved across the corpus, the divergences, the holds and the crossings, ${open.length} with a free identifier)`);
+}
+
+// ---- the mutation config, audited against the cells this suite prints --------------------------
+
+/**
+ * The same instrument the surface suite carries, over this suite's own config.
+ *
+ * `expectRed` is matched as a SUBSTRING of the run's output, which fails toward confidence three
+ * ways and did, all three in these two configs: a sentence left behind by a renamed cell grades
+ * WRONG-RED at fold time; a sentence that is a PREFIX of a sibling can report a kill off the wrong
+ * cell; and a sentence that is a THROW MESSAGE rather than a cell grades a crash as a kill. Exactly
+ * one printed cell per aim catches all three. Cells are recorded whether they passed or FAILED,
+ * because this suite counts rather than exits — an aim naming a cell that fails is still an aim
+ * naming a cell, and the alternative would make this red for the wrong reason on a real divergence.
+ */
+{
+  const cfg = JSON.parse(readFileSync(new URL("./mutations/transform-differential.json", import.meta.url), "utf8")) as {
+    suite: string;
+    mutations: { name: string; expectRed: string }[];
+  };
+  ok("the config audited here is the one that names this suite", cfg.suite.endsWith("differential.smoke.ts"), cfg.suite);
+  // THIS CELL COUNTS ITSELF, and it has to: a config may aim a mutant at the audit, and the audit's
+  // own name is not in `CELLS` yet when it runs — `ok` records after it decides. Left out, an aim at
+  // this cell reads as a stale sentence and the audit reds over its own existence.
+  const AUDIT = "every mutation's expectRed names exactly one cell this suite printed";
+  const known = [...CELLS, AUDIT];
+  const wrong = cfg.mutations
+    .map((m) => ({ m, hits: known.filter((c) => c.includes(m.expectRed)).length }))
+    .filter(({ hits }) => hits !== 1)
+    .map(({ m, hits }) => `${m.name}: ${hits} printed cell(s) match ${JSON.stringify(m.expectRed)}`);
+  ok(AUDIT, wrong.length === 0, wrong);
+  console.log(`  (${cfg.mutations.length} expectRed strings audited against ${CELLS.length} printed cells)`);
 }
 
 console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);

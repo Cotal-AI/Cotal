@@ -79,10 +79,10 @@
       "file": "packages/lang/src/transform/scope.ts",
       "find": "        this.bindingOf.set(node, this.declare(scope, node.name as string, kind, declEnd));",
       "replace": "        this.declare(scope, node.name as string, kind, declEnd);",
-      "expectRed": "resolves to nothing, which a validated program cannot contain",
+      "expectRed": "the transform emits, and a fault in the emitter has a cell to land on",
       "completionMarker": "ok the emitted module has no unbound reference: array and object literals",
-      "cell": "the emitted module has no unbound reference: for with per-iteration closures",
-      "note": "GRADED ON THE REFUSAL, not on a cell, and deliberately: the emitter asks the analysis the same question at a declaration as at a use, and an unrecorded declaration makes a per-iteration `for` head unresolvable. It fails LOUD (the emitter refuses to emit) rather than quietly emitting a plain binding for a cell, which is the outcome worth pinning - the quiet half is covered by the mutation above."
+      "cell": "the transform emits, and a fault in the emitter has a cell to land on",
+      "note": "Aimed at a THROW MESSAGE until now, which is a kill graded on a crash: measured, the mutant killed this suite with an uncaught Error after 30 named cells and zero failed cells, and the config matched the emitter's own sentence out of the stack trace. The break is unchanged - a declarator that records nothing leaves the emitter with a name that resolves to nothing, which a validated program cannot contain - but section 0 now captures the file's first transform, so it reds BY NAME on a cell instead of ending the process. That is the difference between the ledger reporting a wrong answer and reporting a corpse."
     },
     {
       "name": "an update's operand loses its numeric fast path, so every counter crosses the seam",
@@ -323,6 +323,24 @@
       "cell": "and the declaration writes into that record rather than building one",
       "completionMarker": "ok the resolver names a free identifier when one exists",
       "note": "Measured rather than aimed at the cell that reads best: the READ program's declaration is the first one emitted, and its cell already pins the three-argument spelling, so it is what reds. The rule is the same one either way - the write that ENDS a dead zone can never be the write that refuses for it."
+    },
+    {
+      "name": "a cell is renamed and its aim is left behind, which is the fault that reached a fold",
+      "file": "packages/lang/smoke/transform.smoke.ts",
+      "find": "  [\"a member read is one get\", \"const o = { a: 1 }; log(o.a);\", { fuel: 1, born: 1, get: 1, free: 1 }],",
+      "replace": "  [\"a member read is one get, renamed\", \"const o = { a: 1 }; log(o.a);\", { fuel: 1, born: 1, get: 1, free: 1 }],",
+      "expectRed": "every mutation's expectRed names exactly one cell this suite printed",
+      "cell": "every mutation's expectRed names exactly one cell this suite printed",
+      "note": "The exact fault that reached a fold: a rename leaves a config aim pointing at a sentence nothing prints, and nothing notices until the ledger runs and reports WRONG-RED. A corpus row's name IS a cell's name here, and renaming one breaks NO assertion by itself - the audit is the only thing in the file that can see it - so this mutant is the whole evidence that the audit works rather than merely runs."
+    },
+    {
+      "name": "a transform is run above the guard, so the file's first one is unguarded again",
+      "file": "packages/lang/smoke/transform.smoke.ts",
+      "find": "// ---- 0) the FIRST transform in this file, and it is captured ------------------------------------",
+      "replace": "const __ahead = transform(\"log(1);\").module;\nvoid __ahead;\n\n// ---- 0) the FIRST transform in this file, and it is captured ------------------------------------",
+      "expectRed": "the guarded transform is still the first one this file runs",
+      "cell": "the guarded transform is still the first one this file runs",
+      "note": "The control arm the guard is worthless without, and the one the engine suite's equivalent taught: an insertion ABOVE the guard silently re-opens the hole, because the guard's value is its POSITION and nothing about it is checked by running it. This mutant adds an ordinary, harmless-looking transform above section 0 - it breaks no assertion and reds no other cell - and the offset check is the only thing that sees it."
     }
   ]
 }
