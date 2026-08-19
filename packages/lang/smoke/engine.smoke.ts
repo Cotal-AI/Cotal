@@ -282,6 +282,18 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     "a write past the end of an array is L4019, because a hole is not a value here",
     codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([]), "2", 1)))) === "L4019",
   );
+  // THE OTHER HALF, lane T's control row, as a PROGRAM on both arms rather than a seam call: an
+  // index that exists is an ordinary write, so the refusal above is a rule about holes and not the
+  // array path refusing writes. Both answers measured, not transcribed.
+  {
+    const src = `const sch = { xs: keys({ a: 1 }) };\nsch.xs[0] = "z";\nlog(sch.xs[0]);\n`;
+    const wLogs: unknown[][] = [];
+    const eLogs: unknown[][] = [];
+    await walkerRun(src, { runId: "idx", handler: new SimHandler({}), onLog: (l) => wLogs.push([...l.values]) });
+    await runOnEngine(src, transform(src).module, { runId: "idx", handler: new SimHandler({}), evaluate: plainly, onLog: (l) => eLogs.push([...l.values]) });
+    ok("while an IN-RANGE index write completes on the walker", JSON.stringify(wLogs) === '[["z"]]', wLogs);
+    ok("and on the engine, with the same value and the same shape", JSON.stringify(eLogs) === JSON.stringify(wLogs) && sameShapes(eLogs, wLogs), { engine: eLogs, shapes: shapes(eLogs) });
+  }
   ok(
     "a LONGER length is L4017 for the same reason",
     codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born([1]), "length", 5)))) === "L4017",
