@@ -18,7 +18,7 @@
 import { randomUUID } from "node:crypto";
 import { spawn } from "node:child_process";
 import { connect } from "node:net";
-import { mkdtempSync, writeFileSync, rmSync } from "node:fs";
+import { mkdtempSync, writeFileSync, rmSync, existsSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -170,8 +170,19 @@ try {
 
   // Boot the REAL plugin in a subprocess with the connector-built env (Otto's identity + control).
   const PROBE = fileURLToPath(new URL("./cooperative-stop-probe.ts", import.meta.url));
+  // Arm the event plane and hand the probe a marker path. The marker is written by the probe's
+  // own fake OpenCode server when it finishes answering a queued read, so its presence after the
+  // process is gone says the drain was allowed to finish rather than cut off by the exit.
+  const marker = join(dir, "coop-read-finished");
+  mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
-    env: { ...process.env, ...spec.env },
+    env: {
+      ...process.env,
+      ...spec.env,
+      COTAL_EVENTS: "1",
+      COTAL_WORKSPACE_ROOT: join(dir, "ws"),
+      COOP_MARKER: marker,
+    },
     stdio: ["ignore", "inherit", "inherit"],
   });
   let probeExit: number | null = null;
@@ -198,8 +209,15 @@ try {
   }
   check("cooperative stop leaves the mesh (watcher sees Otto offline)", ottoOffline, watcher.getRoster().find((p) => p.card.name === "Otto")?.status);
 
-  await awaitExit(probe, 5000);
+  await awaitExit(probe, 15_000);
   check("the plugin process exited cleanly (0) on cooperative shutdown", probeExit === 0, probeExit);
+
+  // THE MANAGER'S STOP IS A TEARDOWN TOO, and it is the one a supervised seat actually takes.
+  // The join went into the plugin-unload path first, with an absolute claim above it that nothing
+  // publishes after teardown; this path ran a separate routine that exited without joining, so the
+  // claim was false exactly where it mattered. The marker is written by the probe when a queued
+  // read finishes, so it exists only if the stop waited for work that was already in flight.
+  check("cooperative stop joined the queued event work before exiting", existsSync(marker), { marker });
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).message);
