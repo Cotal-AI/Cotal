@@ -8,6 +8,14 @@ implements, and the simulator and dry run that exercise a program with no broker
 **Tier:** `packages/` (the standard). Depends on nothing else in the repo; it knows about effects,
 not about NATS. The host that runs a program on the mesh is `@cotal-ai/runtime`.
 
+**Two engines.** `run`/`resume` are the tree-walker, language version `1`, and it stays the replay
+engine for every run recorded under it. `engine/` is version `2`: a different language, not a faster
+one. Each engine stamps the pins it resolves with its own version and compares a recorded version
+against its own, which is why `WALKER_LANGUAGE_VERSION` and `ENGINE_LANGUAGE_VERSION` are two
+constants and `LANGUAGE_VERSION` is an alias for the current language, the engine's. A record binds
+only under the engine that wrote it (L5008). The engine requires node 22 or newer and refuses below
+it with L1000, an implementation limit that is deliberately not in the error catalog.
+
 The language is defined by [`spec/cotal-lang.md`](../../spec/cotal-lang.md) (normative; every
 `js` block in it is validated by this package's surface suite) and its wire footprint by
 [SPEC.md §14](../../SPEC.md#14-workflow-runs-v05). The guide is

@@ -33,7 +33,7 @@ import { parseDuration } from "./duration.js";
 import { PRIMITIVES, VALUE_NAMES, type EffectKind } from "./primitives.js";
 import { arrayMethods, builtins, numberMethods, stringMethods, type Callable, type Method } from "./library.js";
 import { notifyFactViolation } from "./notify-fact.js";
-import { bindPins, resolvePins, type RunPins } from "./pins.js";
+import { bindPins, resolvePins, WALKER_LANGUAGE_VERSION, type RunPins } from "./pins.js";
 import {
   dispatchPrimitive,
   freeConstructors,
@@ -1505,7 +1505,9 @@ export async function run(source: string, options: RunOptions): Promise<RunResul
     );
   }
   const pins =
-    options.pins !== undefined ? bindPins(options.pins, options) : resolvePins(options, options.handler.now());
+    options.pins !== undefined
+      ? bindPins(options.pins, options, WALKER_LANGUAGE_VERSION)
+      : resolvePins(options, options.handler.now(), WALKER_LANGUAGE_VERSION);
   const interp = new Interpreter(ast as AnyNode, options, programHash, pins);
 
   // The run clock starts at the run's LOGICAL epoch, not at this host's clock: a run resumed on

@@ -26,7 +26,7 @@ import { resumeOnEngine, runOnEngine } from "../src/engine/host.js";
 import { Journal, type JournalEntry } from "../src/journal.js";
 import { resume as walkResume, run as walk } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
-import { resolvePins } from "../src/pins.js";
+import { ENGINE_LANGUAGE_VERSION, WALKER_LANGUAGE_VERSION, resolvePins } from "../src/pins.js";
 import { transform } from "../src/transform/index.js";
 import { validate } from "../src/grammar.js";
 import { BUILTINS, EFFECT_KINDS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES } from "../src/primitives.js";
@@ -909,7 +909,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     ["engine", "walker"],
   ] as const) {
     // The pins are resolved ONCE and travel with the journal, the way a run record carries them.
-    const pins = resolvePins({ runId: "d", seed: SEED, startedAt: AT }, AT);
+    const pins = resolvePins({ runId: "d", seed: SEED, startedAt: AT }, AT, wrote === "walker" ? WALKER_LANGUAGE_VERSION : ENGINE_LANGUAGE_VERSION);
     const journal = new Journal({ run: "d" });
     let asked = 0;
     const first = {
@@ -963,7 +963,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
   const refusals: (string | null)[] = [];
   for (const kind of ["walker", "engine"] as const) {
     const journal = new Journal({ run: "d" });
-    const pins = resolvePins({ runId: "d", seed: SEED, startedAt: AT }, AT);
+    const pins = resolvePins({ runId: "d", seed: SEED, startedAt: AT }, AT, WALKER_LANGUAGE_VERSION);
     try {
       await walk(source, { runId: "d", handler: new SimHandler({}), journal, pins });
     } catch {

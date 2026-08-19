@@ -49,7 +49,8 @@ import {
   resume as resumeProgram,
   RunReleased,
   resolvePins,
-  LANGUAGE_VERSION,
+  RuntimeFault,
+  WALKER_LANGUAGE_VERSION,
   PIN_DEFAULTS,
   type EffectHandler,
   type JournalEntry,
@@ -57,6 +58,50 @@ import {
   type RunResult,
 } from "@cotal-ai/lang";
 import { RunJournalStore } from "./journal-store.js";
+
+/**
+ * THE LANGUAGE VERSIONS THIS BUILD'S DRIVER CAN HOST, most preferred first.
+ *
+ * This is a fact about the DRIVER, not about the language. `LANGUAGE_VERSION` in `@cotal-ai/lang` is
+ * the current language and is 2; this driver serves 1, because it cannot host the version-2 engine
+ * yet and saying otherwise would not make it able to. The engine takes the TRANSFORM'S OUTPUT and an
+ * explicit evaluator - it has no default, deliberately, because turning a module string into a
+ * function is where confinement is applied or lost - and its worker names the handler by MODULE and
+ * builds it in the thread, while this driver's handler is a live object holding sockets, a mesh
+ * client and a clock. None of that is wiring this file may invent.
+ *
+ * MEASURED, which is why this table exists rather than a constant: stamping the current language on
+ * a fresh run and then calling the only engine this driver hosts refuses it -
+ * `driver stamps "2" -> walker: REFUSED L5008`. What a run is stamped with must be the version of
+ * the engine that will actually execute it.
+ *
+ * ORDER IS THE PRECEDENCE and it is declared, never derived: a fresh run takes the first entry. A
+ * sort over the keys would make "which version is preferred" a fact about string collation, which is
+ * not a thing anyone decided. Adding the engine is one entry at the front, and every version-1
+ * record keeps routing to the walker, which is the walker's whole job.
+ */
+const ENGINES: readonly { readonly version: string; readonly run: typeof runProgram; readonly resume: typeof resumeProgram }[] = [
+  { version: WALKER_LANGUAGE_VERSION, run: runProgram, resume: resumeProgram },
+];
+
+/**
+ * The refusal for a recorded language no engine in this build serves, naming what it does serve.
+ *
+ * L5023 rather than L5008: L5008 is the same disagreement one layer in, where a record was handed to
+ * a SPECIFIC engine whose version differs and the repair is to run it on the engine that matches.
+ * Here there is no such engine to name, so it is a different sentence. The message carries the
+ * recorded version AND the served set, because "this build cannot" is only actionable if it says
+ * what it can.
+ */
+function unservedLanguage(version: string): RuntimeFault {
+  return new RuntimeFault(
+    "L5023",
+    `this run was recorded under language version ${version} and this build serves ${ENGINES.map((e) => e.version).join(", ")}. `
+      + `A record replays only on an engine that speaks its language: version 1 is the tree-walker and version 2 is the engine, and they are `
+      + `different languages rather than two speeds of one.\n\n`
+      + `Options\n  run this record on a build whose engines serve version ${version}\n  fork(run, <step>) start a new run on this build, keeping the prefix`,
+  );
+}
 
 /**
  * The lease this driver holds the run under, from the work pool.
@@ -217,12 +262,17 @@ async function drive(
 
   let pins: RunPins;
   let statusRevision: number | undefined;
+  // WHICH ENGINE RUNS THIS. A fresh run takes the first entry this build serves; a resume takes the
+  // one its RECORD names, and is refused if this build has none. Chosen here, before the pins, so a
+  // fresh run is stamped with the version of the engine that will actually execute it.
+  let engine: (typeof ENGINES)[number];
   if (expect === "new") {
     if (record !== undefined) {
       // Not `RunAlreadyStarted` from the journal — this run has a SPEC, which is the stronger
       // statement: it was started, pinned, and those pins are not this attempt's to re-decide.
       return { status: "released", reason: new RunAlreadyStarted(req.runId, 0) };
     }
+    engine = ENGINES[0]!;
     // Resolved ONCE, here, from the host clock read exactly once — from here on the epoch is a
     // recorded fact, and a second read could not be the same run's epoch.
     pins = resolvePins(
@@ -233,12 +283,26 @@ async function drive(
         ...(req.stepBudget !== undefined ? { stepBudget: req.stepBudget } : {}),
       },
       req.handler.now(),
+      engine.version,
     );
   } else {
     if (record === undefined) return { status: "released", reason: new RunNotResumable(req.runId, req.runId) };
     // READ BACK, never re-derived. A default is a property of the interpreter, and the interpreter
     // is the thing that may have changed between attempts.
     pins = record.spec.value.pins as RunPins;
+    // AND THE ENGINE IS READ BACK WITH THEM. No fallback: a record whose language this build cannot
+    // speak is refused by name (L5023) rather than walked by whatever engine happens to be here,
+    // which would run a program under semantics it was never recorded under.
+    const served = ENGINES.find((e) => e.version === pins.languageVersion);
+    // RELEASED, NOT THROWN and not failed. This file's outcome contract is that a driver which is
+    // not the one to run something says so as `released`, and a run result is only ever a thing the
+    // program did: a build that does not serve this language has appended nothing, observed nothing
+    // and decided nothing about the program, so "failed" would be this layer inventing an outcome
+    // and a rejection would be an outcome shape the signature does not declare. It reads the same as
+    // the two refusals either side of it (`RunAlreadyStarted`, `RunNotResumable`) because it is the
+    // same kind of statement: not here, not this attempt.
+    if (served === undefined) return { status: "released", reason: unservedLanguage(pins.languageVersion) };
+    engine = served;
     statusRevision = record.status?.revision;
   }
 
@@ -323,8 +387,8 @@ async function drive(
   try {
     const result =
       expect === "new"
-        ? await runProgram(req.source, { ...options, journal })
-        : await resumeProgram(req.source, journal, options);
+        ? await engine.run(req.source, { ...options, journal })
+        : await engine.resume(req.source, journal, options);
     await note(req, "completed", appender.journalHigh, specRevision, statusRevision);
     return { status: "completed", result };
   } catch (e) {

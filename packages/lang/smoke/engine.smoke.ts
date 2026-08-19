@@ -19,7 +19,7 @@
 
 import { Journal, RunClock } from "../src/journal.js";
 import { KeyScope, programHashOf, stepKeyString } from "../src/keys.js";
-import { resolvePins } from "../src/pins.js";
+import { ENGINE_LANGUAGE_VERSION, WALKER_LANGUAGE_VERSION, resolvePins, type RunPins } from "../src/pins.js";
 import { RuntimeFault, RunDivergence } from "../src/errors.js";
 import { Cancelled } from "../src/effects.js";
 import { LangErrors } from "../src/errors.js";
@@ -75,6 +75,7 @@ function harness(opts: {
       ...(opts.yieldEvery !== undefined ? { yieldEvery: opts.yieldEvery } : {}),
     },
     handler.now(),
+    ENGINE_LANGUAGE_VERSION,
   );
   const run: EngineRun = {
     runId,
@@ -958,6 +959,17 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // RunResult and, for one hand-written pair, the SAME journal. One program is an existence proof, not
 // a gate, and it is written down here so nobody reads it as one.
 
+/**
+ * Every pin BUT the language version, as a comparable string.
+ *
+ * Two engines that agree about a run agree about all of it except which language they speak: the
+ * version is stamped BY the engine that resolved the pins, so it is the one field a cross-engine
+ * comparison must set aside and then assert separately. Setting it aside silently would be the bug;
+ * every cell below that uses this is paired with one naming the versions it expects.
+ */
+const withoutVersion = (p: RunPins): string =>
+  JSON.stringify(Object.fromEntries(Object.entries(p).filter(([k]) => k !== "languageVersion")));
+
 const SOURCE = `
 const builder = await spawn("builder", { name: "hire" });
 const r = await turn(builder, { name: "build" });
@@ -1001,10 +1013,24 @@ const SCRIPT = { turns: { build: { status: "done" as const } } };
   const walker = await walkerRun(SOURCE, { runId: "host-1", handler: new SimHandler(SCRIPT) });
 
   ok("both engines agree on the program hash", walker.programHash === engine.programHash);
+  // AND ON EVERY PIN BUT ONE. The language version is the one field that MUST differ, because a pin
+  // set is stamped by the engine that resolved it and these are two engines speaking two languages.
+  // Splitting this cell in two is the point: "identical pins" was true only while one shared
+  // constant made both engines claim the same version, and a cell that keeps asserting it after the
+  // split would be asserting the bug.
   ok(
-    "and on every pin",
-    JSON.stringify(walker.pins) === JSON.stringify(engine.pins),
+    "and on every pin the two engines share",
+    withoutVersion(walker.pins) === withoutVersion(engine.pins),
     { walker: walker.pins, engine: engine.pins },
+  );
+  // The mirror, and it is not decoration: without it the cell above passes just as well if BOTH
+  // engines stamp the same version again, which is exactly the collapse the split exists to prevent.
+  ok(
+    "while the language version is the one pin they must NOT share, and each is its own engine's",
+    walker.pins.languageVersion === WALKER_LANGUAGE_VERSION
+      && engine.pins.languageVersion === ENGINE_LANGUAGE_VERSION
+      && walker.pins.languageVersion !== engine.pins.languageVersion,
+    { walker: walker.pins.languageVersion, engine: engine.pins.languageVersion },
   );
 
   const strip = (j: Journal): string => JSON.stringify(j.entries());
@@ -1600,7 +1626,15 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     { worker: got.entries.map((e) => `${e.kind}#${e.occurrence}/${e.status}`), walker: walker.journal.entries().map((e) => `${e.kind}#${e.occurrence}/${e.status}`) },
   );
   ok("and there were entries to compare", got.entries.length === 2, got.entries.length);
-  ok("the pins crossed intact", JSON.stringify(got.pins) === JSON.stringify(walker.pins), { worker: got.pins, walker: walker.pins });
+  ok("the pins crossed intact", withoutVersion(got.pins) === withoutVersion(walker.pins), { worker: got.pins, walker: walker.pins });
+  // AND THE THREAD SPEAKS THE ENGINE'S LANGUAGE, which is the half of the pin set the line above
+  // sets aside. Crossing a thread boundary must not change which engine resolved these pins: this is
+  // the same run, so the version that comes back is the one the engine in the thread stamps.
+  ok(
+    "and the version that came back is the ENGINE's, not the walker's",
+    got.pins.languageVersion === ENGINE_LANGUAGE_VERSION && walker.pins.languageVersion === WALKER_LANGUAGE_VERSION,
+    { worker: got.pins.languageVersion, walker: walker.pins.languageVersion },
+  );
   ok("and the hash is the source's, as it is in this process", got.programHash === walker.programHash);
   // Reported rather than bounded tightly: the number is the point, and a tight bound on a shared
   // machine is a flaky cell. Measured on this floor at 22.8-26.4ms for the thread alone.
@@ -2425,7 +2459,17 @@ let n = 1;
     const got = answer as Extract<typeof answer, { ok: true }>;
     const walker = await walkerRun(SOURCE, { runId: "cross", handler: new SimHandler(SCRIPT) });
     ok("journal entries cross out whole, and they are the walker's", JSON.stringify(got.entries) === JSON.stringify(walker.journal.entries()), got.entries.length);
-    ok("and the pins and the program's hash cross with them", JSON.stringify(got.pins) === JSON.stringify(walker.pins) && got.programHash === walker.programHash);
+    ok(
+      "and the pins and the program's hash cross with them",
+      withoutVersion(got.pins) === withoutVersion(walker.pins) && got.programHash === walker.programHash,
+      { worker: got.pins, walker: walker.pins, hash: [got.programHash, walker.programHash] },
+    );
+    // The pin the two arms are NOT expected to share, asserted rather than quietly excluded above.
+    ok(
+      "except the language version, which crosses as the ENGINE's because the engine is what ran",
+      got.pins.languageVersion === ENGINE_LANGUAGE_VERSION,
+      got.pins.languageVersion,
+    );
   }
 
   // ---- crossing 4: THE RESULT VALUE, OUT, under the language's crossing rule.
