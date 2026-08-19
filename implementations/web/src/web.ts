@@ -262,8 +262,11 @@ export class BadRequest extends Error {}
  *  Everything else is REFUSED rather than clamped. A clamp would answer a request nobody made, and
  *  the caller who wrote `limit=2.5` would never learn that the page they read was not the page they
  *  asked for. */
-/** Codepoints `JSON.stringify` leaves RAW that change what a reader sees, stated as Unicode
- *  PROPERTIES rather than as a hand list. The first version of this WAS a hand list, and review
+/** Codepoints `JSON.stringify` leaves RAW that PRODUCE NO GLYPH OF THEIR OWN, or that reorder the
+ *  text around them, stated as Unicode PROPERTIES rather than as a hand list. That wording is
+ *  narrower than "change what a reader sees" on purpose, and the narrowing is a review finding:
+ *  the looser phrase admits every combining mark, and the paragraph at the end of this comment is
+ *  why escaping those would be this issue pointed the other way. The first version of this WAS a hand list, and review
  *  found it missing U+061C, U+2060, the variation selectors and the tag characters, every one of
  *  which is exactly the thing the list said it closed. A list is a claim about a set nobody
  *  maintains; the property IS the set, and it moves with the Unicode version the runtime carries.
@@ -290,7 +293,20 @@ export class BadRequest extends Error {}
  *  NOT IN THIS CLASS, and deliberately: a VISIBLE character that merely resembles another. A Cyrillic
  *  small a is a letter, it renders as itself, and escaping it would make a refusal about a name a
  *  human typed unreadable, which is this issue pointed the other way. Confusables are a different
- *  problem with a different answer, and quoting for a human to read is not it. */
+ *  problem with a different answer, and quoting for a human to read is not it.
+ *
+ *  NOT IN THIS CLASS EITHER, and this one review reached by finding U+0338 COMBINING LONG SOLIDUS
+ *  OVERLAY arriving raw and asking whether it belonged: a COMBINING MARK. It produces a visible
+ *  mark on a visible base, and the property that carries it, `gc=Mn`, is the same one carrying the
+ *  acute accent in a name written in NFD, the Devanagari vowel signs, the Arabic and Hebrew points
+ *  and the Vietnamese tones. Measured on this runtime, marks are 2543 codepoints and only 263 of
+ *  them are already in the class, so escaping them would take about 2280 codepoints of ordinary
+ *  written language and render an accented name as its escapes. A mark CAN build a confusable
+ *  (U+0338 over `=` renders as a not-equals sign, so a quoted `a=b` can display as `a` not-equals
+ *  `b`), which is a real harm and the same one the paragraph above declines: it is unbounded, it
+ *  needs no combining mark to exist, and its answer is normalization or confusable detection
+ *  rather than making every script that writes with marks unreadable. The suite asserts both
+ *  exclusions rather than only describing them. */
 const INVISIBLE_AFTER_JSON = /[\p{Default_Ignorable_Code_Point}\p{gc=Cf}\u007f-\u009f\u2028\u2029]/gu;
 
 /** QUOTE A CALLER'S OWN VALUE SO AN OPERATOR CAN READ IT.

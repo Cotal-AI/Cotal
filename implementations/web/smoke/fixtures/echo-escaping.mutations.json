@@ -78,6 +78,13 @@
       "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
       "replace": "const INVISIBLE_AFTER_JSON = /[\\u034f\\u115f\\u3164\\ufe00\\ufe0f\\uffa0\\u{e0100}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
       "expectRed": "0.12 SWEPT over every codepoint: the set the quoter escapes is exactly the union this file claims, plus what JSON.stringify already closed"
+    },
+    {
+      "name": "E12 the class is widened to every COMBINING MARK, which is the boundary review pushed on after finding U+0338 raw: it looks like closing a gap and it makes a refusal about a name written in NFD, or in any script that writes with marks, come back as escapes",
+      "file": "implementations/web/src/web.ts",
+      "find": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "replace": "const INVISIBLE_AFTER_JSON = /[\\p{Default_Ignorable_Code_Point}\\p{gc=Cf}\\p{M}\\u007f-\\u009f\\u2028\\u2029]/gu;",
+      "expectRed": "0.13 CONTROL: a COMBINING MARK is left RAW, so a refusal about a name written in NFD or in a script that writes with marks stays readable"
     }
   ]
 }

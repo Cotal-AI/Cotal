@@ -42,7 +42,10 @@
  * the literal encodes the union it claims, so cell 0.12 sweeps every codepoint from 0 to 0x10FFFF
  * and compares what the quoter did against that union.
  *
- * WHAT IS DELIBERATELY NOT ESCAPED, and section 0 proves it: ordinary text, and non-ASCII LETTERS.
+ * WHAT IS DELIBERATELY NOT ESCAPED, and section 0 proves it: ordinary text, non-ASCII LETTERS, and
+ * COMBINING MARKS (0.13 to 0.15, added after review found U+0338 raw and asked whether it belonged:
+ * it makes a visible mark on a visible base, and its property is the one carrying the accent in a
+ * name written in NFD).
  * A quoter that escaped every byte over 0x7f would render a refusal about an accented channel name
  * unreadable, which is the same defect pointed the other way.
  *
@@ -281,6 +284,45 @@ ok("0.3 CONTROL: what `JSON.stringify` already closed stays closed - every C0 co
   }
   ok("0.12 SWEPT over every codepoint: the set the quoter escapes is exactly the union this file claims, plus what JSON.stringify already closed",
     wrong.length === 0, wrong);
+}
+
+// THE BOUNDARY IN THE OTHER DIRECTION. Review found U+0338 COMBINING LONG SOLIDUS OVERLAY arriving
+// raw and asked whether it belonged, which is a fair question against the harm as it was first
+// stated: it does change what a reader sees. It is excluded, and these two cells are why that is a
+// decision rather than an oversight. A combining mark makes a VISIBLE mark on a visible base, and
+// its property `gc=Mn` is the same one carrying the acute accent in a name written in NFD, the
+// Devanagari vowel signs, the Arabic and Hebrew points and the Vietnamese tones. Marks are 2543
+// codepoints here and only 263 are already in the class, so escaping them takes about 2280
+// codepoints of ordinary written language: 0.2's defect wearing a different hat. What a mark CAN
+// do is build a confusable, and 0.15 pins the sharpest one so nobody has to take that on trust.
+{
+  const MARKS: Array<[string, number]> = [
+    ["COMBINING LONG SOLIDUS OVERLAY, the one review asked about", 0x338],
+    ["COMBINING ACUTE ACCENT, the accent in a name written in NFD", 0x301],
+    ["DEVANAGARI VOWEL SIGN I", 0x93f],
+    ["ARABIC FATHA", 0x64e],
+    ["HEBREW POINT HIRIQ", 0x5b4],
+    ["COMBINING TILDE, a Vietnamese tone", 0x303],
+  ];
+  const wrongly = MARKS.filter(([, n]) => !quoteForOperator(cp(n)).includes(cp(n)));
+  ok("0.13 CONTROL: a COMBINING MARK is left RAW, so a refusal about a name written in NFD or in a script that writes with marks stays readable",
+    wrongly.length === 0, wrongly.map(([name]) => name));
+}
+
+// The user-visible form of 0.13, because a list of codepoints is not a name a human typed.
+{
+  const nfd = "caf" + "e" + cp(0x301);
+  ok("0.14 CONTROL: an accented name in DECOMPOSED form comes back as the name, not as the letter plus an escape",
+    quoteForOperator(nfd) === '"' + nfd + '"', quoteForOperator(nfd));
+}
+
+// The reason the exclusion is a judgement and not a shrug: this is the strongest case AGAINST it,
+// pinned so a later reader meets it here rather than discovering it in production. It is the same
+// harm as a Cyrillic letter that looks Latin, and it has the same answer, which is not this quoter.
+{
+  const notEqual = "a=" + cp(0x338) + "b";
+  ok("0.15 STATED, not hidden: a mark over `=` renders as a not-equals sign, so the excluded class really can mislead; it is the CONFUSABLE problem, which needs no mark to exist",
+    quoteForOperator(notEqual) === '"' + notEqual + '"', quoteForOperator(notEqual));
 }
 
 // ---- the live server --------------------------------------------------------------------------

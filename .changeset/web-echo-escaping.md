@@ -46,3 +46,16 @@ wrote. The class now carries both properties, which adds 32 codepoints, none of 
 digit. A swept cell puts every codepoint from 0 to 0x10FFFF through the quoter and compares the
 result against the union the code claims, so a dropped alternative or a mistyped range is caught for
 every codepoint rather than for the ones a list happens to name.
+
+Review then pushed on the boundary from the other side, with U+0338 COMBINING LONG SOLIDUS OVERLAY
+arriving raw, which is a fair question against the harm as it was first stated: it does change what
+a reader sees. It is excluded, and the exclusion is now asserted rather than described. A combining
+mark makes a visible mark on a visible base, and the property carrying it also carries the accent
+in a name written in NFD, the Devanagari vowel signs, the Arabic and Hebrew points and the
+Vietnamese tones; escaping marks would take about 2280 codepoints of ordinary written language and
+render an accented name as its escapes, which is the same defect this change refuses to open on the
+letter side. The stated class is narrowed to say what the code does, characters that produce no
+glyph of their own or that reorder the text around them, and three cells pin the exclusion,
+including the strongest case against it, a mark over an equals sign rendering as a not-equals sign.
+That case is the confusable problem, which needs no combining mark to exist and is not answered by
+a quoter.
