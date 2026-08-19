@@ -23,10 +23,25 @@ import { SimHandler } from "../src/sim.js";
 import { transform } from "../src/transform/index.js";
 
 let pass = 0;
+const failures: string[] = [];
+/**
+ * COUNTING, NOT FAIL-FAST, and that is a property of what this suite is for.
+ *
+ * A differential run's answer is "which programs disagree", and a suite that exits at the first one
+ * reports a single divergence where there may be nine — the other lane reads this output to know
+ * what to fix. It also makes the mutation proof honest: with a fail-fast suite every mutation is
+ * graded on whichever cell happens to be earliest, so a mutation aimed at ORDER is judged by a cell
+ * about member reads. The summary line at the bottom prints on both outcomes, which is what lets
+ * `mutation-proof` tell a real red from a run that died early.
+ */
 const ok = (name: string, cond: boolean, extra?: unknown) => {
-  if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
-  pass++;
-  console.log(`  ok ${name}`);
+  if (cond) {
+    pass++;
+    console.log(`  ok ${name}`);
+    return;
+  }
+  failures.push(name);
+  console.log(`  FAIL ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
 };
 
 const SEED = "differential-seed";
@@ -110,6 +125,12 @@ const CORPUS: readonly (readonly [string, string, object])[] = [
   ["switch", 'const a = 2; switch (a) { case 1: { log("one"); break; } case 2: { log("two"); break; } default: { log("other"); break; } }', {}],
   ["try/catch/finally and completions", 'const f = () => { try { return 1; } finally { return 2; } }; try { throw { code: "x" }; } catch (e) { log(e.code); } finally { log("done"); } log(await f());', {}],
   ["try with no parameter", "try { throw 1; } catch { log(2); }", {}],
+  // THE WHOLE CAUGHT VALUE, not one field of it. `e.code` reads the same on a raw record and on the
+  // walker's `{code, kind, message}`, so a catch that bound the raw throw would agree on `e.code`
+  // and disagree on everything else - which is exactly what a mutation proved this corpus missed.
+  ["the value a catch binds", 'try { throw { code: "x" }; } catch (e) { log(e); }', {}],
+  ["catching a value that is not a record", "try { throw 1; } catch (e) { log(e); }", {}],
+  ["catching what a refusal throws", "try { const o = {}; log(o + 1); } catch (e) { log(e); }", {}],
   ["destructuring and rest", "const { a, b: bb, ...rest } = { a: 1, b: 2, c: 3 }; const [x, , ...ys] = [1, 2, 3, 4]; log(a, bb, rest, x, ys);", {}],
   ["destructuring assignment", "let a = 1; let b = 2; [a, b] = [b, a]; log(a, b);", {}],
   ["default and rest parameters", "function f(a, b = 2, ...rest) { return a + b + len(rest); } log(await f(1), await f(1, 2, 3, 4));", {}],
@@ -281,4 +302,8 @@ log("rounds", rounds, r.status);`,
   console.log(`  (${HELD.length} program(s) held out of the corpus, each pinned to the difference that holds it)`);
 }
 
-console.log(`\ndifferential.smoke: ${pass} cells passed`);
+console.log(`\ndifferential.smoke: ${pass + failures.length} cells, ${pass} passed, ${failures.length} failed`);
+if (failures.length > 0) {
+  for (const f of failures) console.log(`  FAILED: ${f}`);
+  process.exitCode = 1;
+}
