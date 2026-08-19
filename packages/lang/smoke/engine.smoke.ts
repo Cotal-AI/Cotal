@@ -22,6 +22,7 @@ import { KeyScope, programHashOf, stepKeyString } from "../src/keys.js";
 import { resolvePins } from "../src/pins.js";
 import { RuntimeFault } from "../src/errors.js";
 import { Cancelled } from "../src/effects.js";
+import { LangErrors } from "../src/errors.js";
 import { SimHandler } from "../src/sim.js";
 import { createCtx, createEngine, type EngineCtx, type EngineRun } from "../src/engine/ctx.js";
 import { runOnEngine } from "../src/engine/host.js";
@@ -603,17 +604,25 @@ const SCRIPT = { turns: { build: { status: "done" as const } } };
 
 {
   // The validator runs first, on the SOURCE, whichever engine is about to execute.
-  let refused: unknown;
-  try {
-    await runOnEngine("const x = new Date();", MODULE, {
+  //
+  // "Something threw" is NOT the claim and would not have been worth writing: with the validator
+  // removed this program still throws, because the module it is paired with performs an unscripted
+  // effect. A mutation run caught exactly that - the cell SURVIVED the removal of `validate`. The
+  // claim has two halves and both are asserted: the refusal is the VALIDATOR'S, and the module was
+  // never evaluated at all.
+  let evaluated = false;
+  const refused = await caught(() =>
+    runOnEngine("const x = new Date();", MODULE, {
       runId: "host-bad",
       handler: new SimHandler({}),
-      evaluate: plainly,
-    });
-  } catch (e) {
-    refused = e;
-  }
-  ok("invalid source is refused before the module is ever evaluated", refused !== undefined, String(refused));
+      evaluate: (m) => {
+        evaluated = true;
+        return plainly(m);
+      },
+    }),
+  );
+  ok("invalid source is refused by the VALIDATOR", refused instanceof LangErrors, String(refused));
+  ok("and the module was never evaluated", !evaluated);
 
   // The evaluator is the injection point, and it is used: no hidden default path.
   let sawModule: string | undefined;

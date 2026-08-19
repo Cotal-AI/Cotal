@@ -135,10 +135,10 @@
       "file": "packages/lang/src/engine/host.ts",
       "find": "  validate(source, options.file);",
       "replace": "",
-      "expectRed": "invalid source is refused before the module is ever evaluated",
+      "expectRed": "invalid source is refused by the VALIDATOR",
       "completionMarker": "ok the step COUNTS differ, which is the declared v2 pin-unit divergence",
-      "cell": "invalid source is refused before the module is ever evaluated",
-      "note": "The validator's refusals have to arrive before anything is journalled, whichever engine is about to execute. Without this the engine is a second, laxer front door onto the same journal."
+      "cell": "invalid source is refused by the VALIDATOR",
+      "note": "The validator's refusals have to arrive before anything is journalled, whichever engine is about to execute; without this the engine is a second, laxer front door onto the same journal. This mutant SURVIVED the cell's first form, which only asserted that something threw - with `validate` gone the program still threw, because its module performs an unscripted effect. The cell now asserts the refusal is a LangErrors AND that the evaluator was never called."
     },
     {
       "name": "a resume with no pins re-resolves them instead of refusing",
