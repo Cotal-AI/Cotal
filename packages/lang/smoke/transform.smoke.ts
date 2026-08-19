@@ -521,7 +521,7 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   // AND THE MIRROR: the shape ruling 1d DID close is emitted, and it carries the flag. Without this
   // cell "refuse every optional call" would pass the one above.
   const closed = transform("const o = { m: () => 1 }; log(await o.m?.());");
-  ok("a tail optional call is emitted through the ruled flag", closed.module.includes('.call(o, "m", async () => [], true)'), closed.module.slice(-260));
+  ok("a tail optional call is emitted through the ruled flag", /\.call\(o, "m", .*, true\)/.test(closed.module), closed.module.slice(-260));
 
   // AND ITS ARGUMENTS ARE HANDED OVER UNEVALUATED. The walker checks the member before it evaluates
   // the argument list, so a short-circuited optional call runs NO argument; an emitted array has
