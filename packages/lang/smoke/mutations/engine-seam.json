@@ -71,9 +71,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "      refuseThenable(v, \"this value\");",
       "replace": "",
-      "expectRed": "a literal with an own callable `then` refuses at birth",
+      "expectRed": "a literal with an own callable `then` refuses at birth (L4021)",
       "completionMarker": "ok writing a member of null is L4010",
-      "cell": "a literal with an own callable `then` refuses at birth",
+      "cell": "a literal with an own callable `then` refuses at birth (L4021)",
       "note": "Measured: returning such a value out of any async function runs its `then` with the host's settlement functions as arguments, outside the run's frame. Birth is one of the two doors that close the whole value graph. The cell captures the outcome instead of returning the value through its own async boundary: written the other way, this mutant made the suite HANG rather than fail (the assimilated `then` ignores resolve, so the promise never settles, exit 13) — the hazard demonstrating itself inside the cell meant to grade it."
     },
     {
@@ -81,9 +81,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");",
       "replace": "",
-      "expectRed": "writing a callable into the field `then` refuses (L4018)",
+      "expectRed": "writing a callable into the field `then` refuses (L4021)",
       "completionMarker": "ok a FUNCTION carrying an own callable `then` refuses at birth too",
-      "cell": "writing a callable into the field `then` refuses (L4018)",
+      "cell": "writing a callable into the field `then` refuses (L4021)",
       "note": "The second door. Without it `x[\"th\" + \"en\"] = f` mints the hazard past any static spelling of the name, which is the shape no emitter-side check can see."
     },
     {
@@ -91,9 +91,9 @@
       "file": "packages/lang/src/engine/ctx.ts",
       "find": "      refuseThenable(v, \"this awaited value\");",
       "replace": "",
-      "expectRed": "awaiting an own-callable-`then` value is L4018",
+      "expectRed": "awaiting an own-callable-`then` value is L4021 as well",
       "completionMarker": "ok writing a NON-callable into `then` stays legal",
-      "cell": "awaiting an own-callable-`then` value is L4018",
+      "cell": "awaiting an own-callable-`then` value is L4021 as well",
       "note": "The cell's second conjunct is what this mutant really exposes: the gate has to run BEFORE the await, because once `await` has the value the host has already called its `then`."
     },
     {
@@ -752,7 +752,7 @@
       "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
       "replace": "      assertWritable(o, currentFrame());\n      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");\n      if (Array.isArray(o)) {",
       "expectRed": "and so does the engine, not the value's rule",
-      "completionMarker": "ok a literal with an own callable `then` refuses at birth",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth (L4021)",
       "cell": "and so does the engine, not the value's rule",
       "note": "Where this gate stood until the order was measured, and the reason a rule about the VALUE cannot be asked before the rule about the MEMBER: `keys({a:1}).then = () => 1` came back L4018 where the walker says L4014, the same sentence `.foo` gets, because an array does not have that member at all. Both engines refuse the program either way, which is why only a cell comparing the CODES against the oracle catches it."
     },
@@ -762,7 +762,7 @@
       "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
       "replace": "      if (!Array.isArray(o)) assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
       "expectRed": "and so does the engine, freeze ahead of the member rule",
-      "completionMarker": "ok a literal with an own callable `then` refuses at birth",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth (L4021)",
       "cell": "and so does the engine, freeze ahead of the member rule",
       "note": "The other end of the same order, and it is measured on the oracle too: a frozen array written with a member it does not have answers L2031, not L4014. A host that asked the member rule first would tell an author to fix the member name on a value no member name would have made writable."
     },

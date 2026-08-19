@@ -291,13 +291,15 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   ok("writing a member of null is L4010", codeOf(await caught(() => h.inFrame(() => h.ctx.set(null, "a", 1)))) === "L4010");
 }
 
-// ---- 4) the thenable gate: the one rule the oracle cannot grade ----------------------------------
+// ---- 4) the thenable gate, and the code it now shares with the oracle ----------------------------
 //
 // A program value with an own CALLABLE `then` is assimilated by the host's await machinery, which
 // runs that closure with the host's own settlement functions as its arguments — measured at every
-// return of a program value out of an async function, and at every await. The walker cannot grade
-// this: the same program takes its process down as an unhandled rejection (a filed walker defect),
-// so these programs are QUARANTINED from the differential corpus and live here instead.
+// return of a program value out of an async function, and at every await. The oracle could not grade
+// this at all until #657: the same program took the walker's process down as an unhandled rejection.
+// It now REFUSES, with L4021, at its four record-member write sites, so this engine carries the
+// walker's code rather than its own — and the programs quarantined from the differential for taking
+// a process down are comparable rows again, which is lane T's to move.
 
 {
   const h = harness();
@@ -305,7 +307,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   // boundary assimilates it, its `then` never settles, and the cell hangs instead of failing. The
   // cell has to be able to report its own failure, which is what the mutation config grades.
   ok(
-    "a literal with an own callable `then` refuses at birth",
+    "a literal with an own callable `then` refuses at birth (L4021)",
     codeOf(
       await caught(() =>
         h.inFrame(() => {
@@ -313,7 +315,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
           return undefined;
         }),
       ),
-    ) === "L4018",
+    ) === "L4021",
   );
   // The boundary in the other direction: a NON-callable `then` is legal, and the walker settles it
   // clean. A gate that refused every own `then` would refuse a program the oracle accepts.
@@ -332,17 +334,17 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
           return undefined;
         }),
       ),
-    ) === "L4018",
+    ) === "L4021",
   );
   // The second door: a record can ACQUIRE the field after birth, and a computed key reaches it past
   // any static spelling of `then`.
   ok(
-    "writing a callable into the field `then` refuses (L4018)",
-    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4018",
+    "writing a callable into the field `then` refuses (L4021)",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4021",
   );
   ok(
     "including through a computed key no static analysis can read",
-    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "th" + "en", () => 1)))) === "L4018",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "th" + "en", () => 1)))) === "L4021",
   );
   ok(
     "writing a NON-callable into `then` stays legal",
@@ -355,7 +357,8 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
   // measured on it here rather than transcribed: what kind of thing is being written (L4010), is it
   // frozen (L2031), does that kind have this member (L4014/L4017/L4019) - and only then the value.
   // A gate placed before the member rule answers the value's sentence for a receiver that never had
-  // the member, and `keys({a:1}).then = () => 1` came back L4018 where the walker says L4014.
+  // the member, and `keys({a:1}).then = () => 1` came back with the value's code where the walker
+  // says L4014.
   {
     const onWalker = async (src: string): Promise<string> => {
       try {
@@ -398,13 +401,20 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     ok("and so does the engine, freeze ahead of the member rule", codeOf(await caught(() => h.inFrame(() => h.ctx.set(frozenArr, "foo", 1)))) === "L2031");
     ok("including for `then`, where the value's rule never gets asked", codeOf(await caught(() => h.inFrame(() => h.ctx.set(frozenArr, "then", () => 1)))) === "L2031");
 
-    // 4) AND ONLY THEN THE VALUE. This is the one place the two engines differ, and it is the
-    // declared divergence, not an accident: the walker refuses NOTHING for a callable `then` on a
-    // record and takes its process down later (#642), which is why these programs are quarantined
-    // from the corpus. The pin is the walker's MEASURED answer, so the day #657 lands and it becomes
-    // L4021, this cell says so.
-    ok("the walker completes a callable `then` on a RECORD, which is the defect", (await onWalker(`let r = { x: 1 };\nr.then = () => 1;\n`)) === "completed");
-    ok("while the engine refuses it L4018, at the last of the four rules", codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4018");
+    // 4) AND ONLY THEN THE VALUE, which is where the two engines used to differ and no longer do.
+    // The walker refused NOTHING for a callable `then` on a record and took its process down later
+    // (#642); #657 gave it L4021 at the write, and this pin is its MEASURED answer, not the code
+    // transcribed from the fix. The position is unchanged and that is the point of the three rules
+    // above: the value is still the LAST thing asked, so an array or a string receiver keeps its own
+    // sentence.
+    ok("the walker refuses a callable `then` on a RECORD with L4021", (await onWalker(`let r = { x: 1 };\nr.then = () => 1;\n`)) === "refused L4021");
+    ok("and the engine answers the same code, at the last of the four rules", codeOf(await caught(() => h.inFrame(() => h.ctx.set(h.ctx.born({}), "then", () => 1)))) === "L4021");
+    // AND THE ROUTES THE WALKER GAINED WITH IT, each one a program rather than a seam call: a
+    // literal, a computed write and a spread all reach the same code on the oracle.
+    ok("the walker refuses it in a LITERAL too", (await onWalker(`const r = { then: () => 1 };\n`)) === "refused L4021");
+    ok("and through a computed key", (await onWalker(`let r = { x: 1 };\nlet k = "th" + "en";\nr[k] = () => 1;\n`)) === "refused L4021");
+    ok("and through a spread into a literal", (await onWalker(`const a = { x: 1 };\nconst b = { ...a, then: () => 1 };\n`)) === "refused L4021");
+    ok("while a NON-callable `then` still completes on the oracle", (await onWalker(`let r = { x: 1 };\nr.then = 1;\nlog("n", r.then);\n`)) === "completed");
   }
   // The third door, and the one that proves the gate runs BEFORE the host: if `await` reached the
   // value first, `then` would already have been called.
@@ -412,7 +422,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
     let fired = 0;
     const thenable = { then: (resolve: (v: unknown) => void): void => { fired += 1; resolve(9); } };
     const e = await caught(() => h.inFrame(() => h.ctx.await(thenable)));
-    ok("awaiting an own-callable-`then` value is L4018", codeOf(e) === "L4018");
+    ok("awaiting an own-callable-`then` value is L4021 as well", codeOf(e) === "L4021");
     ok("and the refusal happened BEFORE the host called it", fired === 0, fired);
   }
   // LANE T'S DOOR E, IN THE ENGINE'S SHAPE. On the walker, `merge({}, { then: f })` mints the hazard
@@ -427,7 +437,7 @@ const plainly = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) =
         return undefined;
       }),
     );
-    ok("a builtin ARGUMENT built as a literal is refused at birth, before the builtin runs", codeOf(e) === "L4018", String(e));
+    ok("a builtin ARGUMENT built as a literal is refused at birth, before the builtin runs", codeOf(e) === "L4021", String(e));
     ok("and the program closure never ran", ran === 0, ran);
   }
   // The other half of the same claim, so nobody reads the cell above as "merge refuses records":
@@ -1969,8 +1979,8 @@ log("out", out);
     );
 
     // WHAT KEEPS THE DOOR SHUT, both halves measured. The program cannot build the input:
-    ok("born refuses a record with an own callable `then`", codeOf(await caught(() => h.ctx.born({ then: () => 1 }))) === "L4018");
-    ok("and set refuses writing one onto a born record", codeOf(await caught(() => h.ctx.set(h.ctx.born({ a: 1 }), "then", () => 1))) === "L4018");
+    ok("born refuses a record with an own callable `then`", codeOf(await caught(() => h.ctx.born({ then: () => 1 }))) === "L4021");
+    ok("and set refuses writing one onto a born record", codeOf(await caught(() => h.ctx.set(h.ctx.born({ a: 1 }), "then", () => 1))) === "L4021");
     // And a callable `then` that reaches a builtin from OUTSIDE the seam never comes back as a
     // record at all: library.ts's own `async` wrapper assimilates it one frame before any
     // return-path check could look. Measured - the call answers 7, the resolved value, not the
@@ -2000,8 +2010,8 @@ log("out", out);
 // half: a refusal AFTER the scope opened would leave a scope entry behind and a resume would read
 // it, so "no entry" is what says the closure is at the literal and not at the result.
 //
-// The walker takes its process down on this program (#642), so it cannot be a corpus row until the
-// L4021 fix lands; it is on lane T's quarantine list and lives here in the meantime.
+// The walker took its process down on this program (#642) and now refuses L4021 at the write, so it
+// is comparable again; moving it out of lane T's quarantine and into the corpus is theirs to measure.
 //
 // WHAT GRADES WHAT, since these four cells have no mutant of their own: the refusal's mechanism is
 // the birth gate, and that is graded where it lives (section 4's first cell, and the mutant that
@@ -2014,7 +2024,7 @@ log("out", out);
     const refused = await caught(() =>
       runOnEngine(source, transform(source).module, { runId: `1b-${scope}`, handler: new SimHandler({}), evaluate: plainly, journal }),
     );
-    ok(`a branch named \`then\` in ${scope} refuses L4018`, codeOf(refused) === "L4018", String(refused).slice(0, 110));
+    ok(`a branch named \`then\` in ${scope} refuses L4021`, codeOf(refused) === "L4021", String(refused).slice(0, 110));
     ok(`and the ${scope} scope was never entered: no journal entry at all`, journal.entries().length === 0, journal.entries().map((e) => e.kind));
   }
 }
