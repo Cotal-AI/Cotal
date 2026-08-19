@@ -604,6 +604,23 @@ const reachedKinds = new Set<string>();
   // are the two ways it lies: a sweep that looked at nothing reports the same zero as a clean
   // journal, and a count alone says nothing about what was in them. Both read `scanned`, so a sweep
   // that stopped collecting reds here instead of going quiet.
+  //
+  // AND WHAT KEEPS THE SET EMPTY IS A BOUNDARY, NOT A TAME CORPUS, which makes this a tripwire
+  // rather than a sample. `assertCrossable` runs on every effect ARGUMENT and every effect RESULT
+  // (`perform.ts`), and it refuses — measured against this sweep's own list, one probe per row — a
+  // non-finite number, absence, a function, a symbol, a bigint, a cycle, a hole in an array, and
+  // anything whose prototype is neither `Object.prototype` nor null, which is every `Date`, `Map`
+  // and `Set`. So all but one of the kinds swept for here cannot reach an entry from either side,
+  // and this cell reds the day that boundary moves. (`surface.smoke` holds the boundary itself, as
+  // L3041 and L3042; this holds the consequence the journal comparison depends on.)
+  //
+  // THE ONE THAT CROSSES IS NEGATIVE ZERO, because it is finite — and if this ever reds on `-0`
+  // alone, a shape signature for the entry leg is the WRONG repair. The canonical form equates -0
+  // with 0 (RFC 8785), so the step key's own input hash already does: measured, `digest({ n: -0 })`
+  // and `digest({ n: 0 })` are the same sha256, with 1-vs-2 and -1-vs-1 differing as controls. Two
+  // journals differing only there are not a divergence the replay contract can see, so the question
+  // that red asks is how an uncanonicalized -0 reached an entry, not how to make this comparison
+  // sharper than the contract underneath it.
   const entries = scanned.flatMap(([, es]) => es);
   const blind = scanned.flatMap(([where, es]) => es.flatMap((entry, i) => jsonBlind(entry, `${where} entry[${i}]`)));
   ok("no journal entry the corpus produces carries a value JSON cannot draw, and the sweep that says so visited every one", entries.length > 0 && blind.length === 0, {
