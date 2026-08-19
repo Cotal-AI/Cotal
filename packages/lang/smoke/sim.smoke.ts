@@ -134,18 +134,24 @@ const ctxFor = (key: StepKey, attempt = 0): EffectContext => ({
 // consumer writes it, so this cell drives the same route a caller can actually reach.
 {
   const simFrom = (script: unknown) => new SimHandler(script as never);
-  const scriptWith = (status: string) => ({
+  const scriptWith = (status: string, clock: { start: number; checkpoint: string }) => ({
     checkpoints: { gate: { status, value: true, at: 999_999 } },
-    clock: { start: 500 },
+    clock,
   });
+  const MINUTE = 60_000;
 
-  const resolved = await simFrom(scriptWith("resolved"))
+  // The two paths run on DIFFERENT clocks, and each expectation is computed from its own fixture.
+  // One fixture cannot tell "stamps virtual time" from "returns the constant that fixture happens to
+  // produce": with both cells on `clock.start` 500 and the default 1m, a `checkpoint()` that ignored
+  // the clock entirely and returned that fixture's own 60500 satisfied both and the suite stayed
+  // green. Two clocks, neither of them the old one, and no constant satisfies both.
+  const resolved = await simFrom(scriptWith("resolved", { start: 1_500, checkpoint: "3m" }))
     .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
-  ok("a scripted `at` is discarded on the RESOLVED path, which stamps virtual time", resolved.at === 60_500, resolved);
+  ok("a scripted `at` is discarded on the RESOLVED path, which stamps virtual time", resolved.at === 1_500 + 3 * MINUTE, resolved);
 
-  const expired = await simFrom(scriptWith("expired"))
+  const expired = await simFrom(scriptWith("expired", { start: 7_000, checkpoint: "2m" }))
     .checkpoint({ prompt: "ok?" }, ctxFor(new KeyScope().nextEffect("checkpoint", "gate")));
-  ok("a scripted `at` is discarded on the EXPIRED path too, which is the other return", expired.at === 60_500, expired);
+  ok("a scripted `at` is discarded on the EXPIRED path too, which is the other return", expired.at === 7_000 + 2 * MINUTE, expired);
 }
 
 // ---- 6) a scripted timeout is a choice, and costs its full budget ------------------------------------
