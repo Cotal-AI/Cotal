@@ -363,6 +363,15 @@
       "expectRed": "the sweep covers the one field no crossing rule guards",
       "cell": "and the corpus binds, so the sweep covers the one field no crossing rule guards",
       "note": "The realistic way this sweep stops watching the thing it is most needed for. `external` reaches an entry through `ctx.bind` with NO crossing rule in front of it - measured, a handler binding a Date, a -0, a NaN and an absent field puts all four into an entry alive on both arms - and this sweep only sees it because entries are swept whole. Normalise them on the way in and the zero above is unchanged, green, and blind to the one path the boundary does not cover. Aimed at the cell that counts the bound entries rather than at the zero, because the zero is exactly what does NOT move."
+    },
+    {
+      "name": "the residual's probe stops binding, so the pin passes without ever exercising the path",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "      await ctx.bind({ n: Number.NaN });\n",
+      "replace": "",
+      "expectRed": "a NaN still reaches a journal entry through `bind`",
+      "cell": "a NaN still reaches a journal entry through `bind`, on both arms, because nothing checks that path",
+      "note": "A pin on a residual is only worth the probe underneath it, and this probe is the whole assertion: without the bind there is no entry carrying `external`, the lookup answers absence, and a cell whose job is to red the day a guard lands would instead have been red from the day it shipped. Note the second cell of the pair survives this - both arms still answer the same, because they answer the same NOTHING - which is why the reaching half and the agreeing half are separate cells rather than one conjunction."
     }
   ],
   "completionMarker": "differential.smoke:"

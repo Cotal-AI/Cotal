@@ -730,6 +730,50 @@ const reachedKinds = new Set<string>();
   ok("and finds nothing in an entry JSON draws faithfully", jsonBlind({ kind: "turn", key: "k", result: { a: 0, b: [1, "s", null], c: { d: true }, e: Object.create(null) as object } }, "entry").length === 0);
 }
 
+// ---- the one path into an entry that has no crossing rule, pinned so it cannot go stale quietly ----
+
+{
+  // A RESIDUAL, WRITTEN THE WAY THIS FILE WRITES A DIVERGENCE: pinned to the answer it gives TODAY,
+  // so the day it is fixed this cell reds and the sentences around it are corrected in the same
+  // change rather than left as folklore. Two cells above call `external` "the one field no crossing
+  // rule guards"; a guard at the bind seam is proposed and, when it lands, both of those sentences
+  // become false with nothing to say so. This is what says so.
+  //
+  // It asserts a DEFECT PERSISTS, which is only honest when the assertion names its own remedy: if
+  // this reds, the bind guard has landed — retire this block and rewrite the two sentences it
+  // names, do not "fix" it by loosening the pin.
+  class BindsUncrossable extends SimHandler {
+    override async spawn(req: Parameters<SimHandler["spawn"]>[0], ctx: Parameters<SimHandler["spawn"]>[1]) {
+      const handle = await super.spawn(req, ctx);
+      await ctx.bind({ n: Number.NaN });
+      return handle;
+    }
+  }
+
+  const externalOf = async (kind: "walker" | "engine"): Promise<unknown> => {
+    const source = 'const a = await spawn("one"); log(a.agent);';
+    const journal = new Journal({ run: "r" });
+    const options = { runId: "r", handler: new BindsUncrossable({}), journal, seed: SEED, startedAt: AT, onLog: () => {} };
+    try {
+      const r = kind === "walker" ? await walk(source, options) : await runOnEngine(source, transform(source).module, { ...options, evaluate });
+      const bound = r.journal.entries().find((e) => (e as { external?: unknown }).external !== undefined) as { external?: Record<string, unknown> } | undefined;
+      return bound?.external?.n;
+    } catch (e) {
+      return `refused ${(e as { code?: string }).code ?? (e as Error).message.slice(0, 40)}`;
+    }
+  };
+
+  const [wn, en] = [await externalOf("walker"), await externalOf("engine")];
+  ok("a NaN still reaches a journal entry through `bind`, on both arms, because nothing checks that path", Number.isNaN(wn) && Number.isNaN(en), {
+    walker: String(wn),
+    engine: String(en),
+    ifThisRed: "the bind guard landed: retire this block and rewrite the two sentences that call `external` unguarded",
+  });
+  // AND IT IS THE SHARED PATH RATHER THAN AN ENGINE DIVERGENCE, which is why the gate's own
+  // two-arm comparison can never be the thing that catches it: both arms answer the same.
+  ok("and both arms answer the same, so no comparison of the two could ever report it", j(wn) === j(en), { walker: String(wn), engine: String(en) });
+}
+
 // ---- what a ruling made different, on purpose ----------------------------------------------------
 
 /**
