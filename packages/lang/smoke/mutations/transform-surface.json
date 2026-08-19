@@ -180,7 +180,7 @@
       "find": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, async () => [${args}], true`)})`;",
       "replace": "          return `(await ${this.seam(\"call\", `${obj}, ${this.memberKey(callee)}, [${args}], true`)})`;",
       "expectRed": "an optional call hands its arguments over as a thunk",
-      "completionMarker": "ok the walker's answers for an optional call are recorded with the rule and with the hole",
+      "completionMarker": "ok a tail optional call is emitted through the ruled flag",
       "cell": "an optional call hands its arguments over as a thunk",
       "note": "The walker checks the member BEFORE evaluating the argument list, so `o.m?.(await sleep(\"1s\"))` on an absent member journals nothing while the same argument on a present method journals a sleep. An array here has already run them, and a resume of that entry replays a step the walker's run never recorded."
     }
