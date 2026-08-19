@@ -25,7 +25,7 @@ import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
-import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
+import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
 import { DECLARATION_PATH, MODULE_PATH, type DeclaredShape, checkDeclarationConsumer, declaredModuleSurface, readCommittedDeclaration, renderReaperDeclaration, transpileConsumer } from "./gen-reaper-dts.mjs";
 
 let pass = 0, fail = 0;
@@ -246,16 +246,26 @@ const mismatches = (shape: DeclaredShape, value: unknown, path: string): string[
       return shape.of.some((s) => mismatches(s, value, path).length === 0)
         ? []
         : [`${path}: no declared member of ${shape.of.map((s) => s.kind).join("|")} matches ${typeof value}`];
+    // NOT a pass. An opaque shape is what the reducer emits when it cannot turn a declared type
+    // into anything checkable, and returning `[]` here made every such leaf satisfy the conformance
+    // cells by being unreadable. Two reviews built that green first-party: declaring
+    // `supported` as `() => void` (and as `object`) while the runtime kept returning a boolean left
+    // this suite at 32 of 32, and a declaration-only consumer calling `report.supported()`
+    // typechecked with no diagnostics and threw `not a function` at runtime, which is the exact
+    // declaration-versus-runtime lie the suite exists to catch. An unverifiable leaf is now a
+    // finding, so the surface either reduces to something checkable or this reddens.
     case "opaque":
-      return [];
+      return [`${path}: declared as ${shape.text}, which reduces to nothing checkable, so this leaf was NOT verified`];
   }
 };
-const leaves = (shape: DeclaredShape, path: string): string[] => {
+/** Every leaf of a declared shape that no runtime value can be checked against. */
+const unverifiable = (shape: DeclaredShape, path: string): string[] => {
   switch (shape.kind) {
-    case "object": return Object.entries(shape.props).flatMap(([k, s]) => leaves(s, `${path}.${k}`));
-    case "array": return leaves(shape.of, `${path}[]`);
-    case "union": return shape.of.flatMap((s) => leaves(s, path));
-    default: return [path];
+    case "object": return Object.entries(shape.props).flatMap(([k, s]) => unverifiable(s, `${path}.${k}`));
+    case "array": return unverifiable(shape.of, `${path}[]`);
+    case "union": return shape.of.flatMap((s) => unverifiable(s, path));
+    case "opaque": return [`${path}: ${shape.text}`];
+    default: return [];
   }
 };
 
@@ -272,6 +282,32 @@ check(
   "and the same for the enumerator, whose declared return has two members and must satisfy one",
   listedMismatches.length === 0,
   listedMismatches.join(" | "),
+);
+
+// The conformance cells above are only as wide as the reducer: a declared type it cannot reduce
+// used to arrive as `opaque` and pass by default, so the two cells were satisfied for exactly the
+// leaves nothing had checked. `mismatches` now reports such a leaf, and this cell names the class
+// so the failure reads as what it is rather than as a type mismatch: the surface must reduce to
+// something checkable end to end, or the declaration is making a promise this suite cannot hold it
+// to. Measured on this tree: the shipped surface has no unverifiable leaf, so this is a live
+// assertion and not a tautology, and a drift that makes one (a field declared `object`, or a
+// callable) reddens here.
+const unchecked = Object.entries(surface.returns).flatMap(([name, shape]) => unverifiable(shape, `${name}()`));
+check(
+  "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
+  unchecked.length === 0,
+  unchecked.join(" | "),
+);
+
+// `reportReaped`'s declared return was read out of the declaration and then never held to
+// anything, so a `@returns` that drifted from what the function does was invisible here: the eng
+// review declared it `number`, returned a string, and the suite stayed green. It returns nothing,
+// which is a claim like any other and is asserted like any other.
+const reporterMismatches = mismatches(surface.returns.reportReaped!, reportReaped("the declaration check", dryReport), "reportReaped()");
+check(
+  "and the reporter's declared return is held to what the call actually gives back",
+  reporterMismatches.length === 0,
+  reporterMismatches.join(" | "),
 );
 
 const dirs: string[] = [];

@@ -212,9 +212,11 @@ try {
   // writes `row.lifecycleUid ?? mintLifecycleUid()`, so a row ALWAYS carries one. Stripping the
   // field from the grant above would leave the row populated with a uid the ledger invented, and a
   // presence check would stay green while the caller's value was silently discarded. Only the uid
-  // THIS caller minted can fail, so that is what is compared. There is no supported mode in which
-  // this entry point carries no uid: `grantAgent`'s signature requires it, and the `??` exists for
-  // the ledger's other writer.
+  // THIS caller minted can fail, so that is what is compared. `grantAgent`'s options do declare
+  // `lifecycleUid` required and the `??` exists for the ledger's other writer, but that declaration
+  // is not what makes this cell safe: no build type-checks this file, so a call that drops the
+  // field still runs, and a review dropped it and watched it run. The runtime equality is the
+  // enforcement; the signature is only where the intent is written down.
   const retainedRow = findActorUnified(stateDir, OWNER, "worker");
   check("the retained agent's ledger row carries the lifecycle uid THIS grant minted",
     retainedRow?.lifecycleUid === RETAINED_UID, { row: retainedRow?.lifecycleUid, minted: RETAINED_UID });

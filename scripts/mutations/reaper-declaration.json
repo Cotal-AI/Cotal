@@ -2,7 +2,7 @@
   "grades": "bin/smoke/reaper.smoke.ts",
   "guard": "the declaration beside the reaper is what the compiler emits from the reaper, so the two cannot describe different modules",
   "command": "pnpm smoke:reaper",
-  "progressPattern": "✓",
+  "progressPattern": "\u2713",
   "completionMarker": "cells ran)",
   "why": "reap-smoke-brokers.mjs stays plain JavaScript because it runs on the CI runner before any workspace build, so its .ts consumers need a declaration beside it. Two hand written guards over a hand written declaration each passed GREEN over real drift, because each was an enumeration of the shapes its author thought of. The declaration is now emitted from the module and compared byte for byte, so there is no shape to recognise. Mutations 1 through 9 are each a shape that beat one of those guards, or the mirror of one, and every one of those must move the SAME cell: that is the property, that the kind of change does not matter. Row 10 is deliberately not one of them and moves a different cell on purpose: it turns the module's type checking OFF, which the first nine all silently depend on, and it is named by the guard that reads the property rather than the one that compares bytes. The completion marker is the suite's own final banner, which it prints on either outcome, so a run that dies before reaching the cell grades INCONCLUSIVE rather than passing as a kill.",
   "mutations": [
@@ -130,6 +130,28 @@
       "expectRed": "and every field the declaration promises of a report is the type the report actually carries",
       "cell": "and every field the declaration promises of a report is the type the report actually carries",
       "note": "A second return-field drift, on a field no hand-written consumer read. It is here because the fixed consumer that preceded the surface reader was beaten twice on exactly this axis, once on supported and once on this counter, by two different reviews. Since the shape is read out of the declaration rather than named here, both die to the same cell."
+    },
+    {
+      "name": "a declared field drifts to a type the reducer cannot check",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": " * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: boolean }} ReapReport\n",
+      "replace": " * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: object }} ReapReport\n",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "expectRed": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
+      "cell": "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
+      "note": "Two reviews built this green: an irreducible declared type used to satisfy the conformance cells by being unreadable. The declaration is regenerated so the drift is the ONLY difference."
+    },
+    {
+      "name": "the reporter's declared return drifts from the nothing it gives back",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": " * @param {ReapReport} result\n * @returns {void}\n",
+      "replace": " * @param {ReapReport} result\n * @returns {number}\n",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "expectRed": "and the reporter's declared return is held to what the call actually gives back",
+      "cell": "and the reporter's declared return is held to what the call actually gives back",
+      "note": "Its declared return was read out of the declaration and then held to nothing."
     }
   ]
 }
