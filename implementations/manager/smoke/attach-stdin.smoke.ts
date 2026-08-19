@@ -467,9 +467,10 @@ const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
  * when the echo lands is a byte that was dropped, which is the claim. A fixed sleep in the same
  * place can only fail toward green, because a delivery slower than the sleep lands after the
  * assertion has already passed. The echo is asserted in its own right, so the absence below can
- * never pass on a channel that carries nothing at all. Returns the sink offset taken before this
- * byte, for a caller whose claim is that the window held NOTHING. */
-const dateByEcho = async (a: Attached, label: string): Promise<number> => {
+ * never pass on a channel that carries nothing at all. Returns the sink offset taken before the
+ * first dating byte, and EVERY nonce it wrote, for a caller whose claim is that the tail holds
+ * nothing but these. */
+const dateByEcho = async (a: Attached, label: string): Promise<{ before: number; typed: string[] }> => {
   const before = sink().length;
   // RETRIED, and that is not belt and braces. `[cotal: reconnected]` prints one round trip BEFORE
   // the session takes the terminal (attach-client's `onReady`), and a byte typed in that gap is seen
@@ -477,20 +478,20 @@ const dateByEcho = async (a: Attached, label: string): Promise<number> => {
   // not evidence of anything: measured, cell B lost exactly that race once in two runs and reported
   // `echoed: false` over a working attach. Type again until one goes through; `tries` is in the
   // detail so a run says how often the race is being hit rather than hiding it.
+  const typed: string[] = [];
   let later = "";
   let echoed = false;
-  let tries = 0;
   const deadline = Date.now() + 40_000;
   while (!echoed && Date.now() < deadline) {
-    tries++;
     later = nonce();
+    typed.push(later);
     a.write(`${later}\r`);
     echoed = await a.waitFor(new RegExp(`ECHO\\[${later}`), 5_000);
   }
   check(`${label}: the session that is up carries the keyboard, which is what dates the absence below`,
     echoed && sink().subarray(before).includes(Buffer.from(later)),
-    { echoed, tries, got: sink().subarray(before).toString("utf8").slice(-200) });
-  return before;
+    { echoed, tries: typed.length, got: sink().subarray(before).toString("utf8").slice(-200) });
+  return { before, typed };
 };
 
 let manager: InstanceType<typeof Manager> | undefined;
@@ -711,9 +712,17 @@ try {
     await closeLink();
     await heal();
     check("...the reconnect still lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
-    const upTo = await dateByEcho(a, "F");
-    check("...and neither byte reached the agent", sink().subarray(mark, upTo).length === 0,
-      { got: sink().subarray(mark, upTo).toString("utf8") });
+    const { typed } = await dateByEcho(a, "F");
+    // Judged over the WHOLE tail rather than up to where dating began. A byte held while there was
+    // no session is flushed when one opens, which is exactly when the dating nonce is in flight, so
+    // a window ending where dating STARTS cannot see it: measured under a 1500ms seat delay, that
+    // window read empty while the tail carried `x\x1d`. FIFO puts anything already in flight ahead
+    // of the dating echo, so what is left after removing the nonces dating actually wrote is what
+    // the agent should never have read. A try that was DROPPED leaves no trace, which is the race
+    // the retry exists for, so a nonce that is MISSING stays legal; a byte nobody typed does not.
+    const tail = sink().subarray(mark).toString("utf8");
+    const residue = typed.reduce((s, n) => s.split(`${n}\n`).join("").split(n).join(""), tail);
+    check("...and neither byte reached the agent", residue === "", { got: tail, residue, typed });
     await detachAndSettle(a, base, "F");
   }
 
