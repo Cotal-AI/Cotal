@@ -46,6 +46,11 @@ function check(label: string, cond: boolean, extra?: unknown): void {
   console.log(`${cond ? "✓" : "✗"} ${label}${cond ? "" : ` — ${extra ?? ""}`}`);
   if (!cond) failures++;
 }
+
+/** `ControlReply.data` is `unknown` on the wire, so the identity a reply reports is read through
+ *  one narrow view rather than four spot casts. */
+const replyName = (r: { data?: unknown }): string | undefined =>
+  (r.data as { name?: string } | undefined)?.name;
 function throws(label: string, fn: () => unknown): void {
   try {
     fn();
@@ -144,7 +149,7 @@ registry.register(recCon);
   check("launchAgentToStartOpts forwards the apply-time owner", launchAgentToStartOpts(resolved, personaPath, OWNER).owner === OWNER);
   const reply = await mgr.startAgent(startOpts);
   check("resolved spawn succeeds with no persona file in .cotal/agents", reply.ok === true, JSON.stringify(reply));
-  check("identity is the resolved name", reply.ok && reply.data?.name === "scout", reply.ok && reply.data?.name);
+  check("identity is the resolved name", reply.ok && replyName(reply) === "scout", reply.ok && replyName(reply));
   check("variant is forwarded to the connector", seenVariant === "high", seenVariant);
   check("launchOptions forwarded to the connector (via resolved)", JSON.stringify(seenLaunchOptions) === JSON.stringify({ temperature: "0.2" }), seenLaunchOptions);
   check("manifest kickoff prompt forwarded to the connector (via resolved)", seenPrompt === "Kick off: post your research plan in #general.", seenPrompt);
@@ -265,7 +270,7 @@ function writeSpec(name: string, body: unknown): string {
   // there would have silently deleted all of them.
   const reply = await op({ runId: runId2, name: "ranger" });
   check("opLaunch boots the resolved agent", reply.ok === true, reply.error);
-  check("reply.name is the declared name, taken exactly (no numbering when nothing collides)", reply.ok && reply.data?.name === "ranger", reply.ok && reply.data?.name);
+  check("reply.name is the declared name, taken exactly (no numbering when nothing collides)", reply.ok && replyName(reply) === "ranger", reply.ok && replyName(reply));
   check("reply carries the manifest requested name", reply.ok && reply.data?.requested === "ranger");
   check("reply carries runId + resolved hash for the ledger", reply.ok && reply.data?.runId === runId2 && reply.data?.hash === "abc123");
   check("reply carries the spawned nkey id", reply.ok && typeof reply.data?.id === "string" && (reply.data.id as string).length > 0);

@@ -149,8 +149,10 @@ const base = {
     return { command: "true", args: [], env: {} };
   },
 };
-registry.register({ ...base, name: "smoke-emitter", eventChannel } satisfies Connector);
-registry.register({ ...base, name: "smoke-silent" } satisfies Connector); // no eventChannel → cannot emit
+const emitterCon: Connector = { ...base, name: "smoke-emitter", eventChannel };
+const silentCon: Connector = { ...base, name: "smoke-silent" }; // no eventChannel → cannot emit
+registry.register(emitterCon);
+registry.register(silentCon);
 
 const credsDir = join(workspaceRoot, ".cotal", "auth", "creds");
 
