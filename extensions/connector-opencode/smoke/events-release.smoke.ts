@@ -32,14 +32,15 @@
  */
 import { spawn, type ChildProcess } from "node:child_process";
 import { createServer as createHttpServer } from "node:http";
-import { createServer as createNetServer } from "node:net";
+import { createServer as createNetServer, connect as netConnect, type Socket } from "node:net";
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync } from "node:fs";
+import { join as joinPath } from "node:path";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { seedChannelRegistry, isReachable } from "@cotal-ai/core";
 import { bootPlugin } from "./_boot-plugin.js";
-import { WAL_KEPT, WAL_REAPED } from "../src/plugin.js";
+import { SESSION_RETIRED, WAL_KEPT, WAL_REAPED } from "../src/plugin.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
@@ -63,6 +64,9 @@ const SPACE = "ocrel";
 const A = "ses_rel_a";
 const B = "ses_rel_b";
 const C = "ses_rel_c";
+/** Section 3's pair: the session whose log holds an unconfirmed frame, and the `/new` that retires it. */
+const P = "ses_rel_p";
+const Q = "ses_rel_q";
 /** Longer than the connector's own `SWAP_SETTLE_MS`, so the drain it holds is ABANDONED rather than
  *  merely slow. That is the state the keep arm is about, and a hold under the bound would produce a
  *  settled drain and grade the reap arm twice. */
@@ -96,15 +100,41 @@ const logged = (needle: string): boolean => logs.some((l) => l.includes(needle))
 
 /** Hold the NEXT source read for longer than the swap bound, once. */
 let holdNextRead = false;
+/** Which id `POST /session` hands back. Section 3 boots a second plugin and needs it bound to its
+ *  own session from the first event rather than to section 1's. */
+let bootSessionId = A;
+/** What the source reads back per session. Empty everywhere except section 3, which needs a real
+ *  turn: a pump with nothing to publish never reaches `beginSend` and so never writes a pending
+ *  frame, which is the whole state that arm is about. */
+const content = new Map<string, unknown[]>();
+/** One completed turn, in the shape `OpenCodeSessionSource` reads. */
+function turn(sessionID: string, n: number): unknown[] {
+  const u = `msg_${sessionID}_${String(2 * n).padStart(4, "0")}`;
+  const a = `msg_${sessionID}_${String(2 * n + 1).padStart(4, "0")}`;
+  return [
+    {
+      info: { id: u, sessionID, role: "user", time: { created: 10 * n } },
+      parts: [{ id: `${u}_p0`, messageID: u, sessionID, type: "text", text: "prompt", time: { start: 10 * n, end: 10 * n } }],
+    },
+    {
+      info: { id: a, sessionID, role: "assistant", time: { created: 10 * n + 1, completed: 10 * n + 9 } },
+      parts: [
+        { id: `${a}_p0`, messageID: a, sessionID, type: "text", text: `answer-${n}`, time: { start: 10 * n + 1, end: 10 * n + 2 } },
+      ],
+    },
+  ];
+}
 const oc = createHttpServer((req, res) => {
   if (req.headers.authorization !== auth) return void res.writeHead(401).end();
   req.setEncoding("utf8");
   req.on("data", () => {});
   req.on("end", () => {
     if (req.method === "POST" && req.url === "/session")
-      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: A }));
-    if (req.method === "GET" && /^\/session\/[^/]+\/message$/.test(req.url ?? "")) {
-      const answer = (): void => void res.writeHead(200, { "content-type": "application/json" }).end("[]");
+      return void res.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify({ id: bootSessionId }));
+    const read = req.url?.match(/^\/session\/([^/]+)\/message$/);
+    if (req.method === "GET" && read) {
+      const body = JSON.stringify(content.get(decodeURIComponent(read[1]!)) ?? []);
+      const answer = (): void => void res.writeHead(200, { "content-type": "application/json" }).end(body);
       if (holdNextRead) {
         holdNextRead = false;
         setTimeout(answer, OVER_THE_BOUND_MS);
@@ -162,9 +192,20 @@ function lockExists(ws: string): boolean {
 }
 
 type Hooks = Awaited<ReturnType<typeof bootPlugin>>;
+/** The plugin keeps ONE mesh endpoint per process behind a global guard, so section 3's second
+ *  plugin has to clear it: otherwise `cotal()` hands back section 1's hooks, pointed at section 1's
+ *  broker and workspace, and the whole section grades the wrong process. */
+const clearPluginGuard = (): void => void delete (globalThis as { __cotalOpencodeHooks?: unknown }).__cotalOpencodeHooks;
 let hooks: Hooks | undefined;
+let pendingHooks: Hooks | undefined;
 let first: ChildProcess | undefined;
 let replacement: ChildProcess | undefined;
+/** Section 3's OWN broker, killed on purpose partway through. It is a second one rather than the
+ *  suite's so that killing it cannot make this section's position in the file load-bearing: a
+ *  section added after it would otherwise fail for a reason nothing in its own text explains. */
+let nats2: ChildProcess | undefined;
+let releaseBroker2: (() => void) | undefined;
+let relayServer: ReturnType<typeof createNetServer> | undefined;
 try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers)) break; await sleep(200); }
   await seedChannelRegistry({ servers, space: SPACE, file: { defaults: { replay: false } } });
@@ -267,18 +308,135 @@ try {
   // green pair is also what a first process that had already exited would produce.
   check("the first process was still alive throughout, so the refusal really had a live owner to name",
     first.exitCode === null, { exitCode: first.exitCode });
+
+  // ── 3. A FRAME THE BROKER NEVER CONFIRMED ─────────────────────────────────────────────────────
+  // Condition (b) of the lifetime, and the half section 1 cannot reach. There, a log is kept because
+  // the DRAIN did not settle. Here the drain settles and the log is kept anyway, because it holds a
+  // frame whose fate nobody knows and only a start that reads this file can settle it.
+  //
+  // REACHED THROUGH THE CONNECTOR'S OWN SURFACE rather than by writing a WAL by hand, and the route
+  // is a broker outage in the middle of a drain. `beginSend` writes the frame into the log as
+  // `sent_unacked` BEFORE the publish is attempted, precisely so an uncertain publish is recoverable;
+  // the publish then fails, the holder's chain absorbs the throw into `die()`, which returns void, so
+  // the retirement's settle RESOLVES and `drained` comes back true. That is what makes this arm
+  // distinguishable at all: the two keep arms differ only in whether the drain settled, so this
+  // section asserts the retirement reported "drained before release" as well as the keep itself.
+  //
+  // A cell that hand-wrote a pending frame into a file would grade the reaper's `if` and nothing
+  // about whether a real run can produce that state. This one produces it.
+  const port2 = await freePort();
+  const servers2 = `nats://127.0.0.1:${port2}`;
+  nats2 = spawn("nats-server", ["-js", "-p", String(port2), "-sd", join(dir, "js2")], { stdio: "ignore" });
+  releaseBroker2 = teardownOnSignal(nats2, dir);
+  for (let i = 0; i < 50; i++) { if (await isReachable(servers2)) break; await sleep(200); }
+  await seedChannelRegistry({ servers: servers2, space: SPACE, file: { defaults: { replay: false } } });
+
+  // THE LINK IS CUT, THE BROKER IS NOT KILLED, AND THE DIFFERENCE IS THE WHOLE REASON THIS RELAY
+  // EXISTS. A frame reaches the log only on the path through `beginSend`, and everything before it
+  // has to succeed to get there. `splitFrames` asks the endpoint for `maxPayload`, which is read off
+  // the client's cached server INFO and THROWS the moment the client knows it is disconnected, so a
+  // broker that is simply gone takes the pump down one step too early: measured, with a SIGKILL the
+  // emitter stopped at "max_payload is only known while connected" and no frame was ever pending.
+  // A link that stops delivering without closing leaves the client believing it is live, so the pump
+  // reads the limit, freezes the frame into the log, and only then fails to get its ack back. That
+  // is the ordinary shape of a network failure mid-drain, and it is the one the log's pending state
+  // was designed for.
+  const relayPort = await freePort();
+  let cut = false;
+  const relaySockets: Socket[] = [];
+  const relay = createNetServer((client) => {
+    const up = netConnect(port2, "127.0.0.1");
+    relaySockets.push(client, up);
+    client.on("data", (d) => { if (!cut) up.write(d); });
+    up.on("data", (d) => { if (!cut) client.write(d); });
+    const bye = (): void => { client.destroy(); up.destroy(); };
+    for (const sock of [client, up]) { sock.on("error", bye); sock.on("close", bye); }
+  });
+  relay.listen(relayPort, "127.0.0.1");
+  await once(relay, "listening");
+  relayServer = relay;
+
+  const WS_PENDING = join(dir, "ws-pending");
+  mkdirSync(WS_PENDING, { recursive: true });
+  bootSessionId = P;
+  content.set(P, []);
+  process.env.COTAL_SERVERS = `nats://127.0.0.1:${relayPort}`;
+  process.env.COTAL_WORKSPACE_ROOT = WS_PENDING;
+  clearPluginGuard();
+  pendingHooks = await bootPlugin();
+  const fireP = (event: unknown): Promise<void> =>
+    (pendingHooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
+  await sleep(1_500);
+  // EVERY LATER READING OF THE LOG IS TAKEN FROM HERE, so a holder that died in section 1 cannot be
+  // mistaken for this section's. The first version scanned the whole array, matched a stale line,
+  // and fired the retirement before the frame had been written; the arm then graded the reap of an
+  // empty log while reporting success on the wait.
+  const from = logs.length;
+  const saidSince = (needle: string): boolean => logs.slice(from).some((l) => l.includes(needle));
+  // Binds the holder and STARTS the emitter, which reaches the broker. It has to happen while the
+  // link is up: a start that fails never opens a log, and there would be nothing to keep.
+  await fireP({ type: "message.part.updated", properties: { part: { sessionID: P } } });
+  await sleep(2_000);
+  const pDirs = threadDirs(WS_PENDING);
+  check("the session that will hold the unconfirmed frame has a log and a live emitter",
+    pDirs.length === 1 && !saidSince("AG-UI emitter stopped"), { pDirs });
+
+  // Stage a real turn, then cut the link. The next pump reads it, freezes the frame into the log,
+  // and never learns what became of it.
+  content.set(P, turn(P, 1));
+  cut = true;
+  await fireP({ type: "message.part.updated", properties: { part: { sessionID: P } } });
+
+  // WAITED FOR RATHER THAN ASSUMED, and the wait is load-bearing twice over. The pending frame has
+  // to be on disk before the retirement, or this grades nothing; and the holder's chain has to have
+  // RESOLVED, or the retirement's settle spends its bound and this becomes the abandoned arm again.
+  const walOf = (name: string): { pending?: unknown } | undefined => {
+    const pd = principalDir(WS_PENDING);
+    if (!pd) return undefined;
+    const f = joinPath(pd, name, "wal.json");
+    if (!existsSync(f)) return undefined;
+    try { return JSON.parse(readFileSync(f, "utf8")) as { pending?: unknown }; } catch { return undefined; }
+  };
+  let framePending = false;
+  for (let i = 0; i < 300 && !framePending; i++) {
+    await sleep(100);
+    framePending = (walOf(pDirs[0]!)?.pending ?? null) !== null;
+  }
+  check("the failed publish left a frame pending in the log, which is the state this arm is about",
+    framePending, walOf(pDirs[0]!)?.pending ?? "(none)");
+  let holderDead = false;
+  for (let i = 0; i < 400 && !holderDead; i++) {
+    await sleep(100);
+    holderDead = saidSince("AG-UI emitter stopped");
+  }
+  check("and the holder's chain resolved rather than hanging, so the retirement below will settle",
+    holderDead);
+
+  // The `/new`. Its drain settles, because a dead holder's queued work is a no-op.
+  await fireP({ type: "session.created", properties: { info: { id: Q } } });
+  await sleep(3_000);
+  check("the retirement reported a SETTLED drain, so this keep is not the abandoned-drain arm",
+    logged(`${SESSION_RETIRED} ${P} superseded by ${Q}; drained before release`), logs.slice(-8));
+  check("a frame the broker never confirmed keeps the log even though the drain settled",
+    logged(`${WAL_KEPT} ${P}: a frame is still pending`), logs.slice(-8));
+  check("so the log holding it is still on disk",
+    threadDirs(WS_PENDING).includes(pDirs[0]!), { pDirs, now: threadDirs(WS_PENDING) });
 } catch (e) {
   fail++;
   console.error("  ✗ scenario threw:", (e as Error).stack);
 } finally {
   await hooks?.dispose?.().catch(() => undefined);
+  await pendingHooks?.dispose?.().catch(() => undefined);
   first?.kill("SIGKILL");
   replacement?.kill("SIGKILL");
+  relayServer?.close();
+  nats2?.kill("SIGKILL");
   nats.kill("SIGKILL");
   oc.close();
   await sleep(200);
   rmSync(dir, { recursive: true, force: true });
-  releaseBroker();
+  releaseBroker2?.();
+  releaseBroker(); // last: ownership is held until this teardown has actually finished
 }
 // Printed on EVERY exit path: a grader that cannot tell an unfinished run from a finished red one
 // cannot grade this suite at all.

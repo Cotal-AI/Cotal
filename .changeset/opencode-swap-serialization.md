@@ -151,12 +151,14 @@ unloading the plugin while its host keeps running releases it exactly as a super
 
 A session's write-ahead log is per session and its lifetime is stated rather than assumed, because
 a log exists so a later start can recover what was not yet published and deleting one early
-destroys exactly that. A retired session's log is removed once its run has been closed on the wire
-AND the drain that closed it settled rather than spending its bound; an abandoned drain is
-uncancelled and may still be writing, so its log stays and the connector says so in the log. The
-live session's log survives teardown, because a teardown is not a retirement: nothing has told an
-observer that thread ended, and a start that adopts it again is the case the log is for. So a
-process leaves one log directory behind rather than one per `/new`.
+destroys exactly that. A retired session's log is removed once its run has been closed on the wire,
+AND the drain that closed it settled rather than spending its bound, AND the log holds no frame the
+broker never confirmed. Either of the last two keeps it, for different reasons that the connector
+distinguishes in what it logs: an abandoned drain is uncancelled and may still be writing, while a
+pending frame is the one thing only a later start reading that file can settle. The live session's
+log survives teardown, because a teardown is not a retirement: nothing has told an observer that
+thread ended, and a start that adopts it again is the case the log is for. So a process leaves one
+log directory behind rather than one per `/new`.
 
 `@cotal-ai/connector-core` gains a close on the emitter holder to go with that. Retiring a holder
 was a dropped reference rather than an act: it refused nothing afterwards, and a late hook could
