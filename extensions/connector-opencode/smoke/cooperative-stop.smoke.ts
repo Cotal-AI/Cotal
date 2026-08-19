@@ -821,10 +821,14 @@ try {
 
   // The cutover closes. The batch was refused, not consumed, so a later wake in THIS process has to
   // carry it. Without that, "refused" and "dropped" are the same observation.
+  // GRADED ON THE TEXT, not on a count. A count says only that some turn started, and this seat has
+  // two inputs in flight: the refused batch and the refused nudge. The first version counted, the
+  // nudge's own prompt satisfied it, and a mutation that acked the batch away still passed. So each
+  // cell names the input it is about.
   let carried = false;
   for (let i = 0; i < 150 && !carried; i++) {
     await wait(100);
-    carried = existsSync(carryPrompts) && readFileSync(carryPrompts, "utf8").trim().length > 0;
+    carried = existsSync(carryPrompts) && /refused mid-cutover/.test(readFileSync(carryPrompts, "utf8"));
   }
   check("carry-seat: the batch refused mid-cutover was kept, and driven once the cutover closed",
     carried, { carryPrompts, carryMarker });
