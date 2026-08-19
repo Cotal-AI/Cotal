@@ -250,7 +250,7 @@ try {
     try { await mintCreds(auth, newIdentity(), profile, opts); return false; } catch { return true; }
   };
   c("a RAW unbranded serve value refuses at the mint",
-    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { endpoint: "manager", instanceId: IID, epoch: EPOCH, commands: ["status"] } as EpServeGrant, serveIssuance: gate.seam }));
+    await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { endpoint: "manager", instanceId: IID, epoch: EPOCH, commands: ["status"] } as unknown as EpServeGrant, serveIssuance: gate.seam }));
   c("a STRUCTURAL COPY of the authorized artifact refuses at the mint",
     await mintThrows({ principal: { owner: "u_op", actor: "mgr" }, endpointServe: { ...serveGrant } as EpServeGrant, serveIssuance: gate.seam }));
   c("the AGENT profile refuses serve rows (a serve credential is never an agent-baseline cred)",
@@ -407,13 +407,13 @@ try {
     c("a mint that wins the CAS on an open, current gate commits its row (the positive fence path)",
       g.active() === 1 && g.revoked() === 0);
     const before = g.coord();
-    const token = g.freezeNow();
+    const token = await g.freezeNow();
     if (token === null) throw new Error("barrier freeze should win");
-    const family = g.barrier.enumerate();
-    for (const row of family) if (row.state === "active") g.barrier.revoke(row);
+    const family = await g.barrier.enumerate();
+    for (const row of family) if (row.state === "active") await g.barrier.revoke(row);
     for (const p of new Set(family.filter((r) => r.state === "revoked").map((r) => r.holderPrincipal)))
-      if (!g.barrier.evict(p)) throw new Error("evict should verify gone");
-    const reopened = g.barrier.reopen(token, { generation: before.generation + 1, processEpoch: before.processEpoch, registrationRevision: before.registrationRevision + 1, nameAuthorityRevision: before.nameAuthorityRevision });
+      if (!(await g.barrier.evict(p))) throw new Error("evict should verify gone");
+    const reopened = await g.barrier.reopen(token, { generation: before.generation + 1, processEpoch: before.processEpoch, registrationRevision: before.registrationRevision + 1, nameAuthorityRevision: before.nameAuthorityRevision });
     c("mint-wins→barrier enumerates→revokes→VERIFIED-evicts the released credential by holderPrincipal",
       family.length === 1 && family[0].holderPrincipal === "u_op.mgr" && g.active() === 0 && g.revoked() === 1 && g.evicted.includes("u_op.mgr"));
     c("…and the TOKEN-pinned reopen advanced the gate to the successor registrationRevision (a superseded re-mint would now lose)",
@@ -502,10 +502,10 @@ try {
   // stale/duplicate reopen with the same token loses and never clobbers the newer gate.
   {
     const g = makeGate({ endpoint: "manager", lifecycleUid: IID, generation: 1, processEpoch: EPOCH, registrationRevision: 5, nameAuthorityRevision: NAR });
-    const token = g.freezeNow();
+    const token = await g.freezeNow();
     if (token === null) throw new Error("freeze should win");
-    const first = g.barrier.reopen(token, { generation: 2, processEpoch: EPOCH, registrationRevision: 6, nameAuthorityRevision: NAR });
-    const stale = g.barrier.reopen(token, { generation: 99, processEpoch: EPOCH, registrationRevision: 999, nameAuthorityRevision: NAR });
+    const first = await g.barrier.reopen(token, { generation: 2, processEpoch: EPOCH, registrationRevision: 6, nameAuthorityRevision: NAR });
+    const stale = await g.barrier.reopen(token, { generation: 99, processEpoch: EPOCH, registrationRevision: 999, nameAuthorityRevision: NAR });
     c("reopen is token-pinned: the completing reopen wins, a STALE reopen with the same token loses and leaves the newer gate intact",
       first === true && stale === false && g.coord().registrationRevision === 6);
   }

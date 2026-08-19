@@ -89,7 +89,7 @@ try {
 
   // Victim listens on its OWN reply subtree.
   const vnc = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(vCreds)), inboxPrefix: `_INBOX_${victim.id}`, maxReconnectAttempts: 0 });
-  let victimGot = false;
+  let victimGot: boolean | undefined;
   const vsub = vnc.subscribe(`${controlServiceSubject(space, CONTROL_DELIVERY, DEV_OWNER, victim.id)}.>`, { callback: (err, m) => { if (!err && m) victimGot = true; } });
   await vnc.flush();
 
@@ -102,10 +102,10 @@ try {
   anc.publish(attackerReq, new TextEncoder().encode(body), { reply: forgedReply });
   await anc.flush();
   await wait(700);
-  check("forged reply target (peer's subtree) is NOT answered — no injection into the victim's lane", victimGot === false);
+  check("forged reply target (peer's subtree) is NOT answered — no injection into the victim's lane", victimGot !== true);
 
   // Control: a legitimate request with the reply under the attacker's OWN subtree IS answered.
-  let attackerGot = false;
+  let attackerGot: boolean | undefined;
   const legitReply = `${attackerReq}.reply.${randomUUID()}`;
   const asub = anc.subscribe(`${attackerReq}.>`, { callback: (err, m) => { if (!err && m) attackerGot = true; } });
   await anc.flush();

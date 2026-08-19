@@ -281,7 +281,7 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
   // A duplicate against a row still MID-ISSUE refuses: the retry exception applies only to active.
   const g = await verify(mint());
   const { hooks, st } = fakeHooks();
-  st.rows.set(g.sessionId, { sessionId: g.sessionId, endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccI", credServing: "csI", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW + 60_000 });
+  st.rows.set(g.sessionId, { sessionId: g.sessionId, endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, grantSig: g.sig, credCaller: "ccI", credServing: "csI", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW + 60_000 });
   await rejects("a duplicate against a still-issuing row refuses (one-use; the retry applies only to an active row)", () => redeemSession(g, PRESENTER, hooks), "permission-denied");
   c("…and released nothing", st.released.length === 0);
 }
@@ -304,7 +304,7 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
   // retrieveServingCredential refuses on a non-active row (an issuing row confers nothing).
   const { hooks, st } = fakeHooks();
   const sid = mintSessionId();
-  st.rows.set(sid, { sessionId: sid, endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccX", credServing: "csX", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW + 60_000 });
+  st.rows.set(sid, { sessionId: sid, endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, grantSig: "sigX", credCaller: "ccX", credServing: "csX", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW + 60_000 });
   await rejects("serving retrieval on a non-active row refuses (issuing confers nothing)",
     () => retrieveServingCredential(sid, SERVING_PRESENTER, hooks), "failed-precondition");
 }
@@ -412,7 +412,7 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
   // CRASH MID-ISSUE → the sweep collects: an `issuing` row past exp is transitioned expired
   // and BOTH recorded ids revoked + MARKED; a fully-collected terminal row is untouched.
   const { hooks, st } = fakeHooks();
-  const row: SessionLedgerRow = { sessionId: mintSessionId(), endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccX", credServing: "csX", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW };
+  const row: SessionLedgerRow = { sessionId: mintSessionId(), endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, grantSig: "sigX", credCaller: "ccX", credServing: "csX", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW };
   st.rows.set(row.sessionId, row);
   c("sweep collects a crashed half-issue past exp (row expired, BOTH ids revoked + marked)",
     (await sweepSessionRow(row, hooks, { now: NOW + 1 })) === true && st.rows.get(row.sessionId)!.state === "expired" && st.revoked.join() === "ccX,csX" && row.revoked.caller && row.revoked.serving, st);
@@ -431,7 +431,7 @@ function fakeHooks(over: Partial<SessionRedemptionHooks> = {}): { hooks: Session
     if (id === "csY" && failOnce) { failOnce = false; throw new Error("revocation outage"); }
     st.revoked.push(id);
   };
-  const row: SessionLedgerRow = { sessionId: mintSessionId(), endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, credCaller: "ccY", credServing: "csY", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW };
+  const row: SessionLedgerRow = { sessionId: mintSessionId(), endpoint: ENDPOINT, serving: SERVING, holder: { principal: HOLDER.id, lifecycleUid: HOLDER.lifecycleUid }, grantSig: "sigY", credCaller: "ccY", credServing: "csY", revoked: { caller: false, serving: false }, state: "issuing", exp: NOW };
   st.rows.set(row.sessionId, row);
   c("sweep pass 1: row terminal; the FAILED revoke leaves its mark unset",
     (await sweepSessionRow(row, hooks, { now: NOW + 1 })) === true && st.rows.get(row.sessionId)!.state === "expired" && row.revoked.caller === true && row.revoked.serving === false, row);
@@ -475,8 +475,8 @@ try {
   {
     const gotB: unknown[] = []; const gotA: unknown[] = [];
     let aClosed = false;
-    const serving = openSessionRail({ nc: ncB, grant, role: "serving", onData: (d) => gotB.push(d) });
-    const caller = openSessionRail({ nc: ncA, grant, role: "caller", onData: (d) => gotA.push(d), onClose: () => { aClosed = true; } });
+    const serving = openSessionRail({ nc: ncB, grant, role: "serving", onData: (d) => { gotB.push(d); } });
+    const caller = openSessionRail({ nc: ncA, grant, role: "caller", onData: (d) => { gotA.push(d); }, onClose: () => { aClosed = true; } });
     await ncA.flush(); await ncB.flush();
 
     // Duplex, in order, MORE frames than the window (credits must cycle). A full window is
@@ -520,7 +520,7 @@ try {
     // and a credit overrun surface as protocol errors.
     const g3 = { ...grant, sessionId: mintSessionId() };
     const errs: string[] = []; const got: number[] = [];
-    const serving = openSessionRail({ nc: ncB, grant: g3, role: "serving", onData: (d) => got.push((d as { i: number }).i), onProtocolError: (r) => errs.push(r) });
+    const serving = openSessionRail({ nc: ncB, grant: g3, role: "serving", onData: (d) => { got.push((d as { i: number }).i); }, onProtocolError: (r) => errs.push(r) });
     await ncB.flush();
     const inSubj = epsSubject(SPACE, ENDPOINT, g3.sessionId, SERVING.epoch, "in");
     ncA.publish(inSubj, encodeSessionFrame({ t: "f", seq: 1, data: { i: 1 } }));
@@ -553,7 +553,7 @@ try {
     // the rail BEFORE the frame's data reaches onData.
     const gO = { ...grant, sessionId: mintSessionId() };
     const errs: string[] = []; const got: unknown[] = [];
-    const serving = openSessionRail({ nc: ncB, grant: gO, role: "serving", onData: (d) => got.push(d), onProtocolError: (r) => errs.push(r) });
+    const serving = openSessionRail({ nc: ncB, grant: gO, role: "serving", onData: (d) => { got.push(d); }, onProtocolError: (r) => errs.push(r) });
     await ncB.flush();
     ncA.publish(epsSubject(SPACE, ENDPOINT, gO.sessionId, SERVING.epoch, "in"), encodeSessionFrame({ t: "f", seq: 1, data: { evil: 1 }, ack: 99 }));
     await ncA.flush();

@@ -80,7 +80,7 @@ try {
   // distinct lifecycle (SPEC §13.1): agent creds are lifecycle-keyed, so each mint carries its own uid.
   const idA1 = newIdentity(), idA2 = newIdentity(), idB1 = newIdentity();
   const uidA1 = mintLifecycleUid(), uidA2 = mintLifecycleUid(), uidB1 = mintLifecycleUid();
-  const grants = { allowSubscribe: ["general"], allowPublish: ["general"] } as const;
+  const grants = { allowSubscribe: ["general"], allowPublish: ["general"] };
   const a1 = await mintCreds(auth, idA1, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora1" }, lifecycleUid: uidA1 });
   await mintCreds(auth, idA2, "agent", { ...grants, principal: { owner: OWNER_A, actor: "actora2" }, lifecycleUid: uidA2 });
   await mintCreds(auth, idB1, "agent", { ...grants, principal: { owner: OWNER_B, actor: "actorb1" }, lifecycleUid: uidB1 });

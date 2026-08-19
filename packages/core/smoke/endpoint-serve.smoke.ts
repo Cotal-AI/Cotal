@@ -858,10 +858,10 @@ try {
   await nc.flush();
   for (let i = 0; i < 60 && gate === undefined; i++) await wait(25); // the handler is parked once gate is set
   c("the gated handler is in flight", gate !== undefined);
-  let stopped = false;
+  let stopped: boolean | undefined;
   const stopping = srvA.stop().then(() => { stopped = true; });
   await wait(400);
-  c("stop() does NOT report stopped while a handler is in flight", stopped === false);
+  c("stop() does NOT report stopped while a handler is in flight", stopped !== true);
   gate!();
   await stopping;
   c("stop() resolves once the in-flight handler finishes", stopped === true);

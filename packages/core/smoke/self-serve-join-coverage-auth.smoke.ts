@@ -142,7 +142,8 @@ try {
     const raw = await connect({ servers: SERVERS, authenticator: credsAuthenticator(new TextEncoder().encode(posterCreds)), inboxPrefix: `_INBOX_${posterIdent.id}` });
     const rjs = jetstream(raw);
     // (a) forged payload `to: <alice>` with a VALID from=poster: must deliver, classified kind=channel by subject.
-    const forged: CotalMessage = {
+    // Deliberately NOT annotated `CotalMessage`: carrying both `channel` and `to` is the forgery.
+    const forged = {
       id: randomUUID(), ts: Date.now(), space, from: poster.ref(), channel: "rev.api",
       to: aId.id, parts: [{ kind: "text", text: "forged-to-probe" }],
     };
