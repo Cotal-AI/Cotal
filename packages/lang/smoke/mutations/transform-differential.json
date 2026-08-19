@@ -308,16 +308,25 @@
       "replace": "  const onLog = (line: { readonly scope: string; readonly values: readonly unknown[] }): void => {\n    run.onLog?.(line);\n    line.values.forEach((v, i) => {\n      try {\n        assertNoCode(v, `log: value ${i + 1}`);\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n    });\n  };\n",
       "expectRed": "caught by the program, which then continues",
       "cell": "declared divergence, and both answers are what the ruling says: a log line is data on the engine: caught by the program, which then continues",
-      "note": "WHY THAT ROW EXISTS, as a measurement rather than a claim. The rule's value is the sink's POSITION - refused before the line reaches any transport - and the three uncaught rows above it cannot see position at all, because `answer` collapses a refusing arm to its code and discards its logs. Run this mutant against them and all three are BYTE IDENTICAL while a live closure reaches the host on every one. The caught row is the only place in this suite where the engine's log lines are part of the compared answer while the L4016 rule is in play, so it is the only cell here this mutant reds."
+      "note": "WHY THAT ROW EXISTS, and it no longer reds alone - deliberately. The rule's value is the sink's POSITION, refused before the line reaches any transport. When this mutant was written the three uncaught rows could not see position at all, because `answer` collapsed a refusing arm to its code and threw its logs away: run it against them and all three were BYTE IDENTICAL while a live closure reached the host on every one. That measurement is what removed the collapse, so this now reds four cells and is graded on the caught row, whose subject IS the position seen from inside the program - the others see the emitted line, this one sees that the program caught, read the code, and continued past it."
     },
     {
       "name": "a retired divergence is repaired by re-pinning both arms instead of being deleted",
       "file": "packages/lang/smoke/differential.smoke.ts",
-      "find": "  [\"ruling 1c / issue 646: an update's operand is a numeric string\", 'let n = \"5\"; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', \"L4018\"],\n",
+      "find": "  [\"ruling 1c / issue 646: an update's operand is a numeric string\", 'let n = \"5\"; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', \"L4018 logs [] shapes []\"],\n",
       "replace": "  [\"ruling 1c / issue 646: an update's operand is a numeric string\", 'let n = 5; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', 'logs [[6]] shapes [[\"number\"]]'],\n",
       "expectRed": "every declared divergence names two different answers",
       "cell": "every declared divergence names two different answers, so a retired one cannot be re-pinned into a permanent row",
       "note": "The failure this list is built to prevent, in the shape it actually arrives in. Issue 646 lands, the walker stops coercing, the row reds - and the repair that costs least is to re-pin BOTH sides to the new common answer, which leaves a program that agrees on both arms sitting inside the declared-divergence list, passing forever and counted as a divergence in the line printed above it. The mutant is exactly that repair: the row's own cell still passes by construction, and only the guard sees it."
+    },
+    {
+      "name": "a refusing arm's answer collapses to its code again, so a divergence that aborts compares nothing else",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "const answer = (a: Arm): string => `${a.error !== null ? `${a.error} ` : \"\"}logs ${j(a.logs)} shapes ${shapes(a.logs)}`;\n",
+      "replace": "const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)} shapes ${shapes(a.logs)}`);\n",
+      "expectRed": "a log line is data on the engine: a function value",
+      "cell": "declared divergence, and both answers are what the ruling says: a log line is data on the engine: a function value",
+      "note": "The blind spot itself, restored. Five of the eight declared divergences end in a refusal on one arm, and with the collapse back in place each of them is pinned to a bare code that says the arm refused and nothing about what it had already done first - which is how a sink that hands its line to the host and refuses afterwards satisfied the pin exactly. This reds all five; it is graded on the first, and the note is here because a reader who sees five cells go red at once should know they are one fact, not five."
     }
   ],
   "completionMarker": "differential.smoke:"

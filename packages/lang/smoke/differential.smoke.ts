@@ -168,8 +168,20 @@ const shapeOf = (v: unknown): string =>
 
 const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((line) => line.map(shapeOf)));
 
-/** What an arm answered, as one string: the refusal it raised, or the lines it logged AND their shapes. */
-const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)} shapes ${shapes(a.logs)}`);
+/**
+ * What an arm answered, as one string: its refusal if it raised one, AND the lines it logged before
+ * it did, with their shapes.
+ *
+ * THE LOGS ARE HERE FOR REFUSING ARMS TOO, and they were not, which cost a whole leg of every
+ * declared divergence that ends in an abort. Collapsed to the bare code, a row pinned to "L4016"
+ * says the engine refused and says NOTHING about when — so a sink that hands the line to the host
+ * and refuses afterwards satisfies the pin exactly. Measured: with the old spelling, moving
+ * `run.onLog?.(line)` above the walk in the engine's log sink left all three L4016 rows BYTE
+ * IDENTICAL while the closure the rule promises never to hand over reached the host on every one.
+ * The corpus never had this hole — `differences` compares logs whether or not an arm refused — so
+ * this was a divergence-only blind spot, which is the half of the file with the fewest readers.
+ */
+const answer = (a: Arm): string => `${a.error !== null ? `${a.error} ` : ""}logs ${j(a.logs)} shapes ${shapes(a.logs)}`;
 
 /** Where two arms differ, as the field names. Empty means identical. */
 const differences = (a: Arm, b: Arm): string[] => {
@@ -614,8 +626,8 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646 — and
   // when it lands the walker starts refusing, these cells red, and the divergence is retired here
   // rather than remembered.
-  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018"],
-  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018"],
+  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018 logs [] shapes []"],
+  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018 logs [] shapes []"],
   // Ruling 1c's second declared divergence, issue 647: `len` of a PROGRAM-DEFINED function. Neither
   // number is the program's arity — each arm reports the arity of its own closure wrapper, the
   // walker's `(frame, args)` pair and the engine's rest parameter — which the cell below measures
@@ -631,16 +643,17 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // the engine, declared here with both answers - the walker's is what the comparator's JSON view
   // makes of a live closure. Three doors: the value itself, a function nested in a record, and a
   // namespace, which is a record of them.
-  ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016"],
-  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+code"]]', "L4016"],
-  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+code"]]', "L4016"],
+  ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016 logs [] shapes []"],
+  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+code"]]', "L4016 logs [] shapes []"],
+  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+code"]]', "L4016 logs [] shapes []"],
   // AND THE SAME RULE SEEN FROM INSIDE THE PROGRAM, which is not the fact the three above hold.
   // `answer` collapses a refusing arm to its code and throws its log lines away, so on those three
-  // rows the engine's log leg is never compared at all. Measured, not reasoned: hand the line over
-  // before the sink walks it (`run.onLog?.(line)` moved above the walk) and all three stay BYTE
-  // IDENTICAL, while the closure the rule promises never to hand over reaches the host on every
-  // one of them. The engine suite holds that position in two cells of its own, so this is not a
-  // hole; what this suite had was a divergence whose engine half only ever appeared as an abort.
+  // rows the engine's log leg was never compared at all until `answer` above started carrying a
+  // refusing arm's lines — which it does BECAUSE of this row: the mutant written for it (the
+  // handover moved above the sink's walk) left all three byte identical, and rather than leave
+  // this row as the list's only witness to that, the collapse was removed and all four now see it.
+  // The engine suite holds the position in two cells of its own, so it was never unguarded; what
+  // this suite had was a divergence whose engine half only ever appeared as an abort.
   // Caught, it appears as behaviour: the refusal is the program's to catch, it carries the code
   // every other refusal carries, the line that raised it was never emitted, and the run continues
   // past it — so both arms COMPLETE and disagree, and the disagreement is in the log rather than
