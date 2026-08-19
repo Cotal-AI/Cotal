@@ -634,6 +634,24 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016"],
   ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+code"]]', "L4016"],
   ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+code"]]', "L4016"],
+  // AND THE SAME RULE SEEN FROM INSIDE THE PROGRAM, which is not the fact the three above hold.
+  // `answer` collapses a refusing arm to its code and throws its log lines away, so on those three
+  // rows the engine's log leg is never compared at all. Measured, not reasoned: hand the line over
+  // before the sink walks it (`run.onLog?.(line)` moved above the walk) and all three stay BYTE
+  // IDENTICAL, while the closure the rule promises never to hand over reaches the host on every
+  // one of them. The engine suite holds that position in two cells of its own, so this is not a
+  // hole; what this suite had was a divergence whose engine half only ever appeared as an abort.
+  // Caught, it appears as behaviour: the refusal is the program's to catch, it carries the code
+  // every other refusal carries, the line that raised it was never emitted, and the run continues
+  // past it — so both arms COMPLETE and disagree, and the disagreement is in the log rather than
+  // in the outcome.
+  [
+    "a log line is data on the engine: caught by the program, which then continues",
+    'try { log((x) => x); } catch (e) { log("caught", e.code); } log("after");',
+    {},
+    'logs [[null],["after"]] shapes [["function"],["string"]]',
+    'logs [["caught","L4016"],["after"]] shapes [["string","string"],["string"]]',
+  ],
 ];
 
 {
@@ -646,6 +664,16 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
     });
   }
   console.log(`  (${DIVERGENT.length} declared divergence(s))`);
+
+  // AND EVERY ROW HERE ACTUALLY DIVERGES. A row pinned to the same answer on both arms is a corpus
+  // program wearing this list's label: it passes forever, it inflates the count printed above, and
+  // it defeats the one promise the list makes — that a divergence retired upstream REDS here the day
+  // it lands. The way that promise gets broken is not a typo, it is a repair: the row reds, and the
+  // next reader re-pins BOTH sides to the new common answer instead of deleting the row, and the
+  // retired divergence is then remembered exactly as the header above says it must not be. Nothing
+  // else here can see that, because a re-pinned row satisfies its own cell by construction.
+  const agreeing = DIVERGENT.filter(([, , , walkerAnswer, engineAnswer]) => walkerAnswer === engineAnswer).map(([name]) => name);
+  ok("every declared divergence names two different answers, so a retired one cannot be re-pinned into a permanent row", agreeing.length === 0, agreeing);
 
   // WHY 647 IS A LEAK AND NOT A DISAGREEMENT ABOUT ARITY. Measured on the oracle: the walker answers
   // 2 for a function of zero, one and three parameters alike, so it is reading its own wrapper and

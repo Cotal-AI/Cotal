@@ -300,6 +300,24 @@
       "expectRed": "the seam file this half trusts is the one the dispatcher's own suite writes",
       "cell": "the seam file this half trusts is the one the dispatcher's own suite writes",
       "note": "A seam is only a seam while both ends agree which subject it is about. This half now trusts a FILE rather than the other suite's source, so it must check the file is that suite's - otherwise a list written for any suite in the repo would satisfy the equality and the rows would index cells that never ran here. The runtime suite grades the same field from its own end; this grades it from the end that consumes it, which is the end that would be silently wrong."
+    },
+    {
+      "name": "the log sink hands the line over before it refuses, so the closure crosses and the refusal is cosmetic",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "  const onLog = (line: { readonly scope: string; readonly values: readonly unknown[] }): void => {\n    line.values.forEach((v, i) => {\n      try {\n        assertNoCode(v, `log: value ${i + 1}`);\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n    });\n    run.onLog?.(line);\n  };\n",
+      "replace": "  const onLog = (line: { readonly scope: string; readonly values: readonly unknown[] }): void => {\n    run.onLog?.(line);\n    line.values.forEach((v, i) => {\n      try {\n        assertNoCode(v, `log: value ${i + 1}`);\n      } catch (e) {\n        if (e instanceof NotCrossable) throw new RuntimeFault(\"L4016\", e.message);\n        throw e;\n      }\n    });\n  };\n",
+      "expectRed": "caught by the program, which then continues",
+      "cell": "declared divergence, and both answers are what the ruling says: a log line is data on the engine: caught by the program, which then continues",
+      "note": "WHY THAT ROW EXISTS, as a measurement rather than a claim. The rule's value is the sink's POSITION - refused before the line reaches any transport - and the three uncaught rows above it cannot see position at all, because `answer` collapses a refusing arm to its code and discards its logs. Run this mutant against them and all three are BYTE IDENTICAL while a live closure reaches the host on every one. The caught row is the only place in this suite where the engine's log lines are part of the compared answer while the L4016 rule is in play, so it is the only cell here this mutant reds."
+    },
+    {
+      "name": "a retired divergence is repaired by re-pinning both arms instead of being deleted",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  [\"ruling 1c / issue 646: an update's operand is a numeric string\", 'let n = \"5\"; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', \"L4018\"],\n",
+      "replace": "  [\"ruling 1c / issue 646: an update's operand is a numeric string\", 'let n = 5; n++; log(n);', {}, 'logs [[6]] shapes [[\"number\"]]', 'logs [[6]] shapes [[\"number\"]]'],\n",
+      "expectRed": "every declared divergence names two different answers",
+      "cell": "every declared divergence names two different answers, so a retired one cannot be re-pinned into a permanent row",
+      "note": "The failure this list is built to prevent, in the shape it actually arrives in. Issue 646 lands, the walker stops coercing, the row reds - and the repair that costs least is to re-pin BOTH sides to the new common answer, which leaves a program that agrees on both arms sitting inside the declared-divergence list, passing forever and counted as a divergence in the line printed above it. The mutant is exactly that repair: the row's own cell still passes by construction, and only the guard sees it."
     }
   ],
   "completionMarker": "differential.smoke:"
