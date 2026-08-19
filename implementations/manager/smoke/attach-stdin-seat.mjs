@@ -20,8 +20,13 @@ for (const k of ["COTAL_INPUT_SINK", "COTAL_PID_SINK"])
   if (!e[k]) throw new Error(`${k} is required: without it this stub silently proves nothing`);
 writeFileSync(e.COTAL_PID_SINK, String(process.pid));
 
+// A starved seat, for the probe that asks whether a negative assertion behind a fixed sleep can be
+// beaten by a delivery that is merely SLOW. Unset in every suite, so the gate's timing is unchanged;
+// set only by `pnpm probe:late-delivery`. It holds the WHOLE handler, sink write and echo together,
+// because a seat whose process is descheduled does not do half of its work on time.
+const SINK_DELAY_MS = Number(e.COTAL_SEAT_SINK_DELAY_MS ?? 0);
 let pending = "";
-process.stdin.on("data", (d) => {
+const onData = (d) => {
   appendFileSync(e.COTAL_INPUT_SINK, d); // raw first: the wrapper below cannot represent a control byte
   pending += d.toString("utf8");
   for (;;) {
@@ -31,7 +36,9 @@ process.stdin.on("data", (d) => {
     pending = pending.slice(i + 1);
     if (line) process.stdout.write(`ECHO[${line}]\r\n`);
   }
-});
+};
+// setTimeout preserves order for equal delays, so a slow seat stays a FIFO seat.
+process.stdin.on("data", (d) => { if (SINK_DELAY_MS > 0) setTimeout(() => onData(d), SINK_DELAY_MS); else onData(d); });
 process.stdin.resume();
 
 const ep = new CotalEndpoint({

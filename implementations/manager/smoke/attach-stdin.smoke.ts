@@ -461,6 +461,25 @@ const saidReconnected = (a: Attached): number => (a.seen().match(/\[cotal: recon
 const saidLost = (a: Attached): number => (a.seen().match(/\[cotal: connection lost, reconnecting\]/g) ?? []).length;
 const nonce = (): string => `N${randomUUID().slice(0, 8).toUpperCase()}`;
 
+/** Dates a negative assertion off the SEAT instead of off a clock: type a fresh nonce into the
+ * session that is up and wait for the seat to echo it back. The rail is FIFO, so anything the
+ * earlier bytes were ever going to arrive as had to arrive BEFORE this one did; a byte still absent
+ * when the echo lands is a byte that was dropped, which is the claim. A fixed sleep in the same
+ * place can only fail toward green, because a delivery slower than the sleep lands after the
+ * assertion has already passed. The echo is asserted in its own right, so the absence below can
+ * never pass on a channel that carries nothing at all. Returns the sink offset taken before this
+ * byte, for a caller whose claim is that the window held NOTHING. */
+const dateByEcho = async (a: Attached, label: string): Promise<number> => {
+  const later = nonce();
+  const before = sink().length;
+  a.write(`${later}\r`);
+  const echoed = await a.waitFor(new RegExp(`ECHO\\[${later}`), 20_000);
+  check(`${label}: the session that is up carries the keyboard, which is what dates the absence below`,
+    echoed && sink().subarray(before).includes(Buffer.from(later)),
+    { echoed, got: sink().subarray(before).toString("utf8").slice(-200) });
+  return before;
+};
+
 let manager: InstanceType<typeof Manager> | undefined;
 
 try {
@@ -529,7 +548,7 @@ try {
     await closeLink();
     await heal();
     check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
-    await wait(2_000);
+    await dateByEcho(a, "A");
     check("...and the seat read nothing of what was typed at a terminal with no session",
       !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
     await detachAndSettle(a, base, "A");
@@ -575,7 +594,7 @@ try {
     await closeLink();
     await heal();
     check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
-    await wait(2_000);
+    await dateByEcho(a, "B");
     check("...and the seat read nothing of what was typed during the failed attempt",
       !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
     await detachAndSettle(a, base, "B");
@@ -596,18 +615,9 @@ try {
     await heal();       // this dial's attempt will now succeed
     a.write(`${n}\r`);  // typed while it is establishing: no session, and nobody used to be reading
     check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
-    await wait(2_500);
+    await dateByEcho(a, "C");
     check("...and the seat read nothing of what was typed while the session was being established",
       !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
-    // The handoff is only correct if the session's OWN reader works after it, so the same cell
-    // types again once the session is up: dropping everything would pass the assertion above.
-    const after = nonce();
-    const mark2 = sink().length;
-    a.write(`${after}\r`);
-    const echoed = await a.waitFor(new RegExp(`ECHO\\[${after}`), 20_000);
-    check("...while typing into the session that came up does reach the agent",
-      echoed && sink().subarray(mark2).includes(Buffer.from(after)),
-      { echoed, got: sink().subarray(mark2).toString("utf8") });
     await detachAndSettle(a, base, "C");
   }
 
@@ -626,7 +636,7 @@ try {
     await heal();
     a.write("\x03");
     check("the reconnect lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
-    await wait(2_500);
+    await dateByEcho(a, "D");
     check("...the agent recorded no signal", !sink().subarray(mark).includes(Buffer.from("<SIGINT>")),
       { got: sink().subarray(mark).toString("utf8") });
     check("...and the agent is still running, on the pid it had", seatAlive() && seatPid() === pidBefore,
@@ -688,9 +698,9 @@ try {
     await closeLink();
     await heal();
     check("...the reconnect still lands", await a.waitFor(/\[cotal: reconnected\]/, 60_000), a.seen().slice(-300));
-    await wait(2_000);
-    check("...and neither byte reached the agent", sink().subarray(mark).length === 0,
-      { got: sink().subarray(mark).toString("utf8") });
+    const upTo = await dateByEcho(a, "F");
+    check("...and neither byte reached the agent", sink().subarray(mark, upTo).length === 0,
+      { got: sink().subarray(mark, upTo).toString("utf8") });
     await detachAndSettle(a, base, "F");
   }
 
@@ -761,7 +771,7 @@ try {
     const a = attachUnderPty(root);
     a.write(`${n}\r`); // typed while the FIRST establishment is still running
     check("the attach comes up", await a.waitFor(new RegExp(`attached to ${SEAT}`), 90_000), a.seen().slice(-300));
-    await wait(2_500);
+    await dateByEcho(a, "I");
     check("...and the seat read nothing of what was typed before it came up",
       !sink().subarray(mark).includes(Buffer.from(n)), { got: sink().subarray(mark).toString("utf8") });
     await detachAndSettle(a, base, "I");
@@ -1013,7 +1023,7 @@ try {
     const recovered = Date.now() + 60_000;
     while (Date.now() < recovered && saidReconnected(a) < rec0 + 2) await wait(100);
     check("the reconnect lands", saidReconnected(a) >= rec0 + 2, a.seen().slice(-300));
-    await wait(2_000);
+    await dateByEcho(a, "O");
     check("...and the seat read nothing of what was typed after a session died before it was ready",
       !sink().subarray(mark).includes(Buffer.from(n)),
       { got: sink().subarray(mark).toString("utf8").slice(-300), sessionsSinceTheCut: saidReconnected(a) - rec0 - 1 });
