@@ -600,6 +600,17 @@ for (const rel of ["spec/cotal-lang.md", "docs/workflows.md"]) {
   const missingRow = cataloged.filter((c) => !codes.includes(c));
   const extraRow = codes.filter((c) => !cataloged.includes(c));
   const duplicated = codes.filter((c, i) => codes.indexOf(c) !== i);
+  // THE FLOOR IS THE LOAD-BEARING THIRD, and it is asserted against a NUMBER rather than printed.
+  // Both comparisons below are between two collections, and two EMPTY collections agree perfectly:
+  // if the row pattern stops matching (the table's format changes, it moves behind another heading)
+  // or the catalog stops parsing, the cells that follow pass and print that all rows agree. A floor
+  // well under the real count reds on a parser that broke without hard-coding a number that has to
+  // be edited whenever a code is added.
+  ok(
+    `the reference and the catalog both parse to a full table: ${rows.length} rows read, ${cataloged.length} codes, floor 90 each`,
+    rows.length >= 90 && cataloged.length >= 90,
+    { rows: rows.length, catalog: cataloged.length },
+  );
   ok(
     `Appendix A lists exactly the catalog's codes, ${cataloged.length} of them, each once`,
     missingRow.length === 0 && extraRow.length === 0 && duplicated.length === 0 && rows.length === cataloged.length,

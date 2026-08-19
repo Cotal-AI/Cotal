@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "The two cells that compare Appendix A with CATALOG compare COLLECTIONS, and two empty collections agree perfectly. A floor asserted against a number is what makes a parser that stopped matching red instead of reporting that every row agrees. This config breaks the document side, which is the side no code change would announce.",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/catalog-parse.json",
+  "mutations": [
+    {
+      "name": "the appendix moves behind a heading the reader does not look for, so no row parses at all",
+      "file": "spec/cotal-lang.md",
+      "find": "## Appendix A. The error catalog",
+      "replace": "## Appendix Z. The error catalog",
+      "expectRed": "both parse to a full table",
+      "completionMarker": "ok every js block in docs/workflows.md validates as written",
+      "cell": "the reference and the catalog both parse to a full table: 99 rows read, 99 codes, floor 90 each",
+      "note": "Cold's scenario, exactly: the section lookup finds nothing, the row pattern matches nothing, and BOTH comparison cells would pass on two empty collections while printing that all rows agree. Only the floor reds, which is the whole reason it is asserted against a number instead of printed."
+    },
+    {
+      "name": "one row loses its table format, so the document quietly stops listing a code it still documents",
+      "file": "spec/cotal-lang.md",
+      "find": "| L5024 | A recorded value has no canonical form |",
+      "replace": "L5024: A recorded value has no canonical form",
+      "expectRed": "Appendix A lists exactly the catalog's codes",
+      "completionMarker": "ok the reference and the catalog both parse to a full table",
+      "cell": "Appendix A lists exactly the catalog's codes, 99 of them, each once",
+      "note": "The single-row version of the same failure, and it lands on a DIFFERENT cell: 98 rows still clears the floor of 90, so the floor cell passes and prints 98, and the set cell is the one that reds with L5024 missing from the document. Anchored on the row this round corrected, so a future edit to that row shows up as a dead anchor rather than a mutant that stopped meaning anything."
+    }
+  ]
+}
