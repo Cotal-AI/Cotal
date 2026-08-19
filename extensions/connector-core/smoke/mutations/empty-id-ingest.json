@@ -2,7 +2,7 @@
   "suite": "extensions/connector-core/smoke/empty-id-ingest.smoke.ts",
   "guard": "an empty message id is never a dedup key at ingest: two distinct id-less messages are both delivered (a third still delivers after a drain), while real-id coalescing is unchanged",
   "command": "pnpm smoke:empty-id-ingest",
-  "completionMarker": "EMPTY-ID INGEST SMOKE PASSED",
+  "completionMarker": "EMPTY-ID INGEST SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/empty-id-ingest.json",
   "why": [
     "The defect is one decision expressed at one site: which key a received id contributes to the",

@@ -163,8 +163,11 @@ try {
   check("two distinct REAL ids are both delivered", c4.includes("ra") && c4.includes("rb") && c4.length === 2, c4);
 
   await nc.drain();
-  console.log(`\nEMPTY-ID INGEST SMOKE PASSED ✅  (${pass} checks)`);
+  console.log(`\nEMPTY-ID INGEST SMOKE OK ✅  (${pass} checks)`);
   await agent.stop();
+} catch (e) {
+  console.error(`\nEMPTY-ID INGEST SMOKE FAILED ❌  ${(e as Error).message}`);
+  process.exitCode = 1;
 } finally {
   releaseBroker();
   srv.kill("SIGKILL");
