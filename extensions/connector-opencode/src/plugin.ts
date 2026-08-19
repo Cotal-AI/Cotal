@@ -123,8 +123,8 @@ export const cotal: Plugin = async () => {
    *  later swap and take the event plane down permanently. */
   let swapChain: Promise<void> = Promise.resolve();
   /**
-   * A cutover is in progress. Read by `drive`, which is the ONE place a turn can start, so every
-   * door is covered by this rather than each door carrying its own guard.
+   * A cutover is in progress. Read by `drive`, which is where this connector submits a turn, so a
+   * caller that reaches `drive` is covered by this rather than carrying its own guard.
    *
    * Gating the drive inside `adoptSession` was not enough and that is the lesson here: adopting
    * also clears `busy` and `driving`, and the inbox, wake and mention-wake handlers all start a
@@ -587,7 +587,8 @@ export const cotal: Plugin = async () => {
    *  the body (a bare nudge, e.g. a focus @mention pull) and surfaces nothing to ack. Self-guards
    *  re-entrancy and never prompts into a running turn (opencode would COALESCE onto it). */
   async function drive(override?: string): Promise<void> {
-    // THE REFUSALS LIVE HERE, at the one place a turn can start, rather than at each caller.
+    // THE REFUSALS LIVE HERE, at the one place this connector submits a turn, rather than at each
+    // caller.
     //
     // Two of them are about WHEN rather than who, and the earlier version of this line named the
     // callers instead and so missed one. `swapping` refuses mid-cutover, because a turn started
@@ -595,8 +596,9 @@ export const cotal: Plugin = async () => {
     // once teardown has begun: the swap's own deferred drive fires after its cutover completes,
     // which can be while `quiesce` is still joining the chain, so a stop that carefully drained the
     // old work would start NEW work behind its own back, after presence had already gone offline.
-    // Listing which callers are covered is what let that through; the condition is the state, and
-    // every caller is covered because there is nowhere else a turn begins.
+    // Listing which callers are covered is what let that through; the condition is the state, so a
+    // caller that reaches this line is refused by it. A prompt submitted natively in the host does
+    // not route through `drive` at all; the fence note on the hook table below covers that path.
     if (stopping || driving || busy || swapping) return;
     if (bootPrompt !== undefined) return; // the boot turn goes first; this batch waits in the inbox
     driving = true;
