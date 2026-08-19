@@ -304,11 +304,13 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
  *
  * Which makes the bind's own announcement precise for a fresh log and IMPRECISE for a resume, and
  * that is worth saying rather than covering. A bind onto a log that already carries a position
- * CONTINUES that log rather than starting here: the emitter delivers what the previous one had
- * consumed up to but not published, which is what the log is for. Nothing is sent twice either
- * way. The line is left as it is because things outside this process parse it, and because the
- * case it is imprecise about is reachable only after an emitter really was publishing this
- * thread.
+ * CONTINUES that log rather than starting here, and what it delivers is everything the thread
+ * appended after that position. That includes what the thread wrote long after the previous
+ * emitter was already dead, not merely what that emitter had read and had not sent, which is why
+ * the docs state the reach of a recovery rather than describing it as a flush. Nothing is sent
+ * twice either way. The line is left as it is because things outside this process parse it, and
+ * because the case it is imprecise about is reachable only after an emitter really was publishing
+ * this thread.
  */
 class BoundStartSource<T> implements DurableSource<T> {
   readonly kind: string;
