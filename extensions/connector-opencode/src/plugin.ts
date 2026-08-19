@@ -642,9 +642,31 @@ export const cotal: Plugin = async () => {
     return id === sessionID;
   };
 
-  const hooks: Hooks = {
-    tool: buildCotalTools(agent, config),
+  /**
+   * EVERY WAY IN, FENCED IN ONE PLACE. Once teardown has begun, admitting more work undoes the
+   * teardown: a late `permission.asked` or tool hook republishes presence over the offline record
+   * `quiesce` exists to publish, a part or idle enqueues holder work after the join has already
+   * snapshotted it, and a late `session.created` extends the very chain the join is waiting on.
+   *
+   * The refusal is applied by CONSTRUCTION rather than written at each entry, because writing it at
+   * each entry is the mistake this file has now made twice: the guard was correct for every caller
+   * that had been listed, and the list was mistaken for the property. A hook is fenced here by being
+   * in this table, so a door added later cannot be forgotten, and there is no per-entry line for a
+   * refactor to drop. `dispose` is deliberately NOT in it — it is the teardown itself.
+   *
+   * BOUNDED, NOT ABSOLUTE. This closes ADMISSION, not the work already inside a hook when the flag
+   * flips; that work is what the joins in `quiesce` cover, and a hook that had already passed this
+   * point still runs. The two together are the claim, and neither is it alone.
+   */
+  const fence = <T extends Record<string, (...args: never[]) => Promise<unknown>>>(intake: T): T =>
+    Object.fromEntries(
+      Object.entries(intake).map(([name, hook]) => [
+        name,
+        async (...args: never[]): Promise<unknown> => (stopping ? undefined : await hook(...args)),
+      ]),
+    ) as T;
 
+  const intake = {
     "chat.message": async (input, output) => {
       if (!ours(input.sessionID)) return;
       // OpenCode exposes the selected model only on this prompt hook. Do not invent a pre-turn
@@ -799,6 +821,11 @@ export const cotal: Plugin = async () => {
       if (!ours(input.sessionID)) return;
       await safeStatus("working", input.tool);
     },
+  } satisfies Partial<Hooks>;
+
+  const hooks: Hooks = {
+    tool: buildCotalTools(agent, config),
+    ...fence(intake),
 
     // The editor unloading the plugin. Same teardown as the manager's stop, minus the exit: see
     // `quiesce`, which owns the join so that neither exit can drift from the other.

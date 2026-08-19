@@ -21,7 +21,18 @@
     "discarded twice, because it passed on BOTH arms: losing the connection purges the presence entry,",
     "so a roster read after a kill says offline whether or not the seat published it, and a read taken",
     "before the kill did not redden either. Cells that cannot fail are worse than absent ones, so it is",
-    "not here. What remains graded is that presence does not queue behind the drain."
+    "not here. What remains graded is that presence does not queue behind the drain.",
+    "",
+    "C6 GRADES THE FENCE, C7 AND C8 GRADE THE WIRING, and they are different claims. C6 asks whether",
+    "the refusal refuses; C7 and C8 ask whether a given door actually goes THROUGH it, which is the",
+    "failure a shared guard is meant to prevent and which no amount of grading the guard itself can",
+    "see. Both are needed because a helper nothing routes to is a helper that guards nothing.",
+    "",
+    "chat.message IS FENCED BUT NOT GRADED, stated rather than left to be discovered. Its only",
+    "post-teardown effect is a card-model publish, and that publish carries the STORED status, which",
+    "is already offline, so there is no presence-visible harm to key a cell on. The probe knocks on it",
+    "so the door is exercised, but mutating it out of the table would survive, and no claim here",
+    "covers it."
   ],
   "mutations": [
     {
@@ -58,6 +69,27 @@
       "find": "    if (stopping || driving || busy || swapping) return;\n",
       "replace": "    if (driving || busy || swapping) return;\n",
       "expectRed": "the teardown started no turn of its own after the stop began"
+    },
+    {
+      "name": "C6 the fence stops refusing, so every public hook entry keeps admitting work after teardown began and a late presence publish puts the seat back on the mesh it just left",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "        async (...args: never[]): Promise<unknown> => (stopping ? undefined : await hook(...args)),\n",
+      "replace": "        async (...args: never[]): Promise<unknown> => await hook(...args),\n",
+      "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
+    },
+    {
+      "name": "C7 the tool hook is wired past the fence instead of through it, which is exactly the omission a single shared guard is supposed to make impossible",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    ...fence(intake),\n",
+      "replace": "    ...fence(intake),\n    \"tool.execute.before\": intake[\"tool.execute.before\"],\n",
+      "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
+    },
+    {
+      "name": "C8 the event hook is wired past the fence instead of through it, so a late permission.asked republishes presence over the offline record",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    ...fence(intake),\n",
+      "replace": "    ...fence(intake),\n    event: intake.event,\n",
+      "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
     }
   ]
 }

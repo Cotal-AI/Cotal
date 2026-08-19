@@ -178,6 +178,8 @@ try {
   const violation = join(dir, "coop-turn-in-cutover");
   const prompts = join(dir, "coop-prompts");
   const markerQueued = join(dir, "coop-queued-swap-ran");
+  const late = join(dir, "coop-knock-now");
+  const lateFired = join(dir, "coop-knocked");
   mkdirSync(join(dir, "ws"), { recursive: true });
   probe = spawn(process.execPath, ["--import", "tsx", PROBE], {
     env: {
@@ -190,6 +192,8 @@ try {
       COOP_VIOLATION: violation,
       COOP_PROMPTS: prompts,
       COOP_MARKER_QUEUED: markerQueued,
+      COOP_LATE: late,
+      COOP_LATE_FIRED: lateFired,
     },
     stdio: ["ignore", "inherit", "inherit"],
   });
@@ -237,6 +241,28 @@ try {
     if (ottoOffline) markerAtOffline = existsSync(marker);
   }
   check("cooperative stop leaves the mesh (watcher sees Otto offline)", ottoOffline, watcher.getRoster().find((p) => p.card.name === "Otto")?.status);
+
+  // ---- ADMISSION IS CLOSED, and it is graded here rather than at the end because it is only
+  // answerable while the process is still up: once it exits, losing the connection purges presence
+  // and every seat reads offline whether or not anything reversed it first. The teardown's joins are
+  // what hold it open, and the trigger is written only after the offline record has been SEEN, so
+  // what lands is unambiguously post-teardown.
+  writeFileSync(late, "go\n");
+  let reversed: string | undefined;
+  let knocked = false;
+  for (let i = 0; i < 25 && reversed === undefined; i++) {
+    await wait(60);
+    knocked = knocked || existsSync(lateFired);
+    const s = watcher.getRoster().find((p) => p.card.name === "Otto")?.status;
+    if (s !== undefined && s !== "offline") reversed = s;
+  }
+  // THE POSITIVE CONTROL, and it is a separate cell on purpose: without it, "nothing changed" also
+  // passes on a probe that never knocked, which is the vacuous shape this suite has already shipped
+  // twice. If this one is the red, the cell below graded nothing and its result means nothing.
+  check("every public hook entry was knocked on after the seat went offline", knocked, { lateFired });
+
+  check("nothing admitted after teardown began put the seat back on the mesh",
+    reversed === undefined, { reversed });
 
   await awaitExit(probe, 15_000);
   check("the plugin process exited cleanly (0) on cooperative shutdown", probeExit === 0, probeExit);

@@ -34,6 +34,12 @@ const prompts = process.env.COOP_PROMPTS?.trim() || undefined;
 // marked separately because it is a different case from the first: the holder join covers work
 // already running, and only the chain join covers a swap that has not begun.
 const marker2 = process.env.COOP_MARKER_QUEUED?.trim() || undefined;
+// Set only for the late-intake scenario: the parent writes `late` once it has SEEN the seat go
+// offline, and the probe answers by knocking on every public door. `lateFired` is written after
+// those calls return and is the positive control — without it the assertion that nothing changed
+// would also pass on a probe that never knocked.
+const late = process.env.COOP_LATE?.trim() || undefined;
+const lateFired = process.env.COOP_LATE_FIRED?.trim() || undefined;
 let drainReads = 0;
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== auth) {
@@ -85,9 +91,15 @@ const hooks = await cotal();
 // chain whose drain flushes the session being left, and that flush reads through the slow
 // endpoint above. Un-awaited on purpose: the bus dispatches events with `void`, so this is how a
 // real create arrives, and awaiting it here would drain before the stop and grade nothing.
+const fire = (event: unknown): Promise<void> =>
+  (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
+const fireTool = (sessionID: string): Promise<void> =>
+  (hooks as unknown as { "tool.execute.before": (i: unknown) => Promise<void> })["tool.execute.before"]({
+    sessionID,
+    tool: "late-tool",
+  });
+
 if (marker) {
-  const fire = (event: unknown): Promise<void> =>
-    (hooks as unknown as { event: (a: unknown) => Promise<void> }).event({ event });
   await fire({ type: "session.created", properties: { info: { id: "ses_coop" } } });
   // THE DRAIN MUST STILL BE IN FLIGHT WHEN THE STOP ARRIVES, which is the whole point and was the
   // flaw in the first version of this: fired at boot, the drain finished long before the parent got
@@ -102,6 +114,28 @@ if (marker) {
     // started, so only a teardown that joins the CHAIN will let it run. Joining the holder alone
     // covers the drain already in flight and leaves this one abandoned.
     void fire({ type: "session.created", properties: { info: { id: "ses_third" } } });
+  })();
+}
+
+// KNOCK ON EVERY PUBLIC DOOR AFTER THE SEAT HAS GONE OFFLINE. The parent triggers this only once it
+// has observed the offline record, so anything that lands here is unambiguously post-teardown, and
+// the joins in the plugin's teardown hold the process open long enough for a publish to be seen.
+if (late) {
+  void (async () => {
+    while (!existsSync(late)) await new Promise((r) => setTimeout(r, 25).unref?.());
+    // No sessionID on purpose: that branch publishes "waiting" without an ownership check, so it
+    // does not depend on how far the swap chain happened to get before the stop.
+    await fire({ type: "permission.asked", properties: { title: "late" } });
+    // The tool hook DOES check ownership, and which session is the owned one depends on where the
+    // chain stopped, so knock with every id this probe created rather than guessing.
+    for (const id of ["ses_coop", "ses_next", "ses_third"]) await fireTool(id);
+    // A prompt hook too. It has no presence-visible effect (its publish carries the stored status,
+    // which is already offline), so it is knocked but not graded — see the fixture's note.
+    await (hooks as unknown as { "chat.message": (i: unknown, o: unknown) => Promise<void> })["chat.message"](
+      { sessionID: "ses_coop" },
+      { parts: [] },
+    );
+    if (lateFired) writeFileSync(lateFired, "every public door was knocked after offline\n");
   })();
 }
 

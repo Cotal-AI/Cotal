@@ -26,3 +26,16 @@ A session that OpenCode attaches to, rather than creates, is also covered. The f
 a run arrives before any session was created, and it now reaches the event plane instead of being
 dropped, so an attached session publishes from its first turn rather than staying silent until the
 next reset.
+
+Stopping a seat is now a teardown rather than an exit. The cooperative stop and the editor
+unloading the plugin run one shared routine, so neither can drift from the other, and it publishes
+offline presence in front of the join rather than behind it: a supervised seat is hard killed after
+its runtime's grace window, so presence queued behind a long drain is the thing that gets lost.
+Queued event work is then given whatever time the runtime allows.
+
+Once that routine has begun, no turn is started and no hook is admitted. Both refusals are stated
+as a condition on the state rather than as a list of the callers they cover, which is what let the
+earlier versions through: a turn could still be started by the deferred drive a swap fires when its
+own cutover completes, and a late presence event could put a seat back on the mesh it had just
+left. Admission is what closes; work already inside a hook when the stop arrives is what the join
+covers, and the two together are the guarantee.
