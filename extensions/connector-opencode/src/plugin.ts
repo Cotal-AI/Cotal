@@ -250,6 +250,19 @@ export const cotal: Plugin = async () => {
    * lengthen it, because drains that used to overlap now finish one after another, so joining is
    * this change's own debt rather than a courtesy. Bounded for the same reason the drain is: a
    * teardown that waits forever on a drain is a worse outcome than one that says it gave up.
+   *
+   * LEAVING THE MESH COMES FIRST, AND THE ORDER IS THE WHOLE POINT OF IT. A supervised stop is
+   * followed by a hard kill after the runtime's grace window, which is 3s for the built-in pty
+   * runtime and 1.5s for the tmux and cmux ones. The join is bounded far above that on purpose,
+   * because a backstop that fires on a healthy drain would turn a slow publish into a dropped one,
+   * so this routine can be killed part way through and that is expected. What must NOT depend on
+   * finishing is the cheap step that matters most: publishing offline presence. Behind the join it
+   * would be lost whenever a drain outlived the grace window, and the roster would keep a live
+   * entry for a process that is gone. In front of it, it always lands, and the queued work then
+   * gets whatever time the runtime allows.
+   *
+   * So this is best effort by construction, and says so rather than claiming the work completes.
+   * The endpoint stays up until `agent.stop()`, so a drain that does finish still publishes.
    */
   const quiesce = async (): Promise<void> => {
     stopping = true;
@@ -258,9 +271,9 @@ export const cotal: Plugin = async () => {
     } catch {
       /* ignore */
     }
+    await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
     await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
-    await safeStatus("offline");
     clearErrorRetry(true);
     await agent.stop();
   };
