@@ -236,7 +236,7 @@ async function within<T>(p: Promise<T>, until: Promise<typeof LATE>): Promise<T 
 }
 
 /** One aggregated page, and what it is missing. `partial` and the counts are ALWAYS present, so a
- *  page that ran out of time cannot be mistaken for a complete one by omission — the shape that made
+ *  page that ran out of time cannot be mistaken for a complete one by omission. The shape that made
  *  `{"error":"timeout"}` indistinguishable from data is exactly this mistake one layer up. */
 export interface ActivityPage {
   entries: ({ mode: "chat"; channel: string; msg: CotalMessage } | { mode: "unicast"; msg: CotalMessage })[];

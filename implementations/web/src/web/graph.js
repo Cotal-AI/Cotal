@@ -702,8 +702,8 @@
     // on a 500 and this server's 500 body is `{"error": "..."}`, which parses, so the refusal
     // arrived as DATA and the first `for (const c of chans)` threw `chans is not iterable` out of
     // the whole bootstrap. The `.catch(() => [])` guards on activity and dms never fired for the
-    // same reason: there was nothing to catch. Because `load()` rejected, `connect()` — which runs
-    // as `load().then(connect)` — was never called, so the page sat at `disconnected` with no peers
+    // same reason: there was nothing to catch. Because `load()` rejected, `connect()`, which runs
+    // as `load().then(connect)`, was never called, so the page sat at `disconnected` with no peers
     // and no channel hubs and could not recover without a reload. Measured against a broker behind
     // a 160ms link, where `/api/channels` and `/api/activity` both returned 500 `timeout`.
     //
