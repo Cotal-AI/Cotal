@@ -237,12 +237,17 @@ export function journalEntryKeyString(entry: JournalEntry): string {
  * cannot express. Refusing it here rather than where it is re-bound is the no-fallbacks reading: a
  * corrupt entry that stays silent until a resume walks into it fails somewhere that cannot say why.
  *
- * WHICH DOOR CAN ACTUALLY FIRE, measured rather than assumed. The durable store encodes with
- * `JSON.stringify`, and every value `JSON.parse` can produce is one this rule ADMITS — including
- * `-0`, which survives `JSON.parse("-0")` even though `JSON.stringify` never writes it. So the
- * driver's door is insurance against a future store and against a hand-written journal, and the
- * WORKER's door is the one that can catch something today: `workerData` is a structured clone, which
- * preserves `Date`, `NaN`, `-0`, an own `undefined` key and a `Map`.
+ * WHICH DOOR CAN ACTUALLY FIRE, measured rather than assumed, and the first answer written here was
+ * WRONG. The durable store encodes with `JSON.stringify`, and ALMOST every value `JSON.parse` can
+ * produce is one this rule admits, including `-0`, which survives `JSON.parse("-0")` even though
+ * `JSON.stringify` never writes it. The exception is the one that decides this comment: `JSON.parse`
+ * installs its keys as OWN properties, so `{"__proto__":1}` mints an own `__proto__` that a literal
+ * cannot spell, `assertCrossable` refuses it by name, and `JSON.stringify` writes it straight back
+ * out again. That value ROUND-TRIPS THIS STORE, so the driver's door is not insurance against a
+ * future store: it can fire on a durable journal written today, and `library.ts` guards the same
+ * hazard one file away for `json.parse`. The WORKER's door catches a different set on top of it:
+ * `workerData` is a structured clone, which preserves `Date`, `NaN`, `-0`, an own `undefined` key
+ * and a `Map`.
  */
 function bindingWithoutCanonicalForm(entry: JournalEntry, field: "external" | "error.detail", cause: NotCrossable): RuntimeFault {
   const step = `${entry.scope}/${entry.name === "" ? entry.kind : `${entry.kind}:${entry.name}`}#${entry.occurrence}`;

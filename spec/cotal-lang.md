@@ -352,6 +352,10 @@ raises L4016 naming the builtin; the host's own error class and stack never reac
 is a host property: a function's is its parameter count, a property of the implementation's
 wrapper rather than a program value, and a record, a number, a boolean, `null` and `undefined`
 have none. For a record's size, `len(keys(r))`.
+A run RECORDED under language version `1` before this narrowing may have called `len` on another
+kind and COMPLETED, because the walker of the day handed back the host's `undefined`. Such a record
+does not replay: the refusal is raised at that `len`, before any recorded entry is consumed, so the
+resume stops rather than half-running. See §8.4.
 `assert` raises L4012 with the message.
 
 Where a parameter takes a **primitive**, an array, record or function in that position is refused
@@ -675,6 +679,15 @@ There are two versions, and they are two languages rather than two speeds of one
 
 Version `1` is not deprecated and does not expire: a run recorded under it has nowhere else to go,
 so the walker remains its replay engine for as long as its records exist.
+
+That sentence names WHICH ENGINE serves version `1`. It does not freeze the walker's semantics, and
+it is not a promise that every version-1 record replays: a revision that narrows a builtin changes
+what a version-1 program means on the current walker, and a record whose program relied on the
+older, wider behaviour is refused rather than replayed. The known case is `len` over a kind other
+than an array or a string (§5.4): such a run completed under the earlier walker, answering
+`undefined`, and is now refused L4016 at that line, before any recorded entry is consumed. The two
+statements are consistent because they answer different questions: which engine serves a recorded
+version, and what that engine's current semantics are.
 
 The version is a property of the ENGINE that runs a program, not of this document. An engine MUST
 stamp the pins it resolves with **its own** version and MUST compare a recorded version against
@@ -1052,6 +1065,7 @@ answer; simulation is a tool, not part of this language, and this document does 
 | 2026-08-18 | Language-lane folds, same revision: operators, computed member keys and the library's primitive parameters coerce primitives only, an array, record or function operand is refused (L4018, §4.5, §5.4); the dead zone is refused statically where visible and at run time otherwise (L2004, §2.3, §3); bigint literals are refused (L1030, §2.2); array index writes are contiguous and an at-length write appends (L4019, §4.3); a method is not a value (L4020, §4.2, §5.2); holes, cycles and an own `__proto__` field cannot cross, stringify or parse in (§4.4, §5.1); `sort`'s total order is defined over kinds with `NaN` placed (§5.3); the string `replace`/`replaceAll` replacement is an ECMAScript substitution string (§5.2); crossing values are frozen in both directions, replayed results included (§4.3); a scope entry's `endedAt` is the joined branch clock (§8.1, §10.1); a race re-decides a cut when an in-flight effect lands (§7.3); cancellation holds across the boundary's own begin gap (§7.6); an uncatchable fault skips `finally` (§9.2), and `finally` otherwise carries ECMAScript's completion semantics (§9.1). |
 | 2026-08-19 | A record may not carry a callable `then`, on a literal, a spread, a rest pattern or a member write alike, literal key or computed (L4021, §4.3): an object with a callable `then` is a thenable, the host's promise machinery adopts it in place of the value the program built, and its failure escaped the run as an unowned rejection that killed the host. |
 | 2026-08-19 | `len` counts an array or a string and refuses every other kind in the language with L4016 before the host is reached (§5.4): the only `length` a function has on the host is its parameter count, a property of the implementation's wrapper and not a program value, and the other kinds have none. |
+| 2026-08-19 | A version-1 record whose program called `len` on a kind other than an array or a string does not replay (§5.4, §8.4): it completed under the walker that recorded it, answering `undefined`, and the narrowing above refuses it L4016 at that line, before any recorded entry is consumed. Disclosed rather than repaired: §8.4's "the walker remains its replay engine" names which engine serves version `1`, not a freeze of the walker's semantics. |
 | 2026-08-19 | Language version `2`, the compiled engine, alongside version `1`, the tree-walker (§8.4): a step is the engine's own unit and budgets are not comparable across versions (§8.3, §12); `log` is data under version 2 and refuses code (L4016); an engine stamps and compares its own version, so a record binds only under the engine that wrote it (L5008); and a build that dispatches to engines refuses a version none of its engines serves, naming what it does serve, leaving the run untouched (L5023, §11.1). |
 | 2026-08-19 | A binding is a value and answers to the value rule (§10.1): a host refuses a binding that is not crossable at the bind, carrying `L4000` with the dispatch's own kind rather than a code of its own, and a resume refuses a journal whose recorded `external` is not crossable, naming the entry and the field (L5024). Stated as canonical and NOT round-trip-exact, because a store may lose distinctions the canonical form keeps: JSON writes `-0` as `0`. |
 | 2026-08-19 | The same rule reaches a failure's `detail` (§10.1): it is a value the handler chose and the record keeps, so it is refused where it is written and on load, and a failure whose detail is refused is recorded under `L4000` with the reason rather than under the handler's own code with the field quietly missing. Reachable because a program that CATCHES an effect failure still completes, so a successful run can carry a settled failure. |

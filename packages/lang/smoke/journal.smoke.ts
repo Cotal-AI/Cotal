@@ -683,6 +683,98 @@ await sleep("3h", { name: "after-the-catch" });
   );
 }
 
+// ---- and a v1 record whose program called `len` on a record does NOT replay ---------------------
+//
+// THE DISCLOSED EXCEPTION to the line above, and the reason it is disclosed rather than repaired.
+// `len` was narrowed to arrays and strings; the narrowing is right and it is main's. But a version 1
+// run whose program called `len` on a record COMPLETED on the walker that recorded it, answering
+// `undefined`, and that record does not replay on the walker that is current: it is refused L4016 at
+// that line, BEFORE any recorded entry is consumed. The spec says so at §5.4 and §8.4 rather than
+// this being discovered by a resume that dies in the field.
+//
+// TWO ARMS ARE WHAT MAKE THIS A MEASUREMENT. The record dying at the current walker cannot, alone,
+// tell "this walker broke replay" from "this record was never replayable"; the fixture beside it was
+// written by the SAME pre-move walker and still replays, which is the half that distinguishes them.
+//
+// THE FIXTURES ARE PINNED BY THEIR CONTENTS, NOT BY THEIR FILENAMES. A checked-in record that
+// silently drifts (its `len` call edited away, its entries emptied, its pins losing version 1) would
+// make these cells pass for the wrong reason forever. So each arm asserts what its own fixture
+// CONTAINS before it asserts what the walker does with it.
+{
+  type V1Fixture = {
+    readonly languageVersion: string;
+    readonly source: string;
+    readonly runId: string;
+    readonly seed: string;
+    readonly startedAt: number;
+    readonly pins: { readonly languageVersion: string };
+    readonly entries: readonly JournalEntry[];
+    readonly logs: readonly unknown[][];
+  };
+  const loadFixture = (name: string): V1Fixture =>
+    JSON.parse(readFileSync(new URL(`./fixtures/${name}`, import.meta.url), "utf8")) as V1Fixture;
+  const refusingHandler = (startedAt: number): EffectHandler =>
+    new Proxy(new SimHandler({}), {
+      get(_target, key) {
+        if (key === "now") return () => startedAt;
+        throw new Error(`the replay dispatched ${String(key)} instead of reading the journal`);
+      },
+    }) as unknown as EffectHandler;
+
+  const blocked = loadFixture("v1-len-on-a-record.json");
+  ok(
+    "the checked-in record is a version 1 record whose program really does call `len` on a record, and carries an entry to replay",
+    blocked.languageVersion === "1" && blocked.pins.languageVersion === "1"
+      && /const r = \{ a: 1, b: 2 \};/.test(blocked.source) && /len\(r\)/.test(blocked.source)
+      && blocked.entries.length >= 1,
+    { version: blocked.pins.languageVersion, entries: blocked.entries.length, source: blocked.source.split("\n").slice(0, 2) },
+  );
+  const blockedJournal = new Journal({ run: blocked.runId, entries: blocked.entries });
+  const blockedOutcome = await resume(blocked.source, blockedJournal, {
+    runId: blocked.runId,
+    handler: refusingHandler(blocked.startedAt),
+    pins: blocked.pins as never,
+    seed: blocked.seed,
+    startedAt: blocked.startedAt,
+  }).then(() => ({ replayed: true as const }), (e: Error & { code?: string }) => ({ replayed: false as const, code: e.code, message: e.message }));
+  ok(
+    "the walker that is current REFUSES it, by the language's own code and not by dying somewhere unnamed",
+    blockedOutcome.replayed === false && blockedOutcome.code === "L4016",
+    blockedOutcome,
+  );
+  ok(
+    "and it refuses BEFORE consuming the recorded entry, which is what makes this a replay that never starts rather than one that half-runs",
+    blockedJournal.orphans().length === blocked.entries.length,
+    { orphans: blockedJournal.orphans().length, entries: blocked.entries.length },
+  );
+
+  // THE POSITIVE CONTROL, written by the same walker at the same sha, differing only in the value
+  // `len` is handed. Without it, every cell above is satisfied by a walker that refuses every v1
+  // record, which is a far worse fault than the one being disclosed.
+  const fine = loadFixture("v1-len-on-an-array.json");
+  ok(
+    "the control fixture is the same shape of program over an ARRAY, so the two arms differ in the value and nothing else",
+    fine.languageVersion === "1" && /const xs = \[1, 2, 3\];/.test(fine.source) && /len\(xs\)/.test(fine.source)
+      && fine.entries.length === blocked.entries.length,
+    { version: fine.pins.languageVersion, entries: fine.entries.length },
+  );
+  const fineJournal = new Journal({ run: fine.runId, entries: fine.entries });
+  const fineLogs: unknown[][] = [];
+  const fineOutcome = await resume(fine.source, fineJournal, {
+    runId: fine.runId,
+    handler: refusingHandler(fine.startedAt),
+    pins: fine.pins as never,
+    seed: fine.seed,
+    startedAt: fine.startedAt,
+    onLog: (l) => fineLogs.push([...l.values]),
+  }).then((r) => ({ replayed: true as const, entries: r.journal.entries() }), (e: Error) => ({ replayed: false as const, error: e.message }));
+  ok(
+    "and a v1 record of the same age that did NOT call `len` on a record still replays and completes, with its entry consumed",
+    fineOutcome.replayed === true && JSON.stringify(fineLogs) === JSON.stringify(fine.logs) && fineJournal.orphans().length === 0,
+    fineOutcome.replayed ? { logs: fineLogs, orphans: fineJournal.orphans().length } : fineOutcome,
+  );
+}
+
 // ---- a BINDING is a value, and answers to the value rule (L5024) --------------------------------
 
 /**
@@ -818,6 +910,46 @@ await sleep("3h", { name: "after-the-catch" });
     "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
     loaded.entries().length === 1 && (loaded.entries()[0]?.external as { simAgent?: string })?.simAgent === "sim.b",
     loaded.entries().map((e) => e.external),
+  );
+}
+
+{
+  // THE DURABLE ROUTE, AND IT CORRECTS A CLAIM THE SOURCE AT THE FAULT USED TO MAKE. That comment
+  // said every value `JSON.parse` can produce is one this rule ADMITS, so the driver's door was only
+  // insurance against a FUTURE store. False, and the counter-example round-trips the store we ship:
+  // `JSON.parse` installs its keys as OWN properties, so a journal TEXT carrying `"__proto__"` mints
+  // an own field a literal cannot spell, `assertCrossable` refuses it by name, and `JSON.stringify`
+  // writes it straight back out. This is the reachability half the hand-built cell above cannot
+  // carry: nothing here is hand-built as an object, only text and the parse a store performs.
+  //
+  // THE TEXT IS A STRING LITERAL ON PURPOSE. Writing `{ "__proto__": 1 }` as an object literal SETS
+  // A PROTOTYPE instead of naming a field, and `JSON.stringify` would then emit `{}` — a fixture
+  // that silently stopped carrying the hazard, and a cell that goes green for the wrong reason. So
+  // the first assertion below is about the FIXTURE, not the rule.
+  const text = `{"v":1,"seq":0,"run":"r-bind-p","scope":"","kind":"spawn","name":"b","occurrence":0,`
+    + `"inputHash":"${H({ persona: "b" })}","state":"settled","status":"done","external":{"__proto__":1}}`;
+  const parsed = JSON.parse(text) as { external: unknown };
+  ok(
+    "the fixture really does carry an own `__proto__`, which is what makes it the hazard and not a prototype write",
+    Object.prototype.hasOwnProperty.call(parsed.external, "__proto__")
+      && Object.getPrototypeOf(parsed.external) === Object.prototype,
+    Object.getOwnPropertyNames(parsed.external),
+  );
+  ok(
+    "and the durable store writes it BACK, so the value round-trips the encoding this repo ships",
+    JSON.stringify(parsed.external).includes('"__proto__"'),
+    JSON.stringify(parsed.external),
+  );
+  let caughtProto: unknown;
+  try {
+    new Journal({ run: "r-bind-p", entries: [parsed] as unknown as readonly JournalEntry[] });
+  } catch (e) {
+    caughtProto = e;
+  }
+  ok(
+    "so a journal PARSED from durable text is refused on load too, and the driver's door is not insurance against a future store",
+    (caughtProto as { code?: string })?.code === "L5024" && /__proto__/.test(String((caughtProto as Error)?.message)),
+    (caughtProto as { code?: string })?.code ?? String(caughtProto).slice(0, 90),
   );
 }
 

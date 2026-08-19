@@ -34,6 +34,16 @@
       "completionMarker": "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
       "cell": "a journal already carrying such a binding is refused ON LOAD, by name",
       "note": "The write guards fence every SHIPPED caller - there are exactly two, both in perform.ts - but they fence by enumeration and a record written before this rule is behind them either way. This is the door such a record cannot go around. Re-aimed when the door grew a second field: the earlier anchor was the single-field call and the refactor left it DEAD, which the fixtures walk caught in the same commit that moved it."
+    },
+    {
+      "name": "the own `__proto__` refusal is dropped, so the one value the durable store can smuggle crosses again",
+      "file": "packages/lang/src/values.ts",
+      "find": "      if (Object.prototype.hasOwnProperty.call(value, \"__proto__\")) {",
+      "replace": "      if (false) {",
+      "expectRed": "so a journal PARSED from durable text is refused on load too, and the driver's door is not insurance against a future store",
+      "completionMarker": "and the recorded values arrive as they were recorded: the builtin as a function, the namespace and the record carrying code",
+      "cell": "so a journal PARSED from durable text is refused on load too, and the driver's door is not insurance against a future store",
+      "note": "The load scan's own mutant proves the DOOR looks; this one proves the door still refuses the value the durable encoding can actually carry. `JSON.parse` installs keys as own properties, so `{\"__proto__\":1}` survives a stringify/parse round trip through the store this repo ships, which is why the source comment claiming the driver's door was insurance against a FUTURE store was wrong. Deleting this branch admits that value and the load completes. The two cells ahead of the named one are deliberately about JSON rather than about our code, so a fixture that stopped carrying the hazard reds THOSE and says so instead of turning this cell green for the wrong reason."
     }
   ]
 }
