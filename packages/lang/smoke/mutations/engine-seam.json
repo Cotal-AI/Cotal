@@ -642,7 +642,7 @@
       "find": "      if (e instanceof ReferenceError) throw new EngineFault(e);",
       "replace": "      void 0;",
       "expectRed": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
-      "completionMarker": "ok and the engine's catch head answers the same record",
+      "completionMarker": "ok and the engine's catch head answers that same record for the read",
       "cell": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
       "note": "The emitted module has zero free identifiers, so a ReferenceError can only be a binding the transform did not classify as a cell or an emitter temporary read before it was bound. Converted, a compiler bug arrives at the program as an ordinary catchable error and the program handles it - which is how a missed classification ships."
     },
