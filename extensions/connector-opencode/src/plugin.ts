@@ -77,7 +77,7 @@ export const SETTLE_ABANDONED = "opencode-settle-abandoned";
  */
 const SWAP_SETTLE_MS = 10_000;
 /**
- * How long teardown waits for interactive work it ALREADY ADMITTED before it publishes departure.
+ * How long teardown waits for interactive work it ALREADY ADMITTED before it attempts departure.
  *
  * DERIVED, NOT PICKED. It has to be under the shortest runtime grace window, which is 1.5s for tmux
  * and cmux against 3s for the built-in pty, because a stop that spends longer than that waiting is a
@@ -232,7 +232,7 @@ export const cotal: Plugin = async () => {
   let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
   /**
    * Interactive work that has been admitted and has not finished. Teardown waits for THIS before it
-   * publishes departure, which is a different thing from refusing new work: the fence closes the
+   * attempts departure, which is a different thing from refusing new work: the fence closes the
    * door, and this covers whoever was already through it.
    *
    * It has to exist because a presence write is not atomic. `setStatus` assigns, awaits `setActivity`
@@ -324,7 +324,9 @@ export const cotal: Plugin = async () => {
    * passed with the order reversed, twice, which is how the overclaim was caught rather than shipped.
    *
    * So this is best effort by construction, and says so rather than claiming the work completes.
-   * The endpoint stays up until `agent.stop()`, so a drain that does finish still publishes.
+   * The endpoint stays up until `agent.stop()`, so a drain that finishes BEFORE that still publishes.
+   * One that outlived the swap bound can finish after it instead, and then it has no endpoint left
+   * to publish through.
    */
   const quiesce = async (): Promise<void> => {
     stopping = true;
@@ -849,10 +851,12 @@ export const cotal: Plugin = async () => {
             } finally {
               swapping = false;
             }
-            // THE DEFERRED DRIVE, and it is outside the `finally` on purpose. The cutover is complete
-            // at this line: the predecessor is drained and settled, the replacement holder is
-            // installed and bound, and `swapping` is already clear, so this turn is allowed to start
-            // and produces records the holder publishes rather than records it adopted past.
+            // THE DEFERRED DRIVE, and it is outside the `finally` on purpose. The cutover waiter is
+            // complete at this line: the predecessor either drained or spent the bound, the
+            // replacement holder is installed and bound, and `swapping` is already clear, so this
+            // turn is allowed to start and produces records the holder publishes rather than records
+            // it adopted past. Drained is not guaranteed, only waited for: a predecessor that
+            // outlived the bound is released undrained and this line still runs.
             if (pendingForWake() > 0) void drive();
           });
           // The chain carries the SUCCESSFUL tail only: a rejected swap is absorbed so the next one

@@ -347,8 +347,10 @@ try {
   // LEAVING THE MESH MUST NOT QUEUE BEHIND THE DRAIN. A supervised stop is hard-killed after the
   // runtime's grace window, 1.5s for tmux and cmux and 3s for pty, and the join is bounded far above
   // that on purpose, so a seat whose drain outlives the window is killed part way through. If
-  // presence waited for the drain it would be the thing lost, and the roster would hold a live entry
-  // for a dead process. So offline has to land while the drain is still running, not after it.
+  // presence waited for the drain, the EXPLICIT departure publish would be the thing lost and
+  // departure would fall back to being inferred from the dropped connection. Not a live entry for a
+  // dead process: losing the connection purges the presence record on its own, which the plugin says
+  // in the same words. So offline has to land while the drain is still running, not after it.
   check("the seat left the mesh BEFORE the drain finished, not behind it",
     ottoOffline && !markerAtOffline, { ottoOffline, markerAtOffline });
 

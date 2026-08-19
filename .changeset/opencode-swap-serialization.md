@@ -9,8 +9,10 @@ adopted, which is where its write-ahead log, subject frontier and log open, so i
 with an open handle and the session it held left a run open on the wire with nothing reporting it.
 The holder they both replaced was drained twice.
 
-Swaps now run one at a time, so each reads a holder that is already settled rather than one
-mid-retirement, and a rejected swap is absorbed so one failed drain cannot wedge every later swap.
+Swaps now run one at a time, so each reads a holder that is installed and no longer being retired
+underneath it, and a rejected swap is absorbed so one failed drain cannot wedge every later swap.
+Installed rather than settled: a swap waits for the holder it RETIRES, not for the one it installs,
+whose adoption is still starting when the swap resolves.
 The connector also logs a retirement the way it already logs an adoption, which is what makes a
 retirement that never happened visible at all.
 
@@ -28,8 +30,8 @@ dropped, so an attached session publishes from its first turn rather than stayin
 next reset.
 
 Stopping a seat is now a teardown rather than an exit. The cooperative stop and the editor
-unloading the plugin run one shared routine, so neither can drift from the other, and it publishes
-offline presence in front of the join rather than behind it: a supervised seat is hard killed after
+unloading the plugin run one shared routine, so neither can drift from the other, and it attempts
+the offline publish in front of the join rather than behind it: a supervised seat is hard killed after
 its runtime's grace window, so presence queued behind a long drain is the thing that gets lost.
 Queued event work is then given whatever time the runtime allows.
 
