@@ -354,6 +354,15 @@
       "expectRed": "finds everything a rendering flattens",
       "cell": "the sweep behind that premise finds everything a rendering flattens, nested where an entry would carry it",
       "note": "The clause a reader would delete first, because it looks defensive rather than load-bearing. Without it the walk recurses into a `Date`, a `Map` and a `Set`, finds no own enumerable key on any of the three, and reports all three faithful - while JSON draws the date as its own ISO string and both containers as `{}`, so a full Map and an empty record compare EQUAL in the entry leg. The control asserts an exact count rather than a non-zero one, which is what makes every clause of the sweep load-bearing; this one is spelled out because it is the one whose absence looks like nothing is missing."
+    },
+    {
+      "name": "the entry sweep drops `external` on the way in, the way one would to quiet a noisy diff",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "    scanned.push([`${name} / walker`, w.entries], [`${name} / engine`, e.entries]);\n",
+      "replace": "    const plain = (es: readonly unknown[]) => es.map((x) => { const { external: _drop, ...rest } = x as Record<string, unknown>; return rest; });\n    scanned.push([`${name} / walker`, plain(w.entries)], [`${name} / engine`, plain(e.entries)]);\n",
+      "expectRed": "the sweep covers the one field no crossing rule guards",
+      "cell": "and the corpus binds, so the sweep covers the one field no crossing rule guards",
+      "note": "The realistic way this sweep stops watching the thing it is most needed for. `external` reaches an entry through `ctx.bind` with NO crossing rule in front of it - measured, a handler binding a Date, a -0, a NaN and an absent field puts all four into an entry alive on both arms - and this sweep only sees it because entries are swept whole. Normalise them on the way in and the zero above is unchanged, green, and blind to the one path the boundary does not cover. Aimed at the cell that counts the bound entries rather than at the zero, because the zero is exactly what does NOT move."
     }
   ],
   "completionMarker": "differential.smoke:"

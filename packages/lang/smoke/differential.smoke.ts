@@ -605,14 +605,31 @@ const reachedKinds = new Set<string>();
   // journal, and a count alone says nothing about what was in them. Both read `scanned`, so a sweep
   // that stopped collecting reds here instead of going quiet.
   //
-  // AND WHAT KEEPS THE SET EMPTY IS A BOUNDARY, NOT A TAME CORPUS, which makes this a tripwire
-  // rather than a sample. `assertCrossable` runs on every effect ARGUMENT and every effect RESULT
-  // (`perform.ts`), and it refuses — measured against this sweep's own list, one probe per row — a
-  // non-finite number, absence, a function, a symbol, a bigint, a cycle, a hole in an array, and
-  // anything whose prototype is neither `Object.prototype` nor null, which is every `Date`, `Map`
-  // and `Set`. So all but one of the kinds swept for here cannot reach an entry from either side,
-  // and this cell reds the day that boundary moves. (`surface.smoke` holds the boundary itself, as
-  // L3041 and L3042; this holds the consequence the journal comparison depends on.)
+  // THREE PATHS REACH AN ENTRY, AND ONLY TWO OF THEM HAVE A CROSSING RULE IN FRONT.
+  //
+  // `assertCrossable` runs on every effect ARGUMENT and every effect RESULT (`perform.ts`), and it
+  // refuses — measured against this sweep's own list, one probe per row — a non-finite number,
+  // absence, a function, a symbol, a bigint, a cycle, a hole in an array, and anything whose
+  // prototype is neither `Object.prototype` nor null, which is every `Date`, `Map` and `Set`. On
+  // those two paths all but one of the kinds swept for here cannot reach an entry at all, and this
+  // cell reds the day that boundary moves. (`surface.smoke` holds the boundary itself as L3041 and
+  // L3042; this holds the consequence the journal comparison depends on.)
+  //
+  // THE THIRD IS `external`, AND NOTHING GUARDS IT. `ctx.bind` reaches `Journal.bind`, which
+  // spreads the record into the entry with no crossing check — the only `assertCrossable` call
+  // sites in the package are the two above, the run's return value, and `json.stringify`. Measured
+  // rather than read: a handler that binds a `Date`, a `-0`, a NaN and an absent field puts all
+  // four into an entry ALIVE on both arms, where this comparison draws them as an ISO string, 0,
+  // null, and a key that is simply gone. It does not fire today because every shipped bind is
+  // JSON-faithful — four strings in `sim.ts`, one number in the mesh handler — so on this path the
+  // zero below is a statement about those five call sites rather than about a boundary, and this
+  // sweep is the only thing in the repo watching them.
+  //
+  // AND THERE IT IS NOT A COMPARISON ARTEFACT. The durable record is encoded with
+  // `JSON.stringify`, and a started-but-unsettled entry resumes by RE-BINDING to `entry.external`,
+  // so a bound `Date` would come back from a restart as a string. The guard, if one is wanted,
+  // belongs at the bind seam and not in this file; what belongs here is that the day a bind starts
+  // carrying such a value, something says so.
   //
   // THE ONE THAT CROSSES IS NEGATIVE ZERO, because it is finite — and if this ever reds on `-0`
   // alone, a shape signature for the entry leg is the WRONG repair. The canonical form equates -0
@@ -627,6 +644,13 @@ const reachedKinds = new Set<string>();
     entries: entries.length,
     blind,
   });
+  // AND THE SWEEP REACHES THE UNGUARDED FIELD, which the paragraph above claims and nothing else
+  // asserts. `external` is reached here only because entries are swept WHOLE — strip it on the way
+  // in, the way one would to quiet a noisy diff, and the zero above survives while the one path
+  // with no crossing rule in front of it stops being watched at all.
+  const bound = entries.filter((e) => (e as { external?: unknown }).external !== undefined);
+  ok("and the corpus binds, so the sweep covers the one field no crossing rule guards", bound.length > 0, bound.length);
+  console.log(`  (${bound.length} of them carry a bound \`external\`, the field nothing checks on the way in)`);
   console.log(`  (${identical} programs identical on both engines: ${completes} complete, ${identical - completes} refuse a declared code)`);
   console.log(`  (${entries.length} journal entries swept across both arms of all ${identical} programs, ${blind.length} carrying a value JSON cannot draw)`);
 }
