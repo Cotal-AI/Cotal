@@ -54,8 +54,14 @@ export interface EngineCtx {
   get(o: unknown, k: unknown): unknown;
   /** Write a member: L2031, L2032, L4014, L4017, L4019. Answers `v`, as an assignment does. */
   set(o: unknown, k: unknown, v: unknown): unknown;
-  /** Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else. */
-  call(o: unknown, k: unknown, args: unknown[]): Promise<unknown>;
+  /**
+   * Call a member. The single L4020 exception: a method is resolved AT the call and nowhere else.
+   *
+   * `optional` is `o.m?.()` (F6, ruled 1d as a flag rather than a fifteenth member). It guards a
+   * NULLISH MEMBER and nothing else — measured on the walker, `?.` softens neither L4014 nor L4011 —
+   * and a short-circuited call evaluates NO ARGUMENT, which is why the optional form takes a thunk.
+   */
+  call(o: unknown, k: unknown, args: unknown[] | (() => unknown[]), optional?: boolean): Promise<unknown>;
   /** Stamp a freshly built container with this frame's depth (L2032's runtime half). */
   born<T>(v: T): T;
   /** A journalled primitive. */
@@ -519,19 +525,37 @@ function buildCtx(run: EngineRun): CtxWithSteps {
       return v;
     },
 
-    async call(o, k, args) {
+    async call(o, k, args, optional) {
+      // THE LOOKUP HAPPENS FIRST, AND `?.` DOES NOT SOFTEN IT. Measured on the walker: `xs.nope?.()`
+      // is L4014 exactly as `xs.nope()` is, and a member that resolves to a non-function is L4011.
+      // The only thing an optional call guards is a member that is null or undefined.
       const found = lookup(o, keyOf(k), true);
+
+      // AN OPTIONAL CALL EVALUATES NO ARGUMENT WHEN IT SHORT-CIRCUITS, which is why the optional
+      // form takes a thunk: the transform evaluates arguments before it can call anything, so an
+      // array here would already have run them. Measured: the walker's short-circuit journalled
+      // nothing where the same argument on a present method journalled a `sleep`.
+      if (optional === true && typeof args !== "function") {
+        throw new RuntimeFault(
+          "L1000",
+          "an optional call must be handed its arguments as a thunk: it may not evaluate them at all, and an array is a list that has already been evaluated",
+        );
+      }
+      if (found.from === "own" && (found.value === null || found.value === undefined) && optional === true) {
+        return undefined;
+      }
+      const list = typeof args === "function" ? args() : args;
       if (found.from === "table") {
         // A curated method: the walker's convention, and the ONE argument this method calls is
         // adapted into it on the way in. Every other argument crosses untouched — see the invariant.
-        return await found.fn(currentFrame(), adaptArgs(found.key, args));
+        return await found.fn(currentFrame(), adaptArgs(found.key, list));
       }
       if (typeof found.value !== "function") {
         throw new RuntimeFault("L4011", "this value is not a function, so it cannot be called");
       }
       // An own field holds a program-convention closure. Adapting here would pass the frame in as
       // the first argument and shift every real one along by a position.
-      return await (found.value as (...a: unknown[]) => unknown)(...args);
+      return await (found.value as (...a: unknown[]) => unknown)(...list);
     },
 
     born(v) {

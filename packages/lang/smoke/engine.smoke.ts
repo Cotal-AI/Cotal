@@ -1127,4 +1127,92 @@ await parallel({
   ok("with the reason it inherited", late.reason === "a sibling branch won the race", late.reason);
 }
 
+// ---- 15) the optional call: `o.m?.()` ------------------------------------------------------------
+//
+// Seam member 4 gains a flag (F6, ruled 1d), not a fifteenth member. Every answer below was MEASURED
+// on the walker first and is compared against it here, because two of them are not what "optional"
+// suggests: `?.` guards a NULLISH MEMBER and nothing else - it softens neither L4014 nor L4011 - and
+// a short-circuited call evaluates NO ARGUMENT AT ALL.
+
+{
+  /** The same program on the oracle: what it logged, what it journalled, or what it refused. */
+  const onWalker = async (src: string): Promise<string> => {
+    const logs: unknown[][] = [];
+    try {
+      const r = await walkerRun(src, { runId: "f6", handler: new SimHandler({}), onLog: (l) => logs.push([...l.values]) });
+      return `ok ${JSON.stringify(logs)} ${JSON.stringify(r.journal.entries().map((e) => e.kind))}`;
+    } catch (e) {
+      return `refused ${codeOf(e)}`;
+    }
+  };
+  const h = harness({ script: {} });
+
+  ok("the walker short-circuits an absent member", (await onWalker(`const o = { a: 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",null]] []');
+  ok(
+    "and so does the engine, with nothing called",
+    (await h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", () => [], true))) === undefined,
+  );
+
+  ok("the walker invokes a member that IS a function", (await onWalker(`const o = { m: () => 1 };\nconst r = o.m?.();\nlog("r", r);\n`)) === 'ok [["r",1]] []');
+  ok(
+    "and so does the engine",
+    (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", () => [], true))) === 1,
+  );
+
+  ok("the walker refuses a member that is NOT a function, optional or not", (await onWalker(`const o = { m: 5 };\nconst r = o.m?.();\nlog("r", r);\n`)) === "refused L4011");
+  ok(
+    "and so does the engine: `?.` does not soften L4011",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ m: 5 }), "m", () => [], true)))) === "L4011",
+  );
+
+  ok("the walker refuses a name the curated table does not have, optional or not", (await onWalker(`const xs = [1, 2];\nconst r = xs.nope?.();\nlog("r", r);\n`)) === "refused L4014");
+  ok(
+    "and so does the engine: `?.` does not soften L4014 either",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "nope", () => [], true)))) === "L4014",
+  );
+
+  // A curated method is never nullish, so the optional form reaches the table path unchanged.
+  const mapped = await h.inFrame(() => h.ctx.call(h.ctx.born([1, 2]), "map", () => [async (x: unknown) => (x as number) * 3], true));
+  ok("an optional call on a curated method is just the call", JSON.stringify(mapped) === "[3,6]", mapped);
+
+  // THE ONE THAT DECIDES THE SHAPE. The walker checks the member BEFORE it evaluates arguments, so a
+  // short-circuited call performs nothing; the control beside it proves the argument would otherwise
+  // have run. That is why the optional form takes a thunk: an array would already have been evaluated.
+  ok(
+    "a short-circuited call on the walker journals NOTHING",
+    (await onWalker(`const o = { a: 1 };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] []',
+  );
+  ok(
+    "while the same argument on a PRESENT method journals its effect",
+    (await onWalker(`const o = { m: (x) => x };\nconst r = o.m?.(await sleep("1s"));\nlog("r", r);\n`)) === 'ok [["r",null]] ["sleep"]',
+  );
+  let evaluated = 0;
+  const short = await h.inFrame(() =>
+    h.ctx.call(h.ctx.born({ a: 1 }), "m", () => {
+      evaluated += 1;
+      return [];
+    }, true),
+  );
+  ok("and the engine's short-circuit never asks for its arguments", short === undefined && evaluated === 0, evaluated);
+  let ran = 0;
+  await h.inFrame(() =>
+    h.ctx.call(h.ctx.born({ m: async () => 1 }), "m", () => {
+      ran += 1;
+      return [];
+    }, true),
+  );
+  ok("while a present member does ask, exactly once", ran === 1, ran);
+
+  // No silent acceptance of an already-evaluated list on the optional path: the short-circuit would
+  // be a lie, because the arguments ran before the seam was reached.
+  ok(
+    "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+    codeOf(await caught(() => h.inFrame(() => h.ctx.call(h.ctx.born({ a: 1 }), "m", [], true)))) === "L1000",
+  );
+  ok(
+    "and an ordinary call still takes a plain array",
+    (await h.inFrame(() => h.ctx.call(h.ctx.born({ m: async (x: unknown) => x }), "m", ["z"]))) === "z",
+  );
+}
+
 console.log(`engine.smoke: ${pass} checks passed`);

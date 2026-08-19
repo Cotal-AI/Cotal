@@ -110,8 +110,8 @@
     {
       "name": "an own-field function is adapted as if it spoke the walker's convention",
       "file": "packages/lang/src/engine/ctx.ts",
-      "find": "      return await (found.value as (...a: unknown[]) => unknown)(...args);",
-      "replace": "      return await (found.value as unknown as Callable)(currentFrame(), adaptArgs(args));",
+      "find": "      return await (found.value as (...a: unknown[]) => unknown)(...list);",
+      "replace": "      return await (found.value as unknown as Callable)(currentFrame(), adaptArgs(found.key, list));",
       "expectRed": "and a member call through the seam agrees",
       "completionMarker": "ok a record-shaped builtin hands out program-convention members",
       "cell": "and a member call through the seam agrees",
@@ -326,6 +326,36 @@
       "completionMarker": "ok and the ESCALATION reaches an already-cancelled child",
       "cell": "the reason stays the FIRST one, because that is what cancelled the branch",
       "note": "The reason is what the Cancelled error carries out of the branch and into the trace. An escalation is not a new reason for stopping - the branch stopped when it lost - so overwriting it makes every cut arm report the escalation instead of the loss."
+    },
+    {
+      "name": "an optional call does not short-circuit a nullish member",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true) {",
+      "replace": "      if (false) {",
+      "expectRed": "and so does the engine, with nothing called",
+      "completionMarker": "ok the walker short-circuits an absent member",
+      "cell": "and so does the engine, with nothing called",
+      "note": "The whole of F6's flag. Without it `o.m?.()` on an absent member is L4011 - the answer the walker gives for a member that is PRESENT and not a function, so the program is refused for a reason that is not true of it."
+    },
+    {
+      "name": "an optional call evaluates its arguments before deciding to short-circuit",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true) {\n        return undefined;\n      }\n      const list = typeof args === \"function\" ? args() : args;",
+      "replace": "      const list = typeof args === \"function\" ? args() : args;\n      if (found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true) {\n        return undefined;\n      }",
+      "expectRed": "and the engine's short-circuit never asks for its arguments",
+      "completionMarker": "ok while the same argument on a PRESENT method journals its effect",
+      "cell": "and the engine's short-circuit never asks for its arguments",
+      "note": "The reason the optional form takes a thunk at all, and the reason it is a seam-shape question rather than a flag: measured on the walker, a short-circuited call journals NOTHING while the same argument on a present method journals a sleep. Under the mutant the arguments run and their effects land in the journal, so a resume of that entry replays a step the walker's run never recorded."
+    },
+    {
+      "name": "an optional call accepts an argument list that has already been evaluated",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (optional === true && typeof args !== \"function\") {",
+      "replace": "      if (false) {",
+      "expectRed": "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+      "completionMarker": "ok while a present member does ask, exactly once",
+      "cell": "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+      "note": "No silent acceptance: an array reaching this parameter means the arguments ran before the seam was entered, so the short-circuit that follows would be a lie - it returns undefined having already performed whatever the arguments performed. The refusal is loud because the emitter, not the program, is what got it wrong."
     }
   ]
 }
