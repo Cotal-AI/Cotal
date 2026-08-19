@@ -26,6 +26,7 @@
  *   pnpm smoke:reaper      fail if the committed declaration is not what the module emits
  */
 import { readFileSync, writeFileSync } from "node:fs";
+import { dirname } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import ts from "typescript";
 
@@ -38,6 +39,37 @@ const BANNER = `// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mjs. 
 `;
 
 /**
+ * The compiler options the emit runs under: the repository's own shared base config, plus the four
+ * that make this an emit rather than a check.
+ *
+ * They are READ rather than restated on purpose. A generator that hand lists `target`, `strict` and
+ * `moduleResolution` produces a declaration that is correct under its own settings and possibly wrong
+ * under the ones its consumers are typechecked with, which is the second-source-of-truth problem one
+ * level up from the one this file exists to remove. `tsconfig.base.json` is what every package in the
+ * repository extends, so this cannot drift from them without drifting from itself.
+ */
+function emitOptions(): ts.CompilerOptions {
+  const configPath = fileURLToPath(new URL("../../tsconfig.base.json", import.meta.url));
+  const read = ts.readConfigFile(configPath, ts.sys.readFile);
+  if (read.error) {
+    throw new Error(`could not read ${configPath}: ${ts.flattenDiagnosticMessageText(read.error.messageText, " ")}`);
+  }
+  const parsed = ts.parseJsonConfigFileContent(read.config, ts.sys, dirname(configPath));
+  if (parsed.errors.length > 0) {
+    throw new Error(`could not parse ${configPath}: ${ts.flattenDiagnosticMessageText(parsed.errors[0].messageText, " ")}`);
+  }
+  return {
+    ...parsed.options,
+    allowJs: true,
+    declaration: true,
+    declarationMap: false,
+    sourceMap: false,
+    emitDeclarationOnly: true,
+    noEmit: false,
+  };
+}
+
+/**
  * The declaration the compiler emits for the reaper today, banner included.
  *
  * Throws rather than returning a weaker declaration when the module does not typecheck, because a
@@ -45,20 +77,7 @@ const BANNER = `// Generated from reap-smoke-brokers.mjs by gen-reaper-dts.mjs. 
  */
 export function renderReaperDeclaration(): string {
   let emitted: string | undefined;
-  const program = ts.createProgram({
-    rootNames: [MODULE_PATH],
-    options: {
-      allowJs: true,
-      declaration: true,
-      emitDeclarationOnly: true,
-      strict: true,
-      target: ts.ScriptTarget.ESNext,
-      module: ts.ModuleKind.NodeNext,
-      moduleResolution: ts.ModuleResolutionKind.NodeNext,
-      skipLibCheck: true,
-      noEmit: false,
-    },
-  });
+  const program = ts.createProgram({ rootNames: [MODULE_PATH], options: emitOptions() });
 
   const errors = ts.getPreEmitDiagnostics(program).filter((d) => d.category === ts.DiagnosticCategory.Error);
   if (errors.length > 0) {
