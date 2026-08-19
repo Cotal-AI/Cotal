@@ -135,6 +135,14 @@ async function main() {
   sandbox.document = { getElementById: byId, addEventListener: () => {},
     querySelector: () => byId("_q"), querySelectorAll: () => [], title: "" };
   sandbox.devicePixelRatio = 1;
+  // A VIEWPORT, because `resize()` reads `window.innerWidth`/`innerHeight` and nothing else sets W
+  // and H. Without them W is undefined, `cam.x` is NaN, and every node's screen position is NaN, so
+  // the viewport cull rejects the whole graph and the ONLY label the page ever draws is the one the
+  // `a.status === "waiting"` escape hatch forces. A suite reading that as "the node is on the
+  // graph" is reading one gate of three. With a real viewport the on-screen footprint gate
+  // (`inView && foot >= 8`) is live, which is the path a browser always takes.
+  sandbox.innerWidth = 1440;
+  sandbox.innerHeight = 900;
   sandbox.performance = { now: () => Date.now() - t0 };
 
   // LOAD WHAT THE PAGE LOADS, IN THE PAGE'S ORDER, read out of graph.html rather than listed here,
