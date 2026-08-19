@@ -335,9 +335,10 @@ export const cotal: Plugin = async () => {
     }
     // BEFORE DEPARTURE IS PUBLISHED, so that nothing this seat already admitted can act after it has
     // said it left. Bounded, and the bound is the honest part: a straggler that outlives it is not
-    // cancelled, so offline goes out anyway and that straggler can still finish afterwards. Losing
-    // the offline publish to an unbounded wait is the worse of the two, because departure would go
-    // back to being inferred from a dropped connection.
+    // cancelled, so the teardown goes on to ATTEMPT the departure publish and that straggler can
+    // still finish afterwards. Attempt is the accurate word: this publish is best effort, it has no
+    // deadline of its own, and a kill inside it takes it. Waiting unboundedly instead is the worse
+    // of the two, because departure would go back to being inferred from a dropped connection.
     // EACH ONE ABSORBED SEPARATELY, which is the difference between waiting for the set and waiting
     // for the first thing to happen to it. The set holds the raw calls, and a bare Promise.all
     // rejects the moment ONE of them does, without waiting for the others; settleWithin then counts
@@ -349,14 +350,15 @@ export const cotal: Plugin = async () => {
     const admitted = [...inFlight].map((work) => work.then(() => undefined, () => undefined));
     const settled = await settleWithin(Promise.all(admitted), INTAKE_SETTLE_MS, "admitted intake at teardown");
     // The generic line above already says the work is uncancelled and may land late. This adds the
-    // part specific to THIS site: departure goes out regardless, so a straggler here publishes or
-    // SENDS after the seat has announced it left, rather than merely out of order. An earlier
+    // part specific to THIS site: the teardown stops waiting and moves on to the departure publish,
+    // so a straggler here can publish or SEND around it rather than merely out of order. An earlier
     // version of the generic line claimed the abandoned work was terminally silent, and this note
     // existed to contradict it; the contradiction is gone now that the line itself is accurate.
     if (!settled)
       log(
-        `admitted work outlived the ${INTAKE_SETTLE_MS}ms intake bound: departure is published anyway, ` +
-          `and that work is NOT cancelled, so it may still publish or send after departure`,
+        `admitted work outlived the ${INTAKE_SETTLE_MS}ms intake bound: the teardown stops waiting and ` +
+          `ATTEMPTS the departure publish next, which is best effort and may not land; that work is ` +
+          `NOT cancelled either, so it may still publish or send afterwards`,
       );
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
