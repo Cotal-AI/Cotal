@@ -78,12 +78,12 @@ const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdir
 /** `Manager.list` is PRIVATE; the cells below assert the row shape `cotal ps` renders, so the reach
  *  goes through one named view rather than a cast per call site, and the view names exactly the
  *  fields those cells read, at exactly the width the real method returns them: `mesh` is a roster
- *  status or the absent sentinel, never an arbitrary string, and `authHealth` is the non-ok half of
- *  `agentAuthState`. A local view WIDER than the real return would let a cell certify a value
+ *  status or the absent sentinel, never an arbitrary string, `pid` is present only on a runtime that
+ *  owns a real process, and `authHealth` is the non-ok half of `agentAuthState`. A local view WIDER than the real return would let a cell certify a value
  *  production cannot emit. Widening the method to public would be a shipped-source change made for a
  *  test's convenience, which is not this change's business. */
 type PresenceStatus = import("@cotal-ai/core").PresenceStatus;
-type PsRow = { name: string; id: string; mesh: PresenceStatus | "absent"; authHealth?: "auth-renewal-failed" | "auth-unknown" | "auth-stale" };
+type PsRow = { name: string; id: string; mesh: PresenceStatus | "absent"; pid?: number; authHealth?: "auth-renewal-failed" | "auth-unknown" | "auth-stale" };
 const psList = (m: object, ownerFilter?: string): PsRow[] =>
   (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
@@ -231,6 +231,22 @@ const e2eFailCon: Connector = {
 };
 registry.register(e2eFailCon);
 
+// A connector whose child LAUNCHES and stays alive but never joins the mesh: the only seat state in
+// which a managed row exists with NO roster entry, which is the `?? "absent"` half of the ps
+// projection. Same provisioning path as `e2e`, one difference — it never opens an endpoint.
+const e2eQuietCon: Connector = {
+  kind: "connector",
+  name: "e2e-quiet",
+  requires: ["node"],
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: process.execPath,
+    args: ["-e", "setInterval(()=>{},1000);"],
+    env: { ...launchEnv(), ...userAuthEnv(o), COTAL_SPACE: o.space, COTAL_NAME: o.name },
+  }),
+};
+registry.register(e2eQuietCon);
+
+
 // ---------- the real Better Auth IdP (device-code, auto-approved) ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
 const idpSrv = createServer((req, res) => handler!(req, res));
@@ -354,7 +370,9 @@ try {
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   // Personas (identity + file ACL) for the two spawns.
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
-  for (const n of ["alpha", "beta", "delta"])
+  // `iota` is the never-joining seat the ps-projection cell needs, and it is spawned through the
+  // same persona path as any other, so its row differs from the rest in one way only: no mesh join.
+  for (const n of ["alpha", "beta", "delta", "iota"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
   // `epsilon` and `zeta` carry NO role on purpose: section E asks what a peer may delegate on the EVENT
   // PLANE, and a role is itself a delegated capability, so a `role: worker` persona would be
@@ -412,7 +430,6 @@ try {
   await observer.start();
   const seen = await until(() => observer!.getRoster().some((p) => p.card.id === alphaPrincipal && p.card.name === "alpha"));
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
-  const listed = psList(manager).find((a) => a.name === "alpha");
   // `mesh !== "absent"` accepted ANY other string, so a row carrying a value no roster can produce
   // read as live. The reach is a cast through `unknown`, which severs the local view from the real
   // return type, so no width declared above can catch that: the closed set has to be asserted here.
@@ -422,13 +439,64 @@ try {
   // `offline`, so on its own it would pass a row this cell calls live while production does not.
   // Live is production's own predicate, `Manager.liveRosterNames` (`status !== "offline"`), and
   // asserting the union alone left the cell's name untrue. A review caught that.
+  //
+  // AND NEITHER HALF PROVED THE VALUE CAME FROM THE ROSTER. A security review severed the
+  // projection, `mesh: "idle" as const` in place of `roster.get(a.name)?.status ?? "absent"`, and
+  // the suite stayed green: every managed row would then render live whatever the mesh says, which
+  // is the unsafe direction, an unavailable principal admitted to the operator's live view.
+  //
+  // Comparing `mesh` to the roster's status does NOT catch that on its own, which was measured
+  // rather than assumed: a joined agent's status is `idle` (core `endpoint.ts`, the default
+  // `PresenceStatus`), so a hard-coded `idle` AGREES with the roster and the comparison passes.
+  // Sampling for a transition does not help either — on this tree a seat is already `idle` in the
+  // roster by the time the spawn returns, so there is no non-live sample to catch a constant with.
+  //
+  // What no constant can satisfy is the projection's OTHER branch. `?? "absent"` is reached by a
+  // managed row whose name has no roster entry at all, so the cell pins two rows at once: `alpha`,
+  // joined, which must carry the roster's own status, and a seat that launches and stays alive
+  // without ever joining the mesh, which must carry `absent`. One literal cannot be both, whichever
+  // literal it is, and a lookup rekeyed off the name renders `absent` for the joined row.
   const PRESENCE_STATUSES: readonly string[] = ["idle", "waiting", "working", "offline"];
+  type RosterEntry = { card: { name: string }; status: string };
+  // The manager's OWN roster, keyed the way `Manager.list` keys it (`new Map(...)` by card NAME, so
+  // a later entry for a name wins). Deriving the expected value any other way measures this oracle's
+  // keying rather than the question production asks.
+  // Bound once: `manager` is a `let` the teardown clears, so a closure over it reads
+  // `Manager | undefined` and the file stops typechecking, which is the very thing this branch fixes.
+  const mgr = manager;
+  const managerRoster = (): RosterEntry[] =>
+    (mgr as unknown as { ep: { getRoster: () => RosterEntry[] } }).ep.getRoster();
+  const rosterOf = (n: string): string =>
+    new Map(managerRoster().map((p) => [p.card.name, p])).get(n)?.status ?? "absent";
+  const meshOf = (n: string): string => psList(mgr).find((a) => a.name === n)?.mesh ?? "absent";
+  // The never-joining seat. `startAgent` waits for presence and finally reports the launch
+  // UNCERTAIN, but the row is in the manager's table from launch, so the state under test is
+  // readable long before that reply: assert while the readiness wait is still in flight, then end
+  // the wait by killing the child rather than paying its full timeout.
+  const quietPending = manager.startAgent({ name: "iota", agent: "e2e-quiet", owner: OWNER });
+  const quietListed = await until(() => psList(mgr).some((a) => a.name === "iota"));
+  const listed = psList(manager).find((a) => a.name === "alpha");
   const mesh = listed?.mesh ?? "absent";
   check(
     "manager ps lists alpha under its principal id, mesh live",
     listed?.id === alphaPrincipal && PRESENCE_STATUSES.includes(mesh) && mesh !== "offline",
     { listed, mesh },
   );
+  const projection = psList(manager).map((a) => ({ name: a.name, mesh: a.mesh, expected: rosterOf(a.name) }));
+  check(
+    "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+    quietListed && projection.length > 0 && projection.every((r) => r.mesh === r.expected),
+    JSON.stringify(projection),
+  );
+  check(
+    "and the two rows really do carry different values, so no constant can satisfy both",
+    meshOf("alpha") !== "absent" && meshOf("iota") === "absent",
+    { alpha: meshOf("alpha"), iota: meshOf("iota") },
+  );
+  const quietPid = (psList(manager).find((a) => a.name === "iota"))?.pid;
+  if (quietPid) process.kill(quietPid, "SIGKILL");
+  const quietReply: ControlReply = await quietPending;
+  check("a seat that never joins the mesh is not reported as a successful launch", quietReply.ok === false, quietReply);
 
   // ---------- B1f. a spawn-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610) ----------
   // The end-to-end half of the goal-follow contract. `epCallerGrantRows` returns `{pub, sub}` and
