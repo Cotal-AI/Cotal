@@ -511,6 +511,23 @@ export const cotal: Plugin = async () => {
    * The endpoint stays up until `agent.stop()`, so a drain that finishes BEFORE that still publishes.
    * One that outlived the swap bound can finish after it instead, and then it has no endpoint left
    * to publish through.
+   *
+   * THE EVENT JOIN IS A `close`, NOT A BARE SETTLE, AND THE TWO JOINS STAY ADJACENT BELOW. It waits
+   * on exactly the chain the settle waited on, under exactly the same bound, so the join is
+   * unchanged; what it adds is the refusal, so a hook arriving while this wait is outstanding no
+   * longer starts or pumps an emitter the teardown has already decided it is done with. This
+   * paragraph is here rather than between the two calls because a mutation anchor may not span a
+   * comment: an anchor that did would stop matching the day someone reworded it, and then report a
+   * clean pass over a guard it no longer tests. The two calls are one anchor, so the prose that
+   * explains them lives above the routine.
+   *
+   * THE PRINCIPAL LOCK GOES BACK ON THE LINE AFTER THEM, and this is the only place it does. A
+   * lock is per PRINCIPAL while a holder is per THREAD, so a `/new` must keep it for the session
+   * that follows; only the final teardown may hand it back. Both ways out reach this routine, so a
+   * dispose that leaves its host process alive releases it exactly as a supervised stop does. That
+   * was the reachable failure: the lock was taken and never released, so its record went on naming
+   * a pid that was alive and no longer publishing, and a replacement process for this principal was
+   * refused its own event plane.
    */
   const quiesce = async (): Promise<void> => {
     stopping = true;
@@ -552,16 +569,7 @@ export const cotal: Plugin = async () => {
       );
     await safeStatus("offline");
     await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
-    // `close` RATHER THAN `settled`, so the join and the release are one act. It waits on exactly
-    // the same chain the settle waited on, under the same bound, and adds the refusal: a hook that
-    // arrives while this wait is outstanding no longer starts or pumps an emitter the teardown has
-    // already decided it is done with.
     await settleWithin(events?.close(), SWAP_SETTLE_MS, "event holder at teardown");
-    // THE FINAL EVENT TEARDOWN IS WHERE THE PRINCIPAL LOCK GOES BACK, and it is the only place: the
-    // swap deliberately keeps it, because the replacement holder publishes for the same principal.
-    // Both ways out of this plugin end here, so a dispose that leaves its host process alive
-    // releases it exactly as a supervised stop does. That was the reachable failure: the record went
-    // on naming a live pid, and a replacement process for this principal was refused its emitter.
     await releaseEventLock();
     clearErrorRetry(true);
     await agent.stop();

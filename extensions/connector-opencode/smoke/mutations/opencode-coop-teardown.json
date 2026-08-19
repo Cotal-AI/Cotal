@@ -139,16 +139,21 @@
     "was up, the call did not take, and the cell graded the batch path twice while claiming to grade",
     "nudges.",
     "",
-    "C1's ANCHOR NOW CARRIES THE COMMENT BETWEEN THE TWO JOINS, because the event join became",
-    "`close()`, which is the same chain under the same bound plus the refusal that stops a late hook",
-    "starting an emitter the teardown has finished with. The mutation is unchanged in meaning: remove",
-    "both joins and the stop abandons event work it had already queued."
+    "C1's ANCHOR IS THE TWO JOIN LINES AND NOTHING ELSE, and keeping it that way cost a comment its",
+    "place. The event join became `close()`, which waits on the same chain under the same bound and",
+    "adds the refusal that stops a late hook starting an emitter the teardown has finished with. The",
+    "sentence saying so was first written BETWEEN the two calls, which put four comment lines inside",
+    "this anchor and `smoke:mutation-fixtures` refused it: an anchor that spans prose stops matching",
+    "the day someone rewords the prose, and then reports a clean pass over a guard it no longer tests.",
+    "That is the same failure family as an anchor matching twice, and it is why the explanation now",
+    "lives in the doc block above `quiesce` while the two calls sit adjacent. The mutation is unchanged",
+    "in meaning: remove both joins and the stop abandons event work it had already queued."
   ],
   "mutations": [
     {
       "name": "C1 the shared teardown stops joining the event work at all, so a stop abandons a drain that was already in flight",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    // `close` RATHER THAN `settled`, so the join and the release are one act. It waits on exactly\n    // the same chain the settle waited on, under the same bound, and adds the refusal: a hook that\n    // arrives while this wait is outstanding no longer starts or pumps an emitter the teardown has\n    // already decided it is done with.\n    await settleWithin(events?.close(), SWAP_SETTLE_MS, \"event holder at teardown\");\n",
+      "find": "    await settleWithin(swapChain, SWAP_SETTLE_MS, \"swap chain at teardown\");\n    await settleWithin(events?.close(), SWAP_SETTLE_MS, \"event holder at teardown\");\n",
       "replace": "",
       "expectRed": "cooperative stop joined the queued event work before exiting"
     },
