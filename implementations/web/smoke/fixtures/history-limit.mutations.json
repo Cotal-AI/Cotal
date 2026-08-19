@@ -4,7 +4,7 @@
     {
       "name": "H1 the whole parse is reverted to the truthy per-route one that shipped, so `limit=abc` becomes NaN again and reaches the history search that cannot terminate on it",
       "file": "implementations/web/src/web.ts",
-      "find": "  const raw = query.get(\"limit\");\n  if (raw === null || raw === \"\") return fallback;\n  if (!/^[0-9]+$/.test(raw))\n    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);\n  const n = Number(raw);\n  // Reachable only through the digits-only test above, so this value cannot carry anything the\n  // quoter would escape today. It quotes anyway: the guarantee that a refusal renders its input\n  // unambiguously should hold because the quoting site holds it, not because a regex two lines up\n  // stays exactly as narrow as it is this morning.\n  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);\n  return n;",
+      "find": "  const raw = query.get(\"limit\");\n  if (raw === null || raw === \"\") return fallback;\n  if (!/^[0-9]+$/.test(raw))\n    throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);\n  const n = Number(raw);\n  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);\n  return n;",
       "replace": "  const raw = query.get(\"limit\");\n  return raw ? Number(raw) : fallback;",
       "expectRed": "1.1 ?limit=\"abc\" is refused by ALL THREE routes, and every one of them ANSWERS"
     },
@@ -46,7 +46,7 @@
     {
       "name": "H10 the safe-integer check is dropped, so a run of digits too large for a double to count exactly is accepted and silently becomes a different number than the caller wrote",
       "file": "implementations/web/src/web.ts",
-      "find": "  // Reachable only through the digits-only test above, so this value cannot carry anything the\n  // quoter would escape today. It quotes anyway: the guarantee that a refusal renders its input\n  // unambiguously should hold because the quoting site holds it, not because a regex two lines up\n  // stays exactly as narrow as it is this morning.\n  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);",
+      "find": "  if (!Number.isSafeInteger(n))\n    throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);",
       "replace": "  if (false)\n    throw new BadRequest(`limit ${JSON.stringify(raw)} is larger than this server can count exactly`);",
       "expectRed": "1.1 ?limit=\"99999999999999999999\" is refused by ALL THREE routes, and every one of them ANSWERS"
     },

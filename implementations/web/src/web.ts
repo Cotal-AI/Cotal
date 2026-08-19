@@ -303,16 +303,17 @@ export function channelNameFromPath(raw: string): string {
   }
 }
 
+/** The `limit` out of the query. The safe-integer refusal is reachable only through the digits-only
+ *  test above it, so its value cannot carry anything the quoter would escape today. It quotes
+ *  anyway: the guarantee that a refusal renders its input unambiguously should hold because the
+ *  quoting site holds it, not because a regex two lines up stays exactly as narrow as it is this
+ *  morning. */
 export function historyLimit(query: URLSearchParams, fallback: number): number {
   const raw = query.get("limit");
   if (raw === null || raw === "") return fallback;
   if (!/^[0-9]+$/.test(raw))
     throw new BadRequest(`limit must be a whole number of messages, received ${quoteForOperator(raw)}`);
   const n = Number(raw);
-  // Reachable only through the digits-only test above, so this value cannot carry anything the
-  // quoter would escape today. It quotes anyway: the guarantee that a refusal renders its input
-  // unambiguously should hold because the quoting site holds it, not because a regex two lines up
-  // stays exactly as narrow as it is this morning.
   if (!Number.isSafeInteger(n))
     throw new BadRequest(`limit ${quoteForOperator(raw)} is larger than this server can count exactly`);
   return n;
