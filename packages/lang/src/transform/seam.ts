@@ -33,6 +33,11 @@ export const SEAM_RULED: ReadonlySet<string> = new Set([
   "unary",
   "iter",
   "caught",
+  // Ruling 1c, member 14: L4011 at a non-function callee. `const f = 1; f()` is a program the
+  // validator ADMITS (measured at 9dc154f8), and the walker answers L4011 where a native call
+  // answers a host TypeError. Emitted behind a `typeof` fast path, so a call to a real function
+  // never reaches the host.
+  "callee",
 ]);
 
 /**
@@ -44,22 +49,19 @@ export const SEAM_RULED: ReadonlySet<string> = new Set([
  * these an emission actually reached, and `transform.smoke` pins that set, so the debt is a
  * measured number rather than a memory.
  */
-export const SEAM_PROPOSED: Readonly<Record<string, string>> = Object.freeze({
-  callee:
-    "L4011 at a non-function callee. `const f = 1; f()` is a program the validator ADMITS (measured at 9dc154f8), and the walker answers L4011 where a native call answers a host TypeError. Emitted behind a `typeof` fast path, so a call to a real function never reaches the host.",
-});
+export const SEAM_PROPOSED: Readonly<Record<string, string>> = Object.freeze({});
 
 /**
  * Every operator selector the emitter hands `unary`, and no other.
  *
- * `!` and `typeof` never reach here: neither can refuse, so both are emitted natively. An earlier
- * draft added a `number` selector for `UpdateExpression`'s coercion; it was WITHDRAWN, because the
- * walker charges that operand through a bare `Number(...)` with no refusal at all (`let o = {};
- * o.c++` answers NaN where `+o.c` answers L4018), so the selector would carry no law. See
- * `Emitter.toNumber`. An op set is as much a contract as a member name, which is why it is written
- * down here rather than left implicit in the emitter.
+ * `!` and `typeof` never reach here: neither can refuse, so both are emitted natively. `update` is
+ * `UpdateExpression`'s operand read, and ruling 1c gave it the coercion refusal rather than the
+ * walker's bare `Number(...)` — the walker's answer there (NaN for a record, 6 for `"5"++`) is the
+ * silent-coercion class, filed as issue 646 and carried as a declared divergence with named cells.
+ * An op set is as much a contract as a member name, which is why it is written down here rather
+ * than left implicit in the emitter.
  */
-export const UNARY_OPS: readonly string[] = Object.freeze(["-", "+", "~"]);
+export const UNARY_OPS: readonly string[] = Object.freeze(["-", "+", "~", "update"]);
 
 /** A site whose law has no ruled member and no surfaced proposal yet: refuse rather than invent one. */
 export class SeamPending extends Error {

@@ -15,7 +15,8 @@ import { parse } from "acorn";
 import { transform } from "../src/transform/index.js";
 import { SEAM_PROPOSED, SEAM_RULED } from "../src/transform/seam.js";
 import { ADMITTED_NODES } from "../src/syntax.js";
-import { run as walk } from "../src/interpret.js";
+import { run as walk, stripPositions } from "../src/interpret.js";
+import { digest } from "../src/keys.js";
 import { SimHandler } from "../src/sim.js";
 
 let pass = 0;
@@ -243,6 +244,7 @@ const CORPUS: readonly (readonly [string, string])[] = [
   ["a named function expression", "const fact = function walk(n) { return n === 0 ? 1 : n * walk(n - 1); }; log(fact(4));"],
   ["effects", 'const a = await spawn("builder"); const r = await turn(a, { name: "build" }); log(r.status);'],
   ["a scope combinator", 'await parallel({ one: () => sleep("1m", { name: "one" }), two: () => sleep("2m", { name: "two" }) }, { name: "both" });'],
+  ["a race, whose losers are digested", 'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);'],
   ["empty statement", "; log(1);"],
   ["the undefined value", "const u = undefined; log(u === undefined);"],
 ];
@@ -315,10 +317,11 @@ const CORPUS: readonly (readonly [string, string])[] = [
 {
   const reached = new Set<string>();
   for (const [, source] of CORPUS) for (const m of transform(source).meta.proposed) reached.add(m);
-  // PINNED, not asserted empty: `callee` is surfaced on #fix.lang-transform and not yet ruled, and a
-  // suite that hid that behind a green cell would be the forbidden move wearing a passing test. When
-  // it is ruled the member moves to SEAM_RULED and this list shrinks in the same change.
-  const expected = ["callee"];
+  // PINNED, not asserted empty. It IS empty at ruling 1c — `callee` became member 14 and moved to
+  // SEAM_RULED — but the pin is what makes a future proposal visible: a member reached without a
+  // ruling reds here rather than sitting indistinguishable from a granted one, which is the
+  // forbidden move wearing a passing test.
+  const expected: string[] = [];
   ok("the emission's unruled seam debt is exactly the surfaced list", JSON.stringify([...reached].sort()) === JSON.stringify(expected), {
     reached: [...reached].sort(),
     expected,
@@ -354,6 +357,11 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   // spread and for-of are the iterability law.
   ["a spread is one iter", "const xs = [1]; log([...xs]);", { iter: 1 }],
   ["a for-of is one iter", "for (const x of [1]) { log(x); }", { iter: 1 }],
+  // A bare callee is the one call shape the member law cannot cover: `call` resolves a name and
+  // calls in one step, and there is no name here. `callee` is member 14 (ruling 1c) and it carries
+  // L4011, so a call on a value charges it once and a call on a member never does.
+  ["a call on a value charges the callee law", "const f = (x) => x; log(f(1));", { callee: 1, call: 0 }],
+  ["a method call charges no callee law", "const xs = [1]; log(xs.map((x) => x));", { callee: 0, call: 1 }],
 ];
 
 {
@@ -394,28 +402,135 @@ const SITES: readonly (readonly [string, string, Readonly<Record<string, number>
   ok("an object literal's keys are emitted computed", module.includes('{ ["a"]: 1 }'), module.slice(0, 200));
 }
 
-// ---- 10) an update's coercion is native, because the walker's is ---------------------------------
+// ---- 10) an update's operand: a native counter, a refused record --------------------------------
 
 {
-  // `x++` reads its old value through a bare `Number(...)` in the walker, with NO refusal: a record
-  // there answers NaN, where `+o.c` on the same record answers L4018. So the update's coercion must
-  // NOT be charged to the seam's `unary` member, whose whole content is that refusal. This cell
-  // measures the walker rather than restating it, because the oracle is the reason for the rule.
+  // THE DECLARED DIVERGENCE OF RULING 1c, held by its oracle rather than by a sentence. The walker
+  // reads `x++`'s old value through a bare `Number(...)` with no refusal, so a record answers NaN
+  // there; the engine refuses it L4018 through `unary("update")`. That is a deliberate departure
+  // (issue 646 — silent coercion is the class the language refuses everywhere else), and this cell
+  // measures the walker's side of it. When 646 lands, the walker starts refusing, this cell reds,
+  // and the divergence is retired in the same change instead of being remembered.
   const logs: unknown[] = [];
   const r = await walk("const o = { c: {} }; o.c++; log(o.c);", {
     runId: "u",
     handler: new SimHandler({}),
     onLog: (l) => logs.push([...l.values]),
   });
-  ok("the walker coerces an update's operand without refusing", JSON.stringify(logs) === "[[null]]", { logs, value: r.value });
+  ok("declared divergence 646: the walker coerces an update's operand instead of refusing", JSON.stringify(logs) === "[[null]]", {
+    logs,
+    value: r.value,
+  });
 
-  const update = transform("let n = 0; n++; const o = { c: 0 }; o.c++; log(n, o.c);").meta.sites;
-  ok("an update does not charge the seam's coercion law", (update.unary ?? 0) === 0, update);
+  // A NUMBER NEVER REACHES THE HOST. Counters are the hot path of every loop in the language, and
+  // one seam call per increment is what the fast path exists to avoid; it is also why the numeric
+  // corpus is identical on both arms while 646 stands.
+  const update = transform("let n = 0; n++; const o = { c: 0 }; o.c++; log(n, o.c);");
+  ok("an update's fast path keeps a numeric counter native", update.module.includes('typeof __t2 === "number" ? __t2 :'), update.module.slice(0, 400));
 
-  // THE MIRROR. Without it, "never call unary" passes the cell above and silently drops L4018 from
-  // every `-x` in the language.
+  // AND THE MIRROR: the slow leg is charged, so a non-number operand reaches the refusal. Without
+  // this cell, emitting the fast path alone would pass the one above and drop L4018 entirely.
+  ok("an update's operand charges the coercion law when it is not a number", (update.meta.sites.unary ?? 0) === 2, update.meta.sites);
+
   const negate = transform("const o = {}; log(-o);").meta.sites;
   ok("a unary operator that can refuse still charges it", (negate.unary ?? 0) === 1, negate);
+}
+
+// ---- 11) a race's static payload, checked against the walker's own value ------------------------
+
+{
+  // The engine has NO AST at run time, and a settled `race` journals a `branchDigest` over the arms
+  // it never walked. So the branch bodies travel in the call site's payload — and the property that
+  // matters is not that they travel but that they SURVIVE the trip: the walker hashes the value it
+  // holds in memory, the engine hashes what arrived as JSON, and a journal entry that differs by a
+  // byte is a divergence. This cell hashes both and requires the same string.
+  const source = 'const r = await race({ a: async () => "a", b: async () => "b" }, { name: "r" });\nlog(r.index);';
+  const { module } = transform(source);
+
+  const wrapped = `(${module})`;
+  const shipped = (() => {
+    const found: unknown[] = [];
+    const walkNode = (n: unknown): void => {
+      if (Array.isArray(n)) return void n.forEach(walkNode);
+      if (n === null || typeof n !== "object") return;
+      const node = n as Node & { key?: Node & { name?: string }; value?: Node & { start: number; end: number } };
+      if (node.type === "Property" && node.key?.name === "branchDigests" && node.value !== undefined) {
+        found.push(JSON.parse(wrapped.slice(node.value.start, node.value.end)));
+      }
+      for (const [k, v] of Object.entries(node)) if (k !== "type") walkNode(v);
+    };
+    walkNode(parse(wrapped, { ecmaVersion: 2023, sourceType: "module" }) as unknown as Node);
+    return found;
+  })();
+  ok("a race call site ships exactly one branch payload", shipped.length === 1, shipped.length);
+
+  const bodies = shipped[0] as Record<string, unknown>;
+  const program = parse(source, { ecmaVersion: 2023, sourceType: "module", allowAwaitOutsideFunction: true }) as unknown as Node;
+  const literal = ((((program.body as Node[])[0] as Node).declarations as Node[])[0] as Node).init as Node;
+  const branches = ((literal.argument as Node).arguments as Node[])[0] as Node;
+  const walkerBodies = new Map<string, unknown>();
+  for (const prop of branches.properties as (Node & { key: Node & { name?: string; value?: string }; value: Node })[]) {
+    walkerBodies.set(prop.key.name ?? (prop.key.value as string), stripPositions(prop.value));
+  }
+  ok("every branch travels, because which one loses is the run's answer", Object.keys(bodies).sort().join() === [...walkerBodies.keys()].sort().join(), {
+    shipped: Object.keys(bodies).sort(),
+    walker: [...walkerBodies.keys()].sort(),
+  });
+
+  // Over every loser set a run of this race could produce, not just one of them.
+  const names = [...walkerBodies.keys()].sort();
+  const subsets = [[], ...names.map((n) => [n]), names];
+  let matched = 0;
+  for (const losers of subsets) {
+    const mine = digest(losers.map((n) => [n, bodies[n] ?? null]));
+    const theirs = digest(losers.map((n) => [n, walkerBodies.get(n) ?? null]));
+    if (mine === theirs) matched += 1;
+    else ok(`the shipped payload digests as the walker's for losers [${losers.join()}]`, false, { mine, theirs });
+  }
+  ok("the shipped payload digests as the walker's value over every loser set", matched === subsets.length, { matched, of: subsets.length });
+  console.log(`  (${subsets.length} loser sets digested on both sides)`);
+}
+
+// ---- 12) what the transform still refuses, and what the walker answers there ---------------------
+
+{
+  // A VALIDATED PROGRAM THE TRANSFORM CANNOT COMPILE IS A HOLE IN THE PRIMARY GATE, so it is named
+  // here rather than discovered when someone writes it. `o.m?.()` needs to know whether a member is
+  // nullish BEFORE calling it, and the seam's `call` resolves the name and calls in one step — the
+  // one place a method name may be resolved at all (L4020 refuses it everywhere else). Surfaced as
+  // F6. When the seam answers it, this cell reds and the program moves into the corpus above.
+  const pending = ["const o = { m: () => 1 }; log(await o.m?.());"];
+  let refused = 0;
+  for (const source of pending) {
+    let name = "";
+    try {
+      transform(source);
+    } catch (e) {
+      name = (e as Error).name;
+    }
+    if (name === "SeamPending") refused += 1;
+    else ok(`the transform refuses \`${source}\` loudly`, false, { name });
+  }
+  ok("every program the seam cannot yet express refuses loudly, and is listed", refused === pending.length, { refused, of: pending.length });
+
+  // AND THE WALKER'S ANSWER IS RECORDED WITH IT, because that is what the emission will have to
+  // reproduce: present function calls, absent short-circuits to undefined, present non-function is
+  // L4011 — the same three answers `?.` gives anywhere else.
+  const answers: string[] = [];
+  for (const source of [
+    "const o = { m: () => 1 }; log(await o.m?.());",
+    "const o = {}; log(await o.m?.());",
+    "const o = { m: 5 }; log(await o.m?.());",
+  ]) {
+    const logs: unknown[] = [];
+    try {
+      await walk(source, { runId: "p", handler: new SimHandler({}), onLog: (l) => logs.push([...l.values]) });
+      answers.push(JSON.stringify(logs));
+    } catch (e) {
+      answers.push((e as { code?: string }).code ?? "?");
+    }
+  }
+  ok("the walker's answer for an optional call is recorded with the refusal", JSON.stringify(answers) === JSON.stringify(["[[1]]", "[[null]]", "L4011"]), answers);
 }
 
 console.log(`\ntransform.smoke: ${pass} cells passed`);

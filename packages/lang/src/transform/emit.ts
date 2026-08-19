@@ -12,6 +12,7 @@
 
 import { BUILTINS, EVENT_CONSTRUCTORS, PRIMITIVES, PURE_PRIMITIVES, VALUE_NAMES } from "../primitives.js";
 import { analyze, type Analysis, type AnyNode, type Binding } from "./scope.js";
+import { stripPositions } from "../interpret.js";
 import { SeamPending, pickNames, type Names } from "./seam.js";
 
 /** Free names that are VALUES as well as callees: the walker declares each as a binding (`installGlobals`). */
@@ -72,6 +73,12 @@ class Emitter {
     return `${this.n.ctx}.${member}(${args})`;
   }
 
+  /**
+   * Reach a member that is SURFACED but not yet ruled. Empty at ruling 1c (`callee` was granted as
+   * member 14), and kept because it is the only route into `TransformMeta.proposed`: a member added
+   * here shows up as measured debt, where one added straight to {@link seam} is caught instead by
+   * the suite's unruled-member check — loudly, but after the fact.
+   */
   private propose(member: string, args: string): string {
     this.proposed.add(member);
     return this.seam(member, args);
@@ -586,18 +593,18 @@ class Emitter {
 
   /** `x++`, `--o.count`: JavaScript's meaning, with the read charged through `Number` as the walker charges it. */
   /**
-   * `x++`'s coercion is NATIVE, and deliberately not the seam's.
+   * `x++`'s operand, coerced under seam ruling 1c's `update` selector.
    *
-   * The walker reads the old value with a bare `Number(...)` and no refusal at all, so `n++` on a
-   * record is NaN there while `-n` on the same record is L4018. Routing this through the ruled
-   * `unary` member would have to pick one of those laws, and either pick is a divergence: the
-   * refusing ops would start refusing what the walker answers NaN for, and a non-refusing
-   * `unary("number")` would be a seam op that carries no law — decoration at a crossing. ToNumber
-   * is a syntax operator, needs no binding, and is exactly `Number()` for every value a validated
-   * program can hold (BigInt, the one value they differ on, is refused at parse).
+   * The walker reads the old value with a bare `Number(...)` and NO refusal: `o.c++` on a record is
+   * NaN there, while `-o.c` on the same record is L4018. Ruling 1c reproduced that and declined to
+   * rebuild it — silent coercion is the class the language exists to refuse, so `update` refuses a
+   * non-number operand and the walker's answer is a DECLARED divergence (issue 646) with its own
+   * cells, not a fidelity target. A number never reaches the host: the fast path keeps every counter
+   * native, which is what makes the numeric corpus identical on both arms.
    */
   private toNumber(code: string): string {
-    return `(+(${code}))`;
+    const t = this.temp();
+    return `((${t} = ${code}), typeof ${t} === "number" ? ${t} : ${this.seam("unary", `${q("update")}, ${t}`)})`;
   }
 
   private update(node: AnyNode): string {
@@ -734,7 +741,7 @@ class Emitter {
       const f = this.temp();
       // L4011 at a non-function callee, behind a `typeof` so a call to a real function never leaves
       // the compartment. `const f = 1; f()` is admitted by the validator (measured).
-      return `(await ((${f} = ${fn}), typeof ${f} === "function" ? ${f} : ${this.propose("callee", f)})(${args}))`;
+      return `(await ((${f} = ${fn}), typeof ${f} === "function" ? ${f} : ${this.seam("callee", f)})(${args}))`;
     }
     return this.expr(node);
   }
@@ -758,14 +765,32 @@ class Emitter {
    * source, which the walker computes from the AST at run time. The engine has no AST then, so
    * without this the two journals cannot be byte-identical for any race that settled.
    */
+  /**
+   * The static payload a call site carries, because the engine has no AST at run time.
+   *
+   * A settled `race` journals a `branchDigest` over the arms it will never walk into, and that
+   * digest is a function of the SOURCE. The walker computes it from the object literal in hand;
+   * the engine has to be handed the same material, so the branch bodies travel here with their
+   * positions stripped by `interpret.ts`'s OWN function — imported, never copied, because a second
+   * implementation of "what the code IS" is a second answer to whether a resumed run diverged.
+   *
+   * WHAT TRAVELS IS THE STRIPPED BODY, NOT A PER-BRANCH DIGEST. The walker hashes one array of
+   * `[loserName, body]` pairs over the loser set, which is only known at run time; per-branch
+   * digests would make the host hash a hash and produce a different byte string for a journal entry
+   * that has to be identical. Only losers are ever digested, but which branches lose is the run's
+   * answer, so every branch travels.
+   */
   private site(name: string, node: AnyNode): string {
     if (name !== "race") return "{}";
     const branches = ((node.arguments as AnyNode[]) ?? [])[0];
     if (branches === undefined || branches.type !== "ObjectExpression") return "{}";
-    throw new SeamPending(
-      "`stripPositions` is not exported from interpret.ts, and seam ruling 1 says import it, never copy it",
-      "race with an object literal of branches",
-    );
+    const bodies: Record<string, unknown> = {};
+    for (const p of (branches.properties as AnyNode[] | undefined) ?? []) {
+      const key = p.key as AnyNode | undefined;
+      const named = (key?.name as string | undefined) ?? (key?.value as string | undefined);
+      if (named !== undefined) bodies[named] = stripPositions(p.value);
+    }
+    return `{ branchDigests: ${JSON.stringify(bodies)} }`;
   }
 
   result(): Pick<Emission, "sites" | "proposed"> {
