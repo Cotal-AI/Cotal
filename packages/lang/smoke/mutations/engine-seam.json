@@ -649,7 +649,7 @@
     {
       "name": "the floor is never checked at the run boundary",
       "file": "packages/lang/src/engine/host.ts",
-      "find": "export const NODE_FLOOR = 24;",
+      "find": "export const NODE_FLOOR = 22;",
       "replace": "export const NODE_FLOOR = 999;",
       "expectRed": "runOnEngine RAN this program rather than refusing it at the boundary",
       "completionMarker": "ok and the ambient frame is what a framed call reads",
@@ -664,7 +664,7 @@
       "expectRed": "a node below the floor is refused by major version",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
       "cell": "a node below the floor is refused by major version",
-      "note": "Measured below the floor: 187 of this suite's checks pass and then the worker section dies on ERR_MODULE_NOT_FOUND, because tsx's ESM loader does not reach a worker thread on node 22. Without the refusal that is what a developer sees - a module resolution error naming a file that is right there - instead of a sentence saying which node this needs."
+      "note": "The floor is the MEASURED runtime floor, 22: ALS propagates 9 of 9 shapes on 22.23.2 and the worker from `dist` answers the same value with the same confinement there, so this suite is 271 of 271 green on 22 as well as on 26. What the refusal is for is the node below it, which nothing here has ever run on - and an engine whose frame plumbing rests on AsyncLocalStorage failing somewhere inside a run is a far worse answer than one sentence at the boundary. Unmutated the cell asks about 20.19.0; mutated, `if (false)` lets it through."
     },
     {
       "name": "an unreadable version is refused for being unreadable",
@@ -674,7 +674,27 @@
       "expectRed": "an unreadable version is not refused on the strength of being unreadable",
       "completionMarker": "ok and anything above it",
       "cell": "an unreadable version is not refused on the strength of being unreadable",
-      "note": "`NaN < 24` is false and `!(NaN >= 24)` is true, which is the whole difference. A version string this cannot parse is a runtime it knows nothing about; refusing it would fail a run for the SHAPE OF A STRING rather than for the runtime under it, and the check exists to answer the second question."
+      "note": "`NaN < 22` is false and `!(NaN >= 22)` is true, which is the whole difference. A version string this cannot parse is a runtime it knows nothing about; refusing it would fail a run for the SHAPE OF A STRING rather than for the runtime under it, and the check exists to answer the second question."
+    },
+    {
+      "name": "the host reaches for a default worker entry when none is given",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "  const worker = new Worker(options.entry, { workerData: { request, stop } });",
+      "replace": "  const worker = new Worker(options.entry ?? new URL(\"./worker-entry.js\", import.meta.url), { workerData: { request, stop } });",
+      "expectRed": "a request with NO entry starts no thread at all",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "a request with NO entry starts no thread at all",
+      "note": "This is the exact move the ruling took out: a worker entry derived from the module's own URL rather than named by the caller. It is invisible on a node whose loader reaches worker threads and it is ERR_MODULE_NOT_FOUND on one whose loader does not, which is how it survived the first time. Mutated, a request with no entry quietly spawns a thread at a path nobody chose instead of refusing."
+    },
+    {
+      "name": "an entry constant is exported for callers to inherit",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "export interface WorkerRunOptions {",
+      "replace": "export const WORKER_ENTRY = new URL(\"./worker-entry.js\", import.meta.url);\nexport interface WorkerRunOptions {",
+      "expectRed": "the worker module exports no entry for a caller to inherit",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "the worker module exports no entry for a caller to inherit",
+      "note": "The other half of the same rule, and the half the no-entry cell cannot see: a derivation does not have to live inside `runInWorker` to be a derivation. Exported, it is the value every caller picks up instead of deciding, and the decision quietly moves back into this package where it cannot be right for a bundler, an installed copy, or a suite that means to grade `dist`."
     }
   ]
 }
