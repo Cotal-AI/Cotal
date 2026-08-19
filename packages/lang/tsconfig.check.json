@@ -1,6 +1,6 @@
 {
   // Typecheck-only. The build config is `src` alone, because `rootDir` decides what lands in
-  // `dist` and the smoke files must not — but that left them typechecked by NOTHING: a deliberate
+  // `dist` and the smoke files must not, but that left them typechecked by NOTHING: a deliberate
   // `const x: number = "s"` planted in a smoke passed the package typecheck at rc=0, while the
   // same plant in `src` was caught with the right file and line. The suites run under tsx, which
   // erases types without checking them, so those files ran green over real type errors.

@@ -497,7 +497,7 @@ accepts("role-parametric procedures are the reuse mechanism",
   // there is no `errors` field to inspect. The previous check read `r.errors === undefined`, which
   // is the decoration the comment beside it warned against wearing a check's clothes: the property
   // does not exist on `ValidateResult`, so the clause was `undefined === undefined` and COULD NOT
-  // FAIL. Catching the throw is what makes acceptance falsifiable — a rejection now reddens this
+  // FAIL. Catching the throw is what makes acceptance falsifiable: a rejection now reddens this
   // cell and names the codes, instead of crashing the suite or passing silently.
   let r: ValidateResult | undefined;
   let rejectedWith: string | undefined;
