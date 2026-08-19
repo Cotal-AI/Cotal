@@ -169,21 +169,38 @@ const shapeOf = (v: unknown): string =>
 const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((line) => line.map(shapeOf)));
 
 /**
- * Where a value would be LOST by `JSON.stringify`, as paths. Empty means the rendering is faithful.
+ * Where a value would NOT SURVIVE a round trip through `JSON.stringify`, as paths. Empty means the
+ * rendering is faithful and a comparison over it answers about the value.
  *
  * The log leg has a shape signature because its values are program data and a closure handed to a
  * host renders as `null`. The ENTRY leg has none: it compares renderings, entry by entry. That is
- * only sound while no journal entry can carry a value JSON flattens, and "only sound while" is a
- * premise, so it is measured over the corpus below rather than assumed here. The day an effect
- * records a NaN, a negative zero, or a hole in an array, that cell reds and the entry leg needs the
- * same signature the log leg has.
+ * only sound while no journal entry can carry a value the rendering flattens, and "only sound
+ * while" is a premise, so it is measured over the corpus below rather than asserted here.
+ *
+ * THE LIST IS BY MECHANISM, NOT BY THE FIVE THAT CAME TO MIND. The first spelling named -0, NaN,
+ * the infinities, absence and code — the five the log leg's signature names — and would have called
+ * an entry faithful while it carried a `Date` (drawn as its own ISO string, so the date and the
+ * string compare equal), a `Map` or a `Set` (drawn as `{}`, so a full one and an empty record
+ * compare equal), or a HOLE in an array (`Object.entries` skips holes, so the walk never reached
+ * it). A journal entry is plain data by contract, so the rule here is that shape: anything that is
+ * not a plain record, an array or a primitive JSON draws faithfully is named, whatever it is.
  */
 const jsonBlind = (v: unknown, path: string): string[] => {
   if (Object.is(v, -0)) return [`${path} = -0`];
   if (typeof v === "number" && (Number.isNaN(v) || !Number.isFinite(v))) return [`${path} = ${v}`];
   if (v === undefined) return [`${path} = undefined`];
-  if (typeof v === "function") return [`${path} = function`];
+  if (typeof v === "function" || typeof v === "symbol" || typeof v === "bigint") return [`${path} = ${typeof v}`];
   if (v === null || typeof v !== "object") return [];
+  if (Array.isArray(v)) {
+    const out: string[] = [];
+    for (let i = 0; i < v.length; i += 1) out.push(...(i in v ? jsonBlind(v[i], `${path}[${i}]`) : [`${path}[${i}] = hole`]));
+    return out;
+  }
+  // A RECORD OR NOTHING. `Object.entries` walks a `Date`, a `Map` and a class instance alike and
+  // finds no own enumerable keys on any of them, so recursing past this line would report every one
+  // of them faithful. The language's own records are prototype-less, which is why null passes here.
+  const proto = Object.getPrototypeOf(v) as object | null;
+  if (proto !== Object.prototype && proto !== null) return [`${path} = ${(v as { constructor?: { name?: string } }).constructor?.name ?? "exotic"}`];
   return Object.entries(v as object).flatMap(([k, x]) => jsonBlind(x, `${path}.${k}`));
 };
 
@@ -589,7 +606,7 @@ const reachedKinds = new Set<string>();
   // that stopped collecting reds here instead of going quiet.
   const entries = scanned.flatMap(([, es]) => es);
   const blind = scanned.flatMap(([where, es]) => es.flatMap((entry, i) => jsonBlind(entry, `${where} entry[${i}]`)));
-  ok("no journal entry carries a value JSON cannot draw, and the sweep that says so visited every one", entries.length > 0 && blind.length === 0, {
+  ok("no journal entry the corpus produces carries a value JSON cannot draw, and the sweep that says so visited every one", entries.length > 0 && blind.length === 0, {
     entries: entries.length,
     blind,
   });
@@ -653,10 +670,16 @@ const reachedKinds = new Set<string>();
   // So it is shown finding one of each kind, nested, in the shape an entry actually has — and the
   // negative arm alongside, because a scan that flagged ordinary data would make the premise
   // unfalsifiable in the other direction.
-  const planted = { kind: "turn", key: "k", result: { a: -0, b: [Number.NaN, 1 / 0, -1 / 0], c: [undefined], d: { e: (x: number) => x } } };
+  const holed = [1, 2];
+  delete holed[0];
+  const planted = {
+    kind: "turn",
+    key: "k",
+    result: { a: -0, b: [Number.NaN, 1 / 0, -1 / 0], c: [undefined], d: { e: (x: number) => x }, f: holed, g: new Date(0), h: new Map([["k", 1]]), i: new Set([1]), j: Symbol("s"), k: 1n },
+  };
   const flattened = jsonBlind(planted, "entry");
-  ok("the scan behind that premise finds every kind JSON flattens, nested where an entry would carry it", flattened.length === 6, flattened);
-  ok("and finds nothing in an entry JSON draws faithfully", jsonBlind({ kind: "turn", key: "k", result: { a: 0, b: [1, "s", null], c: { d: true } } }, "entry").length === 0);
+  ok("the sweep behind that premise finds everything a rendering flattens, nested where an entry would carry it", flattened.length === 12, flattened);
+  ok("and finds nothing in an entry JSON draws faithfully", jsonBlind({ kind: "turn", key: "k", result: { a: 0, b: [1, "s", null], c: { d: true }, e: Object.create(null) as object } }, "entry").length === 0);
 }
 
 // ---- what a ruling made different, on purpose ----------------------------------------------------

@@ -333,8 +333,8 @@
       "file": "packages/lang/smoke/differential.smoke.ts",
       "find": "  if (Object.is(v, -0)) return [`${path} = -0`];\n",
       "replace": "",
-      "expectRed": "finds every kind JSON flattens",
-      "cell": "the scan behind that premise finds every kind JSON flattens, nested where an entry would carry it",
+      "expectRed": "finds everything a rendering flattens",
+      "cell": "the sweep behind that premise finds everything a rendering flattens, nested where an entry would carry it",
       "note": "A zero is only worth the instrument that produced it, and this instrument's whole job is to see the values a rendering hides. Drop the negative-zero clause and the premise cell still reports its clean zero over 160 entries - unchanged, green, and now blind to `0 / -1`. Only the control that shows the sweep finding one of each kind can tell those two zeros apart, which is why the control exists and why it is graded here rather than the premise."
     },
     {
@@ -343,8 +343,17 @@
       "find": "    scanned.push([`${name} / walker`, w.entries], [`${name} / engine`, e.entries]);\n",
       "replace": "",
       "expectRed": "and the sweep that says so visited every one",
-      "cell": "no journal entry carries a value JSON cannot draw, and the sweep that says so visited every one",
+      "cell": "no journal entry the corpus produces carries a value JSON cannot draw, and the sweep that says so visited every one",
       "note": "The other way a zero lies, and the reason the count and the finding are one cell over one array rather than two cells over two. With the collection gone the sweep has nothing to walk, reports no blind value, and would have passed as `blind.length === 0` alone - a green certifying a journal it never opened. Both halves read `scanned`, so this reds instead of going quiet."
+    },
+    {
+      "name": "the sweep walks a Date, a Map and a Set as if they were records, and finds them faithful",
+      "file": "packages/lang/smoke/differential.smoke.ts",
+      "find": "  const proto = Object.getPrototypeOf(v) as object | null;\n  if (proto !== Object.prototype && proto !== null) return [`${path} = ${(v as { constructor?: { name?: string } }).constructor?.name ?? \"exotic\"}`];\n",
+      "replace": "",
+      "expectRed": "finds everything a rendering flattens",
+      "cell": "the sweep behind that premise finds everything a rendering flattens, nested where an entry would carry it",
+      "note": "The clause a reader would delete first, because it looks defensive rather than load-bearing. Without it the walk recurses into a `Date`, a `Map` and a `Set`, finds no own enumerable key on any of the three, and reports all three faithful - while JSON draws the date as its own ISO string and both containers as `{}`, so a full Map and an empty record compare EQUAL in the entry leg. The control asserts an exact count rather than a non-zero one, which is what makes every clause of the sweep load-bearing; this one is spelled out because it is the one whose absence looks like nothing is missing."
     }
   ],
   "completionMarker": "differential.smoke:"
