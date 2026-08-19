@@ -416,8 +416,19 @@ try {
   // `mesh !== "absent"` accepted ANY other string, so a row carrying a value no roster can produce
   // read as live. The reach is a cast through `unknown`, which severs the local view from the real
   // return type, so no width declared above can catch that: the closed set has to be asserted here.
-  const LIVE_PRESENCE: readonly string[] = ["idle", "waiting", "working", "offline"];
-  check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && LIVE_PRESENCE.includes(listed?.mesh ?? "absent"), listed);
+  //
+  // Two halves, because the closed set is NOT the live set. `PRESENCE_STATUSES` is the whole
+  // `PresenceStatus` union, which is what rejects a value no roster can produce; but it contains
+  // `offline`, so on its own it would pass a row this cell calls live while production does not.
+  // Live is production's own predicate, `Manager.liveRosterNames` (`status !== "offline"`), and
+  // asserting the union alone left the cell's name untrue. A review caught that.
+  const PRESENCE_STATUSES: readonly string[] = ["idle", "waiting", "working", "offline"];
+  const mesh = listed?.mesh ?? "absent";
+  check(
+    "manager ps lists alpha under its principal id, mesh live",
+    listed?.id === alphaPrincipal && PRESENCE_STATUSES.includes(mesh) && mesh !== "offline",
+    { listed, mesh },
+  );
 
   // ---------- B1f. a spawn-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610) ----------
   // The end-to-end half of the goal-follow contract. `epCallerGrantRows` returns `{pub, sub}` and

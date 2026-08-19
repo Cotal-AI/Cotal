@@ -354,10 +354,12 @@ try {
   const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
 
-  // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding
-  // today's exact resource names, so the same asserts stay compilable and flip green under the
-  // lifecycle-keyed rename (dm_<principal> becomes dm_<principal>-<lifecycleUid> etc.) without
-  // editing the smoke. Enumeration (`$JS.API.CONSUMER.LIST`) is deliberately grantable by NO
+  // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding one
+  // exact resource name. The lifecycle-keyed rename has LANDED on this tree, so the names they
+  // match already carry the uid (`dm_<owner>-<actor>-<lifecycleUid>`, built by `lifecycleNameKey`
+  // in `subjects.ts`, SPEC 13.1); the prefix form is what let these asserts survive that rename
+  // without being edited, and it is what keeps them standing through the next one.
+  // Enumeration (`$JS.API.CONSUMER.LIST`) is deliberately grantable by NO
   // production profile, so the inspector rides a HARNESS-ONLY god cred signed with the account
   // key the smoke already owns — observability of the harness, never a surface of the code under test.
   const principal = principalKey(OWNER, AGENT);
