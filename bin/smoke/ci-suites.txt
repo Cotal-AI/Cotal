@@ -338,3 +338,4 @@ smoke:opencode-events-arm
 smoke:opencode-events-reset
 smoke:goal-follow
 smoke:required-arg-seam
+smoke:lang-engine

@@ -581,6 +581,9 @@ importers:
       json-canonicalize:
         specifier: 2.0.0
         version: 2.0.0
+      ses:
+        specifier: ^2.3.0
+        version: 2.3.0
 
   packages/smoke-kit: {}
 
@@ -868,6 +871,15 @@ packages:
   '@earendil-works/pi-tui@0.79.10':
     resolution: {integrity: sha512-FUVOjDn1DVwM1uHD5MNYboXQrXjIDbSt+BQ3py7nQWCY62tKfxgiM1OBMxTcwRWLfSdZHUPpV0hm1loIdUJnPw==}
     engines: {node: '>=22.19.0'}
+
+  '@endo/cache-map@1.1.0':
+    resolution: {integrity: sha512-owFGshs/97PDw9oguZqU/px8Lv1d0KjAUtDUiPwKHNXRVUE/jyettEbRoTbNJR1OaI8biMn6bHr9kVJsOh6dXw==}
+
+  '@endo/env-options@1.1.11':
+    resolution: {integrity: sha512-p9OnAPsdqoX4YJsE98e3NBVhIr2iW9gNZxHhAI2/Ul5TdRfoOViItzHzTqrgUVopw6XxA1u1uS6CykLMDUxarA==}
+
+  '@endo/immutable-arraybuffer@2.0.0':
+    resolution: {integrity: sha512-xvfJvo4CgETh6UjSKwhNsFLZrqrTf2k4ZFpcprEN2UtCQRSOk+CcLP70kFbrOesB2Z/c1z9MaUZDS1JY6IlnUg==}
 
   '@eplightning/nats-server-darwin-arm64@2.14.0':
     resolution: {integrity: sha512-tBCOf4anrlTnbQimh3KSz6C+0IbdJTyfTFLcol2YfGWzfmMgsXqjfrSZvnRnqMK2hWD/TJ6eIhsv3/UlfdTzEg==}
@@ -2570,6 +2582,9 @@ packages:
     resolution: {integrity: sha512-xRXBn0pPqQTVQiC8wyQrKs2MOlX24zQ0POGaj0kultvoOCstBQM5yvOhAVSUwOMjQtTvsPWoNCHfPGwaaQJhTw==}
     engines: {node: '>= 18'}
 
+  ses@2.3.0:
+    resolution: {integrity: sha512-qd3iWzDqGKllI2FmExKsWLrJwt+6COWb8jUdzaCn8Cq5OTeoXdQ62Gn/xLy0GWLORC3du6yBAVe/V0B0dLVKew==}
+
   set-cookie-parser@3.1.1:
     resolution: {integrity: sha512-vM9SUhjsUYs6UeJUmygc5Ofm5eQGe85riob5ju6XCgFGJI5PLV4nrDAQpQjd+LkFBpAkADn5BQQpZ9EUNkyLuA==}
 
@@ -3306,6 +3321,12 @@ snapshots:
     dependencies:
       get-east-asian-width: 1.6.0
       marked: 18.0.5
+
+  '@endo/cache-map@1.1.0': {}
+
+  '@endo/env-options@1.1.11': {}
+
+  '@endo/immutable-arraybuffer@2.0.0': {}
 
   '@eplightning/nats-server-darwin-arm64@2.14.0':
     optional: true
@@ -4786,6 +4807,12 @@ snapshots:
       send: 1.2.1
     transitivePeerDependencies:
       - supports-color
+
+  ses@2.3.0:
+    dependencies:
+      '@endo/cache-map': 1.1.0
+      '@endo/env-options': 1.1.11
+      '@endo/immutable-arraybuffer': 2.0.0
 
   set-cookie-parser@3.1.1: {}
 
