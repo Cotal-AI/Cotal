@@ -87,8 +87,48 @@ const arm = async (kind: "walker" | "engine", source: string, script: object): P
 
 const j = (v: unknown) => JSON.stringify(v);
 
-/** What an arm answered, as one string: the refusal it raised, or the lines it logged. */
-const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)}`);
+/**
+ * What a logged value IS, where JSON cannot say.
+ *
+ * `JSON.stringify` draws `undefined`, `null`, a FUNCTION, NaN and both infinities all as `null`, so
+ * a comparison over the rendering answers "identical" for five different facts — including the one
+ * this wave cares about most, a live closure handed to a host where the other arm handed absence.
+ * Measured, not reasoned: `log((x) => x)` and `log(o.b)` both render `[[null]]` on the walker.
+ *
+ * Four decisions here, each on purpose. `null` is NAMED rather than left as "object", because
+ * undefined-versus-null is the distinction this wave leans on hardest (it is why `get`'s cell test
+ * is `hasOwn` and not truthiness). NaN and the infinities are named for the same reason they are
+ * the problem: JSON draws them as `null` too. A container that CARRIES a function anywhere inside
+ * it is named apart from one that does not — a shallow `typeof` would have drawn `{ g: (x) => x }`
+ * and `{}` alike, which is the exact pair the rows about a record carrying a function exist to
+ * tell apart, so a signature that could not see it would have failed the cells it was added for.
+ * Everything else is bare `typeof`: this stays a SHAPE and does not become a second serializer
+ * with blind spots of its own to argue about.
+ */
+const carriesFunction = (v: unknown, seen: Set<object> = new Set()): boolean => {
+  if (typeof v === "function") return true;
+  if (v === null || typeof v !== "object" || seen.has(v)) return false;
+  seen.add(v);
+  return Object.values(v as Record<string, unknown>).some((x) => carriesFunction(x, seen));
+};
+
+const shapeOf = (v: unknown): string =>
+  v === null
+    ? "null"
+    : typeof v === "number" && Number.isNaN(v)
+      ? "NaN"
+      : typeof v === "number" && !Number.isFinite(v)
+        ? v > 0
+          ? "Infinity"
+          : "-Infinity"
+        : typeof v === "object" && carriesFunction(v)
+          ? "object+function"
+          : typeof v;
+
+const shapes = (logs: readonly (readonly unknown[])[]): string => j(logs.map((line) => line.map(shapeOf)));
+
+/** What an arm answered, as one string: the refusal it raised, or the lines it logged AND their shapes. */
+const answer = (a: Arm): string => (a.error !== null ? a.error : `logs ${j(a.logs)} shapes ${shapes(a.logs)}`);
 
 /** Where two arms differ, as the field names. Empty means identical. */
 const differences = (a: Arm, b: Arm): string[] => {
@@ -99,6 +139,10 @@ const differences = (a: Arm, b: Arm): string[] => {
   // reds and this line is live evidence again instead of a comparison nobody restored.
   if (j(a.value) !== j(b.value)) out.push("value");
   if (j(a.logs) !== j(b.logs)) out.push("logs");
+  // AND WHAT THE RENDERING CANNOT SAY, as its OWN label rather than folded into "logs": a shape-only
+  // divergence is one where the line above already answered "identical", so hiding it there would
+  // report the difference under a name that had just denied it.
+  if (shapes(a.logs) !== shapes(b.logs)) out.push("log shapes");
   if (a.error !== b.error) out.push("error");
   // ENTRY FOR ENTRY, in order. A journal that agreed as a set and disagreed on sequence would be a
   // replay that resumes into the wrong step, which is the failure this whole gate exists to catch.
@@ -457,6 +501,31 @@ const reachedKinds = new Set<string>();
   found("entry count", { ...base, entries: base.entries.slice(1) }, "entry count");
   found("entry order", { ...base, entries: [...base.entries].reverse() }, "entry 0");
   found("step key", { ...base, entries: [{ ...(base.entries[0] as JournalEntry), name: "perturbed" }, base.entries[1] as JournalEntry] }, "entry 0");
+
+  // AND THE LEG THAT ONLY EXISTS BECAUSE THE RENDERING LIES. These four pairs render IDENTICALLY —
+  // `JSON.stringify` draws undefined, null, a function, NaN and both infinities all as `null`, and
+  // a record carrying a function exactly as an empty one — so the `logs` leg says nothing and the
+  // whole difference has to be found by shape. Without this cell the new leg would be a claim about
+  // an empty set: every corpus row passes it today, which is precisely when a check cannot show it
+  // can fail. The pairs are the five values, and the nesting the shallow version could not see.
+  const shapeOnly = (label: string, left: unknown[][], right: unknown[][]) => {
+    const a = { ...base, logs: left };
+    const b = { ...base, logs: right };
+    const d = differences(a, b);
+    ok(`the comparator finds a difference the rendering cannot show: ${label}`, !d.includes("logs") && d.includes("log shapes"), {
+      rendered: [j(left), j(right)],
+      shapes: [shapes(left), shapes(right)],
+      differences: d,
+    });
+  };
+  shapeOnly("absence against a literal null", [[undefined]], [[null]]);
+  shapeOnly("absence against a live closure, which is the hazard the log rule exists for", [[undefined]], [[(x: number) => x]]);
+  shapeOnly("absence against NaN", [[undefined]], [[Number.NaN]]);
+  shapeOnly("NaN against Infinity", [[Number.NaN]], [[Number.POSITIVE_INFINITY]]);
+  shapeOnly("an empty record against one carrying a function", [[{}]], [[{ g: (x: number) => x }]]);
+  // AND THE NEGATIVE HALF: the shape leg must not report a difference where there is none, or it
+  // would red every row in the suite and mean nothing.
+  ok("and reports no shape difference between two arms that logged the same values", !differences({ ...base, logs: [[1, "a", null]] }, { ...base, logs: [[1, "a", null]] }).includes("log shapes"));
 }
 
 // ---- what a ruling made different, on purpose ----------------------------------------------------
@@ -474,23 +543,23 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // everywhere else and rebuilding a wart for fidelity is not a goal. Filed as issue 646 — and
   // when it lands the walker starts refusing, these cells red, and the divergence is retired here
   // rather than remembered.
-  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, "logs [[null]]", "L4018"],
-  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, "logs [[6]]", "L4018"],
+  ["ruling 1c / issue 646: an update's operand is a record", "const o = { c: {} }; o.c++; log(o.c);", {}, 'logs [[null]] shapes [["NaN"]]', "L4018"],
+  ["ruling 1c / issue 646: an update's operand is a numeric string", 'let n = "5"; n++; log(n);', {}, 'logs [[6]] shapes [["number"]]', "L4018"],
   // Ruling 1c's second declared divergence, issue 647: `len` of a PROGRAM-DEFINED function. Neither
   // number is the program's arity — each arm reports the arity of its own closure wrapper, the
   // walker's `(frame, args)` pair and the engine's rest parameter — which the cell below measures
   // rather than asserts. Pinned to both answers, so whichever way the issue is settled this reds.
-  ["ruling 1c / issue 647: `len` of a program function", "log(len((x) => x));", {}, "logs [[2]]", "logs [[0]]"],
-  ["ruling 1c / issue 647: `len` of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, "logs [[2]]", "logs [[0]]"],
+  ["ruling 1c / issue 647: `len` of a program function", "log(len((x) => x));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
+  ["ruling 1c / issue 647: `len` of a hoisted function declaration", "function f(a, b) { return a; } log(len(f));", {}, 'logs [[2]] shapes [["number"]]', 'logs [[0]] shapes [["number"]]'],
   // THE VALUE LAW THROUGH `set`, measured on both arms each in its own process. Writing a callable
   // `then` onto a record COMPLETES on the walker - it has no gate on the way in - where the engine
   // refuses L4018 at `set`, because a record that can be awaited is the class this language refuses
   // to mint. Ruling 1a quarantined the programs that KILL the walker; these do not, so they are
   // comparable and belong here. Both spellings, plain and computed, because the member key is the
   // one thing a reader would expect to change the answer and it does not.
-  ["the value law through `set`: a callable then, written plainly", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
-  ["the value law through `set`: a callable then, written computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, 'logs [["after"]]', "L4018"],
-  ["the value law through `set`: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, "logs []", "L4018"],
+  ["the value law through `set`: a callable then, written plainly", 'const o = {}; o.then = (r) => { r(1); }; log("after");', {}, 'logs [["after"]] shapes [["string"]]', "L4018"],
+  ["the value law through `set`: a callable then, written computed", 'const o = {}; const k = "then"; o[k] = (r) => { r(1); }; log("after");', {}, 'logs [["after"]] shapes [["string"]]', "L4018"],
+  ["the value law through `set`: a callable then and nothing after it", "const o = {}; o.then = (r) => { r(1); };", {}, 'logs [] shapes []', "L4018"],
   // A LOG LINE IS DATA ON THE ENGINE: its log sink refuses a function anywhere inside a logged value,
   // L4016 naming the value and the path, before the line reaches any transport (the worker cannot
   // even clone one - measured, it died on a host DataCloneError with the emitted module body in the
@@ -500,9 +569,9 @@ const DIVERGENT: readonly (readonly [string, string, object, string, string])[] 
   // the engine, declared here with both answers - the walker's is what the comparator's JSON view
   // makes of a live closure. Three doors: the value itself, a function nested in a record, and a
   // namespace, which is a record of them.
-  ["a log line is data on the engine: a function value", "log((x) => x);", {}, "logs [[null]]", "L4016"],
-  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]]', "L4016"],
-  ["a log line is data on the engine: a namespace", "log(json);", {}, "logs [[{}]]", "L4016"],
+  ["a log line is data on the engine: a function value", "log((x) => x);", {}, 'logs [[null]] shapes [["function"]]', "L4016"],
+  ["a log line is data on the engine: a record carrying a function", 'log("v", { g: (x) => x });', {}, 'logs [["v",{}]] shapes [["string","object+function"]]', "L4016"],
+  ["a log line is data on the engine: a namespace", "log(json);", {}, 'logs [[{}]] shapes [["object+function"]]', "L4016"],
 ];
 
 {
