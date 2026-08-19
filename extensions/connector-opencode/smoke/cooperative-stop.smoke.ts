@@ -118,6 +118,7 @@ let resumeProbe: ReturnType<typeof spawn> | undefined;
 let carryProbe: ReturnType<typeof spawn> | undefined;
 let throwProbe: ReturnType<typeof spawn> | undefined;
 let collideProbe: ReturnType<typeof spawn> | undefined;
+let busyProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -151,11 +152,13 @@ try {
   const ottoUid = mintLifecycleUid(); // one lifecycle uid per agent (SPEC §13.1) — provision + launch env + child endpoint
   const watchUid = mintLifecycleUid();
   const ottoCreds = await provisionAgent(mgr, auth, ottoId, { ...acl, role: "worker", lifecycleUid: ottoUid });
-  // The watcher also needs `collide`, the history-free channel the ninth seat uses; it is the only
-  // publisher there.
+  // The watcher also needs `collide` and `busywake`, the history-free channels the ninth and tenth
+  // seats use; it is the only publisher on both.
   const watchCreds = await provisionAgent(mgr, auth, watchId, {
     ...acl, role: "watcher", lifecycleUid: watchUid,
-    subscribe: ["general", "collide"], allowSubscribe: ["general", "collide"], allowPublish: ["general", "collide"],
+    subscribe: ["general", "collide", "busywake"],
+    allowSubscribe: ["general", "collide", "busywake"],
+    allowPublish: ["general", "collide", "busywake"],
   });
 
   // The watcher endpoint observes Otto's presence (the proof of a clean leave).
@@ -168,7 +171,7 @@ try {
     // `general`, whose backlog is replayed to each newcomer and DRIVES A BATCH TURN before anything
     // the cell sends; that batch was the drive that parked, so the cell graded the batch path and
     // discriminated nothing. A fresh channel makes the cell's own mention the first drive.
-    channels: ["general", "collide"],
+    channels: ["general", "collide", "busywake"],
     lifecycleUid: watchUid,
     heartbeatMs: 500,
     ttlMs: 30_000,
@@ -1075,6 +1078,106 @@ try {
   await sendShutdown(collideSpec.control!.path, collideSpec.control!.token);
   await awaitExit(collideProbe, 15_000);
 
+  // ---- A WAKE THAT NEVER REACHES `drive` AT ALL. Every cell above grades a nudge that got INTO
+  // `drive` and then had to survive an exit. This one grades the call site: the `mention-wake`
+  // handler refuses to call `drive` while a turn is open, so the nudge is dropped before the slot
+  // that was built to hold it is ever offered the value.
+  //
+  // WHY THE SAME GUARD IS RIGHT ONE HANDLER ABOVE AND WRONG HERE, because that symmetry is what put
+  // it there: `incoming` may return on `busy` because the body is BUFFERED: it sits in the inbox
+  // and the next drive peeks it, so nothing is lost by not driving now. A focus @mention is acked
+  // and dropped at ingest, so the nudge is the only copy that this process will ever hold; refusing
+  // to drive does not defer it, it destroys it. `completeTurn` then sees `pendingForWake() === 0`
+  // and no parked override, so no later drive carries it and no pull is ever triggered.
+  //
+  // GRADED ON THE NUDGE, NOT THE TURN COUNT. The seat is made busy by a DM, which is itself a
+  // submission, so a total-prompt assertion would be satisfied by the DM alone. Only a line naming
+  // the mention proves the wake reached a submission.
+  const bwId = newIdentity();
+  const bwUid = mintLifecycleUid();
+  const bwCreds = await provisionAgent(mgr, auth, bwId, {
+    ...acl, role: "worker", lifecycleUid: bwUid,
+    subscribe: ["busywake"], allowSubscribe: ["busywake"], allowPublish: ["busywake"],
+  });
+  const bwCredsFile = join(dir, "busywake.creds");
+  writeFileSync(bwCredsFile, bwCreds);
+  const busySpec = opencodeConnector.buildLaunch({
+    space, name: "Bram", role: "worker", id: bwId.id, lifecycleUid: bwUid, creds: bwCredsFile,
+    servers: SERVERS, subscribe: ["busywake"], allowSubscribe: ["busywake"], allowPublish: ["busywake"],
+  });
+  const bwPrompts = join(dir, "busywake-prompts");
+  const bwFocus = join(dir, "busywake-in-focus");
+  const bwIdle = join(dir, "busywake-idle");
+  mkdirSync(join(dir, "ws-busywake"), { recursive: true });
+  busyProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...busySpec.env,
+      COTAL_EVENTS: "1",
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-busywake"),
+      COOP_PROMPTS: bwPrompts,
+      COOP_FOCUS: "1",
+      COOP_FOCUS_READY: bwFocus,
+      COOP_IDLE: bwIdle,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  let bramLive = false;
+  // The DM below is addressed to the id PRESENCE reports, not to the identity we minted: a unicast
+  // recipient is the principal dot-form `<owner>.<actor>`, which the launched connector composes.
+  let bramAddr = "";
+  for (let i = 0; i < 100 && !bramLive; i++) {
+    await wait(100);
+    const b = watcher.getRoster().find((p) => p.card.name === "Bram");
+    bramLive = b !== undefined && b.status !== "offline";
+    if (b) bramAddr = b.card.id;
+  }
+  check("busy-seat: the tenth seat came online, so this leg grades a live one", bramLive);
+  let bramFocused = false;
+  for (let i = 0; i < 80 && !bramFocused; i++) {
+    await wait(100);
+    bramFocused = existsSync(bwFocus);
+  }
+  check("busy-seat: the seat is in focus, so an @mention becomes a wake with no inbox entry behind it",
+    bramFocused, { bwFocus });
+
+  const bwLines = (): string[] =>
+    existsSync(bwPrompts) ? readFileSync(bwPrompts, "utf8").split("\n").filter(Boolean) : [];
+  const bwNudges = (): number => bwLines().filter((l) => /You were mentioned by/.test(l)).length;
+
+  // OPEN A REAL TURN. `session.idle` is gated on a file, so the turn this DM starts stays open and
+  // the seat is genuinely `busy`, not merely parked in a guard, when the mention arrives.
+  await watcher.unicast(bramAddr, "first, an ordinary direct message that opens a turn");
+  let turnOpen = false;
+  for (let i = 0; i < 150 && !turnOpen; i++) {
+    await wait(100);
+    turnOpen = bwLines().length >= 1;
+  }
+  check("busy-seat: the DM was submitted, so a turn is open and the seat is busy", turnOpen,
+    { lines: bwLines().length });
+
+  // THE MENTION LANDS MID-TURN. Ingest acks and drops the body, emits `mention-wake`, and returns.
+  await watcher.multicast("@Bram this names you while your turn is open", {
+    channel: "busywake", mentions: ["Bram"],
+  });
+  await wait(1500);
+  check("busy-seat: nothing was submitted while the turn was still open, which both trees agree on",
+    bwNudges() === 0, { nudges: bwNudges() });
+
+  // END THE TURN. This is the sole turn-end site and it drives whatever is pending. With the wake
+  // dropped at the handler there is nothing pending to drive and the seat never learns it was
+  // mentioned; with the wake handed to `drive` it was parked in the slot and is carried here.
+  writeFileSync(bwIdle, "go\n");
+  let woke = false;
+  for (let i = 0; i < 200 && !woke; i++) {
+    await wait(100);
+    woke = bwNudges() >= 1;
+  }
+  check("busy-seat: the wake that arrived mid-turn was held and driven once the turn ended", woke,
+    { nudges: bwNudges(), lines: bwLines().length });
+  await sendShutdown(busySpec.control!.path, busySpec.control!.token);
+  await awaitExit(busyProbe, 15_000);
+
   // ---- REFUSED IS NOT THE SAME AS DROPPED, and the cell above cannot tell them apart: not
   // submitting and losing the input are both zero prompts. The refusal returns before `peekInbox`
   // runs and before `surfaced` is assigned, so nothing is consumed and a later wake in the SAME
@@ -1101,6 +1204,7 @@ try {
     if (carryProbe && carryProbe.exitCode === null) carryProbe.kill("SIGKILL");
     if (throwProbe && throwProbe.exitCode === null) throwProbe.kill("SIGKILL");
     if (collideProbe && collideProbe.exitCode === null) collideProbe.kill("SIGKILL");
+    if (busyProbe && busyProbe.exitCode === null) busyProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }

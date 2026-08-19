@@ -293,6 +293,13 @@
       "find": "      if (tookFromSlot && overrideSeq === carriedSeq) pendingOverride = undefined;",
       "replace": "      if (carried !== undefined) pendingOverride = undefined;",
       "expectRed": "collide-seat: the nudge parked by the second caller survived the first caller's clear and was driven"
+    },
+    {
+      "name": "C23 the mention-wake handler goes back to refusing to drive while a turn is open, which is the guard the incoming handler above it legitimately uses; there the body is buffered in the inbox so declining defers the work, but a focus mention's body was acked and dropped at ingest, so the nudge is the only copy and declining destroys it",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? \"?\"} — read it with cotal_inbox.`);",
+      "replace": "    if (!busy) void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? \"?\"} — read it with cotal_inbox.`);",
+      "expectRed": "busy-seat: the wake that arrived mid-turn was held and driven once the turn ended"
     }
   ]
 }

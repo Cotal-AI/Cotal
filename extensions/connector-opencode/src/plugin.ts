@@ -262,14 +262,22 @@ export const cotal: Plugin = async () => {
   /** A wake nudge that has been handed to `drive` and not yet submitted. A focus @mention is
    *  acked-and-dropped at ingest, so it is not in the inbox and `pendingForWake()` does not count
    *  it; the nudge string exists only in the call that carries it. What is lost when that call
-   *  returns early is therefore the WAKE, not the message, whose body stays recallable through
-   *  `cotal_inbox`. The seat simply never learns to go and look. Held here for the same reason the
-   *  boot text is held: an early return must cost a retry, not the wake.
+   *  returns early is therefore the WAKE, and on a channel that permits replay the message itself
+   *  stays recallable through `cotal_inbox`, and the seat simply never learns to look. Held here
+   *  for the same reason the boot text is held: an early return must cost a retry, not the wake.
    *
    *  ONE SLOT, AND THAT IS THE DESIGN RATHER THAN A LIMIT WORTH APOLOGISING FOR. A later nudge
    *  overwrites an earlier one here, and nothing is lost by that: the nudge names the SENDER and not
    *  the message, so two @mentions from one sender are byte-identical, and the bodies are recovered
-   *  by the seat's own inbox pull from the server frontier rather than carried in this string. What
+   *  by the seat's own inbox pull from the server frontier rather than carried in this string.
+   *
+   *  THE LIMIT OF THAT ARGUMENT, stated because it is easy to over-read. Recovery is the CHANNEL'S
+   *  to give: `recallChannel` honours the per-channel replay gate, so on a `replay=off` channel it
+   *  returns nothing and the dropped body is gone whatever this slot does. That is deliberate:
+   *  focus must not become a history bypass for a channel that denies replay to everyone else, and
+   *  it is not a gap this connector may close, because buffering the body here IS that bypass. On
+   *  such a channel a wake can only tell the seat it was mentioned. What the slot owes is unchanged
+   *  and is all it ever owed: deliver the wake. What
    *  must never happen is the slot reaching EMPTY while a caller's wake is still owed, because then
    *  no pull is ever triggered. The invariant is that at least one wake survives to fire, not that
    *  every wake is preserved. */
@@ -769,9 +777,10 @@ export const cotal: Plugin = async () => {
       // handed its own `override` never took the slot at all and so may not clear it either.
       //
       // ONE SLOT IS DELIBERATE, NOT AN OVERSIGHT. A wake is not content: an @mention in focus is
-      // acked at ingest and stays recallable, so any single wake that fires makes the seat pull its
-      // inbox and recover every held message. Collapsing several wakes into one therefore loses
-      // nothing a seat can observe, while erasing the LAST one loses the pull entirely. The
+      // acked at ingest, and where the channel permits replay it stays recallable, so any single
+      // wake that fires makes the seat pull its inbox and recover the messages that channel will
+      // give back. Collapsing several wakes into one therefore loses nothing a seat could otherwise
+      // have observed, while erasing the LAST one loses the pull entirely. The
       // invariant is that at least one wake survives to fire, which this predicate gives; a queue
       // would preserve duplicates of an identical hint and buy nothing.
       if (tookFromSlot && overrideSeq === carriedSeq) pendingOverride = undefined;
@@ -896,7 +905,16 @@ export const cotal: Plugin = async () => {
   });
   agent.on("mention-wake", (item: InboxItem) => {
     // Focus: the @mention body was acked-and-dropped at ingest — wake a turn to PULL it (recall).
-    if (!busy) void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`);
+    //
+    // NO `busy` GUARD HERE, and its absence is the point rather than an omission. The handler above
+    // may return on `busy` because an `incoming` body is BUFFERED: it sits in the inbox and the next
+    // drive peeks it, so declining to drive now defers the work. This wake has nothing behind it:
+    // the body was acked and dropped at ingest, so the nudge is the only copy this process will ever
+    // hold, and returning here does not defer it, it destroys it. `completeTurn` would then see
+    // `pendingForWake() === 0` and no parked override, so no later drive carries it and the seat is
+    // never told to look. Handing it to `drive` unconditionally is what makes the guard cost a
+    // retry instead of the wake: a refused call parks it in the slot and the next turn end drives it.
+    void drive(`📨 You were mentioned by ${fmtFrom(item)} on #${item.channel ?? "?"} — read it with cotal_inbox.`);
   });
   agent.on("wake", () => {
     if (!busy) void drive();

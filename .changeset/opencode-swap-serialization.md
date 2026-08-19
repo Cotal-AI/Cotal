@@ -82,13 +82,25 @@ generation rather than by value, because the nudge names the sender and not the 
 mentions from one sender are byte identical and comparing them would report "still mine" about
 someone else's input.
 
+A wake could also be destroyed before it ever reached that slot. The handler for an @mention in
+focus declined to ask for a turn while one was already running, which is the right thing to do one
+handler above it, where the message is buffered in the inbox and the next turn picks it up. This
+one has nothing buffered behind it: the body is acked and dropped as it arrives, so the nudge is
+the only copy, and declining did not defer it, it discarded it. The turn then ended, found nothing
+pending, and the seat was never told it had been mentioned at all. That wake is now handed over
+whatever the seat is doing, so a busy seat parks it and drives it when the turn ends.
+
 What that does and does not promise, stated narrowly on purpose. It does NOT prevent message loss:
-an @mention in focus is acked at ingest and its body stays recallable from the server, so the
-content was never riding on the wake. What it prevents is a caller's wake being erased by an
-unrelated call's clear. One slot is the design rather than a limit: a later wake overwriting an
-earlier one costs nothing, because any single wake that fires makes the seat pull its inbox and
-recover every held message, while emptying the slot entirely means no pull is ever triggered. The
-invariant is that at least one wake survives to fire, not that every wake is kept.
+an @mention in focus is acked at ingest, and where the channel permits replay its body stays
+recallable from the server, so the content was never riding on the wake. Where a channel denies
+replay, the body is gone by that channel's own policy and no wake can bring it back; the connector
+deliberately does not buffer it, because doing so would hand a seat in focus history that the
+channel refuses to everyone else. What this prevents is a caller's wake being erased, whether by an
+unrelated call's clear or by a handler that never passed it on. One slot is the design rather than
+a limit: a later wake overwriting an earlier one costs nothing, because any single wake that fires
+makes the seat pull its inbox and recover whatever that channel will give back, while emptying the
+slot entirely means no pull is ever triggered. The invariant is that at least one wake survives to
+fire, not that every wake is kept.
 
 Departure is also ordered behind the work the seat has already admitted, for as long as a short
 bound allows. A presence write is not atomic, so a call admitted before the stop could be parked
