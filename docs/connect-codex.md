@@ -207,12 +207,16 @@ Eight things are specific to Codex and worth knowing before you read a stream:
   either case.
 
   And the reader set is a requirement rather than a guarantee, which is the last thing to say
-  plainly. The grant does not enforce it. A spawn gives a seat permission to PUBLISH its own event
-  channel and nothing else, and is refused outright if it names another agent's. Who may READ that
-  channel is minted separately and out of band (`cotal actor grant` in user mode, `cotal mint
-  --profile agent --allow-subscribe` in open mode), so holding the events readers to at least the
-  width of every channel the seat's tools can read is the operator's policy to keep, enforced by
-  whoever mints those readers.
+  plainly. The grant does not enforce it, and it is worth being exact about what does. A spawn
+  through the manager gives a seat publish rights on its own event channel and nothing else, and a
+  spawn whose grant names a different agent's event channel is refused at the door. That fence is
+  the manager's, it reads the concrete form and leaves a pattern such as `events.<owner>.>` to
+  ordinary ACL authority, and a foreground `cotal spawn` on your own machine grants whatever you
+  name because it mints from your own signing material. [connect-claude.md](connect-claude.md#event-plane)
+  spells all three out. Who may READ a plane is minted separately and out of band either way, with
+  `cotal actor grant` on a user-auth mesh and `cotal mint --profile agent --allow-subscribe` on a
+  static one. So holding the events readers to at least the width of every channel the seat's tools
+  can read is the operator's policy to keep, enforced by whoever mints those readers.
 - **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
   every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
 

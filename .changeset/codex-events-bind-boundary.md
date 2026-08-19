@@ -43,10 +43,12 @@ records reach the stream: what the thread appended between the bind and the emit
 used to land behind the cursor and be dropped, and it is published now. A whole turn can sit in
 that window, tool results included, so the carrier above covers a stretch of the session it
 previously lost. The reader set that follows from all this is a requirement and not a guarantee:
-the grant does not enforce it. A spawn gives a seat permission to publish its own event channel and
-nothing else and is refused if it names another agent's, and read access is minted separately and
-out of band, so holding the events readers to at least the width of every channel the seat's tools
-can read is the operator's policy to keep. Nothing is sent twice in either case. A seat launched
+the grant does not enforce it. A spawn through the manager gives a seat publish rights on its own
+event channel and nothing else and a spawn naming a different agent's is refused at the door, but
+that fence is the manager's, it reads the concrete form rather than a pattern, and a foreground
+spawn on your own machine grants whatever you name. Read access is minted separately and out of
+band either way, so holding the events readers to at least the width of every channel the seat's
+tools can read is the operator's policy to keep. Nothing is sent twice in either case. A seat launched
 without the event plane armed is unaffected.
 
 The window above is now graded rather than argued. A test-only setting widens the emitter's setup
