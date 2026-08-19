@@ -53,11 +53,11 @@
     {
       "name": "a NAMESPACE MERGE is added to an exported function and the declaration does not follow",
       "file": "bin/smoke/reap-smoke-brokers.mjs",
-      "find": "export function reportReaped(label, result) {",
-      "replace": "reportReaped.version = \"1\";\nexport function reportReaped(label, result) {",
+      "find": "  for (const { pid, args } of result.reaped) console.log(`  [reaper]   killed pid ${pid}: ${args.slice(0, 120)}`);\n}",
+      "replace": "  for (const { pid, args } of result.reaped) console.log(`  [reaper]   killed pid ${pid}: ${args.slice(0, 120)}`);\n}\nreportReaped.version = \"1\";",
       "expectRed": "the committed declaration is what the compiler emits from the module",
       "cell": "the committed declaration is what the compiler emits from the module",
-      "note": "The third form. A merged member reads as declared and resolves to undefined at runtime, which is the failure a declaration is supposed to prevent. The expando sits ABOVE the declaration it merges into, which is legal because a function declaration is hoisted, and the anchor is that declaration's own signature line rather than the prose above it: a `find` that spans a comment is disarmed by anyone tidying the comment, and smoke:mutation-fixtures refuses one."
+      "note": "The third form. A merged member reads as declared and resolves to undefined at runtime, which is the failure a declaration is supposed to prevent. The expando now sits BELOW the function it merges into, and where it sits is the whole point: anchored on the signature line, the inserted statement landed between the JSDoc block and the declaration, the JSDoc re-attached to the expando, the function lost its @param types, and the generator threw an implicit-any BEFORE the emitted bytes were ever compared. The cell went red, but on @ts-check catching a detached comment, which mutation 7 already covers. It was a mislabeled duplicate that never reached the property its name claims. Anchored on the last line of the body plus the closing brace, the JSDoc stays attached, the emit gains `export namespace reportReaped { let version: string; }`, and the cell reds on the byte comparison, naming the first differing byte. The find is still code only, because a find that spans a comment is disarmed by anyone tidying the comment and smoke:mutation-fixtures refuses one."
     },
     {
       "name": "a field's TYPE drifts in the module while its name stays",
