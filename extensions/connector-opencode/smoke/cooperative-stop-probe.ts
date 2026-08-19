@@ -123,6 +123,13 @@ const focusReady = process.env.COOP_FOCUS_READY?.trim() || undefined;
 // submitted by a drive that crossed the guard before the stop and resumed after it.
 const holdSession = process.env.COOP_HOLD_SESSION?.trim() || undefined;
 const holdRelease = process.env.COOP_HOLD_RELEASE?.trim() || undefined;
+// THE THROW SEAT. A submission can fail at the server rather than be refused before it, and that
+// exit leaves `drive` through the catch instead of a return. While this file exists the submission
+// is rejected, so the parent can put a real wake nudge into that exit and then take the rejection
+// away again. Rejected attempts are recorded SEPARATELY: `COOP_PROMPTS` keeps its meaning of turns
+// the server accepted, so "the nudge was submitted" cannot be satisfied by the attempt that failed.
+const failPrompt = process.env.COOP_FAIL_PROMPT?.trim() || undefined;
+const failedPrompts = process.env.COOP_PROMPTS_FAILED?.trim() || undefined;
 let drainReads = 0;
 const oc = createServer((req, res) => {
   if (req.headers.authorization !== auth) {
@@ -171,11 +178,14 @@ const oc = createServer((req, res) => {
   if (req.method === "POST" && /\/prompt_async$/.test(req.url ?? "")) {
     // The BODY as well as the url. A count answers "did a turn start"; only the text answers "which
     // input was carried", and the nudge cell below is about a specific one surviving.
-    if (prompts) {
-      const body = raw ? (JSON.parse(raw) as { parts?: { text?: string }[] }) : {};
-      const said = (body.parts ?? []).map((p) => p.text ?? "").join(" ").replace(/\s+/g, " ").slice(0, 300);
-      appendFileSync(prompts, `${req.url} :: ${said}\n`);
+    const body = raw ? (JSON.parse(raw) as { parts?: { text?: string }[] }) : {};
+    const said = (body.parts ?? []).map((p) => p.text ?? "").join(" ").replace(/\s+/g, " ").slice(0, 300);
+    if (failPrompt && existsSync(failPrompt)) {
+      if (failedPrompts) appendFileSync(failedPrompts, `${req.url} :: ${said}\n`);
+      res.writeHead(500, { "content-type": "application/json" }).end('{"error":"submission rejected"}');
+      return;
     }
+    if (prompts) appendFileSync(prompts, `${req.url} :: ${said}\n`);
     if (violation && inCutover) writeFileSync(violation, `a turn was started mid-cutover: ${req.url}\n`);
     res.writeHead(200, { "content-type": "application/json" }).end("{}");
     return;

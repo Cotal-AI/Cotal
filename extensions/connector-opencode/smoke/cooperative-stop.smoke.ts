@@ -116,6 +116,7 @@ let mirrorProbe: ReturnType<typeof spawn> | undefined;
 let interiorProbe: ReturnType<typeof spawn> | undefined;
 let resumeProbe: ReturnType<typeof spawn> | undefined;
 let carryProbe: ReturnType<typeof spawn> | undefined;
+let throwProbe: ReturnType<typeof spawn> | undefined;
 
 try {
   let up = false;
@@ -846,6 +847,94 @@ try {
   await sendShutdown(carrySpec.control!.path, carrySpec.control!.token);
   await awaitExit(carryProbe, 15_000);
 
+  // ---- AN EIGHTH SEAT: THE EXIT THAT IS NOT A RETURN.
+  //
+  // Every cell above leaves `drive` through a guarded RETURN, where the input is put back by hand.
+  // A submission that FAILS leaves through the catch instead, and that path had no such line. The
+  // input is only in `pendingOverride` when it was already parked there; a wake nudge arrives as the
+  // PARAMETER, and `pendingOverride` is cleared only once a submission lands, so on this exit there
+  // was nothing holding it. `scheduleErrorRetry` then reads `workPending()`, which for a focus
+  // @mention is false on all three sources: no boot text, nothing parked, and no inbox entry because
+  // the body was acked-and-dropped at ingest. So the wake is not retried and not recallable, and the
+  // seat is never told to go and look. The comment on the submission claimed the opposite in words.
+  const thId = newIdentity();
+  const thUid = mintLifecycleUid();
+  const thCreds = await provisionAgent(mgr, auth, thId, { ...acl, role: "worker", lifecycleUid: thUid });
+  const thCredsFile = join(dir, "throw.creds");
+  writeFileSync(thCredsFile, thCreds);
+  const throwSpec = opencodeConnector.buildLaunch({
+    space, name: "Thea", role: "worker", id: thId.id, lifecycleUid: thUid, creds: thCredsFile,
+    servers: SERVERS, subscribe: ["general"], allowSubscribe: ["general"], allowPublish: ["general"],
+  });
+  const throwPrompts = join(dir, "throw-prompts");
+  const throwFailed = join(dir, "throw-prompts-failed");
+  const throwFail = join(dir, "throw-reject-submissions");
+  const throwFocus = join(dir, "throw-in-focus");
+  mkdirSync(join(dir, "ws-throw"), { recursive: true });
+  // ARMED BEFORE THE SEAT IS EVEN UP, so there is no window in which the mention could land on a
+  // healthy server and make the failure optional.
+  writeFileSync(throwFail, "submissions are rejected while this file exists\n");
+  throwProbe = spawn(process.execPath, ["--import", "tsx", PROBE], {
+    env: {
+      ...HOST_ENV,
+      ...throwSpec.env,
+      COTAL_EVENTS: "1",
+      COTAL_WORKSPACE_ROOT: join(dir, "ws-throw"),
+      COOP_PROMPTS: throwPrompts,
+      COOP_PROMPTS_FAILED: throwFailed,
+      COOP_FAIL_PROMPT: throwFail,
+      COOP_FOCUS: "1",
+      COOP_FOCUS_READY: throwFocus,
+    },
+    stdio: ["ignore", "inherit", "inherit"],
+  });
+  let theaLive = false;
+  for (let i = 0; i < 100 && !theaLive; i++) {
+    await wait(100);
+    const t = watcher.getRoster().find((p) => p.card.name === "Thea");
+    theaLive = t !== undefined && t.status !== "offline";
+  }
+  check("throw-seat: the eighth seat came online, so this leg grades a live one", theaLive);
+  // SAME PRECONDITION AS THE CARRY SEAT, and for the same reason: outside focus the @mention is an
+  // ordinary inbox item, `workPending()` sees it, and the retry the defect suppresses would fire.
+  let theaFocused = false;
+  for (let i = 0; i < 80 && !theaFocused; i++) {
+    await wait(100);
+    theaFocused = existsSync(throwFocus);
+  }
+  check("throw-seat: the seat is in focus, so an @mention becomes a wake with no inbox entry behind it",
+    theaFocused, { throwFocus });
+
+  await watcher.multicast("@Thea you were named while submissions were failing", {
+    channel: "general",
+    mentions: ["Thea"],
+  });
+
+  // THE PRECONDITION IS ITS OWN GRADED CELL. Without it, "the nudge never arrived" and "the nudge
+  // arrived and was lost" are the same silence, and the leg below would pass on a seat that was
+  // never woken at all. This asserts the wake really did reach the submission and really was
+  // rejected there, which is the exit under test.
+  let rejected = false;
+  for (let i = 0; i < 150 && !rejected; i++) {
+    await wait(100);
+    rejected = existsSync(throwFailed) && /mentioned by/i.test(readFileSync(throwFailed, "utf8"));
+  }
+  check("throw-seat: the wake nudge did reach a submission, and that submission was rejected",
+    rejected, { throwFailed, body: existsSync(throwFailed) ? readFileSync(throwFailed, "utf8").slice(0, 300) : "" });
+
+  // The server is healthy again. Nothing else is sent: if the nudge reappears it is because the
+  // connector still held it, and if it does not, it was destroyed by the exit rather than deferred.
+  rmSync(throwFail, { force: true });
+  let retried = false;
+  for (let i = 0; i < 200 && !retried; i++) {
+    await wait(100);
+    retried = existsSync(throwPrompts) && /mentioned by/i.test(readFileSync(throwPrompts, "utf8"));
+  }
+  check("throw-seat: the wake nudge lost to a failed submission was held, and delivered once submissions worked",
+    retried, { throwPrompts, accepted: existsSync(throwPrompts) ? readFileSync(throwPrompts, "utf8").slice(0, 400) : "" });
+  await sendShutdown(throwSpec.control!.path, throwSpec.control!.token);
+  await awaitExit(throwProbe, 15_000);
+
   // ---- REFUSED IS NOT THE SAME AS DROPPED, and the cell above cannot tell them apart: not
   // submitting and losing the input are both zero prompts. The refusal returns before `peekInbox`
   // runs and before `surfaced` is assigned, so nothing is consumed and a later wake in the SAME
@@ -870,6 +959,7 @@ try {
     if (interiorProbe && interiorProbe.exitCode === null) interiorProbe.kill("SIGKILL");
     if (resumeProbe && resumeProbe.exitCode === null) resumeProbe.kill("SIGKILL");
     if (carryProbe && carryProbe.exitCode === null) carryProbe.kill("SIGKILL");
+    if (throwProbe && throwProbe.exitCode === null) throwProbe.kill("SIGKILL");
   } catch {
     /* ignore */
   }

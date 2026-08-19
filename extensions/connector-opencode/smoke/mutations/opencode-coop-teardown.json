@@ -199,7 +199,7 @@
     {
       "name": "C9 the tool map stops refusing, so a cotal_* call still inside the model's turn runs after the stop and its presence write puts the seat back on the mesh",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "find": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
       "replace": "            await track(def.execute(...args)),\n",
       "expectRed": "nothing admitted after teardown began put the seat back on the mesh"
     },
@@ -220,8 +220,8 @@
     {
       "name": "C12 the tool path stops being tracked, which the hook path cannot stand in for because a tool reaches the agent without passing through the plugin's presence helper",
       "file": "extensions/connector-opencode/src/plugin.ts",
-      "find": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
-      "replace": "            stopping ? `\u26a0 ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
+      "find": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await track(def.execute(...args)),\n",
+      "replace": "            stopping ? `⚠ ${name} was not run: this seat is shutting down` : await def.execute(...args),\n",
       "expectRed": "tool-seat: departure was still unpublished while admitted work was in flight"
     },
     {
@@ -279,6 +279,13 @@
       "find": "    if (phaseClosed() || driving || busy) {\n      if (override !== undefined) pendingOverride = override;\n      return;\n    }\n",
       "replace": "    if (phaseClosed() || driving || busy) return;\n",
       "expectRed": "carry-seat: the wake nudge refused mid-cutover was held, and delivered once the cutover closed"
+    },
+    {
+      "name": "C21 a submission that fails leaves drive through the catch without putting back what the call was carrying, so a wake nudge held only in the parameter is destroyed by the failure and the error retry has nothing to carry",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "      pendingOverride = carried;\n      log(`drive failed: ${(e as Error).message}`);\n",
+      "replace": "      log(`drive failed: ${(e as Error).message}`);\n",
+      "expectRed": "throw-seat: the wake nudge lost to a failed submission was held, and delivered once submissions worked"
     }
   ]
 }

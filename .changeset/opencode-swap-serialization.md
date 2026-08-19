@@ -61,6 +61,16 @@ back on the mesh it had just left, and a tool call already inside the model's tu
 know a stop was running. A refused tool call says so rather than returning nothing, because its
 caller is waiting on a result and silence would read as a hang.
 
+The same loss had one more door, and that one is a failure rather than a refusal. Every refusal
+above leaves the drive through a guarded return, where the input it was carrying is put back by
+hand. A submission the host rejects leaves through the error path instead, and that path put nothing
+back. It looked safe only because most inputs are parked somewhere else already: the wake for an
+@mention in focus is not, because its body is acked at ingest and stays recallable while the wake
+itself lives only in the string handed to that one drive. So a rejected submission destroyed the
+wake, and the retry that exists for exactly this case then saw no pending work and did not run,
+leaving a seat that was never told to go and look. The error path now parks its input like every
+other exit, so a failed submission costs a retry rather than the wake.
+
 Departure is also ordered behind the work the seat has already admitted, for as long as a short
 bound allows. A presence write is not atomic, so a call admitted before the stop could be parked
 mid-write while the teardown published offline, and then put the seat back to work after it had

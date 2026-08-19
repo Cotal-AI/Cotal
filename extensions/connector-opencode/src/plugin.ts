@@ -723,9 +723,11 @@ export const cotal: Plugin = async () => {
       // completeTurn bails unless armed — arming after would drop it and wedge the agent.
       awaitingTurnEnd = true;
       await opencodeApi(`/session/${encodeURIComponent(id)}/prompt_async`, { method: "POST", body: JSON.stringify(body) }, 10_000);
-      // CLEARED ONLY HERE, once the submission actually landed. On any earlier return, and on a
-      // throw into the catch below, the text is still set and still pending, so the next wake
-      // carries it rather than it being lost.
+      // CLEARED ONLY HERE, once the submission actually landed, so no earlier return can lose the
+      // text. That is a property of the returns, which each park it explicitly, and NOT something
+      // this line grants the throw path: a rejected submission leaves through the catch below, and
+      // for a nudge held only in the parameter there was nothing set to still be pending. The catch
+      // now parks it too, so the claim holds on every exit rather than on the returns alone.
       if (boot !== undefined) bootPrompt = undefined;
       if (carried !== undefined) pendingOverride = undefined;
       briefed = true;
@@ -734,6 +736,15 @@ export const cotal: Plugin = async () => {
       busy = false;
       surfaced = [];
       awaitingTurnEnd = false;
+      // THE EXIT THAT IS NOT A RETURN, and the one this was missing. Each guarded return above puts
+      // the input back by hand; a failed submission left through here and put nothing back. That was
+      // only survivable for an input already parked: a wake nudge arrives as the PARAMETER, and
+      // `pendingOverride` is cleared just below on success, so on this path there was nothing
+      // holding it. `scheduleErrorRetry` then read `workPending()` as false, because a focus
+      // @mention has no boot text, nothing parked, and no inbox entry (its body is acked-and-dropped
+      // at ingest), so the seat was never retried and never told to go and look. Parking it here is
+      // what makes the retry below have something to carry.
+      pendingOverride = carried;
       log(`drive failed: ${(e as Error).message}`);
       scheduleErrorRetry();
     } finally {
@@ -751,10 +762,12 @@ export const cotal: Plugin = async () => {
    *  plugin with the broker held down so the loop below parked. What this guard orders is the
    *  connector's own submissions against each other, not the host's against the connector's.
    *
-   *  `bootPrompt` is cleared in the same synchronous step that drives it, with nothing awaited in
-   *  between, so a later readiness event cannot issue a second boot turn, and the floor is released
-   *  even when there is no session to drive into. drive() itself never prompts into a running
-   *  turn. */
+   *  `bootPrompt` is NOT cleared here, and no longer in one synchronous step: `drive` clears it only
+   *  once the submission has landed, which is across an await. What still bounds it to a single
+   *  connector-submitted boot turn is `drive`'s own `driving` flag, which refuses a second entry
+   *  while the first is in flight, plus the clear on success. The floor is released even when there
+   *  is no session to drive into, by the early return below. drive() itself never prompts into a
+   *  running turn. */
   void (async () => {
     if (bootPrompt === undefined) return;
     const id = await sessionReady;
