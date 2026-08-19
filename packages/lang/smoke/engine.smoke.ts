@@ -217,9 +217,19 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
 
 {
   const h = harness();
+  // NOT `return h.ctx.born(...)`: with the gate dropped, returning the value out of this async
+  // boundary assimilates it, its `then` never settles, and the cell hangs instead of failing. The
+  // cell has to be able to report its own failure, which is what the mutation config grades.
   ok(
     "a literal with an own callable `then` refuses at birth",
-    codeOf(await caught(() => h.inFrame(() => h.ctx.born({ then: () => 1 })))) === "L4018",
+    codeOf(
+      await caught(() =>
+        h.inFrame(() => {
+          h.ctx.born({ then: () => 1 });
+          return undefined;
+        }),
+      ),
+    ) === "L4018",
   );
   // The boundary in the other direction: a NON-callable `then` is legal, and the walker settles it
   // clean. A gate that refused every own `then` would refuse a program the oracle accepts.
@@ -234,7 +244,8 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
         h.inFrame(() => {
           const f = (): number => 1;
           (f as unknown as Record<string, unknown>).then = (): number => 1;
-          return h.ctx.born(f);
+          h.ctx.born(f);
+          return undefined;
         }),
       ),
     ) === "L4018",
@@ -415,7 +426,16 @@ const codeOf = (e: unknown): string | undefined => (e as RuntimeFault | undefine
     // `json` is a builtin that is a RECORD, so the outward walk has to reach its members.
     const json = h.ctx.free("json") as Record<string, (...a: unknown[]) => Promise<unknown>>;
     ok("a record-shaped builtin hands out program-convention members", (await json.stringify({ b: 1, a: 2 })) === '{"a":2,"b":1}');
-    ok("and a member call through the seam agrees", (await h.ctx.call(h.ctx.free("json"), "stringify", [[1, 2]])) === "[1,2]");
+    // The outcome is CAPTURED rather than awaited into the expression, so a mutant that breaks the
+    // own-field call path fails THIS cell by name instead of throwing out of the block and killing
+    // the suite anonymously.
+    let viaSeam: unknown;
+    try {
+      viaSeam = await h.ctx.call(h.ctx.free("json"), "stringify", [[1, 2]]);
+    } catch (e) {
+      viaSeam = e;
+    }
+    ok("and a member call through the seam agrees", viaSeam === "[1,2]", String(viaSeam));
     return undefined;
   });
   ok("an unknown free name is L2001, never undefined", codeOf(await caught(() => h.inFrame(() => h.ctx.free("nope", [])))) === "L2001");
