@@ -481,6 +481,18 @@ const NUMBER_CALLS: Readonly<Record<string, string>> = {
       && JSON.stringify(await logsOf("log(map([1], (x) => x + 1));")) === "[[2]]"
       && JSON.stringify(await logsOf("log(sort([[2], [1]])[0]);")) === "[[1]]"
       && JSON.stringify(await logsOf("log(json.stringify({ a: 1 }));")) === '["{\\"a\\":1}"]');
+  // len counts exactly the kinds that have a length of their own (measured before the rule:
+  // len of a program function answered 2 whatever parameters it declared, the host arity of the
+  // interpreter's own wrapper; len of a builtin answered 0; len of a record, a number or a
+  // boolean silently answered undefined; len of null surfaced the host's TypeError text). The
+  // host's Function.length is a property of the runtime's closure, not a program value.
+  ok("len counts an array or a string and refuses every other kind with L4016, catchably, with no host text",
+    await logsOf("const f = (a, b, c) => a; log(len(f));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("a function"))
+      && await logsOf("const h = map; log(len(h));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && await logsOf("const o = { a: 1 }; log(len(o));").then(() => false, (e: Error) => e.message.startsWith("L4016") && e.message.includes("a record"))
+      && await logsOf("log(len(5));").then(() => false, (e: Error) => e.message.startsWith("L4016"))
+      && await logsOf("log(len(null));").then(() => false, (e: Error) => e.message.startsWith("L4016") && !e.message.includes("Cannot read properties"))
+      && JSON.stringify(await logsOf('try { log(len(true)); } catch (e) { log(e.code); } log(len([1, 2]), len("abc"));')) === '["L4016",[2,3]]');
   // A method is not a value: it is looked up at the call and exists nowhere else (measured before
   // the rule: `xs.map === xs.map` was false where JavaScript says true, and an extracted `push`
   // wrote to its receiver where strict JavaScript throws).

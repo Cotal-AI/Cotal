@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "len counts exactly the kinds that have a length of their own, an array or a string, and refuses every other kind with L4016 before the host is reached, so no host property (a function wrapper's arity, a record's missing length) is ever read as a program value.",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/len-domain.json",
+  "mutations": [
+    {
+      "name": "the kind check is dropped, so the host property is read again",
+      "file": "packages/lang/src/library.ts",
+      "find": "      const v = a[0];\n      if (Array.isArray(v) || typeof v === \"string\") return v.length;",
+      "replace": "      const v = a[0];\n      if (v !== null && v !== undefined) return (v as { length: number }).length;",
+      "expectRed": "len counts an array or a string and refuses every other kind with L4016",
+      "completionMarker": "ok and the declared container positions still take containers: no over-fence",
+      "cell": "len counts an array or a string and refuses every other kind with L4016, catchably, with no host text",
+      "note": "Under the mutant len of a program function resolves with the interpreter wrapper's host arity (2) instead of refusing, so the first conjunct runs clean where the cell expects L4016. null and undefined still throw inside the host read, so the guard's removal is isolated to the silent kinds."
+    },
+    {
+      "name": "records are let through, so len answers a missing host property as undefined",
+      "file": "packages/lang/src/library.ts",
+      "find": "      if (Array.isArray(v) || typeof v === \"string\") return v.length;",
+      "replace": "      if (Array.isArray(v) || typeof v === \"string\" || (v !== null && typeof v === \"object\")) return (v as { length: number }).length;",
+      "expectRed": "len counts an array or a string and refuses every other kind with L4016",
+      "completionMarker": "ok and the declared container positions still take containers: no over-fence",
+      "cell": "len counts an array or a string and refuses every other kind with L4016, catchably, with no host text",
+      "note": "The widening failure mode: a kind with no deterministic length admitted by the back door. len(record) silently answers undefined (a value the program never wrote) where the cell expects the L4016 refusal naming a record, so the record conjunct reds while arrays and strings keep working."
+    }
+  ]
+}
