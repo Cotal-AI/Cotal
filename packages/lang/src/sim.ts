@@ -53,11 +53,12 @@ export interface SimScript {
    * then silently discarded. Demanding a field the implementation overwrites makes every fixture
    * carry a number that means nothing, and reads to the next author as though it were honoured.
    *
-   * The type refuses it wherever the literal takes its type from here, which is two shapes: written
-   * inline in the call, and written under an explicit `SimScript` annotation. A literal whose type
-   * is inferred first and only then passed by name, or one put through a cast, still compiles with
-   * `at` present and still has it discarded. This closes the two idioms a new author reaches for
-   * first; it does not close the loophole.
+   * The type refuses it wherever the literal sits in a position that already has a contextual type
+   * from `SimScript`: at the call, under an annotation on a `const`, on an annotated `let` assigned
+   * later, or on a parameter, and under `satisfies SimScript`. What escapes is the pair of shapes
+   * where the literal is typed BEFORE it meets this type: inferred first and then passed by name, or
+   * put through an `as` cast. Those still compile with `at` present and still have it discarded.
+   * This closes the idioms a new author reaches for; it does not close the loophole.
    */
   readonly checkpoints?: Readonly<Record<string, Scripted<Omit<CheckpointResultValue, "at">>>>;
   /** Keyed by the `wait` step's name. A scripted `null` is a timeout, which is a choice. */
