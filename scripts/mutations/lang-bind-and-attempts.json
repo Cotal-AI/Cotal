@@ -51,6 +51,15 @@
       "note": "Occurrences count per kind:name tag, so two kinds under one name and one scope are both #0 and differ in nothing the other three cells constrain."
     },
     {
+      "name": "the bind normalises the occurrences INSIDE the scope path, so two runs of one scope collide",
+      "file": "packages/lang/src/journal.ts",
+      "find": "    const k = Journal.keyOf(key);\n    const entry = this.byKey.get(k);\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "replace": "    const full = Journal.keyOf(key);\n    const flatten = (s: string): string => { const i = s.lastIndexOf(\"/\"); return s.slice(0, i).replace(/#\\d+/g, \"\") + s.slice(i); };\n    const hit = [...this.byKey.entries()].find(([kk]) => flatten(kk) === flatten(full));\n    const k = hit?.[0] ?? full;\n    const entry = hit?.[1];\n    if (entry === undefined) throw new Error(`bind before begin for ${k}`);\n",
+      "expectRed": "the bind lands in the run of the scope that asked for it, and the earlier run of the same scope is untouched",
+      "cell": "the bind lands in the run of the scope that asked for it, and the earlier run of the same scope is untouched",
+      "note": "The scope is a path of frames each carrying its own occurrence; the branch cell and the leaf-occurrence cell both survive a lookup that keeps the frames and drops which run they were."
+    },
+    {
       "name": "the first attempt's record says it resolved when it expired",
       "file": "packages/lang/src/interpret.ts",
       "find": "                { attempt: 0, requestId: ctx.requestId, settled: \"expired\" },\n",

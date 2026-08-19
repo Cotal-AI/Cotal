@@ -239,6 +239,44 @@ const H = (v: unknown) => digest(v);
   );
 }
 
+// ---- 3f) ...and the SCOPE PATH carries occurrences of its own ---------------------------------
+//
+// The scope is a string of frames and each frame carries its own occurrence, so `scope` being part
+// of the identity is two claims, not one: the frames, and which run of each frame. 3c varies the
+// BRANCH under one `parallel:review#0` and 3d varies the leaf's occurrence, so a lookup that
+// normalised the `#n` inside the scope path while keeping everything else satisfies both. A loop
+// around a parallel is the collision: two runs of the same named scope, same branch, same step,
+// same leaf occurrence, differing only in which run of the scope they belong to. A security review
+// built exactly that severing and the whole package stayed rc 0.
+{
+  const j = new Journal({ run: "r-3f" });
+  const s = new KeyScope();
+  const firstRun = s.nextScope("parallel", "review");
+  const secondRun = s.nextScope("parallel", "review");
+  const first = s.branch("parallel", "review", firstRun, "left").nextEffect("turn", "build");
+  const second = s.branch("parallel", "review", secondRun, "left").nextEffect("turn", "build");
+  const h = H({ agent: "builder" });
+  await j.begin(first, h, 1000);
+  await j.settle(first, { status: "ok", result: { status: "done", at: 1100 } }, 1100);
+  await j.begin(second, h, 1200);
+  await j.bind(second, { goalId: "g-second-run" });
+
+  const resumed = new Journal({ run: "r-3f", entries: j.entries() });
+  const s2 = new KeyScope();
+  const firstRun2 = s2.nextScope("parallel", "review");
+  const secondRun2 = s2.nextScope("parallel", "review");
+  const vFirst = resumed.lookup(s2.branch("parallel", "review", firstRun2, "left").nextEffect("turn", "build"), h);
+  const vSecond = resumed.lookup(s2.branch("parallel", "review", secondRun2, "left").nextEffect("turn", "build"), h);
+  const firstExternal = vFirst.verdict === "replay" ? vFirst.entry.external : "not replayable";
+  ok(
+    "the bind lands in the run of the scope that asked for it, and the earlier run of the same scope is untouched",
+    vSecond.verdict === "pending"
+      && (vSecond.entry.external as { goalId?: string } | undefined)?.goalId === "g-second-run"
+      && vFirst.verdict === "replay" && firstExternal === undefined,
+    JSON.stringify(resumed.entries().map((e) => ({ scope: e.scope, external: e.external }))),
+  );
+}
+
 // ---- 4) failures and cancellations replay as themselves ---------------------------------------
 
 {
