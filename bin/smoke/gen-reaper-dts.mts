@@ -79,10 +79,26 @@ function emitOptions(): ts.CompilerOptions {
  *
  * Throws rather than returning a weaker declaration when the module does not typecheck, because a
  * declaration emitted over an error describes a shape the compiler was guessing at.
+ *
+ * `source` replaces the module's own text at its own path, for the suite's probe that the check is
+ * live. It is an override of CONTENT only: the path, and therefore every resolution the compiler
+ * does from it, is unchanged, and nothing is written to disk. Reading the module is the default.
  */
-export function renderReaperDeclaration(): string {
+export function renderReaperDeclaration(source?: string): string {
   let emitted: string | undefined;
-  const program = ts.createProgram({ rootNames: [MODULE_PATH], options: emitOptions() });
+  const options = emitOptions();
+  const host = ts.createCompilerHost(options);
+  if (source !== undefined) {
+    const isModule = (fileName: string) => ts.sys.resolvePath(fileName) === ts.sys.resolvePath(MODULE_PATH);
+    const readFile = host.readFile.bind(host);
+    const getSourceFile = host.getSourceFile.bind(host);
+    host.readFile = (fileName) => (isModule(fileName) ? source : readFile(fileName));
+    host.getSourceFile = (fileName, languageVersion, onError, shouldCreateNewSourceFile) =>
+      isModule(fileName)
+        ? ts.createSourceFile(fileName, source, languageVersion, true)
+        : getSourceFile(fileName, languageVersion, onError, shouldCreateNewSourceFile);
+  }
+  const program = ts.createProgram({ rootNames: [MODULE_PATH], options, host });
 
   const errors = ts.getPreEmitDiagnostics(program).filter((d) => d.category === ts.DiagnosticCategory.Error);
   if (errors.length > 0) {

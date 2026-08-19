@@ -87,23 +87,50 @@ check(
       : `run \`pnpm gen:reaper-dts\`; first difference at byte ${[...emitted].findIndex((c, i) => committed[i] !== c)}`,
 );
 
-// That cell defends the module's JSDoc only while the module is CHECKED, and until this line nothing
-// kept it checked: the generator's options set `allowJs` and never set `checkJs`, so the entire type
-// path hangs on one comment on line 1 of the module. Measured on this tree. Delete `// @ts-check`
-// alone and the suite is 21 passed, 0 failed, a clean survivor. Delete it together with a `pid` that
-// drifts to a string, and the generator stops refusing (exit 0), the emitted declaration is byte
-// identical because those types are read from the JSDoc, and the cell above goes GREEN while the
-// module contradicts the declaration committed beside it. Two behavioural cells still red on that
-// particular drift, which is why the survivor is the pragma on its own and not the pair.
+// That cell defends the module's JSDoc only while the module is CHECKED, and the generator's options
+// set `allowJs` and never `checkJs`, so the whole type path hangs on the module opting in. This
+// suite read `// @ts-check` off the top of the file for that, and a read of one spelling is an
+// enumeration of one, which is the same mistake as the two guards above. Measured on this tree: put
+// `// @ts-nocheck` on line 2 and drift `pid` to a string, and `pnpm gen:reaper-dts` stops refusing
+// (exit 0, the same 4722 bytes, because those types are read from the JSDoc the compiler is no
+// longer reading), the cell above goes GREEN, and the pragma read goes GREEN too, because the file
+// does still open with `// @ts-check`. Only two live-pid behavioural cells red, and a drift with no
+// runtime signature would have had nothing red at all.
 //
-// No mutation row deletes it, and that is the fixtures rule rather than an omission: an anchor for
-// this one is a comment, and `pnpm smoke:mutation-fixtures` refuses a `find` that spans prose,
-// because a comment-only commit cannot announce that it disabled a guard. The read below is the
-// guard instead, and it is direct.
+// So the property is checked instead of the spelling: a deliberate type error is put into the
+// module's text and the emit must REFUSE it. That refusal exists only while the JSDoc is being read,
+// so this reds for `// @ts-nocheck` anywhere, for a deleted `// @ts-check`, and for any later way of
+// turning the check off, none of which it needs to know about. The probe is content-only, at the
+// module's own path, and writes nothing.
+//
+// No mutation row deletes it: an anchor for a comment-driven guard is prose, and
+// `pnpm smoke:mutation-fixtures` refuses a `find` that spans prose. The control cell below is what
+// makes the refusal attributable, since a probe that refuses everything proves nothing.
+const moduleSource = readFileSync(MODULE_PATH, "utf8").replace(/\r\n/g, "\n");
+const TYPE_ERROR = '\n/** @type {number} */\nconst __checkProbe = "not a number";\nvoid __checkProbe;\n';
+let probeEmitted: string | undefined;
+let probeError = "";
+try { probeEmitted = renderReaperDeclaration(moduleSource + TYPE_ERROR); } catch (e) { probeError = (e as Error).message; }
 check(
-  "the module still carries `// @ts-check`, so the emit refuses over a type error rather than guessing",
-  readFileSync(MODULE_PATH, "utf8").replace(/\r\n/g, "\n").startsWith("// @ts-check\n"),
-  `${MODULE_PATH} must open with \`// @ts-check\`; without it the compiler stops reading its JSDoc against its own implementation`,
+  "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
+  probeEmitted === undefined && probeError.includes("does not typecheck"),
+  probeEmitted === undefined
+    ? `the emit refused, but not over the type error: ${probeError}`
+    : `${MODULE_PATH} emitted a declaration over a string assigned to a \`number\`, so its JSDoc is not being read; it must carry \`// @ts-check\` and no \`// @ts-nocheck\``,
+);
+// The control on that zero: the same override path, with the module's own text and nothing added,
+// must emit exactly what reading the file emits. Without this, a probe that refused for any other
+// reason (an unresolved import, a bad host, a path that never matched) would read as the guard
+// holding.
+let controlEmitted: string | undefined;
+let controlError = "";
+try { controlEmitted = renderReaperDeclaration(moduleSource); } catch (e) { controlError = (e as Error).message; }
+check(
+  "and that probe is a valid program: the module's own text through the same path emits the same declaration",
+  controlEmitted !== undefined && controlEmitted === emitted,
+  controlEmitted === undefined
+    ? `the override path refused the module's own text, so the cell above proves nothing: ${controlError}`
+    : "the override path emitted a different declaration from the file read, so the probe is not running against this module",
 );
 
 const dirs: string[] = [];
