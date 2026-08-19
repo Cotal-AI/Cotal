@@ -2696,6 +2696,36 @@ let n = 1;
   /** Names that match more than one printed cell, or none: the tool matches by substring. */
   const ambiguousName: string[] = [];
   let auditedNames = 0;
+  /**
+   * A complaint for each name that does not match EXACTLY ONE of `list`.
+   *
+   * Pure in its arguments so the controls below can hand it a list built to fail. A check whose only
+   * subject is a set that passes today is a cell that cannot show it works - the ambiguity this
+   * audit was written for was fixed in the same commit, so without those controls there would be
+   * nothing left here able to produce the fault.
+   */
+  const matchesOnce = (owner: string, what: string, name: string, list: readonly string[]): string[] => {
+    const matches = list.filter((c) => c.includes(name));
+    return matches.length === 1 ? [] : [`${owner}: ${what} matches ${matches.length} printed cells (${name})`];
+  };
+  // AND THE SUBJECTS THAT CAN STILL FAIL IT. Both halves, because they are different faults: a name
+  // that matches SEVERAL cells is graded off whichever prints first (the trap just closed), and a
+  // name that matches NONE is an aim at something the suite never prints - a throw message, or a
+  // sentence left behind by a rename. Lane T measured the second class grading a kill off a crash.
+  ok(
+    "a name that is a substring of a sibling's is reported, not passed as present",
+    matchesOnce("ctl", "expectRed", "the head answers", ["the head answers", "the head answers for the write"]).length === 1,
+    matchesOnce("ctl", "expectRed", "the head answers", ["the head answers", "the head answers for the write"]),
+  );
+  ok(
+    "and so is a name no cell prints at all, which is what an aim at a throw message looks like",
+    matchesOnce("ctl", "expectRed", "resolves to nothing", ["the head answers"]).length === 1,
+  );
+  // The negative half: an unambiguous name must NOT be reported, or the audit reds on everything.
+  ok("while an unambiguous name is reported as nothing at all", matchesOnce("ctl", "expectRed", "the head answers for the write", ["the head answers", "the head answers for the write"]).length === 0);
+  ok("every `find` matches its file exactly once, so every mutant can be aimed", ambiguous.length === 0, ambiguous);
+  ok("every `expectRed` and marker names a cell this suite actually printed", absent.length === 0, absent);
+
   const downstream: string[] = [];
   let audited = 0;
   for (const m of config.mutations) {
@@ -2719,15 +2749,15 @@ let n = 1;
     // another, so this is one insertion away from mattering anywhere.
     for (const [what, name] of [["expectRed", target], ["completionMarker", marker]] as const) {
       if (name === "") continue;
-      const matches = cells.filter((c) => c.includes(name));
       auditedNames += 1;
-      if (matches.length !== 1) ambiguousName.push(`${m.name}: ${what} matches ${matches.length} printed cells (${name})`);
+      ambiguousName.push(...matchesOnce(m.name, what, name, cells));
     }
   }
   ok(`the mutation config has ${audited} mutations, and every one of them was audited`, audited === config.mutations.length && audited > 0, audited);
-  ok(`and every one of the ${auditedNames} names in it matches EXACTLY ONE printed cell, not merely some cell`, ambiguousName.length === 0, ambiguousName);
-  ok("every `find` matches its file exactly once, so every mutant can be aimed", ambiguous.length === 0, ambiguous);
-  ok("every `expectRed` and marker names a cell this suite actually printed", absent.length === 0, absent);
+  // THE COUNT IS IN THE EXTRA, NOT THE NAME. A cell whose name carries a measured number renames
+  // itself the moment the number moves, and no mutation config can name it - which is exactly how
+  // this cell's own mutant failed to aim the first time it was written.
+  ok("and every name in it matches EXACTLY ONE printed cell, not merely some cell", ambiguousName.length === 0, { audited: auditedNames, ambiguousName });
   ok("and every completion marker is UPSTREAM of the cell it guards, which fail-fast requires", downstream.length === 0, downstream);
 }
 
