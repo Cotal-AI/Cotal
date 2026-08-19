@@ -5,7 +5,7 @@
 Serialize the top-level session swap. The plugin bus does not await the event handler, so a second
 top-level session created while the first swap is still draining captured the same holder to
 retire and installed its replacement over the first one. The dropped replacement had already been
-adopted, which is where its write-ahead log, subject frontier and log open, so it was orphaned
+adopted, which is where its write-ahead log and subject frontier are opened, so it was orphaned
 with an open handle and the session it held left a run open on the wire with nothing reporting it.
 The holder they both replaced was drained twice.
 

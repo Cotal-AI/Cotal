@@ -67,8 +67,10 @@ export const SETTLE_ABANDONED = "opencode-settle-abandoned";
  * How long one swap step may hold the chain, or a teardown may hold the process, before it is
  * abandoned out loud rather than waited on forever.
  *
- * A GENUINE-HANG BACKSTOP, deliberately far above normal settle latency, because a bound that can
- * fire on a step that would have finished would turn a slow publish into a dropped drain. The
+ * A GENUINE-HANG BACKSTOP, deliberately far above normal settle latency. The distance is the point:
+ * a bound near normal latency would fire on steps that were merely slow, and releasing those early
+ * is the cost the distance buys down. It does NOT drop them, because nothing here cancels: a
+ * released step keeps running and can publish late and out of order. The
  * measure comes from a cell rather than a guess: `reset:the /new drain puts the old session's tail
  * and its close ON THE WIRE` asserts that a whole drain, flush plus run close plus settle plus the
  * broker round trip, AND a read-back of the subject both complete inside the 2s the suite waits.
@@ -314,7 +316,8 @@ export const cotal: Plugin = async () => {
    * LEAVING THE MESH COMES FIRST, AND THE ORDER IS THE WHOLE POINT OF IT. A supervised stop is
    * followed by a hard kill after the runtime's grace window, which is 3s for the built-in pty
    * runtime and 1.5s for the tmux and cmux ones. The join is bounded far above that on purpose,
-   * because a backstop that fires on a healthy drain would turn a slow publish into a dropped one,
+   * because a backstop near normal latency would fire on healthy drains and release them early
+   * rather than let them finish, and nothing here cancels what it releases,
    * so this routine can be killed part way through and that is expected. What must NOT depend on
    * finishing is the cheap step: publishing offline presence. Behind the join it is lost whenever a
    * drain outlives the grace window; in front of it, it lands unless the kill arrives first, and the
@@ -454,9 +457,11 @@ export const cotal: Plugin = async () => {
    * left a nearer window: the id was assigned outside the swap, then inside it but before the drain,
    * and each time an event arriving in the remaining gap was routed by the NEW id into a holder
    * still bound to the OLD thread, whose re-adopt refusal is terminal and takes the plane down.
-   * Ordering a two-variable race only moves its boundary, so this removes the second variable from
-   * the decision: an event reaches the holder only if that holder is ALREADY bound to its thread, or
-   * is not bound to anything yet and is free to take it. A holder bound elsewhere is not the route
+   * Ordering a two-variable race only moves its boundary, so this stops trusting the ambient id
+   * ALONE. It remains an input and stays decisional: `eventsFor` below compares it to the holder's
+   * own `path`, and a foreign id routes to nothing. What changed is that agreement with the holder's
+   * binding is now required, so an event reaches the holder only if that holder is ALREADY bound to
+   * its thread, or is not bound to anything yet and is free to take it. A holder bound elsewhere is not the route
    * for this event, whatever the ambient id currently says.
    *
    * THIS IS NOT ATOMIC WITH BINDING, and does not need to be. `flush` enqueues, and the binding is
