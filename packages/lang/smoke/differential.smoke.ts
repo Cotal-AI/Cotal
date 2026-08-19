@@ -377,7 +377,20 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       const logs: unknown[][] = [];
       const journal = new Journal({ run: "d" });
       const first = { runId: "d", handler: new SimHandler(script as never), journal, seed: SEED, startedAt: AT, onLog: (l: { values: readonly unknown[] }) => logs.push([...l.values]) };
-      const original = wrote === "walker" ? await walk(source, first) : await runOnEngine(source, transform(source).module, { ...first, evaluate });
+      // THE FIRST RUN IS GUARDED TOO. Unguarded, an engine that cannot finish the program takes the
+      // whole suite down before it prints its summary — which reads to `mutation-proof` as a run
+      // that died rather than a cell that went red, and discards the evidence it was there to
+      // collect. Measured: the argument-order mutant graded INCONCLUSIVE for exactly this.
+      let original: Awaited<ReturnType<typeof walk>>;
+      try {
+        original = wrote === "walker" ? await walk(source, first) : await runOnEngine(source, transform(source).module, { ...first, evaluate });
+      } catch (e) {
+        ok(`the ${wrote} completes the program it is to be resumed from: ${name}`, false, {
+          error: (e as { code?: string }).code ?? `${(e as Error).name}: ${(e as Error).message.slice(0, 80)}`,
+        });
+        crossings += 1;
+        continue;
+      }
 
       // The pins travel with the journal. Re-resolving them would be a different run wearing this
       // one's history: the epoch moves to the resuming host and every pure draw changes.
