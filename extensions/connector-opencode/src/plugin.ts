@@ -225,16 +225,42 @@ export const cotal: Plugin = async () => {
   // endpoint, so a squatter (or a runtime that can't host the pipe) fails loud rather than running a
   // hijacked or absent control plane.
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  const shutdown = async (): Promise<void> => {
+  /**
+   * THE ONE TEARDOWN, because there are two ways out and an invariant that holds on one of them
+   * is not an invariant. `dispose` is the editor unloading the plugin; `shutdown` is the manager
+   * stopping a supervised seat over the control socket, which is the path a managed agent
+   * actually takes. Both must join the event work before the process stops, so the join lives
+   * here and neither caller owns a copy of it.
+   *
+   * A queued swap still holds a drain that flushes and closes a run, and it runs on its own chain
+   * rather than on this one, so without joining it a stop can be followed by frames for a session
+   * the process no longer serves. Serializing the swap did not create that exposure but it does
+   * lengthen it, because drains that used to overlap now finish one after another, so joining is
+   * this change's own debt rather than a courtesy. Bounded for the same reason the drain is: a
+   * teardown that waits forever on a drain is a worse outcome than one that says it gave up.
+   */
+  const quiesce = async (): Promise<void> => {
     stopping = true;
     try {
       controlServer?.close();
     } catch {
       /* ignore */
     }
+    await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
+    await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
+    await safeStatus("offline");
+    clearErrorRetry(true);
+    await agent.stop();
+  };
+  /**
+   * The manager's cooperative stop. `process.exit` is deliberately AFTER the shared teardown and
+   * not beside it: it used to sit in a `finally` around the presence and agent stop only, so it
+   * ran even when those threw and it ran before any event work could finish. An exit that cannot
+   * be delayed by the teardown is an exit that cannot honour it.
+   */
+  const shutdown = async (): Promise<void> => {
     try {
-      await safeStatus("offline");
-      await agent.stop();
+      await quiesce();
     } finally {
       process.exit(0);
     }
@@ -726,35 +752,14 @@ export const cotal: Plugin = async () => {
       await safeStatus("working", input.tool);
     },
 
+    // The editor unloading the plugin. Same teardown as the manager's stop, minus the exit: see
+    // `quiesce`, which owns the join so that neither exit can drift from the other.
+    //
+    // NO CELL GRADES THE dispose CALLER SPECIFICALLY. The shared routine is graded through the
+    // manager's cooperative stop, which is the path a supervised seat takes and the one that has a
+    // harness; this caller reaches the same code. Filed as #632.
     dispose: async () => {
-      stopping = true;
-      try {
-        controlServer?.close();
-      } catch {
-        /* ignore */
-      }
-      // NOTHING MAY PUBLISH AFTER TEARDOWN. A queued swap still holds a drain that flushes and
-      // closes a run, and it runs on its own chain rather than on this one, so without joining it
-      // here a shutdown can be followed by frames for a session the process has stopped serving.
-      // Serializing the swap did not create that exposure, but it does lengthen it: drains that
-      // used to overlap now complete one after another, so the last one finishes later than it did
-      // before. Joining the chain is therefore this change's own debt rather than a courtesy.
-      // Bounded for the same reason the drain is: a teardown that waits forever on a drain is a
-      // worse outcome than one that says it gave up.
-      //
-      // NO CELL GRADES THIS, and that is stated here rather than only in the pull request, because
-      // the next person to change it will be reading the function and not the pull request. Its
-      // correctness rests on the argument above rather than on a test: swaps are serialized, so a
-      // drain queued at teardown is either running or waiting on the chain, and joining the chain
-      // covers both. Nothing would notice if this join were removed. A cell needs a different
-      // harness shape from the event suite, since it has to arrange work in flight at the moment
-      // dispose runs and then assert on what did NOT reach the subject afterwards. Filed as #632
-      // with the assertions it should make.
-      await settleWithin(swapChain, SWAP_SETTLE_MS, "swap chain at teardown");
-      await settleWithin(events?.settled(), SWAP_SETTLE_MS, "event holder at teardown");
-      await safeStatus("offline");
-      clearErrorRetry(true);
-      await agent.stop();
+      await quiesce();
     },
   };
 
