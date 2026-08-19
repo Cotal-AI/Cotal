@@ -5,7 +5,7 @@
  * WHY THIS SUITE EXISTS, and it is the campaign's own lesson turned into a file. Every other cell
  * this connector carries proves a COMPONENT: the mapper maps, the resolver resolves, the launch
  * arms. All of them were green while three separate defects sat in the seam BETWEEN them, and all
- * three failed toward silence — the plane stops, one log line lands inside the seat's own process,
+ * three failed toward silence: the plane stops, one log line lands inside the seat's own process,
  * and a reader sees an empty panel that looks exactly like an agent with nothing to say. A component
  * suite asks "does this work". The question those defects needed was "who else arrives here, and in
  * what state", and only an instrument that enters where the operator does can ask it.
@@ -24,13 +24,13 @@
  *
  * THE FAKE HAD TO CHANGE, and that change is a finding rather than a convenience. It used to report
  * one constant thread id for every incarnation, so the existing crash cell restarted the app-server
- * onto the SAME thread — a fixture shaped so it could not see the defect. The cold reader on this PR
+ * onto the SAME thread, a fixture shaped so it could not see the defect. The cold reader on this PR
  * is who noticed. Under `FAKE_CODEX_ROLLOUT` each incarnation now mints its own id, exactly as the
  * real one does, which is what makes case 2 below a test rather than a re-run.
  *
  *   1. first bind: an armed seat publishes its thread's activity, and the frames carry the run.
  *   2. restart: the app-server dies, the host brings up a NEW thread, and the plane KEEPS
- *      PUBLISHING — with every run the dead thread opened closed before the swap.
+ *      PUBLISHING, with every run the dead thread opened closed before the swap.
  *   3. shutdown: a mid-turn exit closes the run the record stream never got to close.
  *   4. late file: a seat whose rollout did not exist when the launch looked still binds later, and
  *      publishes what it had already written.
@@ -55,7 +55,7 @@ import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 if (process.platform === "win32") {
   // Managed Codex agents are POSIX-only by design (the isolated CODEX_HOME symlinks the operator's
   // auth.json), so there is no Windows case for this seam at all.
-  console.log("SKIP codex events lifecycle — managed Codex agents are POSIX-only");
+  console.log("SKIP codex events lifecycle: managed Codex agents are POSIX-only");
   process.exit(0);
 }
 
@@ -275,7 +275,7 @@ let aliveBeforeTeardown: number[] = [];
  *  rather than every seat that ever existed. */
 const stoppedOnPurpose = new Set<number>();
 
-/** DM a peer by its ROSTER id (principal dot-form) — names are not unicast recipients. */
+/** DM a peer by its ROSTER id (principal dot-form), names are not unicast recipients. */
 async function dm(peer: string, text: string, ep: CotalEndpoint = operator): Promise<void> {
   const id = ep.getRoster().find((p) => p.card.name === peer)?.card.id;
   if (id === undefined) {
@@ -345,7 +345,7 @@ try {
     open: openRuns(),
   });
   // Reachability, stated separately from correctness: the emitter must not have died on the way.
-  // A dead holder publishes nothing, so the cell above would also fail — but it would fail the same
+  // A dead holder publishes nothing, so the cell above would also fail, but it would fail the same
   // way an unreachable broker fails, and those are different faults.
   check("the emitter never refused a second adopt", frames.filter((f) => f.threadId === threadB).length > 0, {
     threads: threadsSeen(),

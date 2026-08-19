@@ -629,7 +629,7 @@ export async function runCodexHost(): Promise<void> {
         // NOT terminal, and that is the fix for a one-shot bind: an armed seat whose file was slow
         // to appear would otherwise publish nothing for its whole life, with this line as the only
         // trace. The next turn boundary looks again.
-        log(`AG-UI: no rollout file yet for thread ${threadId} — will look again at the next turn`);
+        log(`AG-UI: no rollout file yet for thread ${threadId}, will look again at the next turn`);
         return;
       }
       if (rollout === path && events !== undefined) return; // already publishing this thread
@@ -646,7 +646,7 @@ export async function runCodexHost(): Promise<void> {
       // (the file is created by the primer inject and bound immediately after). On a late bind it
       // is the turns that ran while the file did not exist, and a reader comparing the panel to the
       // terminal deserves to know why they differ rather than to guess.
-      log(`AG-UI: publishing thread ${threadId} from ${path} — the stream starts here, anything already written is not republished`);
+      log(`AG-UI: publishing thread ${threadId} from ${path} (the stream starts here, anything already written is not republished)`);
     } finally {
       binding = false;
       const retry = missedBind;
@@ -1024,7 +1024,7 @@ export async function runCodexHost(): Promise<void> {
       events?.closeRun(Date.now());
       await events?.settled();
     } catch {
-      /* leaving anyway — the forced-exit timer above still owns the deadline */
+      /* leaving anyway: the forced-exit timer above still owns the deadline */
     }
     try {
       await mcp.close(); // the tools existed only for the codex we just stopped
