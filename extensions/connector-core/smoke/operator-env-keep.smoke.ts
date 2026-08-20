@@ -45,30 +45,59 @@ function* sources(dir: string): Generator<string> {
   }
 }
 
-/** A per-spawn assignment, written the way the connectors write it: `env.COTAL_X = ...`,
- *  `COTAL_X: value` inside the env literal, or a computed `env[LAUNCH_MATERIAL_ENV]`-style entry
- *  resolved through its constant. Matching the ASSIGNMENT and not a bare mention is what keeps a
- *  doc comment or an import from registering as a producer. */
+/** A per-spawn assignment, matched BY SHAPE. Four forms, because the connectors use four:
+ *  `env.COTAL_X = v`, a `COTAL_X: v` entry, a computed `[IDENT]: v` key, and a bracket-string
+ *  `env["COTAL_X"] = v`. Matching the ASSIGNMENT rather than a bare mention is what keeps a doc
+ *  comment or an import from registering as a producer.
+ *
+ *  WHY THE COMPUTED FORM RESOLVES A MAP AND NOT A NAME. This pattern was once literally
+ *  `/\[(LAUNCH_MATERIAL_ENV)\]\s*:/`, with the constant baked into the regex. That did not miss a
+ *  SHAPE; it matched the right shape and then refused every instance of it except the one the author
+ *  had in mind. Two real per-spawn assignments were invisible to it - `[TOKEN_ENV]` in codex's tui.ts
+ *  and `[MCP_TOKEN_ENV]` in its host.ts, the latter declared in a different file again - and adding
+ *  those two names to a lookup would have rebuilt the same failure one level up, silent again the day
+ *  a third constant is declared. So the constants are DERIVED from the tree: any `const IDENT =
+ *  "COTAL_..."` anywhere in the walked sources, collected in a first pass, resolved in the second.
+ *  A new constant is graded the day it is written, which is what the prefix strip and the by-shape
+ *  file walk already rest on.
+ *
+ *  The declarations are collected from the WHOLE repo while assignments are still only read from
+ *  `extensions/`, and the difference is not an oversight. `LAUNCH_MATERIAL_ENV` is declared in
+ *  `packages/core`, so a map built from the connectors alone cannot resolve the sharpest name in the
+ *  codebase - the first version of this repair narrowed the map to `extensions/` and the
+ *  `COTAL_LAUNCH_MATERIAL` witness below went red on exactly that. Collecting declarations wider is
+ *  safe because a declaration only ever RESOLVES a name; it never adds an assignment. */
+const CONST_DECL = /\bconst\s+([A-Za-z_$][\w$]*)\s*(?::\s*[^=]+)?=\s*"(COTAL_[A-Z0-9_]+)"/g;
+const constants = new Map<string, string>();
+for (const file of sources(repoRoot))
+  for (const m of readFileSync(file, "utf8").matchAll(CONST_DECL)) {
+    const prev = constants.get(m[1]);
+    assert.ok(
+      prev === undefined || prev === m[2],
+      `two different COTAL_ names are bound to the constant ${m[1]} (${prev} and ${m[2]}); this ` +
+        `census resolves computed keys by constant name across the tree and cannot disambiguate them`,
+    );
+    constants.set(m[1], m[2]);
+  }
+
 const ASSIGN = [
   /\benv\.(COTAL_[A-Z0-9_]+)\s*=/g,
   /^\s*(COTAL_[A-Z0-9_]+):\s/gm,
-  /\[(LAUNCH_MATERIAL_ENV)\]\s*:/g,
+  /\[([A-Za-z_$][\w$]*)\]\s*:/g,
+  /\benv\[\s*["'](COTAL_[A-Z0-9_]+)["']\s*\]\s*=/g,
 ];
-/** `LAUNCH_MATERIAL_ENV` is a constant, not a literal name. Resolve it, or the sharpest variable in
- *  the codebase would be invisible to a census that only reads string literals. */
-const CONSTANTS: Record<string, string> = { LAUNCH_MATERIAL_ENV: "COTAL_LAUNCH_MATERIAL" };
 
 /** THIS CENSUS'S OWN BOUNDARY, CHECKED RATHER THAN ASSUMED.
  *
- *  Everything else here reads `extensions/`. That is the right scope only while every `launchEnv`
- *  caller either lives there or contributes no `COTAL_*` name of its own, and nothing in the census
- *  can notice when that stops being true: a scan's blind spot and a clean tree produce the same
- *  output. So the boundary is a check rather than a comment.
+ *  Assignments above are read from `extensions/`. That is the right scope only while every
+ *  `launchEnv` caller either lives there or contributes no `COTAL_*` name of its own, and nothing in
+ *  the census can notice when that stops being true: a scan's blind spot and a clean tree produce the
+ *  same output.
  *
  *  It is not hypothetical that callers live elsewhere. Two example composition roots call
  *  `launchEnv()`, and the first version of this guard - which simply required every caller to sit
  *  under `extensions/` - reddened on them. They are legitimate: an example configures and
- *  orchestrates and adds no env names of its own, which is exactly the property asserted below.
+ *  orchestrates and adds no env names of its own, which is exactly the property asserted here.
  *  Requiring the PROPERTY rather than the LOCATION is what keeps this from being an allow-list that
  *  rots the same way the keep list would.
  */
@@ -77,12 +106,11 @@ assert.ok(
   callers.length >= 5,
   `found only ${callers.length} launchEnv call sites, so this boundary check is not reading the tree`,
 );
-const unwalked = callers
-  .filter((f) => !f.startsWith(extensionsRoot))
-  .filter((f) => ASSIGN.some((re) => new RegExp(re.source, re.flags).test(readFileSync(f, "utf8"))))
-  .map((f) => relative(repoRoot, f).split("\\").join("/"));
 assert.deepEqual(
-  unwalked,
+  callers
+    .filter((f) => !f.startsWith(extensionsRoot))
+    .filter((f) => ASSIGN.some((re) => new RegExp(re.source, re.flags).test(readFileSync(f, "utf8"))))
+    .map((f) => relative(repoRoot, f).split("\\").join("/")),
   [],
   "a launchEnv caller outside extensions/ assigns a COTAL_ name into the env it spawns with. This " +
     "census does not walk that file, so its keep-list result is blind to it: widen `sources` to " +
@@ -94,7 +122,8 @@ for (const file of sources(extensionsRoot)) {
   const body = readFileSync(file, "utf8");
   for (const re of ASSIGN) {
     for (const m of body.matchAll(re)) {
-      const name = CONSTANTS[m[1]] ?? m[1];
+      const name = m[1].startsWith("COTAL_") ? m[1] : constants.get(m[1]);
+      if (name === undefined) continue; // a computed key bound to something that is not a COTAL_ name
       if (!assigned.has(name)) assigned.set(name, relative(extensionsRoot, file).split("\\").join("/"));
     }
   }
@@ -119,7 +148,14 @@ assert.deepEqual(
 
 // The census must actually see the dangerous families, or the intersection above is empty for the
 // wrong reason: a scan that missed the connectors entirely would also report no conflicts.
-for (const witness of ["COTAL_LIFECYCLE_UID", "COTAL_ROLE", "COTAL_LAUNCH_MATERIAL"])
+// The last two are the constant-indirected assignments this census used to be blind to, one of them
+// bound in a different file from its use. They are witnesses rather than history: if constant
+// resolution ever stops working, these go missing while the other connectors keep the count high and
+// the anti-vacuity floor above stays satisfied.
+for (const witness of [
+  "COTAL_LIFECYCLE_UID", "COTAL_ROLE", "COTAL_LAUNCH_MATERIAL",
+  "COTAL_CODEX_REMOTE_TOKEN", "COTAL_MCP_TOKEN",
+])
   assert.ok(
     assigned.has(witness),
     `the census did not see ${witness} being assigned, so its "no conflicts" result is not evidence of anything`,
