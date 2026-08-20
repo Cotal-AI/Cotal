@@ -97,9 +97,16 @@ function sendShutdown(path: string, token: string): Promise<string> {
 // publish could not make one at all and its control failed. It would have passed in CI, where that
 // variable is unset, which is the worst version of this: green where it is checked, wrong where it
 // is written.
-const HOST_ENV = Object.fromEntries(
-  Object.entries(process.env).filter(([k]) => !k.startsWith("COTAL_") && !k.startsWith("OPENCODE_")),
-);
+//
+// WRITTEN AS A SPREAD AND THEN A DELETE, which is a shape rather than a style. A static census over
+// the suite sources (`pnpm smoke:suite-ambient-env`) reads every file that spreads the ambient
+// environment into a child and requires it to strip `COTAL_` from the copy first. That census is the
+// only thing that can fail a FUTURE seat which reintroduces the spread, and it can only see a file
+// that is written the way it reads. Expressed as a filter comprehension this strip was invisible to
+// it, so the file left the census's population altogether and the strip below became the one line
+// here that nothing graded. Same keys removed either way; this shape is the one that stays watched.
+const HOST_ENV = { ...process.env };
+for (const key of Object.keys(HOST_ENV)) if (key.startsWith("COTAL_") || key.startsWith("OPENCODE_")) delete HOST_ENV[key];
 
 const space = `oc-coop-${randomUUID().slice(0, 8)}`;
 const auth = await createSpaceAuth(space);

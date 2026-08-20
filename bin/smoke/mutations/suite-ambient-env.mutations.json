@@ -26,8 +26,8 @@
     {
       "name": "N1 the opencode cooperative-stop suite loses its COTAL_ strip",
       "file": "extensions/connector-opencode/smoke/cooperative-stop.smoke.ts",
-      "find": "  for (const key of Object.keys(clean)) if (key.startsWith(\"COTAL_\")) delete clean[key];",
-      "replace": "  void 0;",
+      "find": "for (const key of Object.keys(HOST_ENV)) if (key.startsWith(\"COTAL_\") || key.startsWith(\"OPENCODE_\")) delete HOST_ENV[key];\n",
+      "replace": "\n",
       "expectRed": "spread the ambient environment into a child without stripping COTAL_ first",
       "note": "The exact regression the census exists to stop: this file is where the live-identity capture was found, and without the strip it is an offender again."
     },
