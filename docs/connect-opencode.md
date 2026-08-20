@@ -117,8 +117,11 @@ Four things are specific to OpenCode and worth knowing before you read a stream:
 - **A failed turn is published as a run error, not as a finished run.** OpenCode reports a turn that
   died — an upstream API error, a provider auth failure, an output-length stop — on its own
   `session.error` event, and that turn ends its run with `RUN_ERROR` carrying OpenCode's reason and
-  its own error name as the code. A turn **you** stopped is not a failure and is not published as
-  one: a user cancellation arrives on the same event, and it closes the run as an ordinary end.
+  its own error name as the code. If that reason cannot fit in the one closing frame, the shared close
+  still publishes exactly one `RUN_ERROR` that does fit: it keeps the code and says the original detail
+  was omitted or shortened because of the bound, so a reader is never shown a truncated message as
+  complete. A turn **you** stopped is not a failure and is not published as one: a user cancellation
+  arrives on the same event, and it closes the run as an ordinary end.
 
 Reasoning is off by default.
 

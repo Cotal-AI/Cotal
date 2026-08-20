@@ -18,6 +18,17 @@ hook, and that turn now closes with `RUN_ERROR` carrying the harness's error kin
 `session.error`, and that turn now closes with `RUN_ERROR` carrying OpenCode's own error name and
 reason — except a turn a person stopped, which arrives on the same event and is not a failure.
 
+The shared close also bounds that failure detail. Upstream free text (`error_details`,
+`data.message`) can encode past the live frame ceiling; packing it as-is used to refuse the close
+before any terminal became durable and then permanently kill the holder. The close now rebuilds the
+one `RUN_ERROR` so it fits, keeps the code, and the emitted message says the original detail was
+omitted or shortened because of the bound. A short message is unchanged. There is no second protocol
+and no per-connector size table: every producer already goes through this close.
+
+Deliberately not built: connector-specific caps, a second close method, preview-plane truncation on
+the durable path, and any change to `packUnits`'s fail-loud rule for source observations. Those would
+not close this hole and would duplicate a contract that already has a caller.
+
 Migration: nothing is removed and no existing call changes shape. A consumer that only handles
 `RUN_FINISHED` now sees fewer of them on failing sessions; the event type it needs to also handle
 has been part of the vocabulary and accepted by the bracket machine all along.

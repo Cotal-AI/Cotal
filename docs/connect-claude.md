@@ -304,9 +304,12 @@ grant any channel you name: that is the out-of-band grant, not a way around the 
 whether a turn finished or died and fires one of two hooks accordingly, so the connector relays that
 decision rather than making one of its own: a turn that ended on an API error ends its run with
 `RUN_ERROR` carrying the harness's own error kind (`rate_limit`, `billing_error`, `server_error`,
-`max_output_tokens` and the rest) as the code, and whatever detail it reported as the message. A turn
-that ended normally still ends with a run-finished event carrying no outcome, which says the turn
-ended and does not claim it succeeded.
+`max_output_tokens` and the rest) as the code, and whatever detail it reported as the message. If that
+detail cannot fit in the one closing frame, the shared close still publishes exactly one `RUN_ERROR`
+that does fit: it keeps the code and says the original detail was omitted or shortened because of the
+bound, so a reader is never shown a truncated message as complete. A turn that ended normally still
+ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
+succeeded.
 
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was

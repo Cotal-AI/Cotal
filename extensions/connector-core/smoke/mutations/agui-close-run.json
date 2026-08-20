@@ -30,11 +30,13 @@
     "turn to a holder that drops it on the floor publishes a finish, and that is indistinguishable on",
     "the wire from never having reported it.",
     "",
-    "NO MUTATION IS REGISTERED FOR `close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED`,",
-    "and the absence is the honest report rather than a gap. That property is held by the SHAPE of the",
-    "code — one method, one branch, one terminal, and the bracket machine closing the run — not by a",
-    "line that can be deleted to violate it. The cell is a fence against a future second method, and",
-    "it is graded by asking the stream for another close, never by counting calls."
+    "K8 is the size bound on that same close. An oversized upstream detail used to make packUnits",
+    "refuse before beginSend, so the run got no terminal and the holder died. The bound is one call",
+    "on the shared close; skipping it restores the defect.",
+    "",
+    "K9 is the never-both-terminal property. Deleting this.run = undefined from the shared terminal",
+    "arm of AguiBrackets.accept leaves the machine open, so a second close publishes a finish. The",
+    "earlier claim that no such deletion existed was false; the cell already graded the property."
   ],
   "mutations": [
     {
@@ -99,6 +101,24 @@
       "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
       "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
       "note": "A silent drop one layer above the emitter. The connector still believes it reported a failure, the emitter never hears about it, and the wire says the turn finished."
+    },
+    {
+      "name": "K8 skip the close-path bound so an oversized failure detail still throws in packUnits",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      ? boundRunErrorForFrame({\n          message: o.error.message,",
+      "replace": "      ? runError({\n          message: o.error.message,",
+      "expectRed": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+      "cell": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+      "note": "Restores the defect: unbounded upstream text is packed as-is, packUnits refuses before beginSend, no terminal, holder dies."
+    },
+    {
+      "name": "K9 delete this.run = undefined from the shared terminal arm of AguiBrackets.accept",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      this.run = undefined;\n      return;\n    }\n\n    switch (t) {",
+      "replace": "      return;\n    }\n\n    switch (t) {",
+      "expectRed": "close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED",
+      "cell": "close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED",
+      "note": "The machine stays open after RUN_ERROR, so a following ordinary close publishes RUN_FINISHED. The property was always this assignment; the ledger had claimed no such line existed."
     }
   ]
 }

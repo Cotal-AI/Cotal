@@ -1238,6 +1238,85 @@ export function packUnits(opts: {
 }
 
 /**
+ * The notice a bounded `RUN_ERROR` carries so a reader cannot mistake a shortened or omitted
+ * upstream detail for the original. The close path is the one place this string is composed.
+ */
+const RUN_ERROR_DETAIL_BOUND_NOTICE =
+  "original detail omitted or shortened because it exceeded the frame bound";
+
+/**
+ * Rebuild a `RUN_ERROR` so the closing frame fits the live payload ceiling.
+ *
+ * **This exists because the close is a terminal a reader waits on, and the message is untrusted
+ * upstream free text.** `packUnits` is right to refuse an oversized source observation — a unit
+ * that does not fit has no honest cursor. A close unit is not a source observation: we author it,
+ * it consumes no record, and refusing it leaves the run with no terminal, no pending WAL recovery,
+ * and a dead holder. So the close rebuilds the one event until the SAME `measure` `packUnits` will
+ * use says it fits, keeps the failure `code`, and says in the message that the original detail was
+ * omitted or shortened. A short message that already fits is returned unchanged.
+ *
+ * It does not live in `packUnits` and it does not call {@link splitFrames}. Those are a different
+ * contract (source-record packing, and the preview plane). Putting the bound on this close is the
+ * one place every connector already goes through.
+ */
+function boundRunErrorForFrame(opts: {
+  message: string;
+  timestamp: number;
+  code?: string;
+  cotal?: CotalMeta;
+  threadId: string;
+  runId: string;
+  epoch: string;
+  seq: number;
+  measure: (frame: AguiFrame) => number;
+  limit: number;
+}): WithCotal<RunErrorEvent> {
+  const build = (message: string): WithCotal<RunErrorEvent> =>
+    runError({
+      message,
+      timestamp: opts.timestamp,
+      ...(opts.code ? { code: opts.code } : {}),
+      ...(opts.cotal ? { cotal: opts.cotal } : {}),
+    });
+  const frameOf = (event: AguiEvent): AguiFrame =>
+    aguiFrame({
+      threadId: opts.threadId,
+      runId: opts.runId,
+      epoch: opts.epoch,
+      seq: opts.seq,
+      events: [event],
+    });
+
+  const original = build(opts.message);
+  if (opts.measure(frameOf(original)) <= opts.limit) return original;
+
+  const labelled = (kept: string): string =>
+    kept.length === 0 ? RUN_ERROR_DETAIL_BOUND_NOTICE : `${RUN_ERROR_DETAIL_BOUND_NOTICE}: ${kept}`;
+  const at = (codePoints: number): WithCotal<RunErrorEvent> =>
+    build(labelled(takeCodePoints(opts.message, codePoints)));
+
+  const emptied = at(0);
+  if (opts.measure(frameOf(emptied)) > opts.limit)
+    throw new AguiVocabularyError(
+      `a RUN_ERROR close does not fit in ${opts.limit} bytes even with the failure detail emptied ` +
+        `and replaced by a bound notice — the envelope, the code and the headers alone are ` +
+        `${opts.measure(frameOf(emptied))} bytes. No bound on the detail can help, so this fails ` +
+        `loudly rather than leaving the run without a terminal.`,
+    );
+
+  // Binary-search the largest well-formed prefix that still fits, re-measuring the whole frame
+  // each step: JSON escaping and UTF-8 length are nonlinear, so cutting by the overage is wrong.
+  let lo = 0;
+  let hi = Array.from(opts.message).length + 1;
+  while (hi - lo > 1) {
+    const mid = Math.floor((lo + hi) / 2);
+    if (opts.measure(frameOf(at(mid))) <= opts.limit) lo = mid;
+    else hi = mid;
+  }
+  return at(lo);
+}
+
+/**
  * The event emitter: one per principal, one thread at a time.
  *
  * **BRACKET STATE SURVIVES A RESTART, AND THIS PARAGRAPH USED TO SAY THE OPPOSITE.** It described a
@@ -1496,6 +1575,12 @@ export class AguiEmitter<T> {
    * mean a turn FAILED is a connector's decision and is stated at each connector's own mapping site;
    * this file only carries the answer to the wire.
    *
+   * **AN OVERSIZED `error.message` IS BOUNDED HERE, ONCE, FOR EVERY CONNECTOR.** The message is
+   * upstream free text. If it cannot fit in the one closing frame, the close rebuilds the event so
+   * it does, keeps the `code`, and the emitted message says the original detail was omitted or
+   * shortened because of the bound. A short message is unchanged. The alternative is `packUnits`
+   * refusing before `beginSend`, which leaves the run with no terminal and kills the holder.
+   *
    * @returns the run that was closed, or `null` when the stream was already at a stopping point.
    */
   async closeRun(o: {
@@ -1524,12 +1609,20 @@ export class AguiEmitter<T> {
 
     // `RUN_ERROR` carries no `runId` and no `threadId` of its own — its schema is `message` plus an
     // optional `code` — so the run it closes is named by the frame's unit below, not by the event.
+    // The bound is measured with the same function and ceiling `packUnits` will use, at the `seq`
+    // the closing frame will actually carry.
     const event = o.error
-      ? runError({
+      ? boundRunErrorForFrame({
           message: o.error.message,
           timestamp: o.timestamp,
           ...(o.error.code ? { code: o.error.code } : {}),
           ...(o.cotal ? { cotal: o.cotal } : {}),
+          threadId: this.threadId,
+          runId,
+          epoch: this.wal.epoch,
+          seq: this.wal.frontier.seq + 1,
+          measure: (f) => this.measure(f),
+          limit: this.ep.maxPayload,
         })
       : runFinished({
           threadId: this.threadId,
