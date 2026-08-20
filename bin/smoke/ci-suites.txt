@@ -384,3 +384,4 @@ smoke:lang-differential
 # with nothing to report it.
 smoke:freeslot-barrier:live
 smoke:int2-revoke:live
+smoke:orientation

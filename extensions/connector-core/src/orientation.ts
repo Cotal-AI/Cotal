@@ -11,7 +11,7 @@
  */
 import type { AttentionMode, PresenceStatus } from "@cotal-ai/core";
 import type { MeshAgent } from "./agent.js";
-import type { AgentConfig } from "./config.js";
+import { isAuthed, type AgentConfig } from "./config.js";
 import { DOCS_VERSION } from "./docs.js";
 
 /** One-line connector bootstrap that points a joining agent at `cotal_orientation`. Folded into each
@@ -106,7 +106,10 @@ export function buildOrientation(
     generatedAt,
     identity: { name: config.name, role: config.role, space: config.space, id: agent.id, cotalVersion: DOCS_VERSION },
     access: {
-      authMode: !!config.creds,
+      // AUTHENTICATED, not "has static creds": a user-auth mesh has no static creds and its grants
+      // are broker-enforced, so `!!config.creds` told every agent on one that its grants were
+      // advisory and host-trusted. Nothing on the wire corrects a card that misstates the posture.
+      authMode: isAuthed(config),
       read: config.subscribe,
       readAcl: config.allowSubscribe,
       post: config.allowPublish,
