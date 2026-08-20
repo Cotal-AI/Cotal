@@ -33,7 +33,7 @@
 import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { connect, createServer as createNetServer } from "node:net";
-import { mkdtempSync, rmSync } from "node:fs";
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -173,9 +173,17 @@ function fireHookViaRealRelay(
   opts: { starveStdout?: boolean; breakStdout?: boolean } = {},
 ): Promise<{ stdout: string; code: number | null }> {
   return new Promise((resolve) => {
+    // Ambient COTAL_ vars are stripped before this suite sets its own. Whatever runs this suite may
+    // itself be a managed agent session, and inheriting ITS identity here would give the relay a
+    // second answer to "which control endpoint": a launch-material pointer from the outer session
+    // alongside the token this suite is testing with. The config layer refuses that pair rather than
+    // picking one, and the relay fails open on a refusal, so the failure mode would be a hook that
+    // silently does nothing while every assertion here still reads as a relay bug.
+    const clean = { ...process.env };
+    for (const key of Object.keys(clean)) if (key.startsWith("COTAL_")) delete clean[key];
     const child = spawn(process.execPath, [tsxCli, hookEntry], {
       env: {
-        ...process.env,
+        ...clean,
         COTAL_NAME: "Otto", // hasIdentity() gate — the relay no-ops for an unmanaged session
         COTAL_CONTROL_SOCKET: socketPath,
         COTAL_CONTROL_TOKEN: TOKEN,
@@ -666,6 +674,90 @@ try {
     { mentionNoticesBefore: mentionOnly, now: nudges.filter((n) => n.includes("pull it with cotal_inbox")).length },
   );
   await agent.setAttention("open");
+
+
+// ---- R1/R2/R3: fail open, but never fail silent ---------------------------------------------
+//
+// The relay resolves its control endpoint inside a try/catch and returns an empty reply on any
+// failure. Fail open is correct and stays: a lifecycle hook that throws is a hook that blocked a
+// human's session. Silent fail open is not, and it was what shipped. A material file that is
+// missing, permissive, malformed or contradicted by a direct carrier produced a hook that did
+// nothing and said nothing, so the seat ran with dead presence and no injected messages and there
+// was no line anywhere to read. The same defect, in Python, is what smoke:hermes-hooks-control
+// exists for; this is the TypeScript half of it.
+//
+// R3 is the discrimination and is the reason this is three legs rather than one. Warning whenever
+// there is no control endpoint would fire on every hook of a legitimate hand-driven session, which
+// is how a warning channel gets trained into background noise.
+{
+  const relayDir = mkdtempSync(join(tmpdir(), "cotal-relay-warn-"));
+  const runRelay = (env: NodeJS.ProcessEnv): Promise<{ code: number | null; stdout: string; stderr: string }> =>
+    new Promise((resolve) => {
+      const clean = { ...process.env };
+      for (const key of Object.keys(clean)) if (key.startsWith("COTAL_")) delete clean[key];
+      const child = spawn(process.execPath, [tsxCli, hookEntry], {
+        env: { ...clean, ...env },
+        stdio: ["pipe", "pipe", "pipe"],
+      });
+      let stdout = "";
+      let stderr = "";
+      child.stdout.on("data", (c) => (stdout += String(c)));
+      child.stderr.on("data", (c) => (stderr += String(c)));
+      child.on("close", (code) => resolve({ code, stdout, stderr }));
+      child.stdin.end(JSON.stringify({ hook_event_name: "UserPromptSubmit" }));
+    });
+
+  // A material file readable by every local user: the reader refuses it, which is a configuration
+  // fault the operator has to be able to see.
+  const looseMaterial = join(relayDir, "loose.json");
+  writeFileSync(looseMaterial, JSON.stringify({ controlToken: "warn-leg-token" }), { mode: 0o644 });
+  chmodSync(looseMaterial, 0o644);
+  const broken = await runRelay({
+    COTAL_NAME: "Otto",
+    COTAL_CONTROL_SOCKET: join(relayDir, "absent.sock"),
+    COTAL_LAUNCH_MATERIAL: looseMaterial,
+  });
+  const warnings = broken.stderr.split("\n").filter((l) => l.includes("[cotal-connector]"));
+  check(
+    "R1: a hook whose control endpoint cannot be resolved says so on stderr",
+    warnings.length === 1,
+    { warnings: warnings.length },
+  );
+  check(
+    "R1: and still fails open, exit 0 with no reply, so the session is never blocked",
+    broken.code === 0 && broken.stdout.trim() === "",
+    { code: broken.code },
+  );
+  check(
+    "R1: the warning names variables and carries no values",
+    !broken.stderr.includes(looseMaterial) && !broken.stderr.includes("warn-leg-token"),
+  );
+
+  // Positive control: a resolvable endpoint warns about nothing, even though the socket is dead and
+  // the relay still returns empty. Without this leg, a warn-on-every-run mutant would pass R1.
+  const goodMaterial = join(relayDir, "good.json");
+  writeFileSync(goodMaterial, JSON.stringify({ controlToken: "warn-leg-token" }), { mode: 0o600 });
+  chmodSync(goodMaterial, 0o600);
+  const resolvable = await runRelay({
+    COTAL_NAME: "Otto",
+    COTAL_CONTROL_SOCKET: join(relayDir, "absent.sock"),
+    COTAL_LAUNCH_MATERIAL: goodMaterial,
+  });
+  check(
+    "R2: a resolvable control endpoint warns about nothing",
+    !resolvable.stderr.includes("[cotal-connector]") && resolvable.code === 0,
+    { stderr: resolvable.stderr.slice(0, 200) },
+  );
+
+  // R3: a managed-looking session that simply has no control plane is a normal launch, not a fault.
+  const noControl = await runRelay({ COTAL_NAME: "Otto" });
+  check(
+    "R3: a session with no control endpoint at all is not warned about",
+    !noControl.stderr.includes("[cotal-connector]") && noControl.code === 0,
+    { stderr: noControl.stderr.slice(0, 200) },
+  );
+  rmSync(relayDir, { recursive: true, force: true });
+}
 
   console.log(`\nCLAUDE WAKE-PATH TEST PASSED ✅  (${pass} checks)`);
 } finally {

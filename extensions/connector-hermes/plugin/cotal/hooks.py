@@ -3,9 +3,16 @@
 Each hook makes a one-shot connection to connector-core's control socket
 (``COTAL_CONTROL_SOCKET``), sends ``{"token": ..., "event": {"hook_event_name": ...}}``, and
 ignores the reply — the TS ``hermesHookHandle`` turns it into a presence change. The control server
-validates ``token`` (constant-time) before doing anything, so a frame without it is dropped. Both
-the path and token come from the launch env (shared with the sidecar). Hooks must never block the
-gateway, so the connection has a short timeout and every error is swallowed.
+validates ``token`` (constant-time) before doing anything, so a frame without it is dropped. The
+socket PATH comes from the launch env; the TOKEN comes from the launch-material file that env points
+at (``COTAL_LAUNCH_MATERIAL``), which is where a managed launch now carries it so that every
+descendant of the gateway stops inheriting a control-plane bearer. Standalone mode still mints and
+exports ``COTAL_CONTROL_TOKEN`` itself, so that path is read as a fallback and is not deprecated.
+
+Hooks must never block the gateway, so the connection has a short timeout and every socket error is
+swallowed. A token that cannot be resolved is NOT swallowed the same way: it means presence relays
+silently do nothing for the life of the session, which looks exactly like a healthy seat that never
+does anything, so it warns once on stderr (the launcher's log) and then stays quiet.
 
 Hermes hook callback signatures vary by version; these take ``*args, **kwargs`` and best-effort
 extract what they need, so a signature change degrades to "no detail" rather than an exception.
@@ -15,16 +22,58 @@ from __future__ import annotations
 import json
 import os
 import socket
+import sys
 from typing import Any
 
 _TIMEOUT_S = 2.0
+_warned = False
+
+
+def _material_token() -> str | None:
+    """The control token out of this launch's material file, or ``None``.
+
+    Refuses a file other local users can read, for the same reason the TypeScript reader does: a
+    material file readable beyond its owner is the disclosure the file carrier exists to prevent.
+    Every failure here returns ``None`` and lets the caller warn, because a hook is not allowed to
+    raise into the gateway.
+    """
+    path = os.environ.get("COTAL_LAUNCH_MATERIAL")
+    if not path:
+        return None
+    try:
+        if os.name != "nt" and (os.stat(path).st_mode & 0o077):
+            return None
+        with open(path, encoding="utf-8") as fh:
+            material = json.load(fh)
+    except (OSError, ValueError):
+        return None
+    token = material.get("controlToken") if isinstance(material, dict) else None
+    return token if isinstance(token, str) and token else None
+
+
+def _warn_once(message: str) -> None:
+    global _warned
+    if _warned:
+        return
+    _warned = True
+    print(f"[cotal-hermes] {message}", file=sys.stderr, flush=True)
 
 
 def relay(event_name: str, **fields: Any) -> None:
     """Forward one lifecycle event to the connector's control socket; fire-and-forget."""
     path = os.environ.get("COTAL_CONTROL_SOCKET")
-    token = os.environ.get("COTAL_CONTROL_TOKEN")
-    if not path or not token:
+    if not path:
+        return  # not a Cotal-managed gateway at all; nothing to relay to
+    # Managed launches carry the token in the launch material; standalone mode exports it directly.
+    token = os.environ.get("COTAL_CONTROL_TOKEN") or _material_token()
+    if not token:
+        # This is the failure that has no other symptom: the seat joins, the sidecar and the bridge
+        # work, and presence never moves off its first value. Say so once rather than never.
+        _warn_once(
+            "control socket is configured but no control token could be resolved "
+            "(neither COTAL_CONTROL_TOKEN nor a readable COTAL_LAUNCH_MATERIAL with one) - "
+            "presence relays are disabled for this session"
+        )
         return
     payload = {"token": token, "event": {"hook_event_name": event_name, **fields}}
     try:

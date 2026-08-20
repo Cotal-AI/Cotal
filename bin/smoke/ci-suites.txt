@@ -160,6 +160,8 @@ smoke:join-creds
 smoke:flag-inventory
 smoke:start-overrides
 smoke:launch-parity
+smoke:seat-env-scope
+smoke:suite-ambient-env
 smoke:spawn-args
 smoke:own-agent-control
 smoke:views
@@ -228,6 +230,7 @@ smoke:tool-input-closed
 smoke:opencode-tool-closed
 smoke:pi-tool-closed
 smoke:hermes-tool-closed
+smoke:hermes-hooks-control
 smoke:codex-tool-closed
 smoke:control-reply
 smoke:manager-invoke-verdict

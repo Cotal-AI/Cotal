@@ -105,6 +105,14 @@ import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
+// A run started from a session that is itself joined to a mesh inherits `COTAL_*`, and every child
+// spawned below is `cotal attach`, which READS connection material. Blanking three names by hand
+// (SPACE/SERVERS/CREDS) left the rest reachable: the lifecycle uid, the control token, the user-auth
+// quad, the ACLs, and the launch-material path. Scrub the whole prefix once, here; what a child
+// genuinely needs (COTAL_HOME) each spawn sets for itself.
+for (const k of Object.keys(process.env)) if (k.startsWith("COTAL_")) delete process.env[k];
+
+
 const here = dirname(fileURLToPath(import.meta.url));
 const repoRoot = resolve(here, "../../..");
 const BIN = join(repoRoot, "bin", "cotal.ts");
@@ -352,7 +360,7 @@ const started: Attached[] = [];
 function attachUnderPty(root: string): Attached {
   const child = pty.spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY], {
     name: "xterm-256color", cols: 100, rows: 30, cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" } as Record<string, string>,
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME } as Record<string, string>,
   });
   let buf = "";
   let exited: { code: number; signal: number } | undefined;
@@ -387,7 +395,7 @@ const pipedChildren: Piped[] = [];
 function attachPiped(root: string, extra: readonly string[] = []): Piped {
   const child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
     stdio: ["pipe", "pipe", "pipe"],
   });
   let buf = "";
@@ -426,7 +434,7 @@ function attachFromFile(root: string, contents: string, extra: readonly string[]
   const fd = openSync(path, "r");
   const child = spawn("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", space, "--server", PROXY, ...extra], {
     cwd: root,
-    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME, COTAL_SPACE: "", COTAL_SERVERS: "", COTAL_CREDS: "" },
+    env: { ...process.env, COTAL_HOME: home, XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME },
     stdio: [fd, "pipe", "pipe"],
   });
   let buf = "";
