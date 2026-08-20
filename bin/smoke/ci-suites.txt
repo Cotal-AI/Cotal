@@ -384,3 +384,10 @@ smoke:lang-differential
 # with nothing to report it.
 smoke:freeslot-barrier:live
 smoke:int2-revoke:live
+
+# `cotal attach` redeems with the seed the MESH resolved, never one walked up from the cwd (#722):
+# a real authed broker that trusts one chain, a fossil `.cotal` holding another, and the binary run
+# from each directory in turn. Gated because the regression it covers was invisible to every
+# existing suite: they all run from a checkout that IS the resolved root, where the two answers
+# agree.
+smoke:attach-auth-root
