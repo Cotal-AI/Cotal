@@ -35,7 +35,9 @@ required by Pi's SDK if they expect proactive delivery into an idle session.
 
 ## Delivery
 
-Inbound traffic is injected as a `cotal-inbox` custom message. Its opaque batch details must appear
+Inbound traffic is injected as a `cotal-inbox` custom message. Visible inbox and send-tool text is
+wrapped by Pi's own ANSI/grapheme-aware TUI wrapper, so emoji, CJK, and styled content obey the exact
+same terminal-column invariant Pi enforces at render time. Its opaque batch details must appear
 in Pi's `message_start` and in the exact provider `context`. A successful `after_provider_response`
 confirms the batch early when the transport exposes an HTTP response; transports such as the Codex
 subscription may omit that hook, so an exact context is confirmed instead by its following clean

@@ -4,17 +4,34 @@ import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
 import cotalMesh from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
+import { wrapped } from "./src/wrap.js";
 
 let checks = 0;
 const ok = (condition: unknown, message: string): void => {
   assert.ok(condition, message);
   checks++;
 };
+
+// Regression: this exact Cotal inbox line killed a real Pi seat on david-n7401ze.
+// JS sees 120 characters; the two check marks occupy two terminal cells each, so
+// Pi sees 122 columns. The old `.length` wrapper emitted it unchanged at width 120.
+{
+  const width = 120;
+  const crashLine =
+    "**CI at `84bf0a2e…`: `docs` ✅, both CodeQL ✅; `unit`, `live` and all four smoke shards still running.** The `docs` check";
+  ok(crashLine.length === width, "the live crash fixture exactly fills the old JS-length budget");
+  ok(visibleWidth(crashLine) === 122, "Pi measures the live crash fixture two columns over the terminal");
+  const rendered = wrapped(crashLine).render(width);
+  ok(rendered.length > 1, "the terminal-width wrapper splits the line that the JS-length wrapper missed");
+  ok(rendered.every((line) => visibleWidth(line) <= width), "every rendered Cotal line fits Pi's terminal-width invariant");
+  ok(rendered.join(" ") === crashLine, "wrapping preserves the complete peer message");
+}
 
 function item(id: string, overrides: Partial<InboxItem> = {}): InboxItem {
   return {

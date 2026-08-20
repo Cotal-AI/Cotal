@@ -14,6 +14,7 @@ import {
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { PiDriver, type CotalBatchDetails, type PiContextLike } from "./driver.js";
 import { registerCotalTools } from "./tools.js";
+import { wrapped } from "./wrap.js";
 
 const CUSTOM_TYPE = "cotal-inbox";
 const RUNTIMES = Symbol.for("cotal.pi.runtimes");
@@ -48,27 +49,6 @@ function messageText(content: unknown): string {
     .map((part) => (part && typeof part === "object" && "text" in part ? String((part as { text?: unknown }).text ?? "") : ""))
     .filter(Boolean)
     .join("\n");
-}
-
-function wrapped(line: string): { render(width: number): string[]; invalidate(): void } {
-  return {
-    invalidate(): void {},
-    render(width: number): string[] {
-      const size = Math.max(16, width);
-      const out: string[] = [];
-      for (const source of line.split("\n")) {
-        let rest = source;
-        while (rest.length > size) {
-          const whitespace = rest.lastIndexOf(" ", size);
-          const cut = whitespace > size / 2 ? whitespace : size;
-          out.push(rest.slice(0, cut));
-          rest = rest.slice(cut).trimStart();
-        }
-        out.push(rest);
-      }
-      return out;
-    },
-  };
 }
 
 function cleanPersonaFile(runtime: PiRuntime): void {
