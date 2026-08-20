@@ -1,5 +1,6 @@
 ---
 "@cotal-ai/web": minor
+"@cotal-ai/connector-core": minor
 ---
 
 Cap the dashboard delete route's request body at 8 KiB.
@@ -13,3 +14,6 @@ both the declared length and the bytes as they arrive, so a body with no declare
 too. It is never truncated to fit: a shortened channel name is a name the caller did not send, which
 is the aliasing shape this route's validator already exists to refuse. Bodies under the cap, extra
 fields included, are untouched.
+
+`@cotal-ai/connector-core` is listed because it ships the docs bundle, which embeds the page this
+change updates and is regenerated here. Its only diff is that regenerated file.
