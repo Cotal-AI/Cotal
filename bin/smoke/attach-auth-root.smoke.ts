@@ -99,6 +99,14 @@ const must = (name: string, cond: boolean, extra?: unknown) => {
 };
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
+// Scrub any ambient COTAL_* before anything is handed to a child. Whatever runs this suite may
+// itself be a managed agent session, and its `COTAL_SERVERS` / credential variables name a LIVE
+// mesh: a bare `...process.env` would hand the child a real broker and a real identity, which is a
+// different mesh from the one this suite builds and reasons about. Enforced tree-wide by
+// `smoke:suite-ambient-env`, which is where this file's first version was caught.
+const cleanEnv: NodeJS.ProcessEnv = { ...process.env };
+for (const k of Object.keys(cleanEnv)) if (k.startsWith("COTAL_")) delete cleanEnv[k];
+
 const PORT = await freePort();
 const SERVER = `nats://127.0.0.1:${PORT}`;
 const SPACE = "authroot";
@@ -166,7 +174,7 @@ const cmd = (name: string): Command => {
 async function attachFrom(cwd: string, ms = 25_000): Promise<string> {
   const p = spawnProc("npx", ["tsx", BIN, "attach", "--name", SEAT, "--space", SPACE], {
     cwd,
-    env: { ...process.env, COTAL_HOME: home, NO_COLOR: "1" },
+    env: { ...cleanEnv, COTAL_HOME: home, NO_COLOR: "1" },
     stdio: ["ignore", "pipe", "pipe"],
   });
   kids.push(p);
@@ -319,7 +327,7 @@ try {
   const runCli = (argv: string[]) => {
     const r = spawnSync("npx", ["tsx", BIN, ...argv], {
       cwd: workBare,
-      env: { ...process.env, COTAL_HOME: home, NO_COLOR: "1" },
+      env: { ...cleanEnv, COTAL_HOME: home, NO_COLOR: "1" },
       encoding: "utf8",
       timeout: 120_000,
     });
@@ -351,6 +359,10 @@ try {
   console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);
   if (fail) process.exitCode = 1;
 } finally {
-  await mgr?.stop().catch(() => {});
+  // BOUNDED, and the bound is the point: the brokers this file started are killed below, and a
+  // manager stop that hangs must not be able to keep that from happening. Measured once: a leaked
+  // `nats-server` from this rig outlived its run by half an hour, and the reaper attributes a leak
+  // like that to whichever suite was running.
+  await Promise.race([mgr?.stop().catch(() => {}) ?? Promise.resolve(), sleep(10_000)]);
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
 }
