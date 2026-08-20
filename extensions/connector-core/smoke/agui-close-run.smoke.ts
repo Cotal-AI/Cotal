@@ -22,6 +22,10 @@
  *   K4  drop the halted guard -> `close:a-HALTED-emitter-refuses-to-close`
  *   K5  drop the `onRunClosed` report
  *       -> `holder:the-closed-run-is-reported-so-a-mapper-can-forget-it`
+ *   K6  publish a finish even when a failure was reported, which is what this plane shipped
+ *       -> `close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code`
+ *   K7  drop the reason in the holder, one layer above the emitter that would have carried it
+ *       -> `holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given`
  *
  * WHAT CARRIES NO KILL, NAMED RATHER THAN COUNTED AS COVERAGE. Two properties here are held by
  * something other than a line a mutation can break, and saying so is what keeps the five above
@@ -33,6 +37,11 @@
  *   - `holder:a-close-on-a-holder-that-never-adopted-starts-NOTHING` is enforced by the SIGNATURE:
  *     `closeRun` takes no path, so there is nothing to start an emitter from. The cell is a fence
  *     against a future signature that takes one, not evidence about today's code.
+ *   - `close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED` is enforced by the SHAPE:
+ *     one close method builds one terminal, and the bracket machine has closed the run by the time
+ *     anything could ask for a second. There is no line to delete that violates it, so it carries no
+ *     kill. It is a fence against a future SECOND close method, and it is graded by asking the
+ *     stream for another close rather than by counting who called what.
  *
  * Run: pnpm smoke:agui-close-run
  */
@@ -381,6 +390,110 @@ try {
     holder.closeRun(100);
     await holder.settled();
     c("holder:a-second-close-reports-NOTHING", closedRuns.length === 1, closedRuns);
+  });
+
+  // ── AN ERROR CLOSE PUBLISHES RUN_ERROR, AND IT IS STILL A CLOSE ─────────────────────────────
+  //
+  // A turn that FAILED ended too, so it closes through this same terminal — the connector supplies
+  // the reason and this file carries it to the wire. The property that matters to a reader is not
+  // which method was called but WHAT THE SEQUENCE SAYS: `RUN_ERROR` closes a run on its own, so a
+  // run that emitted one must never also emit a `RUN_FINISHED`. That is graded below by asking the
+  // stream, after an error close, for another close and requiring it to publish nothing.
+  await block("AN ERROR CLOSE PUBLISHES RUN_ERROR, AND IT IS STILL A CLOSE", async () => {
+    const { src, walPath, wal, source } = await fresh("error-close");
+    const ep = new FakeEndpoint();
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
+    await em.pump(); // adopt
+    append(src, { open: "run-e" });
+    ep.answers = [{ seq: 21, duplicate: false }];
+    await em.pump();
+
+    const beforeClose = await reopen(walPath);
+    const cursorBefore = beforeClose.frontier.sourceCursor;
+
+    ep.answers = [{ seq: 22, duplicate: false }];
+    const closed = await attempt(() =>
+      em.closeRun({ timestamp: 99, error: { message: "upstream returned 500", code: "APIError" } }),
+    );
+    c("close:an-ERROR-close-names-the-run-it-closed", closed.value === "run-e", {
+      returned: closed.value,
+      err: closed.err?.message,
+    });
+
+    const errFrame = frameOf(ep.publishes[ep.publishes.length - 1]!);
+    const ev = errFrame.events[0] as { type?: string; message?: string; code?: string; runId?: string };
+    c(
+      "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code",
+      errFrame.events.length === 1 &&
+        ev.type === "RUN_ERROR" &&
+        ev.message === "upstream returned 500" &&
+        ev.code === "APIError" &&
+        // RUN_ERROR has no runId of its own; the FRAME is what attributes it to a run.
+        ev.runId === undefined &&
+        errFrame.runId === "run-e",
+      { events: errFrame.events, frameRun: errFrame.runId },
+    );
+
+    // Same cursor discipline as the finish: this frame consumed no source record either.
+    const afterClose = await reopen(walPath);
+    c(
+      "close:an-ERROR-close-republishes-the-source-cursor-UNCHANGED",
+      afterClose.frontier.sourceCursor === cursorBefore && cursorBefore !== undefined,
+      { before: cursorBefore, after: afterClose.frontier.sourceCursor },
+    );
+
+    // THE SEQUENCE PROPERTY, asked of the stream rather than of the caller. Nothing here inspects
+    // which method ran; it asks the emitter for an ordinary close and requires the answer to be
+    // that there is nothing left to close, and requires the wire to have gained no frame.
+    const publishesAfterError = ep.publishes.length;
+    const second = await attempt(() => em.closeRun({ timestamp: 100 }));
+    c(
+      "close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED",
+      second.value === null && second.err === undefined && ep.publishes.length === publishesAfterError,
+      { returned: second.value, err: second.err?.message, publishes: ep.publishes.length },
+    );
+    const allEvents = ep.publishes.flatMap((call) => frameOf(call).events as { type?: string }[]);
+    c(
+      "close:and-no-RUN_FINISHED-appears-ANYWHERE-in-what-this-stream-published",
+      !allEvents.some((e) => e.type === "RUN_FINISHED"),
+      allEvents.map((e) => e.type),
+    );
+  });
+
+  await block("THE HOLDER CARRIES A FAILURE THROUGH THE SAME CLOSE", async () => {
+    const { src, wal, source } = await fresh("holder-error-close");
+    const ep = new FakeEndpoint();
+    const errors: Error[] = [];
+    const closedRuns: string[] = [];
+    const holder = new AguiEmitterHolder<Rec>(
+      async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
+      (e) => errors.push(e),
+      (runId) => closedRuns.push(runId),
+    );
+
+    holder.flush(src); // adopt
+    await holder.settled();
+    append(src, { open: "run-h" });
+    ep.answers = [{ seq: 61, duplicate: false }, { seq: 62, duplicate: false }];
+    holder.flush(src);
+    await holder.settled();
+    holder.closeRun(99, { message: "provider rejected the request", code: "ProviderAuthError" });
+    await holder.settled();
+
+    const frame = frameOf(ep.publishes[ep.publishes.length - 1]!);
+    const ev = frame.events[0] as { type?: string; message?: string; code?: string };
+    c(
+      "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
+      ev.type === "RUN_ERROR" && ev.message === "provider rejected the request" && ev.code === "ProviderAuthError",
+      { events: frame.events, errors: errors.map((e) => e.message) },
+    );
+    // An error close is still a close, so the mapper must be told to forget the run exactly as it is
+    // told after a finish. Without this it attributes the next turn's records to a closed run.
+    c(
+      "holder:an-ERROR-close-reports-the-closed-run-so-a-mapper-can-forget-it",
+      closedRuns.length === 1 && closedRuns[0] === "run-h" && errors.length === 0,
+      { closedRuns, errors: errors.map((e) => e.message) },
+    );
   });
 
   await block("THE HOLDER STARTS NOTHING ON THE WAY OUT OF A TURN", async () => {

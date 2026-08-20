@@ -296,6 +296,7 @@ smoke:manager-deregister
 smoke:scatter-pinned-probe
 smoke:agui-close-run
 smoke:claude-events-arm
+smoke:claude-run-error
 smoke:events-grant
 smoke:spawn-foreground-events
 smoke:seat-input
@@ -336,6 +337,7 @@ smoke:agui-opencode-map
 smoke:agui-opencode-source
 smoke:opencode-events-arm
 smoke:opencode-events-reset
+smoke:opencode-run-error
 smoke:goal-follow
 smoke:required-arg-seam
 smoke:attach-stdin

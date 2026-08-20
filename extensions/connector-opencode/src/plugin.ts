@@ -255,6 +255,31 @@ export const cotal: Plugin = async () => {
     return typeof error === "object" && error !== null && (error as { name?: unknown }).name === "MessageAbortedError";
   }
 
+  /**
+   * The failure a `session.error` reports, in the shape `RUN_ERROR` takes.
+   *
+   * OpenCode's error is a TAGGED UNION — `ProviderAuthError`, `APIError`, `MessageOutputLengthError`,
+   * `UnknownError`, `MessageAbortedError` — with the tag on `name` and the human-readable reason on
+   * `data.message`. The tag is published as the code and the reason as the message, both verbatim:
+   * this connector does not rank one failure kind above another, it names the one OpenCode named.
+   *
+   * `error` is OPTIONAL on the bus event, and an error-less `session.error` is still a failed turn —
+   * it just cannot say which kind, so it gets a message and no code rather than being demoted to a
+   * finish. `MessageOutputLengthError` carries no `message` either and lands on the same fallback.
+   */
+  function runErrorOf(error: unknown): { message: string; code?: string } {
+    const e = (typeof error === "object" && error !== null ? error : {}) as {
+      name?: unknown;
+      data?: { message?: unknown };
+    };
+    const code = typeof e.name === "string" && e.name ? e.name : undefined;
+    const message = typeof e.data?.message === "string" && e.data.message ? e.data.message : undefined;
+    return {
+      message: message ?? `opencode turn failed${code ? `: ${code}` : ""}`,
+      ...(code ? { code } : {}),
+    };
+  }
+
   function scheduleErrorRetry(): void {
     if (errorRetryTimer || pendingForWake() === 0) return;
     const delay = errorRetryMs;
@@ -543,12 +568,29 @@ export const cotal: Plugin = async () => {
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
           if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error
-          // A failed turn still ENDED, so the run is closed rather than left open for the next one
-          // to be refused against. It closes with no outcome, which says the run ended and does not
-          // claim it succeeded; `RUN_ERROR` is unreachable from any emitter on this plane today.
-          events?.flush(sessionID);
-          events?.closeRun(Date.now());
+          // WHICH `session.error`s ARE FAILED TURNS, decided here and stated rather than left to be
+          // inferred, because that judgment is the whole of #596. Every error that reaches this line
+          // ended a turn before it finished — the ack path one block below has always treated it
+          // that way, leaving the batch un-acked so it can retry. The ONE exception is a person
+          // pressing Stop, which OpenCode delivers as this same bus event: it arrives as
+          // `MessageAbortedError`, corroborated by the TUI's own `session.interrupt` command. That
+          // is a turn someone ENDED, not one that failed, and it closes as a finish.
+          //
+          // `interrupted` IS COMPUTED ONCE AND SPENT TWICE, and the single computation is the point:
+          // the wire and the inbox now answer "did this turn fail?" from the same predicate, so they
+          // cannot drift into disagreeing about the same turn. It moved above the close for that
+          // reason and for no other; it consumes a one-shot intent, so a second read would be a
+          // different answer.
           const interrupted = consumeInterruptIntent(event.properties.sessionID) || isMessageAbortedError(event.properties.error);
+          // Order matters and is not stylistic: flush the turn's records FIRST, then close the run,
+          // or the closing frame terminates a run the records that follow still belong to.
+          events?.flush(sessionID);
+          // A failed turn still ENDED, so the run is closed rather than left open for the next one to
+          // be refused against. A FAILED one closes with `RUN_ERROR` carrying OpenCode's own reason,
+          // so a reader can tell it from a turn that finished; an interrupted one closes with no
+          // outcome, which says the run ended and does not claim it succeeded. `RUN_ERROR` closes a
+          // run by itself, so no second terminal follows it.
+          events?.closeRun(Date.now(), interrupted ? undefined : runErrorOf(event.properties.error));
           busy = false;
           if (awaitingTurnEnd) {
             awaitingTurnEnd = false;

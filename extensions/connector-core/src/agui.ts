@@ -1487,9 +1487,23 @@ export class AguiEmitter<T> {
    * makes it safe on a stream whose run was opened by a PREVIOUS process, since the machine is
    * restored from the WAL.
    *
+   * **AN `error` CLOSES THE SAME RUN WITH `RUN_ERROR` INSTEAD, and it is one method rather than two
+   * ON PURPOSE.** `RUN_ERROR` closes a run on its own, so a run that emitted one must never also
+   * emit a `RUN_FINISHED`. With a second method that invariant would be a rule someone has to
+   * remember; with one method and one branch it is a property of the shape: exactly one terminal is
+   * built, and the bracket machine has closed the run by the time anything could ask for another, so
+   * a following close answers `null` like any other close on a settled stream. Which harness signals
+   * mean a turn FAILED is a connector's decision and is stated at each connector's own mapping site;
+   * this file only carries the answer to the wire.
+   *
    * @returns the run that was closed, or `null` when the stream was already at a stopping point.
    */
-  async closeRun(o: { timestamp: number; cotal?: CotalMeta }): Promise<string | null> {
+  async closeRun(o: {
+    timestamp: number;
+    cotal?: CotalMeta;
+    /** Close with `RUN_ERROR` carrying these instead of `RUN_FINISHED`. */
+    error?: { message: string; code?: string };
+  }): Promise<string | null> {
     if (this.halted) throw this.halted;
     if (this.wal.pending)
       throw new Error(
@@ -1508,15 +1522,24 @@ export class AguiEmitter<T> {
           `cursor for the closing frame.`,
       );
 
-    const event = runFinished({
-      threadId: this.threadId,
-      runId,
-      timestamp: o.timestamp,
-      ...(o.cotal ? { cotal: o.cotal } : {}),
-    });
+    // `RUN_ERROR` carries no `runId` and no `threadId` of its own — its schema is `message` plus an
+    // optional `code` — so the run it closes is named by the frame's unit below, not by the event.
+    const event = o.error
+      ? runError({
+          message: o.error.message,
+          timestamp: o.timestamp,
+          ...(o.error.code ? { code: o.error.code } : {}),
+          ...(o.cotal ? { cotal: o.cotal } : {}),
+        })
+      : runFinished({
+          threadId: this.threadId,
+          runId,
+          timestamp: o.timestamp,
+          ...(o.cotal ? { cotal: o.cotal } : {}),
+        });
 
     // Validated on a clone first, exactly as a mapped batch is. The refusal that matters here is a
-    // message or tool call still open under this run: `RUN_FINISHED` while something it opened is
+    // message or tool call still open under this run: either terminal while something it opened is
     // unclosed is a protocol violation, and it must surface as one rather than be published.
     const probe = this.brackets.clone();
     try {
