@@ -57,11 +57,13 @@ import {
  * with no append coming to carry it: one arriving in the worker's boot window, after the upfront
  * sample below but before the thread's first pre-effect check (measured: without the timer, one
  * effect the stop should have prevented is dispatched), and one arriving while an effect is parked
- * in this process for hours. A stop during a long PURE stretch is covered by neither the timer nor
- * anything else: `shouldStop`'s one reader in the language is the pre-effect check, on both
- * engines, so a program that computes without effecting runs to its fuel refusal (L4013) before
- * any stop is honoured. That is the language's own property, shared with the walker, and a stop
- * read at the fuel yield would be a change to both engines, not to this host.
+ * in this process for hours. The timer PUBLISHES; the run honours a published stop at its next
+ * pre-effect check, which is `shouldStop`'s one reader in the language, on both engines. Two
+ * consequences follow and are the language's own properties rather than this host's: a stop during
+ * a long PURE stretch waits for the next effect boundary or the fuel refusal (L4013), and a stop
+ * that lands after the run's LAST pre-effect check is published but never observed, on the walker
+ * exactly as here (measured, both engines). A stop read at the fuel yield would be a change to
+ * both engines, not to this host.
  */
 const STOP_POLL_MS = 100;
 
