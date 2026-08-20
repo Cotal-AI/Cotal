@@ -119,7 +119,7 @@ const SESSION_ENV_PREFIX = "COTAL_";
  *  mesh registry, and a child that shells out to `cotal` must resolve the one its parent did.
  *  `COTAL_CODEX_BIN` and its siblings are operator binary overrides, and sit here precisely BECAUSE
  *  the neighbouring per-launch `COTAL_CODEX_HOME`/`_CONFIG`/`_TUI`/`_PROMPT` do not. */
-const OPERATOR_ENV_KEEP = [
+export const OPERATOR_ENV_KEEP = [
   "COTAL_HOME",
   "COTAL_FEEDBACK_KEY",
   "COTAL_FEEDBACK_EMAIL",
