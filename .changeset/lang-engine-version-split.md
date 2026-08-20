@@ -20,8 +20,7 @@ neither.
 
 The run driver now holds a table of the versions this build hosts, ordered by declared precedence
 rather than by a string sort. A fresh run is stamped with the version of the engine that will
-actually execute it (today that is `1`, the walker, because no driver hosts the version-2 engine
-yet), and a record whose version no engine here serves is released by name with the new **L5023**,
+actually execute it, and a record whose version no engine here serves is released by name with the new **L5023**,
 naming both the version it met and the set this build serves, with the run left untouched: nothing
 activated and nothing appended. It is released rather than failed or thrown, because a build that
 cannot host a language has observed nothing about the program.
