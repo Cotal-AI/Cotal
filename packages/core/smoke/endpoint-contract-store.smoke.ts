@@ -156,7 +156,7 @@ try {
     const appended = await js.publish(epcSubject(SPACE_B, dHexB), enc("SHADOW-GARBAGE"), { headers: hb }).then((r) => r.seq).catch(() => 0);
     c("on an UN-HARDENED stream the raw append SUCCEEDS (seq 2) — the shadow is present", appended === 2, appended);
     const last = await jsm.direct.getMessage(epcStreamName(SPACE_B), { last_by_subj: epcSubject(SPACE_B, dHexB) });
-    c("last_by_subj now returns the SHADOW garbage (the DoS the read must defeat)", dec(last.data) === "SHADOW-GARBAGE");
+    c("last_by_subj now returns the SHADOW garbage (the DoS the read must defeat)", last !== null && dec(last.data) === "SHADOW-GARBAGE");
     const recovered = await fetchContractArtifact(ctxB, dHexB);
     c("fetchContractArtifact still returns the HONEST artifact (create-only-winner fallback defeats the shadow)", recovered !== undefined && dec(recovered) === '{"shadow":"honest-B"}', recovered && dec(recovered));
     // and a subject where BOTH the winner and the shadow are garbage stays loud (genuinely corrupt).

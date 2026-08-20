@@ -27,35 +27,63 @@ export {
   EFFECT_KINDS,
   EVENT_CONSTRUCTORS,
   FORBIDDEN_GLOBALS,
+  HOST_GLOBAL_HINTS,
   PRIMITIVES,
   PURE_PRIMITIVES,
   RESERVED_NAMES,
   STEP_NAME_RE,
+  VALUE_NAMES,
   primitiveDoc,
   type EffectKind,
   type PrimitiveSpec,
 } from "./primitives.js";
+
+export {
+  ADMITTED_NODES,
+  FORBIDDEN_CHILDREN,
+  FORBIDDEN_NODES,
+  KNOWN_NODES,
+  STRUCTURAL_NODES,
+} from "./syntax.js";
+
+export { MUTATING_METHODS } from "./library.js";
 
 export { validate, type ValidateResult } from "./grammar.js";
 
 export {
   RunDivergence,
   RuntimeFault,
+  ScopeBranchMissing,
+  UnwalkableScope,
   resume,
   run,
   type RunOptions,
   type RunResult,
 } from "./interpret.js";
 
-export { Prng, assertCrossable, deepFreeze } from "./values.js";
+export { NotCrossable, Prng, assertCrossable, deepFreeze } from "./values.js";
+
+export {
+  ENGINE_LANGUAGE_VERSION,
+  LANGUAGE_VERSION,
+  PIN_DEFAULTS,
+  PinMismatch,
+  WALKER_LANGUAGE_VERSION,
+  bindPins,
+  resolvePins,
+  type PinnableOptions,
+  type RunPins,
+} from "./pins.js";
 
 export {
   Cancelled,
+  RunReleased,
   EffectError,
   type AgentHandleValue,
   type AskRequest,
   type CancelSignal,
   type ChannelHandleValue,
+  type CheckpointRaw,
   type CheckpointRequest,
   type CheckpointResultValue,
   type ConclaveRequest,
@@ -98,15 +126,20 @@ export {
   type SimScript,
 } from "./sim.js";
 
+export { notifyFactViolation } from "./notify-fact.js";
+
 export {
   Journal,
+  JournalAppendRejected,
   JournalReadOnlyError,
   RunClock,
+  journalEntryKeyString,
   type EntryError,
   type EntryState,
   type EntryStatus,
   type JournalEntry,
   type JournalInit,
+  type JournalStore,
   type LookupVerdict,
 } from "./journal.js";
 
@@ -115,6 +148,7 @@ export {
   KeyScope,
   branchKeys,
   digest,
+  programHashOf,
   scopePathString,
   stepKeyEquals,
   stepKeyString,

@@ -32,7 +32,7 @@ import { publishFactCreateOnly } from "@cotal-ai/core";
 import { openLifecycleRegistry, activateLifecycle } from "../src/lifecycle-registry.js";
 import { registryStores } from "../src/lifecycle-registry.js";
 import { makeRecordsScannerOverConnection } from "../src/records-scanner.js";
-import type { CommitValue } from "../src/admission-mediator.js";
+import type { CancelEffectsRoute, CommitValue } from "../src/admission-mediator.js";
 import { pickFreePort } from "../../../packages/core/smoke/_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -102,13 +102,19 @@ try {
   let clock = NOW;
   const med = await openAdmissionMediator(nc, SPACE, EP, { now: () => clock, proofTtlMs: 1000, recordsScanner: recScanner });
   // The effects hook (the drain's cancelEffectsRoute seam): this smoke plays the SERVING writer
-  // and establishes the completion marker so the drain's re-read passes.
-  const markEffectsDone = async ({ key }: { key: string; doneSubject: string }) => {
+  // and establishes the completion marker so the drain's re-read passes. Typed as the real
+  // `CancelEffectsRoute` rather than a hand-written parameter shape: the old shape named a
+  // `doneSubject` field the repair does not carry, and nothing ever destructured it, so it was a
+  // dead name. The body still derives the completion subject and the acceptance INDEPENDENTLY,
+  // because the drain re-reads the marker at the subject IT derived, and the two derivations
+  // agreeing is the invariant under test, so it is asserted here rather than left implicit.
+  const markEffectsDone: CancelEffectsRoute = async ({ key, subject: boundSubject }) => {
     const [cOwner, cActor, cUid, id] = key.split(".").slice(3);
     const decSubject = epfSubject(SPACE, EP, ["dec", cOwner, cActor, cUid, id]);
     const decision = parseDecisionFact(await readLastFact(jsm, epfStreamName(SPACE), decSubject), decSubject);
     if (decision.decision !== "accepted") throw new Error(`expected accepted decision at ${decSubject}`);
     const subject = epfEffectSubject(SPACE, EP, { owner: cOwner, actor: cActor, uid: cUid }, id);
+    if (subject !== boundSubject) throw new Error(`the mediator bound ${boundSubject}, the key derives ${subject}`);
     await publishFactCreateOnly(js, subject, new TextEncoder().encode(JSON.stringify(effectFactOf(decision, clock))));
   };
   const drainDeps = { applyCommit: (k: string, b: Uint8Array) => applyCommit(recordsKv, k, b), cancelEffectsRoute: markEffectsDone };

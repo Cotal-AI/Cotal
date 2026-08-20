@@ -255,13 +255,16 @@ await rejects("a missing sub is rejected",
     async () => badGrant.exchange(await mintIdp(baseIdp), { actor: "agent_1" }), "deny");
 }
 
-// Misconfig fails at CONSTRUCTION, not as every-exchange-rejected.
+// Misconfig fails at CONSTRUCTION, not as every-exchange-rejected. Each of the three below supplies
+// the REQUIRED mintConnectCredential hook so the constructor reaches, and refuses on, the field the
+// cell names: the hook is validated last (idp.issuer, idp.audience, idp.key, authorizeActor, then
+// it), so omitting it left each cell one reordering away from passing for the wrong reason.
 await rejects("a missing idp.issuer pin fails at construction",
-  () => createIdpBridge({ idp: { issuer: "", audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "issuer");
+  () => createIdpBridge({ idp: { issuer: "", audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}), mintConnectCredential: mintStub }), "issuer");
 await rejects("a missing idp.audience pin fails at construction",
-  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: "", key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "audience");
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: "", key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}), mintConnectCredential: mintStub }), "audience");
 await rejects("a missing idp.key fails at construction",
-  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: undefined as never }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}) }), "key");
+  () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: undefined as never }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: () => ({}), mintConnectCredential: mintStub }), "key");
 await rejects("a missing authorizeActor hook fails at construction",
   () => createIdpBridge({ idp: { issuer: IDP_ISS, audience: IDP_ISS, key: localKey }, space: SPACE, spaceSecret: SECRET, issuer: cotalIssuer, authorizeActor: undefined as never, mintConnectCredential: mintStub }), "hook");
 // R1: the mint hook is REQUIRED at construction — a public bridge that could mint a claimless

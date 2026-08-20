@@ -6,7 +6,8 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { registry } from "@cotal-ai/core";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial, registry } from "@cotal-ai/core";
+import { configFromEnv, controlFromEnv } from "@cotal-ai/connector-core";
 import { codexConnector } from "../src/index.js";
 
 let pass = 0;
@@ -37,14 +38,20 @@ try {
   check("host entry launched", base.args.length === 1 && /host/.test(base.args[0]), base.args);
   check("identity env", base.env?.COTAL_SPACE === "s" && base.env?.COTAL_NAME === "n");
   check("control endpoint minted", Boolean(base.control?.path && base.control?.token));
+  // The socket PATH rides the env; the TOKEN rides the launch material, so a shell this seat runs
+  // cannot pick a control-plane bearer out of its own environment. Both halves are asserted: the
+  // absence alone would also pass on a launch that minted no control endpoint at all.
   check(
-    "control endpoint in env, matching the spec",
-    base.env?.COTAL_CONTROL_SOCKET === base.control?.path && base.env?.COTAL_CONTROL_TOKEN === base.control?.token,
+    "control socket path in env, token NOT in env",
+    base.env?.COTAL_CONTROL_SOCKET === base.control?.path && base.env?.COTAL_CONTROL_TOKEN === undefined,
+  );
+  check(
+    "control token recoverable from the launch material, matching the spec",
+    controlFromEnv(base.env)?.token === base.control?.token,
   );
   check("codex data root defaults to the launch dir", base.env?.COTAL_CODEX_HOME === process.cwd());
   check("env allow-list: unrelated operator env is NOT forwarded", base.env?.SUPER_SECRET_LEAK_CANARY === undefined);
   check("env allow-list: the provider key IS forwarded by name", base.env?.OPENAI_API_KEY === "sk-test-canary");
-  check("no transcript by default", base.env?.COTAL_TRANSCRIPT === undefined);
 
   // Workspace root pins the data root.
   const rooted = codexConnector.buildLaunch({ space: "s", name: "n", workspaceRoot: dir });
@@ -117,18 +124,34 @@ try {
     id: "UAID",
     lifecycleUid: "lc-1",
     servers: "nats://x:1",
-    transcript: true,
     prompt: "greet the operator",
   });
   check(
-    "role/id/lifecycle/servers/transcript/prompt forwarded",
+    "role/id/lifecycle/prompt forwarded",
     full.env?.COTAL_ROLE === "coder" &&
       full.env?.COTAL_ID === "UAID" &&
       full.env?.COTAL_LIFECYCLE_UID === "lc-1" &&
-      full.env?.COTAL_SERVERS === "nats://x:1" &&
-      full.env?.COTAL_TRANSCRIPT === "1" &&
       full.env?.COTAL_CODEX_PROMPT === "greet the operator",
   );
+  // The broker URL is NOT one of them: it rides the launch material, so a suite or a tool this seat
+  // runs cannot resolve its "default" broker out of an inherited variable and silently dial ours.
+  check(
+    "broker URL delivered by launch material, not by env",
+    full.env?.COTAL_SERVERS === undefined && configFromEnv(full.env).servers === "nats://x:1",
+  );
+
+  // A prompt is trimmed on the way in, and a prompt with no text refuses the launch (never dropped).
+  check(
+    "prompt is trimmed",
+    codexConnector.buildLaunch({ space: "s", name: "n", prompt: "  greet  " }).env?.COTAL_CODEX_PROMPT === "greet",
+  );
+  let emptyPromptRefused = false;
+  try {
+    codexConnector.buildLaunch({ space: "s", name: "n", prompt: "   " });
+  } catch (e) {
+    emptyPromptRefused = /empty/.test(String((e as Error).message));
+  }
+  check("an empty prompt refuses the launch", emptyPromptRefused);
 
   // User-mode auth rail + the one-identity-plane rule.
   const user = codexConnector.buildLaunch({
@@ -136,10 +159,22 @@ try {
     name: "n",
     userAuth: { owner: "o", actor: "a", sentinelCredsPath: "/tmp/sc", bearerCmd: ["cmd", "arg"] },
   });
+  // Forwarded through the launch material, not the environment: the sentinel creds path and the
+  // bearer command are the user-mode equivalent of a credential, and a build script the seat runs
+  // has no more business holding them than it has holding a creds file.
   check(
-    "user-mode auth rail forwarded",
-    user.env?.COTAL_OWNER === "o" && user.env?.COTAL_ACTOR === "a" && user.env?.COTAL_BEARER_CMD === '["cmd","arg"]',
+    "user-mode auth rail NOT in the seat env",
+    user.env?.COTAL_OWNER === undefined && user.env?.COTAL_ACTOR === undefined && user.env?.COTAL_BEARER_CMD === undefined,
   );
+  check("user-mode auth rail forwarded through the launch material", (() => {
+    const m = readLaunchMaterial(user.env?.[LAUNCH_MATERIAL_ENV] as string);
+    return (
+      m.userAuth?.owner === "o" &&
+      m.userAuth?.actor === "a" &&
+      m.userAuth?.sentinelCredsPath === "/tmp/sc" &&
+      m.userAuth?.bearerCmd.join(",") === "cmd,arg"
+    );
+  })());
   throws(
     "creds + userAuth is refused (one identity plane)",
     () =>
@@ -192,7 +227,6 @@ try {
   check("variant support is declared", codexConnector.supportsModelVariant === true);
   check("resume support is NOT declared (pre-mint preflight)", codexConnector.supportsResume !== true);
   check("requires names the codex binary", Array.isArray(codexConnector.requires) && codexConnector.requires.includes("codex"));
-  check("transcript channel convention shared", codexConnector.transcriptChannel?.("My Agent") === "tr-my-agent");
 
   console.log(`\nCODEX ARGS SMOKE PASSED ✅  (${pass} checks)`);
 } finally {

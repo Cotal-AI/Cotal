@@ -1,0 +1,57 @@
+{
+  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "guard": "folding a seeded APPEND LOG into the journal's ordered view, not only into its keyed one",
+  "command": "pnpm smoke:lang-journal",
+  "completionMarker": "ok a fresh key misses",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/lang/smoke/mutations/seed-fold.json",
+  "why": [
+    "The defect this grades was LIVE on the resume path, not hypothetical: the stream is append-only",
+    "(one step is a pending record and a settled one), `RunJournalAppender.steps()` replays both, and",
+    "the driver seeds a journal straight from that array. `byKey` folded and `order` did not, so the",
+    "journal's two views disagreed -- the ceiling counted one step while `entries()` reported two, and",
+    "`orphans()` handed the migrate table the same decision twice.",
+    "",
+    "THIS SUITE IS FAIL-FAST: `ok()` THROWS. A mutation must therefore be no broader than the cell it",
+    "names, or it kills an earlier cell and grades WRONG-RED, and the completion marker has to be the",
+    "FIRST cell rather than the last -- a marker at the end is absent on every genuine kill and would",
+    "grade every mutation INCONCLUSIVE."
+  ],
+  "mutations": [
+    {
+      "name": "the seed does not fold: every log row is pushed to the ordered view",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      if (!this.order.includes(full)) this.order.push(full);",
+      "replace": "      this.order.push(full);",
+      "expectRed": "REPAIRED: the ORDERED view folds too — one step is one entry",
+      "cell": "REPAIRED: the ORDERED view folds too — one step is one entry",
+      "note": "The defect exactly as it shipped. It also reddens the orphan cell below, which is the point: one fold, two consumers."
+    },
+    {
+      "name": "the fold keeps the FIRST write instead of the last",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      this.byKey.set(full, deepFreeze(e));",
+      "replace": "      if (!this.byKey.has(full)) this.byKey.set(full, deepFreeze(e));",
+      "expectRed": "and it is the LAST write, so a step that settled reads settled",
+      "cell": "and it is the LAST write, so a step that settled reads settled",
+      "note": "WHICH row survives is a separate claim from WHETHER it folds. First-write-wins folds just as tidily and reports every completed step as still pending -- a resumed run would re-perform work the journal holds a result for. Graded on its own cell because the mutation above cannot distinguish it."
+    },
+    {
+      "name": "the fold collapses every step to one entry",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      if (!this.order.includes(full)) this.order.push(full);",
+      "replace": "      if (this.order.length === 0) this.order.push(full);",
+      "expectRed": "steps the new program never reached are orphans",
+      "cell": "steps the new program never reached are orphans",
+      "note": "The narrowness twin, RE-AIMED at the cell that actually fires. A collapsing fold satisfies the first mutation perfectly and erases a run's history, so it must be graded -- but this suite is FAIL-FAST, and the collapse reddens `steps the new program never reached are orphans` (journal.smoke:152) long before the fold's own block is reached. Naming a later cell graded WRONG-RED: the suite exited 1 for a true reason at an assertion that was not the one under test, which is indistinguishable from a kill only if nobody reads which cell died. The block's own narrowness cell is kept -- a reader of the fold looks there, not 400 lines up -- and is redundant for THIS mutation, which is recorded rather than hidden."
+    },
+    {
+      "name": "the fold reorders history by completion",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      if (!this.order.includes(full)) this.order.push(full);",
+      "replace": "      this.order.splice(this.order.indexOf(full), this.order.includes(full) ? 1 : 0);\n      this.order.push(full);",
+      "expectRed": "and they keep the order the run PERFORMED them in, not the order they finished in",
+      "cell": "and they keep the order the run PERFORMED them in, not the order they finished in",
+      "note": "The second narrowness twin, and the one a reader would call equivalent: last-occurrence ordering folds correctly and keeps every step, and silently reports a concurrent run doing its work in an order it never did. `order` is the order steps BEGAN, because that is when a step's pending row is written."
+    }
+  ]
+}

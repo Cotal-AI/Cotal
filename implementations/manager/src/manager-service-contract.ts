@@ -27,7 +27,7 @@
  * Capability labels (describe/grant vocabulary, one per tier class):
  *   manager.read     status / ps / inspect / models        (read-only)
  *   manager.spawn    spawn                                 (privileged-grade creation)
- *   manager.lifecycle despawn / attach                     (owner-mode terminal/interactive)
+ *   manager.lifecycle despawn / attach / input             (owner-mode terminal/interactive)
  *   manager.self     stop                                  (self-mode halt; baseline)
  *   manager.persona  definePersona                         (privileged-grade; ownership-checked)
  *   manager.admin    purge / launch / resume family        (operator instruments only)
@@ -98,6 +98,21 @@ const AGENT_ROW_SCHEMA = {
     lifecycleUid: { type: "string" },
     authHealth: { type: "string" },
     authReason: { type: "string" },
+    // #651 enrichment, all OPTIONAL: per-seat facts the manager already records, surfaced by
+    // `cotal ps --wide`/`--json`. Optional because absence is real state: a launch may pin no
+    // model, and a runtime that does not own a real process (tmux/cmux/orca/herdr) has no pid.
+    // The row serializes a fact only when this backend recorded one - absent never means zero,
+    // empty, or fabricated. `spawner` is the authenticated requester id (`id`-shaped: an nkey or
+    // an owner.actor principal key); the owning manager's instance/host ride per-row so a
+    // multi-manager scatter view can attribute seats (#579 records the spawner's RAIL when it is
+    // itself a managed seat - not carried here, the manager does not hold it).
+    model: { type: "string" },
+    variant: { type: "string" },
+    cwd: { type: "string" },
+    pid: { type: "integer", minimum: 1 },
+    spawner: { type: "string" },
+    instanceId: { type: "string" },
+    host: { type: "string" },
   },
 } as const;
 
@@ -124,7 +139,7 @@ const SPAWN_INPUT_SCHEMA = {
     variant: { type: "string" },
     launchOptions: { type: "object" },
     resume: { type: "string" },
-    transcript: { type: "boolean" },
+    events: { type: "boolean" },
     cwd: { type: "string" },
     prompt: { type: "string" },
     subscribe: { type: "array", items: { type: "string" } },
@@ -176,6 +191,38 @@ const STOP_OUTPUT_SCHEMA = {
 const ATTACH_OUTPUT_SCHEMA = {
   type: "object", additionalProperties: false, required: ["grant"],
   properties: { grant: { type: "object" } },
+} as const;
+
+/** `input` (C3): type text into a running seat's terminal. The one call an external UI needs to
+ *  deliver a harness command (a line starting with `/`) without holding a terminal open.
+ *
+ *  `text` is taken VERBATIM: the responder never parses it, never strips a leading `/` or `-`, and
+ *  never trims. 64KiB is the ceiling because a keystroke payload is not a file transfer, and the
+ *  BROKER max payload sits above it, so an oversized request is refused by this contract with a
+ *  contract error rather than dropped by the transport with a connection one. `minLength: 1`
+ *  because an empty write is a caller bug, not a no-op worth serving.
+ *
+ *  `enter` defaults to TRUE (absent means true): a harness command that is typed but never
+ *  submitted has not been delivered, so the useful default is the one that presses Enter. Setting
+ *  it false types the text and leaves the cursor there, which is how a caller stages a line. */
+const INPUT_INPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["text"],
+  properties: {
+    text: { type: "string", minLength: 1, maxLength: 65536 },
+    enter: { type: "boolean" },
+  },
+} as const;
+/** `input` output: the seat written to and how many BYTES WERE WRITTEN into its pty (the UTF-8
+ *  length of the text plus the `\r` when one was appended, so a caller can tell the two apart
+ *  without re-deriving the encoding). "Written", not "landed", and the distinction is real: the
+ *  runtime handle's write is fire-and-forget, so a large payload against a slow reader can sit in
+ *  the pty master's buffer while this number is already reported. It is the size of what was
+ *  handed to the terminal, which is the only thing the responder can honestly know.
+ *  Deliberately NOT an echo: output rides the event plane / transcript, and a responder that
+ *  replayed input would be inventing a second, lying source of turns. */
+const INPUT_OUTPUT_SCHEMA = {
+  type: "object", additionalProperties: false, required: ["name", "bytes"],
+  properties: { name: { type: "string" }, bytes: { type: "integer", minimum: 0 } },
 } as const;
 
 /** `models` output, NORMALIZED: always the full catalog list ({@link ManagerServiceHandlers}
@@ -293,6 +340,10 @@ const ROWS: CommandRow[] = [
   // the handler maps mode `any` to its admin authorization path — no wire synonym command.
   { name: "despawn", capability: "manager.lifecycle", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "despawn" },
   { name: "attach", capability: "manager.lifecycle", input: VOID_SCHEMA, output: ATTACH_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "attach" },
+  // `input` rides the SAME row shape as `attach` (capability, targeted, both modes) because it
+  // rides the same authorization: writing into a seat's terminal is what an attach session already
+  // lets its holder do. One row, one policy, no second tier to keep in step.
+  { name: "input", capability: "manager.lifecycle", input: INPUT_INPUT_SCHEMA, output: INPUT_OUTPUT_SCHEMA, targeted: true, modes: ["owner", "any"], handler: "input" },
   { name: "stop", capability: "manager.self", input: GRACEFUL_INPUT_SCHEMA, output: STOP_OUTPUT_SCHEMA, targeted: true, modes: ["self"], handler: "stopSelf" },
   { name: "define-persona", capability: "manager.persona", input: PERSONA_INPUT_SCHEMA, output: PERSONA_OUTPUT_SCHEMA, targeted: false, handler: "definePersona" },
   { name: "purge", capability: "manager.admin", input: PURGE_INPUT_SCHEMA, output: PURGE_OUTPUT_SCHEMA, targeted: false, handler: "purge" },
@@ -344,8 +395,15 @@ export const MANAGER_STATUS_CONTRACT: { input: CompiledContract; output: Compile
  *  merged in ahead of the schema, so the compiled contract refused every request that carried the
  *  field and the feature was unreachable through this door (executed: the compiled input validator
  *  returned false for `{runId, name, spec}` while the CLI sends exactly that). ONE revision 6
- *  covers the whole branch: when the journal-action work lands, its `action` marker and
- *  `readinessDeadlineMs` declaration join THIS revision rather than minting a seventh. */
+ *  covered that whole branch: when the journal-action work lands, its `action` marker and
+ *  `readinessDeadlineMs` declaration join revision 6 rather than minting one of their own.
+ *
+ *  7 = the `input` command (C3): typing into a running seat's terminal without holding a session.
+ *  A NEW SERVED COMMAND is what a revision is for, and it cannot fold into 6: a caller's
+ *  `describe` reads this document to learn what the responder serves, so a surface that grew
+ *  while the number stood still would leave a cached descriptor naming a command set that is no
+ *  longer the served one. (Revision 6's reservation is for fields on commands it ALREADY
+ *  declares, which is the opposite case.) */
 export function managerClusterDocument(): {
   urn: string;
   revision: number;
@@ -363,7 +421,7 @@ export function managerClusterDocument(): {
 } {
   return {
     urn: MANAGER_CLUSTER_URN,
-    revision: 6,
+    revision: 7,
     attributes: [],
     events: [],
     commands: ROWS.map((r) => ({
@@ -409,6 +467,7 @@ export interface ManagerServiceHandlers {
   spawn(ctx: EpServeContext): unknown | Promise<unknown>;
   despawn(ctx: EpServeContext): unknown | Promise<unknown>;
   attach(ctx: EpServeContext): unknown | Promise<unknown>;
+  input(ctx: EpServeContext): unknown | Promise<unknown>;
   stopSelf(ctx: EpServeContext): unknown | Promise<unknown>;
   definePersona(ctx: EpServeContext): unknown | Promise<unknown>;
   purge(ctx: EpServeContext): unknown | Promise<unknown>;

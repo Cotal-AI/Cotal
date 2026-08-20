@@ -1,0 +1,27 @@
+{
+  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "guard": "A fanOut branch that rejects fails the scope with its own value, cancels its siblings, and the losers travel with the failure, exactly as a failed parallel. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-scopes",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/fanout-failure.json",
+  "mutations": [
+    {
+      "name": "the siblings are not cancelled on a branch's rejection (the old behaviour)",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    } catch (e) {\n      for (const f of frames) f.signal.cancel(\"a sibling branch failed\");\n      await Promise.allSettled(launched);",
+      "replace": "    } catch (e) {\n      await Promise.allSettled(launched);",
+      "expectRed": "and the siblings are cancelled: a branch whose effect completes after the failure begins no new effect",
+      "completionMarker": "ok a rejecting fanOut branch fails the scope with the branch's own thrown value, which the program can catch",
+      "cell": "and the siblings are cancelled: a branch whose effect completes after the failure begins no new effect",
+      "note": "Measured before the rule: every sibling went on performing effects against a scope whose entry had settled failed."
+    },
+    {
+      "name": "the failed scope forgets its losers",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      const losers = branchKeys.filter((k) => k !== failed);",
+      "replace": "      const losers: string[] = [];",
+      "expectRed": "and the failed scope entry records the losers as intent, like a failed parallel",
+      "completionMarker": "ok and the siblings are cancelled: a branch whose effect completes after the failure begins no new effect",
+      "cell": "and the failed scope entry records the losers as intent, like a failed parallel"
+    }
+  ]
+}

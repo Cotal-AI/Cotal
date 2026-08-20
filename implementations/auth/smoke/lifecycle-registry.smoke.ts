@@ -135,7 +135,12 @@ try {
     // the barrier's own throwaway enumeration consumer would trigger the deletion. Refuse at bind.
     await createEndpointStreams(jsm, kvm, "shaperet");
     const retRecords = (await jsm.streams.info("KV_cotal_records_shaperet")).config;
-    await jsm.streams.update("KV_cotal_records_shaperet", { ...retRecords, retention: "interest" as never });
+    // The client's `StreamUpdateConfig` deliberately omits `retention` (its update API models the
+    // field as immutable), so the whole literal carries the cast, the same shape line 129 uses to
+    // build the mirrored store. The point of the cell is to stand up a store the client's own types
+    // say cannot exist and prove the registry refuses it at BIND rather than trusting those types;
+    // the server accepts the change, which is exactly why the bind check has to exist.
+    await jsm.streams.update("KV_cotal_records_shaperet", { ...retRecords, retention: "interest" } as never);
     await rejects("a records store with INTEREST retention refuses at bind (non-Limits deletes authority rows on ack)",
       () => openLifecycleRegistry(nc, "shaperet"), "failed-precondition");
   }

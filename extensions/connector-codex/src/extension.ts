@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, transcriptChannel, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
 /** Env the codex child genuinely needs beyond the OS allow-list: the API key (API-key auth) and
  *  the operator's CODEX_HOME override (the host resolves auth.json from it). Forwarded BY NAME,
@@ -117,7 +117,6 @@ async function listCodexModels(): Promise<ModelCatalog> {
 export const codexConnector: Connector = {
   kind: "connector",
   name: "codex",
-  transcriptChannel, // the shared `tr-<name>` convention (connector-core), exposed via the contract
   requires: ["codex"],
   supportsModelVariant: true, // variant = Codex reasoning effort (minimal|low|medium|high|xhigh)
   // There is no first-run gate to press through here: the host joins the mesh FIRST (app-server,
@@ -125,6 +124,16 @@ export const codexConnector: Connector = {
   // someone staring at a blank terminal is that the pause is the mesh, and the UI is coming.
   launchHint: "joining the mesh, then Codex opens",
   listModels: listCodexModels,
+
+  // The AG-UI event plane's subject, declared so the manager mints a grant for exactly the
+  // channel this seat will publish to.
+  //
+  // It is core's own derivation and is NOT re-derived here, so the channel the grant covers and
+  // the subject the session publishes to come from ONE function. A second derivation would be a
+  // second place the subject is decided, and the two would drift the first time either changed.
+  // It takes the PRINCIPAL: a display name is not an identity on this mesh, and a name-keyed
+  // channel would fuse two principals' streams onto one subject.
+  eventChannel,
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     // Resuming isn't wired: a thread brought up with `thread/resume` does not carry the cotal_*
@@ -143,20 +152,28 @@ export const codexConnector: Connector = {
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("codex connector: tool-sharing (connectors.codex.mcpServers) is not implemented");
 
+    // Minted before the env is built: the token goes into the launch material, the path into the env.
+    const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: CODEX_ENV_KEYS }),
       ...aclEnv(opts),
-      ...userAuthEnv(opts),
+      // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
+      // host drops even that once it has read it, so a shell this seat runs inherits neither.
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, controlToken: control.token, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
-    if (opts.creds) env.COTAL_CREDS = opts.creds;
-    if (opts.servers) env.COTAL_SERVERS = opts.servers;
-    if (opts.transcript === true) env.COTAL_TRANSCRIPT = "1"; // gate the host's transcript mirror
-    if (opts.prompt) env.COTAL_CODEX_PROMPT = opts.prompt; // auto-submitted first turn
+    // The auto-submitted first turn. A prompt with no text in it cannot be submitted, so refuse the
+    // launch rather than start a seat that quietly ignores what the operator passed.
+    if (opts.prompt !== undefined) {
+      const prompt = opts.prompt.trim();
+      if (!prompt)
+        throw new Error("codex connector: an initial prompt was given but it is empty, there is no first turn to submit");
+      env.COTAL_CODEX_PROMPT = prompt;
+    }
     // The host picks TUI vs headless from its own stdout, and COTAL_CODEX_TUI overrides that. The
     // child's env is an ALLOW-LIST, so without forwarding it by name the override would silently
     // do nothing.
@@ -174,6 +191,31 @@ export const codexConnector: Connector = {
     // workspace, or the launch dir for a standalone spawn — never the per-agent cwd, which can
     // point at any repo (parity with the OpenCode connector's data root).
     env.COTAL_CODEX_HOME = opts.workspaceRoot ?? process.cwd();
+
+    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // publish grant on a channel is not a request to publish to it, so an agent file that can
+    // write `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by
+    // doing so.
+    //
+    // `COTAL_WORKSPACE_ROOT` rides with it because the write-ahead log has to live somewhere a
+    // LATER start will look, and there is no safe default: a log written under the launch cwd is
+    // invisible to the next start, which then reads an already-published thread as virgin and
+    // republishes sequences the stream has already seen.
+    //
+    // Deliberately NOT folded into `COTAL_CODEX_HOME` above, which falls back to the process cwd.
+    // That fallback is safe for an isolated codex home, which only ever has to be found by the
+    // process that wrote it. It is not safe for the log, which exists to be found by a process
+    // that has not started yet.
+    if (opts.events === true) {
+      env.COTAL_EVENTS = "1";
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "codex connector: events were requested but the launch carries no workspaceRoot, so the " +
+            "event write-ahead log has nowhere to live that a later start would look. Refusing rather " +
+            "than defaulting to the working directory.",
+        );
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
 
     // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona (the
     // host injects it as thread developerInstructions) and model/variant defaults.
@@ -224,9 +266,7 @@ export const codexConnector: Connector = {
 
     // Local control endpoint: the manager sends a cooperative {op:"shutdown"} here on a
     // signal-less runtime. Minted here, held in memory by the manager, served by the host.
-    const control = controlEndpoint(opts.space, opts.name);
     env.COTAL_CONTROL_SOCKET = control.path;
-    env.COTAL_CONTROL_TOKEN = control.token;
 
     return { command: HOST_COMMAND, args: [HOST_ENTRY], env, control };
   },

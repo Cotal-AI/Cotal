@@ -86,7 +86,7 @@ check("an anycast rest is the ROUTE, not a channel", svc?.rest === "someroute", 
 //
 // EVERY PLANE IS COVERED, not just chat. The kind-gate's whole job is what happens on `inst` and
 // `svc`, so agreement on chat alone would leave the gate's own premise ungraded.
-const srcSubjects = await import("../../../packages/core/src/subjects.ts");
+const srcSubjects = await import("../../../packages/core/src/subjects.js");
 check("core SOURCE loaded directly (an unloadable source would skip this entire block)",
   typeof srcSubjects.parseSubject === "function" && typeof srcSubjects.chatSubject === "function");
 
@@ -383,19 +383,28 @@ function extractBackfillFunction(src: string, file: string): string | undefined 
   return found.length === 1 ? found[0] : undefined;
 }
 
-/** Executes an extracted async backfill function by NAME and returns the entry list it mutated.
+/** Executes an extracted async backfill function by its own CALL EXPRESSION and returns the entry
+ *  list it mutated. A call expression rather than a bare name because the two shipped surfaces do
+ *  not take the batch the same way: `app.js` fetches it inside `refresh()`, while `graph.js` seeds
+ *  from a batch handed in. Both are still the shipped function, driven.
  *  The stubs are deliberately inert: every one of them is a no-op or an empty collection, so the
  *  only thing that can put a channel on a message is the shipped code under test. */
-async function runBackfillFunction(code: string, fnName: string, file: string, entries: unknown[]) {
+async function runBackfillFunction(code: string, call: string, file: string, entries: unknown[]) {
+  // `/api/activity` answers a bounded PAGE; the entries under test ride inside it, exactly as the
+  // server sends them. `entries` is still the array the shipped code mutates, so the cells that read
+  // it back are unaffected.
   const json = (u: string): unknown =>
-    u.includes("/api/activity") ? entries : u.includes("/api/membership") ? { members: [] } : [];
+    u.includes("/api/activity")
+      ? { entries, partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 }
+      : u.includes("/api/membership") ? { members: [] } : [];
   const ctx: Record<string, unknown> = {
     // `ok: true` is part of the stub, not decoration: shipped code that checks the status before
     // trusting the body reads `r.ok`, and a response object without it is a stub that reports every
     // fetch as failed. That drives the refusal arm of a caller this suite is not testing.
     fetch: async (u: string) => ({ ok: true, json: async () => json(u) }),
+    __entries: entries,
     // app.js
-    refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {},
+    refreshDerived() {}, renderSidebarNav() {}, renderCenter() {}, select() {}, setStale() {},
     roster: [], channels: null, dms: [], activity: [], agentSel: null, dmSel: null, selected: "*",
     // graph.js
     $: () => ({ textContent: "" }), ensureHub: () => ({}), updateRoster() {}, applyMembership() {},
@@ -411,9 +420,17 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
     window: {} as Record<string, unknown>,
     feedOrder: undefined, channelOrder: undefined, orderNotes: [] as unknown[],
     noteOrder() {},
+    // The poll reads the space name as a source, and its apply writes the document title. An apply
+    // that throws aborts the whole poll, so a page-like context has to supply the page globals the
+    // shipped code uses or every cell here measures the harness rather than the backfill.
+    document: { title: "" },
   };
   const c = createContext(ctx);
   runInContext(read("../src/web/event-order.js"), c, { filename: "event-order.js" });
+  // Keep-last-good + the refusal guard: both backfill paths read every source through it, so it is a
+  // collaborator here for the same reason the order machine is, and it is READ OFF DISK rather than
+  // stubbed so a change to what a refused read does cannot pass unnoticed.
+  runInContext(read("../src/web/snapshot.js"), c, { filename: "snapshot.js" });
   if (file.includes("app.js")) {
     // The single-flight state the shipped backfill reads. TAKEN FROM THE FILE, not restated here: one
     // bootstrap must pair with one settle, so coalescing overlapping callers is part of the backfill
@@ -423,7 +440,7 @@ async function runBackfillFunction(code: string, fnName: string, file: string, e
     assert.equal(decls.length, 2, "app.js must declare the single-flight state this harness runs");
     runInContext(decls.join("\n"), c, { filename: "app.js (state)" });
   }
-  runInContext(`${code}\n__p = ${fnName}();`, c, { filename: file });
+  runInContext(`${code}\n__p = ${call};`, c, { filename: file });
   await (ctx.__p as Promise<void>);
   // `entries` is returned rather than `ctx.activity` ON PURPOSE. In `app.js` the backfill assigns
   // to a page-global and the two are the same array; in `graph.js` `activity` is a LOCAL from a
@@ -473,7 +490,7 @@ const hostileAnycastGraph = () => ({ mode: "anycast", senderId: "s-1", channel: 
 function runAppOnMessage(code: string, entry: unknown, selected = "*") {
   const ctx = {
     __entry: entry,
-    activity: [] as { msg: { id?: string } }[],
+    activity: [] as { msg: { id?: string; channel?: string } }[],
     dms: [] as { id?: string }[],
     channels: new Map<string, { messages?: number }>(),
     channelMsgs: [] as unknown[],
@@ -538,7 +555,7 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
     file: "app.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "app.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "refresh", "app.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "refresh()", "app.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },
@@ -551,7 +568,7 @@ const INGRESS: { file: string; path: string; extract(src: string): string | unde
     file: "graph.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "graph.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "load", "graph.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "seedActivity(__entries)", "graph.js", [{ channel: VERIFIED, msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },
@@ -569,6 +586,31 @@ for (const ing of INGRESS) {
   const got = await ing.run(stmt!);
   check(`${ing.file} — ${ing.path} — the VERIFIED channel overwrites the publisher's claim`,
     got === VERIFIED, { got, claimed: CLAIMED, verified: VERIFIED });
+}
+
+// REACHABILITY, NOT JUST THE PREDICATE, and this suite lost it when the code moved. On the graph page
+// the loop that attributes a channel now lives in `seedActivity`, so the two graph rows above execute
+// THAT function. Executing it proves the rule and says nothing about whether the page's own boot ever
+// reaches it: that half is what a harness silently drops when the code it drives is entered by name
+// instead of by the path a browser takes. `refreshAll` handing a source's read to its `apply` is
+// proven in `smoke:web-snapshot`; the link THIS suite owns is the one from that `apply` to the loop,
+// so the shipped `apply` is lifted and RUN rather than read.
+{
+  const graphSrc = read("../src/web/graph.js");
+  const found = graphSrc.match(/apply: \(page\) => \{[^}]*seedActivity\(page\.entries\);[^}]*\}/g) ?? [];
+  check("graph.js activity source: exactly one apply this harness can run", found.length === 1, { found: found.length });
+  // The miss has to be reachable, or the cell above is a pattern that matches whatever it is given.
+  check("CONTROL: the same pattern naming a function the page does not have finds nothing",
+    (graphSrc.match(/apply: \(page\) => \{[^}]*seedNothing\(page\.entries\);[^}]*\}/g) ?? []).length === 0);
+  let seeded: unknown;
+  const applyCtx = createContext({ activityPage: null, seedActivity: (a: unknown) => { seeded = a; }, console });
+  runInContext(
+    `({ ${found[0]} }).apply({ entries: [{ channel: ${JSON.stringify(VERIFIED)}, msg: { channel: ${JSON.stringify(CLAIMED)} } }],`
+      + ` partial: false, read: 1, of: 1, missing: [], deadlineMs: 8000 })`,
+    applyCtx, { filename: "graph.js (activity apply)" });
+  const seededEntries = seeded as { channel?: string }[] | undefined;
+  check("graph.js /api/activity backfill: the source's apply hands the SERVER'S entries to the backfill the rows above drive",
+    Array.isArray(seededEntries) && seededEntries.length === 1 && seededEntries[0].channel === VERIFIED, seededEntries);
 }
 
 // ── THE HOSTILE CASE: NO authoritative channel, and a forged one in the payload ──────────────────
@@ -596,7 +638,7 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
     file: "app.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "app.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "refresh", "app.js", [{ msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "refresh()", "app.js", [{ msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },
@@ -609,7 +651,7 @@ const HOSTILE: { file: string; path: string; extract(src: string): string | unde
     file: "graph.js", path: "/api/activity backfill",
     extract: (src) => extractBackfillFunction(src, "graph.js"),
     async run(code) {
-      const out = await runBackfillFunction(code, "load", "graph.js", [{ msg: { channel: CLAIMED } }]);
+      const out = await runBackfillFunction(code, "seedActivity(__entries)", "graph.js", [{ msg: { channel: CLAIMED } }]);
       return out[0]?.msg?.channel;
     },
   },
@@ -704,7 +746,8 @@ check("app.js — a forged DM does NOT reach the victim channel's transcript",
 // and the cell passes on exploitable code. MEASURED both ways — selected=VICTIM gives 0 badges,
 // selected=elsewhere gives 1 on `victim-channel`. One fixture cannot serve both branches, so the
 // unread claim gets an OFF-SCREEN run of its own.
-const OFFSCREEN = "some-other-channel";
+// `string`, not the literal: the cell below compares it with VICTIM on purpose.
+const OFFSCREEN: string = "some-other-channel";
 const appHostileOffscreenPayload = hostileDm();
 check("app.js — the OFF-SCREEN unread run receives a payload that STILL carries the forgery",
   appHostileOffscreenPayload.msg.channel === VICTIM, { got: appHostileOffscreenPayload.msg.channel });

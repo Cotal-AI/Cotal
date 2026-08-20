@@ -45,6 +45,7 @@ runtimes ship this way.
 | Agents & personas | [`ps`](#ps-stop-attach) | List managed agents and their mesh status |
 | Agents & personas | [`stop`](#ps-stop-attach) | Ask the manager to stop a managed agent |
 | Agents & personas | [`attach`](#ps-stop-attach) | Stream and drive a managed agent's terminal (pty runtime) |
+| Agents & personas | [`input`](#input) | Type one line into a managed agent's terminal without attaching |
 | Agents & personas | [`personas`](#personas) | List, show, edit, create, or remove local personas |
 | Agents & personas | [`supervise`](#supervise) | Run a manager daemon (the agent supervisor / control plane) |
 | Agents & personas | [`runtimes`](#runtimes) | List the agent runtimes the manager can spawn through and whether each is reachable |
@@ -474,7 +475,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--cwd <dir>` | this cwd | Working directory to root the agent at |
 | `--prompt <text>` | — | Initial prompt auto-submitted at start |
 | `--resume <id>` | — | Fork an existing session id into the mesh (claude only) |
-| `--transcript` / `--no-transcript` | off | Mirror the session transcript to `tr-<name>` |
+| `--events` / `--no-events` | off | Publish the session's structured event plane to its own event channel |
 | `--share-tools <sel>` | none | Share named operator MCP servers with the agent |
 | `--subscribe <a,b>` | persona's | Channel read-set override |
 | `--allow-subscribe <a,b>` | = subscribe | Read-ACL override |
@@ -485,6 +486,18 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--dry-run` | off | With `-f`: print the plan, mutate nothing |
 | `--allow-stale <a,b>` | — | With `-f`: waive named stale agents (apply-only) |
 | `--runtime <name>` | manifest's | With `-f`: override the manifest's runtime |
+
+`--events` turns on the session's **event plane**: a stream of structured events describing what
+the agent did, rather than the prose it wrote, on a channel of its own. The channel is named after
+the agent's principal, `events.<owner>.<actor>`, never after its display name, because two live
+agents are allowed to share a display name and would then share a stream. The launch grants publish
+rights on exactly that one channel, foreground and detached alike, and a connector that does not
+publish an event plane refuses the flag rather than starting a session whose events have nowhere to
+go.
+
+The flag and the grant are separate on purpose. Holding publish rights on a channel is not a request
+to publish to it, so writing an event channel into an agent file's `allowPublish` does not turn the
+plane on: only the launch does.
 
 The persona (`--config` > positional > `COTAL_DEFAULT_PERSONA` > `default`) is loaded from the
 target mesh's `.cotal/agents/`; the launch flags override the file. Foreground runs the agent
@@ -547,9 +560,9 @@ registry.
 ## ps, stop, attach
 
 ```bash
-cotal ps [--on <instance>] [--space <s>]
+cotal ps [--on <instance>] [--wide | --json] [--space <s>]
 cotal stop --name <n> [--on <instance>] [--space <s>]
-cotal attach --name <n> [--on <instance>] [--space <s>]
+cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 ```
 
 | Flag | Default | Meaning |
@@ -557,6 +570,9 @@ cotal attach --name <n> [--on <instance>] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
+| `--wide` (`ps`) | off | After each seat's compact row, print the per-seat facts the manager already records: model pin (and variant), `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. A fact the manager did not record (no model pinned, or a runtime that owns no real process) prints nothing, never a placeholder |
+| `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, exactly the row the manager sent. Instance headers and errors go to stderr, so stdout is pure rows. Mutually exclusive with `--wide` |
+| `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 These are operator clients over the running manager's control plane. `ps` prints two facts per
 managed agent, because they answer different questions: the process fact from the manager's own
@@ -614,6 +630,42 @@ they are cross-agent admin operations. On a user-auth mesh, your own agents (any
 owner) need only the `spawn` scope; another owner's agent needs `admin` on your ledger row
 ([identity & auth](identity-and-auth.md)). Launch detached agents with [`spawn --detach`](#spawn).
 
+**`attach` reconnects when the link dies.** A session lives on a network link, and a laptop that
+sleeps, a VPN that drops or a wifi handover kills it. When that happens `attach` prints
+`[cotal: connection lost, reconnecting]` on stderr and starts asking the manager for a new session:
+a fresh grant, a fresh per-session credential, a fresh connection, so every attempt re-runs the same
+authorization the first attach did. On success it prints `[cotal: reconnected]`, the manager repaints
+the seat's current screen the way it does for any attach, and you carry on in the same terminal.
+Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key is read the
+whole time the loop runs, the waits and the attempts alike, so a reconnect never traps you: press it
+while a session is being established and the attach ends there, and a session that lands behind the
+press is handed back to the manager rather than left holding a slot. Everything else you type while
+there is no session is dropped rather than queued, so keystrokes aimed at a terminal that turned out
+to be frozen, Ctrl-C included, are not delivered to the agent by a reconnect you did not know had
+happened. That starts before the first session, not at the first reconnect: at a terminal, `attach`
+reads and drops what you type while it is still resolving the mesh, so a key struck at a prompt that
+has not come up yet does not reach the agent when it does.
+
+With stdin a **pipe** the contract is the opposite, and deliberately so. `printf 'ls\n' | cotal
+attach --name web` is a script's input rather than an operator at a frozen screen, so it is buffered
+by the stream and delivered to the seat when the session opens, exactly as it always was. That holds
+in every window, not just before the first session: a pipe keeps buffering across a reconnect too, so
+`tail -f log | cotal attach --name web` does not lose the part of its feed written while the link was
+down. Only a terminal gets the reader; `--no-reconnect` keeps the old behaviour on both.
+
+It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
+exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there
+(despawned, or its agent exited while the link was down) exits cleanly with `seat <name> is gone`.
+A refusal that could still pass, such as a manager at its session ceiling, is relayed in the
+manager's own words while the loop keeps trying, once per refusal rather than once per attempt.
+Pressing the detach key, or the agent's process exiting while you are attached, ends the attach as
+it always did. `--no-reconnect` turns all of this off and restores the single-session behaviour,
+which is what a script wants.
+
+Each reconnect also hands the abandoned session back to the manager, over the first link that can
+carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
+time. If that message never gets a link, the attach says so when it ends.
+
 `attach` streams over the manager's own HTTP/WS face rather than the mesh. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
 address down, which is what lets you attach to an agent whose manager runs on another machine. A
@@ -634,6 +686,62 @@ single-use and short-lived, so one authorized attach can never be re-pointed at 
 agent. The **console token** is the operator's own, reaches every agent, and is printed only to the
 manager's output. The roster, the live feed, and the PTY stream all answer `401` without one; the
 static console shell is served openly, since it describes no agent.
+
+## input
+
+```bash
+cotal input --name <n> --text <text> [--no-enter] [--on <instance>] [--space <s>]
+```
+
+| Flag | Default | Meaning |
+|---|---|---|
+| `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
+| `--name <n>` | | Managed agent to type into (required) |
+| `--text <text>` | | The text to type, taken verbatim (required) |
+| `--no-enter` | off | Type the text and stop there, without pressing Enter |
+| `--on <instance>` | class anycast | Pin to one manager instance id, exactly as [`attach`](#ps-stop-attach) |
+
+Types one line into a running agent's terminal, as if you had typed it there, and returns. This is
+the half of [`attach`](#ps-stop-attach) that a program wants: `attach` is a live stream that holds a
+session open and expects a terminal on your side, so a script, a cron job or a web UI cannot use it
+to send a single line. `input` is one authorized call.
+
+What it is for is **harness commands**. A line beginning with `/` is not chat and not a message: it
+is something the agent's own harness handles, and the only way in is the keyboard.
+
+```bash
+cotal input --name reviewer --text "/compact"          # ask the harness to compact its context
+cotal input --name reviewer --text "/model opus"       # switch its model
+cotal input --name reviewer --text "hold on that PR"   # ordinary typing works too
+```
+
+**Quoting.** `--text` takes a value, so a payload starting with `/` survives as written. A payload
+starting with a dash needs the `=` form, because the shell-style `--text --foo` is ambiguous and is
+refused rather than guessed:
+
+```bash
+cotal input --name reviewer --text=--verbose          # dash-leading text: use --text=<value>
+```
+
+Enter is pressed by default, since a command typed but never submitted has not been delivered.
+`--no-enter` types the text and leaves it sitting at the prompt, which is how you stage a line and
+send it later.
+
+Nothing comes back but a delivery receipt (`✓ sent 9 bytes to reviewer`, counting the trailing
+carriage return). Whatever the agent does next shows up where its output already goes: the mesh, its
+transcript, or an `attach`.
+
+**This one is operator-only, and more narrowly than `stop` or `attach`.** Those two are granted to
+anything holding `spawn`, so an agent can stop and attach to seats under its own owner. `input` is
+not: it is granted only to operator credentials, which on a user-auth mesh means your ledger row
+needs the `admin` scope, the same scope [`ps`](#ps-stop-attach) already needs there. The reason is
+that a write into a terminal is control of whatever is running in it, and on a user-auth mesh the
+own-owner rule covers every seat under you, not only the ones you launched: a `spawn`-scoped agent
+could otherwise type into a sibling it never started. Seat locality is still resolved for you.
+
+Only the `pty` runtime can be typed into. The external terminal runtimes (`tmux`, `cmux`, `orca`,
+`herdr`) attach to a process they do not own, so they have no input stream for it and the command
+refuses by name rather than dropping the keystroke.
 
 ## personas
 
@@ -899,8 +1007,8 @@ cotal mint <name> --provision [--role <role>] [--space <s>] [--server <url>]
 | `--out <path>` | `.cotal/auth/creds/<name>.creds` | Output path |
 | `--signer` | off | Emit a stripped account-signing file instead |
 | `--force` | off | With `--signer`: overwrite an existing file |
-| `--allow-subscribe <a,b>` | profile default | Read-ACL override |
-| `--allow-publish <a,b>` | profile default | Post-ACL override |
+| `--allow-subscribe <a,b>` | the agent file's, else subscribe | Read-ACL override, **agent profile only**: `observer` and `admin` carry a fixed read set, and `mint` refuses this flag there rather than narrowing nothing |
+| `--allow-publish <a,b>` | the agent file's, else deny | Post-ACL override, **agent profile only** |
 | `--role <role>` | the agent file's | Agent profile: the anycast task queue the identity pulls (`svc_<role>`) |
 | `--provision` | off | Agent profile: also pre-create the identity's bind-only DM/deliver durables (and its role's task queue) on the live mesh, so the credential can consume |
 | `--space <s>`, `--server <url>` | the resolved mesh | With `--provision`: which mesh to provision on |
@@ -938,6 +1046,7 @@ ledger at connect time. `logout` revokes the IdP session and clears the cache. S
 ## actor
 
 ```bash
+# an upsert of the WHOLE row: a flag left off is the WIDE default below, not "unchanged"
 cotal actor grant <actor> --sub <IdP subject> [--scope a,b] [--allow-subscribe a,b] [--allow-publish a,b] [--role <r>] [--label <l>]
 cotal actor revoke <actor> (--sub <IdP subject> | --owner <u_…>)
 cotal actor list
@@ -956,9 +1065,12 @@ cotal actor list
 
 The actor ledger is the single authorization source of a user-auth space: no row, no access.
 A bare `grant` is the **full** envelope (all channels, may spawn); the flags narrow it. A
-re-grant **replaces** the row, so to add a capability, re-grant with it added to the current
-scope (`cotal actor list` shows what a row holds). `revoke` denies the next exchange and the
-next connect with no restart, and evicts the principal's live connections. Managed-agent rows
+re-grant **replaces the whole row**, not the one field you name, so to add a capability spell
+every field out: the new scope plus the row's current read set, post set, role and label
+(`cotal actor list` shows what a row holds). A field left off does not stay as it was, it
+reverts to the wide default in the table above, which is how a narrow reader becomes a reader
+of every channel. `revoke` denies the next exchange and the next connect with no restart, and
+evicts the principal's live connections. Managed-agent rows
 (written by the spawn path) live in a disjoint row space this command never touches. See
 [identity & auth](identity-and-auth.md).
 

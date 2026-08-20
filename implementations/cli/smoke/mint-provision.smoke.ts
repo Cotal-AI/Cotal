@@ -16,7 +16,9 @@
  *   4. --provision --allow-subscribe fix.x                  → the read grant is fix.x and NOT general
  *      (the pre-created filter rides the ACL, never widened to the launcher default), and the
  *      identity reads fix.x live but cannot join general
- *   5. --provision / --role off the agent profile, and with --signer → exit 1, one sentence, nothing written
+ *   5. --provision / --role / --allow-subscribe / --allow-publish off the agent profile, and the
+ *      footprint flags with --signer → exit 1, one sentence, nothing written; and the control that
+ *      the same ACL flag on the agent profile still works
  *   6. --provision from a root whose auth is for another space; from a FRESH open root (no auth on
  *      disk, as `cotal up` leaves one); from a root holding its OWN auth for a mesh of the same
  *      name that runs on another trust root → exit 1 each, naming why, nothing minted
@@ -288,6 +290,26 @@ try {
     const r3 = await runMint(["--signer", "--provision", "--role", "board", "--out", signerOut]);
     check("--signer with --provision/--role exits 1 with the reason", r3.code === 1 && /agent profile only.*--signer/.test(r3.out), r3.out);
     check("  and writes no signer file", !existsSync(signerOut));
+    // THE TWO ACL FLAGS, WHICH USED TO BE IGNORED HERE RATHER THAN REFUSED, AND THAT COST AN
+    // OPERATOR A CREDENTIAL. `permissionsFor`'s observer/admin arm emits a FIXED read set over the
+    // whole chat plane, and the command read `--allow-subscribe` only inside its agent branch. So
+    // `--profile observer --allow-subscribe <one channel>` exited 0, printed a success line, and
+    // handed out a reader of every channel in the space: an operator asking to NARROW got the
+    // opposite, silently. Found by running the command and decoding the credential, not by reading
+    // it. These cells are the refusal, on the same footing as `--role` and `--provision` above.
+    const aclOut = join(root, "acl.creds");
+    const r4 = await runMint(["obs3", "--profile", "observer", "--allow-subscribe", "events.local.UVICTIM", "--out", aclOut]);
+    check("--allow-subscribe on the observer profile exits 1 with the reason", r4.code === 1 && /agent profile only/.test(r4.out), r4.out);
+    check("  and mints nothing, rather than a credential that reads the whole chat plane", !existsSync(aclOut));
+    const r5 = await runMint(["obs4", "--profile", "admin", "--allow-publish", "general", "--out", aclOut]);
+    check("--allow-publish on the admin profile exits 1 with the reason", r5.code === 1 && /agent profile only/.test(r5.out), r5.out);
+    check("  and mints nothing", !existsSync(aclOut));
+    // THE CONTROL. Every cell above is satisfied by a command that refuses these flags outright,
+    // which would break the scoped reader the manager's own refusal text tells an operator to mint.
+    const okOut = join(root, "agentacl.creds");
+    const r6 = await runMint(["ag1", "--profile", "agent", "--allow-subscribe", "events.local.UVICTIM", "--out", okOut]);
+    check("the SAME flag on the agent profile is accepted, which is the form the manager's refusal prints",
+      r6.code === 0 && existsSync(okOut), r6.out);
   }
 
   // ── 6. the wrong mesh, a FRESH open mesh, and a same-named mesh on another trust root ────────

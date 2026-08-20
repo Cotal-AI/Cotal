@@ -11,8 +11,8 @@
     {
       "name": "F2 the backfill filters nothing before it fetches, so every event channel is still asked for and its history still merged: the answer looks the same and the cost is exactly what it was",
       "file": "implementations/web/src/web.ts",
-      "find": "  const chans = chatOnly(await ep.listChannels());",
-      "replace": "  const chans = await ep.listChannels();",
+      "find": "    const chans = chatOnly(listed);",
+      "replace": "    const chans = listed;",
       "expectRed": "2.1 no event channel was ever ASKED for"
     },
     {

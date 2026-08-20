@@ -8,7 +8,7 @@
     {
       "name": "the sibling tool's keys are rejected again",
       "file": "scripts/mutation-proof.mjs",
-      "find": "  \"cell\", \"note\", \"cellTemplate\",\n",
+      "find": "  \"cell\", \"note\", \"cellTemplate\", \"completionMarker\",\n",
       "replace": "",
       "expectRed": "...but a key a SIBLING tool reads is not unknown, and the mutation is GRADED rather than refused",
       "cell": "...but a key a SIBLING tool reads is not unknown, and the mutation is GRADED rather than refused",

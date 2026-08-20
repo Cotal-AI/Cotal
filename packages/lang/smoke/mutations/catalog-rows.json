@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "Appendix A of the language reference and CATALOG are two renderings of ONE table: the same codes, each exactly once, each carrying the title the code actually raises. A reader repairing a program searches the document for the title the tool printed, so a document that lists a code the code does not raise, or a title the code no longer says, sends that reader nowhere. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/catalog-rows.json",
+  "mutations": [
+    {
+      "name": "a catalog title drifts from the row that renders it",
+      "file": "packages/lang/src/errors.ts",
+      "find": "  L5024: \"A recorded value has no canonical form\",",
+      "replace": "  L5024: \"A recorded value has no canonical shape\",",
+      "expectRed": "and every one of those",
+      "completionMarker": "ok Appendix A lists exactly the catalog's codes",
+      "cell": "and every one of those 99 rows carries the title the code raises",
+      "note": "The REAL drift, replayed. L5024's row read \"A recorded binding has no canonical form\" while the code raised \"A recorded value has no canonical form\" from 5e606152 to c38b2ee8, because the rule grew to cover a failure's detail and a scope's result and the row was left behind. The set cell cannot see this: the codes still match one for one. Only the title cell reds, which is why the two are not one conjunction."
+    },
+    {
+      "name": "the catalog loses a code the document still lists",
+      "file": "packages/lang/src/errors.ts",
+      "find": "  L5021: \"Resume over a journal without the run's pins\",",
+      "replace": "",
+      "expectRed": "Appendix A lists exactly the catalog's codes",
+      "completionMarker": "ok every js block in docs/workflows.md validates as written",
+      "cell": "Appendix A lists exactly the catalog's codes, 99 of them, each once",
+      "note": "The other direction, and the one a title comparison alone would miss: the document keeps a row whose code no longer exists. L5021 is chosen because no cell in this suite raises or names it, so the mutant reaches the set comparison rather than reding something upstream. The set cell runs BEFORE the title cell, so under this mutant it is the first red and the title cell never runs."
+    }
+  ]
+}

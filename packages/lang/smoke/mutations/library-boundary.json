@@ -1,0 +1,37 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "The L4018 no-coercion law holds at the library boundary: a builtin or method parameter that takes a primitive refuses a container or function before the host can coerce it. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/library-boundary.json",
+  "mutations": [
+    {
+      "name": "the argument gate never fires",
+      "file": "packages/lang/src/library.ts",
+      "find": "  args.forEach((v, i) => {\n    if (i < restFrom && !any.includes(i)) noCoerce(name, v);\n  });",
+      "replace": "",
+      "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
+      "completionMarker": "ok every admitted node type is classified against the key guard: coercing (exercised above) or inert, no type unclassified",
+      "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
+      "note": "With gateArgs a no-op every declared primitive position opens. The red lands on the cell's FIRST conjunct, `abs({})` -> silent NaN (measured pre-fix), a non-closure shape, so the FAIL prints before any closure could detach a rejection."
+    },
+    {
+      "name": "free join stops gating its elements",
+      "file": "packages/lang/src/library.ts",
+      "find": "    [\"join\", fn(\"join\", (_f, a) => {\n      for (const el of a[0] as unknown[]) noCoerce(\"join\", el);\n      return (a[0] as unknown[]).join(a[1] as string);\n    }, { any: [0] })],",
+      "replace": "    [\"join\", fn(\"join\", (_f, a) => (a[0] as unknown[]).join(a[1] as string), { any: [0] })],",
+      "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
+      "completionMarker": "ok every admitted node type is classified against the key guard: coercing (exercised above) or inert, no type unclassified",
+      "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
+      "note": "Elements sit inside the declared container argument, so gateArgs cannot see them; only the element loop does. Under the mutant `join([{a:1}], \",\")` silently answers \"[object Object]\" (measured pre-fix) \u2014 the join conjunct runs clean and reds the cell; the record has no closure, so no detached rejection."
+    },
+    {
+      "name": "string methods lose the gate",
+      "file": "packages/lang/src/library.ts",
+      "find": "    concat: (_f, s, a) => s.concat(...a.map(String)),\n  };\n  return Object.freeze(\n    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, gate(k, impl)) as unknown as Method])),\n  );",
+      "replace": "    concat: (_f, s, a) => s.concat(...a.map(String)),\n  };\n  return Object.freeze(\n    Object.fromEntries(Object.entries(table).map(([k, impl]) => [k, guarded(k, impl) as unknown as Method])),\n  );",
+      "expectRed": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
+      "cell": "a library argument where a primitive is needed refuses a container or function with L4018, catchably, and the process survives",
+      "note": "NO completionMarker on purpose: under the mutant `\"a\".repeat(spy)` reaches the host, which calls the program's own toString closure \u2014 the red prints at the conjunct (the surfaced error is not L4018) but the detached closure may still crash the process afterwards, and a real red followed by a crash is still KILLED only when no marker is declared."
+    }
+  ]
+}

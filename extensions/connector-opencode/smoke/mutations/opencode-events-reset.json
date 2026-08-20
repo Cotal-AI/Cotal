@@ -1,0 +1,46 @@
+{
+  "suite": "extensions/connector-opencode/smoke/agui-session-reset.smoke.ts",
+  "guard": "a second top-level session gets its own emitter, and the session it replaces is drained and closed on the wire first",
+  "command": "pnpm smoke:opencode-events-reset",
+  "completionMarker": "opencode-events-reset smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-opencode/smoke/mutations/opencode-events-reset.json",
+  "why": [
+    "THE HOLDER'S REFUSAL IS CORRECT AND IS NOT THE TARGET HERE. A holder binds to one thread and",
+    "refuses a second terminally, because the write-ahead log is keyed to the thread. The defect was",
+    "the caller: the plugin adopted every top-level session into the SAME holder, so `/new` killed it",
+    "and the plane went dark with nothing on the wire to say so. These mutations put the caller back",
+    "into each of the three states it was in or could regress to.",
+    "",
+    "R1 is the shipped defect: no swap, so the second session is adopted into the bound holder.",
+    "R2 and R3 are the two halves of the drain, which are what an external observer sees: without the",
+    "flush the tail the old session had settled never reaches the subject, and without the close the",
+    "observer is left holding a run that never ends.",
+    "",
+    "The ordering barrier between the two chains is NOT registered as a mutation. Removing it is a",
+    "race rather than a defect that reproduces on demand, and a mutation whose kill depends on",
+    "scheduling would report SURVIVED on a slow machine and read as a hole in the suite."
+  ],
+  "mutations": [
+    {
+      "name": "R1 the second top-level session is adopted into the bound holder, which is the state this connector shipped in",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "            await previous.settled();\n            events = newEventHolder();\n",
+      "replace": "            await previous.settled();\n",
+      "expectRed": "reset:the session created by /new PUBLISHES"
+    },
+    {
+      "name": "R2 the drain closes the old session without flushing what it had already settled",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "            previous.flush(previous.path);\n",
+      "replace": "",
+      "expectRed": "order:and the tail it was still holding went out BEFORE that close"
+    },
+    {
+      "name": "R3 the drain leaves the old session's run open, so an observer holds a run that never ends",
+      "file": "extensions/connector-opencode/src/plugin.ts",
+      "find": "            previous.closeRun(Date.now());\n",
+      "replace": "",
+      "expectRed": "order:every run the first session OPENED was closed"
+    }
+  ]
+}

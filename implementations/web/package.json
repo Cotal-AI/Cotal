@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/web",
   "description": "Cotal browser observability dashboard: adds the `web` command to the cotal CLI.",
-  "version": "0.20.0",
+  "version": "0.24.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -29,6 +29,7 @@
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
     "@cotal-ai/workspace": "workspace:*",
     "dompurify": "^3.4.12",
     "marked": "^18.0.6"

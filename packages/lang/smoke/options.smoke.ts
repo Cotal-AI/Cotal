@@ -33,7 +33,14 @@ const ok = (name: string, cond: boolean, extra?: unknown) => {
 /** Capture the request object handed to each handler method, then delegate. */
 const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<string, unknown[]> } => {
   const seen = new Map<string, unknown[]>();
-  const wrap = <A extends { [k: string]: unknown }, R>(
+  // The constraint used to be `A extends { [k: string]: unknown }`, which no request type can
+  // satisfy: an INTERFACE has no implicit index signature, so every handler method failed to
+  // infer and the whole object leaned on the `as unknown as EffectHandler` below to stay quiet.
+  // Nothing annotates this literal now, and nothing needs to: `capturing`'s declared return type
+  // checks it at the `return` below. A `satisfies` here would be a second conformance mechanism
+  // for a shape already checked once, which is machinery rather than safety.
+  // `A` is only ever pushed into `unknown[]`, so the bound bought nothing and cost ten methods.
+  const wrap = <A, R>(
     name: string,
     fn: (req: A, ctx: EffectContext) => Promise<R>,
   ) => {
@@ -56,7 +63,7 @@ const capturing = (inner: EffectHandler): { handler: EffectHandler; seen: Map<st
     monitor: wrap("monitor", inner.monitor),
     openConclave: wrap("openConclave", inner.openConclave),
     closeConclave: wrap("closeConclave", inner.closeConclave),
-  } as unknown as EffectHandler;
+  };
   return { handler, seen };
 };
 
@@ -75,7 +82,6 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   "fanOut.name": "combinator scope name, interpreter-level",
   "fanOut.key": "maps an item to its branch key, evaluated by the interpreter before any dispatch",
   "conclave.name": "combinator scope name, interpreter-level",
-  "conclave.channel": "conclave is not implemented in this interpreter and fails loud as L1000",
 };
 
 // ---- 1) the capture instrument sees what it claims to see ---------------------------------------
@@ -123,6 +129,12 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
       src: 'const a = await spawn("p", { name: "a" });\nawait wait(replied(a), { name: "w", timeout: "1h" });\n',
       method: "wait",
     },
+    // `conclave` is a scope, so its request is built on the scope path rather than in `callPrimitive`.
+    // That is a second place an option can be dropped, and until this case existed nothing walked it.
+    conclave: {
+      src: 'const a = await spawn("p", { name: "a" });\nawait conclave([a], (ch) => turn(a, { name: "go" }), { name: "t", channel: "war-room" });\n',
+      method: "openConclave",
+    },
   };
 
   const script = {
@@ -154,23 +166,24 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
   ok("no accepted option is silently dropped on its way to the handler", dropped.length === 0, dropped);
 }
 
-// ---- 3) an unimplemented primitive fails loud rather than quietly ignoring its options -----------
+// ---- 3) every declared primitive is actually implemented ----------------------------------------
 
 {
-  // `conclave` is declared, validated, and not implemented. That is a legitimate state for a
-  // skeleton, but ONLY while it is loud: a primitive that parses and then does nothing is the
-  // silent-drop defect at the level of a whole effect.
-  let caught: unknown;
-  try {
-    await run(
-      'const a = await spawn("a", { name: "a" });\nawait conclave([a], (ch) => turn(a, { name: "h" }), { name: "t", channel: "war-room" });\n',
-      { runId: "o-c", handler: new SimHandler({ turns: { h: { status: "done", at: 0 } } }) },
-    );
-  } catch (e) {
-    caught = e;
-  }
-  ok("conclave is refused at runtime, not ignored", (caught as { code?: string })?.code === "L1000", String(caught).slice(0, 80));
-  ok("and the message names the primitive", String((caught as Error)?.message).includes("conclave"), String(caught).slice(0, 80));
+  // The claim worth holding is the one the catalog makes: a primitive that parses runs. The check
+  // that catches a regression is that no primitive reaches the interpreter's L1000 default.
+  const { handler, seen } = capturing(new SimHandler({ turns: { h: { status: "done", at: 0 } } }));
+  const r = await run(
+    'const a = await spawn("a", { name: "a" });\nawait conclave([a], (ch) => turn(a, { name: "h" }), { name: "t", channel: "war-room" });\n',
+    { runId: "o-c", handler },
+  );
+  ok("conclave opens its channel through the handler", (seen.get("openConclave") ?? []).length === 1);
+  ok("and closes it", (seen.get("closeConclave") ?? []).length === 1);
+  ok("and the body's own effect ran inside it", (seen.get("turn") ?? []).length === 1);
+  ok(
+    "and the scope is journalled under its own kind, so a migrate can ask whether it closed",
+    r.journal.entries().some((e) => e.kind === "conclave" && e.status === "ok"),
+    r.journal.entries().map((e) => `${e.kind}:${e.status ?? e.state}`),
+  );
 }
 
 // ---- 4) the OBJECT form of spawn, which this suite did not exercise until it had to ------------
@@ -320,7 +333,7 @@ const NOT_A_HANDLER_FIELD: Readonly<Record<string, string>> = {
 
     let diverged: unknown;
     try {
-      await resume(src(p.bagB), live.journal, { runId, handler: new SimHandler(script) });
+      await resume(src(p.bagB), live.journal, { runId, pins: live.pins, handler: new SimHandler(script) });
     } catch (e) {
       diverged = e;
     }

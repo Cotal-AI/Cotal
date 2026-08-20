@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -40,6 +41,7 @@ import {
   epCallerReplyFilter,
   parseEpSubject,
   controlServiceSubject,
+  eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
 import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
@@ -294,7 +296,7 @@ export interface ManagerResumeAgent {
     allowSubscribe: string[];
     allowPublish?: string[];
     capabilities?: string[];
-    transcript: boolean;
+    events: boolean;
     shareTools?: string;
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
@@ -382,9 +384,10 @@ export interface StartAgentOpts {
    *  the connector. Only ever set from imperative control args (`opStart`), NEVER from `resolved` —
    *  the manifest path stays resume-free by construction. Unsupported connectors throw at buildLaunch. */
   resume?: string;
-  /** Mirror the session's transcript to `tr-<name>`. Defaults to off; `true` (the
-   *  `--transcript` flag) opts in. */
-  transcript?: boolean;
+  /** Publish the session's AG-UI event plane to its own principal-keyed event channel. Defaults to
+   *  off; `true` (the `--events` flag) opts in. It is the only structured view of what a session
+   *  did: the prose mirror this replaced is gone. */
+  events?: boolean;
   /** Initial prompt auto-submitted at session start (the `--prompt` flag), forwarded verbatim to
    *  the connector. Imperative launches only — a manifest launch carries its own `resolved.prompt`
    *  and rejects this flag alongside it (one source, no merge). */
@@ -421,7 +424,7 @@ interface ManagedLaunch {
   allowSubscribe: string[];
   allowPublish?: string[];
   capabilities?: string[];
-  transcript: boolean;
+  events: boolean;
   shareTools?: string;
   forkSource?: string;
   unresolvedLaunchOptionKeys?: string[];
@@ -573,6 +576,33 @@ export async function epAwaitReply(
  * through a pluggable {@link Runtime} (pty by default). It does NOT proxy agent
  * mesh traffic — terminal I/O streams over its own attach endpoint instead.
  */
+/**
+ * Event channels in `channels` that do NOT belong to `{owner, actor}`.
+ *
+ * ONE HELPER FOR EVERY SEAM THAT ARMS AN ACL, and that is the whole design. The rule first existed
+ * only at the spawn accept seam, and a security review found the hole that shape guarantees: resume
+ * re-arms a managed row straight from the inventory document, and `renewManagedStaticCred` re-mints
+ * the JWT from that row, so an admin-supplied inventory could carry a foreign concrete event channel
+ * past a fence that only ever looked at spawns. A rule with one call site is a rule that covers one
+ * door.
+ *
+ * IT COMPARES PRINCIPALS, NOT STRINGS. `eventChannelPrincipal` decodes the channel back to the
+ * `{owner, actor}` it names, so this is mode-independent: static keys the actor on the allocated
+ * nkey and user mode keys it on the alias, and neither needs its own branch here.
+ *
+ * STATED LIMIT, unchanged and asserted by a cell: the decode refuses anything that is not exactly
+ * two principal tokens, so a WILDCARD is not an event channel to it. `events.<owner>.>` and
+ * `events.>` pass untouched and are governed by ordinary ACL authority. This closes the concrete
+ * form, which is what a caller writes when it knows which agent it wants to read, and not the
+ * wildcard form, which is what an operator writes deliberately for an observer.
+ */
+function foreignEventChannels(channels: readonly string[], owner: string, actor: string): string[] {
+  return channels.filter((ch) => {
+    const p = eventChannelPrincipal(ch);
+    return p !== null && !(p.owner === owner && p.actor === actor);
+  });
+}
+
 export class Manager {
   private readonly space: string;
   private readonly servers: string | undefined;
@@ -798,6 +828,45 @@ export class Manager {
   /** The console page URL (manager-hosted, loopback). */
   get consoleUrl(): string {
     return this.attach.consoleUrl();
+  }
+
+  /**
+   * The out-of-band route for the mesh the refusal is running on, as ONE paste-ready command.
+   *
+   * **A REMEDY A REFUSAL PRINTS IS AUTHORITY THE REFUSAL LENDS, AND BOTH HALVES OF THIS ONE WERE
+   * WIDER THAN THE SENTENCE AROUND THEM.** The static half named `--profile observer`, and `mint`
+   * reads `--allow-subscribe` only for the agent profile while the observer arm of `permissionsFor`
+   * hardcodes `chat.>`: an operator narrowing a reader to one event plane was handed a reader of every
+   * channel in the space. The user half named a bare `cotal actor grant`, and an omitted flag there is
+   * not "leave it alone" but the WIDE default (`>` read, `>` post, `spawn,role:default` scope), so the same
+   * sentence handed out a full-mesh reader-writer with spawn. The static half was found by RUNNING
+   * the printed command and decoding what it produced; the user half was found by READING it against
+   * `runActor`'s defaults. Neither is the only way in, and a remedy string is not proved by either
+   * one alone.
+   *
+   * So the command is spelled out in full and only ONE is printed: the one for the mesh this manager
+   * is actually running, because a sentence carrying both routes is a sentence an operator picks the
+   * wrong half of. `smoke:events-grant` section 9 runs the static half and grades the credential;
+   * `smoke:user-spawn:live` section E runs the user half and grades the row.
+   *
+   * It takes NO mode argument, on purpose. It used to, and the resume door passed the resumed
+   * DOCUMENT's (`entry.identity.mode === "user"`) rather than the manager's: those agree on an honest
+   * inventory and disagree on the shape section 8 exercises, a user-mode record under a static
+   * manager, where it handed a static operator `cotal actor grant` for a mesh with no actor ledger to
+   * write it to. The operator reading the refusal is on the manager's mesh, never on the record's. A
+   * boolean parameter is how that happened, so the mode is read from `this` and a third door cannot
+   * pass the wrong one.
+   */
+  private readerRemedy(owner: string, channel: string): string {
+    return this.userMode
+      ? `\`cotal actor grant <reader> --owner ${owner} --scope '' --allow-subscribe '${channel}' ` +
+          `--allow-publish ''\`, with every field spelled out: \`actor grant\` is an upsert of the ` +
+          `WHOLE row and an omitted flag means the WIDE default (\`>\` read, \`>\` post, \`spawn,role:default\` ` +
+          `scope), not "leave it alone".`
+      : `\`cotal mint <reader> --profile agent --allow-subscribe ${channel} --provision\`, where there ` +
+          `is no actor ledger for \`actor grant\` to write to. The AGENT profile, not the observer ` +
+          `one: \`mint\` reads --allow-subscribe only for that profile, so an observer mint is ` +
+          `refused outright and writes no creds file.`;
   }
 
   async start(): Promise<void> {
@@ -1473,7 +1542,7 @@ export class Manager {
         allowSubscribe: a.launch.allowSubscribe,
         allowPublish: a.launch.allowPublish,
         capabilities: a.launch.capabilities,
-        transcript: a.launch.transcript,
+        events: a.launch.events,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
         unresolvedLaunchOptionKeys: a.launch.unresolvedLaunchOptionKeys,
@@ -2015,6 +2084,15 @@ export class Manager {
         if (denied) throw new EpEnvelopeError("permission-denied", denied);
         return unwrap(await this.attachAuthorized(a, ctx.subject.caller));
       }),
+      // C3 `input`: the SAME authorization as `attach`, deliberately written out rather than
+      // factored with it - the two share a policy, not a body, and a shared wrapper would be a
+      // place for one of them to quietly acquire a condition the other does not have.
+      input: (ctx) => this.serveGated(ctx, async () => {
+        const a = targetAgent(ctx);
+        const denied = await this.authorizeNamed(a, callerOf(ctx), await this.epAnyModeAdmin(ctx));
+        if (denied) throw new EpEnvelopeError("permission-denied", denied);
+        return this.inputAuthorized(a, args(ctx));
+      }),
       stopSelf: (ctx) => this.serveGated(ctx, () => unwrap(this.opStopSelf(callerOf(ctx), args(ctx)))),
       definePersona: (ctx) => this.serveGated(ctx, () => unwrap(this.opDefinePersona(args(ctx), callerOf(ctx), false))),
       purge: (ctx) => this.serveGated(ctx, () => adminGated(ctx, async () => unwrap(await this.opPurge(args(ctx), callerOf(ctx))))),
@@ -2525,10 +2603,21 @@ export class Manager {
   private async driveRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
     if (!this.auth) return; // guaranteed by requestRetirement; re-checked for the type narrowing below
     const held = this.retiring.get(a.name);
-    const me = parsePrincipalKey(this.ep.ref().id);
     const target = parsePrincipalKey(a.id);
-    if (!me || !target) {
-      if (held) held.lastError = "the manager or target principal could not be derived; the retirement was not requested";
+    if (!target) {
+      if (held) held.lastError = "the target principal could not be derived; the retirement was not requested";
+      return;
+    }
+    // The SERVE identity, not the endpoint identity, is who this request speaks as (#549). The field
+    // is declared `!:`, which asserts to the type system what the ordering happens to provide, so it
+    // is read here as what it actually is. On today's ordering this guard cannot fire: `start()`
+    // assigns the identity before it connects anything, and a retirement needs an agent that only a
+    // started manager can hold. It is kept as a fail-closed assertion rather than a live face,
+    // because the alternative is carrying `undefined` into the caller triple and surfacing the
+    // result as "the rail could not be reached", which would name the wrong cause.
+    const serveIdentity = this.managerServeIdentity as Identity | undefined;
+    if (!serveIdentity?.id) {
+      if (held) held.lastError = `the retirement was NOT requested: this manager has no serve identity yet, so it cannot speak as the registered serving instance. The despawn stopped "${a.name}" and the name stays held. NEXT: let the manager finish registering, then re-attempt the same-name spawn to re-drive the teardown.`;
       return;
     }
     const uncertain = (why: string) =>
@@ -2537,7 +2626,22 @@ export class Manager {
       // The caller triple and the TARGET are both grant-pinned now (#350): the `handle` target
       // rides the subject, so this ephemeral credential can ask to retire exactly this
       // incarnation and nothing else.
-      const caller = { owner: me.owner, actor: me.actor, uid: this.managerLifecycleUid };
+      //
+      // THE TRIPLE IS THE SERVE PRINCIPAL, and it has to be (#549). The auth rail authorizes this
+      // request by comparing the caller's `<owner>.<actor>` against the serve issuance gate's bound
+      // principal, and that gate is opened with `principalKey(DEV_OWNER, serveIdentity.id)` (see the
+      // registration block). Deriving the caller from `ep.ref().id` instead put the manager's
+      // ENDPOINT identity nkey on the wire, which is a different, equally real identity of the same
+      // manager, so the comparison was unsatisfiable and EVERY user-mesh retirement was refused as a
+      // full no-op. Measured before the fix: 8 refusals in one suite run across 5 agents, with the
+      // epoch and the instance id both matching and only the principal disagreeing.
+      //
+      // Both halves come from the gate's own sources rather than from `ep.ref()`: `DEV_OWNER` is
+      // hard-coded at the gate site, so taking the owner from `ep.ref().id` would re-open the same
+      // mismatch in the owner half the moment a manager ran under a user-shaped identity. This is
+      // also the more honest attribution: the authority being exercised is "I am the registered
+      // serving instance", which is exactly what the gate records.
+      const caller = { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
       const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
         retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
       });
@@ -2760,7 +2864,7 @@ export class Manager {
         variant: args.variant ? String(args.variant) : undefined,
         launchOptions: args.launchOptions as Record<string, unknown> | undefined,
         resume: args.resume ? String(args.resume) : undefined,
-        transcript: typeof args.transcript === "boolean" ? args.transcript : undefined,
+        events: typeof args.events === "boolean" ? args.events : undefined,
         cwd: args.cwd ? String(args.cwd) : undefined,
         prompt: args.prompt ? String(args.prompt) : undefined,
         subscribe,
@@ -3063,9 +3167,19 @@ export class Manager {
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? [];
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
+      // #651: fold the persona's model into the launch record, mirroring the variant line below
+      // and the manifest branch above. Without this, a persona-file model (the common pin source)
+      // never reaches `launch.model`, so the connector runs the seat on it while `ps --wide`/`--json`
+      // reports the model ABSENT - a false "no model pinned" for a seat that has one.
+      model = opts.model ?? def.model;
       variant = opts.variant ?? def.variant;
       launchOptions = mergeLaunchOptions(def.launchOptions, opts.launchOptions);
     }
+    // #651: an empty or whitespace-only model string is not a pin. Coerce it to undefined here, at
+    // the single point every path (persona, manifest, imperative) has resolved `model`, so it
+    // serializes ABSENT rather than present-but-empty (`"model": ""`), which a key-presence consumer
+    // would misread as "a pin was recorded".
+    if (model !== undefined && model.trim() === "") model = undefined;
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
     // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
@@ -3113,20 +3227,19 @@ export class Manager {
       name = this.uniqueName(identityName);
     }
     this.reserved.add(name);
-    // Transcript mirroring (opt-in: `--transcript` / COTAL_TRANSCRIPT_DEFAULT=1) → grant the agent pub
-    // on its OWN transcript channel; auth-mode publish is default-deny, so without the grant the mirror's
-    // publish is rejected. Ask the resolved connector for the channel — the SAME one it publishes to, so
-    // the grant and the publish can't drift, and the literal stays out of core. Uses the spawned `name`
-    // (post-uniqueName) so the grant matches the actual identity. Mirroring is OPTIONAL per connector
-    // (like prompt): if it's requested for a connector that doesn't mirror, fail loud — never silently
-    // skip the grant (that would surface later as a confusing auth-mode publish rejection).
-    const transcript = opts.transcript ?? process.env.COTAL_TRANSCRIPT_DEFAULT === "1";
-    if (transcript) {
-      if (!connector.transcriptChannel) {
-        this.reserved.delete(name); // release the just-reserved name on this fail-fast path
-        return { ok: false, error: `connector "${connector.name}" does not support transcript mirroring, but transcript was requested` };
-      }
-      allowPublish = [...(allowPublish ?? []), connector.transcriptChannel(name)];
+    // The AG-UI event plane (opt-in: `--events` / COTAL_EVENTS_DEFAULT=1). Refused HERE, before
+    // anything is minted: a connector that cannot
+    // emit must fail before provisioning rather than after, exactly as an unsupported `resume` does.
+    // The GRANT itself cannot be derived yet. It is keyed on the agent's PRINCIPAL, and in user mode
+    // the principal's owner is resolved further down, so deriving it from anything in scope here
+    // would mean guessing at the identity the child will actually connect as. It is added at the
+    // accept seam below, where the allocated triple exists.
+    const events = opts.events ?? process.env.COTAL_EVENTS_DEFAULT === "1";
+    if (events && !connector.eventChannel) {
+      // Release the just-reserved name on this fail-fast path. A leaked reserve is silent: it costs
+      // the next spawn of this persona its un-suffixed name and nothing reports why.
+      this.reserved.delete(name);
+      return { ok: false, error: `connector "${connector.name}" does not publish an AG-UI event plane, but events was requested` };
     }
     // F2 (Unit B): a STATIC managed spawn REFUSES endpoint capabilities, fail-closed IN CODE (not
     // a doc note): the static terminal has no obligation-drain/frontier steps yet, so an accepted-
@@ -3169,6 +3282,51 @@ export class Manager {
       const agentTriple = this.userMode
         ? { owner: opts.owner ?? (spawner && parsePrincipalKey(spawner)?.owner.startsWith("u_") ? parsePrincipalKey(spawner)!.owner : DEV_OWNER), actor: name, uid: lifecycleUid }
         : { owner: DEV_OWNER, actor: identity.id, uid: lifecycleUid };
+      // THE EVENT GRANT, derived from the principal that was actually ALLOCATED and never from the
+      // display name. A display name is UI convenience: this mesh permits two live agents to carry
+      // one, so a name-keyed channel fuses two principals onto one subject and, in auth mode,
+      // authorizes both onto it from the same name-only value. `agentTriple` is the triple the child
+      // will connect as in both modes, so the grant and the subject the session derives from its own
+      // endpoint are the same derivation. Placed here rather than beside the refusal above
+      // because this is the first point at which that triple exists, and still before every
+      // provisioning call that consumes `allowPublish`.
+      // THE OWN-CHANNEL RULE FOR THE EVENT PLANE, and it is the first thing this seam does.
+      //
+      // An event channel carries a session's tool inputs and outputs, which makes it the most
+      // valuable read on the mesh, and `subscribe` / `allowSubscribe` / `allowPublish` are
+      // caller-supplied on every spawn door. On a per-user-auth mesh the ledger's spawner envelope
+      // already refuses a delegation wider than the spawner's own grant. On a STATIC mesh there is
+      // no ledger, so nothing attenuates a caller-supplied ACL at all, and a caller that may spawn
+      // may mint its child a read on any subject.
+      //
+      // What this rule asks is NOT who the caller is. That question has no answer on a static mesh:
+      // an untargeted spawn carries no authorization mode, and the admin reach a static caller
+      // holds is true by construction for everyone who can reach the handler. It asks whether the
+      // event channel being minted BELONGS TO THE AGENT BEING CREATED, which the manager knows
+      // because it has just allocated the principal.
+      //
+      // STATED LIMIT, because a fence whose gap is discovered later is worse than one whose gap is
+      // written down. `eventChannelPrincipal` decodes a principal and refuses anything that is not exactly
+      // two principal tokens, so a WILDCARD is not an event channel to it: `events.<owner>.>` and
+      // `events.>` pass this rule untouched and are governed by ordinary ACL authority, which on a
+      // user mesh is the envelope and on a static mesh is the spawn credential itself. So this
+      // closes the concrete form and not the wildcard form. It is worth having anyway: it is the
+      // form a caller writes when it knows which agent it wants to read, and the wildcard form is
+      // the one an operator writes deliberately for an observer.
+      const foreign = foreignEventChannels([...allowSubscribe, ...(allowPublish ?? [])], agentTriple.owner, agentTriple.actor);
+      if (foreign.length) {
+        // Throws rather than returning, because this seam is inside the accept body: the throw
+        // unwinds before `onAccepted`, so no goal is bound and no identity is minted, and the
+        // enclosing `finally` releases the reserved name. Returning here would be a value nobody
+        // reads.
+        throw new Error(
+          `this spawn asks for another agent's event channel: ${foreign.join(", ")}. An ` +
+            `agent may be granted its OWN event plane and no other, because that plane carries the ` +
+            `session's tool inputs and outputs. Grant a reader out of band rather than through a ` +
+            `spawn: ${this.readerRemedy(agentTriple.owner, foreign[0]!)}`,
+        );
+      }
+      if (events) allowPublish = [...(allowPublish ?? []), connector.eventChannel!({ owner: agentTriple.owner, actor: agentTriple.actor })];
       await hooks?.onAccepted?.({ name, identity, lifecycleUid, agentTriple });
       // In auth mode, mint the agent's creds from the space signing key and write them where the
       // spawned session reads them (COTAL_CREDS path). Open mesh → no creds. Scope = the resolved
@@ -3293,7 +3451,7 @@ export class Manager {
         allowSubscribe,
         allowPublish,
         capabilities,
-        transcript,
+        events,
         mcpServers,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
@@ -3335,7 +3493,7 @@ export class Manager {
           allowSubscribe,
           allowPublish,
           capabilities,
-          transcript,
+          events,
           shareTools: opts.shareTools,
           forkSource: opts.resume,
           // Opaque values may contain secrets. Preserve only their keys and require the referenced
@@ -3375,7 +3533,7 @@ export class Manager {
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
-      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain" }); return { ok: false, error: readiness.detail }; } // uncertain — non-success, but kept
+      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } }); return { ok: false, error: readiness.detail }; } // uncertain: non-success, but kept, and the detail rides the terminal (#605)
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
       // would never match and down -f would treat the agent as foreign).
@@ -3488,6 +3646,44 @@ export class Manager {
   ): Promise<Pick<PreparedResume, "id" | "creds" | "userAuth">> {
     const referenceError = this.inventoryReferenceError(entry);
     if (referenceError) throw new Error(`retained agent ${entry.name}: ${referenceError}`);
+    // THE OWN-CHANNEL RULE, ON THE RESUME DOOR, and it belongs here rather than beside the launch
+    // because BOTH resume paths funnel through this function and neither may skip it.
+    //
+    // A resume document is admin-supplied JSON. It carries the ACLs the managed row is re-armed
+    // from, and `renewManagedStaticCred` re-mints the credential out of that row at half TTL, so a
+    // foreign event channel written into an inventory becomes a minted read on another agent's tool
+    // inputs and outputs one renewal later. In static mode nothing else stops it: the checks below
+    // pin the credential's PATH, its IDENTITY and the broker's acceptance of it, and say nothing at
+    // all about its ACL. User mode compares the adopted authority's ACL against the inventory's, so
+    // it refuses a divergence on both fields already, but it refuses it as DRIFT rather than as this
+    // rule, and an inventory whose record and credential agree with each other and disagree with
+    // this rule is exactly the document an operator would not notice.
+    //
+    // Refuses rather than strips. Silently narrowing an admin document would leave the operator
+    // holding a record that says one thing and a mesh that does another, and the whole reason this
+    // is reachable is that nobody reads the record.
+    {
+      const owner = entry.identity.mode === "user" ? entry.identity.owner : DEV_OWNER;
+      // The ACTOR HALF IS THE PRINCIPAL, never the display name. In user mode the row this
+      // document re-arms is keyed by `identity.actor` (it is what the provider adopts below and
+      // what every liveness check reads), and an inventory supplies `name` and `identity.actor`
+      // independently, so judging the channel against `name` would judge it against the half that
+      // does not own the plane.
+      const actor = entry.identity.mode === "user" ? entry.identity.actor : entry.identity.id;
+      const foreign = foreignEventChannels(
+        [...(entry.launch.allowSubscribe ?? []), ...(entry.launch.allowPublish ?? [])],
+        owner,
+        actor,
+      );
+      if (foreign.length)
+        throw new Error(
+          `retained agent ${entry.name}: its record claims another agent's event channel ` +
+            `(${foreign.join(", ")}). An agent may hold its OWN event plane and no other, because that ` +
+            `plane carries the session's tool inputs and outputs. Remove it from the inventory and ` +
+            `grant the reader out of band instead: ` +
+            `${this.readerRemedy(owner, foreign[0]!)}`,
+        );
+    }
     if (entry.identity.mode === "open") {
       if (this.auth || this.userMode)
         throw new Error(`retained agent ${entry.name} is open-mode but the current manager is authenticated`);
@@ -3718,7 +3914,7 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
-          transcript: entry.launch.transcript,
+          events: entry.launch.events,
           mcpServers,
           workspaceRoot: this.workspaceRoot,
         });
@@ -3783,7 +3979,7 @@ export class Manager {
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
-          transcript: entry.launch.transcript,
+          events: entry.launch.events,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
         },
@@ -4812,7 +5008,10 @@ export class Manager {
         } else if (o.kind === "failed") {
           ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
         } else {
-          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch } }));
+          // Forward the readiness detail as the terminal's reason: this manager owns the deadline,
+          // so it owns what elapsing it MEANS. Absent, core commits its own generic line (#605).
+          const why = (o.data as { reason?: unknown } | undefined)?.reason;
+          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch }, ...(typeof why === "string" && why.length > 0 ? { reason: why } : {}) }));
         }
         this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
         await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
@@ -5252,6 +5451,45 @@ export class Manager {
     return { ok: true, data: { name, path } };
   }
 
+  /** The post-authorization `input` effect (C3): type `text` into the seat's terminal as if a human
+   *  had. The single call an external UI needs to deliver a harness command (`/compact`, `/clear`,
+   *  `/model`) without holding a terminal open on the caller's side.
+   *
+   *  Why the runtime HANDLE and not an attach session: a session is a stream (backlog, subscriber
+   *  set, a lifetime the session plane accounts for and caps). Opening and discarding one per
+   *  keystroke line would burn a session slot for a write, and would put a capacity refusal in the
+   *  path of an operation that has no capacity cost. {@link AgentHandle.write} is the one-shot
+   *  sibling of `interrupt()`, which already writes into the same pty.
+   *
+   *  Three refusals, each for a different reason and each with its own code, so a caller can tell
+   *  "never going to work" from "not right now":
+   *   - the name was refilled while authorization awaited: act on the incarnation the caller was
+   *     authorized for or on nothing at all (the same guard {@link attachAuthorized} carries, for
+   *     the same reason: a name is a reusable slot and `authorizeNamed` can await a ledger read);
+   *   - the agent is not running: there is no terminal to type into;
+   *   - the runtime cannot write (tmux/cmux/orca/herdr attach to an externally-owned process, so
+   *     they own no input stream for it): `unimplemented`, named by runtime kind. NOT a fallback
+   *     to an attach session and NOT a silent success - a dropped keystroke would leave the caller
+   *     believing a command was delivered that never was.
+   *
+   *  `enter` defaults to true: a harness command typed but not submitted has not been delivered.
+   *  Nothing is echoed back; the caller reads the resulting turns from the event plane. */
+  private inputAuthorized(a: ManagedAgent, args: Record<string, unknown>): { name: string; bytes: number } {
+    if (this.agents.get(a.name) !== a)
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" was replaced during authorization - retry`);
+    if (a.handle.status() !== "running")
+      throw new EpEnvelopeError("failed-precondition", `agent "${a.name}" is not running (${a.handle.status()}); nothing to type into`);
+    const write = a.handle.write?.bind(a.handle);
+    if (!write)
+      throw new EpEnvelopeError("unimplemented", `input is not supported by runtime ${a.handle.kind}`);
+    // The contract validated `text` (non-empty, <= 64KiB) and `enter` (boolean) before this ran, so
+    // the only decision left is the carriage return. `!== false` and not `?? true`: an ABSENT enter
+    // and an explicit `true` must behave identically, and only `false` may suppress the return.
+    const data = `${String(args.text)}${args.enter !== false ? "\r" : ""}`;
+    write(data);
+    return { name: a.name, bytes: Buffer.byteLength(data, "utf8") };
+  }
+
   /** The post-authorization attach effect (P2 item 6): mint the holder-bound §13.6 offer, redeem it
    *  through the ONE session plane (one-use CAS + presenter-equality), and stand up the PTY bridge —
    *  atomically. The reply is the SIGNED grant (no ws:// URL, non-bearer, never logged); the caller
@@ -5362,6 +5600,17 @@ export class Manager {
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.
         lifecycleUid: a.lifecycleUid,
+        // #651 enrichment: per-seat facts the manager ALREADY holds, carried on the row so `ps
+        // --wide`/`--json` can surface them without a new collection path. All optional in the row
+        // schema: a fact this backend did not record serializes absent, never fabricated (the
+        // pid is absent on runtimes that do not own a real process; a launch may pin no model).
+        model: a.launch.model,
+        variant: a.launch.variant,
+        cwd: a.launch.cwd,
+        pid: a.handle.pid,
+        spawner: a.spawner,
+        instanceId: this.managerInstanceId,
+        host: hostname(),
         ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
       };
     });

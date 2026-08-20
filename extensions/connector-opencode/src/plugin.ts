@@ -28,12 +28,22 @@ import {
   fmtFrom,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
-  transcriptChannel,
+  AguiEmitter,
+  AguiEmitterHolder,
+  EventWal,
+  FileSubjectFrontier,
+  ensureEventWalDir,
+  resolveEventsStateRoot,
   type InboxItem,
+  controlFromEnv,
+  scrubLaunchMaterial,
 } from "@cotal-ai/connector-core";
+import { principalKey } from "@cotal-ai/core";
+import { randomUUID } from "node:crypto";
+import { OpenCodeSessionSource, type OpenCodeMessageWithParts, type OpenCodeRecord } from "./agui-source.js";
+import { createOpenCodeMapper, type OpenCodeMapper } from "./agui-map.js";
 import type { Plugin, Hooks } from "@opencode-ai/plugin";
 import { buildCotalTools } from "./tools.js";
-import { createTranscriptMirror } from "./transcript.js";
 
 function log(msg: string): void {
   process.stderr.write(`[cotal-connector] ${msg}\n`);
@@ -56,6 +66,10 @@ export const cotal: Plugin = async () => {
   }
   if (guard.__cotalOpencodeHooks) return guard.__cotalOpencodeHooks; // one agent; reuse the hooks
   const config = configFromEnv();
+  const control = controlFromEnv();
+  // Both readers of the launch material have now read it, so the pointer is dropped: the shells and
+  // tools this seat runs from here on inherit no reference to its credential or control token.
+  scrubLaunchMaterial();
   config.connector = "opencode"; // advertise the host harness on our AgentCard (meta.connector)
   const serverUrl = process.env.COTAL_OPENCODE_SERVER_URL?.trim();
   const serverUsername = process.env.OPENCODE_SERVER_USERNAME?.trim() || "opencode";
@@ -65,6 +79,72 @@ export const cotal: Plugin = async () => {
 
   const agent = new MeshAgent(config);
   agent.start(); // background connect with retry — never blocks startup
+
+  /**
+   * Publishes this session's activity as AG-UI events on `events.<owner>.<actor>`, iff COTAL_EVENTS
+   * is on. A personal `opencode` never publishes, because the launcher sets that variable only for
+   * a managed session.
+   */
+  let events: AguiEmitterHolder<OpenCodeRecord> | undefined;
+  /**
+   * ONE HOLDER PER SESSION, built on demand rather than once per process.
+   *
+   * A holder binds to one thread for the life of its emitter and refuses a second, terminally: the
+   * write-ahead log is keyed to the thread, so re-adopting would continue one session's epoch and
+   * sequence against another session's bytes. That refusal is correct and stays. What it means here
+   * is that `/new`, a second top-level session in the same OpenCode process, needs its own holder,
+   * its own emitter and its own log, which is the sequential-sessions-one-principal case the shared
+   * subject frontier exists for.
+   */
+  function newEventHolder(): AguiEmitterHolder<OpenCodeRecord> {
+    // Scoped to this holder, not to the process: the run-closed callback below has to reach the
+    // mapper, and the two are assigned at different times because the mapper is built inside the
+    // factory, keyed on the session the bus names.
+    let mapper: OpenCodeMapper | undefined;
+    // Built LAZILY, on the first event that names a session: `start()` reaches the broker, and that
+    // work must not run for a session that never emits.
+    return new AguiEmitterHolder<OpenCodeRecord>(
+      async (id: string) => {
+        // Throws rather than defaulting to the working directory: a write-ahead log written
+        // somewhere no later start looks for is a silent loss.
+        const workspaceRoot = resolveEventsStateRoot(process.env);
+        const threadId = id; // the native session IS the AG-UI thread
+        const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+        const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        // Per PRINCIPAL, not per thread: without it a second session of this agent opens virgin,
+        // expects an empty subject its own first session filled, and halts for good.
+        const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
+        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+        mapper = createOpenCodeMapper({ threadId, mintRunId: () => randomUUID() });
+        return AguiEmitter.start<OpenCodeRecord>({
+          endpoint: agent.ep,
+          wal,
+          subjectFrontier,
+          source: new OpenCodeSessionSource({
+            // The SUPPORTED surface. `opencodeApi` is the same authenticated HTTP client the rest of
+            // this plugin uses, and `/session/{id}/message` is the endpoint the SDK's
+            // `session.messages()` calls. The SQLite store behind it is OpenCode's private business
+            // and its schema migrates, so nothing here reads it.
+            read: () => opencodeApi<OpenCodeMessageWithParts[]>(`/session/${encodeURIComponent(id)}/message`, undefined, 30_000),
+            // A revert is a legitimate user action, so the divergence is RECORDED and the stream
+            // continues. The read itself is already correct without this, because the cursor is
+            // compared as an order and never dereferenced as an identity.
+            onVanished: (cursor) => log(`AG-UI: the resume cursor was removed from the session (revert): ${cursor}`),
+          }),
+          map: mapper.map,
+        });
+      },
+      // Required, and not defaulted to a swallow: this runs behind a bus handler that must not
+      // throw, so a failure reaches a human only if it is written somewhere. The holder is terminal
+      // on error and does not retry, so this line is the whole record of why events stopped.
+      (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
+      // The turn terminal closes a run the record stream never described, so without this the mapper
+      // would still believe that run is open, attribute the next records to it, and have the batch
+      // refused. Keyed on the id, so a newer run opened in between is left alone.
+      (runId: string) => mapper?.forgetOpenRun(runId),
+    );
+  }
+  if (/^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "")) events = newEventHolder();
 
   async function opencodeApi<T>(path: string, init?: RequestInit, timeoutMs = 10_000): Promise<T> {
     const res = await fetch(`${serverUrl}${path}`, {
@@ -106,15 +186,6 @@ export const cotal: Plugin = async () => {
   // this session's first turn rather than a batch that raced it. Cleared by the one drive that
   // carries it, so no later readiness event can issue a second boot turn.
   let bootPrompt = process.env.COTAL_OPENCODE_PROMPT?.trim() || undefined;
-  // Transcript mirror → `tr-<name>`: opt-in via COTAL_TRANSCRIPT (the connector's buildLaunch / the
-  // manager set it for managed sessions; a personal opencode never mirrors). EVENT-DRIVEN — fed from
-  // the OpenCode event hook below (message.updated → assistant roles, message.part.updated → parts)
-  // and flushed at session.idle, so it never re-reads the whole session. The manager grants this agent
-  // pub rights on the same `tr-<name>` channel.
-  const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? "")
-    ? createTranscriptMirror(agent, transcriptChannel(config.name))
-    : undefined;
-
   const safeStatus = async (status: PresenceStatus, activity?: string): Promise<void> => {
     try {
       if (agent.connected) await agent.setStatus(status, activity);
@@ -147,14 +218,12 @@ export const cotal: Plugin = async () => {
       process.exit(0);
     }
   };
-  const controlPath = process.env.COTAL_CONTROL_SOCKET?.trim();
-  const controlToken = process.env.COTAL_CONTROL_TOKEN?.trim();
-  if (controlPath && controlToken) {
+  if (control) {
     const handle = async (): Promise<Record<string, unknown>> => ({
       ok: false,
       error: "opencode runs cotal hooks in-process; only the shutdown control op is supported",
     });
-    controlServer = startControlServer(agent, { path: controlPath, token: controlToken }, handle, {
+    controlServer = startControlServer(agent, control, handle, {
       fatalBind: true,
       onShutdown: () => void shutdown(),
     });
@@ -214,7 +283,6 @@ export const cotal: Plugin = async () => {
     awaitingTurnEnd = false;
     clearInterruptIntent();
     clearErrorRetry(true);
-    transcript?.reset(); // hard session boundary: drop any buffered parts so `/new` never mirrors them
     if (previous) {
       log(`adopted opencode session ${id} after ${reason}; mesh identity unchanged`);
       if (pendingForWake() > 0) void drive();
@@ -421,28 +489,41 @@ export const cotal: Plugin = async () => {
         return;
       }
       switch (event.type) {
-        case "session.created":
+        case "session.created": {
           // Adopt every top-level session created in this OpenCode process. That makes `/new` a
           // Cotal-aware context reset: same mesh identity, new OpenCode context/session id.
-          if (!event.properties.info.parentID) adoptSession(event.properties.info.id, "top-level session create");
+          if (event.properties.info.parentID) break;
+          const created = event.properties.info.id;
+          adoptSession(created, "top-level session create");
+          const previous = events;
+          if (previous && previous.path !== undefined && previous.path !== created) {
+            // DRAIN, THEN SWAP. Flush first so the session being left publishes what it settled,
+            // then close its open run: an observer that never sees the close holds a run that never
+            // ends, and the plane's rule is that a divergence is on the wire rather than silent.
+            //
+            // THE AWAIT IS THE ORDERING AND IS NOT A STYLE CHOICE. The two calls above land on the
+            // OLD holder's chain and the new session's frames go out on a DIFFERENT one, so without
+            // a settled point between them the new session's first frame can reach the subject
+            // before the old session's close.
+            previous.flush(previous.path);
+            previous.closeRun(Date.now());
+            await previous.settled();
+            events = newEventHolder();
+          }
+          // Adopt READS FROM HERE. A resumed session must not republish its history, and the
+          // source's fresh adopt returns the position of the end for exactly that reason.
+          events?.adopt(created);
           break;
-        case "message.updated":
-          // Feed the transcript mirror: which messages on OUR session are assistant-authored.
-          if (transcript && ours(event.properties.info.sessionID)) transcript.record(event.properties.info);
-          break;
-        case "message.part.updated":
-          // Feed the transcript mirror: buffer each part as it streams (no per-turn refetch).
-          if (transcript && ours(event.properties.part.sessionID)) transcript.observe(event.properties.part);
-          break;
+        }
         case "session.idle": {
           const idleSession = event.properties.sessionID;
           if (!ours(idleSession)) return;
+          // Order matters and is not stylistic: flush the turn's records FIRST, then close the run.
+          // Both land on the holder's chain in the order they were enqueued, so closing first would
+          // terminate a run the records that follow still belong to.
+          events?.flush(sessionID);
+          events?.closeRun(Date.now());
           await safeStatus("idle");
-          // Publish what the agent did this turn BEFORE driving the next batch, so a fresh turn's parts
-          // don't bleed in. The mirror is an observability side-channel: surface a publish failure but
-          // keep it OFF the turn loop, so a transport hiccup can never wedge the agent.
-          if (transcript)
-            await transcript.flush().catch((e) => log(`transcript mirror publish failed: ${(e as Error).message}`));
           completeTurn(); // the sole turn-end site: ack-on-surface + drive the next batch
           break;
         }
@@ -466,6 +547,11 @@ export const cotal: Plugin = async () => {
           // `busy` stays stuck and every later push is buffered behind a turn that already failed.
           if (event.properties.sessionID && !ours(event.properties.sessionID)) return;
           if (!busy && !awaitingTurnEnd) return; // no turn to fail — stray error
+          // A failed turn still ENDED, so the run is closed rather than left open for the next one
+          // to be refused against. It closes with no outcome, which says the run ended and does not
+          // claim it succeeded; `RUN_ERROR` is unreachable from any emitter on this plane today.
+          events?.flush(sessionID);
+          events?.closeRun(Date.now());
           const interrupted = consumeInterruptIntent(event.properties.sessionID) || isMessageAbortedError(event.properties.error);
           busy = false;
           if (awaitingTurnEnd) {
@@ -477,6 +563,14 @@ export const cotal: Plugin = async () => {
           if (!interrupted) scheduleErrorRetry();
           else clearErrorRetry(true);
           break;
+        case "message.part.updated": {
+          // NEAR-LIVE. The bus is the wake signal and never the data path: this says "look now", and
+          // the source then reads the durable store and decides what is settled enough to publish.
+          const partSession = (event.properties as { part?: { sessionID?: string } }).part?.sessionID;
+          if (!ours(partSession)) return;
+          events?.flush(sessionID);
+          break;
+        }
         case "tui.command.execute": {
           const p = event.properties as { command?: string; sessionID?: string };
           if (p.command === "session.interrupt") markInterruptIntent(p.sessionID);

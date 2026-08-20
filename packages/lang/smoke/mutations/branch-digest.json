@@ -1,0 +1,74 @@
+{
+  "suite": "packages/lang/smoke/migrate.smoke.ts",
+  "guard": "the entry's `branchDigest`: the arms a settled race is never walked into",
+  "command": "pnpm smoke:lang-migrate",
+  "completionMarker": "migrate.smoke:",
+  "proveWith": "node scripts/mutation-proof.mjs --config packages/lang/smoke/mutations/branch-digest.json",
+  "why": [
+    "The guard has FOUR separable claims and each is mutated on its own, because a single red would",
+    "not say which one carried it: that the digest is WRITTEN, that it is COMPARED, that it is over",
+    "STRUCTURE rather than source offsets, and that it covers the LOSERS ONLY.",
+    "",
+    "The last two are narrowness. A digest that refused everything would satisfy the first two",
+    "mutations perfectly and make every decided race un-migratable and un-forkable; a digest over the",
+    "winner too would replace a divergence naming the step it broke with one naming the whole scope,",
+    "which is a worse error for the same event.",
+    "",
+    "This suite counts rather than throws, so a mutation may redden more than the cell it names --",
+    "the harness requires the NAMED cell to be red, and the marker prints at the end because the",
+    "suite reaches it on every run."
+  ],
+  "mutations": [
+    {
+      "name": "the digest is never written",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    ...digestFacts(branchDigest, outcome.cancel?.losers),",
+      "replace": "",
+      "expectRed": "because the recorded scope entry carries a `branchDigest` over the arms the walk skips",
+      "cell": "because the recorded scope entry carries a `branchDigest` over the arms the walk skips",
+      "note": "An entry with no digest is compared against nothing -- `if (entry.branchDigest !== undefined)` is how a journal written before this rule stays readable -- so this also silently restores the old blind spot. That is why the WRITE is graded separately from the COMPARISON. RE-AIMED when the scope grew a second settle: the fence that refuses a value the record cannot hold writes the same facts, so this line briefly appeared twice and the anchor went AMBIGUOUS. The repair was in the CODE, not the anchor: the facts are now assembled once into `settledFacts` and both settles write that, which removes the duplication a second copy would have drifted from. The anchor follows the surviving line."
+    },
+    {
+      "name": "the digest is written but never compared",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (entry.branchDigest !== undefined && branchDigest !== undefined) {\n      const now = branchDigest(entry.cancel?.losers ?? []);\n      if (now !== undefined && now !== entry.branchDigest) {\n        throw new RunDivergence(stepKeyString(scopeKey), entry.branchDigest, now);\n      }\n    }",
+      "replace": "",
+      "expectRed": "REPAIRED: an edit inside a branch the race decided now refuses the migration",
+      "cell": "REPAIRED: an edit inside a branch the race decided now refuses the migration"
+    },
+    {
+      "name": "source offsets are hashed along with the structure",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    if (k === \"start\" || k === \"end\" || k === \"loc\" || k === \"range\") continue;",
+      "replace": "",
+      "expectRed": "a REINDENTED losing arm is not an edited one: same structure, same digest, walk completes",
+      "cell": "a REINDENTED losing arm is not an edited one: same structure, same digest, walk completes",
+      "note": "The first narrowness twin. Acorn nodes carry start/end, so hashing them makes ANY edit earlier in the file diverge a race nobody touched -- the false positive that teaches people to route around a check."
+    },
+    {
+      "name": "the digest covers every arm, not only the unwalked ones",
+      "file": "packages/lang/src/interpret.ts",
+      "find": "    return (losers) =>\n      digest(\n        [...losers]\n          .sort()\n          .map((n) => [n, bodies.has(n) ? bodies.get(n) : null]),\n      );",
+      "replace": "    return (_losers) =>\n      digest(\n        [...bodies.keys()]\n          .sort()\n          .map((n) => [n, bodies.get(n)]),\n      );",
+      "expectRed": "an edit in the WINNING arm diverges at the STEP it broke, not at the scope",
+      "cell": "an edit in the WINNING arm diverges at the STEP it broke, not at the scope",
+      "note": "The second narrowness twin, and the subtler one: it does not break the guard, it makes the guard EARLIER than the better check that already exists. The walk enters the winner entry by entry, so an edit there diverges at the step it broke; a digest over the winner pre-empts that with the scope key and loses the location. A guard that fires first is not automatically the right guard."
+    },
+    {
+      "name": "the comparison is restricted to the migration walk",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (entry.branchDigest !== undefined && branchDigest !== undefined) {",
+      "replace": "    if (host.options.migration === true && entry.branchDigest !== undefined && branchDigest !== undefined) {",
+      "expectRed": "a RESUME of the same edited source diverges as well, rather than replaying past it",
+      "cell": "a RESUME of the same edited source diverges as well, rather than replaying past it",
+      "note": "The specified placement is the migrate walk only, so this mutation restores the narrower rule and is still a defect: the run record carries no program hash, so nothing upstream refused edited source before a resume got here, and a settled race is delivered from its entry without entering an arm. The wider placement is deliberate and is graded rather than assumed."
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "the `race`-only restriction at the call site",
+      "file": "packages/lang/src/interpret.ts",
+      "why": "Widening the call site’s `name === \"race\"` test to every scope kind adds a digest to `parallel`/`fanOut`, whose branches are ALL walked, and to `conclave`, which a migration cannot enter at all. Nothing observable changes for the first two -- an edit inside a walked branch already diverges at its own step, upstream of any scope-level comparison -- so a mutation on it can only report SURVIVED. It is a cost-and-clarity choice, not a behaviour guard, and is recorded here rather than graded to look like coverage."
+    }
+  ]
+}

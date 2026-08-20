@@ -26,7 +26,6 @@ const EXPECTED_KEYS = [
   "OPENAI_API_KEY",
   "OPENROUTER_API_KEY",
   "NOUS_API_KEY",
-  "NEBIUS_API_KEY",
   // hermes-registry dedicated keys
   "OPENCODE_GO_API_KEY",
   "OPENCODE_ZEN_API_KEY",
@@ -95,6 +94,13 @@ assert.ok(!("SOME_UNRELATED_SECRET" in env), "unrelated env secrets must not be 
 // An exclusion appearing on the allow-list is a policy contradiction, not coverage.
 for (const key of EXCLUDED)
   assert.ok(!HERMES_PROVIDER_KEYS.includes(key), `${key} is both allow-listed and excluded`);
+
+// An initial prompt has no carrier into the gateway yet: it is refused at launch, never dropped.
+assert.throws(
+  () => hermesConnector.buildLaunch({ space: "smoke", name: "hermes-1", prompt: "greet the operator" }),
+  /initial prompt/,
+  "a prompt the connector cannot submit must refuse the launch",
+);
 
 console.log(
   `launch-env smoke: ${HERMES_PROVIDER_KEYS.length} provider keys forwarded, ${EXCLUDED.length} exclusions held, P3 boundary intact`,

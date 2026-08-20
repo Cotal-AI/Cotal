@@ -9,7 +9,7 @@ import { setup, setupFlags } from "./commands/setup.js";
 import { join } from "./commands/join.js";
 import { console_ } from "./commands/console.js";
 import { spawn, spawnComplete, spawnFlags, spawnRequiredExtensions } from "./commands/spawn.js";
-import { attach, attachFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
+import { attach, attachFlags, input, inputFlags, managedAgentComplete, ps, psFlags, stop, stopFlags } from "./commands/agents.js";
 import { models, modelsComplete, modelsFlags } from "./commands/models.js";
 import { c } from "./ui.js";
 import { personas, personasComplete } from "./commands/personas.js";
@@ -217,9 +217,9 @@ const baseCommands: Command[] = [
       { name: "out", type: "string", value: "<path>", description: "output path (default .cotal/auth/creds/<name>.creds)" },
       { name: "signer", type: "boolean", description: "emit a stripped account-signing file instead" },
       { name: "force", type: "boolean", description: "with --signer: overwrite an existing file" },
-      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "read ACL override (comma-separated)" },
-      { name: "allow-publish", type: "string", value: "<a,b>", description: "post ACL override (comma-separated)" },
-      { name: "role", type: "string", value: "<role>", description: "agent role: scopes its anycast task queue (svc_<role>); overrides the agent file" },
+      { name: "allow-subscribe", type: "string", value: "<a,b>", description: "agent profile: read ACL override (comma-separated); refused off it" },
+      { name: "allow-publish", type: "string", value: "<a,b>", description: "agent profile: post ACL override (comma-separated); refused off it" },
+      { name: "role", type: "string", value: "<role>", description: "agent profile: scopes its anycast task queue (svc_<role>); overrides the agent file; refused off it" },
       { name: "provision", type: "boolean", description: "agent profile: also pre-create the identity's bind-only DM/deliver durables (+ role task queue) on the live mesh, so the credential can consume; needs the broker reachable" },
       spaceFlag,
       serverFlag,
@@ -362,6 +362,15 @@ const baseCommands: Command[] = [
     summary: "stream + drive an agent's terminal (pty runtime) - --name <n>",
     flags: attachFlags,
     run: attach,
+    complete: managedAgentComplete,
+  },
+  {
+    kind: "command",
+    name: "input",
+    group: "Agents",
+    summary: "type one line into an agent's terminal without attaching - --name <n> --text <t>",
+    flags: inputFlags,
+    run: input,
     complete: managedAgentComplete,
   },
   {

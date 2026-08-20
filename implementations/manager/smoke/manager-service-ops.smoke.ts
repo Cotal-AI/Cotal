@@ -2,9 +2,9 @@
  * MANAGER SERVICE OPS smoke (control-surface P2 item 1, slice 1b) — the FULL typed-command
  * fan-out over a REAL Manager + JWT broker + REAL agent processes (e2e-stub.mjs), proving:
  *
- *  1. The rev-2 cluster document serves ALL 17 commands (describe lists them; targeted commands
+ *  1. The cluster document serves ALL 18 commands (describe lists them; targeted commands
  *     declare their modes).
- *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 16-field request into
+ *  2. SPAWN FIDELITY (the 1b oracle): the ep `spawn` door coerces the full 15-field request into
  *     StartAgentOpts (field-for-field, captured at the single `startAgent` chokepoint), with the
  *     right spawner attribution. Deep semantics (empty `resume`) refuse through the shared handler.
  *     (The ctl `start` door this once mirrored was deleted in 1d — the ep door is the only door.)
@@ -45,7 +45,7 @@ import {
   type Connector, type ControlReply, type EpCaller, type LaunchOpts, type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
-import { Manager } from "../src/manager.js";
+import { Manager, type SpawnHooks } from "../src/manager.js";
 import { MANAGER_ENDPOINT, MANAGER_CONTRACTS } from "../src/manager-service-contract.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
@@ -111,7 +111,9 @@ const mgr = new Manager({ space, servers: SERVERS, runtime: "pty", workspaceRoot
 const M = mgr as unknown as {
   managerInstanceId: string;
   agents: Map<string, { id: string; lifecycleUid: string; secretPaths?: { creds?: string } }>;
-  startAgent: (opts: Record<string, unknown>, spawner?: string) => Promise<ControlReply>;
+  // The real signature takes the spawn hooks as a third parameter; this hand-written view had
+  // only two, so the mock below could pass `hooks` that the type said would never arrive.
+  startAgent: (opts: Record<string, unknown>, spawner?: string, hooks?: SpawnHooks) => Promise<ControlReply>;
 };
 
 /** A caller instrument: mint an agent cred with the given ep capabilities (+ ctl privileged via
@@ -161,22 +163,24 @@ try {
   let launchInputDigest: string | undefined;
   {
     const replies: unknown[] = [];
-    const sub = A.nc.subscribe(epCallerReplyFilter(space, A.caller), { callback: (_e, m) => replies.push(JSON.parse(dec.decode(m.data))) });
+    const sub = A.nc.subscribe(epCallerReplyFilter(space, A.caller), { callback: (_e, m) => { replies.push(JSON.parse(dec.decode(m.data))); } });
     const subj = epRequestSubject(space, { route: { mode: "one" }, endpoint: MANAGER_ENDPOINT, command: "describe", caller: A.caller, nonce: `n${String(Date.now()).padStart(23, "0")}` });
     A.nc.publish(subj, enc.encode(JSON.stringify({ v: 1, id: "d1", op: { endpoint: MANAGER_ENDPOINT, command: "describe" }, class: "ephemeral", replyExpected: true, deadlineMs: 5000, from: { id: A.principal, name: "smoke" } })));
     await A.nc.flush();
     for (let i = 0; i < 60 && replies.length === 0; i++) await wait(100);
     const d = replies[0] as { ok?: boolean; data?: { descriptor?: { clusters?: Array<{ commands?: string[]; document?: { revision?: number; commands?: Array<{ name: string; targeted: boolean; modes?: string[] }> } }> } } } | undefined;
     const cmds = d?.data?.descriptor?.clusters?.[0]?.commands ?? [];
-    check("describe lists all 17 commands", cmds.length === 17 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "stop", "define-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
+    check("describe lists all 18 commands", cmds.length === 18 && ["status", "ps", "inspect", "models", "spawn", "despawn", "attach", "input", "stop", "define-persona", "purge", "launch", "resume-preserved", "commit-resume", "finalize-resume", "prepare-preservation", "commit-preservation", "abort-preservation"].every((c) => cmds.includes(c)), cmds);
     clusterDigest = (d?.data?.descriptor?.clusters?.[0] as { digest?: string } | undefined)?.digest;
     const doc = d?.data?.descriptor?.clusters?.[0]?.document;
     spawnInputDigest = (doc?.commands?.find((c) => c.name === "spawn") as { inputDigest?: string } | undefined)?.inputDigest;
     launchInputDigest = (doc?.commands?.find((c) => c.name === "launch") as { inputDigest?: string } | undefined)?.inputDigest;
     const despawnDecl = doc?.commands?.find((c) => c.name === "despawn");
     const stopDecl = doc?.commands?.find((c) => c.name === "stop");
-    check("the document is revision 6 (launch admits a remote manifest deploy's inline spec); despawn declares owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
-      doc?.revision === 6 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+    const inputDecl = doc?.commands?.find((c) => c.name === "input");
+    check("the document is revision 7 (the C3 `input` command); despawn AND input declare owner+any modes (the 1c operator reach), stop declares self mode (child/ledger ABSENT everywhere)",
+      doc?.revision === 7 && despawnDecl?.targeted === true && JSON.stringify(despawnDecl?.modes) === '["owner","any"]'
+      && inputDecl?.targeted === true && JSON.stringify(inputDecl?.modes) === '["owner","any"]'
       && stopDecl?.targeted === true && JSON.stringify(stopDecl?.modes) === '["self"]'
       && doc?.commands?.every((c) => !(c.modes ?? []).includes("child") && !(c.modes ?? []).includes("ledger")) === true, doc?.commands);
     sub.unsubscribe();
@@ -198,12 +202,12 @@ try {
     };
     const fields = {
       agent: "e2e-stub", role: "worker", config: "cfg.md", identity: "idfile", model: "m1", variant: "high",
-      launchOptions: { flag: "v", n: 2 }, resume: "sess-1", transcript: true, cwd: "/tmp/x", prompt: "hello",
+      launchOptions: { flag: "v", n: 2 }, resume: "sess-1", cwd: "/tmp/x", prompt: "hello",
       subscribe: ["general"], allowSubscribe: ["general", "task"], allowPublish: ["general"], shareTools: "all",
     };
     const rEp = await A.call("spawn", { name: "wp1", ...fields });
     M.startAgent = orig;
-    check("the ep door accepted the 16-field request", rEp.reply.ok === true, rEp.reply);
+    check("the ep door accepted the 15-field request", rEp.reply.ok === true, rEp.reply);
     const [ep] = captured;
     const strip = (o: Record<string, unknown>) => { const { name: _n, ...rest } = o; return rest; };
     // The coercion oracle: every declared field round-trips into StartAgentOpts (a schema drift
@@ -228,10 +232,37 @@ try {
     const rows = ps.reply.data as Array<{ name: string; id: string; lifecycleUid: string; mesh: string }>;
     const row = rows.find((x) => x.name === "w1");
     check("ps lists w1 with id + lifecycleUid (the targeting coordinates)", ps.reply.ok === true && row !== undefined && row.id === w1.id && row.lifecycleUid === w1.lifecycleUid, rows);
+    // #651: the row carries the per-seat facts the manager ALREADY holds, so `ps --wide`/`--json`
+    // need no new collection path. `spawnLive` pinned the cwd and the spawner is the ep caller's
+    // authenticated id; no model was pinned, so `model` serializes ABSENT (a real optional, never
+    // a fabricated empty) - that absence is asserted too, it is half the contract.
+    const enrich = row as typeof row & { model?: string; cwd?: string; pid?: number; spawner?: string; instanceId?: string; host?: string };
+    check("ps rows carry the #651 enrichment facts (cwd/pid/spawner/instance/host)",
+      enrich.cwd === repoRoot && typeof enrich.pid === "number" && enrich.pid > 0 && enrich.spawner === A.principal && enrich.instanceId === M.managerInstanceId && typeof enrich.host === "string" && enrich.host.length > 0, enrich);
+    check("...and an unpinned model serializes ABSENT, not fabricated",
+      !("model" in enrich), enrich);
     const ins = await A.call("inspect", { name: "w1" });
     check("inspect returns the same row", ins.reply.ok === true && (ins.reply.data as { id: string }).id === w1.id);
     const insMiss = await A.call("inspect", { name: "ghost" });
     check("inspect of an unknown name is not-found", insMiss.reply.ok === false && insMiss.reply.error?.code === "not-found", insMiss.reply);
+  }
+  {
+    // #651 fix: the persona-file model path. A seat whose model comes from its PERSONA FILE (no
+    // --model override) must surface that model in the row - the manager folds def.model into the
+    // launch record just as it folds def.variant. Before the fix, launch.model stayed undefined and
+    // ps reported the model ABSENT while the connector ran the seat on the persona's model.
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "pmodel.md"), `---\nname: pmodel\nrole: worker\nmodel: persona-m\n---\n`);
+    const { row: wp } = await spawnLive(A.call, { name: "pmodel", agent: "e2e-stub", cwd: repoRoot });
+    const psP = await A.call("ps");
+    const prow = ((psP.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === wp.name);
+    check("a persona-file model surfaces in the ps row (no --model flag)", prow?.model === "persona-m", prow);
+    // #651 fix: an empty/whitespace persona model is not a pin - it coerces to undefined and
+    // serializes ABSENT, never present-but-empty (which a key-presence consumer misreads as a pin).
+    writeFileSync(join(workspaceRoot, ".cotal", "agents", "emodel.md"), `---\nname: emodel\nrole: worker\nmodel: "   "\n---\n`);
+    const { row: we } = await spawnLive(A.call, { name: "emodel", agent: "e2e-stub", cwd: repoRoot });
+    const psE = await A.call("ps");
+    const erow = ((psE.reply.data as Array<{ name: string; model?: string }>) ?? []).find((x) => x.name === we.name);
+    check("an empty/whitespace persona model serializes ABSENT, not present-empty", erow !== undefined && !("model" in erow), erow);
   }
   {
     const rB = await B.call("despawn", { graceful: true }, { actor: w1.id, lifecycleUid: w1.lifecycleUid });
@@ -383,7 +414,7 @@ try {
     const { manifest: docManifest, artifacts: docArts } = await fetchContractClosure(storeCtx, clusterDigest!, () => []);
     const fetchedDoc = JSON.parse(dec.decode(docArts.get(contractRefToHex(docManifest.root))!)) as { revision?: number; urn?: string };
     check("the cluster document is fetchable at its REGISTERED closure digest (verify-on-read walk, baseline caller grant)",
-      fetchedDoc.revision === 6 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
+      fetchedDoc.revision === 7 && fetchedDoc.urn === "ai.cotal.manager", fetchedDoc);
     // THE DOOR-LEVEL PROOF REVISION 6 EXISTS FOR. The handler branch for a remote manifest deploy's
     // inline `spec` merged in ahead of the schema, so the compiled input validator refused every
     // request carrying the field and the feature was unreachable THROUGH THIS DOOR while the
@@ -443,7 +474,7 @@ try {
     check("fixture: A spawns w3 (the operator instrument is NOT its spawner)", typeof accW3.name === "string" && (accW3.name as string).startsWith("w3"), accW3);
     const svc = await resolveService(opNc, space, MANAGER_ENDPOINT, opCaller, { deadlineMs: 10_000 });
     check("the instrument resolves the full surface generically (describe + store fetch + recompile)",
-      svc.commands.size === 17 && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+      svc.commands.size === 18 && svc.responder.epoch === 0 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
     const rPs = await invokeCommand(opNc, space, svc, "ps", undefined, {});
     check("instrument `ps` rides the manager.read row + the describe-bound default currency (no epoch stub)",
       rPs.reply.ok === true && (rPs.reply.data as { name: string }[]).some((r) => r.name === accW3.name), rPs.reply);

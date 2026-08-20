@@ -44,10 +44,10 @@ const ANNOTATIONS = {
       "Serves the version-exact docs bundled with this release (offline); `refresh: true` adds an opt-in pull from docs.cotal.ai that is version-gated, so it can never return docs for a different version.",
   },
   cotal_inbox: {
-    effect: "Claude: drains all (or peeks); driven connectors: clears pull-only quiet traffic",
+    effect: "clears exactly the messages it returns, never more (nothing at all when peek is true)",
     availability: "always",
     notes:
-      "OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is cleared. In focus mode, normal channel recall is also shown read-only (replay-gated).",
+      "One call carries at most a receivable window; what does not fit stays buffered, is named in the reply, and comes back on the next call. OpenCode, Codex, Hermes, and Pi expose no arguments: automatic traffic remains connector-owned, while buffered quiet ambient is what this call returns and clears. In focus mode, normal channel recall is also shown read-only (replay-gated) and is never cleared by the read.",
   },
   cotal_send: {
     effect: "publishes to a channel",
@@ -193,7 +193,7 @@ for (const s of specs) {
   lines.push("");
   if (s.name === "cotal_inbox") {
     lines.push(
-      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise drains the full local inbox. OpenCode, Codex, Hermes, and Pi expose no arguments: the call destructively pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only.",
+      "**Connector variants:** Claude Code exposes the `peek` argument and otherwise reads the whole local inbox, one receivable window per call. OpenCode, Codex, Hermes, and Pi expose no arguments: the call pulls only buffered quiet ambient, leaving automatic traffic to the connector; normal focus recall shown with it remains read-only. On every variant the call clears only what that response actually carried.",
     );
     lines.push("");
   }

@@ -53,14 +53,27 @@ import {
   formatInjection,
   fmtFrom,
   startControlServer,
-  transcriptChannel,
   ORIENTATION_BOOTSTRAP,
   MESH_FIRST_STEER,
+  AguiEmitter,
+  AguiEmitterHolder,
+  EventWal,
+  FileSubjectFrontier,
+  JsonlFileSource,
+  ensureEventWalDir,
+  resolveEventsStateRoot,
+  type DurableSource,
   type InboxItem,
+  controlFromEnv,
+  scrubLaunchMaterial,
+  type SourceRead,
 } from "@cotal-ai/connector-core";
+import { principalKey } from "@cotal-ai/core";
+import { randomUUID } from "node:crypto";
 import { AppServerDriver, type ThreadItem } from "./app-server.js";
+import { createCodexMapper, type CodexMapper, type CodexRecord } from "./agui-map.js";
+import { waitForRollout } from "./agui-rollout.js";
 import { startCotalMcp, MCP_SERVER_NAME, MCP_TOKEN_ENV, type CotalMcpEndpoint } from "./mcp.js";
-import { createTranscriptMirror } from "./transcript.js";
 import { launchTui } from "./tui.js";
 
 const ERROR_RETRY_INITIAL_MS = 1_000;
@@ -73,6 +86,10 @@ const MAX_RESTARTS = 3;
 const STATUS_FLUSH_MS = 500;
 /** How long a cooperative shutdown waits for the clean mesh leave before exiting regardless. */
 const SHUTDOWN_GRACE_MS = 5_000;
+/** Looks the launch spends waiting for a thread's rollout file to appear, at 250ms each. Bounded
+ *  because a caller that waits forever cannot report that it is stuck; giving up is not final,
+ *  because every later turn boundary looks again (see `bindEvents`). */
+const ROLLOUT_ATTEMPTS = 40;
 
 /** Once the Codex TUI owns the terminal, NOTHING else may write to it — a stray log line lands
  *  in the middle of its rendering. From that point the host's own diagnostics go to a file inside
@@ -259,6 +276,62 @@ function mcpOverrides(mcp: CotalMcpEndpoint): [string, string][] {
   ];
 }
 
+/**
+ * The rollout source, positioned where the BIND was taken rather than where the emitter's own
+ * setup finished.
+ *
+ * A log with no cursor means "start at the current end", and for this connector the current end is
+ * the wrong end. The emitter is built lazily inside `adopt`, and between the bind and its first
+ * read sit the write-ahead log's directory, the subject frontier, the log itself, a channel
+ * resolve and a single-replica preflight: filesystem and broker work, measured at 17ms and 36ms on
+ * an idle machine. Every record the session appends while that runs would land behind the later
+ * end and be treated as already published, so a turn completing inside the window is dropped,
+ * permanently and silently, under a line that has already announced the stream as started.
+ *
+ * So the boundary is captured at the bind, before the announcement, and substituted HERE, on the
+ * one read that would otherwise ask the file where it currently ends.
+ *
+ * IT IS DELIBERATELY NOT WRITTEN INTO THE LOG. The log's cursor stays the emitter's own, and on a
+ * log with nothing in it a start writes nothing at all: its recovery has no pending frame to fold,
+ * so the position is first written by a PUMP, once one has actually read something. A start that
+ * throws therefore leaves nothing behind, and so does a start that succeeded and then died before
+ * its first read. Both leave the log virgin and the next bind boundaries at the file as it stands
+ * then, which is this same window one level up. A start that throws is the ordinary case here and
+ * not an edge: an armed seat whose broker is not up yet loses its emitter at launch and rebinds at
+ * a later boundary. A boundary seeded before the start would outlive it, the later bind would read
+ * a cursor and treat it as a RESUME, and everything the session wrote while the seat was cut off
+ * would be republished onto a channel whose readers are not the input channel's.
+ *
+ * THE LIMIT, stated once and in one place: this positions the first read of a log that has no
+ * cursor. A log that already carries one is a resume and passes through untouched, because a
+ * cursor written by a live emitter is the honest one. Each bind builds its own source with its own
+ * boundary, so a rebind never reuses an older one.
+ *
+ * Which makes the bind's own announcement precise for a fresh log and IMPRECISE for a resume, and
+ * that is worth saying rather than covering. A bind onto a log that already carries a position
+ * CONTINUES that log rather than starting here, and what it delivers is everything the thread
+ * appended after that position. That includes what the thread wrote long after the previous
+ * emitter was already dead, not merely what that emitter had read and had not sent, which is why
+ * the docs state the reach of a recovery rather than describing it as a flush. Nothing is sent
+ * twice either way. The line is left as it is because things outside this process parse it, and
+ * because the case it is imprecise about is reachable only after an emitter really was publishing
+ * this thread.
+ */
+class BoundStartSource<T> implements DurableSource<T> {
+  readonly kind: string;
+
+  constructor(
+    private readonly inner: DurableSource<T>,
+    private readonly start: string,
+  ) {
+    this.kind = inner.kind;
+  }
+
+  read(cursor: string | undefined): Promise<SourceRead<T>> {
+    return this.inner.read(cursor ?? this.start);
+  }
+}
+
 export async function runCodexHost(): Promise<void> {
   const config = configFromEnv(); // throws without an identity — a host launch is always managed
   config.connector = "codex";
@@ -290,6 +363,76 @@ export async function runCodexHost(): Promise<void> {
     bin: codexBin,
     log,
   });
+
+  /** Publishes this thread's activity as AG-UI events on `events.<owner>.<actor>`.
+   *
+   *  Armed by the launch (`COTAL_EVENTS`), so a seat the operator did not arm never reaches the
+   *  broker for an event plane it has no grant for. The emitter is built LAZILY on the first
+   *  adopt, because its source is the rollout file, whose path is not known until the thread
+   *  exists, and because `start()` reaches the broker, work that must not run for a thread that
+   *  never publishes. */
+  const eventsArmed = /^(1|true|yes|on)$/i.test(process.env.COTAL_EVENTS ?? "");
+  /** TEST ONLY, and the reason it exists rather than a fixture doing this from outside.
+   *
+   *  The window this whole boundary rule is about is the emitter's own asynchronous setup: the
+   *  bind captures where the stream starts, announces it, and only then does the setup below run
+   *  and the first read happen. That window is a few tens of milliseconds wide, which is not a
+   *  window a test can put a completed turn inside on purpose, so the only cell that could grade
+   *  the rule was one that raced it and therefore graded nothing reliably. This widens the same
+   *  window instead of simulating a different one, so what a fixture writes into it is what the
+   *  running seat would have written into it.
+   *
+   *  Nothing outside a test sets this, and unset is not a shorter wait, it is no wait and no call:
+   *  absent, empty, zero, negative, and unparseable all resolve to 0 and the branch below is not
+   *  taken. */
+  const startDelayMs = ((): number => {
+    const ms = Number(process.env.COTAL_EVENTS_TEST_START_DELAY_MS ?? "");
+    return Number.isFinite(ms) && ms > 0 ? ms : 0;
+  })();
+  let events: AguiEmitterHolder<CodexRecord> | undefined;
+  let mapper: CodexMapper | undefined;
+  /** The adopted rollout path. A holder binds to ONE path and dies on a second, so every flush
+   *  names the file the emitter is already reading rather than re-deriving it, and a NEW thread
+   *  gets a new holder rather than a second adopt (see `bindEvents`). */
+  let rollout: string | undefined;
+  const newEventHolder = (startCursor: string): AguiEmitterHolder<CodexRecord> =>
+    new AguiEmitterHolder<CodexRecord>(
+      async (rolloutPath: string) => {
+        // The test-only widening of this setup, at the top of it so a fixture's write lands in the
+        // real window rather than beside it. Zero unless a test set it, and zero does not await.
+        if (startDelayMs > 0) await new Promise<void>((r) => setTimeout(r, startDelayMs));
+        // Throws rather than defaulting to the working directory: a write-ahead log written
+        // somewhere no later start looks is a silent loss.
+        const workspaceRoot = resolveEventsStateRoot(process.env);
+        // The thread id is the rollout filename key, MEASURED equal to `session_meta.payload.id`
+        // and to the `thread/start` id on a real app-server thread. Taken from the path this
+        // emitter actually reads, so the log cannot be keyed to one thread while consuming
+        // another's bytes.
+        const threadId = (rolloutPath.match(/rollout-.*?-([0-9a-f-]{36})\.jsonl$/)?.[1]) ?? "";
+        if (threadId === "") throw new Error(`cannot derive a thread id from rollout path ${rolloutPath}`);
+        const principal = principalKey(agent.ep.principal.owner, agent.ep.principal.actor).key;
+        const { walPath, subjectPath } = await ensureEventWalDir({ workspaceRoot, space: config.space, principal, threadId });
+        const subjectFrontier = await FileSubjectFrontier.open(subjectPath, { space: config.space, principal });
+        const wal = await EventWal.open(walPath, { space: config.space, threadId, principal, subjectMayExist: false });
+        mapper = createCodexMapper({ threadId, mintRunId: () => randomUUID() });
+        return AguiEmitter.start<CodexRecord>({
+          endpoint: agent.ep,
+          wal,
+          subjectFrontier,
+          // `startCursor` is the boundary this bind captured before it announced itself. Nothing
+          // above writes it into the log: see `BoundStartSource` for what that buys and what it
+          // costs.
+          source: new BoundStartSource<CodexRecord>(new JsonlFileSource<CodexRecord>(rolloutPath), startCursor),
+          map: mapper.map,
+        });
+      },
+      // Required, and not defaulted to a swallow. The holder is terminal on error and does not
+      // retry, so this line is the whole record of why events stopped.
+      (e: Error) => log(`AG-UI emitter stopped: ${e.message}`),
+      // A turn terminal closes a run the record stream never described. Without this the mapper
+      // would attribute the next records to a run the published stream has already finished.
+      (runId: string) => mapper?.forgetOpenRun(runId),
+    );
 
   // Presence is best-effort and must never throw into the turn loop — but it must also never
   // LIE. The mesh connect runs in the background, so an auto-prompt (`--prompt`) can open a real
@@ -332,12 +475,6 @@ export async function runCodexHost(): Promise<void> {
       armStatusFlush();
     }
   };
-
-  // Transcript mirror → `tr-<name>`, opt-in via COTAL_TRANSCRIPT (the connector sets it for
-  // `--transcript` spawns; the manager grants pub rights on the same channel).
-  const transcript = /^(1|true|yes|on)$/i.test(process.env.COTAL_TRANSCRIPT ?? "")
-    ? createTranscriptMirror(agent, transcriptChannel(config.name))
-    : undefined;
 
   // ---- the turn loop -------------------------------------------------------
   let ready = false; // thread up — never drive before then
@@ -494,7 +631,6 @@ export async function runCodexHost(): Promise<void> {
       if (status === "failed") scheduleErrorRetry();
       else clearErrorRetry(true);
       void (async () => {
-        if (transcript) await transcript.flush().catch((e) => log(`transcript publish failed: ${(e as Error).message}`));
         if (gen !== boundaryGen) return; // a newer turn boundary owns presence + the next drive
         await safeStatus("idle");
         if (gen !== boundaryGen) return;
@@ -509,7 +645,139 @@ export async function runCodexHost(): Promise<void> {
 
   // ---- events --------------------------------------------------------------
 
+  /** The thread the plane should be publishing. Set at every `comeOnline`, so a restart's new
+   *  thread is what a retry binds to rather than the dead one. */
+  let eventsThread: string | undefined;
+  /** One bind at a time. `bindEvents` awaits a file that may not exist yet, and every turn
+   *  boundary can call it, so without this a slow resolve would be re-entered per boundary. */
+  let binding = false;
+  /** A boundary that arrived while a bind was in flight. It is REMEMBERED rather than dropped: the
+   *  boundary is the signal that the thread just did something, and the file it was waiting for may
+   *  have appeared during exactly that window. Without this the retry has to win a race with the
+   *  flag, and a turn whose start and end land in one burst would lose it. */
+  let missedBind = false;
+  /** Flush what the current binding settled, close the run it left open, and wait for both to land.
+   *
+   *  ORDER MATTERS: closing first would terminate a run the flushed records still belong to. This is
+   *  the same drain the OpenCode connector runs when a new session replaces the one it publishes. */
+  async function drainBinding(): Promise<void> {
+    if (events === undefined) return;
+    if (rollout !== undefined) events.flush(rollout);
+    events.closeRun(Date.now());
+    await events.settled();
+  }
+
+  /** Bind the plane to a thread's rollout, DRAINING and REPLACING any previous binding.
+   *
+   *  A holder binds one path and dies on a second, so a restarted app-server, which always brings
+   *  up a NEW thread and therefore a new rollout, cannot be handed to the old holder: that killed
+   *  the plane for the rest of the process, and a recovery mechanism that permanently disables what
+   *  it recovers is worse than none, because the first crash is survivable and looks survived.
+   *
+   *  DRAIN THEN SWAP, the same order the OpenCode connector uses when a `/new` session replaces the
+   *  one it was publishing: flush what the old thread settled, close the run it left open, wait for
+   *  both to land, and only then start a new holder with its own write-ahead log keyed to the new
+   *  thread. Closing first would terminate a run the flushed records still belong to.
+   *
+   *  `attempts` is the resolve budget. The launch spends the full one because `thread/start` writes
+   *  nothing to disk and the primer inject is what materializes the file; a turn boundary spends
+   *  one look, because it is a retry rather than a wait. */
+  async function bindEvents(threadId: string, attempts: number): Promise<void> {
+    if (!eventsArmed) return;
+    if (binding) {
+      missedBind = true;
+      return;
+    }
+    binding = true;
+    try {
+      const path = await waitForRollout(codexHome, threadId, { attempts, intervalMs: attempts > 1 ? 250 : 0 });
+      if (eventsThread !== threadId) return; // a newer thread arrived while this one waited
+      if (path === undefined) {
+        // THE PREDECESSOR IS STILL ENDED. Giving up on the new thread's file says nothing about the
+        // old thread, which is gone: its process is dead, no record will ever be appended to it
+        // again, and a run left open on the wire is a reader waiting forever for an end that cannot
+        // come. So the old binding is drained and closed HERE rather than only on the happy path.
+        //
+        // THE CLEAR IS LOAD-BEARING FOR EVERY BOUNDARY BELOW, and that is why it is not merely
+        // tidying up after the drain. A boundary asks whether ANYTHING is bound, and a retry fires
+        // only when nothing is; both are correct only because a binding that no longer belongs to
+        // the thread the seat is on stops existing HERE. Keep the drain and drop these two lines and
+        // the plane feeds a dead thread forever while the live one publishes nothing, which is the
+        // defect this whole path exists to close.
+        if (events !== undefined) {
+          await drainBinding();
+          events = undefined;
+          rollout = undefined;
+        }
+        // NOT terminal, and that is the fix for a one-shot bind: an armed seat whose file was slow
+        // to appear would otherwise publish nothing for its whole life, with this line as the only
+        // trace. The next turn boundary looks again.
+        log(`AG-UI: no rollout file yet for thread ${threadId}, will look again at the next turn`);
+        return;
+      }
+      if (rollout === path && events !== undefined) return; // already publishing this thread
+      if (events !== undefined) await drainBinding();
+      // CAPTURED HERE, BEFORE THE ANNOUNCEMENT, and that placement is the fix. See
+      // `BoundStartSource` for why the emitter cannot be left to position itself later.
+      const startCursor = (await new JsonlFileSource<CodexRecord>(path).read(undefined)).cursor;
+      events = newEventHolder(startCursor);
+      rollout = path;
+      events.adopt(path);
+      // `adopt` starts the emitter, it does not read. Without this the first records wait for a
+      // turn boundary that a seat sitting idle never reaches.
+      events.flush(path);
+      // SAID OUT LOUD, because it is a limit and not an implementation detail: the stream starts at
+      // the boundary captured just above, the file's last COMPLETE record as of the bind, so
+      // whatever the thread had already written before this moment is not republished. A file with
+      // nothing complete in it yet boundaries at its start, which says the same thing: there is
+      // nothing there to leave behind. On the ordinary path that is nothing
+      // (the file is created by the primer inject and bound immediately after). On a late bind it
+      // is the turns that ran while the file did not exist, and a reader comparing the panel to the
+      // terminal deserves to know why they differ rather than to guess.
+      log(`AG-UI: publishing thread ${threadId} from ${path} (the stream starts here, anything already written is not republished)`);
+    } finally {
+      binding = false;
+      const retry = missedBind;
+      missedBind = false;
+      // Two things were refused while this bind held the flag, and both are kicked from here
+      // because nothing else will: a NEWER thread (a restart landed mid-bind), and a boundary that
+      // arrived while this one was still looking.
+      if (eventsThread !== undefined && eventsThread !== threadId) void bindEvents(eventsThread, attempts);
+      else if (retry && rollout === undefined && eventsThread !== undefined) void bindEvents(eventsThread, 1);
+    }
+  }
+
+  /** Ask the emitter to read what codex has appended. The rollout is written by the child, so
+   *  nothing tells this process a record landed; the driver's own boundaries are the closest
+   *  signal there is, and a flush is cheap and idempotent (the cursor decides what is new). */
+  const flushEvents = (): void => {
+    // A DEAD HOLDER IS NOT A BINDING. The holder is TERMINAL on error, and one error it can take is
+    // the one that matters most here: `AguiEmitter.start` refuses an endpoint with no connection,
+    // and `agent.start()` connects in the BACKGROUND, so an armed seat whose broker was not up yet
+    // kills its own plane at launch. Nothing after that publishes, the mesh side recovers around it
+    // and looks healthy, and one line in the seat's own log is the whole trace. Flushing a corpse is
+    // silence with a heartbeat, so a death is treated as NO BINDING and the next boundary builds a
+    // new one. WHAT THE FRESH ADOPT THEN PUBLISHES DEPENDS ON WHETHER THE DEAD HOLDER EVER WROTE A
+    // POSITION, and saying only half of that here is what made this comment wrong. A log with no
+    // cursor in it is virgin: the new bind starts at the file's last complete record, so what the
+    // dead holder had not published is not recovered, which is the same stated limit a late bind
+    // carries. A log that carries one is a RESUME and continues it, so everything the thread
+    // appended after that position IS published, including what it appended while this plane was
+    // dead. `BoundStartSource` states that split once and in one place.
+    if (events?.failure !== undefined) {
+      log(`AG-UI: the emitter stopped (${events.failure.message}), rebinding at this boundary`);
+      events = undefined;
+      rollout = undefined;
+    }
+    if (rollout !== undefined) {
+      events?.flush(rollout);
+      return;
+    }
+    if (eventsArmed && eventsThread !== undefined) void bindEvents(eventsThread, 1);
+  };
+
   driver.on("turnStarted", () => {
+    flushEvents();
     // Invalidate any prior turn's still-pending async boundary tail: a new turn owning presence
     // now means T(n-1)'s flush/status/pump must no longer publish a stale `idle` over this
     // `working`, nor pump this turn's batch past its backoff.
@@ -519,6 +787,7 @@ export async function runCodexHost(): Promise<void> {
   });
   driver.on("waiting", (detail: string) => void safeStatus("waiting", detail));
   driver.on("turnCompleted", ({ status, owned }: { status: string; owned: boolean }) => {
+    flushEvents();
     feed(`— turn ${status}`);
     completeTurn(status, owned);
   });
@@ -532,8 +801,8 @@ export async function runCodexHost(): Promise<void> {
     }
   });
   driver.on("itemCompleted", (item: ThreadItem) => {
+    flushEvents();
     if (item.type === "agentMessage" && item.text?.trim()) feed(`● ${item.text.trim()}`);
-    transcript?.observe(item);
   });
   /** Has a restart overtaken the incarnation `gen` names? A launch/restart tail is a long chain of
    *  awaits, and at any of them its own app-server can die and the crash rail can bring up a
@@ -562,6 +831,16 @@ export async function runCodexHost(): Promise<void> {
    *  never joined. */
   async function comeOnline(threadId: string): Promise<void> {
     agent.setContextId(threadId);
+    // Bind the thread's rollout as the event plane's durable source. `thread/start` writes
+    // nothing to disk, so the file only exists once the driver's primer inject has landed; the
+    // wait is bounded, and giving up is not final, because an emitter with no source publishes
+    // nothing and would otherwise do so silently for the rest of the process. A RESTART ARRIVES
+    // HERE TOO, with a new thread, and `bindEvents` drains the old binding rather than adopting a
+    // second path into a holder that would die on it.
+    if (eventsArmed) {
+      eventsThread = threadId;
+      void bindEvents(threadId, ROLLOUT_ATTEMPTS);
+    }
     if (agentStarted) return;
     agentStarted = true;
     agent.start(); // background connect with retry
@@ -664,11 +943,8 @@ export async function runCodexHost(): Promise<void> {
       // (the launch tail died before `agent.start()`), so this is also the completion path for it.
       await comeOnline(tid);
       if (superseded(gen)) return;
-      // A restarted thread is a NEW Codex context: it never saw the channel briefing, and the
-      // dead thread's partial transcript must not merge into its first flush.
+      // A restarted thread is a NEW Codex context: it never saw the channel briefing.
       briefed = false;
-      await transcript?.flush().catch(() => {});
-      if (superseded(gen)) return;
       ready = true;
       log(`app-server restarted — thread ${tid}`);
       // The old UI was retired synchronously above; bring one up on the new listener.
@@ -825,6 +1101,24 @@ export async function runCodexHost(): Promise<void> {
     } catch {
       /* ignore */
     }
+    // THE PLANE IS DRAINED ON THE WAY OUT, and the order is the whole content of it. `interrupt()`
+    // returns when the RPC is acknowledged, NOT when codex has written `turn_aborted` to the
+    // rollout, so the flush may still not see the record that ends the turn; `closeRun` is the
+    // backstop for exactly that run. Without both, a mid-turn exit publishes `RUN_STARTED` and
+    // nothing else, and an observer holds a run that never ends, because the next process is a new
+    // thread with a new write-ahead log and no one ever reads those bytes again.
+    //
+    // This connector has no per-turn `closeRun`, and that is not an omission: on Claude and
+    // OpenCode the record stream never says the turn ended so the harness must close the run,
+    // while a Codex `task_complete` IS the terminal and the mapper closes from it. Shutdown is the
+    // one boundary the records cannot describe.
+    try {
+      flushEvents();
+      events?.closeRun(Date.now());
+      await events?.settled();
+    } catch {
+      /* leaving anyway: the forced-exit timer above still owns the deadline */
+    }
     try {
       await mcp.close(); // the tools existed only for the codex we just stopped
     } catch {
@@ -839,16 +1133,20 @@ export async function runCodexHost(): Promise<void> {
     }
   };
   let controlServer: ReturnType<typeof startControlServer> | undefined;
-  const controlPath = process.env.COTAL_CONTROL_SOCKET?.trim();
-  const controlToken = process.env.COTAL_CONTROL_TOKEN?.trim();
-  if (controlPath && controlToken) {
+  // Socket path from the env, first-frame token from the launch material (see controlFromEnv).
+  const control = controlFromEnv();
+  if (control) {
     controlServer = startControlServer(
       agent,
-      { path: controlPath, token: controlToken },
+      control,
       async () => ({ ok: false, error: "codex runs cotal in-process; only the shutdown control op is supported" }),
       { fatalBind: true, onShutdown: () => void shutdown() },
     );
   }
+  // Config and control pair are both materialized now, so the pointer to the launch material has no
+  // reader left: drop it, and the codex child and every tool it runs inherit no reference to this
+  // session's credential or control token.
+  scrubLaunchMaterial();
   process.on("SIGINT", () => void shutdown());
   process.on("SIGTERM", () => void shutdown());
 

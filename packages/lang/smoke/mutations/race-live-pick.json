@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/scopes.smoke.ts",
+  "guard": "The LIVE winner of a race is the arm with the least recorded branch clock among the settled arms, never the arm declared first or the arm that woke first. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-scopes",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/race-live-pick.json",
+  "mutations": [
+    {
+      "name": "the live pick takes the first settled arm in declaration order and ignores the clocks",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (winnerIndex === -1 || at < winnerAt) {",
+      "replace": "      if (winnerIndex === -1) {",
+      "expectRed": "a live race is decided by the recorded clocks, not by which arm woke first",
+      "completionMarker": "ok the live pass records a winner (a simulator tie, broken by declaration order)",
+      "cell": "a live race is decided by the recorded clocks, not by which arm woke first",
+      "note": "The serial simulator ties both arms' clocks, so the section 1 live cell cannot see this mutant (a tie falls to declaration order under both rules); the section 1b handler stamps the arm that woke first with the LATER clock, so only the rule picks `fast`."
+    },
+    {
+      "name": "the live pick takes the GREATEST clock",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (winnerIndex === -1 || at < winnerAt) {",
+      "replace": "      if (winnerIndex === -1 || at > winnerAt) {",
+      "expectRed": "a live race is decided by the recorded clocks, not by which arm woke first",
+      "completionMarker": "ok the live pass records a winner (a simulator tie, broken by declaration order)",
+      "cell": "a live race is decided by the recorded clocks, not by which arm woke first",
+      "note": "Same shape as the first mutant, from the other side: proves the cell holds the DIRECTION of the comparison and not just its presence."
+    }
+  ]
+}

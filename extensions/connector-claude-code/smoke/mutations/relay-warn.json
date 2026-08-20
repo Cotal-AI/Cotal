@@ -1,0 +1,45 @@
+{
+  "suite": "extensions/connector-claude-code/smoke/wake-path.smoke.ts",
+  "guard": "the lifecycle hook relay fails OPEN on a configuration fault without failing SILENT, and does not warn about a session that legitimately has no control plane",
+  "command": "pnpm build > /dev/null && pnpm smoke:claude-wake",
+  "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-claude-code/smoke/mutations/relay-warn.json",
+  "why": [
+    "THE DEFECT WAS SILENCE, NOT FAILURE, so a mutation that breaks the relay outright proves nothing",
+    "about this repair. Both mutations below leave the relay working and change only what it says.",
+    "",
+    "M1 restores the shipped behaviour exactly: the catch still fails open, and now says nothing. The",
+    "operator's symptom is a seat whose presence never advances and which never receives a queued peer",
+    "message, with no line anywhere to read. R1 is the assertion that refuses to accept that as",
+    "success. This is the same class the hermes Python hooks shipped, one connector over, which is why",
+    "the repair is a warning and not a stricter refusal.",
+    "",
+    "M2 IS THE OTHER HALF AND IT MATTERS AS MUCH. Moving the warning to the no-control branch makes",
+    "the relay warn on every hook of a legitimate hand-driven session that never had a control socket.",
+    "A warning channel that fires on working configurations is trained into background noise inside a",
+    "day, at which point the R1 warning is present and unread, which is indistinguishable from the",
+    "defect. R3 is the assertion that keeps the discrimination honest.",
+    "",
+    "BUILD FIRST because the relay resolves through dist/, and afterRestore rebuilds because dist/ is",
+    "gitignored and git cannot be the recovery for a tree holding a build compiled from the mutant."
+  ],
+  "mutations": [
+    {
+      "name": "M1 the relay fails open silently again",
+      "file": "extensions/connector-core/src/relay.ts",
+      "find": "function warnOnce(message: string): void {\n  if (warned) return;",
+      "replace": "function warnOnce(message: string): void {\n  if (true) return;",
+      "expectRed": "R1: a hook whose control endpoint cannot be resolved says so on stderr",
+      "note": "The shipped defect restored. R1's sibling assertions (exit 0, empty stdout) stay green under it, which is the point: the broken build looked healthy on every path anyone was watching.",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "M2 the relay warns about a session that simply has no control plane",
+      "file": "extensions/connector-core/src/relay.ts",
+      "find": "  if (!control) return done(\"\");",
+      "replace": "  if (!control) {\n    warnOnce(\"no control endpoint\");\n    return done(\"\");\n  }",
+      "expectRed": "R3: a session with no control endpoint at all is not warned about",
+      "note": "Over-warning is the failure mode that destroys the value of the fix without breaking a single functional assertion. A hand-driven session sets COTAL_NAME and has no control socket; under this mutant it is told it is broken on every lifecycle event.",
+      "afterRestore": "pnpm build > /dev/null"
+    }
+  ]
+}

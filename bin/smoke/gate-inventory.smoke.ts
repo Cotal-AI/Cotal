@@ -67,6 +67,15 @@ const UNGATED: Record<string, string> = {
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
+  // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
+  // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
+  // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised
+  // stably, free text collapsed), so every cell runs in CI. This arm names an operator's actual
+  // session file, which cannot be committed, and it buys two things the fixture cannot: it sees
+  // TODAY's harness rather than a snapshot, so a new `origin.kind` shows up here as a throw before
+  // it shows up in production; and it shares no assumption with the redactor, which itself encodes
+  // a belief about which fields matter and could be wrong in the same direction as the mapper.
+  "smoke:agui-map:real": "names an operator's own uncommittable session JSONL (COTAL_AGUI_SESSION); the fixture arm is gated as smoke:agui-map",
   // Known-red or documented flakes: debt with a fuse, counted as such. Gating them would make the
   // gate lie; leaving them unmarked made the list unable to say how much debt it held.
   "smoke:channels": `${BROKEN} documented timing flake + fixed-port cleanup leak`,
@@ -83,7 +92,10 @@ const UNGATED: Record<string, string> = {
   "smoke:renewal-terminal-race": `${BROKEN} reproduction of an open defect; gate when the fix lands`,
   // Full-stack live suites: boot a real broker + install tree, too slow/stateful for the PR gate.
   "smoke:manager-singleton:live": "full live stack", "smoke:seed-tarball:live": "packs a tarball",
-  "smoke:user-auth-launch:live": "full live stack", "smoke:user-spawn:live": "full live stack",
+  // `smoke:user-spawn:live` left this list when it was gated: it had thrown at section B1e on a
+  // missing explicit `tls` and stopped after 14 of its 66 cells, and being ungated is why nobody
+  // heard about it. "Too slow for the gate" was 105 seconds.
+  "smoke:user-auth-launch:live": "full live stack",
   "smoke:web-seed:live": "full live stack",
   // NOT dead, despite the obvious reading. v0.4 removed the MANAGER's ctl tiers, not the ctl rail:
   // `ctl.delivery` survives as the delivery daemon's carve-out, still built by subjects.ts and still

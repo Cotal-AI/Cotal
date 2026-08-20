@@ -515,10 +515,10 @@ try {
       close: async () => {},
     };
     await rejects("a HAND-ASSEMBLED structural scanner is rejected at registry open (an empty-family enumeration would let a barrier advance over live holders)",
-      () => openLifecycleRegistry(nc, SPACE, handAssembled), "failed-precondition");
+      () => openLifecycleRegistry(nc!, SPACE, handAssembled), "failed-precondition");
     const foreignScanner = makeLedgerScannerOverConnection(nc, "otherspace");
     await rejects("a FOREIGN-SPACE scanner attached to this space's registry is rejected (the scanner is bonded to its exact space)",
-      () => openLifecycleRegistry(nc, SPACE, foreignScanner), "failed-precondition");
+      () => openLifecycleRegistry(nc!, SPACE, foreignScanner), "failed-precondition");
     // HIGH 2 (capability integrity): the branded handle is FROZEN, so a post-brand method swap (the
     // silent-empty scanner the brand alone cannot catch: the WeakMap keys the reference, not the
     // behavior) THROWS instead of surviving a later assertScannerSpace.

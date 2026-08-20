@@ -38,6 +38,7 @@ const SUBCOMMAND = process.argv[2] ?? "";
 if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
   await import("@cotal-ai/auth"); // self-registers `agent-bearer` / `auth-service` (+ the provider) into the registry
   const { registry } = await import("@cotal-ai/core");
+  type Command = import("@cotal-ai/core").Command;
   const rest = process.argv.slice(3);
   const values: Record<string, string | boolean | undefined> = {};
   const positionals: string[] = [];
@@ -50,9 +51,10 @@ if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
       else values[key] = true;
     } else positionals.push(a);
   }
-  const cmd = registry
-    .all<{ name: string; run: (a: { values: typeof values; positionals: string[]; raw: readonly string[] }) => Promise<void> }>("command")
-    .find((c) => c.name === SUBCOMMAND);
+  // The real contract, rather than a hand-written shape: `all` constrains its type argument to
+  // Extension, which the inline shape did not satisfy because it omitted `kind`, and ParsedArgs is
+  // exactly the values/positionals/raw triple this dispatcher already passes.
+  const cmd = registry.all<Command>("command").find((c) => c.name === SUBCOMMAND);
   if (!cmd) { console.error(`self-dispatch: command "${SUBCOMMAND}" is not registered`); process.exit(1); }
   try {
     await cmd.run({ values, positionals, raw: rest }); // agent-bearer prints its bearer + returns; auth-service never returns
@@ -72,6 +74,18 @@ type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn, execFile } = await import("node:child_process");
 const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
+
+/** `Manager.list` is PRIVATE; the cells below assert the row shape `cotal ps` renders, so the reach
+ *  goes through one named view rather than a cast per call site, and the view names exactly the
+ *  fields those cells read, at exactly the width the real method returns them: `mesh` is a roster
+ *  status or the absent sentinel, never an arbitrary string, `pid` is present only on a runtime that
+ *  owns a real process, and `authHealth` is the non-ok half of `agentAuthState`. A local view WIDER than the real return would let a cell certify a value
+ *  production cannot emit. Widening the method to public would be a shipped-source change made for a
+ *  test's convenience, which is not this change's business. */
+type PresenceStatus = import("@cotal-ai/core").PresenceStatus;
+type PsRow = { name: string; id: string; mesh: PresenceStatus | "absent"; pid?: number; authHealth?: "auth-renewal-failed" | "auth-unknown" | "auth-stale" };
+const psList = (m: object, ownerFilter?: string): PsRow[] =>
+  (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -90,11 +104,13 @@ type AddressInfo = import("node:net").AddressInfo;
 
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
-  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid,
-  resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError,
+  setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
+  resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError, epAuthBucket,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds,
 } = await import("@cotal-ai/core");
 const { connect: rawConnect } = await import("@nats-io/transport-node");
+const { Kvm } = await import("@nats-io/kv");
+const { createHash } = await import("node:crypto");
 const { decodeJwt } = await import("jose");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
@@ -214,6 +230,51 @@ const e2eFailCon: Connector = {
   buildLaunch: (): LaunchSpec => { throw new Error("e2e-fail: buildLaunch deliberately rejects this launch"); },
 };
 registry.register(e2eFailCon);
+
+// A connector whose child LAUNCHES and stays alive but never joins the mesh: the only seat state in
+// which a managed row exists with NO roster entry, which is the `?? "absent"` half of the ps
+// projection. Same provisioning path as `e2e`, with one difference: it never opens an endpoint.
+const e2eQuietCon: Connector = {
+  kind: "connector",
+  name: "e2e-quiet",
+  requires: ["node"],
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: process.execPath,
+    args: ["-e", "setInterval(()=>{},1000);"],
+    env: { ...launchEnv(), ...userAuthEnv(o), COTAL_SPACE: o.space, COTAL_NAME: o.name },
+  }),
+};
+registry.register(e2eQuietCon);
+
+// A connector whose child joins the mesh normally and then, on SIGUSR1, publishes presence
+// `offline` and keeps running. That is the third mesh state a managed row can carry, and the only
+// one that is neither the default a joined seat starts in nor the sentinel for no roster row at
+// all. Flipping on a signal rather than on a timer keeps the state change ordered against the
+// assertions instead of racing the manager's readiness wait.
+const CHILD_OFFLINE = CHILD.replace(
+  "setInterval(()=>{},1000);",
+  "setInterval(()=>{},1000);const seq=['working','waiting'];let phase=0;process.on('SIGUSR2',()=>{ep.setStatus(seq[Math.min(phase++,seq.length-1)]).catch(()=>{});});process.on('SIGUSR1',()=>{ep.setStatus('offline').catch(()=>{});});",
+);
+const e2eOfflineCon: Connector = {
+  kind: "connector",
+  name: "e2e-offline",
+  requires: ["node"],
+  buildLaunch: (o: LaunchOpts): LaunchSpec => ({
+    command: process.execPath,
+    args: ["-e", CHILD_OFFLINE],
+    env: {
+      ...launchEnv(),
+      ...userAuthEnv(o),
+      CORE_DIST: coreDist,
+      COTAL_SPACE: o.space,
+      COTAL_NAME: o.name,
+      COTAL_SERVERS: o.servers ?? "",
+      ...(o.lifecycleUid ? { COTAL_LIFECYCLE_UID: o.lifecycleUid } : {}),
+    },
+  }),
+};
+registry.register(e2eOfflineCon);
+
 
 // ---------- the real Better Auth IdP (device-code, auto-approved) ----------
 let handler: ReturnType<typeof toNodeHandler> | undefined;
@@ -338,8 +399,16 @@ try {
   recordMesh({ space: SPACE, server: SERVER, root, mode: "user", userAuth: assertUserAuthInfo(prepared.publicAuth), ts: new Date().toISOString() });
   // Personas (identity + file ACL) for the two spawns.
   mkdirSync(join(root, ".cotal", "agents"), { recursive: true });
-  for (const n of ["alpha", "beta", "delta"])
+  // `iota` is the never-joining seat the ps-projection cell needs, and `kappa` the one that joins
+  // and then goes offline while its process stays alive. Both are spawned through the same persona
+  // path as any other, so each row differs from the rest in exactly one way: its mesh state.
+  for (const n of ["alpha", "beta", "delta", "iota", "kappa"])
     writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nrole: worker\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
+  // `epsilon` and `zeta` carry NO role on purpose: section E asks what a peer may delegate on the EVENT
+  // PLANE, and a role is itself a delegated capability, so a `role: worker` persona would be
+  // refused for the role before the channel was ever weighed and the cell would read as a pass.
+  for (const n of ["epsilon", "zeta"])
+    writeFileSync(join(root, ".cotal", "agents", `${n}.md`), `---\nname: ${n}\nsubscribe: [general]\nallowPublish: [general]\n---\n${n} persona.\n`);
 
   authChild = spawnAuthService();
   await waitAuthReady();
@@ -391,8 +460,155 @@ try {
   await observer.start();
   const seen = await until(() => observer!.getRoster().some((p) => p.card.id === alphaPrincipal && p.card.name === "alpha"));
   check("observer (operator user bearer) sees alpha join as the owner.actor principal", seen, observer.getRoster().map((p) => p.card.id));
-  const listed = manager.list().find((a) => a.name === "alpha");
-  check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && listed?.mesh !== "absent", listed);
+  // `mesh !== "absent"` accepted ANY other string, so a row carrying a value no roster can produce
+  // read as live. The reach is a cast through `unknown`, which severs the local view from the real
+  // return type, so no width declared above can catch that: the closed set has to be asserted here.
+  //
+  // Two halves, because the closed set is NOT the live set. `PRESENCE_STATUSES` is the whole
+  // `PresenceStatus` union, which is what rejects a value no roster can produce; but it contains
+  // `offline`, so on its own it would pass a row this cell calls live while production does not.
+  // Live is production's own predicate, `Manager.liveRosterNames` (`status !== "offline"`), and
+  // asserting the union alone left the cell's name untrue. A review caught that.
+  //
+  // AND NEITHER HALF PROVED THE VALUE CAME FROM THE ROSTER. A security review severed the
+  // projection, `mesh: "idle" as const` in place of `roster.get(a.name)?.status ?? "absent"`, and
+  // the suite stayed green: every managed row would then render live whatever the mesh says, which
+  // is the unsafe direction, an unavailable principal admitted to the operator's live view.
+  //
+  // Comparing `mesh` to the roster's status does NOT catch that on its own, which was measured
+  // rather than assumed: a joined agent's status is `idle` (core `endpoint.ts`, the default
+  // `PresenceStatus`), so a hard-coded `idle` AGREES with the roster and the comparison passes.
+  // Sampling for a transition does not help either, since on this tree a seat is already `idle` in
+  // the roster by the time the spawn returns, so there is no non-live sample to catch a constant.
+  //
+  // What no constant can satisfy is the projection's OTHER branch. `?? "absent"` is reached by a
+  // managed row whose name has no roster entry at all, so the cell pins two rows at once: `alpha`,
+  // joined, which must carry the roster's own status, and a seat that launches and stays alive
+  // without ever joining the mesh, which must carry `absent`. One literal cannot be both, whichever
+  // literal it is, and a lookup rekeyed off the name renders `absent` for the joined row.
+  // The tie to the enum, not a copy of it: `Record<PresenceStatus, ...>` is missing a property the
+  // moment a member is added to the union, and this file is typechecked by the root config, which is
+  // the gate this branch exists to close. So the coverage below cannot silently fall behind the set
+  // of values a row can carry, and the list is derived from it rather than written out twice.
+  type PresenceStatus = import("@cotal-ai/core").PresenceStatus;
+  const STATUS_COVERAGE: Record<PresenceStatus, string> = {
+    idle: "alpha, the default a joined seat starts in",
+    working: "kappa, signalled",
+    waiting: "kappa, signalled",
+    offline: "kappa, signalled",
+  };
+  const PRESENCE_STATUSES: readonly string[] = Object.keys(STATUS_COVERAGE);
+  type RosterEntry = { card: { name: string }; status: string };
+  // The manager's OWN roster, keyed the way `Manager.list` keys it (`new Map(...)` by card NAME, so
+  // a later entry for a name wins). Deriving the expected value any other way measures this oracle's
+  // keying rather than the question production asks.
+  // Bound once: `manager` is a `let` the teardown clears, so a closure over it reads
+  // `Manager | undefined` and the file stops typechecking, which is the very thing this branch fixes.
+  const mgr = manager;
+  const managerRoster = (): RosterEntry[] =>
+    (mgr as unknown as { ep: { getRoster: () => RosterEntry[] } }).ep.getRoster();
+  const rosterOf = (n: string): string =>
+    new Map(managerRoster().map((p) => [p.card.name, p])).get(n)?.status ?? "absent";
+  const meshOf = (n: string): string => psList(mgr).find((a) => a.name === n)?.mesh ?? "absent";
+  // The never-joining seat. `startAgent` waits for presence and finally reports the launch
+  // UNCERTAIN, but the row is in the manager's table from launch, so the state under test is
+  // readable long before that reply: assert while the readiness wait is still in flight, then end
+  // the wait by killing the child rather than paying its full timeout.
+  const quietPending = manager.startAgent({ name: "iota", agent: "e2e-quiet", owner: OWNER });
+  const quietListed = await until(() => psList(mgr).some((a) => a.name === "iota"));
+  const listed = psList(manager).find((a) => a.name === "alpha");
+  const mesh = listed?.mesh ?? "absent";
+  check(
+    "manager ps lists alpha under its principal id, mesh live",
+    listed?.id === alphaPrincipal && PRESENCE_STATUSES.includes(mesh) && mesh !== "offline",
+    { listed, mesh },
+  );
+  // The offline seat. `alpha` is `idle` and `iota` has no roster row at all, so both of those rows
+  // are satisfied by a projection that passes `idle` and `absent` through while rewriting only
+  // `offline` to `idle`, which is the direction that matters: it renders an unavailable principal
+  // live in an operator's view. A security review measured exactly that severing green here.
+  // `kappa` joins like any other seat and then publishes `offline` on a signal, so its row stays
+  // managed with its process alive while its roster status is the one value neither other row can
+  // carry. Signalling rather than timing keeps the flip ordered after the manager's readiness wait
+  // instead of racing it.
+  const offlineReply: ControlReply = await manager.startAgent({ name: "kappa", agent: "e2e-offline", owner: OWNER });
+  const signalPid = psList(mgr).find((a) => a.name === "kappa")?.pid;
+  // One row walks the rest of the union. A review found the hole at `offline`, having found an
+  // earlier one at `idle`, and the shape of both is the same: a rewrite of a status no row carries
+  // is invisible. So rather than add the one value that was named, this walks EVERY member of
+  // `PresenceStatus` that a joined row can reach and records what the projection carried for it.
+  const carried: Record<string, string> = { idle: meshOf("alpha") };
+  for (const want of ["working", "waiting", "offline"] as const) {
+    if (signalPid) process.kill(signalPid, want === "offline" ? "SIGUSR1" : "SIGUSR2");
+    const reached = await until(() => rosterOf("kappa") === want);
+    carried[want] = reached ? meshOf("kappa") : `the roster never reached ${want} (it says ${rosterOf("kappa")})`;
+  }
+  check(
+    "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+    offlineReply.ok === true && signalPid !== undefined
+      && (["working", "waiting", "offline"] as const).every((st) => carried[st] === st),
+    JSON.stringify(carried),
+  );
+  const projection = psList(manager).map((a) => ({ name: a.name, mesh: a.mesh, expected: rosterOf(a.name) }));
+  check(
+    "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+    quietListed && projection.length > 0 && projection.every((r) => r.mesh === r.expected),
+    JSON.stringify(projection),
+  );
+  // The closure this cell claims: every member of the union was observed on a row, plus the sentinel
+  // for a row with no roster entry at all, and the values are distinct. No constant satisfies that,
+  // and neither does a rewrite of any single status, whichever member it targets.
+  const observed = new Set([...Object.values(carried), meshOf("iota")]);
+  const uncovered = Object.keys(STATUS_COVERAGE).filter((st) => !observed.has(st));
+  check(
+    "the fixture carries every status the union can hold plus the absent sentinel, so no rewrite of any single status can hide in a value no row exercises",
+    uncovered.length === 0 && observed.has("absent") && observed.size === Object.keys(STATUS_COVERAGE).length + 1,
+    JSON.stringify({ observed: [...observed], uncovered }),
+  );
+  const quietPid = (psList(manager).find((a) => a.name === "iota"))?.pid;
+  if (quietPid) process.kill(quietPid, "SIGKILL");
+  const quietReply: ControlReply = await quietPending;
+  check("a seat that never joins the mesh is not reported as a successful launch", quietReply.ok === false, quietReply);
+
+  // ---------- B1f. a spawn-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610) ----------
+  // The end-to-end half of the goal-follow contract. `epCallerGrantRows` returns `{pub, sub}` and
+  // documents its `sub` as the row that lets "the caller may follow its OWN goal to terminal", but
+  // the `spawn` mint branch took `.pub` alone, so a spawn-capable credential could SUBMIT a goal
+  // and not HEAR it: the broker refused the follow, the manager committed the terminal on time, and
+  // the caller reported a timeout about a goal that had already settled. An operator reads that as
+  // failure and re-issues, which mints a duplicate.
+  //
+  // The spawn under test is REFUSED by design (persona `beta` carries `role: worker`, which the cli
+  // actor's `[spawn]` scope may not delegate), so the manager commits a `failed` terminal promptly
+  // and no child is created. What is asserted is not the refusal - it is that this caller HEARS it.
+  console.log("B1f) a spawn-scope caller follows its own goal to a terminal (#610)");
+  {
+    const claims = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { act: { lifecycleUid: string } };
+    const follower = new CotalEndpoint({
+      space: SPACE, servers: SERVER, bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds,
+      lifecycleUid: claims.act.lifecycleUid,
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+      card: { name: "goal-follower", kind: "endpoint" },
+    });
+    // Surface rather than swallow: a broker refusal on this connection is the defect itself, and a
+    // swallowed one is indistinguishable from silence (the product had the same bug).
+    const connErrors: string[] = [];
+    follower.on("error", (e: unknown) => connErrors.push((e as Error)?.message ?? String(e)));
+    await follower.start();
+    ctlEps.push(follower);
+    const t0 = Date.now();
+    const r = await follower.invokeService("manager", "spawn", { name: "beta", agent: "e2e" }, { deadlineMs: 20_000, follow: true });
+    const elapsed = Date.now() - t0;
+    const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
+    // THE ASSERTION THE FIX EXISTS FOR: a real terminal, not a deadline and not a refusal to listen.
+    check("a spawn-scope caller HEARS its own goal's terminal (not a deadline, not a denied subscription)",
+      code === "failed", { code, elapsed, message: r.reply.error?.message?.slice(0, 160), connErrors });
+    check("...and the terminal carries the refusal's own reason, so the caller learns WHY",
+      (r.reply.error?.message ?? "").includes("would exceed its spawner's grant"), r.reply.error?.message?.slice(0, 200));
+    check(`...delivered on the goal's own timing, well inside the caller's budget (${elapsed}ms of 20000ms)`,
+      elapsed < 15_000, elapsed);
+    check("...with no broker refusal on the follower's connection", connErrors.length === 0, connErrors);
+  }
 
   // ---------- B1e. the v0.4 ep rails under a USER bearer (1c.2c) ----------
   // The manager REGISTERS its service on this user mesh (the mode-neutral 1c.2c flip), the cli
@@ -402,11 +618,15 @@ try {
   {
     const bearerClaims = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { sub: string; act: { actor: string; lifecycleUid: string } };
     const epCaller = { owner: bearerClaims.sub, actor: bearerClaims.act.actor, uid: bearerClaims.act.lifecycleUid };
-    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds }), maxReconnectAttempts: 0 });
+    // `tls: false` is REQUIRED, not decorative: this file is outside every tsconfig, so the guard
+    // in `standaloneConnectOpts` is the only thing that reaches it, and it throws rather than
+    // defaulting. SERVER is a plaintext local broker, the same value its two sibling auth smokes
+    // pass. Without it this line threw and took every cell below it with it.
+    const epNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds, tls: false }), maxReconnectAttempts: 0 });
     try {
       const svc = await resolveService(epNc, SPACE, "manager", epCaller, { deadlineMs: 10_000 });
       check("user bearer resolves the manager generically (describe + store fetch + digest-verified recompile, all over the bearer)",
-        svc.commands.size === 17 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
+        svc.commands.size === 18 && svc.responder.instanceId.length > 0, { size: svc.commands.size, responder: svc.responder });
       const ri = await invokeCommand(epNc, SPACE, svc, "inspect", { name: "alpha" }, {});
       check("user bearer invokes `inspect` over ep (a spawn-set row; describe-bound currency, no epoch stub)",
         ri.reply.ok === true && (ri.reply.data as { name: string }).name === "alpha", ri.reply);
@@ -479,7 +699,15 @@ try {
   const shortEx = await agentExchange("alpha", alphaToken, OWNER, 10);
   check("direct agent exchange { owner, actorToken, ttlSec:10 } mints a bearer (200)", shortEx.status === 200 && typeof shortEx.body.token === "string", shortEx.status);
   const callout = (await loadCalloutAuth(store, SPACE))!;
-  let connected = false;
+  // Declared WITHOUT an initializer. The endpoint's connection callback is what moves this, and the
+  // checker does not follow an assignment made inside a callback, so a `= false` initializer narrows
+  // the binding to the literal `false` and `connected === true` below reports as a comparison
+  // between types with no overlap: the cell could not pass. Dropping the initializer also removes a
+  // false green further down, where `until(() => connected === false)` returned immediately if the
+  // endpoint never emitted at all, greening "the connection dies at its bearer expiry" for an
+  // endpoint that never connected. `undefined` now means "no connection event yet", which is what
+  // the pre-connect state actually is.
+  let connected: boolean | undefined;
   shortEp = new CotalEndpoint({
     space: SPACE, servers: SERVER, bearer: shortEx.body.token!, sentinelCreds: callout.sentinelCreds,
     channels: [], consume: false, registerPresence: false, watchPresence: false,
@@ -505,7 +733,7 @@ try {
   let deadHealth: { state?: string; reason?: string } = {};
   try { deadHealth = JSON.parse(readFileSync(incFiles("alpha").health, "utf8")); } catch { /* */ }
   check("the health file records state=failed with the restart copy", deadHealth.state === "failed" && /restart it with `cotal up`/.test(deadHealth.reason ?? ""), deadHealth);
-  check("manager ps reports authHealth = auth-renewal-failed", manager.list().find((a) => a.name === "alpha")?.authHealth === "auth-renewal-failed", manager.list().find((a) => a.name === "alpha"));
+  check("manager ps reports authHealth = auth-renewal-failed", psList(manager).find((a) => a.name === "alpha")?.authHealth === "auth-renewal-failed", psList(manager).find((a) => a.name === "alpha"));
 
   console.log("G) spawning with the auth service down is refused at preflight (row rolled back)");
   const gReply = await manager.startAgent({ name: "beta", agent: "e2e", owner: OWNER });
@@ -542,7 +770,7 @@ try {
   await oracle.stop();
   const healRun = await execBearer(alphaBearerArgv);
   check("the agent bearer command succeeds after the auth service heals", healRun.ok && healRun.stdout.trim().split(".").length === 3, { ok: healRun.ok, err: healRun.stderr.slice(0, 120) });
-  check("manager ps is auth-clean again (no authHealth flag)", manager.list().find((a) => a.name === "alpha")?.authHealth === undefined, manager.list().find((a) => a.name === "alpha"));
+  check("manager ps is auth-clean again (no authHealth flag)", psList(manager).find((a) => a.name === "alpha")?.authHealth === undefined, psList(manager).find((a) => a.name === "alpha"));
 
   // ---------- H. post-provision failure window (freelance blocker 1) ----------
   console.log("H) a spawn that provisions then FAILS at buildLaunch leaves no managed grant behind");
@@ -560,11 +788,11 @@ try {
   // PRIVILEGED ctl subject, admitted by the callout-minted scope grants and decided by the
   // manager's owner-domain authorization.
   console.log("O) own-agent control: owner-domain attach/stop on the spawn tier");
-  const ctlCaller = async (actor: string, owner: string, scope: string[]) => {
+  const ctlCaller = async (actor: string, owner: string, scope: string[], acl?: { allowSubscribe?: string[]; allowPublish?: string[] }) => {
     // The row's lifecycleUid ALSO rides the endpoint options: invokeService's caller triple is
     // (owner, actor, uid) and refuses without it (SPEC 13.1 — no alias-keyed fallback).
     const uid = mintLifecycleUid();
-    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: [], allowPublish: [], lifecycleUid: uid });
+    const g = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner, actor, scope, allowSubscribe: acl?.allowSubscribe ?? [], allowPublish: acl?.allowPublish ?? [], lifecycleUid: uid });
     const ex = await agentExchange(actor, g.actorToken, owner);
     if (ex.status !== 200 || !ex.body.token) throw new Error(`ctlCaller ${owner}.${actor}: exchange HTTP ${ex.status} ${ex.body.error ?? ""}`);
     const ep = new CotalEndpoint({
@@ -585,7 +813,7 @@ try {
   // a spawn-only cross-owner op is broker-DENIED at publish while an admin operator's is admitted
   // and the manager's fresh ledger read governs.
   type EpReply = { ok: boolean; data?: unknown; error?: string };
-  const epTargeted = async (ep: CotalEndpoint, op: "attach" | "stop", name: string): Promise<EpReply> => {
+  const epTargeted = async (ep: InstanceType<typeof CotalEndpoint>, op: "attach" | "stop" | "input", name: string, forceMode?: "owner" | "any"): Promise<EpReply> => {
     let info;
     try { info = await ep.invokeService("manager", "inspect", { name }); }
     catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
@@ -593,14 +821,21 @@ try {
     const rowInfo = info.reply.data as { id: string; lifecycleUid: string };
     const dot = rowInfo.id.indexOf(".");
     const [tOwner, tActor] = dot > 0 ? [rowInfo.id.slice(0, dot), rowInfo.id.slice(dot + 1)] : [ep.principal.owner, rowInfo.id];
-    const mode = tOwner !== ep.principal.owner ? "any" : "owner";
-    const command = op === "stop" ? "despawn" : "attach";
+    // Derived from the owners, EXCEPT when a caller forces it. The derivation is right for every
+    // ordinary call, and wrong for one question: a same-owner target always derives `owner`, so a
+    // cell that wants to prove the ANY-mode subject is also closed can never reach it by asking
+    // nicely. `forceMode` exists for exactly that cell and for nothing else.
+    const mode = forceMode ?? (tOwner !== ep.principal.owner ? "any" : "owner");
+    const command = op === "stop" ? "despawn" : op;
+    // `input` is the one op here that carries a body. Everything else about the call is identical,
+    // which is the point: the same resolve, the same derived mode, the same rails.
+    const body = op === "input" ? { text: "/compact", enter: false } : undefined;
     try {
-      const r = await ep.invokeService("manager", command, undefined, { target: { mode, owner: tOwner, actor: tActor, lifecycleUid: rowInfo.lifecycleUid } });
+      const r = await ep.invokeService("manager", command, body, { target: { mode, owner: tOwner, actor: tActor, lifecycleUid: rowInfo.lifecycleUid } });
       return r.reply.ok === true ? { ok: true, ...(r.reply.data !== undefined ? { data: r.reply.data } : {}) } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
     } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
   };
-  const epPs = async (ep: CotalEndpoint): Promise<EpReply> => {
+  const epPs = async (ep: InstanceType<typeof CotalEndpoint>): Promise<EpReply> => {
     try {
       const r = await ep.invokeService("manager", "ps");
       return r.reply.ok === true ? { ok: true, data: r.reply.data } : { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
@@ -608,13 +843,113 @@ try {
   };
   // The target: `delta`, already live from the envelope section (spawned WITH spawner `u_….cli`),
   // so a DIFFERENT actor under the same owner is a true sibling — not the spawner, not the manager.
-  check("precondition: delta is live under the operator's owner", manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  check("precondition: delta is live under the operator's owner", psList(manager).some((a) => a.name === "delta"), psList(manager).map((a) => a.name));
   const opsmate = await ctlCaller("opsmate", OWNER, ["spawn"]);
+  // delta's lifecycle uid, read off the same `inspect` the helper uses, so the retirement cells
+  // below key on the incarnation that is actually stopped rather than on a name.
+  const deltaInfo = await opsmate.invokeService("manager", "inspect", { name: "delta" });
+  const deltaUid = (deltaInfo.reply.data as { lifecycleUid: string }).lifecycleUid;
   const sibAttach = await epTargeted(opsmate, "attach", "delta");
   check("owner-domain: a spawn-scoped SIBLING actor attaches an agent under its owner (ep owner mode)", sibAttach.ok === true && typeof (sibAttach.data as { grant?: { sessionId?: string } })?.grant?.sessionId === "string", sibAttach);
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
-  check("delta is gone from the manager after the sibling stop", !manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  check("delta is gone from the manager after the sibling stop", !psList(manager).some((a) => a.name === "delta"), psList(manager).map((a) => a.name));
+  // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
+  // Read from STATE, never from the despawn's log copy. The defect this covers made the auth rail's
+  // principal cross-check unsatisfiable, because the gate is bound to `principalKey(DEV_OWNER,
+  // serveIdentity.id)` while the request used to carry the manager's ENDPOINT identity: two real
+  // identities of the same manager that can never be equal. Every user-mesh retirement was refused.
+  //
+  // WHY NOT ASSERT THE TERMINAL. `runAgentRetirementBarrier` cannot reach its terminal here: the
+  // final step needs `verifiedGone` from the delivery daemon's `evictPrincipal`, and this fixture
+  // runs no delivery daemon. Asserting "the name was released" would therefore be red for a reason
+  // that has nothing to do with authorization.
+  //
+  // WHY NOT ASSERT THE REFUSAL IS GONE. That is the wrong experiment, and it is the one I would
+  // most easily have run: a fix that only rewrote the refusal's wording would pass it. Measured on
+  // the broken tree, the string disappearing and the retirement working are genuinely different
+  // outcomes, because with the cross-check fixed the requests still fail further down.
+  //
+  // WHAT IS ASSERTED. The two durable facts the barrier writes BEFORE any of that, both of which a
+  // request refused at the cross-check never reaches: the operation intent row exists, and the
+  // agent's own issuance gate has moved from `open` to `frozen` under exactly that opId. The gate
+  // freeze is the load-bearing half: an intent row alone would only prove something was recorded,
+  // while the freeze proves the retirement began ACTING on the lifecycle.
+  //
+  // The opId is recomputed here rather than exported from the manager, because it is deterministic
+  // by contract (a stable op per retiring incarnation, so retries re-drive the same operation). If
+  // that derivation ever changes, this cell fails loudly rather than silently reading a stale key.
+  //
+  // FIXTURE HYGIENE. The freeze this cell waits for is real state left in the auth store, and a
+  // frozen gate is a known wedge class. It cannot wedge anything here: the row is `gate.<uid>` for
+  // delta's ONE stopped incarnation, `delta` is never spawned again below (the later cells use
+  // `alpha` and fresh names), and an issuance gate is keyed per lifecycle uid, so no later mint or
+  // registration reads it. The manager's OWN endpoint gate, which is the row whose freeze deadlocks
+  // a restart, is a different key family and is untouched.
+  {
+    const retireOpId = (uid: string): string => createHash("sha256").update(`retire:${uid}`).digest("hex").slice(0, 26);
+    // A `lifecycle-executor` pinned to delta. That profile is the one credential documented as able
+    // to READ (never write) other rows in the auth store for its one-shot lifetime, because its
+    // reads are body-selected `STREAM.MSG.GET` and a subject grant cannot see the requested key.
+    // It is used here rather than widening any production profile for a test, and it is pinned to
+    // exactly the incarnation under test.
+    const kvCreds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
+      lifecycleExecutor: { owner: OWNER, actor: "delta", lifecycleUid: deltaUid, alias: "delta" },
+    });
+    const kvNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ creds: kvCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const authKv = await new Kvm(kvNc).open(epAuthBucket(SPACE));
+      // The retirement is single-flighted and driven off the despawn rather than awaited by it, so
+      // this polls to a deadline. A timeout leaves both observations at their last read, which is
+      // what the failure payload prints.
+      let intent: unknown, gateState: string | undefined, gateOp: string | undefined;
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const i = await authKv.get(`stage.${retireOpId(deltaUid)}`);
+        const g = await authKv.get(`gate.${deltaUid}`);
+        intent = i?.operation === "PUT" ? JSON.parse(new TextDecoder().decode(i.value)) as unknown : undefined;
+        const row = g?.operation === "PUT" ? JSON.parse(new TextDecoder().decode(g.value)) as { state?: string; op?: { opId?: string } } : undefined;
+        gateState = row?.state; gateOp = row?.op?.opId;
+        if (intent !== undefined && gateState === "frozen") break;
+        await wait(250);
+      }
+      check("the sibling stop's retirement was AUTHORIZED: the auth rail wrote its durable operation intent for delta's lifecycle",
+        (intent as { kind?: string; lifecycleUid?: string })?.kind === "retirement"
+        && (intent as { lifecycleUid?: string })?.lifecycleUid === deltaUid, { intent, deltaUid });
+      check("...and it ACTED: delta's own issuance gate is FROZEN under exactly that opId (an unauthorized request never reaches a gate)",
+        gateState === "frozen" && gateOp === retireOpId(deltaUid), { gateState, gateOp, expected: retireOpId(deltaUid) });
+    } finally {
+      await kvNc.close().catch(() => {});
+    }
+  }
+  // THE SIBLING-WRITE VECTOR, executed on a real user mesh rather than argued from the mint table.
+  // The two cells above are the reason it exists: on a user mesh the own-domain arm admits any seat
+  // under the caller's owner, so `opsmate` attaches and stops an agent it never spawned. That is the
+  // policy working as designed, because both are denial. Seat INPUT is not denial, it is control of
+  // whatever the peer is running, so it must NOT ride the same spawn scope. It does not: a spawn
+  // bearer is minted no `input` row in either mode, so the publish is broker-denied before the
+  // manager sees it. `alpha` rather than `delta` because the sibling stop above took delta.
+  // The refusal is asserted BY SHAPE, not just by `ok === false`, because an absence assertion is
+  // the kind that passes for the wrong reason. A broker drop surfaces as `unavailable` or
+  // `deadline-exceeded`: the publish never reached a manager, so nothing answered. Restoring the
+  // grant would not merely change that string, it would make the owner-mode call SUCCEED, since the
+  // own-domain arm admits the sibling. A `permission-denied` would mean the publish was ADMITTED
+  // and the handler refused, which is a weaker property than the one these cells are for.
+  const brokerDropped = (r: EpReply): boolean =>
+    r.ok === false && /unavailable|deadline-exceeded/.test(r.error ?? "");
+  // BOTH modes, and the second one has to be forced. The helper derives `owner` for a same-owner
+  // target, so without the override the any-mode subject is never published and a claim about it
+  // would be untested text sitting next to a green cell.
+  const sibInput = await epTargeted(opsmate, "input", "alpha", "owner");
+  check("owner-domain: the SAME sibling actor that could attach and stop is REFUSED owner-mode seat input, dropped at the BROKER",
+    brokerDropped(sibInput), sibInput);
+  const sibInputAny = await epTargeted(opsmate, "input", "alpha", "any");
+  check("...and the any-mode subject is closed to it too, so the refusal is the missing grant and not the mode derivation",
+    brokerDropped(sibInputAny), sibInputAny);
+  // Named for what it proves and no more. `input` never removes a seat, so this rules out a wild
+  // despawn rather than a successful write; the load-bearing half is the pair above.
+  check("the refused input did not take alpha with it (it never should; this is the belt, not the braces)",
+    psList(manager).some((a) => a.name === "alpha"), psList(manager).map((a) => a.name));
   // A CROSS-OWNER caller with only spawn scope: the ep any-mode row it would need is broker-DENIED
   // at publish (a spawn bearer holds owner-mode rows only), so the op fails before the manager.
   const OWNER_B = "u_" + "b".repeat(26);
@@ -623,17 +958,184 @@ try {
   check("cross-owner attach is refused fail-closed (any-mode broker-denied for a spawn bearer)", crossAttach.ok === false, crossAttach);
   const crossStop = await epTargeted(intruder, "stop", "alpha");
   check("cross-owner stop is refused the same way", crossStop.ok === false, crossStop);
-  check("alpha survived the refused cross-owner stop", manager.list().some((a) => a.name === "alpha"), manager.list().map((a) => a.name));
+  check("alpha survived the refused cross-owner stop", psList(manager).some((a) => a.name === "alpha"), psList(manager).map((a) => a.name));
   // A cross-owner caller whose LEDGER row carries admin: the callout minted it the any-mode admin
   // instrument rows, so the broker admits the any-mode publish and the manager's fresh ledger read → allowed.
   const auditor = await ctlCaller("auditor", OWNER_B, ["spawn", "admin"]);
   const adminAttach = await epTargeted(auditor, "attach", "alpha");
   check("cross-owner attach with ledger admin passes (any-mode admin rows + fresh ledger read)", adminAttach.ok === true, adminAttach);
+  // And the same ledger row reaches seat input, which is the whole point of putting `input` on the
+  // operator instrument instead of on `spawn`: the authority that already crosses owners carries it,
+  // and nothing weaker does. This is also the live proof that the any-mode `input` row the admin
+  // mint emits is REACHABLE, not merely present in a decoded JWT.
+  const adminInput = await epTargeted(auditor, "input", "alpha");
+  check("cross-owner seat input with ledger admin passes, and reports the bytes it wrote",
+    adminInput.ok === true && (adminInput.data as { bytes?: number })?.bytes === 8, adminInput);
+  // ---------- D1. an ADMIN-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610, the admin fold) ----------
+  // `permissionsFor` folds the per-goal progress row on TWO branches, `spawn` and `admin`, and B1f
+  // covers only the first. Every other cell that follows a goal is minted with `spawn`, which
+  // supplies the same row, so reverting the admin branch alone left the whole suite green. This is
+  // the assertion that branch is missing: an admin-scope caller with NO `spawn` in its ledger row
+  // submits a goal-bearing command and hears its terminal, rather than being refused the follow.
+  console.log("D1) an admin-scope caller follows its own goal to a terminal (#610)");
+  {
+    const adminFollower = await ctlCaller("adminfollower", OWNER_B, ["admin"]);
+    const followErrors: string[] = [];
+    adminFollower.on("error", (e: unknown) => followErrors.push((e as Error)?.message ?? String(e)));
+    const t0 = Date.now();
+    const r = await adminFollower.invokeService("manager", "spawn", { name: "beta", agent: "e2e" }, { deadlineMs: 20_000, follow: true });
+    const elapsed = Date.now() - t0;
+    const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
+    console.log(`   [D1 observed] code=${code} elapsed=${elapsed} msg=${(r.reply.error?.message ?? "").slice(0, 140)} errs=${JSON.stringify(followErrors)}`);
+    check("an admin-scope caller HEARS its own goal's terminal (the admin mint branch folds the progress row too)",
+      code === "ok" || code === "failed", { code, elapsed, message: r.reply.error?.message?.slice(0, 160), followErrors });
+    check(`...on the goal's own timing, not at the caller's budget (${elapsed}ms of 20000ms)`, elapsed < 15_000, elapsed);
+    check("...with no broker refusal on the admin follower's connection", followErrors.length === 0, followErrors);
+    if (r.reply.ok === true) {
+      const spawned = (r.reply.data as { name?: string })?.name ?? "beta";
+      await adminFollower.invokeService("manager", "despawn", { name: spawned, owner: OWNER_B }).catch(() => undefined);
+    }
+  }
+
   // Narrow the auditor back to [spawn] (upsert) — its NEXT exchange mints owner-mode-only rows, so a
   // cross-owner op loses the any-mode reach (the callout re-reads the ledger per exchange).
   await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const narrowedAttach = await epTargeted(auditor, "attach", "alpha");
   check("narrowing the auditor's scope bites its cross-owner reach on the next exchange", narrowedAttach.ok === false, narrowedAttach);
+
+  // ---------- E. the event plane, at the real door, under BOTH rules ----------
+  // Two rules meet here and the ORDER is the finding. The delegation envelope says a peer may hand
+  // down a subset of what it holds and no more. The OWN-CHANNEL rule says the agent being created
+  // may hold its OWN event plane and no other, whatever the spawner holds, because that plane
+  // carries the session's tool inputs and outputs verbatim. The own-channel rule runs FIRST and is
+  // NOT envelope-dependent, so widening the peer's own grant does not admit the request: a reader
+  // of somebody else's plane is granted out of band, never through a spawn.
+  //
+  // WHY THESE CELLS WERE REWRITTEN RATHER THAN REPAIRED. Before the rule existed the door ACCEPTED
+  // the over-ask (spawn is an action: the door replies the instant the identity is minted) and the
+  // ledger refused it afterwards, so these cells asserted acceptance plus the absence of a row.
+  // The rule moved the refusal AHEAD of the mint. Keeping the old assertion would be asserting the
+  // defect, so what is asserted now is the refusal itself, at the door, over a real bearer.
+  //
+  // The stated limit is asserted too, from the other side, because a limit nobody tests is a
+  // sentence: the CONCRETE form is refused whatever the envelope says, and the WILDCARD form is
+  // left to the envelope exactly as every other channel is.
+  console.log("E) the own-channel rule at the real door, and the envelope's remaining half");
+  const VICTIM = eventChannel({ owner: OWNER_B, actor: "auditor" });
+  const VICTIM_WILDCARD = `events.${OWNER_B}.>`;
+  type Accepted = { ok: boolean; name?: string; error?: string };
+  const epSpawnAccept = async (ep: InstanceType<typeof CotalEndpoint>, args: Record<string, unknown>): Promise<Accepted> => {
+    try {
+      const r = await ep.invokeService("manager", "spawn", args, { deadlineMs: 15_000 });
+      if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code };
+      return { ok: true, name: (r.reply.data as { name?: string }).name };
+    } catch (e) { return { ok: false, error: e instanceof EpEnvelopeError ? `${e.code}: ${e.message}` : (e as Error).message }; }
+  };
+  const settle = async (ms: number) => { await new Promise((r) => setTimeout(r, ms)); };
+  const ownChannelRefusal = (r: Accepted): boolean =>
+    r.ok === false && /another agent's event channel/.test(r.error ?? "") && (r.error ?? "").includes(VICTIM);
+  const evtpeer = await ctlCaller("evtpeer", OWNER, ["spawn"], { allowSubscribe: ["general"], allowPublish: ["general"] });
+  const readOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("a peer's ep spawn asking a FOREIGN event channel as its child's READ set is refused AT THE DOOR, naming the channel",
+    ownChannelRefusal(readOverAsk), readOverAsk);
+  await settle(1500);
+  check("...and no managed row for the child", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  check("...and no live agent by that name", !psList(manager).some((a) => a.name === "epsilon"), psList(manager).map((a) => a.name));
+  const writeOverAsk = await epSpawnAccept(evtpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM] });
+  check("the same over-ask on the child's WRITE set is refused at the door too: publishing INTO another agent's plane is forgery, not eavesdropping",
+    ownChannelRefusal(writeOverAsk), writeOverAsk);
+  await settle(1500);
+  check("...and leaves no row either", !existsSync(rowFile("managed", OWNER, "epsilon")));
+  // THE HALF THE ENVELOPE NO LONGER DECIDES. An operator widening the peer's own grant used to
+  // admit this exact request, and that was the whole "containment rather than ban" story. The
+  // own-channel rule takes the CONCRETE form out of the envelope's hands: the answer is the same
+  // refusal, from a spawner that demonstrably holds the channel.
+  const widened = await ctlCaller("evtpeer2", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  const admitted = await epSpawnAccept(widened, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] });
+  check("with the peer's OWN grant widened by the operator, the identical spawn is STILL refused: the concrete form is not the envelope's to hand down",
+    ownChannelRefusal(admitted), admitted);
+  await settle(2500);
+  check("...and still writes no row", !existsSync(rowFile("managed", OWNER, "epsilon")), admitted);
+  // THE STATED LIMIT, ASSERTED. `eventChannelPrincipal` decodes exactly two principal tokens, so a
+  // WILDCARD is not an event channel to the rule and passes it untouched, governed by the envelope
+  // alone. That is deliberate: the wildcard is the form an operator writes on purpose for an
+  // observer, and this cell is what stops the limit being a comment nobody tests.
+  const wildpeer = await ctlCaller("evtpeer3", OWNER, ["spawn"], { allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  const wildAdmitted = await epSpawnAccept(wildpeer, { name: "epsilon", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] });
+  check("the WILDCARD form is left to the delegation envelope: a peer whose own grant covers it CAN hand it down", wildAdmitted.ok === true, wildAdmitted);
+  await settle(2500);
+  const wildRow = existsSync(rowFile("managed", OWNER, "epsilon"))
+    ? (JSON.parse(readFileSync(rowFile("managed", OWNER, "epsilon"), "utf8")) as { allowSubscribe?: string[]; parent?: string })
+    : undefined;
+  check("...and a row IS written, carrying exactly the pattern it asked for", wildRow?.allowSubscribe?.includes(VICTIM_WILDCARD) === true, wildRow);
+  check("...recording the peer that delegated it as parent", wildRow?.parent === `${OWNER}.evtpeer3`, wildRow);
+  // THE TWO REFUSALS, SIDE BY SIDE, through the op core with the same spawner principal, so the
+  // TEXT of each is on the record. Without the second one the first proves only that something
+  // refused: the envelope is still the authority for every channel that is not a concrete event
+  // channel, and a rule that had swallowed it would look identical from one cell.
+  const overText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("the refusal for a concrete event channel is the OWN-CHANNEL rule, and it names the channel",
+    overText.ok === false && /another agent's event channel/.test(overText.error ?? "") && (overText.error ?? "").includes(VICTIM), overText);
+  // THE REMEDY THAT REFUSAL PRINTS, PARSED AND RUN. A confinement refusal lends its own authority
+  // to whatever command it prints, and BOTH halves of this one were once wider than the sentence
+  // around them: the static half named a profile that ignores `--allow-subscribe`, and this half
+  // named a bare `cotal actor grant`. A bare grant is not a narrow one. `runActor` fills every
+  // omitted flag from `csv(values.x, dflt)` with the WIDE default (`>` read, `>` post,
+  // `spawn,role:default` scope), and it says so in its own comment, so an operator following this
+  // refusal to the letter in order to grant a READER would have written a row that reads and posts
+  // everywhere and can spawn. That is a worse outcome than the spawn the refusal blocked, and it
+  // arrives carrying the manager's authority.
+  //
+  // Two cells, because the text and the effect are different claims. The first is that the command
+  // spells every field out, which is what stops a default applying at all. The second RUNS the
+  // values it printed through the real ledger writer and grades the row that lands.
+  const grantCmd = /cotal actor grant [^`]+/.exec(overText.error ?? "")?.[0] ?? "";
+  const flag = (name: string): string | undefined => new RegExp(`--${name} '([^']*)'`).exec(grantCmd)?.[1];
+  const ownerFlag = /--owner (\S+)/.exec(grantCmd)?.[1];
+  check("the user-mesh refusal prints an actor grant that spells out EVERY field, so no wide default applies",
+    grantCmd.length > 0 && flag("allow-subscribe") === VICTIM && flag("allow-publish") === "" && flag("scope") === "" && ownerFlag === OWNER,
+    { grantCmd, sub: flag("allow-subscribe"), pub: flag("allow-publish"), scope: flag("scope"), owner: ownerFlag });
+  // A THIRD claim, and the one no cell read until now: the RATIONALE. The two cells above grade the
+  // printed command and the row it writes; both stay green while the sentence explaining WHY every
+  // field must be spelled out understates how wide the default is. It said `spawn` scope when
+  // `runActor` omitting `--scope` writes `spawn,role:default` - dropping a DELEGATION capability
+  // from a sentence whose only job is calibration. An operator auditing a past omitted-scope grant
+  // by that sentence concludes it "only got spawn" and closes a question that is open.
+  const remedyText = overText.error ?? "";
+  check("the user-mesh remedy states the omitted-scope default in FULL, both capabilities, and not the narrower one",
+    /spawn,role:default/.test(remedyText) && !/`spawn` scope/.test(remedyText), remedyText);
+  const READER = "evtreader";
+  grantActor(dir, {
+    owner: ownerFlag ?? "",
+    actor: READER,
+    scope: (flag("scope") ?? ">").split(",").filter(Boolean),
+    allowSubscribe: (flag("allow-subscribe") ?? ">").split(",").filter(Boolean),
+    allowPublish: (flag("allow-publish") ?? ">").split(",").filter(Boolean),
+  });
+  const readerRow = existsSync(rowFile("interactive", OWNER, READER))
+    ? (JSON.parse(readFileSync(rowFile("interactive", OWNER, READER), "utf8")) as { allowSubscribe: string[]; allowPublish: string[]; scope: string[] })
+    : undefined;
+  check("running exactly what it printed writes a row that reads that ONE channel, posts nowhere, and cannot spawn",
+    JSON.stringify(readerRow?.allowSubscribe) === JSON.stringify([VICTIM]) && readerRow?.allowPublish.length === 0 && readerRow?.scope.length === 0,
+    readerRow);
+
+  const envelopeText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", "not-mine"], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("and an ORDINARY channel the peer does not hold is still refused by the delegation envelope, which the rule did not replace",
+    envelopeText.ok === false && /delegation only narrows/.test(envelopeText.error ?? "") && (envelopeText.error ?? "").includes("not-mine"), envelopeText);
+  // AND THE WILDCARD FORM IS ATTENUATED LIKE ANY OTHER PATTERN. The rule leaves it alone; that is
+  // not the same as nothing governing it. A peer that does NOT hold the pattern cannot hand it
+  // down, on either side, and these are the cells that would notice an author exempting the
+  // `events.` prefix from the containment walk to make arming "just work".
+  const wildOverText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general", VICTIM_WILDCARD], allowPublish: ["general"] }, `${OWNER}.evtpeer`);
+  check("a WILDCARD the peer does NOT hold is refused by the envelope on the READ side",
+    wildOverText.ok === false && /delegation only narrows/.test(wildOverText.error ?? "") && (wildOverText.error ?? "").includes(VICTIM_WILDCARD), wildOverText);
+  const wildPubText: ControlReply = await manager.startAgent(
+    { name: "zeta", agent: "e2e", allowSubscribe: ["general"], allowPublish: ["general", VICTIM_WILDCARD] }, `${OWNER}.evtpeer`);
+  check("and on the WRITE side: a peer cannot hand down a wildcard write over another owner's planes",
+    wildPubText.ok === false && /delegation only narrows/.test(wildPubText.error ?? "") && (wildPubText.error ?? "").includes(VICTIM_WILDCARD), wildPubText);
 
   // ---------- V. elevated views (exchange-gated per-connection profiles), live ----------
   // The live half of the views design (unit layers: smoke:views). Real wire: refused under-scoped
@@ -655,6 +1157,45 @@ try {
   // cli's scope is still [spawn] here — every admin-gated view must refuse naming the gate.
   const deniedView = await humanViewEx("admin");
   check('an admin-view exchange under scope [spawn] refuses 401 naming scope "admin"', deniedView.status === 401 && /needs scope "admin"/.test(deniedView.body.error ?? ""), deniedView);
+  // ...and the re-grant it prints is a WHOLE-row upsert, not a scope edit. `runActor` fills every
+  // omitted flag from `csv(v, dflt)` with the WIDE default, so a scope-only paste silently resets
+  // this row's read/post to `>`/`>`: adding a view would widen the operator to the whole chat
+  // plane.
+  //
+  // Naming the flags is NOT enough, and a security lens is why this cell says more than that: a
+  // command that names `--allow-subscribe '<its current read set>'` reads as paste-ready, fails on
+  // an invalid channel, and the operator's shortest route to a command that succeeds is to delete
+  // the flag or write `>`. So the values are graded against the ROW, not the sentence: whatever the
+  // refusal prints must be what the row actually holds right now.
+  const viewErr = deniedView.body.error ?? "";
+  const viewRegrant = /cotal actor grant [^(]+/.exec(viewErr)?.[0] ?? "";
+  const flagOf = (name: string): string | undefined =>
+    new RegExp(`--${name} '([^']*)'`).exec(viewRegrant)?.[1];
+  const liveRow = JSON.parse(readFileSync(rowFile("interactive", OWNER, "cli"), "utf8")) as {
+    allowSubscribe: string[]; allowPublish: string[]; scope: string[]; label?: string;
+  };
+  check(
+    "the view refusal's re-grant names read AND post, not scope alone, and says the upsert replaces the WHOLE row",
+    /--scope '/.test(viewRegrant) &&
+      /--allow-subscribe '/.test(viewRegrant) &&
+      /--allow-publish '/.test(viewRegrant) &&
+      /WHOLE row/.test(viewErr),
+    { viewRegrant, error: viewErr },
+  );
+  check(
+    "the ACL values it prints are the row's REAL current sets, not a placeholder and not the wide default",
+    flagOf("allow-subscribe") === liveRow.allowSubscribe.join(",") &&
+      flagOf("allow-publish") === liveRow.allowPublish.join(",") &&
+      !/[<>]/.test(`${flagOf("allow-subscribe")}${flagOf("allow-publish")}`),
+    { printed: { sub: flagOf("allow-subscribe"), pub: flagOf("allow-publish") }, row: liveRow },
+  );
+  check(
+    "and it carries the scope ADDED to the row's own, plus the label the upsert would otherwise drop",
+    (flagOf("scope") ?? "").split(",").includes("admin") &&
+      liveRow.scope.every((sc) => (flagOf("scope") ?? "").split(",").includes(sc)) &&
+      flagOf("label") === liveRow.label,
+    { printedScope: flagOf("scope"), printedLabel: flagOf("label"), row: liveRow },
+  );
   // The managed (agent-secret) path never mints views — even for a row that CARRIES admin.
   const vg = await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER, actor: "viewbot", scope: ["spawn", "admin"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });
   const mgdViewRes = await fetch(`${svc.url}/exchange`, {
@@ -694,6 +1235,10 @@ try {
   // asserts on; a space-wide tap would be a silent sub violation and see nothing.
   godEye.tap((subject: string) => { tapped.push(subject); }, { subject: `cotal.${SPACE}.inst.>` });
   await wait(300); // let the tap subscription settle
+  // A written `<owner>.<actor>` literal, so it is a valid recipient by construction rather than
+  // by anything checking it here. Any future change to the principal grammar has to visit this
+  // line: it builds a recipient instead of borrowing one from a card, and this suite is not in
+  // the CI chain, so nothing would fail if it stopped being well formed.
   await opsmate.unicast(`${OWNER}.alpha`, "psst — a DM between two other principals");
   let sawDm = false;
   for (let i = 0; i < 20 && !sawDm; i++) { await wait(100); sawDm = tapped.some((s) => s.includes(".inst.")); }

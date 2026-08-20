@@ -17,7 +17,7 @@ import {
   type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, agentLifecycleSecretFilePaths } from "@cotal-ai/workspace";
-import { Manager, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
+import { Manager, type ManagerResumeIdentity, type ManagerResumeAgent, type ManagerResumeInventory } from "../src/manager.js";
 import { MAX_RESUME_CONTROL_BYTES } from "../src/resume.js";
 
 let failures = 0;
@@ -228,12 +228,16 @@ function managed(name: string, id: string, handle: AgentHandle, source: "manifes
       allowSubscribe: ["general"],
       allowPublish: [],
       capabilities: ["spawn"],
-      transcript: false,
     },
   };
 }
 
+// The connector callback below is what assigns this, and the checker cannot follow a call into
+// a registered extension. A bare `x = undefined` reset therefore narrows the binding to
+// `undefined` for the rest of the block and every later read reports on `never`, so the reset
+// goes through a call, which leaves the declared type in place. Runtime behaviour is identical.
 let capturedLaunch: LaunchOpts | undefined;
+const resetCapturedLaunch = () => { capturedLaunch = undefined; };
 const connector: Connector = {
   kind: "connector",
   name: "preserve-connector",
@@ -259,7 +263,11 @@ let retainedAuthority = {
   role: "worker",
   parent: undefined as string | undefined,
 };
-registry.register({
+// The registry takes a whole AuthProvider; this stub implements only what the resume path calls.
+// A cast AFTER the literal gives its members no contextual type, which is why the validator's
+// parameter was implicitly `any`; annotating the subset types the callback from the contract, and
+// the widening happens once, at the register call.
+const preserveAuth: Pick<AuthProvider, "kind" | "name" | "agentBearerCommand" | "validateRetainedAgent" | "grantAgent"> = {
   kind: "auth-provider",
   name: "preserve-auth",
   agentBearerCommand: "agent-bearer",
@@ -274,19 +282,21 @@ registry.register({
     retainedGrantCalls++;
     throw new Error("grantAgent must not run during resume");
   },
-} as unknown as AuthProvider);
+};
+registry.register(preserveAuth as unknown as AuthProvider);
 
 // Fence and drain: an accepted async control request completes before children stop, while later
 // lifecycle work is rejected immediately. The exit watcher fires from stop() but must not clean up.
 {
   let releaseModels!: () => void;
   const modelsGate = new Promise<void>((resolve) => { releaseModels = resolve; });
-  registry.register({
+  const slowModelsCon: Connector = {
     kind: "connector",
     name: "preserve-slow-models",
     listModels: async () => { await modelsGate; return { models: [] }; },
     buildLaunch: () => ({ command: "true", args: [] }),
-  } satisfies Connector);
+  };
+  registry.register(slowModelsCon);
   const manager = managerWith((name) => fakeHandle(name));
   const handle = fakeHandle("worker");
   const map = (manager as unknown as { agents: Map<string, unknown> }).agents;
@@ -457,17 +467,19 @@ let openInventory: ManagerResumeAgent;
       runtime: "fake",
       cwd: root,
       source: { kind: "manifest", runId: "r1", requested: "worker", hash: "abc123", configPath: runPersonaPath, configSha256: digest(runPersonaPath), manifestSha256: digest(join(runDir, "r1.json")) },
+      // Required by ManagerResumeAgent and omitted here, so the resume read `undefined` and treated
+      // this run as event-less. `false` is that same behaviour, stated.
+      events: false,
       subscribe: ["general"],
       allowSubscribe: ["general"],
       allowPublish: [],
-      transcript: false,
     },
     dependencies: [join(runDir, "r1.json"), runPersonaPath],
     spawner: "local.manager",
     startedAt: new Date().toISOString(),
   };
   const manager = managerWith((name) => fakeHandle(name));
-  capturedLaunch = undefined;
+  resetCapturedLaunch();
   const result = await manager.resumePreserved(inventoryOf(openInventory));
   const reply = result.agents[0]?.reply;
   check("open resume succeeds under the exact retained name", result.ok && reply?.ok && (reply.data as { name?: string })?.name === "worker", JSON.stringify(result));
@@ -550,7 +562,7 @@ let openInventory: ManagerResumeAgent;
   // (manager-service-ops); a merely spawn-capable caller is broker-denied before the handler. There
   // is no in-handler tier reject to assert here anymore, so this section drives the admin path only.
   check("no resume launched before the admin call", spawns === 0, spawns);
-  capturedLaunch = undefined;
+  resetCapturedLaunch();
   const resumed = await control(manager, "admin", "resumePreserved", args);
   check("admin wire resume succeeds", resumed.ok, resumed.error);
   check("wire resume uses the exact retained principal", capturedLaunch?.id === "open_principal_resume", capturedLaunch?.id);
@@ -824,7 +836,7 @@ let openInventory: ManagerResumeAgent;
     launch: { ...openInventory.launch, source: { kind: "persona", ref: "worker", configPath: personaPath, configSha256: digest(personaPath) } },
     dependencies: [personaPath],
   };
-  capturedLaunch = undefined;
+  resetCapturedLaunch();
   const ok = await manager.resumePreserved(inventoryOf(entry));
   check("static resume accepts matching retained credential", ok.ok && capturedLaunch?.id === identity.id && capturedLaunch?.creds === credsPath, ok);
   check("static resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor(identity.id), capturedLaunch?.lifecycleUid);
@@ -890,7 +902,9 @@ let openInventory: ManagerResumeAgent;
   const healthPath = join(credsDir, "worker.auth-health.json");
   writeFileSync(actorTokenPath, "retained-token", { mode: 0o600 });
   writeFileSync(sentinelPath, "retained-sentinel", { mode: 0o600 });
-  const entry: ManagerResumeAgent = {
+  // Annotated with the user arm pinned: `ManagerResumeAgent` widens `identity` to the whole union,
+  // and the cells below read owner/actor and rebuild the identity, which only one arm carries.
+  const entry: ManagerResumeAgent & { identity: Extract<ManagerResumeIdentity, { mode: "user" }> } = {
     ...openInventory,
     identity: {
       mode: "user",
@@ -904,12 +918,12 @@ let openInventory: ManagerResumeAgent;
   };
   retainedValidationCalls = 0;
   retainedGrantCalls = 0;
-  capturedLaunch = undefined;
+  resetCapturedLaunch();
   const result = await manager.resumePreserved(inventoryOf(entry));
   check("user resume validates retained authority at preflight and immediately before spawn", result.ok && retainedValidationCalls === 2, `${result.error} / calls=${retainedValidationCalls}`);
   check("provider receives retained token and sentinel contents", lastRetainedInput?.actorToken === "retained-token" && lastRetainedInput?.sentinelCreds === "retained-sentinel", lastRetainedInput);
   check("user resume never calls grantAgent", retainedGrantCalls === 0, retainedGrantCalls);
-  check("user resume reuses exact owner/actor in launch", capturedLaunch?.userAuth?.owner === entry.identity.owner && capturedLaunch.userAuth.actor === entry.identity.actor, capturedLaunch?.userAuth);
+  check("user resume reuses exact owner/actor in launch", capturedLaunch?.userAuth?.owner === entry.identity.owner && capturedLaunch?.userAuth?.actor === entry.identity.actor, capturedLaunch?.userAuth);
   check("user resume threads the recovered incarnation uid into launch", capturedLaunch?.lifecycleUid === uidFor("userworker"), capturedLaunch?.lifecycleUid);
   check("user bearer command is reconstructed from provider command", capturedLaunch?.userAuth?.bearerCmd.includes("agent-bearer") === true, capturedLaunch?.userAuth?.bearerCmd);
 

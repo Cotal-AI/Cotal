@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -531,7 +532,7 @@ for (const assistant of [
     registerMessageRenderer(): void {},
     on(): void {},
   } as unknown as ExtensionAPI;
-  await assert.rejects(() => cotalMesh(compatibleApi), /must be provided together/);
+  await assert.rejects(() => cotalMesh(compatibleApi), /COTAL_CONTROL_SOCKET is set but no control token could be resolved/);
   checks++;
   for (const key of keys) {
     const value = saved[key];
@@ -559,11 +560,25 @@ for (const assistant of [
     });
     ok(launch.args.includes("flag/model") && !launch.args.includes("file/model"), "spawn model overrides the agent file model");
     ok(launch.args.includes("--append-system-prompt"), "the frontmatter-stripped persona is forwarded by file");
-    ok(launch.env.COTAL_OWNER === "owner" && launch.env.COTAL_ACTOR === "actor", "user-mode identity is forwarded");
-    ok(launch.env.GROQ_API_KEY === "groq-test" && !("UNRELATED_SECRET" in launch.env), "only Pi provider keys are forwarded");
+    // `LaunchSpec.env` is optional on the interface; a managed Pi launch always carries one, so
+    // bind it once and assert that, rather than reading through an optional at every cell.
+    const env = launch.env;
+    assert.ok(env, "a managed Pi launch carries a child env");
+    // The user-mode identity is forwarded through the launch material, not the environment: the
+    // sentinel creds path and the bearer command are this mode's credential, and a shell the seat
+    // runs has no more business holding them than it has holding a creds file.
+    ok(
+      env.COTAL_OWNER === undefined && env.COTAL_ACTOR === undefined,
+      "user-mode identity is NOT in the seat environment",
+    );
+    ok(
+      readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]).userAuth?.owner === "owner",
+      "user-mode identity is forwarded through the launch material",
+    );
+    ok(env.GROQ_API_KEY === "groq-test" && !("UNRELATED_SECRET" in env), "only Pi provider keys are forwarded");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
     ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");
-    if (launch.env.COTAL_PI_PERSONA_FILE) rmSync(dirname(launch.env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
+    if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 
     assert.throws(
       () => piConnector.buildLaunch({ space: "test", name: "pi", creds: "creds", userAuth: { owner: "o", actor: "a", sentinelCredsPath: "s", bearerCmd: ["b"] } }),
@@ -573,7 +588,18 @@ for (const assistant of [
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "high" }), /variant/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", mcpServers: { x: { command: "x" } } }), /MCP/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", launchOptions: { offline: true } }), /launch options/);
-    checks += 5;
+    // `--prompt` is Pi's positional initial message: delivered as the LAST argument (Pi's parser
+    // takes any bare argument as a message, so it must follow every value-taking flag), and a
+    // prompt Pi would misread (empty, an option, a file reference) refuses the launch.
+    const prompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model", prompt: "  say hello  " });
+    ok(prompted.args[prompted.args.length - 1] === "say hello", "the initial prompt is Pi's last positional argument, trimmed");
+    ok(prompted.args.indexOf("--model") === prompted.args.length - 3, "the prompt follows the value-taking flags");
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "   " }), /empty/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "-p run" }), /cannot start with/);
+    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize" }), /cannot start with/);
+    const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model" }).args;
+    ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
+    checks += 11;
   } finally {
     if (previousGroq === undefined) delete process.env.GROQ_API_KEY;
     else process.env.GROQ_API_KEY = previousGroq;

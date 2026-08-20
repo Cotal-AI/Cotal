@@ -1,0 +1,28 @@
+{
+  "suite": "packages/lang/smoke/surface.smoke.ts",
+  "guard": "Every argument of an effect primitive is checked for a canonical form before any journal entry is written: `undefined` and a non-finite number are L3041, a function is L3042. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-surface",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/effect-boundary.json",
+  "mutations": [
+    {
+      "name": "the argument check is dropped, so `undefined` reaches the hash and the handler",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (e instanceof NotCrossable) throw new RuntimeFault(e.why === \"function\" ? \"L3042\" : \"L3041\", e.message);\n      throw e;",
+      "replace": "      if (e instanceof NotCrossable) return;\n      throw e;",
+      "expectRed": "`undefined` inside an effect's argument is L3041, naming the argument",
+      "completionMarker": "ok a value born inside a branch may be written there and is returned frozen",
+      "cell": "`undefined` inside an effect's argument is L3041, naming the argument",
+      "note": "Before this check existed, `schema: { x: undefined }` and `{ x: NaN }` were canonicalized silently (undefined dropped, NaN as null) and handed to the handler; L3041 and L3042 were catalog rows nothing raised."
+    },
+    {
+      "name": "a function is reported under the generic code",
+      "file": "packages/lang/src/perform.ts",
+      "find": "throw new RuntimeFault(e.why === \"function\" ? \"L3042\" : \"L3041\", e.message);",
+      "replace": "throw new RuntimeFault(\"L3041\", e.message);",
+      "expectRed": "a function inside an effect's argument is L3042",
+      "completionMarker": "ok a non-finite number inside an effect's argument is L3041",
+      "cell": "a function inside an effect's argument is L3042",
+      "note": "The two codes are the catalog's two rows; a function collapsing into L3041 is a repair loop told the wrong thing."
+    }
+  ]
+}

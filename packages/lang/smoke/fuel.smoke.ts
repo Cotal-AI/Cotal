@@ -24,6 +24,8 @@
 import { run } from "../src/interpret.js";
 import { RuntimeFault } from "../src/interpret.js";
 import { SimHandler } from "../src/sim.js";
+import { Journal, type JournalEntry, type JournalStore } from "../src/journal.js";
+import { WALKER_LANGUAGE_VERSION, resolvePins } from "../src/pins.js";
 
 let pass = 0;
 const ok = (name: string, cond: boolean, extra?: unknown) => {
@@ -113,52 +115,98 @@ const watchdogFiredDuring = async (yieldEvery: number): Promise<boolean> => {
   ok("so the timer is measuring the yield, not the runtime", yielding !== starved, { yielding, starved });
 }
 
-// ---- 3) a race loser that spins is actually unwound ---------------------------------------------
+// ---- 3) a race arm that spins: cut when it cannot win, budgeted when it could ------------------
 
 /**
- * The reachable case, with no new API: cancellation is otherwise observed only at effect
- * boundaries, so a race loser that spins without performing an effect never learns it lost.
+ * Cancellation is otherwise observed only at effect boundaries, so an arm that spins without
+ * performing an effect never reaches one. What happens to it is the race rule, not the scheduler:
  *
- * `race` cancels the losers and then awaits them (`allSettled`), so without a cancellation check at
- * the yield boundary this program does not resolve at all. The timeout below is what distinguishes
- * "unwound" from "hung", and it is real: this test hangs rather than fails if the check is removed,
- * which is why it is written with an explicit loser rather than left to the suite runner.
+ * - an arm that CAN NO LONGER WIN (its clock is later than a settled sibling's, or equal and it is
+ *   declared later) is cut at its next yield, and the run returns with the sibling as the winner;
+ * - an arm that COULD STILL WIN (its clock is earlier, or equal and it is declared earlier) keeps
+ *   its pure work, because cutting it there would let `yieldEvery` decide the race; if that work is
+ *   a pure infinite loop it ends on the step budget, L4013, which is the run's answer.
+ *
+ * Three programs, one variable each. The watchdog is what distinguishes "returned" from "hung", and
+ * it is real: with the cut removed the second program does not resolve inside its budget window.
  */
 {
-  const SPIN_LOSER = `
+  const raceUntil = async (source: string, runId: string): Promise<{ verdict: string; logs: unknown[] }> => {
+    const logs: unknown[] = [];
+    const raced = run(source, {
+      runId,
+      handler: new SimHandler({ turns: { quick: { status: "done", at: 0 } } }),
+      yieldEvery: 64,
+      stepBudget: 40_000,
+      onLog: (l) => logs.push(l.values[0]),
+    });
+    const verdict = await Promise.race([
+      raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
+      new Promise<string>((r) => {
+        setTimeout(() => r("HUNG"), 8_000);
+      }),
+    ]);
+    return { verdict, logs };
+  };
+
+  // (b) the spinner CANNOT win: equal clocks (neither arm awaits an effect), and it is declared second.
+  {
+    const { verdict, logs } = await raceUntil(
+      `
+const out = await race({
+  quick: async () => "done",
+  spin: async () => { let n = 0; while (true) { n = n + 1; } },
+}, { name: "who" });
+log(out.index);
+`,
+      "f-4b",
+    );
+    ok("a spinning arm that cannot win is cut at its next yield and the run returns", verdict === "returned", verdict);
+    ok("and the arm declared first wins the tie", logs[0] === "quick", logs);
+  }
+
+  // (c) the same two arms, the spinner declared FIRST: it could still win the tie, so its pure work
+  // is not cut, and the pure infinite loop ends on the step budget.
+  {
+    const { verdict } = await raceUntil(
+      `
+const out = await race({
+  spin: async () => { let n = 0; while (true) { n = n + 1; } },
+  quick: async () => "done",
+}, { name: "who" });
+log(out.index);
+`,
+      "f-4c",
+    );
+    ok("a spinning arm that could still win is not cut: the step budget ends it (L4013)", verdict.startsWith("threw L4013"), verdict);
+  }
+
+  // (a) the spinner has the EARLIER clock: the sibling awaited a turn (the simulator advances its
+  // clock by 5m), the spinner awaited nothing, so its logical time is the scope's entry. Declared
+  // second, it could still win on the clock alone, and the budget ends it.
+  {
+    const { verdict } = await raceUntil(
+      `
 const a = await spawn("a");
 const out = await race({
   fast: async () => await turn(a, { name: "quick" }),
   spin: async () => { let n = 0; while (true) { n = n + 1; } },
 }, { name: "who" });
 log(out.index);
-`;
-  const logs: unknown[] = [];
-  const raced = run(SPIN_LOSER, {
-    runId: "f-4",
-    handler: new SimHandler({ turns: { quick: { status: "done", at: 0 } } }),
-    yieldEvery: 64,
-    stepBudget: 2_000_000,
-    onLog: (l) => logs.push(l.values[0]),
-  });
-  const verdict = await Promise.race([
-    raced.then(() => "returned").catch((e) => `threw ${(e as Error).message.slice(0, 40)}`),
-    new Promise<string>((r) => {
-      setTimeout(() => r("HUNG"), 4_000);
-    }),
-  ]);
-
-  ok("a race whose loser spins forever still returns", verdict === "returned", verdict);
-  ok("and the effect-performing branch is the winner", logs[0] === "fast", logs);
+`,
+      "f-4a",
+    );
+    ok("a spinning arm with the earlier logical time is not cut either, whatever it is declared after (L4013)", verdict.startsWith("threw L4013"), verdict);
+  }
 }
 
 // ---- 4) the ceiling is invisible to ordinary programs -------------------------------------------
 
 /**
- * The cancellation check sits at the yield boundary rather than on every dispatch, so that ordinary
- * programs keep the documented law unchanged: cancellation is observed at effect boundaries. That
- * claim is only true if ordinary programs do not cross a yield boundary between effects, which is a
- * fact about step counts rather than an intention. So measure it.
+ * The pure cut sits at the yield boundary rather than on every dispatch, so an ordinary program
+ * never meets it: cancellation is observed at effect boundaries. That claim rests on ordinary
+ * programs not crossing a yield boundary between effects, which is a fact about step counts rather
+ * than an intention. So measure it.
  */
 {
   const ORDINARY = `
@@ -189,10 +237,79 @@ log(votes.a.status);
 
   ok("a realistic program completes under the default budget", logs[0] === "done", logs);
   ok("and reports what it cost", typeof r.steps === "number" && r.steps > 0, r.steps);
-  // The number that backs the comment in breathe(): five effects and a parallel scope cost far less
-  // than one yield interval, so no ordinary program reaches the boundary where cancellation is
-  // checked. If this ever fails, the comment is wrong before the code is.
+  // Five effects and a parallel scope cost far less than one yield interval, so no ordinary program
+  // reaches the boundary where a pure cut is applied. If this ever fails, the comment is wrong
+  // before the code is.
   ok("and stays well inside one yield interval (1024)", r.steps < 1_024, r.steps);
+}
+
+// ---- 4) the effect ceiling is a RUN bound, and survives a crash ------------------------------
+//
+// The counter lives on the interpreter, so a fresh activation starts at zero and a run pinned to
+// four effects can perform six across two activations without faulting. Two individually correct
+// decisions compose into that: instance fields at zero, and replayed effects deliberately not
+// counted, which is right because a replay performs nothing. The journal records every dispatch,
+// so the count is recoverable, and L4009 is a RUN ceiling.
+//
+// The shape here: pin four, release after three, resume.
+{
+  const NOW = 1_770_000_000_000;
+  const pins = resolvePins({ runId: "r-ceil", effectCeiling: 4 }, NOW, WALKER_LANGUAGE_VERSION);
+  const SIX = [1, 2, 3, 4, 5, 6].map((i) => `await sleep("1m", { name: "s${i}" });`).join("\n");
+
+  const entries: JournalEntry[] = [];
+  const store = { append: async (e: JournalEntry) => { entries.push(e); } } as JournalStore;
+
+  let dispatched = 0;
+  const counting = new Proxy(new SimHandler({ clock: { start: NOW } }), {
+    get(t: SimHandler, k: string | symbol) {
+      const v = (t as unknown as Record<string | symbol, unknown>)[k];
+      if (typeof v !== "function") return v;
+      const f = v as (...a: unknown[]) => unknown;
+      if (k !== "sleep") return f.bind(t);
+      return (...a: unknown[]) => { dispatched += 1; return f.apply(t, a); };
+    },
+  }) as SimHandler;
+
+  let stops = 0;
+  const first = await run(SIX, {
+    runId: "r-ceil", handler: counting, pins,
+    journal: new Journal({ run: "r-ceil", store }),
+    shouldStop: () => (stops++ >= 3 ? "released" : undefined),
+  }).then(() => null, (e: unknown) => e as Error);
+  ok("the first activation is released after three effects, well inside the ceiling",
+    first?.name === "RunReleased" && dispatched === 3, { first: first?.name, dispatched });
+
+  const second = await run(SIX, {
+    runId: "r-ceil", handler: counting, pins,
+    journal: new Journal({ run: "r-ceil", entries, store }),
+  }).then(() => null, (e: unknown) => e as Error);
+
+  // The ceiling is what the RUN is pinned to, not what one walk is. Counted per activation, this
+  // returns normally having performed six effects under a ceiling of four, and says nothing.
+  ok("the resumed run reaches the ceiling the RUN was pinned to, not a fresh one",
+    second instanceof RuntimeFault && second.code === "L4009", { name: second?.name, code: (second as RuntimeFault)?.code });
+  ok("and it stops at the pinned number rather than after it",
+    dispatched === 4, dispatched);
+  ok("the message quotes the pinned ceiling",
+    second instanceof Error && second.message.includes("more than 4 effects"), second?.message);
+}
+
+// ---- 5) the step budget is NOT the same, and says so -----------------------------------------
+//
+// Steps are not recorded, so nothing can recover a count across an activation and the budget is
+// genuinely per-walk. The two pins sit together on the run record and the next reader will assume
+// symmetry, so the message is where the asymmetry has to be stated.
+{
+  let caught: unknown;
+  try {
+    await run(RUNAWAY, { runId: "f-walk", handler: new SimHandler({}), stepBudget: 500, yieldEvery: NEVER });
+  } catch (e) {
+    caught = e;
+  }
+  ok("the step budget faults as L4013", (caught as RuntimeFault)?.code === "L4013", String(caught));
+  ok("and its message says it bounds ONE WALK, not the run",
+    caught instanceof Error && caught.message.includes("bounds ONE WALK, not the run"), (caught as Error)?.message);
 }
 
 console.log(`fuel.smoke: ${pass} checks passed`);

@@ -34,8 +34,8 @@ import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import {
   AUTH_ENDPOINT, EP_CMD_RETIRE_LIFECYCLE, epgateKey, epAuthBucket,
   epRequestSubject, epCallerReplyFilter, parseEpSubject,
-  createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable,
-  mintCreds, mintLifecycleUid, newIdentity, serverConfig, type EvictionResult,
+  createEndpointStreams, createSpaceAuth, ensureAuthorityStores, isReachable, DEV_OWNER,
+  mintCreds, mintLifecycleUid, newIdentity, principalKey, serverConfig, type EvictionResult,
 } from "@cotal-ai/core";
 import { deriveOwnerToken, openAuthAuthorityPlane } from "../src/index.js";
 import { openAuthorityClient } from "../src/authority-client.js";
@@ -76,8 +76,14 @@ const okEvictor: EvictPrincipal = async (principal) => ({ principal, kicked: 0, 
 // arrives while the first is still in flight. Pass-through (== okEvictor) whenever the gate is idle,
 // so phases A-D are unaffected.
 let gateArmed = false;
-let gateEntered: (() => void) | null = null;
-let gateRelease: (() => void) | null = null;
+// Declared WITHOUT an initializer on purpose. Both resolvers are handed over by a Promise executor,
+// and the checker does not follow an assignment made inside a callback, so a `= null` initializer
+// narrows the binding to `null` for the rest of the module: every later `gateRelease?.()` then
+// reports "this expression is not callable" on type `never`. Those release calls are the suite's
+// only liveness escape, and the checker could not see them reach anything. No initializer means the
+// declared type stands. Runtime behaviour is identical; neither is ever reset back.
+let gateEntered: (() => void) | undefined;
+let gateRelease: (() => void) | undefined;
 const gatedEvictor: EvictPrincipal = async (principal) => {
   if (gateArmed) {
     gateArmed = false; // only the first call after arming gates
@@ -86,9 +92,17 @@ const gatedEvictor: EvictPrincipal = async (principal) => {
   }
   return okEvictor(principal);
 };
-const MGR = { owner: "local", actor: "mgr0", uid: mintLifecycleUid() };
+// A manager holds TWO real identities, and Cotal #549 was the two being conflated: the nkey it
+// REGISTERS with (what its serve gate is bound to) and the nkey its ENDPOINT connects with. The
+// fixture models both, and derives each side of the rail's cross-check through the same expression
+// production uses on that side, from a different input. It used to spend ONE friendly literal on
+// both halves, so the cross-check was asserted against an equality this file had itself written:
+// a shape that cannot fail, teaches nothing, and let #549 through.
+const MGR_SERVE = newIdentity(); // registered; `gate.principal` is bound to this one
+const MGR_ENDPOINT = newIdentity(); // the endpoint's connection identity, never an authorization
+const MGR = { owner: DEV_OWNER, actor: MGR_SERVE.id, uid: mintLifecycleUid() };
 const spacePrefixLiteral = `cotal.${space}`;
-const MGR_KEY = `${MGR.owner}.${MGR.actor}`;
+const MGR_KEY = principalKey(DEV_OWNER, MGR_SERVE.id).key;
 // P2 item 3 (3b-3): the rail's holder check is now the serve-issuance GATE, not the manager lease.
 // The requester declares its serve identity; these are the defaults every green request rides (a test
 // overrides serveEpoch to model a superseded/deposed predecessor).
@@ -377,6 +391,40 @@ try {
     const rOwn = await request(MGR, { owner: OWNER, actor: "wforeign", lifecycleUid: uidF }, { opId: "f".repeat(26) });
     check("INVERSE CONTROL: the SAME caller naming its OWN serve registration SUCCEEDS (the cell grades the principal comparison, not a rail that refuses everything)",
       rOwn !== "no-reply" && rOwn.ok === true && (rOwn.data as { retired?: boolean })?.retired === true, rOwn);
+  }
+  // THE DIVERGENCE GUARD (Cotal #549). The cell above uses a foreign party, which reads as an
+  // outsider and is easy to get right. #549 was the hard shape: ONE manager process, TWO of its own
+  // real identities, and the requester speaking as the wrong one of them. Nothing about that looks
+  // like an intruder, which is why it survived every existing cell and shipped as "no user-mesh
+  // retirement ever completes". The registered identity authorizes; a second identity of the SAME
+  // process does not, whatever else it is entitled to do.
+  //
+  // WHAT THIS DOES AND DOES NOT PROVE. It fences the rail's side of the class: after this, a manager
+  // that speaks as anything other than its REGISTERED serve identity is refused here, deterministic
+  // and named. It cannot be red-before/green-after on its own, because the requester derivation the
+  // fix changes lives in the manager and `implementations/*` never import each other; that half is
+  // proved end-to-end over the real Manager in `user-spawn.smoke.ts`, with the mutation registered
+  // on it. This cell's job is that the FIXTURE can no longer agree with itself.
+  console.log("D. the divergence guard (#549: two identities of one manager)");
+  {
+    const uidD = mintLifecycleUid();
+    await ensureRootCredential(wreg, { owner: OWNER, actor: "wdiverge", lifecycleUid: uidD, managerInstance: "smoke" });
+    const target = { owner: OWNER, actor: "wdiverge", lifecycleUid: uidD };
+    // Same manager, same live registration, same epoch: the ONLY difference from the green path is
+    // which of its own identities the caller triple carries.
+    const rEp = await request({ owner: DEV_OWNER, actor: MGR_ENDPOINT.id, uid: MGR.uid }, target, { opId: "d".repeat(26) });
+    check("a manager speaking as its ENDPOINT identity is REFUSED against its own serve registration (both principals named, both derived, not literals)",
+      rEp !== "no-reply" && rEp.ok === false
+      && rEp.error?.includes(MGR_KEY) === true
+      && rEp.error?.includes(principalKey(DEV_OWNER, MGR_ENDPOINT.id).key) === true
+      && /FULL no-op/.test(rEp.error ?? ""), rEp);
+    check("...and that refusal left the target alive (an unauthorized request must not have acted)",
+      (await readLifecycleHeadForOperation(wreg, OWNER, "wdiverge"))?.mapping.state === "active");
+    // INVERSE CONTROL, on the SAME target and the SAME registration: the SERVE identity is accepted.
+    // Without it the cell above is satisfied by a rail that refuses every nkey-shaped principal.
+    const rServe = await request(MGR, target, { opId: "d".repeat(26) });
+    check("INVERSE CONTROL: the SERVE identity, on the same target and the same registration, IS authorized and retires it",
+      rServe !== "no-reply" && rServe.ok === true && (rServe.data as { retired?: boolean })?.retired === true, rServe);
   }
   // And the target is still intact after every refusal above.
   check("after every refusal face the target lifecycle is STILL active (refusals are complete no-ops)",

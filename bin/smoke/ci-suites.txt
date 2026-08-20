@@ -147,7 +147,6 @@ smoke:membership-feed-confinement:auth
 smoke:wildcard-backfill
 smoke:opencode
 smoke:opencode-coop
-smoke:opencode-transcript
 smoke:codex-args
 smoke:codex-host
 smoke:codex-dist
@@ -155,13 +154,14 @@ smoke:codex-installed
 smoke:web-harness
 smoke:web-parts
 smoke:web-channel-authority
-smoke:transcript-grant
 smoke:persona-acl
 smoke:cli-kernel
 smoke:join-creds
 smoke:flag-inventory
 smoke:start-overrides
 smoke:launch-parity
+smoke:seat-env-scope
+smoke:suite-ambient-env
 smoke:spawn-args
 smoke:own-agent-control
 smoke:views
@@ -184,6 +184,7 @@ smoke:down-lease-tombstone
 smoke:spawn-from-anywhere
 smoke:spawn-from-anywhere:live
 smoke:cross-path-dedup
+smoke:inbox-window
 smoke:backup-cli
 smoke:registry-staging
 smoke:materialize-concurrency
@@ -229,6 +230,7 @@ smoke:tool-input-closed
 smoke:opencode-tool-closed
 smoke:pi-tool-closed
 smoke:hermes-tool-closed
+smoke:hermes-hooks-control
 smoke:codex-tool-closed
 smoke:control-reply
 smoke:manager-invoke-verdict
@@ -295,5 +297,96 @@ smoke:scatter-liveness
 smoke:service-dereg
 smoke:manager-deregister
 smoke:scatter-pinned-probe
+smoke:agui-close-run
+smoke:claude-events-arm
+smoke:events-grant
+smoke:spawn-foreground-events
+smoke:seat-input
+smoke:user-spawn:live
+smoke:agui-authorship
+smoke:agui-map
+smoke:attach-reconnect
+smoke:agui-multi-session
+smoke:subject-frontier
+
+# The cotal-lang runtime: the language package, the durable step journal and run driver, and the
+# mesh handler that binds the effect interface onto the real planes.
+smoke:mutation-proof
+smoke:doc-binding
+smoke:run-journal
+smoke:run-notice
+smoke:run-migration
+smoke:run-journal-auth
+smoke:lang-pins
+smoke:lang-scopes
+smoke:lang-notify-fact
+smoke:lang-migrate
+smoke:runtime-journal-store
+smoke:runtime-run-driver
+smoke:runtime-mesh-sleep
+smoke:runtime-mesh-checkpoint
+smoke:runtime-mesh-wait
+smoke:runtime-mesh-notify
+smoke:runtime-mesh-seam
+smoke:runtime-migrate
+smoke:runtime-fork
+smoke:lang-semantics
+smoke:lang-surface
+
+# The OpenCode connector's AG-UI event plane: the durable read, the mapper, the launch that
+# arms it, and the per-session emitter swap that keeps `/new` from going dark.
+smoke:agui-opencode-map
+smoke:agui-opencode-source
+smoke:opencode-events-arm
+smoke:opencode-events-reset
+smoke:goal-follow
+smoke:required-arg-seam
+smoke:attach-stdin
+
+# The Codex connector's AG-UI event plane: the mapper against a real app-server
+# thread, the launch arm, and the per-agent rollout resolution.
+smoke:agui-codex-map
+smoke:codex-events-arm
+smoke:codex-rollout-path
+# The same plane through the seam a spawn actually takes: a real broker, the real host process, a
+# real rollout on disk, and a subscriber reading the frames off the channel.
+smoke:codex-events-lifecycle
+
+# The web dashboard's resilience to a link that stalls: what the pages keep when a poll refuses,
+# what the activity aggregation returns when it runs out of time, and whether a presence watch
+# rebuild can clean up after itself.
+smoke:web-snapshot
+smoke:web-bounded-aggregation
+smoke:presence-watch-rebuild:auth
+smoke:web-history-limit
+smoke:core-history-limit
+smoke:web-graph-boot
+smoke:web-echo-escaping
+smoke:web-channel-alias
+# The engine host: the seam the transformed module is handed, the worker that
+# runs it under lockdown in a Compartment with zero endowments, and the laws the walker enforces
+# inline enforced here at one boundary instead.
+smoke:lang-engine
+
+# The source transform: the emitted module's surface, closed over the seam,
+# reaching no unruled member, pure in its source, one rule per admitted node type. The differential
+# suite against the walker is the primary gate and lands with the engine host's `__ctx`.
+smoke:lang-transform
+
+# The primary gate for the two engines: the same program through the walker and through the engine,
+# compared on value, log, refusal and journal entry for entry. What a rule made divergent, and
+# what the engine cannot run yet, are two named lists inside it rather than programs left out.
+smoke:lang-differential
+
+# The two auth suites this branch revived: the despawn/respawn barrier contract (reservation,
+# lifecycle keying, replay safety) and the swallowed-revoke name hold. Both threw before their
+# first cell for a month while ungated, which is how a retry budget drifted past a presence TTL
+# with nothing to report it.
+smoke:freeslot-barrier:live
+smoke:int2-revoke:live
+
+# The default-deny read ACL: an agent subscribes only to the channels its spawn named, and a spawn
+# that names none grants none (the agent stays DM-reachable). The session suite covers the
+# connector side, where the boot set and the granted set must agree or the session refuses.
 smoke:no-implicit-general
 smoke:session-channels

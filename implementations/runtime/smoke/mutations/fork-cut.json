@@ -1,0 +1,231 @@
+{
+  "suite": "implementations/runtime/smoke/fork-run.smoke.ts",
+  "guard": "The fork cut: computed in migration mode, ending before the step it names, inheriting the parent pins verbatim, and committed with the child record written last.",
+  "command": "pnpm smoke:runtime-fork",
+  "completionMarker": "fork-run.smoke:",
+  "proveWith": "pnpm mutation-proof --config implementations/runtime/smoke/mutations/fork-cut.json   # --config resolves against the repo root, never the cwd",
+  "mutations": [
+    {
+      "name": "the cut includes the very step it was cut at",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (stepKeyString(key) === this.cutAt) throw new CutReached(this.cutAt);\n    return super.lookup(key, inputHash);",
+      "replace": "    const v = super.lookup(key, inputHash);\n    if (stepKeyString(key) === this.cutAt) throw new CutReached(this.cutAt);\n    return v;",
+      "expectRed": "the step forked at is NOT in the cut: the child re-runs it",
+      "cell": "the step forked at is NOT in the cut: the child re-runs it"
+    },
+    {
+      "name": "the cut is computed in RESUME mode",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "      migration: true,\n      pins: req.pins,",
+      "replace": "      migration: false,\n      pins: req.pins,",
+      "expectRed": "the real plan reaches a cut inside a settled scope, because it walks in migration mode",
+      "cell": "the real plan reaches a cut inside a settled scope, because it walks in migration mode"
+    },
+    {
+      "name": "the child is reseeded from its own run id",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });",
+      "replace": "  await createRunSpec(kv, endpoint, plan.child, { pins: { ...plan.pins, seed: plan.child }, createdAt: plan.at });",
+      "expectRed": "it is pinned to the parent's seed, so the copied prefix decides what it decided",
+      "cell": "and it is pinned to the parent's seed, so the copied prefix decides what it decided"
+    },
+    {
+      "name": "the record is written FIRST, so a crash leaves a drivable half-fork",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }\n\n  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });",
+      "replace": "  await createRunSpec(kv, endpoint, plan.child, { pins: plan.pins, createdAt: plan.at });\n\n  for (const entry of plan.cut) {\n    await store.append({ ...entry, run: plan.child });\n  }",
+      "expectRed": "leaves NO record behind: the spec is written last",
+      "cell": "and leaves NO record behind: the spec is written last"
+    },
+    {
+      "name": "a spawn in the cut is copied rather than refused",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (e.kind !== \"spawn\") continue;",
+      "replace": "    if (e.kind !== \"spawn\" || true) continue;",
+      "expectRed": "a cut containing a spawn is refused: the fork would have to respawn an agent this host cannot mint",
+      "cell": "a cut containing a spawn is refused: the fork would have to respawn an agent this host cannot mint"
+    },
+    {
+      "name": "a step the journal never recorded is waved through",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!recorded) {",
+      "replace": "  if (!recorded && false) {",
+      "expectRed": "with L5017 rather than a cut at the end of history",
+      "cell": "with L5017 rather than a cut at the end of history"
+    },
+    {
+      "name": "a divergence before the cut is reported as an unreachable step",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "      refusals.push({\n        code: \"L5001\",\n        step: err.stepKey,",
+      "replace": "      refusals.push({\n        code: \"L5018\",\n        step: err.stepKey,",
+      "expectRed": "with L5001, the divergence, not with a cut refusal",
+      "cell": "with L5001, the divergence, not with a cut refusal"
+    },
+    {
+      "name": "the copy leaves the entries on the parent's run",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    await store.append({ ...entry, run: plan.child });",
+      "replace": "    await store.append({ ...entry });",
+      "expectRed": "onto the CHILD's run, because the prefix is now the child's history",
+      "cell": "onto the CHILD's run, because the prefix is now the child's history"
+    },
+    {
+      "name": "forking into a run that already exists is allowed",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (existing !== undefined) {",
+      "replace": "  if (existing !== undefined && false) {",
+      "expectRed": "forking into a run that already exists is refused: a fork mints a new run",
+      "cell": "forking into a run that already exists is refused: a fork mints a new run"
+    },
+    {
+      "name": "an unwalkable scope on the way to the cut raises no L5014",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    } else if (err instanceof UnwalkableScope) {\n      refusals.push({\n        code: \"L5014\",\n        step: err.scopeKey,\n        why: `the walk could not enter a scope on the way to the cut: ${err.message}`,\n      });",
+      "replace": "    } else if (err instanceof UnwalkableScope) {\n      /* mutated: the refusal is dropped */",
+      "expectRed": "a fork past a settled conclave is refused with L5014, not waved through",
+      "cell": "a fork past a settled conclave is refused with L5014, not waved through",
+      "note": "Graduated from fork-unasserted.json on 2026-08-16. It SURVIVED there \u2014 nothing watched L5014 \u2014 and is predicted KILLED here now that a cell does."
+    },
+    {
+      "name": "L5018 rides along beside a refusal that already explains the stop",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!reached && recorded && !stoppedForAnotherReason) {",
+      "replace": "  if (!reached && recorded) {",
+      "expectRed": "and NOT with L5018, which would send the caller to repair a step key that is correct",
+      "cell": "and NOT with L5018, which would send the caller to repair a step key that is correct"
+    },
+    {
+      "name": "the L5018 gate is too broad and suppresses a genuinely unreached step",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  if (!reached && recorded && !stoppedForAnotherReason) {",
+      "replace": "  if (false && !reached && recorded && !stoppedForAnotherReason) {",
+      "expectRed": "with L5018, because a cut never reached is the whole journal",
+      "cell": "with L5018, because a cut never reached is the whole journal",
+      "note": "The twin of the mutation above. One proves the gate FIRES; this proves it does not fire for everything \u2014 a gate that suppressed L5018 outright would pass the first mutation and lose the refusal."
+    },
+    {
+      "name": "the enclosing scope is copied settled, so the child short-circuits past its own cut",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "        return !orphaned.has(k) && !projected.has(k);",
+      "replace": "        return !orphaned.has(k);",
+      "expectRed": "the CHILD's first live step is the step it was forked to re-run, not the one after the scope",
+      "cell": "the CHILD's first live step is the step it was forked to re-run, not the one after the scope",
+      "note": "Named on the CHILD-RUN cell on purpose, not on a plan-shape cell. Several plan-shape cells also redden, but they are the kind of assertion that let claim 1 survive 200 trials; the mutation is graded on the one that runs the child."
+    },
+    {
+      "name": "a cut inside a decided race is admitted instead of refused",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    if (e.kind === \"parallel\" || e.kind === \"fanOut\") continue;",
+      "replace": "    continue;",
+      "expectRed": "a cut inside a decided `race` is refused with L5020 rather than re-raced",
+      "cell": "a cut inside a decided `race` is refused with L5020 rather than re-raced"
+    },
+    {
+      "name": "the projection is too broad and drops scopes that do NOT enclose the cut",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    return SCOPE_KINDS.has(e.kind) && req.fromStepKey.startsWith(`${k}/b:`);",
+      "replace": "    return SCOPE_KINDS.has(e.kind);",
+      "expectRed": "and the scope it does not enclose STAYS in the prefix: the projection is enclosing-only",
+      "cell": "so the CHILD replays that scope instead of re-entering it: it records no second `parallel:pair`",
+      "note": "The narrowness twin. Projecting EVERY scope entry would satisfy the first mutation perfectly while destroying any fork whose cut sits after an unrelated combinator -- the child would re-enter and re-run scopes it had already settled. It SURVIVED its first grading and survived honestly: it was graded on `a fork at a recorded step is admissible`, a cell over a program with NO SCOPES, so the widening could not change its answer. Re-graded on a child seeded from a cut taken AFTER a settled `parallel`, and on what that child APPENDS -- the branch sleeps replay either way, so the first-live-step probe is inert here and only the second `parallel:pair#0` row tells the two apart."
+    },
+    {
+      "name": "L5020 is dropped from the ride-along gate",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const stoppedForAnotherReason = refusals.some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\" || r.code === \"L5020\",\n  );",
+      "replace": "  const stoppedForAnotherReason = refusals.some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\",\n  );",
+      "expectRed": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "cell": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "note": "The gate's narrowness is graded by mutation 12 (`the L5018 gate is too broad`), which is why no twin is added here: a gate that swallowed L5018 for every stop would satisfy this removal and be caught there."
+    },
+    {
+      "name": "the gate runs before the projection, so it cannot see L5020",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const stoppedForAnotherReason = refusals.some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\" || r.code === \"L5020\",\n  );",
+      "replace": "  const stoppedForAnotherReason = ([] as { code: string }[]).some(\n    (r) => r.code === \"L5001\" || r.code === \"L5014\" || r.code === \"L5020\",\n  );",
+      "expectRed": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "cell": "REPAIRED: L5018 no longer rides along, because the step IS one the program reaches",
+      "note": "ORDERING, mutated as its own fact. The repair was not only adding a code to the gate -- it was moving the gate BELOW the projection that pushes L5020. An empty set stands in for the ordering bug the move fixed: a `some()` over a refusal list that has not been filled yet is a check that cannot fail, and it reads identically to a correct gate."
+    },
+    {
+      "name": "a refused plan hands its cut back anyway",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const cut =\n    reached && refusals.length === 0\n      ? entries.filter((e) => {",
+      "replace": "  const cut =\n    reached\n      ? entries.filter((e) => {",
+      "expectRed": "REPAIRED: an INADMISSIBLE plan carries no cut",
+      "cell": "REPAIRED: an INADMISSIBLE plan carries no cut",
+      "note": "Re-anchored: the seed-fold repair renamed `req.entries` to the journal's folded `entries` on this very line, so the old anchor was gone and the mutation graded ERROR -- nothing mutated, guard ungraded, run still healthy-looking. THIRD occurrence of that class in one day, and the count is the point: a repair that touches a line disarms every mutation anchored to it, silently, and only the TALLY catches it."
+    },
+    {
+      "name": "the cut is emptied for everyone, refused or not",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const cut =\n    reached && refusals.length === 0\n      ? entries.filter((e) => {",
+      "replace": "  const cut =\n    false\n      ? entries.filter((e) => {",
+      "expectRed": "and an admissible plan over the same journal still carries its prefix",
+      "cell": "and an admissible plan over the same journal still carries its prefix",
+      "note": "The narrowness twin. `cut = []` unconditionally satisfies the removal above perfectly and makes every fork a fork of nothing -- admissible, empty-prefixed, and silent. Graded on the control cell in the same block rather than on a distant one, so the two mutations differ by exactly the condition under test."
+    },
+    {
+      "name": "the plan addresses the caller's raw list again",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const entries = journal.entries();",
+      "replace": "  const entries = req.entries;",
+      "expectRed": "REPAIRED: the cut carries one row per step, folded by the journal rather than by a second rule",
+      "cell": "REPAIRED: the cut carries one row per step, folded by the journal rather than by a second rule",
+      "note": "The defect exactly as it shipped, and it is invisible to every other block in this file because they all build a KEYED view with `Journal.entries()`. Only the block that hands `planFork` an append log -- the shape a driver actually holds -- can see it."
+    },
+    {
+      "name": "the fold drops a row from the prefix",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "  const entries = journal.entries();",
+      "replace": "  const entries = journal.entries().slice(1);",
+      "expectRed": "the cut is what happened BEFORE it",
+      "cell": "the cut is what happened BEFORE it",
+      "note": "The narrowness twin, THIRD form, and the two discarded forms are why it reads like this.\n  (1) `entries = []` graded INCONCLUSIVE: an empty prefix makes later blocks throw on a plan they assumed admissible, so the run died before printing its marker -- red, and not evidence about any cell.\n  (2) `entries = journal.orphans()` graded SURVIVED, and the mutant simply DOES NOT REPRODUCE: this line is taken before the walk runs, when nothing is consumed yet, so `orphans()` and `entries()` are the same array. A mutation that is a no-op at its own program point is not a suite hole, and reading that SURVIVED as one would have sent me to write a cell for a defect that cannot occur.\n  Dropping one row is the claim that actually matters beside 'one row per step': the fold must return the WHOLE prefix, not part of it. A de-dup that kept only the last write overall would pass every other cell in this config and hand each child a truncated history."
+    },
+    {
+      "name": "planFork does not translate `branch missing` into a refusal at all",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "    } else if (err instanceof ScopeBranchMissing) {",
+      "replace": "    } else if (false) {",
+      "expectRed": "a fork over a race whose winning arm the source renamed away RETURNS rather than hanging",
+      "cell": "a fork over a race whose winning arm the source renamed away RETURNS rather than hanging",
+      "completionMarker": "fork-run.smoke:",
+      "note": "Untranslated, it falls to the rethrow and planFork raises instead of reporting. The lang-side cells prove the THROW; this file's half is the translation, which is the category the fork-unasserted probe found surviving once already."
+    },
+    {
+      "name": "the refusal is filed under L5014, the other way a walk fails to enter a scope",
+      "file": "implementations/runtime/src/fork.ts",
+      "find": "      refusals.push({\n        code: \"L5022\",",
+      "replace": "      refusals.push({\n        code: \"L5014\",",
+      "expectRed": "not with L5014, which would send the caller to fork before a conclave that is not there",
+      "cell": "not with L5014, which would send the caller to fork before a conclave that is not there",
+      "completionMarker": "fork-run.smoke:",
+      "note": "A TRUE-shaped refusal with a FALSE reason, which is the same defect the L5014/L5018 pairing above was written for: both codes mean the walk stopped at a scope, and only the code tells the caller whether to fork before a conclave or to put an arm's name back."
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "an activation expecting a NEW run accepts one whose journal has records",
+      "file": "packages/core/src/run-journal.ts",
+      "why": "Unkillable FROM HERE, and recorded rather than dropped. This suite imports @cotal-ai/core, whose package exports resolve to `dist`, so a mutation of core's SOURCE cannot reach it without a rebuild \u2014 the harness reported SURVIVED, which was honest: the suite genuinely does not exercise the mutated file in this configuration. The cell that observes this fence is real and lives here; the KILL for the guard belongs to a core suite that imports core from `../src`. Recorded so that a later reader does not re-author this mutation and read SURVIVED as a missing test."
+    },
+    {
+      "name": "the `reached` clause of the cut's gate",
+      "file": "implementations/runtime/src/fork.ts",
+      "why": "Ungradable from any suite, because it is now REDUNDANT and that is deliberate. The gate reads `reached && refusals.length === 0`, and the second clause subsumes the first on every path this source has: unreached-and-unrecorded pushes L5017; unreached-and-recorded pushes L5018 unless L5001/L5014/L5020 already explains the stop. So `!reached` always arrives carrying a refusal, removing `reached &&` changes no observable answer, and a mutation on it can only ever report SURVIVED -- indistinguishable from a missing test. It is kept as defence in depth against a FUTURE path that returns unreached with an EMPTY refusal set, which would hand a plausible cut back silently. The premise that makes it redundant is itself asserted, by `an unreached plan always carries a refusal, which is what makes its empty cut overdetermined`: the day that cell fails, this mutation becomes gradable again and belongs back in the set.",
+      "history": "It was a graded mutation until this repair. It has now gone ERROR -- anchor line rewritten, nothing mutated -- TWICE in one day, once for the projection repair and once for this one, the second time after the rule about it was already written down. Re-anchoring it a third time would have hidden the real change, which is that the guard it grades stopped being observable."
+    }
+  ],
+  "why": [
+    "SPECIFIER BOUNDARY, and it is one config away rather than absent. Every mutation config in",
+    "this lane mutates a module its suite imports through a RELATIVE `../src/*.js` path, and no",
+    "command carries a build step -- all are bare `tsx` -- so the mutated bytes are the bytes the",
+    "suite loads. The suites in THIS directory nonetheless boot `@cotal-ai/core` and `@cotal-ai/lang`",
+    "through package specifiers that resolve to `dist`. So a future config that targets",
+    "`packages/lang/src` or `packages/core/src` under a `pnpm smoke:runtime-*` command would be VOID",
+    "ON ARRIVAL: the mutant would sit in `src` while the suite graded an untouched `dist`, and the",
+    "kill rate would measure module resolution rather than the guard. Either mutate the module the",
+    "suite imports relatively, or put a build between the mutation and the run."
+  ]
+}

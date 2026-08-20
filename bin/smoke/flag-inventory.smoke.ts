@@ -77,10 +77,9 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
     flags: [
       "agent:string", "allow-publish:string", "allow-stale:string", "allow-subscribe:string",
       "config:string", "creds:string", "cwd:string", "detach:boolean:d", "dry-run:boolean",
-      "file:string:f", "live-only:boolean", "model:string", "name:string", "no-transcript:boolean",
+      "events:boolean", "file:string:f", "live-only:boolean", "model:string", "name:string", "no-events:boolean",
       "on:string", "opt:string", "prompt:string", "resume:string", "role:string", "runtime:string",
-      "server:string", "share-tools:string", "space:string", "subscribe:string",
-      "transcript:boolean", "variant:string",
+      "server:string", "share-tools:string", "space:string", "subscribe:string", "variant:string",
     ],
     positionals: true,
   },
@@ -149,8 +148,19 @@ const GOLDEN: Record<string, { flags: string[]; positionals: boolean; rawArgs?: 
   // Stage 2a: `start` is a tombstone — errors naming `spawn --detach`; never a silent alias.
   start: { flags: [], positionals: true, rawArgs: true },
   stop: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
-  ps: { flags: [...TARGET, "on:string"], positionals: false },
-  attach: { flags: [...TARGET, "name:string", "on:string"], positionals: false },
+  // #651: `--wide` (human facts line) / `--json` (machine rows) enrich the SAME listing; bare
+  // output is unchanged. Mutually exclusive by construction, refused rather than prioritized.
+  ps: { flags: [...TARGET, "on:string", "wide:boolean", "json:boolean"], positionals: false },
+  // `--no-reconnect` (2026-08, lane A1): attach re-establishes its session when the LINK dies,
+  // so the flag is the opt OUT, for scripts that want one session and one exit code. Named
+  // `no-reconnect` rather than a negation of a `reconnect` flag for the reason `input` gives
+  // just below: parseArgs does not negate under strict.
+  attach: { flags: [...TARGET, "name:string", "no-reconnect:boolean", "on:string"], positionals: false },
+  // `input` (2026-08, lane C3): type one line into a seat without attaching. `--text` is a VALUE
+  // flag on purpose, so a payload that starts with `/` or `-` (a harness command such as
+  // `/compact`) is taken verbatim instead of being parsed as an option; `--no-enter` is a declared
+  // boolean rather than a negation of `--enter`, because parseArgs does not negate under strict.
+  input: { flags: [...TARGET, "name:string", "no-enter:boolean", "on:string", "text:string"], positionals: false },
   deliver: {
     // `--tls` here is the daemon REQUIRING TLS to the broker, not offering it. Note that `join`
     // has carried a `tls:boolean` in this same inventory all along: the CLIENT half of TLS shipped

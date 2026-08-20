@@ -33,7 +33,7 @@ import {
   pruneStaleMeshes, renderWorkspaceError, soleSpaceOf, type MeshTarget, type MeshTargetErrorCode,
 } from "@cotal-ai/workspace";
 import { c, staleStoreHint } from "../ui.js";
-import { connectOrExit, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
+import { connectOrExit, connectOrThrow, connectUserControlOrExit, type ConnectFlags } from "./connect.js";
 
 /** Endpoint auth material for one control call — a static/raw cred OR user-mode bearer+sentinel
  *  (spread into the endpoint verbatim), plus the minted instrument's v0.4 caller triple when the
@@ -77,7 +77,14 @@ export async function resolveControlTarget(
    *  only, exactly as before. It has to arrive HERE rather than at the invoke: the instrument is
    *  minted during this resolve, and a credential cannot gain a rail after it is issued. */
   instanceId?: string,
+  /** `onRefusal: "throw"` makes an unresolvable or unreachable mesh a THROWN
+   *  {@link ConnectRefusal} instead of a printed sentence and `process.exit(1)`. A command that is
+   *  one shot deep wants the exit; a loop that has to survive the broker being briefly gone (the
+   *  attach reconnect) cannot use a path that ends the process, and "no mesh running at X - run
+   *  `cotal up`" is the wrong answer to a link that is coming back. */
+  opts: { onRefusal?: "exit" | "throw" } = {},
 ): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth }> {
+  const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
     : flags;
@@ -134,7 +141,7 @@ export async function resolveControlTarget(
     }
   }
   // Static / open / raw-creds: mint the requested instrument (or bare open connect).
-  const conn = await connectOrExit(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
+  const conn = await connect_(withSpace, profile, ...(instanceId !== undefined ? [{ instanceId }] as const : []));
   return {
     space: conn.space,
     server: conn.server,
@@ -151,7 +158,7 @@ export async function resolveControlTarget(
 /** v0.3 ctl op → v0.4 typed command (P2 item 1, 1c.2b): the wire names the manager REGISTERS
  *  (manager-service-contract ROWS). `start` is creation (`spawn`), a NAMED `stop` is the one
  *  owner/any-mode terminal (`despawn`), the per-agent `status` read is `inspect`; the camelCase
- *  admin family maps to its kebab-case wire names. `targeted` marks the two commands whose
+ *  admin family maps to its kebab-case wire names. `targeted` marks the three commands whose
  *  `{name}` argument becomes a §13.2 target block (resolved to the agent's principal triple via
  *  the name-keyed `inspect` read — it rides the spawn capability arm, so resolution reach equals
  *  despawn/attach reach; the wire target is (owner, actor, lifecycleUid), never an alias). */
@@ -159,6 +166,7 @@ const EP_COMMANDS: Record<string, { command: string; targeted?: boolean }> = {
   start: { command: "spawn" },
   stop: { command: "despawn", targeted: true },
   attach: { command: "attach", targeted: true },
+  input: { command: "input", targeted: true },
   status: { command: "inspect" },
   ps: { command: "ps" },
   models: { command: "models" },
@@ -221,7 +229,11 @@ async function askManagerEp(
       // the spawn-scoped user bearers - the 1c.2b read narrowing - and hangs their stop/attach).
       const info = await invokeCommand(nc, space, service, "inspect", { name }, { deadlineMs: 10_000 });
       if (info.reply.ok !== true)
-        return { ok: false, error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}` };
+        return {
+          ok: false,
+          error: `could not resolve "${name}": ${info.reply.error?.message ?? info.reply.error?.code ?? "inspect failed"}`,
+          ...(info.reply.error?.code ? { code: info.reply.error.code } : {}),
+        };
       const row = info.reply.data as { id: string; lifecycleUid: string };
       // A STATIC row's `id` is the bare actor under the caller's own owner; a USER-mode row's `id`
       // is the composite `owner.actor` principal key - split it (an embedded dot would break the
@@ -254,7 +266,12 @@ async function askManagerEp(
     const r = (GOAL_BEARING_COMMANDS as readonly string[]).includes(mapped.command)
       ? await submitAndFollowGoal(nc, space, BASELINE_LIFECYCLE_ENDPOINT, caller, timeoutMs ?? START_TIMEOUT_MS, submit)
       : await submit();
-    if (r.reply.ok !== true) return { ok: false, error: r.reply.error?.message ?? r.reply.error?.code ?? "error" };
+    if (r.reply.ok !== true)
+      return {
+        ok: false,
+        error: r.reply.error?.message ?? r.reply.error?.code ?? "error",
+        ...(r.reply.error?.code ? { code: r.reply.error.code } : {}),
+      };
     // The ep `models` reply is normalized to `{catalogs}` — unwrap so call sites keep the ctl shape.
     const data = mapped.command === "models" ? (r.reply.data as { catalogs: unknown }).catalogs : r.reply.data;
     return { ok: true, ...(data !== undefined ? { data } : {}) };
@@ -270,7 +287,11 @@ async function askManagerEp(
  *  deadline elapsed with nothing attributed to the request). `up`'s resume readiness poll keys on it;
  *  it used to key on the message prefix, which turned an operator-facing string into a control-flow
  *  predicate in another file. */
-export type ManagerReply = ControlReply & { unanswered?: boolean };
+/** The manager's error CODE, when there was one. A caller that has to DECIDE on a refusal — the
+ *  attach loop distinguishing "you may not" from "that seat is gone" from "try again" — was left
+ *  matching English, because both renderings below collapse the envelope to
+ *  `message ?? code` and the code is the only stable half. */
+export type ManagerReply = ControlReply & { unanswered?: boolean; code?: string };
 
 /** What the calling command declares about pinning. Passed ONLY by a command that offers `--on`
  *  (`ps`, `stop`, `attach`, `spawn --detach`), with `instanceId` set to what the operator typed, if

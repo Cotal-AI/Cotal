@@ -1,7 +1,7 @@
 // Generate the version-exact Cotal docs bundle that ships inside the connector, so a
 // mesh agent can call `cotal_docs` and read the AUTHORITATIVE docs for the exact version
 // it is running — offline, with no drift. Sources of truth: /docs/*.md + /SPEC.md +
-// /spec/cotal.schema.json, stamped with the release version (bin/package.json). Run:
+// /spec/cotal-lang.md + /spec/cotal.schema.json, stamped with the release version (bin/package.json). Run:
 // `pnpm gen:docsbundle`.
 //
 // Emits extensions/connector-core/src/docs-bundle.generated.ts as a plain typed constant
@@ -99,12 +99,15 @@ const specBody = readFileSync(join(repoRoot, "SPEC.md"), "utf8");
 if (!specBody.trim()) throw new Error("gen:docsbundle: SPEC.md is empty");
 const schemaBody = readFileSync(join(repoRoot, "spec", "cotal.schema.json"), "utf8");
 if (!schemaBody.trim()) throw new Error("gen:docsbundle: spec/cotal.schema.json is empty");
+const langBody = readFileSync(join(repoRoot, "spec", "cotal-lang.md"), "utf8");
+if (!langBody.trim()) throw new Error("gen:docsbundle: spec/cotal-lang.md is empty");
 
 const bundle = {
   version,
-  generatedFrom: "docs/*.md + SPEC.md + spec/cotal.schema.json",
+  generatedFrom: "docs/*.md + SPEC.md + spec/cotal-lang.md + spec/cotal.schema.json",
   pages,
   spec: { title: titleOf(specBody, "spec"), body: specBody },
+  lang: { title: titleOf(langBody, "lang"), body: langBody },
   schema: { title: "Cotal message schema (JSON Schema)", body: schemaBody },
 };
 
@@ -122,4 +125,4 @@ writeFileSync(
     ";\n",
 );
 
-console.log(`gen:docsbundle: wrote ${pages.length} pages + spec + schema for Cotal v${version} → ${out.replace(repoRoot + "/", "")}`);
+console.log(`gen:docsbundle: wrote ${pages.length} pages + spec + lang + schema for Cotal v${version} → ${out.replace(repoRoot + "/", "")}`);

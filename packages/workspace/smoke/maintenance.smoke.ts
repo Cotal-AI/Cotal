@@ -196,10 +196,11 @@ for (const mode of ["auth", "open", "user"] as const) {
     record.state === "ready" && record.mode === mode && Boolean(record.source.generation) &&
     record.resume.sha256 === p.resume.sha256);
   const document = readMaintenanceResumeDocument(p.root, p.resume);
+  const isJsonObject = (v: unknown): v is { readonly [key: string]: unknown } =>
+    typeof v === "object" && v !== null && !Array.isArray(v);
   check(`${mode} resume document retains inventory and launch provenance`,
     Array.isArray(document.inventory) &&
-    typeof document.launch === "object" && document.launch !== null && !Array.isArray(document.launch) &&
-    document.launch.runtime === "pty");
+    isJsonObject(document.launch) && document.launch.runtime === "pty");
   releaseMaintenanceLock(p.lock);
 }
 
@@ -542,7 +543,7 @@ if (process.platform !== "win32") {
     launch: { server: "nats://127.0.0.1:4222", runtime: "pty", resumeAgents: true },
   });
   expectCode("ordinary resume cannot retire before activation", "invalid-transition", () =>
-    retireOrdinaryResume(p.lock));
+    retireOrdinaryResume(p.lock, managerFinalize("ordinary-retire-1")));
   const active = markOrdinaryResumeActive(p.lock, ordinaryActivation("ordinary-retire-1"));
   check("ordinary resume active retains provenance and activation result",
     active.state === "resume-active" && active.ordinaryResume.launch.runtime === "pty" &&
@@ -603,7 +604,7 @@ if (process.platform !== "win32") {
     degraded.state === "resume-degraded" && degraded.activeAt === active.activeAt &&
     degraded.activation?.state === "awaitingCommit");
   expectCode("degraded ordinary resume cannot be retired", "invalid-transition", () =>
-    retireOrdinaryResume(p.lock));
+    retireOrdinaryResume(p.lock, managerFinalize("ordinary-active-degraded")));
   const repaired = markOrdinaryResumeActive(p.lock, ordinaryActivation("ordinary-active-degraded"));
   check("repaired degraded ordinary resume can recover forward to active",
     repaired.state === "resume-active" && repaired.activation.attemptId === "ordinary-active-degraded");
@@ -979,9 +980,10 @@ if (process.platform !== "win32") {
   recordRestoreManagerCommit(p.lock, p.proof, managerCommit(p.proof.attemptId));
   expectCode("manager-committed restore refuses listener replacement", "invalid-transition", () =>
     replaceDeadRestoreListener(p.lock, p.proof, { ownerStatus: () => "dead" }));
+  const afterRefusal = readMaintenanceJournal(p.root);
   check("replacement refusal retains manager-committed state and proof",
-    readMaintenanceJournal(p.root)?.state === "manager-committed" &&
-    readMaintenanceJournal(p.root)?.listenerProof?.serverNonce === p.proof.serverNonce);
+    afterRefusal?.state === "manager-committed" &&
+    afterRefusal.listenerProof?.serverNonce === p.proof.serverNonce);
   markRestoreDegraded(p.lock, "manager-committed listener degraded", [
     { action: "repair", description: "Repair the committed listener without replacing ownership." },
   ]);
