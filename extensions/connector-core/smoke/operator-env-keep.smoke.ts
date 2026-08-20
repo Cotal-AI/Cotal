@@ -26,11 +26,12 @@ import { fileURLToPath } from "node:url";
 import { OPERATOR_ENV_KEEP } from "../src/launch.js";
 
 const extensionsRoot = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
+const repoRoot = join(extensionsRoot, "..");
 
 /** Every connector/adapter source file. Keyed on location rather than a hardcoded list of the five
  *  connectors that exist today, so a SIXTH is graded the day it is added rather than the day someone
  *  remembers to extend this file. That is the same reasoning the prefix strip rests on. */
-function* connectorSources(dir: string): Generator<string> {
+function* sources(dir: string): Generator<string> {
   for (const e of readdirSync(dir, { withFileTypes: true })) {
     if (e.name.startsWith(".") || e.name === "node_modules" || e.name === "dist") continue;
     const p = join(dir, e.name);
@@ -39,7 +40,7 @@ function* connectorSources(dir: string): Generator<string> {
     // third spelling is not hypothetical - `orca/smoke.ts` assigns COTAL_ORCA_BIN to build a
     // fixture, and an earlier version of this census read that as a connector assigning it per
     // spawn and reddened on a name that is genuinely operator-level.
-    if (e.isDirectory()) { if (e.name !== "smoke") yield* connectorSources(p); }
+    if (e.isDirectory()) { if (e.name !== "smoke") yield* sources(p); }
     else if (e.name.endsWith(".ts") && !e.name.includes(".smoke.") && e.name !== "smoke.ts" && statSync(p).size < 2_000_000) yield p;
   }
 }
@@ -57,8 +58,39 @@ const ASSIGN = [
  *  the codebase would be invisible to a census that only reads string literals. */
 const CONSTANTS: Record<string, string> = { LAUNCH_MATERIAL_ENV: "COTAL_LAUNCH_MATERIAL" };
 
+/** THIS CENSUS'S OWN BOUNDARY, CHECKED RATHER THAN ASSUMED.
+ *
+ *  Everything else here reads `extensions/`. That is the right scope only while every `launchEnv`
+ *  caller either lives there or contributes no `COTAL_*` name of its own, and nothing in the census
+ *  can notice when that stops being true: a scan's blind spot and a clean tree produce the same
+ *  output. So the boundary is a check rather than a comment.
+ *
+ *  It is not hypothetical that callers live elsewhere. Two example composition roots call
+ *  `launchEnv()`, and the first version of this guard - which simply required every caller to sit
+ *  under `extensions/` - reddened on them. They are legitimate: an example configures and
+ *  orchestrates and adds no env names of its own, which is exactly the property asserted below.
+ *  Requiring the PROPERTY rather than the LOCATION is what keeps this from being an allow-list that
+ *  rots the same way the keep list would.
+ */
+const callers = [...sources(repoRoot)].filter((f) => /(?<!function )\blaunchEnv\(/.test(readFileSync(f, "utf8")));
+assert.ok(
+  callers.length >= 5,
+  `found only ${callers.length} launchEnv call sites, so this boundary check is not reading the tree`,
+);
+const unwalked = callers
+  .filter((f) => !f.startsWith(extensionsRoot))
+  .filter((f) => ASSIGN.some((re) => new RegExp(re.source, re.flags).test(readFileSync(f, "utf8"))))
+  .map((f) => relative(repoRoot, f).split("\\").join("/"));
+assert.deepEqual(
+  unwalked,
+  [],
+  "a launchEnv caller outside extensions/ assigns a COTAL_ name into the env it spawns with. This " +
+    "census does not walk that file, so its keep-list result is blind to it: widen `sources` to " +
+    "cover that tree, or the census will keep reporting 0 conflicts about code it never reads.",
+);
+
 const assigned = new Map<string, string>(); // name -> first file that assigns it
-for (const file of connectorSources(extensionsRoot)) {
+for (const file of sources(extensionsRoot)) {
   const body = readFileSync(file, "utf8");
   for (const re of ASSIGN) {
     for (const m of body.matchAll(re)) {
@@ -95,5 +127,6 @@ for (const witness of ["COTAL_LIFECYCLE_UID", "COTAL_ROLE", "COTAL_LAUNCH_MATERI
 
 console.log(
   `operator-env-keep smoke: ${assigned.size} per-spawn COTAL_ names found across the connectors, ` +
-    `${OPERATOR_ENV_KEEP.length} keep-list names, 0 conflicts`,
+    `${OPERATOR_ENV_KEEP.length} keep-list names, 0 conflicts, ` +
+    `${callers.length} launchEnv call sites, none outside the walked tree contributing a COTAL_ name`,
 );
