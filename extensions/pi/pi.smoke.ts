@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
-import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
@@ -541,6 +541,22 @@ for (const assistant of [
   else checks++;
   if (previous === undefined) delete process.env.COTAL_PI_SESSION_STATE;
   else process.env.COTAL_PI_SESSION_STATE = previous;
+
+  const project = join(root, "project");
+  const agentDir = join(project, ".cotal", "agents");
+  mkdirSync(agentDir, { recursive: true });
+  const oldAgentFile = process.env.COTAL_AGENT_FILE;
+  const oldName = process.env.COTAL_NAME;
+  const oldUid = process.env.COTAL_LIFECYCLE_UID;
+  process.env.COTAL_AGENT_FILE = join(agentDir, "legacy.md");
+  process.env.COTAL_NAME = "legacy";
+  process.env.COTAL_LIFECYCLE_UID = "12345678901234567890123456";
+  persistSessionId("01999999-9999-7999-8999-000000000003");
+  const derived = join(project, ".cotal", "pi-sessions", "legacy-12345678901234567890123456.json");
+  ok(JSON.parse(readFileSync(derived, "utf8")).sessionId.endsWith("0003"), "an already-running pre-upgrade seat derives its lifecycle-keyed session state path");
+  if (oldAgentFile === undefined) delete process.env.COTAL_AGENT_FILE; else process.env.COTAL_AGENT_FILE = oldAgentFile;
+  if (oldName === undefined) delete process.env.COTAL_NAME; else process.env.COTAL_NAME = oldName;
+  if (oldUid === undefined) delete process.env.COTAL_LIFECYCLE_UID; else process.env.COTAL_LIFECYCLE_UID = oldUid;
   rmSync(root, { recursive: true, force: true });
 }
 

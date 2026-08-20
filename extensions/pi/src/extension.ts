@@ -1,7 +1,7 @@
-import { basename, dirname } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { rmSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { writeSecretFileAtomic } from "@cotal-ai/core";
+import { mkSecretDir, writeSecretFileAtomic } from "@cotal-ai/core";
 import {
   MeshAgent,
   configFromEnv,
@@ -54,9 +54,26 @@ function messageText(content: unknown): string {
     .join("\n");
 }
 
+function sessionStatePath(): string | undefined {
+  const explicit = process.env.COTAL_PI_SESSION_STATE?.trim();
+  if (explicit) return explicit;
+  // Upgrade path for seats launched before COTAL_PI_SESSION_STATE existed. Managed Pi receives the
+  // persona path and lifecycle UID; from <root>/.cotal/agents/<name>.md the same lifecycle-keyed
+  // state path is derivable without selecting a newest session.
+  const agentFile = process.env.COTAL_AGENT_FILE?.trim();
+  const name = process.env.COTAL_NAME?.trim();
+  const lifecycleUid = process.env.COTAL_LIFECYCLE_UID?.trim();
+  const agentsDir = agentFile ? dirname(agentFile) : "";
+  const cotalDir = agentsDir ? dirname(agentsDir) : "";
+  if (!agentFile || !name || !lifecycleUid || basename(agentsDir) !== "agents" || basename(cotalDir) !== ".cotal")
+    return undefined;
+  return join(cotalDir, "pi-sessions", `${name}-${lifecycleUid}.json`);
+}
+
 export function persistSessionId(sessionId: string, status: "running" | "quit" = "running"): void {
-  const path = process.env.COTAL_PI_SESSION_STATE?.trim();
+  const path = sessionStatePath();
   if (!path) return;
+  mkSecretDir(dirname(path));
   writeSecretFileAtomic(path, `${JSON.stringify({ version: 1, sessionId, status })}\n`);
 }
 
