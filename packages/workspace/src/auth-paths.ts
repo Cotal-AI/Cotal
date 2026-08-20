@@ -423,13 +423,34 @@ export function findCotalRoot(start: string = process.cwd()): string {
  *  it holds the SAME chain (a second checkout of the same mesh, which is legitimate and silent).
  *
  *  It REPORTS. It does not choose: a caller that silently preferred one root over the other would be
- *  the same defect with a different winner. */
+ *  the same defect with a different winner. It also never THROWS - a fault reading either root is
+ *  reported as nothing to say, because a detector that can abort its caller is that same defect once
+ *  more, wearing the cwd's failure instead of its answer. */
 export function divergentCwdAnchor(resolvedRoot: string, space: string, cwd?: string): { cwdRoot: string } | undefined {
   const cwdRoot = findCotalRoot(cwd);
   if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;
-  const here = loadSpaceAuth(authDir(cwdRoot), space);
+  // A detector that can THROW is the cwd deciding the command's fate by another route, which is the
+  // defect this function exists to end rather than relocate. `loadSpaceAuth` refuses unreadable
+  // trust material loudly - right for a root a command is about to USE, wrong for one it has just
+  // declared it is not using: a half-written `~/.cotal/auth/broker.json` would kill an attach whose
+  // seed came from elsewhere, and on the reconnect path that throw is classified transient and
+  // retried forever, printing a disk-parse error as though the link were down.
+  //
+  // Silence here is not a fallback, it is the accurate answer. The question is "does the walked root
+  // hold a DIFFERENT chain for this space", and it can only be answered by comparing two legible
+  // chains: an unreadable walked root asserts nothing, and an unreadable RESOLVED root leaves
+  // nothing to compare against, so claiming divergence would be a statement this code cannot make.
+  // Neither case hides a real problem, because corruption in the root the command actually reads
+  // still surfaces loudly from the path that reads it.
+  let here: SpaceAuth | undefined;
+  let there: SpaceAuth | undefined;
+  try {
+    here = loadSpaceAuth(authDir(cwdRoot), space);
+    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;
+  } catch {
+    return undefined;
+  }
   if (!here) return undefined;
-  const there = loadSpaceAuth(authDir(resolvedRoot), space);
   if (there && here.account.pub === there.account.pub) return undefined;
   return { cwdRoot };
 }

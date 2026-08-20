@@ -120,7 +120,13 @@ const rootFossil = join(base, "fossil");
 const rootTwin = join(base, "twin");
 const workFossil = join(rootFossil, "work");
 const workBare = join(base, "bare", "work");
-for (const d of [rootLive, rootFossil, rootTwin, workFossil, workBare]) mkdirSync(d, { recursive: true });
+// A root whose broker trust is UNREADABLE rather than absent or foreign: a half-written or
+// hand-edited `.cotal/auth/broker.json`, which is what a failed `cotal setup` leaves behind. It
+// holds no account for this space at all, which is the point - a directory with nothing to say
+// about this space was still able to decide this command's fate.
+const rootCorrupt = join(base, "corrupt");
+const workCorrupt = join(rootCorrupt, "work");
+for (const d of [rootLive, rootFossil, rootTwin, workFossil, workBare, workCorrupt]) mkdirSync(d, { recursive: true });
 
 /** The seat: a REAL mesh endpoint (not a bare keepalive), so the spawn's readiness resolves on
  *  presence instead of riding the 30s backstop into an `uncertain` non-success. It authenticates
@@ -197,6 +203,16 @@ const authRefused = (s: string) => /Authorization Violation/i.test(s);
 const seedRefused = (s: string) => /needs this space's local seed/.test(s);
 const attached = (s: string) => new RegExp(`attached to ${SEAT}`).test(s);
 
+/** What the detector DID, including throwing, so a fault is a recorded failure with its message
+ *  rather than an exception that ends the run before the banner. */
+const detectorSays = (resolvedRoot: string, cwd: string): string => {
+  try {
+    return divergentCwdAnchor(resolvedRoot, SPACE, cwd) === undefined ? "nothing" : "divergence";
+  } catch (e) {
+    return `THREW: ${e instanceof Error ? e.message : String(e)}`;
+  }
+};
+
 let mgr: InstanceType<typeof Manager> | undefined;
 try {
   // ---- 1. the measurement is only valid in an unanchored tree ---------------------------------
@@ -221,6 +237,8 @@ try {
   saveSpaceAuth(authDir(rootLive), live);
   saveSpaceAuth(authDir(rootFossil), fossil);
   cpSync(authDir(rootLive), authDir(rootTwin), { recursive: true });
+  mkdirSync(authDir(rootCorrupt), { recursive: true });
+  writeFileSync(join(authDir(rootCorrupt), "broker.json"), "{not json");
 
   // ---- 3. a REAL authed broker that trusts ONLY the live chain -----------------------------------
   const storeDir = mkdtempSync(join(tmpdir(), "cotal-authroot-js-"));
@@ -275,6 +293,21 @@ try {
     divergentCwdAnchor(rootLive, SPACE, rootTwin) === undefined,
     { why: "a second checkout of one mesh is ordinary; firing there would make the report noise" },
   );
+  // The detector runs BEFORE the mint and before the no-seed refusal, on a root the command has just
+  // declared it is not using. If it can throw, the cwd still decides the command's fate - the same
+  // defect wearing the walked root's failure instead of its answer - and on the reconnect path that
+  // throw is classified transient and retried forever. Both directions are asserted, because an
+  // unreadable RESOLVED root is the mirror case and is where the next version of this would live.
+  ok(
+    "a walked root whose broker trust does not PARSE says nothing, and does not throw at its caller",
+    detectorSays(rootLive, workCorrupt) === "nothing",
+    detectorSays(rootLive, workCorrupt),
+  );
+  ok(
+    "…and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
+    detectorSays(rootCorrupt, workFossil) === "nothing",
+    { got: detectorSays(rootCorrupt, workFossil), why: "with one side illegible there is no comparison to report" },
+  );
 
   // ---- 4. a real supervised seat to attach to -----------------------------------------------------
   mkdirSync(join(rootLive, ".cotal", "agents"), { recursive: true });
@@ -315,6 +348,27 @@ try {
   ok("attach from an UNANCHORED directory attaches through the registry-resolved trust", attached(fromBare), fromBare.slice(-900));
   ok("…and was not refused for a missing local seed", !seedRefused(fromBare) && !authRefused(fromBare), fromBare.slice(-900));
   ok("…and says nothing about a shadowing anchor, because there is none", !/DIFFERENT trust chain/.test(fromBare), fromBare.slice(-900));
+
+  // ---- E. a corrupt anchor on the way past cannot kill a command that is not using it -------------
+  // The end-to-end half of the pair above, through the real binary: same live mesh, same resolved
+  // root, same seat, and a cwd whose ancestor `.cotal/auth/broker.json` is garbage. Attach must
+  // still open, because the seed it redeems with never came from there.
+  const fromCorrupt = await attachFrom(workCorrupt);
+  ok(
+    "attach from a directory whose ancestor auth is CORRUPT still opens the session",
+    attached(fromCorrupt),
+    { note: "the walked root is unreadable and irrelevant; the seed came from the resolved root", out: fromCorrupt.slice(-900) },
+  );
+  ok(
+    "…and does not die on the unreadable file it just declared it was not using",
+    !/does not parse as broker trust/.test(fromCorrupt),
+    fromCorrupt.slice(-900),
+  );
+  ok(
+    "…and says nothing about a shadowing anchor, because nothing legible there says there is one",
+    !/DIFFERENT trust chain/.test(fromCorrupt),
+    fromCorrupt.slice(-900),
+  );
 
   // ---- D. redemption never sees a target with no resolved root -----------------------------------
   // `attachNoSeedMessage` carries an arm for a connection that resolved NO checkout root, because

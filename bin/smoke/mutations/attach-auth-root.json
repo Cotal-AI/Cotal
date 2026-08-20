@@ -37,7 +37,17 @@
     "no resolved root. No supported route reaches redemption in that state -- both off-registry",
     "routes are refused earlier, which the suite MEASURES in cells D -- so there is no mutation for",
     "it here. An unreachable arm cannot be killed, and a mutation aimed at one would report",
-    "SURVIVED and read as a coverage gap rather than as the invariant it actually is."
+    "SURVIVED and read as a coverage gap rather than as the invariant it actually is.",
+    "",
+    "MUTATIONS 5 AND 6 ARE THE SECOND ANSWER IN ITS OTHER FORM. Carrying the resolution's seed forward",
+    "stops the cwd choosing WHICH chain is used; it does not stop the cwd ending the command. The",
+    "detector reads the walked root before the mint, and `loadSpaceAuth` refuses unreadable trust",
+    "material loudly, so a corrupt `broker.json` up the walk aborted an attach that had already",
+    "declared it was not using that root -- and on the reconnect path that abort is classified",
+    "transient and retried forever. 5 restores that shape whole and is graded through the binary. 6 is",
+    "the half fix, guarding only the side the bug report named, and it is not redundant: an unreadable",
+    "RESOLVED root leaves nothing to compare against, and reporting a divergence from it would be a",
+    "claim this code cannot support."
   ],
   "mutations": [
     {
@@ -55,8 +65,8 @@
       "file": "implementations/cli/src/commands/agents.ts",
       "find": "  if (shadow)\n    console.error(\n      `! this directory resolves to ${shadow.cwdRoot}, whose .cotal/auth holds a DIFFERENT trust chain for space \"${t.space}\".\\n` +\n      `  attach used ${t.root}, the root this mesh resolved to. The other one is not being used, and is worth a look.`,\n    );",
       "replace": "  void shadow;",
-      "expectRed": "…and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
-      "cell": "…and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
+      "expectRed": "\u2026and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
+      "cell": "\u2026and the shadowing anchor is REPORTED, naming the walked root and the one actually used",
       "afterRestore": "pnpm --filter @cotal-ai/cli build",
       "note": "A careless edit, not a malicious one: the report is dropped and the detector call kept. Everything still typechecks and every functional cell still passes."
     },
@@ -79,6 +89,26 @@
       "cell": "standing where there is no anchor at all says nothing",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",
       "note": "Turns the report into noise: every directory outside a checkout would warn about a trust chain it does not have, which is how a real signal gets trained away."
+    },
+    {
+      "name": "the detector can throw again: an unreadable root on the way past aborts a command that is not using it",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "  let here: SpaceAuth | undefined;\n  let there: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;",
+      "replace": "  const here = loadSpaceAuth(authDir(cwdRoot), space);\n  if (!here) return undefined;\n  const there = loadSpaceAuth(authDir(resolvedRoot), space);",
+      "expectRed": "attach from a directory whose ancestor auth is CORRUPT still opens the session",
+      "cell": "attach from a directory whose ancestor auth is CORRUPT still opens the session",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",
+      "note": "The shape the first fix shipped in. `loadSpaceAuth` throws on trust material it cannot read, so a half-written `broker.json` anywhere up the cwd walk kills an attach whose seed came from the resolved root. Graded through the REAL binary, because that is where the abort is fatal."
+    },
+    {
+      "name": "only the walked root is guarded, so an unreadable RESOLVED root still throws (the half fix)",
+      "file": "packages/workspace/src/auth-paths.ts",
+      "find": "  let here: SpaceAuth | undefined;\n  let there: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;",
+      "replace": "  let here: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;\n  const there = loadSpaceAuth(authDir(resolvedRoot), space);",
+      "expectRed": "\u2026and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
+      "cell": "\u2026and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
+      "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",
+      "note": "The fix someone writes after reading only the bug report: guard the side the report named. The other side is the same abort with the roots swapped, and it is the direction a later change is most likely to reintroduce."
     }
   ]
 }
