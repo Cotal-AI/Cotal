@@ -14,6 +14,7 @@ import {
   agentFilePath,
   clearSpaceHistory,
   connectorServers,
+  spawnEnvAllow,
   deprovisionAgent,
   firstFreeName,
   idFromCreds,
@@ -3405,11 +3406,11 @@ export class Manager {
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
       // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
-      const mcpServers = connectorServers(
-        loadCotalConfig(this.workspaceRoot),
-        agent,
-        parseShareSelection(opts.shareTools),
-      );
+      const cotalConfig = loadCotalConfig(this.workspaceRoot);
+      const mcpServers = connectorServers(cotalConfig, agent, parseShareSelection(opts.shareTools));
+      // The operator's spawn-env policy travels the same route: absent means the child inherits
+      // their environment, present means containment. A connector never reads the config itself.
+      const envAllow = spawnEnvAllow(cotalConfig);
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
       // agent shares the workspace root (the prior, unchanged behavior).
@@ -3453,6 +3454,7 @@ export class Manager {
         capabilities,
         events,
         mcpServers,
+        envAllow,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
         workspaceRoot: this.workspaceRoot,
@@ -3886,11 +3888,9 @@ export class Manager {
       }
 
       try {
-        const mcpServers = connectorServers(
-          loadCotalConfig(this.workspaceRoot),
-          entry.launch.connector,
-          parseShareSelection(entry.launch.shareTools),
-        );
+        const resumeConfig = loadCotalConfig(this.workspaceRoot);
+        const mcpServers = connectorServers(resumeConfig, entry.launch.connector, parseShareSelection(entry.launch.shareTools));
+        const envAllow = spawnEnvAllow(resumeConfig);
         const spec = connector.buildLaunch({
           space: this.space,
           name: entry.name,
@@ -3916,6 +3916,7 @@ export class Manager {
           capabilities: entry.launch.capabilities,
           events: entry.launch.events,
           mcpServers,
+          envAllow,
           workspaceRoot: this.workspaceRoot,
         });
         const value = { spec, ...authority } satisfies PreparedResume;

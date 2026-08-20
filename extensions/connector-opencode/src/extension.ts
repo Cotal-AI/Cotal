@@ -2,7 +2,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv, MODEL_PROVIDER_KEYS } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, eventChannel, launchEnv, controlEndpoint, materialEnv } from "@cotal-ai/connector-core";
 
 /** The bundled in-process plugin (esbuild → `dist/plugin.bundle.js`). `opencode serve` loads it by
  *  absolute path from the inline config, so it runs *inside* the server and shares its SDK client.
@@ -141,14 +141,14 @@ export const opencodeConnector: Connector = {
           "is a separate feature.",
       );
     // Identity rides the process env: the plugin runs in the opencode process and inherits it
-    // (unlike the Claude Code MCP server, which gets none of the parent env). The OS allow-list +
-    // the named model-provider key (opencode's hosted models read OPENCODE_API_KEY; other
-    // providers read their own) are forwarded BY NAME — never `...process.env` — so the operator's
-    // unrelated secrets don't reach the child (P3).
+    // (unlike the Claude Code MCP server, which gets none of the parent env). The child inherits the
+    // operator's environment minus Cotal's own per-session COTAL_* (see launchEnv), so opencode
+    // resolves whichever provider its model names the same way it does when the operator runs it by
+    // hand. `envAllow` is set only when the operator declared `spawn.env`, which confines the child.
     // Minted before the env is built: the token goes into the launch material, the path into the env.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ providerKeys: MODEL_PROVIDER_KEYS }),
+      ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported.
       //

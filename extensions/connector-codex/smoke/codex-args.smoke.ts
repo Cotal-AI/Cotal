@@ -50,8 +50,14 @@ try {
     controlFromEnv(base.env)?.token === base.control?.token,
   );
   check("codex data root defaults to the launch dir", base.env?.COTAL_CODEX_HOME === process.cwd());
-  check("env allow-list: unrelated operator env is NOT forwarded", base.env?.SUPER_SECRET_LEAK_CANARY === undefined);
-  check("env allow-list: the provider key IS forwarded by name", base.env?.OPENAI_API_KEY === "sk-test-canary");
+  // Flipped with the env default: a spawned agent inherits the operator's environment, so both of
+  // these arrive. The canary is kept rather than deleted because asserting its PRESENCE is the
+  // sharpest statement of the change, and a reviewer reads the inversion instead of a missing cell.
+  check("env is inherited: an unrelated operator variable IS forwarded", base.env?.SUPER_SECRET_LEAK_CANARY === "leak-me");
+  check("env is inherited: the provider key arrives without a vendor list", base.env?.OPENAI_API_KEY === "sk-test-canary");
+  // What is NOT inherited is Cotal's own per-session namespace: the codex connector mints
+  // COTAL_CODEX_HOME per launch (asserted above), so an inherited one must never reach the child.
+  check("per-session COTAL_* is reset, not inherited", base.env?.COTAL_CREDS === undefined && base.env?.COTAL_LIFECYCLE_UID === undefined);
 
   // Workspace root pins the data root.
   const rooted = codexConnector.buildLaunch({ space: "s", name: "n", workspaceRoot: dir });
