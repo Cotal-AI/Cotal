@@ -47,7 +47,16 @@
     "transient and retried forever. 5 restores that shape whole and is graded through the binary. 6 is",
     "the half fix, guarding only the side the bug report named, and it is not redundant: an unreadable",
     "RESOLVED root leaves nothing to compare against, and reporting a divergence from it would be a",
-    "claim this code cannot support."
+    "claim this code cannot support.",
+    "",
+    "THE ONE INPUT THAT IS NOT GRADED, and said rather than implied: a process whose working directory",
+    "has been DELETED. `findCotalRoot` defaults its argument to `process.cwd()`, which throws on that",
+    "input, which is why the call sits inside the guard rather than before it. There is no mutation and",
+    "no cell for it because the only way to produce it is to chdir into a directory and remove it, and",
+    "this suite process goes on to read fixtures and spawn the real binary afterwards: a cell that",
+    "sabotages its own process's cwd would take the other twenty four with it. An explicit path cannot",
+    "stand in, since a non-existent PATH walks to the filesystem root and returns normally. The guard is",
+    "structural instead, and the contract comment states the bound."
   ],
   "mutations": [
     {
@@ -93,8 +102,8 @@
     {
       "name": "the detector can throw again: an unreadable root on the way past aborts a command that is not using it",
       "file": "packages/workspace/src/auth-paths.ts",
-      "find": "  let here: SpaceAuth | undefined;\n  let there: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;",
-      "replace": "  const here = loadSpaceAuth(authDir(cwdRoot), space);\n  if (!here) return undefined;\n  const there = loadSpaceAuth(authDir(resolvedRoot), space);",
+      "find": "  let cwdRoot: string;\n  let here: SpaceAuth | undefined;\n  let there: SpaceAuth | undefined;\n  try {\n    cwdRoot = findCotalRoot(cwd);\n    if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;",
+      "replace": "  const cwdRoot = findCotalRoot(cwd);\n  if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;\n  const here = loadSpaceAuth(authDir(cwdRoot), space);\n  if (!here) return undefined;\n  const there = loadSpaceAuth(authDir(resolvedRoot), space);",
       "expectRed": "attach from a directory whose ancestor auth is CORRUPT still opens the session",
       "cell": "attach from a directory whose ancestor auth is CORRUPT still opens the session",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",
@@ -103,8 +112,8 @@
     {
       "name": "only the walked root is guarded, so an unreadable RESOLVED root still throws (the half fix)",
       "file": "packages/workspace/src/auth-paths.ts",
-      "find": "  let here: SpaceAuth | undefined;\n  let there: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;",
-      "replace": "  let here: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;\n  const there = loadSpaceAuth(authDir(resolvedRoot), space);",
+      "find": "  let cwdRoot: string;\n  let here: SpaceAuth | undefined;\n  let there: SpaceAuth | undefined;\n  try {\n    cwdRoot = findCotalRoot(cwd);\n    if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n    there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;",
+      "replace": "  const cwdRoot = findCotalRoot(cwd);\n  if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;\n  let here: SpaceAuth | undefined;\n  try {\n    here = loadSpaceAuth(authDir(cwdRoot), space);\n  } catch {\n    return undefined;\n  }\n  if (!here) return undefined;\n  const there = loadSpaceAuth(authDir(resolvedRoot), space);",
       "expectRed": "\u2026and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
       "cell": "\u2026and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",

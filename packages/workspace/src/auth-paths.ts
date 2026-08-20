@@ -427,8 +427,6 @@ export function findCotalRoot(start: string = process.cwd()): string {
  *  reported as nothing to say, because a detector that can abort its caller is that same defect once
  *  more, wearing the cwd's failure instead of its answer. */
 export function divergentCwdAnchor(resolvedRoot: string, space: string, cwd?: string): { cwdRoot: string } | undefined {
-  const cwdRoot = findCotalRoot(cwd);
-  if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;
   // A detector that can THROW is the cwd deciding the command's fate by another route, which is the
   // defect this function exists to end rather than relocate. `loadSpaceAuth` refuses unreadable
   // trust material loudly - right for a root a command is about to USE, wrong for one it has just
@@ -442,9 +440,18 @@ export function divergentCwdAnchor(resolvedRoot: string, space: string, cwd?: st
   // nothing to compare against, so claiming divergence would be a statement this code cannot make.
   // Neither case hides a real problem, because corruption in the root the command actually reads
   // still surfaces loudly from the path that reads it.
+  // `findCotalRoot` is INSIDE the guard rather than before it, because its default argument is
+  // `process.cwd()`, which throws when the process's working directory has been deleted out from
+  // under it. That is the one input on which this function could still end its caller, and a
+  // contract that says it never throws has to hold for every statement, not only for the ones the
+  // fault was found in. The comment sits out here and not in the block because the block is a
+  // mutation anchor, and an anchor that spans prose breaks the moment someone rewords the prose.
+  let cwdRoot: string;
   let here: SpaceAuth | undefined;
   let there: SpaceAuth | undefined;
   try {
+    cwdRoot = findCotalRoot(cwd);
+    if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;
     here = loadSpaceAuth(authDir(cwdRoot), space);
     there = here ? loadSpaceAuth(authDir(resolvedRoot), space) : undefined;
   } catch {
