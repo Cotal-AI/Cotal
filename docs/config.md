@@ -135,13 +135,19 @@ environment at all (see [identity & auth](identity-and-auth.md)).
 To confine a spawned agent instead, declare `spawn.env` in the config file:
 
 ```json
-{ "spawn": { "env": ["NEBIUS_API_KEY"] } }
+{ "spawn": { "env": ["MY_PROVIDER_API_KEY"] } }
 ```
 
 The child then gets a fixed OS allow-list (PATH, HOME, TERM, locale, XDG/Windows config dirs) plus
 exactly the names you list, plus any `${VAR}` a shared MCP server references. An empty array is a
 real policy, meaning the OS allow-list alone. A space-local `spawn` block replaces the
 operator-level one outright rather than merging, so the narrower file stays narrow.
+
+Three states that look alike are not: no `spawn` block means no allow-list and the agent inherits
+your environment; `"spawn": { "env": [] }` means the OS allow-list alone; and `"spawn": {}` in a
+space-local file replaces the operator-level block with nothing, so that space inherits even when
+your machine-wide file confines. The last one is how a space opts out of machine-wide containment,
+which is worth knowing before you write it by accident.
 
 Be honest with yourself about what this buys: `HOME` is forwarded either way, so an agent with a
 shell reads `~/.aws`, `~/.ssh` and `~/.config` regardless. `spawn.env` protects secrets that live

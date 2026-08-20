@@ -378,3 +378,4 @@ smoke:lang-transform
 # what the engine cannot run yet, are two named lists inside it rather than programs left out.
 smoke:lang-differential
 smoke:operator-env-keep
+smoke:spawn-env-config

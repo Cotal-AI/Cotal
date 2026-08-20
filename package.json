@@ -251,6 +251,7 @@
     "smoke:event-wal": "tsx extensions/connector-core/smoke/event-wal.smoke.ts",
     "smoke:agui-wal-path": "tsx extensions/connector-core/smoke/agui-wal-path.smoke.ts",
     "smoke:operator-env-keep": "tsx extensions/connector-core/smoke/operator-env-keep.smoke.ts",
+    "smoke:spawn-env-config": "tsx packages/core/smoke/spawn-env-config.smoke.ts",
     "smoke:agui-emitter": "tsx extensions/connector-core/smoke/agui-emitter.smoke.ts",
     "smoke:agui-retry-duplicate": "tsx extensions/connector-core/smoke/agui-retry-duplicate.smoke.ts",
     "smoke:agui-holder": "tsx extensions/connector-core/smoke/agui-holder.smoke.ts",
