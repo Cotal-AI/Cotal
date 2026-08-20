@@ -74,9 +74,26 @@ const { Manager } = await import("@cotal-ai/manager");
 import type { Command, Connector, LaunchOpts } from "@cotal-ai/core";
 
 let pass = 0;
+let fail = 0;
 const kids: ChildProcess[] = [];
+/** A graded cell. It RECORDS rather than throws, so every cell runs and the banner below always
+ *  prints. That is not a style preference: `mutation-proof` treats a run that never reached its
+ *  completion marker as INCONCLUSIVE rather than as a kill, so a fail-fast suite reports every
+ *  mutation as "stopped early" even when the right cell went red for the right reason. */
 const ok = (name: string, cond: boolean, extra?: unknown) => {
-  if (!cond) throw new Error(`FAIL: ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
+  if (cond) {
+    pass++;
+    console.log(`  ✓ ${name}`);
+    return;
+  }
+  fail++;
+  console.log(`  ✗ FAIL: ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
+};
+/** A cell about the RIG rather than about the subject. It throws, because everything after it
+ *  measures something else once it is false, and a suite that carried on would report greens about
+ *  the wrong tree or the wrong broker. An unfinished run is the correct outcome there. */
+const must = (name: string, cond: boolean, extra?: unknown) => {
+  if (!cond) throw new Error(`FAIL (rig): ${name}${extra !== undefined ? ` - ${JSON.stringify(extra)}` : ""}`);
   pass++;
   console.log(`  ✓ ${name}`);
 };
@@ -176,7 +193,7 @@ let mgr: InstanceType<typeof Manager> | undefined;
 try {
   // ---- 1. the measurement is only valid in an unanchored tree ---------------------------------
   const walked = findCotalRoot(base);
-  ok(
+  must(
     "the base tree has NO ancestor .cotal, so the anchor under test is the only one in play",
     resolve(walked) === resolve(base),
     { base, walked, why: "an ancestor anchor captures every root below and would green this suite against the wrong tree" },
@@ -212,7 +229,7 @@ try {
     if (p.ok || p.reason === "auth-required") { serving = true; break; }
     await sleep(100);
   }
-  ok("the authed broker is serving", serving, { server: SERVER });
+  must("the authed broker is serving", serving, { server: SERVER });
 
   // The premise every later cell rests on, asserted instead of assumed: this broker trusts the LIVE
   // chain and REFUSES the fossil one. Without this pair the suite could run green against a broker
@@ -331,7 +348,8 @@ try {
     { rawOpen: rawOpen.out.slice(-300) },
   );
 
-  console.log(`\nattach auth-root: ${pass} checks passed`);
+  console.log(`\nattach auth-root: ${pass} passed, ${fail} failed`);
+  if (fail) process.exitCode = 1;
 } finally {
   await mgr?.stop().catch(() => {});
   await Promise.all(kids.map((k) => { k.kill("SIGKILL"); return awaitExit(k); }));
