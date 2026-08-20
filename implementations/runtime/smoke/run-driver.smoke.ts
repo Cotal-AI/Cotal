@@ -384,7 +384,11 @@ try {
     let trapResolve!: (v: string) => void;
     const trap = new Promise<string>((resolve) => { trapResolve = resolve; });
     const onUncaught = (e: Error) => trapResolve(`uncaught: ${e.message}`);
-    process.once("uncaughtException", onUncaught);
+    process.on("uncaughtException", onUncaught);
+    // Throw ONCE. The unguarded mutant rethrows from the timer callback; a second tick after
+    // this listener is removed would kill the process before `run-driver.smoke:` prints, and
+    // mutation-proof would grade a named red as INCONCLUSIVE (measured at d4033944).
+    let exploded = false;
     const outcome = await Promise.race([
       runOnHostedEngine({
         source: `const a = await spawn("x", { name: "s" })\nlog("done", 1)`,
@@ -394,7 +398,10 @@ try {
         store: { append: async () => { pendingSeen = true; } },
         entries: [],
         shouldStop: () => {
-          if (pendingSeen && parked) throw new Error("the stop check exploded");
+          if (pendingSeen && parked && !exploded) {
+            exploded = true;
+            throw new Error("the stop check exploded");
+          }
           return undefined;
         },
       }).then(() => "completed", (e: Error) => `rejected: ${e.message}`),

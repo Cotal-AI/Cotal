@@ -48,7 +48,7 @@
       "replace": "    } catch (e) {\n      throw e;\n    }",
       "expectRed": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
       "cell": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
-      "note": "Rethrowing from the timer callback is exactly the unguarded shape this guard replaced: the throw lands on Timeout._onTimeout, bypasses the driver's catch, and without the cell's own uncaughtException trap it kills the host process (MEASURED at c24be213). The cell traps the escape so the kill is a named red rather than a dead suite."
+      "note": "Rethrowing from the timer callback is exactly the unguarded shape this guard replaced: the throw lands on Timeout._onTimeout, bypasses the driver's catch, and without the cell's own uncaughtException trap it kills the host process (MEASURED at c24be213). The cell traps the escape so the kill is a named red rather than a dead suite. The stop check throws ONCE: a throw on every tick, after the listener is removed, killed the process before `run-driver.smoke:` and graded INCONCLUSIVE (measured at d4033944)."
     },
     {
       "name": "the poll ticks but reads nothing, so a stop with no append traffic is never heard",
