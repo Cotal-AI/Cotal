@@ -119,7 +119,8 @@ The language, its validator, interpreter, simulator and dry run are `@cotal-ai/l
 (`packages/lang`), usable in-process with your own effect handler and with no broker: `validate(src)`,
 then `run(src, { runId, handler })`, and `resume(src, journal, { runId, pins, handler })` to pick a
 run up from its journal (the package README has the snippet, with `SimHandler` as the handler). That
-is the only way to run a program today. The wire
+is the in-process route, yours to drive with your own handler; a run the driver starts executes on
+the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,
@@ -133,12 +134,15 @@ when they change.
 
 **Two engines, and which one runs your program.** The tree-walker is language version `1` and the
 compiled engine is version `2`, two languages rather than two speeds of one (`spec/cotal-lang.md`
-§8.4 lists what differs). Today the driver hosts version `1` only, so **every run a driver starts is
-stamped `1` and executed by the walker**, whatever the newest version in the package is. That is a
-fact about this build rather than about the language: the driver serves a declared set of versions,
-and a record whose version it does not serve is refused by name (**L5023**) with the run left
-untouched, instead of being replayed by whichever engine happens to be present. Records do not cross
-between versions in either direction; the repair is to resume on the recorded version, or to fork.
+§8.4 lists what differs). The driver hosts both: **every run a driver starts is stamped `2` and
+executed by the compiled engine** — the program runs in its own locked-down worker thread with
+nothing in its global scope, while the effects and the durable journal stay in the driver's process,
+bridged over a message port so no socket or credential enters the isolate holding the program —
+and **every version-`1` record keeps replaying on the walker**, which is the walker's job. The
+driver serves a declared set of versions, and a record whose version it does not serve is refused
+by name (**L5023**) with the run left untouched, instead of being replayed by whichever engine
+happens to be present. Records do not cross between versions in either direction; the repair is to
+resume on the recorded version, or to fork.
 
 **The engine needs node 22 or newer** and refuses below it with **L1000**, which is an
 implementation limit and not a language error, so you will not find it in the catalog. It is a floor
