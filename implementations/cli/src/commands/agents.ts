@@ -599,8 +599,13 @@ async function establishAttachSession(
  *  all three is the defect issue #722 opened on (its old text named an internal work item and no
  *  root at all). A USER-AUTH mesh holds no local seed by design. A REGISTERED static mesh has a
  *  root and it is named, along with how it was resolved, so an operator can see which directory the
- *  command used rather than guessing at their cwd. A RAW off-registry connection has no resolved
- *  root at all, and says so instead of printing a blank where a path should be. */
+ *  command used rather than guessing at their cwd.
+ *
+ *  The third arm is an INVARIANT, not advice, and is written that way on purpose. A connection with
+ *  no resolved root is what the type allows, and no supported route reaches redemption in that
+ *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
+ *  rather than assumes. So that arm says what its own existence would mean instead of offering a
+ *  remedy for a situation that cannot currently arise. */
 function attachNoSeedMessage(t: { space: string; server: string; root?: string; auth: { bearer?: unknown } }): string {
   const shadow = t.root === undefined ? undefined : divergentCwdAnchor(t.root, t.space);
   const shadowLine = shadow
@@ -610,8 +615,8 @@ function attachNoSeedMessage(t: { space: string; server: string; root?: string; 
   if (t.auth.bearer)
     return `${head}\n  broker ${t.server}\n  This is a USER-AUTH mesh, which holds no local seed by design; two-step user-mode redemption is not wired yet, so attach is unavailable on it from every directory, not just this one.${shadowLine}`;
   if (t.root === undefined)
-    return `${head}\n  broker ${t.server}\n  This connection is raw (off-registry): it came from explicit flags rather than a registered mesh, so there is no resolved checkout root to hold the seed. Register the mesh with \`cotal meshes add\` to attach through it.${shadowLine}`;
-  return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  A static-auth mesh keeps this space's seed under <root>/.cotal/auth. That root is what this command resolved and connected with, so if it is not the checkout holding this space's auth, re-register the mesh with \`cotal meshes add --root <dir>\`.${shadowLine}`;
+    return `${head}\n  broker ${t.server}\n  This connection resolved NO checkout root, and no supported route reaches redemption in that state: an off-registry \`--server\` on an unregistered space is refused for missing credentials, and \`--creds\` is refused at the control surface, both before a session grant is asked for. Reaching this sentence means a route now exists that skips both refusals.${shadowLine}`;
+  return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  A static-auth mesh keeps this space's seed under <root>/.cotal/auth. That root is what this command resolved and connected with, so if it is not the checkout holding this space's auth, re-register the mesh with \`cotal meshes add ${t.space} --server ${t.server} --root <dir>\`.${shadowLine}`;
 }
 
 /** A session this side can no longer reach, plus the one credential that can still speak for it. */
