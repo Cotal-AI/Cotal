@@ -406,6 +406,34 @@ export function findCotalRoot(start: string = process.cwd()): string {
   }
 }
 
+/** What the CWD WALK would have resolved, when that disagrees with the root a command actually used.
+ *
+ *  This exists because the two can disagree silently and the disagreement is invisible in the
+ *  output. `findCotalRoot` accepts any directory merely NAMED `.cotal`, and `~/.cotal` is one on
+ *  every install, because that is where the mesh registry lives. So every cwd under `$HOME` that is
+ *  not inside a project walks up to the HOME directory, and if that directory's auth holds the same
+ *  space under a different trust chain - an older mesh, a decommissioned one, a copy - a command
+ *  that re-derives its seed from the cwd mints a credential the broker never trusted. That was
+ *  issue #722: the failure reached the operator as a bare `Authorization Violation` naming neither
+ *  root.
+ *
+ *  Comparison is on the account PUBLIC key: it identifies the chain, and no secret material is read
+ *  for the answer or available to a caller rendering it. Returns undefined when there is nothing to
+ *  say - the walk agrees with the resolved root, or the walked root holds no auth for this space, or
+ *  it holds the SAME chain (a second checkout of the same mesh, which is legitimate and silent).
+ *
+ *  It REPORTS. It does not choose: a caller that silently preferred one root over the other would be
+ *  the same defect with a different winner. */
+export function divergentCwdAnchor(resolvedRoot: string, space: string, cwd?: string): { cwdRoot: string } | undefined {
+  const cwdRoot = findCotalRoot(cwd);
+  if (resolve(cwdRoot) === resolve(resolvedRoot)) return undefined;
+  const here = loadSpaceAuth(authDir(cwdRoot), space);
+  if (!here) return undefined;
+  const there = loadSpaceAuth(authDir(resolvedRoot), space);
+  if (there && here.account.pub === there.account.pub) return undefined;
+  return { cwdRoot };
+}
+
 // ---- broker trust and space accounts are SEPARATE persisted authorities (W4) ----
 //
 // A nats-server trusts exactly one operator and one system account, so broker trust is per-BROKER
