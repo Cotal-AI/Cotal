@@ -1,5 +1,66 @@
 # @cotal-ai/connector-opencode
 
+## 0.25.0
+
+### Minor Changes
+
+- 17f8c57: OpenCode sessions publish AG-UI events, so a seat's work is readable by a program rather than only by a person.
+
+  A session spawned with `--events` now publishes run boundaries, assistant text, reasoning and every
+  tool call with its arguments, its end and its result, on `events.<owner>.<actor>`. Until now only
+  Claude Code did; an OpenCode seat's event panel was empty.
+
+  Migration: nothing is removed and no behaviour changes for a session that does not ask for events.
+  A personal `opencode` with the plugin installed still publishes nothing, because arming is
+  `COTAL_EVENTS` and the launcher sets it only for a `--events` spawn.
+
+  Two limits are deliberate and documented. No user-authored text is published: OpenCode injects a
+  peer batch by prepending it into the human's own text part, so one record holds both authors with no
+  boundary in it to filter on, and guessing where one ends would fail open the moment either formatter
+  changed. And no step events or usage numbers: OpenCode's step records carry no step name and no key
+  shared between start and finish, and what the finish carries is cost and tokens, so emitting a step
+  boundary would tell a reader that a phase ended when what happened is that counts arrived.
+
+  One OpenCode process can hold several sessions, and `/new` is a context reset that keeps the mesh
+  identity. Each session publishes under its own thread id on the one channel. The session being left
+  is flushed and its open run is closed before the switch, so a reader is never left holding a run
+  that never ends.
+
+  The reader is the same on every connector, so the channel, the grant and how to subscribe are
+  documented once in the Claude Code page and linked from the OpenCode one.
+
+  `@cotal-ai/connector-core` is listed because the generated documentation bundle it carries is
+  regenerated with the pages.
+
+- a087c2b: A spawned agent now inherits the operator's environment. A harness you installed and configured
+  should behave under `cotal spawn` the way it behaves when you run it yourself, and the alternative
+  was Cotal maintaining a list of inference vendors: every new provider needed a change in Cotal
+  before it would work through a managed spawn. `MODEL_PROVIDER_KEYS` and the per-connector lists
+  that extended it are gone, and Cotal no longer names an inference vendor anywhere in its source.
+
+  Cotal still resets its own `COTAL_*` namespace before the child starts, keeping the machine-wide
+  knobs (`COTAL_HOME`, the feedback set, the default-agent pair, the `*_BIN` overrides, the timing
+  knobs). That reset is not configurable, because it is identity and not preference: a connector
+  supplies the per-session names for each child and does so conditionally, so an inherited value is
+  never overwritten and would hand an agent another agent's credential path, ACL, or lifecycle uid.
+  The whole prefix is stripped rather than a named list, because which names a connector sets varies
+  between connectors and a deny-list only ever names what its author remembered.
+
+  To confine a spawned agent instead, declare `spawn.env` in the cotal config file. The child then
+  gets a fixed OS allow-list plus exactly the names you list. An empty array is a real policy meaning
+  the OS allow-list alone. Note what this does and does not buy: `HOME` is forwarded either way, so
+  an agent with a shell reads `~/.aws` and `~/.ssh` regardless, and this protects only secrets that
+  live nowhere but the environment.
+
+- 34caaf4: Agent seats no longer export their connection material into the environment every descendant
+  process inherits. The broker URL, the creds path, the auth token, the user-mode identity and the
+  local control token now ride a private 0600 launch-material file whose path is the only thing in the
+  seat's environment; pi, codex and OpenCode drop even that path once they have read it (for OpenCode
+  that happens in the `opencode serve` process its seat shim starts, which is also what runs the
+  session's tool calls), while claude and hermes keep the reference because their readers are
+  short-lived children that start later. A session driven by hand still sets `COTAL_CREDS` / `COTAL_SERVERS` itself, and a
+  launch that carries both carriers is refused rather than resolved by precedence.
+
 ## 0.24.0
 
 ## 0.23.0

@@ -1,5 +1,53 @@
 # @cotal-ai/manager
 
+## 0.25.0
+
+### Minor Changes
+
+- a087c2b: A spawned agent now inherits the operator's environment. A harness you installed and configured
+  should behave under `cotal spawn` the way it behaves when you run it yourself, and the alternative
+  was Cotal maintaining a list of inference vendors: every new provider needed a change in Cotal
+  before it would work through a managed spawn. `MODEL_PROVIDER_KEYS` and the per-connector lists
+  that extended it are gone, and Cotal no longer names an inference vendor anywhere in its source.
+
+  Cotal still resets its own `COTAL_*` namespace before the child starts, keeping the machine-wide
+  knobs (`COTAL_HOME`, the feedback set, the default-agent pair, the `*_BIN` overrides, the timing
+  knobs). That reset is not configurable, because it is identity and not preference: a connector
+  supplies the per-session names for each child and does so conditionally, so an inherited value is
+  never overwritten and would hand an agent another agent's credential path, ACL, or lifecycle uid.
+  The whole prefix is stripped rather than a named list, because which names a connector sets varies
+  between connectors and a deny-list only ever names what its author remembered.
+
+  To confine a spawned agent instead, declare `spawn.env` in the cotal config file. The child then
+  gets a fixed OS allow-list plus exactly the names you list. An empty array is a real policy meaning
+  the OS allow-list alone. Note what this does and does not buy: `HOME` is forwarded either way, so
+  an agent with a shell reads `~/.aws` and `~/.ssh` regardless, and this protects only secrets that
+  live nowhere but the environment.
+
+- 0b602e4: Managed Pi sessions can now fork an existing Pi transcript into the mesh and recover the exact active Pi session after an unexpected process crash. The Pi adapter reports session changes through its authenticated local control endpoint and an owner-only atomic state file; the manager preserves the Cotal identity, lifecycle UID, credentials, children, and durable inbox across up to three restarts in two minutes, then retires a crash loop loudly. Deliberate stops never restart.
+- 8e38835: Carry the manager's readiness guidance on an `uncertain` goal terminal. The manager built a
+  diagnosis naming the agent and telling the operator to inspect rather than re-issue, then dropped
+  it: the terminal committed core's generic "the success signal did not arrive within the readiness
+  deadline", which reads as a plain failure and teaches a re-issue, and a re-issue after a launch
+  that actually succeeded mints a duplicate agent. `settleGoalUncertain` now accepts an optional
+  `reason` the committer supplies, and the manager passes the detail it already constructed; core's
+  line remains the fallback for a committer that supplies none.
+
+### Patch Changes
+
+- 3f1ee2f: `cotal ps --wide` / `--json`: surface the per-seat facts the manager already records. The agent row now carries the model pin (and variant), `cwd`, `pid`, spawner, and the owning manager's instance id and host, all optional so an unrecorded fact (no model pinned; a runtime that owns no real process) serializes absent, never fabricated. Bare `ps` output is unchanged; `--wide` prints one dim facts line under each seat; `--json` prints the manager's row verbatim, one object per line, with instance headers on stderr. No new collection path: every field was already held in the manager's spawn-time record.
+- b33ba93: A managed agent's retirement is now requested as the manager's SERVE identity, so it is authorized instead of being refused. The auth rail authorizes a `retireLifecycle` request by comparing the caller's `<owner>.<actor>` against the principal bound into the manager's serve issuance gate, and that gate is opened with the serve identity the manager registers with. The request was built from the manager's endpoint identity instead: a second, equally real identity of the same manager, and one the gate can never name. The comparison was therefore unsatisfiable on every user-auth mesh, so every despawn stopped the agent and then had its retirement refused as a full no-op, leaving the name held and the lifecycle un-retired. Both halves of the caller triple now come from the gate's own sources, the owner included, so a manager running under a user-shaped identity cannot re-open the mismatch in the owner half.
+- Updated dependencies [636b4b8]
+- Updated dependencies [c83e600]
+- Updated dependencies [b501ec5]
+- Updated dependencies [a087c2b]
+- Updated dependencies [0b602e4]
+- Updated dependencies [34caaf4]
+- Updated dependencies [8e38835]
+- Updated dependencies [6959679]
+  - @cotal-ai/core@0.25.0
+  - @cotal-ai/workspace@0.25.0
+
 ## 0.24.0
 
 ### Patch Changes

@@ -1,5 +1,85 @@
 # cotal-ai
 
+## 0.25.0
+
+### Minor Changes
+
+- aa6c63d: Codex seats publish an AG-UI event plane
+
+  A Codex seat launched with `cotal spawn --events` now publishes a structured account of its work on
+  `events.<owner>.<actor>`: run boundaries per turn, assistant text, reasoning summaries, and the tool
+  calls the model makes through Codex's function-call and custom-tool interfaces, each with its
+  arguments, its end, and its result. Before this the connector had no event plane at all, so an
+  external observer watching a mesh saw nothing from a Codex seat.
+
+  The durable source is the thread's rollout file inside the seat's own isolated `CODEX_HOME`, not the
+  live app-server stream. The file is written by the child and outlives this process's view of it, so a
+  seat that restarts its own app-server picks a thread's records up where it stopped rather than from
+  whatever the socket delivers next.
+
+  Four behaviours are worth knowing before reading a stream. A turn that fails ends its run with a run
+  error carrying the code Codex reported, rather than as a finished run, because Codex records a
+  failure on the turn's own completion record. No user authored text is ever published: your prompts,
+  the peer messages injected into the thread, and the persona's developer instructions are all
+  withheld, because the events channel carries a different read ACL from the channel you typed into.
+  A restarted app-server is a new thread and gets a new stream: the seat finishes the old one, closing
+  any run it left open, before it begins the new one. That holds even when the new thread's file is
+  slow to appear, though the order there is the other way round: the seat spends its whole bounded
+  look for the successor first, and the old run is closed when that look gives up, not at the moment
+  the restart happened. From the give-up on it publishes nothing until a later turn boundary binds
+  the successor, rather than continuing to report the dead thread's activity as if it were live. And Codex's own built-in tools, web search, tool
+  search and image generation, are not published, because their records carry an end with no start and
+  no key that joins the halves.
+
+  What is published is worth stating plainly: an observer of the events channel sees every tool call's
+  arguments and outputs verbatim, so withholding user authored text does not make the stream safe to
+  widen.
+
+  Two limits are worth knowing as well. A stream begins at the last complete record in the file at the
+  moment the seat binds to it, never at the beginning of the thread, so anything written before that
+  moment is not republished; the seat says so in its log when it happens. And a seat whose broker was
+  unreachable when it started loses its emitter, reports that it did, and rebuilds it at a later turn
+  boundary once the broker is there, so the outage costs the turns it covered rather than the rest of
+  the seat's life.
+
+  Migration: none. The plane is opt in per spawn, arming is separate from authorization, and a seat
+  launched without `--events` behaves exactly as before.
+
+- 34caaf4: Agent seats no longer export their connection material into the environment every descendant
+  process inherits. The broker URL, the creds path, the auth token, the user-mode identity and the
+  local control token now ride a private 0600 launch-material file whose path is the only thing in the
+  seat's environment; pi, codex and OpenCode drop even that path once they have read it (for OpenCode
+  that happens in the `opencode serve` process its seat shim starts, which is also what runs the
+  session's tool calls), while claude and hermes keep the reference because their readers are
+  short-lived children that start later. A session driven by hand still sets `COTAL_CREDS` / `COTAL_SERVERS` itself, and a
+  launch that carries both carriers is refused rather than resolved by precedence.
+
+### Patch Changes
+
+- Updated dependencies [636b4b8]
+- Updated dependencies [3f1ee2f]
+- Updated dependencies [17f8c57]
+- Updated dependencies [aa6c63d]
+- Updated dependencies [a4e4c49]
+- Updated dependencies [b31d2af]
+- Updated dependencies [c83e600]
+- Updated dependencies [b501ec5]
+- Updated dependencies [838c01e]
+- Updated dependencies [a087c2b]
+- Updated dependencies [0b602e4]
+- Updated dependencies [b33ba93]
+- Updated dependencies [34caaf4]
+- Updated dependencies [a7742a7]
+- Updated dependencies [8e38835]
+- Updated dependencies [6959679]
+  - @cotal-ai/core@0.25.0
+  - @cotal-ai/manager@0.25.0
+  - @cotal-ai/cli@0.25.0
+  - @cotal-ai/connector-core@0.25.0
+  - @cotal-ai/auth@0.25.0
+  - @cotal-ai/delivery@0.25.0
+  - @cotal-ai/workspace@0.25.0
+
 ## 0.24.0
 
 ### Patch Changes
