@@ -377,3 +377,10 @@ smoke:lang-transform
 # compared on value, log, refusal and journal entry for entry. What a rule made divergent, and
 # what the engine cannot run yet, are two named lists inside it rather than programs left out.
 smoke:lang-differential
+
+# The two auth suites this branch revived: the despawn/respawn barrier contract (reservation,
+# lifecycle keying, replay safety) and the swallowed-revoke name hold. Both threw before their
+# first cell for a month while ungated, which is how a retry budget drifted past a presence TTL
+# with nothing to report it.
+smoke:freeslot-barrier:live
+smoke:int2-revoke:live

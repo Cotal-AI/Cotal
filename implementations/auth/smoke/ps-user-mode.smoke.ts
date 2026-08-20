@@ -169,7 +169,22 @@ let idpSrv: ReturnType<typeof createServer> | undefined;
 let base!: string;
 let origin!: string;
 let cookie!: string;
-let ba!: ReturnType<typeof betterAuth>;
+/** The IdP under test, built once from its origin. `betterAuth` is generic in its options, and
+ *  `Auth<O>` is invariant in `O`, so a binding declared as the DEFAULT `ReturnType<typeof betterAuth>`
+ *  (that is, `Auth<BetterAuthOptions>`) cannot hold the concretely-typed value this call returns.
+ *  Naming the construction gives the binding the exact instantiation and keeps `ba.api` typed. */
+const buildIdpAuth = (idpOrigin: string) => betterAuth({
+  baseURL: idpOrigin,
+  secret: "repro-only-better-auth-secret-0123456789",
+  database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [], deviceCode: [] }),
+  emailAndPassword: { enabled: true },
+  plugins: [
+    jwt({ jwt: { issuer: idpOrigin, audience: idpOrigin } }),
+    deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id) => id === CLIENT_ID }),
+    bearer(),
+  ],
+});
+let ba!: ReturnType<typeof buildIdpAuth>;
 try {
   home = mkdtempSync(join(scratch, "home-"));
   process.env.COTAL_HOME = home;
@@ -201,17 +216,7 @@ try {
   });
   origin = `http://127.0.0.1:${(idpSrv.address() as AddressInfo).port}`;
   base = `${origin}/api/auth`;
-  ba = betterAuth({
-    baseURL: origin,
-    secret: "repro-only-better-auth-secret-0123456789",
-    database: memoryAdapter({ user: [], session: [], account: [], verification: [], jwks: [], deviceCode: [] }),
-    emailAndPassword: { enabled: true },
-    plugins: [
-      jwt({ jwt: { issuer: origin, audience: origin } }),
-      deviceAuthorization({ expiresIn: "2m", interval: "1s", validateClient: (id) => id === CLIENT_ID }),
-      bearer(),
-    ],
-  });
+  ba = buildIdpAuth(origin);
   handler = toNodeHandler(ba);
   const signup = await ba.api.signUpEmail({
     body: { email: "human@example.test", password: "correct-horse-battery", name: "Human 42" },
