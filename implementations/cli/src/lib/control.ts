@@ -83,7 +83,7 @@ export async function resolveControlTarget(
    *  attach reconnect) cannot use a path that ends the process, and "no mesh running at X - run
    *  `cotal up`" is the wrong answer to a link that is coming back. */
   opts: { onRefusal?: "exit" | "throw" } = {},
-): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth; root?: string; source?: MeshTarget["source"] }> {
+): Promise<{ space: string; server: string; auth: ControlAuth; spaceAuth?: SpaceAuth; root?: string }> {
   const connect_ = opts.onRefusal === "throw" ? connectOrThrow : connectOrExit;
   const withSpace = flags.creds
     ? { ...flags, space: flags.space ?? soleSpaceOf(authDir(findCotalRoot())) ?? DEFAULT_SPACE }
@@ -138,7 +138,6 @@ export async function resolveControlTarget(
         server: conn.server,
         auth: { ...endpointAuth(conn), ...(conn.epCaller ? { epCaller: conn.epCaller } : {}) },
         ...(conn.root !== undefined ? { root: conn.root } : {}),
-        ...(conn.source !== undefined ? { source: conn.source } : {}),
       };
     }
   }
@@ -162,7 +161,6 @@ export async function resolveControlTarget(
     // unregistered `--space`), which is a real state and not a gap to paper over: there IS no
     // resolved root then, and a caller rendering one would be inventing it.
     ...(conn.root !== undefined ? { root: conn.root } : {}),
-    ...(conn.source !== undefined ? { source: conn.source } : {}),
   };
 }
 

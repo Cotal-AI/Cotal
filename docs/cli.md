@@ -682,7 +682,7 @@ past, and not obeyed:
 ```
 
 When the resolved mesh holds no seed at all, `attach` refuses and names what it resolved, the broker
-and the root and how that root was chosen, instead of describing a directory it did not use.
+and the root, instead of describing a directory it did not use.
 
 Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind

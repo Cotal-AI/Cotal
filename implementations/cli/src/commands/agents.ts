@@ -598,8 +598,8 @@ async function establishAttachSession(
  *  Three distinct states, kept distinct because the remedy differs and a single sentence covering
  *  all three is the defect issue #722 opened on (its old text named an internal work item and no
  *  root at all). A USER-AUTH mesh holds no local seed by design. A REGISTERED static mesh has a
- *  root and it is named, along with how it was resolved, so an operator can see which directory the
- *  command used rather than guessing at their cwd.
+ *  root and it is named, so an operator can see which directory the command used rather than
+ *  guessing at their cwd.
  *
  *  The third arm is an INVARIANT, not advice, and is written that way on purpose. A connection with
  *  no resolved root is what the type allows, and no supported route reaches redemption in that
