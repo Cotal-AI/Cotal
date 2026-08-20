@@ -181,6 +181,17 @@
       "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
       "afterRestore": "pnpm gen:reaper-dts",
       "note": "The generated calls are what make a widened parameter reachable, and for the one export that SIGKILLs a process they are also a hazard: a security review found the generated `reapSmokeBrokers(undefined);` in the half that runs, and the module reads a missing argument as `dryRun` false. Reproduced first-party: an orphan fixture died to that exact call while `{ dryRun: true }` left it alive, and all 36 cells stayed green, because `nothing here may generate a call that reaps` was a comment and no cell. On a shared box the broker that dies belongs to another lane. The `undefined` arm is compiled but not run now, and this row grows a NEW arm the generator would sample live: the cell reads the text before it runs and gates the run on it, so the mutant reds without reaping anything."
+    },
+    {
+      "name": "the declaration grows a SECOND call signature, which the enumeration reads none of",
+      "file": "bin/smoke/reap-smoke-brokers.mjs",
+      "find": "export function reportReaped(label, result) {\n",
+      "replace": "/**\n * @overload\n * @param {number} label\n * @param {ReapReport} result\n * @returns {void}\n *\n * @overload\n * @param {string} label\n * @param {ReapReport} result\n * @returns {void}\n *\n * @param {string | number} label\n * @param {ReapReport} result\n * @returns {void}\n */\nexport function reportReaped(label, result) {\n",
+      "expectRed": "and every callable export declares exactly ONE call signature, because the enumeration reads the first and would be blind to a second",
+      "cell": "and every callable export declares exactly ONE call signature, because the enumeration reads the first and would be blind to a second",
+      "command": "pnpm gen:reaper-dts && pnpm smoke:reaper",
+      "afterRestore": "pnpm gen:reaper-dts",
+      "note": "The arm keys distinguish shapes WITHIN one call signature and say nothing about a second one. `declaredModuleSurface` read only the first signature, so a declaration promising an overload was enumerated by nothing, compiled by nothing and run by nothing. Reproduced first-party at the previous tip: adding exactly this overload and regenerating left the suite at 40 passed, 0 failed while the committed declaration promised `reportReaped(label: number, ...)`, which the module does not honour. The fix does not enumerate every signature, it refuses more than one: a bound described by what it declines beats one that silently covers signature 0. The same cell reds in the opposite direction, verified by hand with a valid program that made the export a non-callable object: `reportReaped is enumerated as a callable and declares 0`."
     }
   ]
 }

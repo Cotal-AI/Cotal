@@ -111,6 +111,7 @@ export function declaredModuleSurface(): {
   readonly exports: readonly string[];
   readonly returns: Readonly<Record<string, DeclaredShape>>;
   readonly params: Readonly<Record<string, readonly DeclaredShape[]>>;
+  readonly signatures: Readonly<Record<string, number>>;
 } {
   const options: ts.CompilerOptions = {
     ...emitOptions(),
@@ -169,18 +170,26 @@ export function declaredModuleSurface(): {
   const exports: string[] = [];
   const returns: Record<string, DeclaredShape> = {};
   const params: Record<string, DeclaredShape[]> = {};
+  // How many call signatures each export declares, recorded BEFORE anything is skipped. Only the
+  // first signature is read below, so a second one would be enumerated by nothing and checked by
+  // nothing, and a zero-signature export would drop out of `params` and be exercised by nothing.
+  // Both are silent today, which is the failure this number exists to make loud: the suite refuses
+  // any count other than one rather than quietly covering signature 0.
+  const signatures: Record<string, number> = {};
   for (const exported of checker.getExportsOfModule(moduleSymbol)) {
     const name = exported.getName();
     exports.push(name);
     const declaration = exported.valueDeclaration ?? exported.declarations?.[0];
-    if (declaration === undefined) continue;
-    const [signature] = checker.getTypeOfSymbolAtLocation(exported, declaration).getCallSignatures();
+    if (declaration === undefined) { signatures[name] = 0; continue; }
+    const callSignatures = checker.getTypeOfSymbolAtLocation(exported, declaration).getCallSignatures();
+    signatures[name] = callSignatures.length;
+    const [signature] = callSignatures;
     if (signature === undefined) continue;
     returns[name] = shapeOf(signature.getReturnType(), 0);
     params[name] = signature.getParameters().map((parameter) =>
       shapeOf(checker.getTypeOfSymbolAtLocation(parameter, parameter.valueDeclaration ?? declaration), 0));
   }
-  return { exports: exports.sort(), returns, params };
+  return { exports: exports.sort(), returns, params, signatures };
 }
 
 /**

@@ -240,6 +240,25 @@ const executedFor = new Map<string, number>();
 // the call that cannot run into every other parameter's call as well.
 const holdArm = (name: string, index: number, shape: DeclaredShape): DeclaredShape =>
   armsOf(shape).find((arm) => COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) ?? armsOf(shape)[0]!;
+// The enumeration below reads ONE call signature per export, so a declaration that grows a second
+// one is covered by nothing: the arms it admits are never generated, never compiled and never run,
+// and the suite stays green while the declaration promises a shape the module does not honour.
+// Measured at this tip before this cell existed: adding a `reportReaped(label: number, ...)`
+// overload to the module's JSDoc and regenerating left the suite at 40 passed, 0 failed. The same
+// blindness runs the other way, an export with NO call signature drops out of `surface.params` and
+// is exercised by nothing. So the bound is stated as a refusal rather than as partial coverage:
+// exactly one signature per export, or the suite reds and names the export and the count it found.
+const CALLABLE = ["listNatsServers", "reapSmokeBrokers", "reportReaped"];
+const signatureDefects = surface.exports.flatMap((name) => {
+  const count = surface.signatures[name] ?? 0;
+  if (CALLABLE.includes(name)) return count === 1 ? [] : [`${name} is enumerated as a callable and declares ${count}`];
+  return count === 0 ? [] : [`${name} is not enumerated as a callable and declares ${count}`];
+});
+check(
+  "and every callable export declares exactly ONE call signature, because the enumeration reads the first and would be blind to a second",
+  signatureDefects.length === 0,
+  signatureDefects.join(" | "),
+);
 for (const [name, params] of Object.entries(surface.params)) {
   const count = (into: Map<string, number>) => into.set(name, (into.get(name) ?? 0) + 1);
   if (params.length === 0) { generatedCalls.push(`${name}();`); executedCalls.push(`${name}();`); count(generatedFor); count(executedFor); continue; }
