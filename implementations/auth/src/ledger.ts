@@ -75,9 +75,11 @@ export interface ActorRow {
    *     that command without `--allow-subscribe` reads EVERY channel in the space, and because a
    *     grant is an upsert of the whole row, omitting the flag on a RE-grant widens a previously
    *     narrow row rather than leaving it alone.
-   *   - the spawn paths (`manager.ts`, the CLI's `spawn.ts`) fall back to `["general"]` for the
-   *     read set and `[]` for the post set. Narrower, not wider, so not a hazard, but a reader
-   *     asking "does anything default these before they land here" must be told both.
+   *   - the spawn paths (`manager.ts`, the CLI's `spawn.ts`) fall back to `[]` for BOTH sets: an
+   *     omitted read set is NO channel, not `general`. The post set is `[]` too, except where a
+   *     spawn derives an events grant, which is appended to whatever the caller passed. Narrower,
+   *     not wider, so not a hazard, but a reader asking "does anything default these before they
+   *     land here" must be told both.
    *
    *  Name the flag, or the row gets `>`. */
   allowSubscribe: string[];
