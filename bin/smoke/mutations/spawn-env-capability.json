@@ -19,6 +19,14 @@
       "replace": "  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? [])]) copy(k);",
       "expectRed": "O2 explicit spawn.env opt-in delivered SSH_AUTH_SOCK",
       "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "fixture restores invalid bare down with a space flag",
+      "file": "bin/smoke/spawn-env-e2e.smoke.ts",
+      "find": "function recordedStackDownCommand(space: string): string[] {\n  void space;\n  return [\"down\"];\n}",
+      "replace": "function recordedStackDownCommand(space: string): string[] {\n  return [\"down\", \"--space\", space];\n}",
+      "expectRed": "T1 default recorded stack teardown exits 0",
+      "afterRestore": "pnpm build > /dev/null"
     }
   ]
 }

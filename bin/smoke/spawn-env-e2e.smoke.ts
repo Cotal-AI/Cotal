@@ -34,6 +34,18 @@ interface ChildReport {
   privateKeyExists: boolean;
   status: number | null;
 }
+interface StackRecord {
+  file: string;
+  pid: number;
+}
+interface StackTeardown {
+  primaryStatus: number | null;
+  primaryOutput: string;
+  recoveryStatus?: number | null;
+  records: StackRecord[];
+  clean: boolean;
+  failure?: string;
+}
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -77,6 +89,77 @@ function stopAgent(a: Agent): void {
   spawnSync("ssh-agent", ["-k"], { env: { ...process.env, SSH_AUTH_SOCK: a.sock, SSH_AGENT_PID: a.pid }, encoding: "utf8" });
 }
 
+/** The normal teardown is a folder-scoped down: `--space` without a named target is invalid and
+ * exits before teardown. This is intentionally a separate function so the mutation fixture can
+ * restore that invalid command and prove the recorded-stack result cell turns red. */
+function recordedStackDownCommand(space: string): string[] {
+  void space;
+  return ["down"];
+}
+
+function recordedStack(project: string): StackRecord[] {
+  return ["manager.pid", "nats.pid"].map((file) => {
+    const path = join(project, ".cotal", file);
+    const raw = readFileSync(path, "utf8").trim();
+    if (!/^[1-9]\d*$/.test(raw)) throw new Error(`${file} is not a recorded positive pid`);
+    return { file, pid: Number(raw) };
+  });
+}
+
+function sameRecordedStack(project: string, records: readonly StackRecord[]): boolean {
+  try {
+    return records.every(({ file, pid }) => readFileSync(join(project, ".cotal", file), "utf8").trim() === String(pid));
+  } catch {
+    return false;
+  }
+}
+
+function recordedPidsGone(records: readonly StackRecord[]): boolean {
+  return records.every(({ pid }) => {
+    try {
+      process.kill(pid, 0); // observation only: never signal a pid outside cotal down's recorded ownership path
+      return false;
+    } catch (e) {
+      return (e as NodeJS.ErrnoException).code === "ESRCH";
+    }
+  });
+}
+
+async function stopRecordedStack(project: string, space: string, env: NodeJS.ProcessEnv): Promise<StackTeardown> {
+  let records: StackRecord[];
+  try {
+    records = recordedStack(project);
+  } catch (e) {
+    return { primaryStatus: null, primaryOutput: "", records: [], clean: false, failure: (e as Error).message };
+  }
+  const primary = spawnSync(NODE, [CLI, ...recordedStackDownCommand(space)], {
+    cwd: project, env, encoding: "utf8", timeout: TOOL_TIMEOUT_MS,
+  });
+  const primaryOutput = `${primary.stdout ?? ""}${primary.stderr ?? ""}`;
+  let recoveryStatus: number | null | undefined;
+  // A failed primary command may not have touched the stack. Re-run the known-good folder teardown
+  // only while its records still name the two processes this fresh fixture started. Never scan or
+  // signal unrelated processes, and preserve the box if ownership changed under us.
+  if (primary.status !== 0 && sameRecordedStack(project, records)) {
+    const recovery = spawnSync(NODE, [CLI, "down"], { cwd: project, env, encoding: "utf8", timeout: TOOL_TIMEOUT_MS });
+    recoveryStatus = recovery.status;
+  }
+  for (let i = 0; i < 100; i++) {
+    const recordsGone = records.every(({ file }) => !existsSync(join(project, ".cotal", file)));
+    if (recordsGone && recordedPidsGone(records))
+      return { primaryStatus: primary.status, primaryOutput, recoveryStatus, records, clean: true };
+    await sleep(50);
+  }
+  return {
+    primaryStatus: primary.status,
+    primaryOutput,
+    recoveryStatus,
+    records,
+    clean: false,
+    failure: "recorded manager or broker did not exit cleanly",
+  };
+}
+
 async function waitFor(check: () => boolean, label: string): Promise<void> {
   const deadline = Date.now() + READINESS_TIMEOUT_MS;
   while (Date.now() < deadline) {
@@ -86,7 +169,7 @@ async function waitFor(check: () => boolean, label: string): Promise<void> {
   throw new Error(`timed out waiting for ${label}`);
 }
 
-async function armAndRun(mode: "default" | "opt-in", port: number): Promise<ChildReport> {
+async function armAndRun(mode: "default" | "opt-in", port: number): Promise<{ report: ChildReport; teardown: StackTeardown }> {
   const box = mkdtempSync(join(tmpdir(), `cotal-spawn-env-${mode}-`));
   const project = join(box, "project");
   const home = join(box, "home");
@@ -100,6 +183,8 @@ async function armAndRun(mode: "default" | "opt-in", port: number): Promise<Chil
   const challenge = join(box, "challenge");
   const reportPath = join(box, "child.json");
   const a = agent();
+  let report: ChildReport | undefined;
+  let teardown: StackTeardown | undefined;
   const env = {
     ...suiteEnvironment(),
     COTAL_HOME: home,
@@ -149,20 +234,24 @@ process.exit(0);
       if (!existsSync(reportPath)) await sleep(300);
     }
     await waitFor(() => existsSync(reportPath), "the real manager-launched Pi child report");
-    return JSON.parse(readFileSync(reportPath, "utf8")) as ChildReport;
+    report = JSON.parse(readFileSync(reportPath, "utf8")) as ChildReport;
   } finally {
-    if (existsSync(natsPid)) {
-      spawnSync(NODE, [CLI, "down", "--space", space], { cwd: project, env, encoding: "utf8", timeout: TOOL_TIMEOUT_MS });
-    }
+    if (existsSync(natsPid)) teardown = await stopRecordedStack(project, space, env);
     stopAgent(a);
-    rmSync(box, { recursive: true, force: true });
+    if (teardown?.clean) rmSync(box, { recursive: true, force: true });
+    else if (teardown) console.error(`! preserving ${box}: recorded-stack teardown did not complete (${teardown.failure ?? teardown.primaryOutput.trim()})`);
   }
+  if (!report) throw new Error(`no child report for ${mode}`);
+  if (!teardown) throw new Error(`no recorded-stack teardown result for ${mode}`);
+  return { report, teardown };
 }
 
 const defaultPort = await freePort();
 const optInPort = await freePort();
-const defaultReport = await armAndRun("default", defaultPort);
-const optInReport = await armAndRun("opt-in", optInPort);
+const defaultArm = await armAndRun("default", defaultPort);
+const optInArm = await armAndRun("opt-in", optInPort);
+const defaultReport = defaultArm.report;
+const optInReport = optInArm.report;
 
 let failed = 0;
 function check(name: string, pass: boolean, detail: unknown): void {
@@ -176,4 +265,7 @@ check("D3 default child could not sign through an undeclared ssh-agent", default
 check("O1 explicit spawn.env opt-in child ran through the managed Pi launch after its private key file was deleted", optInReport.privateKeyExists === false && optInReport.argv[0] === "--extension" && /@cotal-ai\/pi\/dist\/standalone\.js$/.test(optInReport.argv[1] ?? ""), optInReport);
 check("O2 explicit spawn.env opt-in delivered SSH_AUTH_SOCK", typeof optInReport.authSock === "string" && optInReport.authSock.length > 0, optInReport);
 check("O3 explicit spawn.env opt-in child signed through the live ssh-agent", optInReport.signature === true && optInReport.status === 0, optInReport);
+check("T1 default recorded stack teardown exits 0", defaultArm.teardown.primaryStatus === 0, defaultArm.teardown);
+check("T2 explicit opt-in recorded stack teardown exits 0", optInArm.teardown.primaryStatus === 0, optInArm.teardown);
+check("T3 both recorded manager and broker processes are gone before fixture removal", defaultArm.teardown.clean && optInArm.teardown.clean, { default: defaultArm.teardown, optIn: optInArm.teardown });
 process.exit(failed === 0 ? 0 : 1);
