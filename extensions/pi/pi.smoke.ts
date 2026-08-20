@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { LAUNCH_MATERIAL_ENV, readLaunchMaterial } from "@cotal-ai/core";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import type { ExactDrainResult, InboxItem, InboxScope, MeshAgent } from "@cotal-ai/connector-core";
 import { PiDriver, type CotalBatchDetails, type PiContextLike, type PiHost } from "./src/driver.js";
-import cotalMesh from "./src/extension.js";
+import cotalMesh, { persistSessionId } from "./src/extension.js";
 import { InboxTurn } from "./src/inbox-turn.js";
 import { piConnector } from "./src/connector.js";
 import { wrapped } from "./src/wrap.js";
@@ -524,6 +524,26 @@ for (const assistant of [
   );
 }
 
+// The session-state carrier follows in-process /resume: each session_start atomically replaces the
+// current id, so a later process crash reopens the session the user actually switched to.
+{
+  const root = mkdtempSync(join(tmpdir(), "cotal-pi-session-state-"));
+  const state = join(root, "session.json");
+  const previous = process.env.COTAL_PI_SESSION_STATE;
+  process.env.COTAL_PI_SESSION_STATE = state;
+  persistSessionId("01999999-9999-7999-8999-000000000001");
+  ok(JSON.parse(readFileSync(state, "utf8")).sessionId.endsWith("0001"), "session state records the initial Pi session");
+  persistSessionId("01999999-9999-7999-8999-000000000002");
+  ok(JSON.parse(readFileSync(state, "utf8")).sessionId.endsWith("0002"), "session state follows an in-process Pi /resume");
+  persistSessionId("01999999-9999-7999-8999-000000000002", "quit");
+  ok(JSON.parse(readFileSync(state, "utf8")).status === "quit", "a deliberate Pi quit is distinguished from a crash");
+  if (process.platform !== "win32") ok((statSync(state).mode & 0o077) === 0, "session state is owner-only on POSIX");
+  else checks++;
+  if (previous === undefined) delete process.env.COTAL_PI_SESSION_STATE;
+  else process.env.COTAL_PI_SESSION_STATE = previous;
+  rmSync(root, { recursive: true, force: true });
+}
+
 // Extension activation: unrelated operator settings are inert; partial managed control fails loud.
 {
   const keys = [
@@ -573,6 +593,7 @@ for (const assistant of [
       name: "pi-test",
       model: "flag/model",
       configPath: agentFile,
+      workspaceRoot: root,
       userAuth: { owner: "owner", actor: "actor", sentinelCredsPath: "/tmp/sentinel", bearerCmd: ["token"] },
     });
     ok(launch.args.includes("flag/model") && !launch.args.includes("file/model"), "spawn model overrides the agent file model");
@@ -600,6 +621,16 @@ for (const assistant of [
     ok(env.UNRELATED_SECRET === "must-not-forward", "an unrelated operator variable is inherited like any other");
     ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "no per-session COTAL_* is inherited from this process");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
+    const freshSessionAt = launch.args.indexOf("--session-id");
+    ok(
+      freshSessionAt >= 0 && /^[0-9a-f-]{36}$/.test(launch.args[freshSessionAt + 1] ?? "") &&
+        env.COTAL_PI_EXPECTED_SESSION === launch.args[freshSessionAt + 1],
+      "a fresh managed Pi seat gets an exact recoverable session id before its first turn",
+    );
+    ok(
+      typeof launch.sessionStatePath === "string" && env.COTAL_PI_SESSION_STATE === launch.sessionStatePath,
+      "managed Pi launch env carries the exact session-state path",
+    );
     ok(launch.args.some((arg) => arg.endsWith("standalone.js")), "managed Pi launches use the standalone bundle");
     if (env.COTAL_PI_PERSONA_FILE) rmSync(dirname(env.COTAL_PI_PERSONA_FILE), { recursive: true, force: true });
 
@@ -607,7 +638,21 @@ for (const assistant of [
       () => piConnector.buildLaunch({ space: "test", name: "pi", creds: "creds", userAuth: { owner: "o", actor: "a", sentinelCredsPath: "s", bearerCmd: ["b"] } }),
       /mutually exclusive/,
     );
-    assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", resume: "session" }), /resume/);
+    ok(piConnector.supportsResume === true, "Pi declares operator fork-resume support");
+    ok(piConnector.supportsSessionContinuation === true, "Pi declares exact-session crash continuation support");
+    const forked = piConnector.buildLaunch({ space: "test", name: "pi", resume: "session weird;$(nope)" });
+    const forkAt = forked.args.indexOf("--fork");
+    ok(forkAt >= 0 && forked.args[forkAt + 1] === "session weird;$(nope)", "Pi resume renders one opaque --fork argv token");
+    ok(!forked.args.includes("--session-id"), "Pi fork resume never reuses the source session id");
+    const continued = piConnector.buildLaunch({ space: "test", name: "pi", continueSession: "session-current" });
+    const sessionAt = continued.args.indexOf("--session-id");
+    ok(sessionAt >= 0 && continued.args[sessionAt + 1] === "session-current", "Pi crash recovery reopens the exact current session id");
+    ok(!continued.args.includes("--fork"), "Pi crash continuation never forks the session again");
+    assert.throws(
+      () => piConnector.buildLaunch({ space: "test", name: "pi", resume: "source", continueSession: "current" }),
+      /mutually exclusive/,
+    );
+    checks += 6;
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", variant: "high" }), /variant/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", mcpServers: { x: { command: "x" } } }), /MCP/);
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", launchOptions: { offline: true } }), /launch options/);

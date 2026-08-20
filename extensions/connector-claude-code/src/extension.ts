@@ -74,6 +74,7 @@ export const claudeConnector: Connector = {
   launchHint: "press Enter at the dev-channels prompt", // Claude Code opens on that one-time gate
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.continueSession) throw new Error("claude connector does not support exact-session continuation");
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};

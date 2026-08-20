@@ -18,7 +18,7 @@
     }
   },
   "scripts": {
-    "test": "tsx smoke/start-model-preflight.smoke.ts && tsx smoke/start-overrides.smoke.ts && tsx smoke/preserve-state.smoke.ts",
+    "test": "tsx smoke/start-model-preflight.smoke.ts && tsx smoke/start-overrides.smoke.ts && tsx smoke/preserve-state.smoke.ts && tsx smoke/pi-session-recovery.smoke.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "build": "tsc -p tsconfig.json && node -e \"const fs=require('node:fs'); fs.rmSync('dist/console', { recursive: true, force: true }); fs.cpSync('src/console', 'dist/console', { recursive: true })\" && pnpm run build:console-bundle",
     "build:console-bundle": "esbuild src/console-session-entry.ts --bundle --format=iife --platform=browser --target=es2020 --alias:node:crypto=./src/console-crypto-shim.ts --outfile=dist/console/session-bundle.js && node scripts/console-bundle-loadtest.mjs",

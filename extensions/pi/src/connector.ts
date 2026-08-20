@@ -1,9 +1,11 @@
-import { mkdtempSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   hardenPrivate,
+  mkSecretDir,
   loadAgentFile,
   registry,
   writeSecretFile,
@@ -28,9 +30,11 @@ export const piConnector: Connector = {
   kind: "connector",
   name: "pi",
   requires: ["pi"],
+  supportsResume: true,
+  supportsSessionContinuation: true,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
-    if (opts.resume)
-      throw new Error("pi connector: resuming an existing session (resume) is not implemented");
+    if (opts.resume && opts.continueSession)
+      throw new Error("pi connector: resume (fork source) and continueSession (same session) are mutually exclusive");
     if (opts.variant) throw new Error("pi connector: model variants (variant) are not implemented");
     if (opts.mcpServers && Object.keys(opts.mcpServers).length > 0)
       throw new Error("pi connector: MCP tool-sharing is not implemented");
@@ -47,6 +51,10 @@ export const piConnector: Connector = {
 
     // Minted before the env is built: the token goes into the launch material, the path into the env.
     const control = controlEndpoint(opts.space, opts.name);
+    const stateRoot = opts.workspaceRoot ? join(opts.workspaceRoot, ".cotal", "pi-sessions") : undefined;
+    const sessionStatePath = stateRoot ? join(stateRoot, `${opts.name}-${opts.lifecycleUid ?? "unmanaged"}.json`) : undefined;
+    if (stateRoot) mkSecretDir(stateRoot);
+    if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const env: Record<string, string> = {
       ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
@@ -62,6 +70,17 @@ export const piConnector: Connector = {
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;
 
     const args = ["--extension", STANDALONE];
+    // Operator resume is a FORK, matching LaunchOpts.resume's contract: Pi creates a new session and
+    // leaves the source transcript untouched. Crash recovery is the opposite operation: reopen the
+    // exact already-meshed session rather than forking it again. A fresh managed seat gets an exact
+    // UUID at launch, so even an idle/no-prompt Pi has a recoverable session identity before its
+    // first turn (Pi otherwise creates no session until a turn starts).
+    const freshSessionId = !opts.resume && !opts.continueSession ? randomUUID() : undefined;
+    if (opts.resume) args.push("--fork", opts.resume);
+    else if (opts.continueSession) args.push("--session-id", opts.continueSession);
+    else args.push("--session-id", freshSessionId!);
+    const expectedSessionId = opts.continueSession ?? freshSessionId;
+    if (expectedSessionId) env.COTAL_PI_EXPECTED_SESSION = expectedSessionId;
     if (persona) {
       const dir = mkdtempSync(join(tmpdir(), "cotal-persona-"));
       hardenPrivate(dir, "dir");
@@ -87,7 +106,8 @@ export const piConnector: Connector = {
     }
 
     env.COTAL_CONTROL_SOCKET = control.path;
-    return { command: "pi", args, env, control };
+    if (sessionStatePath) env.COTAL_PI_SESSION_STATE = sessionStatePath;
+    return { command: "pi", args, env, control, sessionStatePath };
   },
 };
 

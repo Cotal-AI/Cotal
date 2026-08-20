@@ -120,6 +120,7 @@ export const opencodeConnector: Connector = {
   // name-keyed channel would fuse two principals' streams onto one subject.
   eventChannel,
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.continueSession) throw new Error("opencode connector does not support exact-session continuation");
     // Resuming an existing session isn't wired for opencode: the connector runs `opencode serve` +
     // a plugin that CREATES its own session then attaches a TUI, so a fork must plumb into
     // session-creation (SDK fork / the serve attach), not argv. Throw rather than spawn fresh

@@ -131,6 +131,7 @@ export const codexConnector: Connector = {
   eventChannel,
 
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.continueSession) throw new Error("codex connector does not support exact-session continuation");
     // Resuming isn't wired: a thread brought up with `thread/resume` does not carry the cotal_*
     // MCP surface. Verified against codex-cli 0.145.0 — the resume succeeds and the turn runs,
     // but the model answers "mesh_ping tool unavailable" — so a resumed agent would come up mute
