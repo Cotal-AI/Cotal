@@ -241,8 +241,8 @@ try {
     const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
       `Connection: close\r\nContent-Length: ${body.length}\r\n\r\n`;
     const r = await raw(head, body);
-    ok("5.1 a DECLARED oversize is refused, and the caller is cut off having sent a small fraction of what it announced, so the read never ran to the end",
-      r.sent < body.length / 4, { sent: r.sent, declared: body.length, status: r.status });
+    ok("5.1 a DECLARED oversize is refused and the caller never finishes the body it announced, so the read did not run to the end",
+      r.sent < body.length, { sent: r.sent, declared: body.length, status: r.status });
   }
   {
     // Chunked: there is no content-length to check, so only the streaming gate can refuse this.
@@ -256,10 +256,19 @@ try {
     // outside. A cap that counts correctly but only looks AFTER the loop answers 413 exactly like
     // this one and still spends the whole body first, so the status alone cannot tell them apart.
     // The caller being cut off is what separates them.
+    //
+    // AGAINST THE FULL LENGTH, NOT A FRACTION OF IT. This asserted `sent < body.length / 4` until
+    // the quarter was measured rather than assumed: five runs of this shape gave a worst case of
+    // 3,211,264 against a bar of 5,000,000, a margin of 1.56x that moved by 3x run to run on an
+    // idle machine. That is a race with however fast a box drains a loopback socket, and a faster
+    // runner reds the cell for a reason that has nothing to do with the code. The strict inequality
+    // against the whole body is the event the cell is named for, it cannot flake, because once the
+    // server stops reading the caller is bounded by the socket buffer rather than by a race, and it
+    // still separates the two implementations: a cap that reads to the end lets the caller finish.
     const body = Buffer.alloc(20_000_000, 0x61);
     const r = await raw(CHUNKED_HEAD, body, asChunks);
     ok("5.3 ...and the caller is cut off partway through an undeclared body, so the refusal happened AT the threshold rather than after reading to the end",
-      r.sent < body.length / 4, { sent: r.sent, total: body.length, status: r.status });
+      r.sent < body.length, { sent: r.sent, total: body.length, status: r.status });
   }
 
   console.log("6. the threshold itself, one byte on each side of it");
