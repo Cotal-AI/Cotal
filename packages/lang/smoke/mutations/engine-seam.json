@@ -1000,10 +1000,10 @@
       "file": "packages/lang/src/engine/bridge.ts",
       "find": "        bind: (external) => {\n          const b = bseq++;\n          const answer = new Promise<void>((resolve, reject) => binds.set(b, { resolve, reject }));\n          port.postMessage({ kind: \"bind\", bseq: b, seq: seqHere, external } satisfies ToThread);\n          return answer;\n        },",
       "replace": "        bind: () => Promise.resolve(),",
-      "expectRed": "and the host's store hears exactly the append sequence the walker's store hears",
-      "completionMarker": "ok every effect was serviced by the host's own handler instance",
-      "cell": "and the host's store hears exactly the append sequence the walker's store hears",
-      "note": "A bind is what makes a crash mid-effect recoverable, and it runs AGAINST the arrow: the handler in the host declares the resource, the journal in the thread records it, and the durable append comes back out. Swallowed, every handler bind - the simulator's own included - vanishes from the append stream, so the bridged store hears four appends where the walker's hears six. Aimed at the sequence-parity cell rather than the named-bind cell because the simulator's binds die first and the suite is fail-fast: the parity cell is the earliest observer."
+      "expectRed": "the journal a bridged run brings back is the WALKER'S, entry for entry",
+      "completionMarker": "ok a bridged run completes, its handler never having left this process",
+      "cell": "the journal a bridged run brings back is the WALKER'S, entry for entry",
+      "note": "A bind is what makes a crash mid-effect recoverable, and it runs AGAINST the arrow: the handler in the host declares the resource, the journal in the thread records it, and the durable append comes back out. Swallowed, every handler bind - the simulator's own included - vanishes, so the bridged entries lose their `external` while the walker's keep it. Aimed at the entry-for-entry parity cell because it is the EARLIEST observer and the suite is fail-fast: the first prediction (the append-sequence cell) graded WRONG-RED, measured - the entry parity reds before the sequence comparison is reached."
     }
   ],
   "unkillable": [
