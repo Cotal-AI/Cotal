@@ -19,13 +19,19 @@
  * exact case the teardown helper cannot cover and the only case the reaper may act on.
  */
 import { strict as assert } from "node:assert";
-import { spawn, type ChildProcess } from "node:child_process";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { SMOKE_BROKER_PREFIX as KIT_PREFIX, SMOKE_BROKER_TOKEN, killAndAwaitExit, teardownOnSignal } from "@cotal-ai/smoke-kit";
 import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers } from "./reap-smoke-brokers.mjs";
+// A NAMESPACE import for the reporter, deliberately: a named import of every export makes this
+// suite die at LOAD when a mutation renames one, which turns a graded row into an unexplained
+// crash and cost exactly that here. Reached through the namespace, a renamed export is a missing
+// property the cell below reports, and the declaration cell still reddens for its own reason.
+import * as reaperModule from "./reap-smoke-brokers.mjs";
+import { DECLARATION_PATH, MODULE_PATH, type DeclaredShape, checkDeclarationConsumer, declaredModuleSurface, readCommittedDeclaration, renderReaperDeclaration, transpileConsumer } from "./gen-reaper-dts.mjs";
 
 let pass = 0, fail = 0;
 const check = (name: string, ok: boolean, detail = ""): void => {
@@ -49,6 +55,444 @@ console.log("\n── smoke broker reaper ────────────�
 check("the reaper's prefix literal is the one the kit mints", SMOKE_BROKER_PREFIX === KIT_PREFIX, `${SMOKE_BROKER_PREFIX} vs ${KIT_PREFIX}`);
 // And the minted token must actually carry this process's pid, or the owner check has nothing to read.
 check("the kit's token stamps the owning pid into the dir name", SMOKE_BROKER_TOKEN === `${KIT_PREFIX}${process.pid}-`, SMOKE_BROKER_TOKEN);
+
+// ── the declaration beside the module is emitted from it, so it cannot describe a different one ──
+//
+// `reap-smoke-brokers.mjs` stays plain JavaScript because it runs on the CI runner before any
+// workspace build, so its `.ts` consumers need a declaration beside it. A hand written declaration
+// is a SECOND source of truth, and a guard that reads one is an enumeration of the shapes whoever
+// wrote it thought of. This suite shipped two such guards and both failed GREEN over real drift: a
+// regex version scored `(cb: () => void, n: number)` as zero required parameters and called an arity
+// mismatch agreement, and the AST version that replaced it walked variable statements and function
+// declarations only, so `export { X as Y }`, `export default`, a namespace and a declaration merge
+// landed in neither the parse NOR `Object.keys(module)` and agreed by both being absent. Neither
+// version compared a single TYPE, so a `pid` that became a string was agreement too.
+//
+// So the declaration is no longer written by hand and there is nothing left to recognise. It is
+// emitted from the module by the compiler, and this asserts the committed file is exactly what the
+// compiler emits today. Any change to the module that the declaration does not follow changes these
+// bytes, whatever kind of change it is: a renamed export, a parameter added after a defaulted one, a
+// re-export under an alias, a default export, a merged namespace, a field whose type moved. The
+// generator refuses to emit over a type error, so `// @ts-check` in the module makes its own JSDoc
+// part of what this cell defends.
+const committed = readCommittedDeclaration();
+// A module that no longer typechecks has no declaration to compare, and that is a RED rather than a
+// crash: the generator refuses to emit over a type error, and this cell is where that refusal is
+// read. Throwing here would end the run before the banner, which grades INCONCLUSIVE instead.
+let emitted: string | undefined;
+let emitError = "";
+try { emitted = renderReaperDeclaration(); } catch (e) { emitError = (e as Error).message; }
+check(
+  "the committed declaration is what the compiler emits from the module",
+  emitted !== undefined && emitted === committed,
+  emitted === undefined
+    ? emitError
+    : committed === undefined
+      ? `${DECLARATION_PATH} is missing; run \`pnpm gen:reaper-dts\``
+      : `run \`pnpm gen:reaper-dts\`; first difference at byte ${[...emitted].findIndex((c, i) => committed[i] !== c)}`,
+);
+
+// That cell defends the module's JSDoc only while the module is CHECKED, and the generator's options
+// set `allowJs` and never `checkJs`, so the whole type path hangs on the module opting in. This
+// suite read `// @ts-check` off the top of the file for that, and a read of one spelling is an
+// enumeration of one, which is the same mistake as the two guards above. Measured on this tree: put
+// `// @ts-nocheck` on line 2 and drift `pid` to a string, and `pnpm gen:reaper-dts` stops refusing
+// (exit 0, the same 4722 bytes, because those types are read from the JSDoc the compiler is no
+// longer reading), the cell above goes GREEN, and the pragma read goes GREEN too, because the file
+// does still open with `// @ts-check`. Only two live-pid behavioural cells red, and a drift with no
+// runtime signature would have had nothing red at all.
+//
+// So the property is checked instead of the spelling: a deliberate type error is put into the
+// module's text and the emit must REFUSE it. That refusal exists only while the JSDoc is being read,
+// so this reds wherever the check is actually turned off: a deleted `// @ts-check`, a
+// `// @ts-nocheck` in the module's LEADING TRIVIA, and any later way of disabling it, none of which
+// it needs to know about. Leading trivia is the whole of it, and measured rather than assumed: a
+// `// @ts-nocheck` ABOVE the import reds this cell, while one AFTER the import or at EOF leaves the
+// suite 23 of 23. That is correct rather than a hole, because TypeScript ignores the pragma in
+// those positions too, so checking is still ON and there is nothing to catch. An earlier version of
+// this sentence said "anywhere", which was wrong; two reviews executed the positions.
+// The probe is content-only, at the module's own path, and writes nothing.
+//
+// A mutation row DOES reach this now, which is the point of making the guard behavioural: the
+// textual read it replaced could only be anchored on a comment, and `pnpm smoke:mutation-fixtures`
+// refuses a `find` that spans prose, so no row could announce that someone had disabled it. The
+// anchor is code, the module's `import` line, and the row is in `reaper-declaration.json`. The
+// control cell below is what makes the refusal attributable, since a probe that refuses everything
+// proves nothing.
+const moduleSource = readFileSync(MODULE_PATH, "utf8").replace(/\r\n/g, "\n");
+const TYPE_ERROR = '\n/** @type {number} */\nconst __checkProbe = "not a number";\nvoid __checkProbe;\n';
+let probeEmitted: string | undefined;
+let probeError = "";
+try { probeEmitted = renderReaperDeclaration(moduleSource + TYPE_ERROR); } catch (e) { probeError = (e as Error).message; }
+check(
+  "the module's JSDoc is really being checked: a deliberate type error in it stops the emit",
+  probeEmitted === undefined && probeError.includes("does not typecheck"),
+  probeEmitted === undefined
+    ? `the emit refused, but not over the type error: ${probeError}`
+    : `${MODULE_PATH} emitted a declaration over a string assigned to a \`number\`, so its JSDoc is not being read; it must carry \`// @ts-check\` and no \`// @ts-nocheck\``,
+);
+// The control on that zero: the same override path, with the module's own text and nothing added,
+// must emit exactly what reading the file emits. What it covers is a probe that refuses for a
+// reason that is not the injected error, which is the way this guard could go green while proving
+// nothing: an environment where the module ITSELF stops typechecking refuses either text, and the
+// probe cannot tell that refusal from the one it is asking for.
+//
+// It does NOT cover an override that never reaches the module, and a review was right to say so.
+// Measured: with the path test forced to `false` the probe RED and this control GREEN, because a
+// probe whose injected error never reached the compiler emits a declaration and reds on that. So
+// the two cells cover different halves, no bypass leaves both green, and this comment used to
+// claim the wrong half.
+let controlEmitted: string | undefined;
+let controlError = "";
+try { controlEmitted = renderReaperDeclaration(moduleSource); } catch (e) { controlError = (e as Error).message; }
+check(
+  "and that probe is a valid program: the module's own text through the same path emits the same declaration",
+  controlEmitted !== undefined && controlEmitted === emitted,
+  controlEmitted === undefined
+    ? `the override path refused the module's own text, so the cell above proves nothing: ${controlError}`
+    : "the override path emitted a different declaration from the file read, so the probe is not running against this module",
+);
+
+// ---- and the declaration is honest about the RUNTIME, not only about the module's own JSDoc -----
+//
+// Everything above ties the declaration to the module's JSDoc and proves that JSDoc is checked.
+// Neither says the promise is TRUE of the running code, and a security review built the bypass that
+// lives in the gap: change `reportReaped`'s `@param {string} label` to `{number}`, and defeat the
+// check locally with `/** @type {string} */ (/** @type {unknown} */ (label))` before a string-only
+// use. `pnpm gen:reaper-dts` exits 0, the committed declaration becomes
+// `reportReaped(label: number, ...)`, and this suite stayed at 23 of 23 while a consumer passing
+// the declared `number` compiled and then threw `printableLabel.slice is not a function` at
+// runtime. Reproduced first-party at 23 of 23 before these two cells existed. A double cast is the
+// one thing `// @ts-check` cannot see through, so no amount of checking the module against itself
+// closes this; only the runtime can answer it.
+//
+// So one consumer text is used twice. It calls every export the way the declaration says they may
+// be called, and it is both COMPILED against the declaration alone (`allowJs` off, so the module's
+// text is not a resolution target) and EXECUTED against the real module. The bypass above reds the
+// first cell, because a consumer written to a `string` label no longer typechecks. Drift in the
+// other direction, a declaration that stays honest-looking while the runtime moves under it, reds
+// the second, and that is the one a mutation row drives: `reaper-declaration.json` makes
+// `reportReaped` demand a number of a value the declaration still promises as a string.
+//
+// AND THE CALLS IT MAKES ARE BUILT FROM THE DECLARED PARAMETER ARMS, not written out by hand. A
+// hand-written call is an enumeration of ONE input, which is the same failure one level further in:
+// a security review widened `reportReaped`'s `@param {string}` to `{string | number}`, kept the body
+// string-only behind a double cast, regenerated, and this suite stayed at 34 of 34. The consumer
+// passed a string, a string still satisfies the wider declaration, and no cell ever passed the
+// `number` the declaration had begun to promise. A consumer written to that arm compiled with zero
+// diagnostics and threw `printableLabel.slice is not a function` at runtime. Reproduced first-party
+// at 34 of 34 before these cells existed. So every top-level arm of every parameter gets a call: a
+// primitive arm gets a sample of its own type, and an arm no sample can stand in for gets a value
+// named here, so an arm that arrives with neither is a finding rather than silence.
+const surface = declaredModuleSurface();
+const PRIMITIVE_SAMPLES: Readonly<Record<string, string>> = {
+  string: "`contract probe ${SMOKE_BROKER_PREFIX}`",
+  number: "42",
+  boolean: "true",
+  undefined: "undefined",
+  null: "null",
+};
+// The arms a primitive sample cannot stand in for, keyed by export, position and the arm's STRUCTURE
+// rather than its kind. Structure, because kind is not identity: an engineering review widened
+// `reportReaped`'s report parameter to `ReapReport | { supported: true, reaped: null }`, held the body
+// to a real report behind a double cast, regenerated, and this suite stayed at 36 of 36. Both arms
+// were of kind `object`, so the pin written for the report answered for the new arm as well, and the
+// widened one was never passed; a consumer written to it compiled with zero diagnostics and then
+// threw `Cannot read properties of null` at runtime. Reproduced first-party at 36 of 36 before this
+// key carried structure. A widened arm now has a key nobody pinned, so it reds the cell below.
+const armKey = (arm: DeclaredShape): string =>
+  arm.kind === "primitive" ? arm.name
+    : arm.kind === "array" ? `array<${armKey(arm.of)}>`
+      : arm.kind === "object" ? `object{${Object.keys(arm.props).sort().map((k) => `${k}:${armKey(arm.props[k]!)}`).join(",")}}`
+        : arm.kind === "union" ? `union(${arm.of.map(armKey).sort().join("|")})`
+          : `opaque(${arm.text})`;
+// These are values, not types.
+const NAMED_ARMS: Readonly<Record<string, string>> = {
+  "reapSmokeBrokers#0#object{dryRun:union(boolean|undefined)}": "{ dryRun: true }",
+  "reportReaped#1#object{inspected:number,ownedLive:number,reaped:array<object{args:string,owner:number,pid:number}>,supported:boolean,unclaimable:number,unparseable:number}": "report",
+};
+// And the arms that are COMPILED but not RUN, each named with the reason it cannot be run.
+// `reapSmokeBrokers` is the one export here that does something, and its parameter is optional, so
+// `undefined` is an arm whose single inhabitant the module reads as `dryRun` false: a live SIGKILL of
+// every orphaned smoke broker on the box. A security review found the generated
+// `reapSmokeBrokers(undefined);` sitting in the executed half and demonstrated the kill. Reproduced
+// first-party: the orphan fixture died to that exact call while `{ dryRun: true }` left it alive, and
+// all 36 cells stayed green throughout, because "nothing here may generate a call that reaps" was a
+// comment and no cell. On a shared box it is another lane's fixture that dies. So the call is held to
+// the compiled half, where it still proves the declaration admits the arm, and the executed half is
+// held to the property the comment used to only assert.
+const COMPILE_ONLY_ARMS: Readonly<Record<string, string>> = {
+  "reapSmokeBrokers#0#undefined": "its one inhabitant is a live reap: the module reads a missing argument as dryRun false",
+};
+const armsOf = (shape: DeclaredShape): readonly DeclaredShape[] => (shape.kind === "union" ? shape.of : [shape]);
+const keyOfArm = (name: string, index: number, arm: DeclaredShape): string => `${name}#${index}#${armKey(arm)}`;
+const expressionFor = (name: string, index: number, arm: DeclaredShape): string | undefined =>
+  NAMED_ARMS[keyOfArm(name, index, arm)] ?? (arm.kind === "primitive" ? PRIMITIVE_SAMPLES[arm.name] : undefined);
+// One call per arm, varying a single parameter at a time and holding the others at their first arm,
+// so the call count is the number of arms rather than their product.
+const generatedCalls: string[] = [];
+const executedCalls: string[] = [];
+const unexercisedArms: string[] = [];
+const declaredArmKeys = new Set<string>();
+const generatedFor = new Map<string, number>();
+const executedFor = new Map<string, number>();
+// The value the OTHER parameters are held at is never a compile-only arm, or holding one would carry
+// the call that cannot run into every other parameter's call as well.
+const holdArm = (name: string, index: number, shape: DeclaredShape): DeclaredShape =>
+  armsOf(shape).find((arm) => COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) ?? armsOf(shape)[0]!;
+// The enumeration below reads ONE call signature per export, so a declaration that grows a second
+// one is covered by nothing: the arms it admits are never generated, never compiled and never run,
+// and the suite stays green while the declaration promises a shape the module does not honour.
+// Measured at this tip before this cell existed: adding a `reportReaped(label: number, ...)`
+// overload to the module's JSDoc and regenerating left the suite at 40 passed, 0 failed. The same
+// blindness runs the other way, an export with NO call signature drops out of `surface.params` and
+// is exercised by nothing. So the bound is stated as a refusal rather than as partial coverage:
+// exactly one signature per export, or the suite reds and names the export and the count it found.
+const CALLABLE = ["listNatsServers", "reapSmokeBrokers", "reportReaped"];
+const signatureDefects = surface.exports.flatMap((name) => {
+  const count = surface.signatures[name] ?? 0;
+  if (CALLABLE.includes(name)) return count === 1 ? [] : [`${name} is enumerated as a callable and declares ${count}`];
+  return count === 0 ? [] : [`${name} is not enumerated as a callable and declares ${count}`];
+});
+check(
+  "and every callable export declares exactly ONE call signature, because the enumeration reads the first and would be blind to a second",
+  signatureDefects.length === 0,
+  signatureDefects.join(" | "),
+);
+for (const [name, params] of Object.entries(surface.params)) {
+  const count = (into: Map<string, number>) => into.set(name, (into.get(name) ?? 0) + 1);
+  if (params.length === 0) { generatedCalls.push(`${name}();`); executedCalls.push(`${name}();`); count(generatedFor); count(executedFor); continue; }
+  const first = params.map((shape, i) => expressionFor(name, i, holdArm(name, i, shape)));
+  params.forEach((shape, index) => {
+    for (const arm of armsOf(shape)) {
+      declaredArmKeys.add(keyOfArm(name, index, arm));
+      const expression = expressionFor(name, index, arm);
+      if (expression === undefined) {
+        unexercisedArms.push(`${name}(#${index}) admits ${armKey(arm)}, and nothing here passes one`);
+        continue;
+      }
+      const args = first.map((value, i) => (i === index ? expression : value));
+      if (args.some((value) => value === undefined)) continue;
+      const call = `${name}(${args.join(", ")});`;
+      generatedCalls.push(call);
+      count(generatedFor);
+      if (COMPILE_ONLY_ARMS[keyOfArm(name, index, arm)] === undefined) { executedCalls.push(call); count(executedFor); }
+    }
+  });
+}
+check(
+  "every arm the declaration admits for a parameter is one this consumer passes a value of, so a widened parameter cannot arrive unexercised",
+  unexercisedArms.length === 0,
+  unexercisedArms.join(" | "),
+);
+// The two tables above are the only hand-written part of the enumeration, so they are held to the
+// declaration in both directions. A pin or a refusal for an arm the declaration no longer admits is
+// a dead anchor: it reads as coverage and covers nothing, exactly like a mutation row whose find has
+// drifted, and it would let the arm it once named come back unexercised under a new shape.
+const staleTable = (table: Readonly<Record<string, string>>): string[] =>
+  Object.keys(table).filter((key) => !declaredArmKeys.has(key));
+check(
+  "every arm this file pins a value for is one the declaration still admits, so a pin cannot outlive the shape it was written for",
+  staleTable(NAMED_ARMS).length === 0,
+  staleTable(NAMED_ARMS).join(" | "),
+);
+check(
+  "and every arm this file refuses to RUN is one the declaration still admits, so a refusal cannot outlive its reason",
+  staleTable(COMPILE_ONLY_ARMS).length === 0,
+  staleTable(COMPILE_ONLY_ARMS).join(" | "),
+);
+const consumerText = (calls: readonly string[]): string => `import type { NatsServerRow, ReapReport, ReapedBroker } from "./reap-smoke-brokers.mjs";
+import { SMOKE_BROKER_PREFIX, listNatsServers, reapSmokeBrokers, reportReaped } from "./reap-smoke-brokers.mjs";
+
+const rows: NatsServerRow[] | undefined = listNatsServers();
+const report: ReapReport = reapSmokeBrokers({ dryRun: true });
+const owners: number[] = report.reaped.map((r: ReapedBroker) => r.owner);
+const label: string = \`contract probe \${SMOKE_BROKER_PREFIX}\`;
+reportReaped(label, report);
+${calls.join("\n")}
+console.log(\`__CONSUMER_RAN__ rows=\${rows === undefined ? "none" : rows.length} inspected=\${report.inspected} owners=\${owners.length}\`);
+`;
+const CONSUMER = consumerText([...new Set(generatedCalls)]);
+const EXECUTED_CONSUMER = consumerText([...new Set(executedCalls)]);
+const consumerDiagnostics = checkDeclarationConsumer(CONSUMER);
+check(
+  "a consumer written to what the declaration promises compiles against the declaration alone",
+  consumerDiagnostics.length === 0,
+  consumerDiagnostics.slice(0, 3).join(" | "),
+);
+// The executed half claims nothing: it enumerates and reports, and signals no process. That is read
+// off the text about to run rather than asserted about it, and it names the one call shape allowed.
+// It GATES the run rather than only recording, because a report that a live reap was executed is not
+// a guard against executing it: by the time the cell fails, another lane's orphan is already dead.
+const liveReaps = EXECUTED_CONSUMER.split("\n")
+  .filter((line) => /\breapSmokeBrokers\(/.test(line) && !/\breapSmokeBrokers\(\{ dryRun: true \}\)/.test(line));
+check(
+  "and the half that RUNS reaps nothing: every call it makes to the one export that kills a process is a dry run",
+  liveReaps.length === 0,
+  liveReaps.map((line) => line.trim()).join(" | "),
+);
+// And refusing to RUN an arm is bounded by what it may not empty: a callable with generated calls
+// keeps at least one of them in the half that runs, so the refusal table cannot quietly grow until
+// the executed half proves nothing at all. Counted over the GENERATED calls rather than read off the
+// consumer text: the text carries a hand-written preamble naming all three callables, so a check
+// over the text passes with every generated call held back. It was written that way first, and a
+// by-hand control that made both arms of `reapSmokeBrokers` compile-only left the suite at 40 of 40.
+const uncalled = [...generatedFor.keys()].filter((name) => (executedFor.get(name) ?? 0) === 0);
+check(
+  "and every callable with generated calls keeps one in the half that RUNS, so holding arms back cannot empty it",
+  uncalled.length === 0,
+  uncalled.join(" | "),
+);
+const ranPath = join(dirname(MODULE_PATH), `.declaration-consumer.${process.pid}.mjs`);
+let ran = { status: -1, output: `not run: the generated consumer would have reaped [${liveReaps.map((line) => line.trim()).join(" | ")}]` };
+if (liveReaps.length === 0) {
+  try {
+    writeFileSync(ranPath, transpileConsumer(EXECUTED_CONSUMER));
+    const r = spawnSync(process.execPath, [ranPath], { encoding: "utf8" });
+    ran = { status: r.status ?? -1, output: `${r.stdout ?? ""}${r.stderr ?? ""}` };
+  } finally {
+    rmSync(ranPath, { force: true });
+  }
+}
+check(
+  "and that same consumer RUNS against the module, so the declaration describes the code and not just its comments",
+  ran.status === 0 && ran.output.includes("__CONSUMER_RAN__"),
+  `exit ${ran.status}: ${ran.output.split("\n").find((l) => /Error/.test(l)) ?? ran.output.trim().slice(-200)}`,
+);
+
+// ---- and the check is over the WHOLE declared surface, not the part a consumer happened to touch -
+//
+// The consumer above is a fixed text, which makes it an enumeration, and a security review beat it
+// the same way the two earlier hand-written guards were beaten: it read `reaped[].owner` and never
+// `supported`, so declaring `ReapReport.supported` as a `string` while the code returns a boolean
+// (double cast, so `// @ts-check` stays green) regenerated a declaration promising a string and left
+// the suite at 25 of 25. A consumer written to THAT declaration compiled clean and threw at runtime.
+// Reproduced first-party at 25 of 25 before these cells existed.
+//
+// So the surface is read OUT of the declaration by the compiler instead of being restated here: the
+// exported names, and for each exported function the shape of what it returns, reduced to the part a
+// runtime value can be held to. A shape that cannot be reduced is reported as `opaque` rather than
+// counted as satisfied, so an unchecked leaf shows up as unchecked. A field nobody thought of is
+// covered because nobody had to think of it, and a NEW export reds the completeness cell below
+// rather than passing in silence.
+// The three type names are exercised too, by the consumer's `import type` and its annotations: a
+// type that stopped being exported would fail that compile rather than pass unnoticed.
+const EXERCISED = [
+  "NatsServerRow", "ReapReport", "ReapedBroker",
+  "SMOKE_BROKER_PREFIX", "listNatsServers", "reapSmokeBrokers", "reportReaped",
+];
+check(
+  "every name the declaration exports is one this suite exercises, so a new export cannot arrive unwitnessed",
+  surface.exports.join(",") === [...EXERCISED].sort().join(","),
+  `declared [${surface.exports.join(", ")}] vs exercised [${[...EXERCISED].sort().join(", ")}]`,
+);
+
+const mismatches = (shape: DeclaredShape, value: unknown, path: string): string[] => {
+  switch (shape.kind) {
+    case "primitive":
+      if (shape.name === "undefined") return value === undefined ? [] : [`${path}: declared undefined, got ${typeof value}`];
+      if (shape.name === "null") return value === null ? [] : [`${path}: declared null, got ${typeof value}`];
+      return typeof value === shape.name ? [] : [`${path}: declared ${shape.name}, got ${typeof value}`];
+    case "array":
+      return Array.isArray(value)
+        ? value.flatMap((v, i) => mismatches(shape.of, v, `${path}[${i}]`))
+        : [`${path}: declared an array, got ${typeof value}`];
+    case "object":
+      return typeof value === "object" && value !== null
+        ? Object.entries(shape.props).flatMap(([k, s]) => mismatches(s, (value as Record<string, unknown>)[k], `${path}.${k}`))
+        : [`${path}: declared an object, got ${typeof value}`];
+    case "union":
+      return shape.of.some((s) => mismatches(s, value, path).length === 0)
+        ? []
+        : [`${path}: no declared member of ${shape.of.map((s) => s.kind).join("|")} matches ${typeof value}`];
+    // NOT a pass. An opaque shape is what the reducer emits when it cannot turn a declared type
+    // into anything checkable, and returning `[]` here made every such leaf satisfy the conformance
+    // cells by being unreadable. Two reviews built that green first-party: declaring
+    // `supported` as `() => void` (and as `object`) while the runtime kept returning a boolean left
+    // this suite at 32 of 32, and a declaration-only consumer calling `report.supported()`
+    // typechecked with no diagnostics and threw `not a function` at runtime, which is the exact
+    // declaration-versus-runtime lie the suite exists to catch. An unverifiable leaf is now a
+    // finding, so the surface either reduces to something checkable or this reddens.
+    case "opaque":
+      return [`${path}: declared as ${shape.text}, which reduces to nothing checkable, so this leaf was NOT verified`];
+  }
+};
+/** Every leaf of a declared shape that no runtime value can be checked against. */
+const unverifiable = (shape: DeclaredShape, path: string): string[] => {
+  switch (shape.kind) {
+    case "object": return Object.entries(shape.props).flatMap(([k, s]) => unverifiable(s, `${path}.${k}`));
+    case "array": return unverifiable(shape.of, `${path}[]`);
+    case "union": return shape.of.flatMap((s) => unverifiable(s, path));
+    case "opaque": return [`${path}: ${shape.text}`];
+    default: return [];
+  }
+};
+
+const dryReport = reapSmokeBrokers({ dryRun: true });
+const dryMismatches = mismatches(surface.returns.reapSmokeBrokers!, dryReport, "reapSmokeBrokers()");
+check(
+  "and every field the declaration promises of a report is the type the report actually carries",
+  dryMismatches.length === 0,
+  dryMismatches.join(" | "),
+);
+const listedShape = surface.returns.listNatsServers!;
+const listedMismatches = mismatches(listedShape, listNatsServers(), "listNatsServers()");
+check(
+  "and the same for the enumerator, whose declared return has two members and must satisfy one",
+  listedMismatches.length === 0,
+  listedMismatches.join(" | "),
+);
+
+// The conformance cells above are only as wide as the reducer: a declared type it cannot reduce
+// used to arrive as `opaque` and pass by default, so the two cells were satisfied for exactly the
+// leaves nothing had checked. `mismatches` now reports such a leaf, and this cell names the class
+// so the failure reads as what it is rather than as a type mismatch: the surface must reduce to
+// something checkable end to end, or the declaration is making a promise this suite cannot hold it
+// to. Measured on this tree: the shipped surface has no unverifiable leaf, so this is a live
+// assertion and not a tautology, and a drift that makes one (a field declared `object`, or a
+// callable) reddens here.
+const unchecked = Object.entries(surface.returns).flatMap(([name, shape]) => unverifiable(shape, `${name}()`));
+check(
+  "and no leaf of that surface is a type the reducer cannot check, which would otherwise pass by being unreadable",
+  unchecked.length === 0,
+  unchecked.join(" | "),
+);
+// The same rule on the other half of every signature. An arm this suite passes a value of is only
+// as verified as the reducer's reading of it: `boolean` is `true | false` to the checker, so an
+// optional boolean parameter arrives as two arms whose only member is an opaque `valueOf`, and an
+// arm that reduces to nothing checkable is a promise this suite cannot hold the code to. Measured
+// on this tree: the declared parameters have no unverifiable leaf, so this is a live assertion and
+// not a tautology, and the ledger row that stops the reducer reading a literal reddens it.
+const uncheckedParams = Object.entries(surface.params).flatMap(([name, shapes]) =>
+  shapes.flatMap((shape, index) => unverifiable(shape, `${name}(#${index})`)));
+check(
+  "and no leaf of a parameter the declaration admits is a type the reducer cannot check either",
+  uncheckedParams.length === 0,
+  uncheckedParams.join(" | "),
+);
+
+// `reportReaped`'s declared return was read out of the declaration and then never held to
+// anything, so a `@returns` that drifted from what the function does was invisible here: the eng
+// review declared it `number`, returned a string, and the suite stayed green. It returns nothing,
+// which is a claim like any other and is asserted like any other.
+// The call is guarded because this cell reaches into the module, and a suite that DIES here stops
+// before the cells below it: a mutation elsewhere in the ledger makes this function throw on its
+// own argument, and an unguarded call turned that row from a graded kill into an unfinished run.
+// A throw is reported as what it is, a call that gave nothing back, and the run carries on.
+let reporterReturn: unknown;
+try {
+  reporterReturn = typeof reaperModule.reportReaped === "function"
+    ? reaperModule.reportReaped("the declaration check", dryReport)
+    : "the module exports no reportReaped to hold that declaration to";
+} catch (error) {
+  reporterReturn = `the call threw instead of returning: ${error instanceof Error ? error.message : String(error)}`;
+}
+const reporterMismatches = mismatches(surface.returns.reportReaped!, reporterReturn, "reportReaped()");
+check(
+  "and the reporter's declared return is held to what the call actually gives back",
+  reporterMismatches.length === 0,
+  reporterMismatches.join(" | "),
+);
 
 const dirs: string[] = [];
 const kids: ChildProcess[] = [];
@@ -99,6 +543,35 @@ try {
   check("the orphan's owner is dead", !alive(ownerPid!), `owner ${ownerPid}`);
   check("the orphan's broker outlived its owner, which is what makes it an orphan", alive(orphanPid!), `broker ${orphanPid}`);
 
+  // `dryRun` is the reaper's read-only mode, and the executed consumer above CALLS it, so a dryRun
+  // that signalled would make this suite a killer of live brokers rather than a test of one. It had
+  // no cell at all: an engineering review dropped the `continue` from the dryRun branch, so the
+  // call fell through to SIGKILL while the JSDoc, the declaration bytes and all 25 cells were
+  // unchanged and green. Reproduced first-party before this trio. The claim and the silence are
+  // separate properties, so they are separate cells: a dryRun that claimed nothing would satisfy
+  // "killed nothing" for the wrong reason.
+  const dry = reapSmokeBrokers({ dryRun: true });
+  check(
+    "a dry run CLAIMS the orphan, so the two cells below are not vacuous",
+    dry.reaped.some((r) => r.pid === orphanPid),
+    JSON.stringify(dry.reaped.map((r) => r.pid)),
+  );
+  // The wait is load-bearing and was measured: a child SIGKILLed a moment ago still answers
+  // `kill(pid, 0)` until its parent reaps it, so checking immediately reported a killed broker as
+  // alive and this cell stayed green under the very mutant it exists for. Half a second is past
+  // that window on this suite's own children.
+  await wait(500);
+  check(
+    "and it SIGNALS nothing: the broker it claimed is still alive after it",
+    alive(orphanPid!),
+    `pid ${orphanPid} was killed by a run that promised to kill nothing`,
+  );
+  check(
+    "and it names each claim once, so a fall-through into the kill path shows as a double count",
+    new Set(dry.reaped.map((r) => r.pid)).size === dry.reaped.length,
+    JSON.stringify(dry.reaped.map((r) => r.pid)),
+  );
+
   const result = reapSmokeBrokers();
   await wait(500);
 
@@ -114,6 +587,18 @@ try {
   check("the live-owner broker is counted as owned, not silently skipped", result.ownedLive >= 1, `ownedLive=${result.ownedLive}`);
   check("the report counts what it deliberately did not claim", result.unclaimable >= 2, `unclaimable=${result.unclaimable}`);
   check("the report counts everything it inspected", result.inspected >= 3, `inspected=${result.inspected}`);
+
+  // The dry-run conformance cell above runs on a report whose `reaped` is usually empty, and an
+  // empty array witnesses nothing about its element type. This one runs on the report of a reap
+  // that actually killed something, so `ReapedBroker`'s own declared fields are held to the values
+  // the runtime produced. The non-empty requirement is part of the cell for that reason: without it
+  // the element check passes vacuously exactly when it matters.
+  const reapedMismatches = mismatches(surface.returns.reapSmokeBrokers!, result, "the real reap's report");
+  check(
+    "the declared shape holds for a report that actually reaped, so the element type is witnessed and not assumed",
+    reapedMismatches.length === 0 && result.reaped.length > 0,
+    `${reapedMismatches.join(" | ")} (reaped ${result.reaped.length})`,
+  );
 
   // Running again with the orphan already gone must be a clean no-op: the reaper runs after every
   // suite in the chain, so the quiet path is the common one.

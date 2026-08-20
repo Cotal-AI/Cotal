@@ -14,6 +14,7 @@
     "gen:schema": "node scripts/generate-cotal-schema.mjs",
     "gen:tooldocs": "tsx scripts/generate-tool-docs.mjs",
     "gen:docsbundle": "node scripts/generate-docs-bundle.mjs",
+    "gen:reaper-dts": "tsx bin/smoke/gen-reaper-dts.mts",
     "mutation-proof": "node scripts/mutation-proof.mjs",
     "mutation-coverage": "node scripts/mutation-coverage.mjs",
     "doc-binding": "node scripts/doc-binding.mjs",
