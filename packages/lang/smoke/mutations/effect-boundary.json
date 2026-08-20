@@ -6,9 +6,9 @@
   "mutations": [
     {
       "name": "the argument check is dropped, so `undefined` reaches the hash and the handler",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        if (e instanceof NotCrossable) throw new RuntimeFault(e.why === \"function\" ? \"L3042\" : \"L3041\", e.message);\n        throw e;",
-      "replace": "        if (e instanceof NotCrossable) return;\n        throw e;",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      if (e instanceof NotCrossable) throw new RuntimeFault(e.why === \"function\" ? \"L3042\" : \"L3041\", e.message);\n      throw e;",
+      "replace": "      if (e instanceof NotCrossable) return;\n      throw e;",
       "expectRed": "`undefined` inside an effect's argument is L3041, naming the argument",
       "completionMarker": "ok a value born inside a branch may be written there and is returned frozen",
       "cell": "`undefined` inside an effect's argument is L3041, naming the argument",
@@ -16,7 +16,7 @@
     },
     {
       "name": "a function is reported under the generic code",
-      "file": "packages/lang/src/interpret.ts",
+      "file": "packages/lang/src/perform.ts",
       "find": "throw new RuntimeFault(e.why === \"function\" ? \"L3042\" : \"L3041\", e.message);",
       "replace": "throw new RuntimeFault(\"L3041\", e.message);",
       "expectRed": "a function inside an effect's argument is L3042",

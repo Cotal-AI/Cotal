@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID, randomBytes } from "node:crypto";
+import { hostname } from "node:os";
 import { connect, credsAuthenticator } from "@nats-io/transport-node";
 import { existsSync, lstatSync, readFileSync, rmSync } from "node:fs";
 import { join, dirname, resolve } from "node:path";
@@ -2602,10 +2603,21 @@ export class Manager {
   private async driveRetirement(a: { id: string; name: string; lifecycleUid: string }): Promise<void> {
     if (!this.auth) return; // guaranteed by requestRetirement; re-checked for the type narrowing below
     const held = this.retiring.get(a.name);
-    const me = parsePrincipalKey(this.ep.ref().id);
     const target = parsePrincipalKey(a.id);
-    if (!me || !target) {
-      if (held) held.lastError = "the manager or target principal could not be derived; the retirement was not requested";
+    if (!target) {
+      if (held) held.lastError = "the target principal could not be derived; the retirement was not requested";
+      return;
+    }
+    // The SERVE identity, not the endpoint identity, is who this request speaks as (#549). The field
+    // is declared `!:`, which asserts to the type system what the ordering happens to provide, so it
+    // is read here as what it actually is. On today's ordering this guard cannot fire: `start()`
+    // assigns the identity before it connects anything, and a retirement needs an agent that only a
+    // started manager can hold. It is kept as a fail-closed assertion rather than a live face,
+    // because the alternative is carrying `undefined` into the caller triple and surfacing the
+    // result as "the rail could not be reached", which would name the wrong cause.
+    const serveIdentity = this.managerServeIdentity as Identity | undefined;
+    if (!serveIdentity?.id) {
+      if (held) held.lastError = `the retirement was NOT requested: this manager has no serve identity yet, so it cannot speak as the registered serving instance. The despawn stopped "${a.name}" and the name stays held. NEXT: let the manager finish registering, then re-attempt the same-name spawn to re-drive the teardown.`;
       return;
     }
     const uncertain = (why: string) =>
@@ -2614,7 +2626,22 @@ export class Manager {
       // The caller triple and the TARGET are both grant-pinned now (#350): the `handle` target
       // rides the subject, so this ephemeral credential can ask to retire exactly this
       // incarnation and nothing else.
-      const caller = { owner: me.owner, actor: me.actor, uid: this.managerLifecycleUid };
+      //
+      // THE TRIPLE IS THE SERVE PRINCIPAL, and it has to be (#549). The auth rail authorizes this
+      // request by comparing the caller's `<owner>.<actor>` against the serve issuance gate's bound
+      // principal, and that gate is opened with `principalKey(DEV_OWNER, serveIdentity.id)` (see the
+      // registration block). Deriving the caller from `ep.ref().id` instead put the manager's
+      // ENDPOINT identity nkey on the wire, which is a different, equally real identity of the same
+      // manager, so the comparison was unsatisfiable and EVERY user-mesh retirement was refused as a
+      // full no-op. Measured before the fix: 8 refusals in one suite run across 5 agents, with the
+      // epoch and the instance id both matching and only the principal disagreeing.
+      //
+      // Both halves come from the gate's own sources rather than from `ep.ref()`: `DEV_OWNER` is
+      // hard-coded at the gate site, so taking the owner from `ep.ref().id` would re-open the same
+      // mismatch in the owner half the moment a manager ran under a user-shaped identity. This is
+      // also the more honest attribution: the authority being exercised is "I am the registered
+      // serving instance", which is exactly what the gate records.
+      const caller = { owner: DEV_OWNER, actor: serveIdentity.id, uid: this.managerLifecycleUid };
       const creds = await mintCreds(this.auth, newIdentity(), "retirement-requester", {
         retirementRequester: { ...caller, target: { owner: target.owner, actor: target.actor, lifecycleUid: a.lifecycleUid } },
       });
@@ -3140,9 +3167,19 @@ export class Manager {
       allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? ["general"];
       allowPublish = opts.allowPublish ?? def.allowPublish;
       capabilities = def.capabilities;
+      // #651: fold the persona's model into the launch record, mirroring the variant line below
+      // and the manifest branch above. Without this, a persona-file model (the common pin source)
+      // never reaches `launch.model`, so the connector runs the seat on it while `ps --wide`/`--json`
+      // reports the model ABSENT - a false "no model pinned" for a seat that has one.
+      model = opts.model ?? def.model;
       variant = opts.variant ?? def.variant;
       launchOptions = mergeLaunchOptions(def.launchOptions, opts.launchOptions);
     }
+    // #651: an empty or whitespace-only model string is not a pin. Coerce it to undefined here, at
+    // the single point every path (persona, manifest, imperative) has resolved `model`, so it
+    // serializes ABSENT rather than present-but-empty (`"model": ""`), which a key-presence consumer
+    // would misread as "a pin was recorded".
+    if (model !== undefined && model.trim() === "") model = undefined;
     const idErr = this.nameError(identityName);
     if (idErr) return { ok: false, error: opts.resolved ? `launch agent: ${idErr}` : `persona ${configPath}: ${idErr}` };
     // The alias-reuse gate (#29 piece 3): a name whose previous agent is still retiring REFUSES
@@ -3496,7 +3533,7 @@ export class Manager {
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
       this.watchExit(managed);
-      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain" }); return { ok: false, error: readiness.detail }; } // uncertain — non-success, but kept
+      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } }); return { ok: false, error: readiness.detail }; } // uncertain: non-success, but kept, and the detail rides the terminal (#605)
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
       // would never match and down -f would treat the agent as foreign).
@@ -4971,7 +5008,10 @@ export class Manager {
         } else if (o.kind === "failed") {
           ({ fact } = await commitGoalResult(gw.ctx, { ref, now: Date.now(), cause: "complete", state: "failed", data: o.data, committer: { instanceId: this.managerInstanceId, epoch } }));
         } else {
-          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch } }));
+          // Forward the readiness detail as the terminal's reason: this manager owns the deadline,
+          // so it owns what elapsing it MEANS. Absent, core commits its own generic line (#605).
+          const why = (o.data as { reason?: unknown } | undefined)?.reason;
+          ({ fact } = await settleGoalUncertain(gw.ctx, { ref, now: Date.now(), committer: { instanceId: this.managerInstanceId, epoch }, ...(typeof why === "string" && why.length > 0 ? { reason: why } : {}) }));
         }
         this.emitGoalProgress(ref, epoch, { phase: "terminal", state: fact.state, ...(fact.data !== undefined ? { data: fact.data } : {}) });
         await clearGoalIndex(gw.ctx, ref); // must-5 Q-B: terminal reached - the successor never reconciles it
@@ -5560,6 +5600,17 @@ export class Manager {
         // The incarnation coordinate (SPEC 13.1) — with `id`, exactly what a v0.4 caller needs to
         // build a targeted (`despawn`/`attach`) request against THIS incarnation.
         lifecycleUid: a.lifecycleUid,
+        // #651 enrichment: per-seat facts the manager ALREADY holds, carried on the row so `ps
+        // --wide`/`--json` can surface them without a new collection path. All optional in the row
+        // schema: a fact this backend did not record serializes absent, never fabricated (the
+        // pid is absent on runtimes that do not own a real process; a launch may pin no model).
+        model: a.launch.model,
+        variant: a.launch.variant,
+        cwd: a.launch.cwd,
+        pid: a.handle.pid,
+        spawner: a.spawner,
+        instanceId: this.managerInstanceId,
+        host: hostname(),
         ...(health && health.state !== "ok" ? { authHealth: health.state, authReason: health.reason } : {}),
       };
     });

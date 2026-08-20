@@ -29,6 +29,7 @@ import {
   newIdentity,
   setupSpaceStreams,
   DEV_OWNER,
+  type CotalMessage,
   type Delivery,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -115,7 +116,7 @@ try {
   });
   const got: string[] = [];
   a.on("error", () => {});
-  a.on("message", (m, d: Delivery) => { got.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
+  a.on("message", (m: CotalMessage, d: Delivery) => { got.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
   await a.start();
   await wait(300);
 

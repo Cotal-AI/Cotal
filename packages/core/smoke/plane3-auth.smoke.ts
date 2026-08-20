@@ -158,7 +158,7 @@ try {
   const agentErrors: string[] = [];
   a.on("error", (e: Error) => console.error("  ! alice", e.message));
   a.on("error", (e: Error) => agentErrors.push(e.message));
-  a.on("message", (m, d: Delivery, meta: MessageMeta) => {
+  a.on("message", (m: CotalMessage, d: Delivery, meta: MessageMeta) => {
     got.push({
       ch: m.channel, kind: meta.kind, durable: d.durable,
       text: m.parts.map((p) => (p.kind === "text" ? p.text : "")).join(""),
@@ -311,7 +311,6 @@ try {
     inboxPrefix: `_INBOX_${aId.id}`,
     maxReconnectAttempts: 0,
   });
-  aNc.on?.("error", () => {});
   const aJsm = await jetstreamManager(aNc);
   const aJs = jetstream(aNc);
   check(
@@ -340,7 +339,6 @@ try {
     inboxPrefix: `_INBOX_${bId.id}`,
     maxReconnectAttempts: 0,
   });
-  bNc.on?.("error", () => {});
   const bJs = jetstream(bNc);
   check(
     "a peer CANNOT bind another agent's dlv_<owner> durable (name-scoped grant)",

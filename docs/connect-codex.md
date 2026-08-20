@@ -131,6 +131,95 @@ connector's own defaults and selectors ride the same rail and yield to yours, ex
 `mcp_servers`, which is how the agent reaches the mesh: the whole namespace is refused loud (at
 spawn, not at launch) rather than silently overridden.
 
+## Event plane
+
+A seat launched with `cotal spawn --events` publishes a structured account of what it did: run
+boundaries per turn, assistant text, reasoning, and the tool calls the model makes through Codex's
+function-call and custom-tool interfaces, each with its arguments, its end, and its result. That
+covers the tools you watch a seat use, `shell` and `apply_patch` among them. The channel is
+`events.<owner>.<actor>`, named after the seat's principal, and the rules for it are the same on
+every connector: see [connect-claude.md](connect-claude.md#event-plane) for the channel, the grant,
+and how to read it. Arming is `COTAL_EVENTS`, which the launcher sets for `--events` spawns; your own
+`codex` publishes nothing.
+
+```bash
+cotal spawn watcher --agent codex --events -d   # armed, detached; read it with `cotal console`
+```
+
+Eight things are specific to Codex and worth knowing before you read a stream:
+
+- **The durable record is the thread's rollout file, not the live app-server stream.** The seat's
+  rollout lives inside its own isolated `CODEX_HOME`, under
+  `<workspace>/.cotal/codex/<space>-<name>-<hash>/sessions/<yyyy>/<mm>/<dd>/rollout-<stamp>-<thread>.jsonl`.
+  Reading the file rather than the stream is what lets the seat resume a thread's stream where it
+  stopped after its own process restarts, rather than reopening it from the top.
+- **A restarted app-server is a NEW thread, and its stream is a new one.** When the child dies and
+  the seat brings up a replacement, Codex starts a fresh thread with a fresh rollout. The seat
+  finishes the old one first, publishing what it had and closing any run left open, then begins
+  publishing the new thread under its own write-ahead log. A reader sees one stream end and another
+  begin, never one stream silently continuing under a different thread. If the new thread's file is
+  slow to appear the order is the other way round: the seat spends its whole bounded look for the new
+  file first, and the old stream ends when that look gives up, not at the moment of the restart. From
+  the give-up on it publishes nothing until the new thread binds at a later turn boundary; it does not
+  keep reporting the dead thread's activity in the meantime.
+- **The stream starts where the seat binds to the file.** `thread/start` writes nothing to disk; the
+  file appears when the thread is primed. The seat binds to it then, and publishes from that point
+  forward. If the file is slow to appear the seat says so in its log and looks again at each turn
+  boundary, and whatever the thread wrote before the bind is not republished.
+- **Codex's own built-in tools are not published yet.** Web search, tool search and image generation
+  record an end with no start, and nothing joins the two halves: the start-shaped record carries no
+  call id and the end carries one. Rather than guess a pairing, the seat drops them, so those tool
+  uses are absent from the stream while everything on the function-call path is present.
+- **A failed turn is published as a run error, not as a finished run.** Codex records a failure on
+  the turn's own completion record, so a turn that hit a usage limit or an upstream error ends its
+  run with `RUN_ERROR` carrying the code Codex reported.
+- **No user-authored text is published, ever.** Your prompts, the peer messages injected into the
+  thread, and the developer instructions the persona supplies are all withheld. The events channel
+  carries a different read ACL from the channel you typed into, so republishing your own words there
+  would widen who can read them. Assistant text, reasoning and tool activity are unaffected.
+- **A broker that is down when the seat starts costs the outage, not the seat.** The plane publishes
+  through the seat's mesh connection, so a seat armed while its broker was unreachable cannot start
+  its emitter. It says so in its log, and rebuilds the emitter at the first turn boundary once the
+  broker is there. A rebind DECLINES to publish two things, and they are one rule rather than two
+  exceptions. It declines what the thread wrote while the seat was cut off. It also declines the
+  turn whose own boundary triggered it: Codex writes a turn's first record before it announces that
+  the turn started, and that announcement is what a rebind runs on, so the record is always behind
+  whatever boundary the rebind takes, and a run is never opened from the middle of a turn. The first
+  turn to start after the rebind is published in full. One case is different and is named here
+  rather than left to be discovered: if the emitter had already been publishing this thread and
+  then died, the seat's log carries its position, and the rebind CONTINUES that log rather than
+  starting where it binds. An outage there costs the wait, not the content: everything the thread
+  wrote while the plane was down, including whatever it wrote while the plane was already dead, is
+  published once the plane is back. Two consequences are worth stating plainly, because both are
+  easy to read past. A tool RESULT is published as the tool returned it, so anything a tool read on
+  the seat's behalf, including messages it fetched from a channel with a narrower reader set, is in
+  this stream; nothing redacts it or marks where it came from. And a backlog written while the
+  plane was terminal is not discarded, it is delivered on recovery. Together those mean the readers
+  of an events channel must be treated as at least as wide as every channel the seat's own tools
+  can read. What the stream does not carry, here or on a live plane, is the session's own record of
+  the user's words and the developer instructions. Neither of those two carriers is introduced by
+  the boundary rule above and neither changes shape, but the rule is not confined to the seat whose
+  emitter never started. It changes WHICH RECORDS reach the stream, on every armed seat. A bind
+  announces where the stream starts and the emitter's setup then runs before its first read; what
+  the thread appended inside that window used to land behind the cursor and be dropped, and it is
+  published now. A whole turn can sit in there, tool results included, so the carrier described
+  just above now covers a stretch of the session it previously lost. Nothing is sent twice in
+  either case.
+
+  And the reader set is a requirement rather than a guarantee, which is the last thing to say
+  plainly. The grant does not enforce it, and it is worth being exact about what does. A spawn
+  through the manager gives a seat publish rights on its own event channel and nothing else, and a
+  spawn whose grant names a different agent's event channel is refused at the door. That fence is
+  the manager's, it reads the concrete form and leaves a pattern such as `events.<owner>.>` to
+  ordinary ACL authority, and a foreground `cotal spawn` on your own machine grants whatever you
+  name because it mints from your own signing material. [connect-claude.md](connect-claude.md#event-plane)
+  spells all three out. Who may READ a plane is minted separately and out of band either way, with
+  `cotal actor grant` on a user-auth mesh and `cotal mint --profile agent --allow-subscribe` on a
+  static one. So holding the events readers to at least the width of every channel the seat's tools
+  can read is the operator's policy to keep, enforced by whoever mints those readers.
+- **Reasoning is published as its summary only.** Codex also stores an encrypted reasoning blob on
+  every reasoning record; it is opaque, no reader can display it, and it is never put on the wire.
+
 ## Autonomy and the sandbox
 
 A spawned Codex agent is woken by peer messages, which arrive when nobody is watching the

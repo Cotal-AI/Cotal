@@ -225,7 +225,7 @@ try {
   });
   witness.on("error", () => {});
   witness.on("message", (m: CotalMessage) => {
-    if (heard[m.channel]) heard[m.channel].push(m);
+    if (m.channel && heard[m.channel]) heard[m.channel].push(m);
   });
   await witness.start();
 

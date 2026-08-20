@@ -560,7 +560,7 @@ registry.
 ## ps, stop, attach
 
 ```bash
-cotal ps [--on <instance>] [--space <s>]
+cotal ps [--on <instance>] [--wide | --json] [--space <s>]
 cotal stop --name <n> [--on <instance>] [--space <s>]
 cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 ```
@@ -570,6 +570,8 @@ cotal attach --name <n> [--on <instance>] [--no-reconnect] [--space <s>]
 | `--space <s>` / `--server <url>` / `--creds <path>` | resolved mesh | Which manager to reach |
 | `--name <n>` | — | Managed agent to stop / attach (required) |
 | `--on <instance>` | class anycast (`ps`: class scatter) | Pin to one manager instance id (multi-manager space); takes the whole id as `ps` prints it, not a prefix. An empty value (`--on ""`, an unset shell variable) is refused, never treated as absent |
+| `--wide` (`ps`) | off | After each seat's compact row, print the per-seat facts the manager already records: model pin (and variant), `cwd`, `pid`, spawner, lifecycle uid, and the owning manager's instance id and host. A fact the manager did not record (no model pinned, or a runtime that owns no real process) prints nothing, never a placeholder |
+| `--json` (`ps`) | off | Machine-readable: one JSON object per seat per line, exactly the row the manager sent. Instance headers and errors go to stderr, so stdout is pure rows. Mutually exclusive with `--wide` |
 | `--no-reconnect` (`attach`) | off | End the attach when its session ends, instead of re-establishing it. For scripts that want one run and one exit code |
 
 These are operator clients over the running manager's control plane. `ps` prints two facts per
@@ -634,10 +636,22 @@ sleeps, a VPN that drops or a wifi handover kills it. When that happens `attach`
 a fresh grant, a fresh per-session credential, a fresh connection, so every attempt re-runs the same
 authorization the first attach did. On success it prints `[cotal: reconnected]`, the manager repaints
 the seat's current screen the way it does for any attach, and you carry on in the same terminal.
-Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key is read
-during those waits, so a reconnect never traps you; it is not read across the round trip that
-hands the old session back and opens the new one, so a press inside that window takes effect when
-the round trip returns, within seconds.
+Retries wait 1s, 2s, 5s, 10s, then 30s, for as long as the seat exists. The detach key is read the
+whole time the loop runs, the waits and the attempts alike, so a reconnect never traps you: press it
+while a session is being established and the attach ends there, and a session that lands behind the
+press is handed back to the manager rather than left holding a slot. Everything else you type while
+there is no session is dropped rather than queued, so keystrokes aimed at a terminal that turned out
+to be frozen, Ctrl-C included, are not delivered to the agent by a reconnect you did not know had
+happened. That starts before the first session, not at the first reconnect: at a terminal, `attach`
+reads and drops what you type while it is still resolving the mesh, so a key struck at a prompt that
+has not come up yet does not reach the agent when it does.
+
+With stdin a **pipe** the contract is the opposite, and deliberately so. `printf 'ls\n' | cotal
+attach --name web` is a script's input rather than an operator at a frozen screen, so it is buffered
+by the stream and delivered to the seat when the session opens, exactly as it always was. That holds
+in every window, not just before the first session: a pipe keeps buffering across a reconnect too, so
+`tail -f log | cotal attach --name web` does not lose the part of its feed written while the link was
+down. Only a terminal gets the reader; `--no-reconnect` keeps the old behaviour on both.
 
 It stops on its own when reconnecting cannot help, and says why: a manager that refuses the attach
 exits non-zero with the manager's own message, and a reconnect that finds the seat no longer there

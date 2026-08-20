@@ -39,6 +39,7 @@ import {
   commitMember,
   DEV_OWNER,
   type MembershipRecord,
+  type CotalMessage,
   type Delivery,
 } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
@@ -126,7 +127,7 @@ try {
   });
   const got: string[] = [];
   a.on("error", () => {});
-  a.on("message", (m, d: Delivery) => { got.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
+  a.on("message", (m: CotalMessage, d: Delivery) => { got.push(m.parts.map((p) => (p.kind === "text" ? p.text : "")).join("")); d.ack(); });
   await a.start();
   await wait(400); // connect + boot-membership hydration round-trip
 
@@ -162,7 +163,6 @@ try {
     inboxPrefix: `_INBOX_${seedId.id}`,
     maxReconnectAttempts: 0,
   });
-  kvNc.on?.("error", () => {});
   const kv = await openMembersRegistry(kvNc, space);
   const pending: MembershipRecord = {
     channel: "review", owner: aPrincipal, lifecycleUid: uidA, state: "durable-active", joinCursor: 0,

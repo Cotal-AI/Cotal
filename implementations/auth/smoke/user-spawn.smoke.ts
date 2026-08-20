@@ -91,10 +91,12 @@ type AddressInfo = import("node:net").AddressInfo;
 const {
   CotalEndpoint, createSpaceAuth, isReachable, mintCreds, newIdentity, serverConfig,
   setupSpaceStreams, principalKey, registry, spaceWildcard, clearChannel, mintLifecycleUid, eventChannel,
-  resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError,
+  resolveService, invokeCommand, standaloneConnectOpts, EpEnvelopeError, epAuthBucket,
   mintMembershipObserverCreds, observePlaneLivenessWithCreds,
 } = await import("@cotal-ai/core");
 const { connect: rawConnect } = await import("@nats-io/transport-node");
+const { Kvm } = await import("@nats-io/kv");
+const { createHash } = await import("node:crypto");
 const { decodeJwt } = await import("jose");
 const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, workspaceSecretStore, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
 const {
@@ -399,6 +401,46 @@ try {
   const listed = manager.list().find((a) => a.name === "alpha");
   check("manager ps lists alpha under its principal id, mesh live", listed?.id === alphaPrincipal && listed?.mesh !== "absent", listed);
 
+  // ---------- B1f. a spawn-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610) ----------
+  // The end-to-end half of the goal-follow contract. `epCallerGrantRows` returns `{pub, sub}` and
+  // documents its `sub` as the row that lets "the caller may follow its OWN goal to terminal", but
+  // the `spawn` mint branch took `.pub` alone, so a spawn-capable credential could SUBMIT a goal
+  // and not HEAR it: the broker refused the follow, the manager committed the terminal on time, and
+  // the caller reported a timeout about a goal that had already settled. An operator reads that as
+  // failure and re-issues, which mints a duplicate.
+  //
+  // The spawn under test is REFUSED by design (persona `beta` carries `role: worker`, which the cli
+  // actor's `[spawn]` scope may not delegate), so the manager commits a `failed` terminal promptly
+  // and no child is created. What is asserted is not the refusal - it is that this caller HEARS it.
+  console.log("B1f) a spawn-scope caller follows its own goal to a terminal (#610)");
+  {
+    const claims = JSON.parse(Buffer.from(opCreds.bearer.split(".")[1], "base64url").toString("utf8")) as { act: { lifecycleUid: string } };
+    const follower = new CotalEndpoint({
+      space: SPACE, servers: SERVER, bearer: opCreds.bearer, sentinelCreds: opCreds.sentinelCreds,
+      lifecycleUid: claims.act.lifecycleUid,
+      channels: [], consume: false, registerPresence: false, watchPresence: false,
+      card: { name: "goal-follower", kind: "endpoint" },
+    });
+    // Surface rather than swallow: a broker refusal on this connection is the defect itself, and a
+    // swallowed one is indistinguishable from silence (the product had the same bug).
+    const connErrors: string[] = [];
+    follower.on("error", (e: unknown) => connErrors.push((e as Error)?.message ?? String(e)));
+    await follower.start();
+    ctlEps.push(follower);
+    const t0 = Date.now();
+    const r = await follower.invokeService("manager", "spawn", { name: "beta", agent: "e2e" }, { deadlineMs: 20_000, follow: true });
+    const elapsed = Date.now() - t0;
+    const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
+    // THE ASSERTION THE FIX EXISTS FOR: a real terminal, not a deadline and not a refusal to listen.
+    check("a spawn-scope caller HEARS its own goal's terminal (not a deadline, not a denied subscription)",
+      code === "failed", { code, elapsed, message: r.reply.error?.message?.slice(0, 160), connErrors });
+    check("...and the terminal carries the refusal's own reason, so the caller learns WHY",
+      (r.reply.error?.message ?? "").includes("would exceed its spawner's grant"), r.reply.error?.message?.slice(0, 200));
+    check(`...delivered on the goal's own timing, well inside the caller's budget (${elapsed}ms of 20000ms)`,
+      elapsed < 15_000, elapsed);
+    check("...with no broker refusal on the follower's connection", connErrors.length === 0, connErrors);
+  }
+
   // ---------- B1e. the v0.4 ep rails under a USER bearer (1c.2c) ----------
   // The manager REGISTERS its service on this user mesh (the mode-neutral 1c.2c flip), the cli
   // actor's callout-minted rows carry the spawn set + baseline, and the bearer's ledger lifecycle
@@ -626,11 +668,83 @@ try {
   // so a DIFFERENT actor under the same owner is a true sibling — not the spawner, not the manager.
   check("precondition: delta is live under the operator's owner", manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
   const opsmate = await ctlCaller("opsmate", OWNER, ["spawn"]);
+  // delta's lifecycle uid, read off the same `inspect` the helper uses, so the retirement cells
+  // below key on the incarnation that is actually stopped rather than on a name.
+  const deltaInfo = await opsmate.invokeService("manager", "inspect", { name: "delta" });
+  const deltaUid = (deltaInfo.reply.data as { lifecycleUid: string }).lifecycleUid;
   const sibAttach = await epTargeted(opsmate, "attach", "delta");
   check("owner-domain: a spawn-scoped SIBLING actor attaches an agent under its owner (ep owner mode)", sibAttach.ok === true && typeof (sibAttach.data as { grant?: { sessionId?: string } })?.grant?.sessionId === "string", sibAttach);
   const sibStop = await epTargeted(opsmate, "stop", "delta");
   check("owner-domain: the same sibling actor stops it (stop travels with attach)", sibStop.ok === true, sibStop);
   check("delta is gone from the manager after the sibling stop", !manager.list().some((a) => a.name === "delta"), manager.list().map((a) => a.name));
+  // ---------- THE RETIREMENT IS AUTHORIZED AND ACTS (Cotal #549) ----------
+  // Read from STATE, never from the despawn's log copy. The defect this covers made the auth rail's
+  // principal cross-check unsatisfiable, because the gate is bound to `principalKey(DEV_OWNER,
+  // serveIdentity.id)` while the request used to carry the manager's ENDPOINT identity: two real
+  // identities of the same manager that can never be equal. Every user-mesh retirement was refused.
+  //
+  // WHY NOT ASSERT THE TERMINAL. `runAgentRetirementBarrier` cannot reach its terminal here: the
+  // final step needs `verifiedGone` from the delivery daemon's `evictPrincipal`, and this fixture
+  // runs no delivery daemon. Asserting "the name was released" would therefore be red for a reason
+  // that has nothing to do with authorization.
+  //
+  // WHY NOT ASSERT THE REFUSAL IS GONE. That is the wrong experiment, and it is the one I would
+  // most easily have run: a fix that only rewrote the refusal's wording would pass it. Measured on
+  // the broken tree, the string disappearing and the retirement working are genuinely different
+  // outcomes, because with the cross-check fixed the requests still fail further down.
+  //
+  // WHAT IS ASSERTED. The two durable facts the barrier writes BEFORE any of that, both of which a
+  // request refused at the cross-check never reaches: the operation intent row exists, and the
+  // agent's own issuance gate has moved from `open` to `frozen` under exactly that opId. The gate
+  // freeze is the load-bearing half: an intent row alone would only prove something was recorded,
+  // while the freeze proves the retirement began ACTING on the lifecycle.
+  //
+  // The opId is recomputed here rather than exported from the manager, because it is deterministic
+  // by contract (a stable op per retiring incarnation, so retries re-drive the same operation). If
+  // that derivation ever changes, this cell fails loudly rather than silently reading a stale key.
+  //
+  // FIXTURE HYGIENE. The freeze this cell waits for is real state left in the auth store, and a
+  // frozen gate is a known wedge class. It cannot wedge anything here: the row is `gate.<uid>` for
+  // delta's ONE stopped incarnation, `delta` is never spawned again below (the later cells use
+  // `alpha` and fresh names), and an issuance gate is keyed per lifecycle uid, so no later mint or
+  // registration reads it. The manager's OWN endpoint gate, which is the row whose freeze deadlocks
+  // a restart, is a different key family and is untouched.
+  {
+    const retireOpId = (uid: string): string => createHash("sha256").update(`retire:${uid}`).digest("hex").slice(0, 26);
+    // A `lifecycle-executor` pinned to delta. That profile is the one credential documented as able
+    // to READ (never write) other rows in the auth store for its one-shot lifetime, because its
+    // reads are body-selected `STREAM.MSG.GET` and a subject grant cannot see the requested key.
+    // It is used here rather than widening any production profile for a test, and it is pinned to
+    // exactly the incarnation under test.
+    const kvCreds = await mintCreds(auth, newIdentity(), "lifecycle-executor", {
+      lifecycleExecutor: { owner: OWNER, actor: "delta", lifecycleUid: deltaUid, alias: "delta" },
+    });
+    const kvNc = await rawConnect({ servers: SERVER, ...standaloneConnectOpts({ creds: kvCreds, tls: false }), maxReconnectAttempts: 0 });
+    try {
+      const authKv = await new Kvm(kvNc).open(epAuthBucket(SPACE));
+      // The retirement is single-flighted and driven off the despawn rather than awaited by it, so
+      // this polls to a deadline. A timeout leaves both observations at their last read, which is
+      // what the failure payload prints.
+      let intent: unknown, gateState: string | undefined, gateOp: string | undefined;
+      const deadline = Date.now() + 20_000;
+      while (Date.now() < deadline) {
+        const i = await authKv.get(`stage.${retireOpId(deltaUid)}`);
+        const g = await authKv.get(`gate.${deltaUid}`);
+        intent = i?.operation === "PUT" ? JSON.parse(new TextDecoder().decode(i.value)) as unknown : undefined;
+        const row = g?.operation === "PUT" ? JSON.parse(new TextDecoder().decode(g.value)) as { state?: string; op?: { opId?: string } } : undefined;
+        gateState = row?.state; gateOp = row?.op?.opId;
+        if (intent !== undefined && gateState === "frozen") break;
+        await wait(250);
+      }
+      check("the sibling stop's retirement was AUTHORIZED: the auth rail wrote its durable operation intent for delta's lifecycle",
+        (intent as { kind?: string; lifecycleUid?: string })?.kind === "retirement"
+        && (intent as { lifecycleUid?: string })?.lifecycleUid === deltaUid, { intent, deltaUid });
+      check("...and it ACTED: delta's own issuance gate is FROZEN under exactly that opId (an unauthorized request never reaches a gate)",
+        gateState === "frozen" && gateOp === retireOpId(deltaUid), { gateState, gateOp, expected: retireOpId(deltaUid) });
+    } finally {
+      await kvNc.close().catch(() => {});
+    }
+  }
   // THE SIBLING-WRITE VECTOR, executed on a real user mesh rather than argued from the mint table.
   // The two cells above are the reason it exists: on a user mesh the own-domain arm admits any seat
   // under the caller's owner, so `opsmate` attaches and stops an agent it never spawned. That is the
@@ -680,6 +794,32 @@ try {
   const adminInput = await epTargeted(auditor, "input", "alpha");
   check("cross-owner seat input with ledger admin passes, and reports the bytes it wrote",
     adminInput.ok === true && (adminInput.data as { bytes?: number })?.bytes === 8, adminInput);
+  // ---------- D1. an ADMIN-scope caller HEARS ITS OWN GOAL'S TERMINAL (#610, the admin fold) ----------
+  // `permissionsFor` folds the per-goal progress row on TWO branches, `spawn` and `admin`, and B1f
+  // covers only the first. Every other cell that follows a goal is minted with `spawn`, which
+  // supplies the same row, so reverting the admin branch alone left the whole suite green. This is
+  // the assertion that branch is missing: an admin-scope caller with NO `spawn` in its ledger row
+  // submits a goal-bearing command and hears its terminal, rather than being refused the follow.
+  console.log("D1) an admin-scope caller follows its own goal to a terminal (#610)");
+  {
+    const adminFollower = await ctlCaller("adminfollower", OWNER_B, ["admin"]);
+    const followErrors: string[] = [];
+    adminFollower.on("error", (e: unknown) => followErrors.push((e as Error)?.message ?? String(e)));
+    const t0 = Date.now();
+    const r = await adminFollower.invokeService("manager", "spawn", { name: "beta", agent: "e2e" }, { deadlineMs: 20_000, follow: true });
+    const elapsed = Date.now() - t0;
+    const code = r.reply.ok === true ? "ok" : (r.reply.error?.code ?? "?");
+    console.log(`   [D1 observed] code=${code} elapsed=${elapsed} msg=${(r.reply.error?.message ?? "").slice(0, 140)} errs=${JSON.stringify(followErrors)}`);
+    check("an admin-scope caller HEARS its own goal's terminal (the admin mint branch folds the progress row too)",
+      code === "ok" || code === "failed", { code, elapsed, message: r.reply.error?.message?.slice(0, 160), followErrors });
+    check(`...on the goal's own timing, not at the caller's budget (${elapsed}ms of 20000ms)`, elapsed < 15_000, elapsed);
+    check("...with no broker refusal on the admin follower's connection", followErrors.length === 0, followErrors);
+    if (r.reply.ok === true) {
+      const spawned = (r.reply.data as { name?: string })?.name ?? "beta";
+      await adminFollower.invokeService("manager", "despawn", { name: spawned, owner: OWNER_B }).catch(() => undefined);
+    }
+  }
+
   // Narrow the auditor back to [spawn] (upsert) — its NEXT exchange mints owner-mode-only rows, so a
   // cross-owner op loses the any-mode reach (the callout re-reads the ledger per exchange).
   await cotalAuthProvider.grantAgent({ store, dir, space: SPACE, owner: OWNER_B, actor: "auditor", scope: ["spawn"], allowSubscribe: [], allowPublish: [], lifecycleUid: mintLifecycleUid() });

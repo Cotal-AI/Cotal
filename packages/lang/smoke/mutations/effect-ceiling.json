@@ -7,8 +7,8 @@
     {
       "name": "every activation starts with a fresh allowance again",
       "file": "packages/lang/src/interpret.ts",
-      "find": "    this.effectCount = this.journal.dispatchedEffects();",
-      "replace": "    this.effectCount = 0;",
+      "find": "    this.effects = { journal: this.journal, options, ceiling: pins.effectCeiling, effectCount: this.journal.dispatchedEffects() };",
+      "replace": "    this.effects = { journal: this.journal, options, ceiling: pins.effectCeiling, effectCount: 0 };",
       "expectRed": "the resumed run reaches the ceiling the RUN was pinned to, not a fresh one",
       "completionMarker": "and stays well inside one yield interval (1024)",
       "cell": "the resumed run reaches the ceiling the RUN was pinned to, not a fresh one"

@@ -617,6 +617,10 @@ try {
   const r3b = await send(oneSubj("status"), req({ args: { name: 42 } }));
   c("args violating the input schema are bad-request BEFORE any effect",
     r3b !== undefined && r3b.reply.error?.code === "bad-request");
+  const r3x = await send(oneSubj("status"), req({ args: { name: "x", events: true } }));
+  c("a closed-contract refusal names the offending property over the wire (skew diagnosis starts there)",
+    r3x !== undefined && r3x.reply.error?.code === "bad-request" && (r3x.reply.error?.message ?? "").includes('"events"'),
+    JSON.stringify(r3x?.reply.error));
   const r3n = await send(oneSubj("status"), req({ args: null }));
   c("explicit-null args on an OBJECT-input command are bad-request through the SCHEMA (not the parser)",
     r3n !== undefined && r3n.reply.error?.code === "bad-request", JSON.stringify(r3n?.reply));
@@ -858,10 +862,10 @@ try {
   await nc.flush();
   for (let i = 0; i < 60 && gate === undefined; i++) await wait(25); // the handler is parked once gate is set
   c("the gated handler is in flight", gate !== undefined);
-  let stopped = false;
+  let stopped: boolean | undefined;
   const stopping = srvA.stop().then(() => { stopped = true; });
   await wait(400);
-  c("stop() does NOT report stopped while a handler is in flight", stopped === false);
+  c("stop() does NOT report stopped while a handler is in flight", stopped !== true);
   gate!();
   await stopping;
   c("stop() resolves once the in-flight handler finishes", stopped === true);

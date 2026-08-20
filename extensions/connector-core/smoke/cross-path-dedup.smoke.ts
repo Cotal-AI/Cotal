@@ -41,12 +41,12 @@ const incoming = new Map<string, number>();
 agent.on("incoming", (item) => incoming.set(item.id, (incoming.get(item.id) ?? 0) + 1));
 
 const meta: MessageMeta = { historical: false, kind: "channel" };
-const msg = (id: string): CotalMessage => ({
+const msg = (id: string, channel = "ch"): CotalMessage => ({
   id,
   ts: 1,
   space: cfg.space,
-  from: { id: "peer", name: "Peer", kind: "agent" },
-  channel: "ch",
+  from: { id: "peer", name: "Peer" },
+  channel,
   parts: [{ kind: "text", text: "hi" }],
 });
 // Counting deliveries: each ack bumps its own counter, so after drainInbox we can see exactly WHICH
@@ -308,7 +308,7 @@ try {
     for (let i = 0; i < 4100; i++) a2.ep.emit("message", msg(`focus-excluded-${i}`), mkDelivery(false, { n: 0 }), meta);
     (a2.ep as unknown as { joinedChannels(): string[] }).joinedChannels = () => ["ch", "other"];
     (a2.ep as unknown as { recallChannel(channel: string, since: number): Promise<{ messages: CotalMessage[]; dropped: boolean }> }).recallChannel =
-      async (channel) => ({ messages: channel === "other" ? [{ ...msg("other-normal"), channel: "other" }] : [], dropped: false });
+      async (channel) => ({ messages: channel === "other" ? [msg("other-normal", "other")] : [], dropped: false });
     const recall = await a2.recallAmbient();
     check("focus-exclusion cap reports the affected channel fail-closed", recall.droppedChannels.includes("ch"));
     check("focus-exclusion cap does not block unrelated normal recall", recall.items.some((i) => i.id === "other-normal"));

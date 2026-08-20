@@ -2,6 +2,7 @@
 // protocol to drive the host's turn loop, and journals everything it sees to
 // FAKE_CODEX_LOG (JSONL) so the smoke can assert on it. Turn behavior is scripted by
 // the injected text: TOOL:roster → call the cotal_* MCP endpoint the host is serving;
+// TOOLREC → also leave in the rollout the two records a real tool call leaves;
 // SLOW → hold the turn open ~1.2s (a steer window); HANG → hold until an interrupt
 // arrives, else self-interrupt after ~1s; FAIL → complete with status "failed";
 // default → complete.
@@ -10,7 +11,9 @@
 // websocket at all, they are fetched over the loopback HTTP endpoint named in its own
 // `-c mcp_servers.cotal.url` with the bearer token from its env. That is what makes the
 // smoke exercise the same path a TUI-initiated turn takes.
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import { WebSocketServer } from "ws";
 
 const logPath = process.env.FAKE_CODEX_LOG;
@@ -172,7 +175,72 @@ const serverRequest = (method, params) =>
     write({ jsonrpc: "2.0", id, method, params });
   });
 
-const THREAD = "t_fake";
+// ROLLOUT MODE (FAKE_CODEX_ROLLOUT=1 or =late). Off by default, so every existing cell keeps the
+// constant thread id it asserts on. On, this fake behaves like the real app-server in the two ways
+// the event plane depends on: each INCARNATION gets its OWN thread id, and the thread's activity is
+// appended to a rollout JSONL inside the CODEX_HOME it was handed. A constant id across a restart
+// is precisely what made the existing crash cell blind to the emitter defect, so the id has to move
+// for the same reason the real one does.
+const ROLLOUT = process.env.FAKE_CODEX_ROLLOUT ?? "";
+const THREAD = ROLLOUT === "" ? "t_fake" : randomUUID();
+/** `late` withholds the file until the SECOND turn, so the host's bounded first look misses it and
+ *  only a later retry can bind. A seat whose file appeared late must still publish what it wrote
+ *  before the bind, which is why turn one's records are appended to the file when it is created.
+ *
+ *  `restart-late` is the same withholding, but ONLY in the incarnation that follows a crash: the
+ *  first one writes its file at the primer inject like the real app-server does, and the SUCCESSOR
+ *  is the one whose file is slow. That combination is a state neither `1` nor `late` reaches, and
+ *  it is the one where a plane already bound to the dead thread has to notice that the thread it is
+ *  publishing is not the thread the seat is on. The marker file is written by the incarnation that
+ *  dies, so a successor reads it at load and a first incarnation never does. */
+const ROLLOUT_LATE = ROLLOUT === "late" || (ROLLOUT === "restart-late" && existsSync(DIED_MARK));
+let rolloutPath;
+const pendingRecords = [];
+const stamp = () => new Date().toISOString();
+
+function rolloutRecord(type, payload) {
+  if (ROLLOUT === "") return;
+  const line = JSON.stringify({ timestamp: stamp(), type, payload }) + "\n";
+  if (rolloutPath === undefined) pendingRecords.push(line);
+  else appendFileSync(rolloutPath, line);
+}
+
+/** Create the file, in the real nested shape, and drain anything written before it existed. */
+function materializeRollout() {
+  if (ROLLOUT === "" || rolloutPath !== undefined) return;
+  const home = process.env.CODEX_HOME;
+  if (!home) return;
+  const dir = join(home, "sessions", "2026", "08", "19");
+  mkdirSync(dir, { recursive: true });
+  const p = join(dir, `rollout-2026-08-19T00-00-00-${THREAD}.jsonl`);
+  writeFileSync(
+    p,
+    JSON.stringify({ timestamp: stamp(), type: "session_meta", payload: { id: THREAD, originator: "codex_app_server" } }) + "\n",
+  );
+  rolloutPath = p;
+  journal({ ev: "rollout", path: p, thread: THREAD });
+  for (const line of pendingRecords.splice(0)) appendFileSync(p, line);
+}
+/** A TURN THE SUITE HAS TO ORDER AGAINST SOMETHING THIS PROCESS CANNOT SEE.
+ *
+ *  `FAKE_CODEX_GO` names a file that does not exist yet, and the first turn writes not one record
+ *  until it does. The host binds its event plane without awaiting the bind and drives an
+ *  auto-submitted prompt a few awaits later, so a boot turn otherwise races the bind that decides
+ *  where the published stream starts. LOST ONLY SOMETIMES IS WORSE THAN LOST ALWAYS: a lost race
+ *  puts the turn's records behind the boundary, nothing can leak, and a test of the leak passes in
+ *  both worlds while discriminating nothing.
+ *
+ *  Deliberately unbounded. The suite releases the marker whether its own wait succeeded or expired,
+ *  so the only way to sit here forever is a suite that stopped caring, and a fake hanging under a
+ *  suite timeout is louder than a fixture that quietly proceeded and proved nothing. */
+const GO_MARK = process.env.FAKE_CODEX_GO ?? "";
+let goSpent = false;
+async function waitForGo() {
+  if (GO_MARK === "" || goSpent) return;
+  goSpent = true;
+  while (!existsSync(GO_MARK)) await new Promise((r) => setTimeout(r, 50));
+}
+
 let turnSeq = 0;
 let activeTurn;
 let interruptWaiter;
@@ -184,9 +252,11 @@ let soloUsed = false; // SOLOTUI is one-shot
 let foreignUsed = false; // FOREIGN is one-shot: the REDELIVERED batch must complete normally
 
 async function runTurn(text) {
+  await waitForGo();
   const turnId = `turn_${++turnSeq}`;
   activeTurn = turnId;
   activeTurnIsRace = text.includes("RACE");
+  rolloutRecord("event_msg", { type: "task_started", turn_id: turnId, started_at: stamp() });
   notify("turn/started", { threadId: THREAD, turn: { id: turnId, status: "inProgress" } });
 
   if (activeTurnIsRace) {
@@ -219,6 +289,21 @@ async function runTurn(text) {
     } catch (e) {
       journal({ ev: "toolReplyNoAuth", turnId, error: String(e) });
     }
+  }
+  if (text.includes("TOOLREC")) {
+    // THE ROLLOUT IS WHAT THE EVENT PLANE READS, so a turn that used a tool has to leave behind the
+    // records a real one leaves. `TOOL:roster` above calls MCP and writes to the JOURNAL, so that
+    // path puts no tool anywhere the plane can see. These are the two shapes the mapper reads, joined
+    // on `call_id`, and their strings are markers an assertion about a leak can name: the command
+    // line a shell call carries, and the output it returned.
+    const callId = `call_${turnSeq}`;
+    rolloutRecord("response_item", {
+      type: "function_call",
+      call_id: callId,
+      name: "shell",
+      arguments: JSON.stringify({ command: ["/bin/echo", `toolargs:${turnSeq}`] }),
+    });
+    rolloutRecord("response_item", { type: "function_call_output", call_id: callId, output: `tooloutput:${turnSeq}` });
   }
   if (text.includes("SOLOTUI") && !soloUsed) {
     // A turn the human started with NOTHING of ours open. The host must still pump its buffered
@@ -276,6 +361,23 @@ async function runTurn(text) {
   }
   const status = text.includes("FAIL") && !failUsed ? "failed" : "completed";
   if (status === "failed") failUsed = true;
+  if (status === "completed") {
+    rolloutRecord("response_item", {
+      type: "message",
+      role: "assistant",
+      id: `msg_${turnSeq}`,
+      content: [{ type: "output_text", text: `ok:${turnSeq}` }],
+    });
+  }
+  rolloutRecord("event_msg", {
+    type: "task_complete",
+    turn_id: turnId,
+    completed_at: stamp(),
+    error: status === "failed" ? { message: "fake failure", codex_error_info: "fake" } : null,
+  });
+  // The SECOND turn is what materializes the file in `late` mode: the first turn's records are
+  // buffered and land the moment it is created, so nothing written before the bind is lost.
+  if (ROLLOUT_LATE && turnSeq >= 2) materializeRollout();
   if (status === "completed")
     notify("item/completed", {
       threadId: THREAD,
@@ -358,7 +460,9 @@ function onChunk(d) {
         }
         break;
       case "thread/inject_items":
-        // The host primes the thread at start so a rollout exists for the TUI to resume.
+        // The host primes the thread at start so a rollout exists for the TUI to resume. That is
+        // also when the REAL app-server first writes the file: `thread/start` alone writes nothing.
+        if (!ROLLOUT_LATE) materializeRollout();
         reply(id, {});
         break;
       case "account/read":

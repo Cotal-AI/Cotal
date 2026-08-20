@@ -426,7 +426,21 @@ export function builtins(ctx: LibraryContext): readonly (readonly [string, unkno
     ["has", fn("has", (_f, a) => Object.prototype.hasOwnProperty.call(a[0] as object, a[1] as string), { any: [0] })],
     ["merge", fn("merge", (frame, a) => born({ ...(a[0] as object), ...(a[1] as object) }, frame.depth), { any: [0, 1] })],
     // arrays
-    ["len", fn("len", (_f, a) => (a[0] as { length: number }).length, { any: [0] })],
+    // len counts exactly the kinds that have a length OF THEIR OWN: an array's elements, a
+    // string's units. Nothing else may answer, because the only `length` anything else has is a
+    // HOST property (measured before this check: len of a program function answered 2 whatever
+    // parameters it declared, which is the arity of the interpreter's own wrapper; len of a
+    // builtin answered 0; len of a record, a number or a boolean silently answered undefined;
+    // len of null surfaced the host's TypeError text). The refusal happens here, before the
+    // host is reached, so no host property is ever read as a program value.
+    ["len", fn("len", (_f, a) => {
+      const v = a[0];
+      if (Array.isArray(v) || typeof v === "string") return v.length;
+      throw new RuntimeFault(
+        "L4016",
+        `len counts the elements of an array or the units of a string, and ${v === null ? "null" : v === undefined ? "undefined" : typeof v === "function" ? "a function" : typeof v === "object" ? "a record" : `a ${typeof v}`} has no length in this language: the only length a function has on the host is its parameter count, a property of the implementation's wrapper and not a program value. For a record's size, use \`len(keys(r))\`.`,
+      );
+    }, { any: [0] })],
     [
       "map",
       higher("map", async (frame, list, f) => {

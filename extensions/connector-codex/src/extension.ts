@@ -12,7 +12,7 @@ import { spawn } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
-import { aclEnv, connectorLaunchOptions, controlEndpoint, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
 /** Env the codex child genuinely needs beyond the OS allow-list: the API key (API-key auth) and
  *  the operator's CODEX_HOME override (the host resolves auth.json from it). Forwarded BY NAME,
@@ -125,6 +125,16 @@ export const codexConnector: Connector = {
   launchHint: "joining the mesh, then Codex opens",
   listModels: listCodexModels,
 
+  // The AG-UI event plane's subject, declared so the manager mints a grant for exactly the
+  // channel this seat will publish to.
+  //
+  // It is core's own derivation and is NOT re-derived here, so the channel the grant covers and
+  // the subject the session publishes to come from ONE function. A second derivation would be a
+  // second place the subject is decided, and the two would drift the first time either changed.
+  // It takes the PRINCIPAL: a display name is not an identity on this mesh, and a name-keyed
+  // channel would fuse two principals' streams onto one subject.
+  eventChannel,
+
   buildLaunch(opts: LaunchOpts): LaunchSpec {
     // Resuming isn't wired: a thread brought up with `thread/resume` does not carry the cotal_*
     // MCP surface. Verified against codex-cli 0.145.0 — the resume succeeds and the turn runs,
@@ -181,6 +191,31 @@ export const codexConnector: Connector = {
     // workspace, or the launch dir for a standalone spawn — never the per-agent cwd, which can
     // point at any repo (parity with the OpenCode connector's data root).
     env.COTAL_CODEX_HOME = opts.workspaceRoot ?? process.cwd();
+
+    // The AG-UI event plane. `COTAL_EVENTS` ARMS the emitter, and arming is not authorization: a
+    // publish grant on a channel is not a request to publish to it, so an agent file that can
+    // write `allowPublish` cannot turn on a stream of another seat's tool inputs and outputs by
+    // doing so.
+    //
+    // `COTAL_WORKSPACE_ROOT` rides with it because the write-ahead log has to live somewhere a
+    // LATER start will look, and there is no safe default: a log written under the launch cwd is
+    // invisible to the next start, which then reads an already-published thread as virgin and
+    // republishes sequences the stream has already seen.
+    //
+    // Deliberately NOT folded into `COTAL_CODEX_HOME` above, which falls back to the process cwd.
+    // That fallback is safe for an isolated codex home, which only ever has to be found by the
+    // process that wrote it. It is not safe for the log, which exists to be found by a process
+    // that has not started yet.
+    if (opts.events === true) {
+      env.COTAL_EVENTS = "1";
+      if (!opts.workspaceRoot)
+        throw new Error(
+          "codex connector: events were requested but the launch carries no workspaceRoot, so the " +
+            "event write-ahead log has nowhere to live that a later start would look. Refusing rather " +
+            "than defaulting to the working directory.",
+        );
+      env.COTAL_WORKSPACE_ROOT = opts.workspaceRoot;
+    }
 
     // An agent file carries identity (read in-session via COTAL_AGENT_FILE) plus persona (the
     // host injects it as thread developerInstructions) and model/variant defaults.

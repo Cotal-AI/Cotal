@@ -98,6 +98,21 @@ const AGENT_ROW_SCHEMA = {
     lifecycleUid: { type: "string" },
     authHealth: { type: "string" },
     authReason: { type: "string" },
+    // #651 enrichment, all OPTIONAL: per-seat facts the manager already records, surfaced by
+    // `cotal ps --wide`/`--json`. Optional because absence is real state: a launch may pin no
+    // model, and a runtime that does not own a real process (tmux/cmux/orca/herdr) has no pid.
+    // The row serializes a fact only when this backend recorded one - absent never means zero,
+    // empty, or fabricated. `spawner` is the authenticated requester id (`id`-shaped: an nkey or
+    // an owner.actor principal key); the owning manager's instance/host ride per-row so a
+    // multi-manager scatter view can attribute seats (#579 records the spawner's RAIL when it is
+    // itself a managed seat - not carried here, the manager does not hold it).
+    model: { type: "string" },
+    variant: { type: "string" },
+    cwd: { type: "string" },
+    pid: { type: "integer", minimum: 1 },
+    spawner: { type: "string" },
+    instanceId: { type: "string" },
+    host: { type: "string" },
   },
 } as const;
 

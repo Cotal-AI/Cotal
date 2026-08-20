@@ -6,13 +6,13 @@
   "mutations": [
     {
       "name": "the ok-path scope settle is stamped with the handler's clock at append time",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      frame.clock.now(),\n      {",
-      "replace": "      this.options.handler.now(),\n      {",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    frame.clock.now(),\n    settledFacts,",
+      "replace": "    host.options.handler.now(),\n    settledFacts,",
       "expectRed": "and the scope entry is stamped with that joined clock, not the handler's clock at append time",
       "completionMarker": "ok live, now() after a parallel is the join of the branch clocks",
       "cell": "and the scope entry is stamped with that joined clock, not the handler's clock at append time",
-      "note": "The section 9 handler makes the last effect to LAND record the SMALLER clock (sb lands last at 4000; sa recorded 9000), so the handler's clock at settle is 4000 while the joined branch clock is 9000. Only the joined stamp keeps live and resume agreeing on now()."
+      "note": "The section 9 handler makes the last effect to LAND record the SMALLER clock (sb lands last at 4000; sa recorded 9000), so the handler's clock at settle is 4000 while the joined branch clock is 9000. Only the joined stamp keeps live and resume agreeing on now(). RE-AIMED with branch-digest's, for the same refactor: the scope's settle facts are now assembled once into `settledFacts` and both settles write that, so the inline object this anchor ended on is gone. The mutant and its meaning are unchanged; only the two lines it names moved."
     }
   ]
 }

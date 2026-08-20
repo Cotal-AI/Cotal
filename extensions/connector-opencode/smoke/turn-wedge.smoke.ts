@@ -25,7 +25,7 @@ import { once } from "node:events";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CotalEndpoint, seedChannelRegistry, isReachable } from "@cotal-ai/core";
-import { cotal } from "../src/plugin.js";
+import { bootPlugin } from "./_boot-plugin.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
 
 async function freePort(): Promise<number> {
@@ -98,7 +98,7 @@ Object.assign(process.env, {
 });
 
 // Fire one opencode bus event at the plugin's `event` hook.
-type Hooks = Awaited<ReturnType<typeof cotal>>;
+type Hooks = Awaited<ReturnType<typeof bootPlugin>>;
 const fire = (hooks: Hooks, event: unknown) => hooks.event!({ event } as never);
 const chatMessage = (hooks: Hooks) =>
   (hooks as Hooks & {
@@ -126,7 +126,7 @@ try {
   await pub.start();
 
   // Boot the plugin (it connects its mesh agent in the background and creates session SID).
-  hooks = await cotal();
+  hooks = await bootPlugin();
   for (let i = 0; i < 50; i++) {
     if (pub.getRoster().some((p) => p.card.name === "Otto")) break;
     await sleep(100);

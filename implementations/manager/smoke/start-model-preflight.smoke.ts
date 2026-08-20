@@ -106,7 +106,12 @@ const agentCount = () => agentsMap().size;
 // A recording connector that requires `node` (present whenever this smoke runs) — captures the
 // LaunchOpts the manager hands it, so we can assert the model threads through verbatim. Declares
 // `supportsResume` so a resume request passes the pre-mint preflight and reaches buildLaunch.
+// The connector callback below is what assigns this, and the checker cannot follow a call into
+// a registered extension. A bare `x = undefined` reset therefore narrows the binding to
+// `undefined` for the rest of the block and every later read reports on `never`, so the reset
+// goes through a call, which leaves the declared type in place. Runtime behaviour is identical.
 let lastOpts: LaunchOpts | undefined;
+const resetOpts = () => { lastOpts = undefined; };
 const recCon: Connector = {
   kind: "connector",
   name: "smoke-rec",
@@ -118,7 +123,12 @@ registry.register(recCon);
 
 // A twin that passes the harness preflight (node present) but does NOT support resume — used to prove
 // the pre-mint resume preflight rejects BEFORE reaching buildLaunch (its buildLaunch must never run).
-let noResumeBuilt = false;
+// Only buildLaunch below assigns this, and the checker cannot follow a call into a registered
+// connector. An initialised flag reset with a bare assignment narrows to that literal, so a later
+// `=== true` reads as a comparison that cannot hold. Declared unset and reset through a call, the
+// binding keeps its declared type and the cells state the same claims.
+let noResumeBuilt: boolean | undefined;
+const resetNoResumeBuilt = () => { noResumeBuilt = undefined; };
 const recNoResumeCon: Connector = {
   kind: "connector",
   name: "smoke-norsm",
@@ -144,19 +154,19 @@ registry.register(recNoResumeCon);
 
 // 2 — Model THREADING through the manager into LaunchOpts (PATH restored → `node` present again).
 {
-  lastOpts = undefined;
+  resetOpts();
   const reply = await mgr.startAgent({ name: "rec1", agent: "smoke-rec", model: "sonnet" });
   check("present-binary connector passes preflight + spawns", reply.ok === true, reply);
   check("--model threads into LaunchOpts.model verbatim", lastOpts?.model === "sonnet", lastOpts?.model);
   check("built spec was captured (success path ran)", lastSpec?.command === "true");
 
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "rec2", agent: "smoke-rec" });
   check("no --model → LaunchOpts.model undefined", lastOpts?.model === undefined, lastOpts?.model);
 
   // ACL threading: the resolved read/post set must reach the connector via LaunchOpts (the bug —
   // it was minted into creds but never handed to buildLaunch, so the connector fell back to general).
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "rec3", agent: "smoke-rec" });
   check("persona subscribe threads into LaunchOpts.subscribe", JSON.stringify(lastOpts?.subscribe) === '["team"]', lastOpts?.subscribe);
   check("persona allowSubscribe threads into LaunchOpts", JSON.stringify(lastOpts?.allowSubscribe) === '["team","team.>"]', lastOpts?.allowSubscribe);
@@ -287,10 +297,10 @@ registry.register(recNoResumeCon);
     check(`${con.name}: no resume → builds normally`, built);
   }
   // MANAGER THREADING: startAgent({resume}) → LaunchOpts.resume verbatim, and absent → undefined.
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "rrec1", agent: "smoke-rec", resume: "sess-thread" });
   check("startAgent resume threads into LaunchOpts.resume", lastOpts?.resume === "sess-thread", lastOpts?.resume);
-  lastOpts = undefined;
+  resetOpts();
   await mgr.startAgent({ name: "rrec2", agent: "smoke-rec" });
   check("no resume → LaunchOpts.resume undefined", lastOpts?.resume === undefined, lastOpts?.resume);
 }
@@ -304,16 +314,16 @@ registry.register(recNoResumeCon);
   check("hermes supportsResume falsy", !hermesConnector.supportsResume, hermesConnector.supportsResume);
 
   // REJECT: smoke-norsm passes the node PATH check but declares no resume support.
-  noResumeBuilt = false;
+  resetNoResumeBuilt();
   const before = agentCount();
   const reply = await mgr.startAgent({ name: "norsm1", agent: "smoke-norsm", resume: "sess-x" });
   check("unsupported-connector resume rejected", reply.ok === false, reply);
   check("reject names 'does not support resuming'", /does not support resuming/.test(reply.error ?? ""), reply.error);
-  check("reject BEFORE buildLaunch (no spec built)", noResumeBuilt === false);
+  check("reject BEFORE buildLaunch (no spec built)", noResumeBuilt !== true);
   check("reject BEFORE side effect (no agent recorded)", agentCount() === before);
 
   // …but no resume → the same connector spawns normally (the preflight doesn't over-fire).
-  noResumeBuilt = false;
+  resetNoResumeBuilt();
   const ok = await mgr.startAgent({ name: "norsm2", agent: "smoke-norsm" });
   check("no resume → unsupported-resume connector still spawns", ok.ok === true, ok);
   check("no resume → buildLaunch reached", noResumeBuilt === true);

@@ -100,7 +100,21 @@ interface Pending {
   pullOnly: boolean;
 }
 
+/** Where a session's focus-mode recall has been read to: a timestamp plus the id that breaks its ties. */
+export interface RecallMark {
+  ts: number;
+  id: string;
+}
+
+/** Total order on {@link RecallMark}: by time, then by id, so items sharing a millisecond still queue. */
+export function afterRecallMark(a: RecallMark, b: RecallMark): boolean {
+  return a.ts !== b.ts ? a.ts > b.ts : a.id > b.id;
+}
+
 const MAX_INBOX = 200;
+/** How many future-stamped recall ids one session will remember having handed over. See
+ *  {@link MeshAgent.recallAheadRoom}. */
+const MAX_AHEAD = 256;
 const CLASSIFICATION_CAP = 4096;
 const FOCUS_EXCLUSION_CAP = 4096;
 const PROTECTED_DISPOSITION_CAP = 4096;
@@ -163,6 +177,11 @@ export class MeshAgent extends EventEmitter {
   private _connected = false;
   private _status: PresenceStatus = "idle";
   private _attention: AttentionMode = "open"; // F3: fail-open default; reset to open on SessionStart
+  private _recallCursor: RecallMark = { ts: 0, id: "" };
+  /** Recall items stamped ahead of this session's clock that it has already handed over. They are
+   *  tracked by id rather than by {@link _recallCursor}, because a sender's clock must not be able to
+   *  move this session's mark. Bounded by {@link MAX_AHEAD}. */
+  private aheadDelivered = new Set<string>();
   /** Per-channel attention overrides — the AUTHORITATIVE runtime state (read by {@link ingest} on
    *  every message). Seeded from the agent-file default; mutated by {@link setChannelMode}; mirrored
    *  to presence for peers. An absent key ⇒ that channel follows the global {@link _attention}. Reset
@@ -561,6 +580,106 @@ export class MeshAgent extends EventEmitter {
     return scope === "all" ? this.inbox.length : this.inbox.filter((p) => this.inScope(p, scope)).length;
   }
 
+  /**
+   * How far this session has read the focus-mode channel recall.
+   *
+   * {@link recallAmbient} re-derives the same items from an unchanged frontier on every call, so a
+   * reader that shows only what fits in one response would show the same prefix forever. This mark
+   * moves when a response actually delivered recall items, and it belongs to ONE walk over ONE
+   * frontier: it says how far this focus episode has read, not what the stream still holds, and
+   * {@link setAttention} forgets it whenever the frontier under it changes.
+   *
+   * WHAT THIS MARK DOES NOT OWN, said here so nothing above it claims otherwise. It orders what
+   * {@link recallAmbient} hands over; it does not decide what becomes recallable. A message that only
+   * becomes readable after this mark has passed its timestamp, through late persistence, is below the
+   * watermark and will not be walked to. That is governed by the frontier `recallAmbient` derives from
+   * ({@link chatFrontier} and the focus watermark), not here, and it is the same for any
+   * timestamp-ordered reader of that stream.
+   *
+   * What the mark DOES own is where it can be moved to, and only this session's own traffic may move
+   * it: an item stamped ahead of the local clock is walked by {@link recallAhead}, not by this mark,
+   * so no sender can push it past the messages it has not read yet.
+   */
+  get recallCursor(): RecallMark {
+    return this._recallCursor;
+  }
+
+  /**
+   * Record the last recall item actually handed to the caller.
+   *
+   * The mark is a PAIR, not a timestamp, because two recall items can share a millisecond: a
+   * timestamp alone either filters the twin out for good, if it advances past both, or re-serves the
+   * one already delivered, if it stops below them. Ordering by `(ts, id)` gives every item a place of
+   * its own, so the next call resumes strictly after the last one delivered.
+   */
+  noteRecalled(mark: RecallMark): void {
+    if (afterRecallMark(mark, this._recallCursor)) this._recallCursor = mark;
+  }
+
+  /**
+   * Does this recall item claim a time this session has not reached?
+   *
+   * `ts` is stamped by the SENDING endpoint, so it is neither trustworthy nor bounded, and a mark
+   * that walks it is a mark a peer can move. One message stamped far ahead otherwise parks
+   * {@link recallCursor} in the future: every ordinary message after it sorts below the mark, is
+   * filtered out of recall for the rest of the session, and the reply says there is no chatter. That
+   * is one peer suppressing OTHER peers' recall, which makes it a security property and not only a
+   * clock one, and the defence has to hold when the field is chosen rather than merely wrong.
+   *
+   * So the walk splits. An item at or behind this session's clock is ordered by its timestamp and
+   * moves the mark. An item ahead of it is not ordered at all and NEVER moves the mark: it is handed
+   * over once and remembered by id ({@link noteRecalledAhead}), so it neither leads the walk nor
+   * comes back on the next call.
+   *
+   * THE LANES SWAP MEMBERSHIP, and the record is what keeps them honest with each other. An item
+   * stamped just ahead of the clock crosses into the ordered lane the moment the clock passes it,
+   * arriving above a mark that never moved for it, so the reader has to consult
+   * {@link recallAheadSeen} there too or hand it over a second time. That crossing is the one part of
+   * this mechanism that cannot be staged by choosing timestamps, so its cell waits for real time
+   * rather than reasoning about it.
+   */
+  recallAhead(item: { ts: number }): boolean {
+    return item.ts > Date.now();
+  }
+
+  /** Has this future-stamped recall item already been handed over in this session? */
+  recallAheadSeen(id: string): boolean {
+    return this.aheadDelivered.has(id);
+  }
+
+  /**
+   * How many more future-stamped recall items this session will take responsibility for.
+   *
+   * Exactness costs memory, and that memory is what a flood of forged stamps would grow, so it is
+   * bounded. A caller must not hand over what it cannot record, or it will hand it over again on
+   * every call forever; past this bound it has to say so instead. Note where the cost lands: an item
+   * at or behind the clock never enters this set, so a peer that spends the whole bound spends it on
+   * ITS OWN messages and cannot use it to silence anyone else's.
+   */
+  recallAheadRoom(): number {
+    return MAX_AHEAD - this.aheadDelivered.size;
+  }
+
+  /** Record that a future-stamped recall item was actually handed to the caller. */
+  noteRecalledAhead(id: string): void {
+    if (this.aheadDelivered.size < MAX_AHEAD) this.aheadDelivered.add(id);
+  }
+
+  /**
+   * Forget how far a recall walk had read, because the thing it was walking is gone.
+   *
+   * The mark is session-local, which is a longer life than it can honestly carry: it describes a
+   * position in ONE walk over ONE frontier, and {@link setAttention} both drops the frontier on the
+   * way out of focus and captures a new one on the way in. Measured before this reset, a mark left
+   * over from an earlier focus episode filtered a new episode's messages out of recall whenever they
+   * were stamped behind it, which a lagging or a chosen clock produces. The focus watermark was
+   * already cleared here; the mark that walks it was not.
+   */
+  private resetRecallWalk(): void {
+    this._recallCursor = { ts: 0, id: "" };
+    this.aheadDelivered.clear();
+  }
+
   /** Buffered receive-time lane for one id. Undefined means it is no longer pending. */
   inboxScope(id: string): Exclude<InboxScope, "all"> | undefined {
     const pending = this.inbox.find((p) => p.item.id === id);
@@ -658,11 +777,13 @@ export class MeshAgent extends EventEmitter {
         throw error;
       }
       this.enteringFocus = false;
+      this.resetRecallWalk();
     } else {
       this.enteringFocus = false;
       this.focusSince = undefined;
       this.focusExcludedIds.clear();
       this.focusRecallUnsafeChannels.clear();
+      this.resetRecallWalk();
     }
     this._attention = mode;
     // Mirror to presence (advisory observability — peers can see "they're in focus"). Best-effort:
