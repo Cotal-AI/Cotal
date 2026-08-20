@@ -54,8 +54,14 @@ import {
  * ride on. The per-effect granularity the walker has does not come from this timer: every effect is
  * bracketed by durable appends, and the store below asks `shouldStop` on each one, so the flag is
  * current at every effect boundary the thread checks it at. What only the timer covers is a stop
- * arriving mid-stretch — a long pure loop (the thread also reads the flag at fuel yields) or an
- * effect parked in this process for hours — where no append is coming to carry the check.
+ * with no append coming to carry it: one arriving in the worker's boot window, after the upfront
+ * sample below but before the thread's first pre-effect check (measured: without the timer, one
+ * effect the stop should have prevented is dispatched), and one arriving while an effect is parked
+ * in this process for hours. A stop during a long PURE stretch is covered by neither the timer nor
+ * anything else: `shouldStop`'s one reader in the language is the pre-effect check, on both
+ * engines, so a program that computes without effecting runs to its fuel refusal (L4013) before
+ * any stop is honoured. That is the language's own property, shared with the walker, and a stop
+ * read at the fuel yield would be a change to both engines, not to this host.
  */
 const STOP_POLL_MS = 100;
 

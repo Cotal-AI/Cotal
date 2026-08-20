@@ -404,6 +404,51 @@ try {
     c("a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
       outcome === "rejected: the stop check exploded", outcome);
   }
+
+  // AND THE POLL ITSELF IS LOAD-BEARING, graded in the one window only it serves: an effect parked
+  // in the host with NO append traffic, and a stop that is true only inside that window (the
+  // handler raises it entering the park and lowers it leaving, so the append boundaries on either
+  // side of the park see nothing). Only the timer can carry that stop; without it the run
+  // COMPLETES, performing a second effect the operator's stop should have prevented. The park is
+  // six of the timer's periods with the event loop free, so a tick landing inside it is the timer
+  // contract itself, not a bet on load.
+  {
+    const sim = new SimHandler({});
+    let stopNow = false;
+    const enters: string[] = [];
+    const parking: EffectHandler = {
+      now: () => sim.now(),
+      spawn: async (r, x) => {
+        enters.push(r.persona);
+        if (r.persona === "x") {
+          stopNow = true;
+          await new Promise((res) => setTimeout(res, 600));
+          stopNow = false;
+        }
+        return sim.spawn(r, x);
+      },
+      turn: (r, x) => sim.turn(r, x),
+      ask: (r, x) => sim.ask(r, x),
+      checkpoint: (r, x) => sim.checkpoint(r, x),
+      sleep: (r, x) => sim.sleep(r, x),
+      wait: (r, x) => sim.wait(r, x),
+      notify: (r, x) => sim.notify(r, x),
+      monitor: (r, x) => sim.monitor(r, x),
+      openConclave: (r, x) => sim.openConclave(r, x),
+      closeConclave: (r, x) => sim.closeConclave(r, x),
+    };
+    const outcome = await runOnHostedEngine({
+      source: `const a = await spawn("x", { name: "s" })\nconst b = await spawn("y", { name: "t" })\nlog("done", 2)`,
+      runId: "d-7p",
+      pins: resolvePins({ runId: "d-7p" }, sim.now(), ENGINE_LANGUAGE_VERSION),
+      handler: parking,
+      store: { append: async () => {} },
+      entries: [],
+      shouldStop: () => (stopNow ? "operator stop" : undefined),
+    }).then(() => "completed", (e: Error) => e.name);
+    c("a stop only the poll can see, raised inside a parked effect with no append traffic, still stops the run at the next effect",
+      outcome === "RunReleased" && enters.length === 1, { outcome, enters });
+  }
 }
 
 // ── 7) pause: an operator stop is not a failure either ───────────────────────────────────────

@@ -49,6 +49,15 @@
       "expectRed": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
       "cell": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
       "note": "Rethrowing from the timer callback is exactly the unguarded shape this guard replaced: the throw lands on Timeout._onTimeout, bypasses the driver's catch, and without the cell's own uncaughtException trap it kills the host process (MEASURED at c24be213). The cell traps the escape so the kill is a named red rather than a dead suite."
+    },
+    {
+      "name": "the poll ticks but reads nothing, so a stop with no append traffic is never heard",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "      const reason = req.shouldStop();\n      if (reason !== undefined) worker.stop(reason);",
+      "replace": "      void req;",
+      "expectRed": "a stop only the poll can see, raised inside a parked effect with no append traffic, still stops the run at the next effect",
+      "cell": "a stop only the poll can see, raised inside a parked effect with no append traffic, still stops the run at the next effect",
+      "note": "The timer's one load-bearing window, measured: a stop true only while an effect is parked in the host reaches the run through no other path, because the append boundaries on either side of the park see the flag lowered. Neutered, the run completes and performs the second effect the stop should have prevented. Every other suite stayed green under this mutant before the cell existed."
     }
   ],
 
