@@ -105,6 +105,11 @@ function sendShutdown(path: string, token: string): Promise<string> {
 // that is written the way it reads. Expressed as a filter comprehension this strip was invisible to
 // it, so the file left the census's population altogether and the strip below became the one line
 // here that nothing graded. Same keys removed either way; this shape is the one that stays watched.
+//
+// SO DO NOT REWRITE IT AS A COMPREHENSION, however much tidier that reads. A static census defines
+// its population syntactically, which means a semantically identical rewrite can evict this file
+// from the watched set while leaving its behaviour exactly right, and nothing fails at the moment it
+// happens. That is how the coverage was lost the first time.
 const HOST_ENV = { ...process.env };
 for (const key of Object.keys(HOST_ENV)) if (key.startsWith("COTAL_") || key.startsWith("OPENCODE_")) delete HOST_ENV[key];
 
