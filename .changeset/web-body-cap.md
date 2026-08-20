@@ -15,5 +15,10 @@ too. It is never truncated to fit: a shortened channel name is a name the caller
 is the aliasing shape this route's validator already exists to refuse. Bodies under the cap, extra
 fields included, are untouched.
 
+The refusal also closes the connection the oversized body arrived on. Without that, a caller asking
+to keep the connection alive still got to send every byte, because the server reads the rest of a
+body to get the socket back for reuse: the refusal was early but the work was not bounded. Ordinary
+within-cap requests keep their connection and their socket stays reusable.
+
 `@cotal-ai/connector-core` is listed because it ships the docs bundle, which embeds the page this
 change updates and is regenerated here. Its only diff is that regenerated file.

@@ -66,6 +66,8 @@ const PADDED = "padded_me";   // deleted through a body just under the cap
 const PREFIX = "prefix_me";   // named in the first bytes of an OVERSIZED body; must survive
 const EDGE_CL = "edge_cl";    // deleted through a body of EXACTLY the cap, with a declared length
 const EDGE_TE = "edge_te";    // the same, with no declared length at all
+const KEEP_A = "keep_a";      // deleted over a keep-alive socket, first request
+const KEEP_B = "keep_b";      // deleted over the SAME socket, proving it stayed reusable
 const MSG = "seeded";
 
 const PORT = await freePort();
@@ -81,12 +83,12 @@ try {
   if (!up) throw new Error("nats-server did not start");
   await setupSpaceStreams({ servers: SERVER, space: SPACE });
 
-  const seed = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE],
+  const seed = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE, KEEP_A, KEEP_B],
     consume: false, registerPresence: false,
     card: { id: newIdentity().id, name: "seed", kind: "endpoint" } });
   seed.on("error", () => {});
   await seed.start();
-  for (const ch of [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE]) await seed.multicast(MSG, { channel: ch });
+  for (const ch of [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE, KEEP_A, KEEP_B]) await seed.multicast(MSG, { channel: ch });
   await seed.stop();
 
   const WEB_PORT = await freePort();
@@ -157,7 +159,8 @@ try {
   ok("1.0 the shipped `web` entry point serves at all", served, log.slice(-300));
   ok("1.1 CONTROL: every seeded channel holds its message, so every cell below is about the BODY and not about an empty broker",
     (await stillThere(SMALL)) && (await stillThere(PADDED)) && (await stillThere(PREFIX))
-    && (await stillThere(EDGE_CL)) && (await stillThere(EDGE_TE)));
+    && (await stillThere(EDGE_CL)) && (await stillThere(EDGE_TE))
+    && (await stillThere(KEEP_A)) && (await stillThere(KEEP_B)));
 
   console.log("2. under the cap, nothing changed");
   {
@@ -293,6 +296,125 @@ try {
     const r4 = await raw(CHUNKED_HEAD, Buffer.from(exact(PREFIX, CAP + 1), "utf8"), asChunks);
     ok("6.4 ...and one byte past it is refused on the read loop as well, with the channel it names untouched",
       r4.status.includes("413") && (await stillThere(PREFIX)), { status: r4.status, text: r4.text.slice(0, 160) });
+  }
+
+  console.log("7. the bound does not depend on a header the CALLER chooses");
+  {
+    // EVERY CELL ABOVE SENDS `Connection: close`, which is the arm where this cap looks perfect:
+    // the frame's reply closes the socket under a caller that is still uploading. On a keep-alive
+    // connection Node wants the socket back and reads the rest of the body to get it, so before
+    // the refusal carried `connection: close` a caller got to send all 30,000,000 bytes and the
+    // server spent six seconds reading them, with the 413 already on the wire at 2 ms. A bound a
+    // caller can lift by choosing a header is not a bound, and no cell above could see it because
+    // they all chose the header for it.
+    //
+    // BOTH GATES, SEPARATELY, because they end the request by different mechanisms and the refusal
+    // header is written after that has already happened. Throwing on the declared length leaves the
+    // request object intact; throwing out of the read loop abandons the iterator, which DESTROYS
+    // the request. A close header written onto an already-destroyed request is exactly the case
+    // where the other gate's result is worth nothing, so neither cell stands for the other.
+    //
+    // ASSERTED AS EVENTS, NOT AS A RATE. "How many bytes got through" is a race with however fast
+    // this machine drains a loopback socket, and a threshold on it is a cell that passes or fails
+    // for reasons that have nothing to do with the code. Each check below either happened or did
+    // not. The termination check is a CONTROL on the header being honoured rather than merely
+    // printed: it is satisfied eventually even without the fix, because the platform gives up on
+    // the promised body on its own at around 6003 ms. The header is what discriminates, and the
+    // measured 3 ms against 6003 ms is supporting evidence recorded here rather than an oracle.
+    //
+    // THE TWO ARMS ASSERT DIFFERENT THINGS, and that asymmetry is measured rather than tidied
+    // away. The declared arm sends NO body bytes, so the server has nothing unread when it closes
+    // and the caller reliably reads the 413. The chunked arm is mid-upload by construction, which
+    // leaves unread bytes, which makes the close an RST, which makes the caller discard a response
+    // it may already have buffered: a first version of the chunked cell asserted the 413 text and
+    // FAILED with an empty response on a run where the declared arm passed. That is this change's
+    // own stated limit arriving in its own suite, so the chunked cell asserts what the server owns
+    // rather than what the caller receives: the connection ended, the upload was cut off, and the
+    // OPERATOR line recorded the refusal.
+    const KEEPALIVE = "Connection: keep-alive\r\n";
+    ok("7.0 CONTROL: the requests below really do ask to KEEP the connection, so this section tests that header and not the close path every cell above uses",
+      KEEPALIVE.includes("keep-alive") && !KEEPALIVE.includes("close"));
+
+    const oversizedOverKeepAlive = async (declared: boolean): Promise<{ resp: string; closedAfterMs: number | null; afterClose: string; sent: number }> => {
+      const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" + KEEPALIVE +
+        (declared ? "Content-Length: 20000000\r\n\r\n" : "Transfer-Encoding: chunked\r\n\r\n");
+      let resp = "", sent = 0;
+      const piece = Buffer.alloc(65536, 0x61);
+      const sock = net.connect(WEB_PORT, "127.0.0.1", () => {
+        sock.write(head);
+        if (declared) return;   // no body at all: the DECLARED size is what refuses, and 5.0 already
+                                // owns "refuses without waiting for the body". Sending nothing here
+                                // keeps the close clean so this arm can assert the reply itself.
+        const pump = (): void => {   // no declared length: only the reading gate can stop this
+          while (sent < 20_000_000) {
+            if (sock.destroyed) return;
+            const okToWrite = sock.write(Buffer.concat([Buffer.from(piece.length.toString(16) + "\r\n"), piece, Buffer.from("\r\n")]));
+            sent += piece.length;
+            if (!okToWrite) { sock.once("drain", pump); return; }
+          }
+        };
+        pump();
+      });
+      sock.on("data", (d) => { resp += d.toString("latin1"); });
+      sock.on("error", () => {});
+      const closedAfterMs = await new Promise<number | null>((resolve) => {
+        const t0 = Date.now();
+        sock.on("close", () => resolve(Date.now() - t0));
+        setTimeout(() => resolve(null), 20_000);
+      });
+      const afterClose = await new Promise<string>((resolve) => {
+        if (!sock.writable) return resolve("not writable");
+        sock.write("b".repeat(1000), (e) => resolve(e ? `refused: ${(e as NodeJS.ErrnoException).code ?? e.message}` : "accepted"));
+        setTimeout(() => resolve("no callback"), 3000);
+      });
+      return { resp, closedAfterMs, afterClose, sent };
+    };
+
+    const dec = await oversizedOverKeepAlive(true);
+    ok("7.1 an oversized DECLARED body on a KEEP-ALIVE connection is refused and that connection ENDS, so the cap bounds what this server takes in rather than what the caller volunteers to stop sending",
+      dec.resp.includes("413") && /connection:\s*close/i.test(dec.resp) && dec.closedAfterMs !== null,
+      { status: dec.resp.split("\r\n")[0], closedAfterMs: dec.closedAfterMs, head: dec.resp.slice(0, 200) });
+    ok("7.2 ...and body bytes written after that cannot be delivered, which is the difference between a connection that ended and a refusal the caller may ignore",
+      dec.afterClose !== "accepted", dec.afterClose);
+
+    const beforeChunked = log.length;
+    const chk = await oversizedOverKeepAlive(false);
+    await wait(300);
+    const chunkedLog = log.slice(beforeChunked);
+    ok("7.3 an oversized CHUNKED body over keep-alive is cut off and RECORDED BY THE OPERATOR even though the uploading caller may get no readable reply, which is the durable half of the refusal and the half this change actually owns",
+      chk.closedAfterMs !== null && chk.sent < 20_000_000 && /8192 byte limit/.test(chunkedLog),
+      { closedAfterMs: chk.closedAfterMs, sentOf20MB: chk.sent, replyBytesTheCallerGot: chk.resp.length,
+        operatorLine: (chunkedLog.split("\n").find((l) => l.includes("8192 byte limit")) ?? "(none)").slice(0, 200) });
+    ok("7.4 ...and body bytes written after THAT cannot be delivered either",
+      chk.afterClose !== "accepted", chk.afterClose);
+  }
+  {
+    // THE NEGATIVE ARM, and it is the reason the four cells above are not free. Refusing by closing
+    // every connection would pass all of them by breaking the server for everyone, so an ordinary
+    // within-cap request has to leave its socket usable, and the proof is a SECOND request served
+    // on the SAME socket.
+    const req = (ch: string): string => {
+      const b = JSON.stringify({ channel: ch });
+      return "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
+        `Connection: keep-alive\r\nContent-Length: ${Buffer.byteLength(b)}\r\n\r\n${b}`;
+    };
+    let resp = "";
+    const sock = net.connect(WEB_PORT, "127.0.0.1");
+    sock.on("data", (d) => { resp += d.toString("latin1"); });
+    sock.on("error", () => {});
+    await new Promise<void>((r) => { sock.on("connect", () => r()); setTimeout(r, 5000); });
+    sock.write(req(KEEP_A));
+    for (let i = 0; i < 100 && !resp.includes("\r\n\r\n"); i++) await wait(100);
+    const first = resp;
+    ok("7.5 CONTROL: an ordinary within-cap delete over keep-alive is served, and its answer does NOT say the connection is closing",
+      first.includes("200") && !/connection:\s*close/i.test(first), first.slice(0, 200));
+    resp = "";
+    const reusable = sock.writable && !sock.destroyed;
+    if (reusable) sock.write(req(KEEP_B));
+    for (let i = 0; i < 100 && !resp.includes("\r\n\r\n"); i++) await wait(100);
+    ok("7.6 ...and a SECOND request is served on that same socket, so the remedy above ends the connection an oversized body was riding on and not keep-alive itself",
+      reusable && resp.includes("200") && resp.includes('"purged"'), { reusable, second: resp.slice(0, 200) });
+    sock.destroy();
   }
 } finally {
   webChild?.kill("SIGKILL");

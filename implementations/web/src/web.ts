@@ -867,28 +867,43 @@ export async function web(args: ParsedArgs): Promise<void> {
       const caller = status < 500;
       console.error(c[caller ? "yellow" : "red"](`${caller ? "~" : "!"} ${req.method ?? "GET"} ${req.url ?? "/"} ${caller ? "refused" : "failed"}: ${why}`));
       if (res.headersSent) return void res.end();
-      res.writeHead(status, { "content-type": "application/json" });
+      // END THE CONNECTION A REFUSED BODY WAS RIDING ON, or the cap bounds only what the caller
+      // volunteers. On a keep-alive connection Node wants the socket back, so rather than closing
+      // under a caller that is still uploading it reads and discards the rest of the body first.
+      // The refusal is on the wire in 2 ms either way and the caller still gets to send all of it.
+      //
+      // MEASURED against the shipped route, one 30,000,000 byte post per row:
+      //   connection: close        3,211,264 of 30,000,000 accepted, +0 MB,   508 ms
+      //   connection: keep-alive  30,000,000 of 30,000,000 accepted, +32 MB, 6516 ms
+      // and with this header the keep-alive row becomes 3,407,872 accepted, +0 MB, 505 ms.
+      // The connection itself also stops lingering: a refused keep-alive request ends in 3 to 4 ms
+      // rather than sitting until the platform gives up on the body it was promised, at 6003 ms.
+      //
+      // The trade, stated rather than assumed: a caller can now force a new connection per refusal.
+      // That is cheaper than letting it spend the server's memory and six seconds of reading, and a
+      // caller that wanted connection churn could open connections without our help. Section 7 of
+      // the suite carries the negative arm: an ordinary within-cap request keeps its socket.
+      //
+      // WHAT THIS DOES NOT REACH. It is the connection this process owns. A reverse proxy that
+      // buffers a request before forwarding it owns its own ingress bound, and `connection` is
+      // hop-by-hop, so nothing here configures anything upstream of this server.
+      res.writeHead(status, e instanceof PayloadTooLarge
+        ? { "content-type": "application/json", connection: "close" }
+        : { "content-type": "application/json" });
       res.end(JSON.stringify({ error: why }));
-      // A REFUSAL THE CALLER MAY NOT GET TO READ, and this line is a measured mitigation rather
-      // than a cure, so it says so. Closing the socket while the caller is still uploading leaves
-      // unread bytes in the receive buffer; that close goes out as an RST, and an RST makes the
-      // peer discard the response it had already buffered. Resuming the request discards the
-      // remainder WITHOUT collecting it, which lets more of those closes be clean.
+      // NO DRAIN HERE, DELIBERATELY. An earlier version resumed the request after answering, on the
+      // theory that discarding the remainder let more closes be clean and so let more callers read
+      // the 413. Three independent measurements, two of them from other people on another machine,
+      // could not reproduce any effect: the direction did not hold, and a real `fetch` client read
+      // the refusal in every arm with or without it. A line whose only defence is that it is
+      // harmless is not worth carrying, and once the refusal closes the connection there is no
+      // socket being kept for it to be for.
       //
-      // MEASURED, equal arms, 200 posts of 30 MB each against a local broker: 144/200 callers read
-      // the 413 without this line, 176/200 with it. Better, not solved. Small samples said 9/10 and
-      // then 20/20 three times, which is why the number here comes from 200 and not from 10.
-      //
-      // The residue is not a defect in this code, it is the trade the cap exists to make: a server
-      // that cuts a caller off mid-upload cannot also guarantee the caller reads its answer, and a
-      // server that guarantees the answer is the unbounded read this is replacing. The refusal that
-      // is NEVER lost is the operator line above, which is written before the response is.
-      //
-      // What this is not: it is not reading the body before complaining. The complaint is already
-      // on the wire when this runs, and nothing arriving after it is kept, parsed, or answered. Nor
-      // does it let a slow caller hold the connection: a chunked trickle past the cap is refused at
-      // 8,204 bytes with the socket closed 1 ms later, and a declared oversize never gets that far.
-      if (e instanceof PayloadTooLarge) req.resume();
+      // WHETHER THE UPLOADING PEER READS THE 413 IS BEST EFFORT AND NOT CLAIMED. Cutting a caller
+      // off mid-upload leaves unread bytes in its receive buffer, that close goes out as an RST,
+      // and an RST makes the peer discard the response it had already buffered. That is the trade
+      // the cap exists to make, and the alternative is the unbounded read this replaces. The
+      // refusal that is never lost is the operator line above, written before the response is.
     });
   });
 

@@ -57,6 +57,20 @@
       "find": "  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");",
       "replace": "  if (Number.isFinite(declared) && declared >= MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");",
       "expectRed": "6.1 a body of EXACTLY the cap is accepted and purges: the limit is a ceiling the caller may reach, not one it must stay under"
+    },
+    {
+      "name": "C9 the refusal no longer ends the connection it arrived on, so a caller that asks to keep it alive is not cut off: Node reads the rest of the body to get the socket back, and the cap bounds only what a caller volunteers to stop sending",
+      "file": "implementations/web/src/web.ts",
+      "find": "      res.writeHead(status, e instanceof PayloadTooLarge\n        ? { \"content-type\": \"application/json\", connection: \"close\" }\n        : { \"content-type\": \"application/json\" });",
+      "replace": "      res.writeHead(status, { \"content-type\": \"application/json\" });",
+      "expectRed": "7.1 an oversized DECLARED body on a KEEP-ALIVE connection is refused and that connection ENDS, so the cap bounds what this server takes in rather than what the caller volunteers to stop sending"
+    },
+    {
+      "name": "C10 a size refusal stops reaching the operator log, leaving the ONE report of it that a reset connection cannot lose: the caller mid-upload may never read the 413, so with this line gone an oversized request is refused silently as far as anyone running the dashboard can tell",
+      "file": "implementations/web/src/web.ts",
+      "find": "      console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${req.url ?? \"/\"} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
+      "replace": "      if (!(e instanceof PayloadTooLarge)) console.error(c[caller ? \"yellow\" : \"red\"](`${caller ? \"~\" : \"!\"} ${req.method ?? \"GET\"} ${req.url ?? \"/\"} ${caller ? \"refused\" : \"failed\"}: ${why}`));",
+      "expectRed": "7.3 an oversized CHUNKED body over keep-alive is cut off and RECORDED BY THE OPERATOR even though the uploading caller may get no readable reply, which is the durable half of the refusal and the half this change actually owns"
     }
   ]
 }

@@ -148,10 +148,11 @@ purged a channel you did not name, while the answer showed you the name you type
 wildcard at all, so the one destructive control names exactly one channel.
 
 The delete request itself is capped at 8 KiB, which is far more than a channel name can be and far
-less than a machine can spend. A larger body is refused with a `413` naming the limit, and the
-server stops reading it rather than taking it all in first and complaining afterwards. It is never
-shortened to fit: a trimmed name is a name you did not type, which is the thing the paragraph above
-exists to prevent.
+less than a machine can spend. A larger body is refused with a `413` naming the limit, the server
+stops reading it rather than taking it all in first and complaining afterwards, and the connection
+that body arrived on is closed so the rest of it cannot be sent. It is never shortened to fit: a
+trimmed name is a name you did not type, which is the thing the paragraph above exists to prevent.
+Ordinary requests keep their connection as usual.
 
 **Message bodies render Markdown** (headings, lists, **bold**, `code`, blockquotes, links) across
 the Monitor, channel, and DM views, parsed and sanitized client-side. Agent text is untrusted, so
