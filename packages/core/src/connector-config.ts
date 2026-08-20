@@ -49,18 +49,9 @@ export interface ConnectorConfig {
   mcpServers?: Record<string, McpServerSpec>;
 }
 
-/** Machine-local policy for what a SPAWNED AGENT's process environment contains.
- *
- *  Absent (the default) means the child inherits the operator's environment, because a harness they
- *  installed and configured should behave under `cotal spawn` the way it behaves when they run it
- *  themselves. Cotal still resets its own `COTAL_*` namespace either way; that is identity, not
- *  preference, and it is not configurable.
- *
- *  `env` PRESENT opts into containment: the child gets a fixed OS allow-list plus exactly these
- *  names. An EMPTY array is a real policy (the OS allow-list alone), which is why the mode turns on
- *  presence and never on length. Use it when secrets live only in the environment and never on
- *  disk - an `aws-vault exec` or `op run` shell, CI-injected values - and know that it does nothing
- *  about `~/.aws` or `~/.ssh`, which a child with a shell reads regardless. */
+/** Deliberate extra environment names for a spawned agent. The default launch boundary is a fixed
+ *  OS allow-list plus connector-declared provider inputs. `env` adds named capability to that
+ *  boundary. An empty array is valid and adds nothing. */
 export interface SpawnConfig {
   env?: string[];
 }
@@ -119,10 +110,8 @@ function mergeConfig(base: CotalConfig, over: CotalConfig): CotalConfig {
     const o = over.connectors?.[name];
     connectors[name] = { ...b, ...o, mcpServers: { ...(b?.mcpServers ?? {}), ...(o?.mcpServers ?? {}) } };
   }
-  // `spawn` replaces WHOLESALE rather than merging per key the way servers do. An allow-list is one
-  // policy statement, and a space-local file that names three variables means those three, not those
-  // three plus whatever the operator-level file happened to list. Silently unioning two allow-lists
-  // would widen the narrower one, which is the wrong direction for a containment setting.
+  // `spawn` replaces wholesale rather than merging per key. An explicit local list means those
+  // names, not those plus a wider operator-level list.
   const spawn = over.spawn ?? base.spawn;
   return spawn === undefined ? { connectors } : { connectors, spawn };
 }
@@ -170,10 +159,8 @@ export function parseShareSelection(value: string | undefined): readonly string[
     .filter(Boolean);
 }
 
-/** The spawned-agent env allow-list an operator declared, or `undefined` when they declared none
- *  (the inherit default). The caller passes this straight to `LaunchOpts.envAllow`; distinguishing
- *  "declared empty" from "not declared" is the whole point, so this returns the array as written
- *  rather than defaulting it. */
+/** Extra spawned-agent environment names the operator declared. Undefined means no extras; the
+ *  caller preserves an empty declaration and passes the value to `LaunchOpts.envAllow`. */
 export function spawnEnvAllow(config: CotalConfig): readonly string[] | undefined {
   return config.spawn?.env;
 }

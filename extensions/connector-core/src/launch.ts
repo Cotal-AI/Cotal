@@ -1,45 +1,20 @@
 /**
  * The spawned-agent env (P3) - the single chokepoint for what a child process sees.
  *
- * DEFAULT: a spawned agent INHERITS the operator's environment. A coding harness the operator
- * installed and configured should behave under `cotal spawn` the way it behaves when they run it
- * themselves, and Cotal has no business holding an opinion about which inference providers exist or
- * which variables a harness reads. The list of vendor key names that used to live here was the tell:
- * every new provider needed a change in Cotal before it would work through a managed spawn.
+ * Connectors build the child's env as `{ ...launchEnv(...), <COTAL_* identity>, <connector vars> }`
+ * and runtimes pass only that env. The default is a fixed OS allow-list plus connector-declared
+ * values, never the operator's ambient environment. This is a capability boundary: agent sockets,
+ * temporary cloud credentials, source-control tokens, and unrelated secrets are usable authority,
+ * not harness preference. An operator deliberately expands it only through `spawn.env`.
  *
- * EXCEPT Cotal's own `COTAL_*` namespace, which is RESET. That is not an opinion about the
- * operator's environment; it is Cotal refusing to let one agent's identity become another's. A
- * connector re-supplies the `COTAL_*` a child should have, but many of those assignments are
- * CONDITIONAL - {@link aclEnv} omits an empty ACL so the connector can defer to the persona file,
- * {@link materialEnv} returns `{}` when a launch carries nothing to hand over, `if (opts.role)`,
- * `if (opts.lifecycleUid)` - so an inherited value is never overwritten and survives into a child
- * that was never granted it.
+ * Connection material follows the same boundary in the other direction. {@link materialEnv} puts a
+ * seat's credential, broker URL, and control token in a private file instead of ambient process
+ * state, so descendants do not receive them merely by being launched from the seat.
  *
- * The prefix is stripped WHOLESALE rather than by a named deny-list, because the danger is
- * ASYMMETRY rather than any single omission: `COTAL_EVENTS` and `COTAL_WORKSPACE_ROOT` are set by
- * opencode/claude/codex and NOT by hermes/pi, `COTAL_CHANNEL` only by claude, `COTAL_VARIANT` only
- * by opencode/codex, the `COTAL_CODEX_*` family only by codex. A hand-maintained deny-list names
- * what its author remembers. The repo has a worked example: six suite files reached main each
- * blanking exactly `COTAL_SPACE`, `COTAL_SERVERS` and `COTAL_CREDS` by hand before spreading
- * `...process.env` into a `cotal attach` child, which let the lifecycle uid, the control token, both
- * identity quads and {@link LAUNCH_MATERIAL_ENV} through to a process that reads connection
- * material. {@link OPERATOR_ENV_KEEP} is the inverse and is safe for the same reason a deny-list is
- * not: every name on it is one no connector assigns per spawn, so a new connector cannot invalidate
- * it by forgetting something.
- *
- * OPT-IN CONTAINMENT: an operator who wants the child confined sets `spawn.env` in the cotal config
- * file; the caller resolves it and passes it as `envAllow`. The child then gets the OS allow-list
- * plus exactly the names declared there, and nothing else.
- *
- * Scope this is HONEST about (P6). NEITHER mode closes filesystem secret access: HOME / XDG /
- * platform config dirs are forwarded either way, so a child with a shell reads ~/.aws, ~/.ssh,
- * ~/.config and ~/.cotal straight off disk. An allow-list stops env-ONLY secrets - an
- * `aws-vault exec` or `op run` shell, CI-injected values - and nothing that has a file behind it.
- * Nor does either mode close model-key exfil: a key-based agent holds its provider key in its own
- * process in order to do inference. What DOES narrow under inherit is that Cotal's own connection
- * material is no longer in the environment at all: {@link materialEnv} moved the credential, the
- * broker address and the control token behind a 0600 file, so what a child now inherits from the
- * `COTAL_*` namespace is a path this function removes, not a secret.
+ * Scope: this protects environment-only values. HOME and platform config directories remain in the
+ * OS allow-list, so a child with a shell can still read accessible files. A sandbox or VM is needed
+ * to constrain filesystem access. A provider key deliberately supplied to a child is necessarily
+ * available to that child's process.
  */
 import {
   eventChannel,
@@ -107,87 +82,35 @@ const OS_ENV_ALLOW = [
   "PUBLIC",
 ] as const;
 
-/** Cotal's own per-session namespace. Everything under this prefix is reset before a child starts,
- *  except {@link OPERATOR_ENV_KEEP}. Compared case-INSENSITIVELY: Windows env lookup is
- *  case-insensitive, so a stray `Cotal_Creds` must not slip past a case-sensitive test. */
-const SESSION_ENV_PREFIX = "COTAL_";
-
-/** The `COTAL_*` an operator sets MACHINE-WIDE, which a child legitimately needs. The qualifying
- *  property is not "harmless" but "no connector assigns it per spawn": a name no launch path writes
- *  cannot carry one agent's grant into another, which is why this list stays correct as connectors
- *  are added and a deny-list would not. `COTAL_HOME` is the load-bearing entry - it redirects the
- *  mesh registry, and a child that shells out to `cotal` must resolve the one its parent did.
- *  `COTAL_CODEX_BIN` and its siblings are operator binary overrides, and sit here precisely BECAUSE
- *  the neighbouring per-launch `COTAL_CODEX_HOME`/`_CONFIG`/`_TUI`/`_PROMPT` do not. */
-export const OPERATOR_ENV_KEEP = [
-  "COTAL_HOME",
-  "COTAL_FEEDBACK_KEY",
-  "COTAL_FEEDBACK_EMAIL",
-  "COTAL_FEEDBACK_URL",
-  "COTAL_DEFAULT_AGENT",
-  "COTAL_DEFAULT_PERSONA",
-  "COTAL_SKIP_CONNECTOR_SEED",
-  "COTAL_SKIP_ASSIST",
-  "COTAL_DETACH_KEY",
-  "COTAL_COMPLETE_DEBUG",
-  "COTAL_DEBUG",
-  "COTAL_SERVE_HEADLESS",
-  "COTAL_EVENTS_DEFAULT",
-  "COTAL_MEMBERSHIP_INTERVAL_MS",
-  "COTAL_DELIVERY_BROKER_GONE_MS",
-  "COTAL_IDP_TIMEOUT_MS",
-  "COTAL_CODEX_BIN",
-  "COTAL_OPENCODE_BIN",
-  "COTAL_ORCA_BIN",
+/** Model-provider API keys a key-based connector may forward to its child. Claude needs none
+ *  (macOS Keychain / OAuth token, not an env key). Other connectors name the keys they support and
+ *  the launcher copies only those names, never the ambient environment. */
+export const MODEL_PROVIDER_KEYS = [
+  "OPENCODE_API_KEY",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "NOUS_API_KEY",
 ] as const;
 
-/** Build the base env a spawned agent runs with.
- *
- *  DEFAULT (`envAllow` absent): the operator's environment minus {@link SESSION_ENV_PREFIX}, keeping
- *  {@link OPERATOR_ENV_KEEP}. The connector layers this child's own `COTAL_*` on top, so every
- *  per-session name it ends up with was granted to IT.
- *
- *  OPT-IN (`envAllow` present, from the config file's `spawn.env`): the OS allow-list plus exactly
- *  the declared names and `mcpKeys` (the `${VAR}` secrets a shared MCP server references, see
- *  {@link mcpServerEnvKeys}). Each is copied BY NAME and only when present. An EMPTY array is a real
- *  policy - the OS allow-list alone - and not "unset", which is why the mode is chosen on
- *  `!== undefined` rather than on length.
- *
- *  Allow-list matching is CASE-INSENSITIVE and each value is copied under the OS's OWN key casing:
- *  Windows spells these `Path`/`ComSpec`/`windir`, so a canonical-only copy would either miss them
- *  (a plain read of `process.env.SystemRoot` differs from `process.env.systemroot`) or, worse, emit
- *  BOTH `Path` and `PATH` - a case-duplicate Windows process creation chokes on. Keying off the
- *  source env's actual casing (one entry per lowercased name) forwards each var exactly once. */
+/** Build the base env a spawned agent runs with: the fixed OS allow-list plus connector-declared
+ *  provider keys, shared-MCP `${VAR}` references, and an explicit operator `spawn.env` extension.
+ *  Every name is copied from the launcher environment only when present. Matching is
+ *  case-insensitive and preserves the OS's source key casing, avoiding Windows case duplicates. */
 export function launchEnv(
-  opts: { mcpKeys?: readonly string[]; envAllow?: readonly string[] } = {},
+  opts: { providerKeys?: readonly string[]; mcpKeys?: readonly string[]; envAllow?: readonly string[] } = {},
 ): Record<string, string> {
-  if (opts.envAllow !== undefined) {
-    const env: Record<string, string> = {};
-    // lowercased name -> the OS's actual key casing; one entry per var (the OS env has no case-dup),
-    // so every allow-list name resolves to a single source key and the result carries no case-dup.
-    const sourceKey = new Map<string, string>();
-    for (const k of Object.keys(process.env)) sourceKey.set(k.toLowerCase(), k);
-    const copy = (name: string): void => {
-      const src = sourceKey.get(name.toLowerCase());
-      if (src === undefined) return;
-      const v = process.env[src];
-      if (v !== undefined) env[src] = v;
-    };
-    for (const k of OS_ENV_ALLOW) copy(k);
-    for (const k of [...opts.envAllow, ...(opts.mcpKeys ?? [])]) copy(k);
-    return env;
-  }
-
-  // Inherit. `mcpKeys` needs no handling in this mode: a `${VAR}` a shared MCP server references is
-  // already in the operator's environment, which is what the child is being given.
-  const keep = new Set<string>(OPERATOR_ENV_KEEP);
   const env: Record<string, string> = {};
-  for (const [k, v] of Object.entries(process.env)) {
-    if (v === undefined) continue;
-    const canon = k.toUpperCase();
-    if (canon.startsWith(SESSION_ENV_PREFIX) && !keep.has(canon)) continue;
-    env[k] = v;
-  }
+  const sourceKey = new Map<string, string>();
+  for (const k of Object.keys(process.env)) sourceKey.set(k.toLowerCase(), k);
+  const copy = (name: string): void => {
+    const src = sourceKey.get(name.toLowerCase());
+    if (src === undefined) return;
+    const v = process.env[src];
+    if (v !== undefined) env[src] = v;
+  };
+  for (const k of OS_ENV_ALLOW) copy(k);
+  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);
   return env;
 }
 

@@ -22,6 +22,9 @@ const HOST_COMMAND = FROM_BUILD
   ? process.execPath
   : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
+/** API-key auth and an explicit operator Codex home are the only ambient inputs this host needs. */
+const CODEX_ENV_KEYS = ["OPENAI_API_KEY", "CODEX_HOME"] as const;
+
 /** Discovery env for `listModels`: the operator's own codex (their CODEX_HOME/auth), with the
  *  mesh identity scrubbed so a catalog probe can never look like a managed session. */
 function discoveryEnv(): NodeJS.ProcessEnv {
@@ -151,7 +154,7 @@ export const codexConnector: Connector = {
     // Minted before the env is built: the token goes into the launch material, the path into the env.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ envAllow: opts.envAllow }),
+      ...launchEnv({ providerKeys: CODEX_ENV_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
       // host drops even that once it has read it, so a shell this seat runs inherits neither.

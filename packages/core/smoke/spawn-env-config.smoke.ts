@@ -2,12 +2,9 @@
  * The config layering behind `spawn.env`, exercised through `loadCotalConfig` rather than through
  * the merge function it calls.
  *
- * WHY THIS EXISTS. `spawn` is the first top-level config key besides `connectors`, and adding it
- * uncovered that `mergeConfig` returned `{ connectors }` - so every other top-level key a config
- * file declared was silently discarded on the way through. That was latent rather than harmful only
- * because no such key existed yet. Nothing anywhere referenced `loadCotalConfig`, `mergeConfig` or
- * `spawnEnvAllow`, so the layering path had no coverage at the moment it acquired its first real
- * user, and the fix for the discard had none either.
+ * WHY THIS EXISTS. `spawn` is a top-level config key beside `connectors`, and its names must survive
+ * loading and local replacement exactly. Nothing elsewhere reaches `loadCotalConfig`, `mergeConfig`,
+ * and `spawnEnvAllow` together, so this keeps the operator declaration path observable.
  *
  * WHY THROUGH `loadCotalConfig`. `mergeConfig` is not exported, and testing a merge by calling it
  * directly would prove the merge works without proving the loader reaches it. These cells write real
@@ -53,12 +50,8 @@ function cell(name: string, fn: () => void): void {
 }
 
 try {
-  // --- the discard this PR fixed -------------------------------------------------------------
-  // The load-bearing one. Before the fix the merge returned `{ connectors }`, so an operator-level
-  // `spawn` block vanished the moment ANY config layering happened - which is every load, since the
-  // loader always layers two files. A cell that only ever set `spawn` on one side would pass against
-  // the broken merge too, so the space-local file here carries a `connectors` key: that is what makes
-  // the merge produce a fresh object and drop everything it does not name.
+  // The load-bearing layering cell. The local file carries connectors so the loader must preserve
+  // the independent operator-level spawn block while it combines both sources.
   cell("operator-level spawn survives layering when the space file declares something else", () => {
     const cfg = load(
       { spawn: { env: ["OPERATOR_ONLY_KEY"] }, connectors: { claude: {} } },
@@ -84,33 +77,23 @@ try {
     );
   });
 
-  // --- the three distinct empty states ---------------------------------------------------------
-  // `absent`, `{}` and `[]` are three different statements and the loader must not conflate them.
-  cell("no spawn block anywhere means no allow-list, so the child inherits", () => {
+  // --- absence and empty declarations ----------------------------------------------------------
+  // Both add no extra environment names. They remain distinguishable in config only so layering can
+  // preserve an operator's explicit local replacement rather than silently unioning a wider list.
+  cell("no spawn block means no additional environment names", () => {
     assert.equal(spawnEnvAllow(load(undefined, undefined)), undefined);
     assert.equal(spawnEnvAllow(load({ connectors: {} }, { connectors: {} })), undefined);
   });
 
-  cell("an empty env ARRAY is a real policy: the OS allow-list alone, not 'unset'", () => {
-    const cfg = load(undefined, { spawn: { env: [] } });
-    const allow = spawnEnvAllow(cfg);
-    assert.notEqual(allow, undefined, "an empty array must not read as an absent policy");
-    assert.deepEqual(allow, [], "an empty array means the OS allow-list alone");
+  cell("an empty env array remains an explicit empty additional-name list", () => {
+    assert.deepEqual(spawnEnvAllow(load(undefined, { spawn: { env: [] } })), []);
   });
 
-  // The behaviour a reviewer flagged as a footgun, pinned deliberately rather than left to be
-  // rediscovered. Replace semantics mean a space-local `spawn` block replaces the operator-level one
-  // WHOLE, so `{}` is a space saying "no allow-list here" and the machine-wide list does not apply.
-  // That is the documented rule rather than an oversight, and it is written down as a cell so that
-  // changing it has to be a decision rather than a drift.
-  cell("a space-local empty spawn block drops the operator-level allow-list (replace, not merge)", () => {
-    const cfg = load({ spawn: { env: ["MACHINE_WIDE"] } }, { spawn: {} });
+  cell("a space-local empty spawn block replaces an operator extra-name list", () => {
     assert.equal(
-      spawnEnvAllow(cfg),
+      spawnEnvAllow(load({ spawn: { env: ["MACHINE_WIDE"] } }, { spawn: {} })),
       undefined,
-      "an empty space-local spawn block should replace the operator-level one outright. If this " +
-        "starts falling through to the operator list, a space can no longer opt out of machine-wide " +
-        "containment, which is a behaviour change and not a bug fix.",
+      "a local spawn block must replace rather than inherit a broader machine-wide extra-name list",
     );
   });
 
@@ -137,7 +120,7 @@ try {
   });
 
   assert.equal(cells, 6, "not every cell ran");
-  console.log(`spawn-env-config smoke: ${cells} cells - layering, replace-not-union, three empty states, replace expiry`);
+  console.log(`spawn-env-config smoke: ${cells} cells - layering, replace-not-union, explicit extra-name states, replace expiry`);
 } finally {
   if (priorXdg === undefined) delete process.env.XDG_CONFIG_HOME;
   else process.env.XDG_CONFIG_HOME = priorXdg;

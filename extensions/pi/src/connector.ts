@@ -26,6 +26,40 @@ const STANDALONE = fileURLToPath(
 );
 
 
+/** Provider environment names recognized by the pinned Pi host. Kept Pi-local so adding a
+ * provider here never expands the secret surface of sibling connectors. */
+export const PI_PROVIDER_KEYS = [
+  "ANTHROPIC_OAUTH_TOKEN",
+  "ANTHROPIC_API_KEY",
+  "OPENAI_API_KEY",
+  "OPENROUTER_API_KEY",
+  "OPENCODE_API_KEY",
+  "GEMINI_API_KEY",
+  "GOOGLE_CLOUD_API_KEY",
+  "GROQ_API_KEY",
+  "CEREBRAS_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "MISTRAL_API_KEY",
+  "XAI_API_KEY",
+  "ZAI_API_KEY",
+  "ZAI_CODING_CN_API_KEY",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CN_API_KEY",
+  "MOONSHOT_API_KEY",
+  "FIREWORKS_API_KEY",
+  "TOGETHER_API_KEY",
+  "NVIDIA_API_KEY",
+  "KIMI_API_KEY",
+  "HF_TOKEN",
+  "COPILOT_GITHUB_TOKEN",
+  "AI_GATEWAY_API_KEY",
+  "CLOUDFLARE_API_KEY",
+  "XIAOMI_API_KEY",
+  "XIAOMI_TOKEN_PLAN_CN_API_KEY",
+  "XIAOMI_TOKEN_PLAN_AMS_API_KEY",
+  "XIAOMI_TOKEN_PLAN_SGP_API_KEY",
+] as const;
+
 export const piConnector: Connector = {
   kind: "connector",
   name: "pi",
@@ -56,7 +90,7 @@ export const piConnector: Connector = {
     if (stateRoot) mkSecretDir(stateRoot);
     if (sessionStatePath) rmSync(sessionStatePath, { force: true });
     const env: Record<string, string> = {
-      ...launchEnv({ envAllow: opts.envAllow }),
+      ...launchEnv({ providerKeys: PI_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
       // extension drops even that once it has read it, so a shell this seat runs inherits neither.

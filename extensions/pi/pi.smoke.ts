@@ -613,13 +613,11 @@ for (const assistant of [
       readLaunchMaterial(env[LAUNCH_MATERIAL_ENV]).userAuth?.owner === "owner",
       "user-mode identity is forwarded through the launch material",
     );
-    // Flipped with the env default: the child inherits the operator's environment, so the provider
-    // key and the unrelated variable arrive alike. Pi's own key list is gone; which providers the
-    // operator has credentials for is Pi's business and theirs, never a list this connector keeps.
-    // The per-session assertions above are what still contains this launch, and they got stronger.
-    ok(env.GROQ_API_KEY === "groq-test", "the provider key reaches Pi because the environment is inherited");
-    ok(env.UNRELATED_SECRET === "must-not-forward", "an unrelated operator variable is inherited like any other");
-    ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "no per-session COTAL_* is inherited from this process");
+    ok(env.GROQ_API_KEY === "groq-test", "Pi's declared provider key reaches the child");
+    ok(env.UNRELATED_SECRET === undefined, "an unrelated operator variable is withheld by default");
+    const optedIn = piConnector.buildLaunch({ space: "test", name: "pi-opt-in", envAllow: ["UNRELATED_SECRET"] }).env!;
+    ok(optedIn.UNRELATED_SECRET === "must-not-forward", "spawn.env explicitly adds the named operator variable");
+    ok(!("COTAL_CREDS" in env) && !("COTAL_LIFECYCLE_UID" in env), "no per-session COTAL_* is ambient");
     ok(Boolean(launch.control?.path && launch.control.token), "managed Pi launches expose cooperative control");
     const freshSessionAt = launch.args.indexOf("--session-id");
     ok(
@@ -667,7 +665,7 @@ for (const assistant of [
     assert.throws(() => piConnector.buildLaunch({ space: "test", name: "pi", prompt: "@notes.md summarize" }), /cannot start with/);
     const unprompted = piConnector.buildLaunch({ space: "test", name: "pi", model: "flag/model" }).args;
     ok(unprompted[unprompted.length - 1] === "flag/model", "no prompt, no positional argument: the last argument is still the model value");
-    checks += 11;
+    checks += 12;
   } finally {
     if (previousGroq === undefined) delete process.env.GROQ_API_KEY;
     else process.env.GROQ_API_KEY = previousGroq;

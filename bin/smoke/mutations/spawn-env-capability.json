@@ -1,0 +1,24 @@
+{
+  "suite": "bin/smoke/spawn-env-e2e.smoke.ts",
+  "guard": "a shipped detached spawn with no explicit environment opt-in cannot use an inherited ssh-agent, while spawn.env can deliberately add that capability",
+  "command": "pnpm build > /dev/null && pnpm smoke:spawn-env-e2e",
+  "proveWith": "node scripts/mutation-proof.mjs --config bin/smoke/mutations/spawn-env-capability.json",
+  "mutations": [
+    {
+      "name": "default launch copies the entire operator environment",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  for (const k of OS_ENV_ALLOW) copy(k);\n  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);",
+      "replace": "  for (const k of Object.keys(process.env)) copy(k);",
+      "expectRed": "D2 default child did not receive SSH_AUTH_SOCK",
+      "afterRestore": "pnpm build > /dev/null"
+    },
+    {
+      "name": "explicit spawn.env no longer forwards SSH_AUTH_SOCK",
+      "file": "extensions/connector-core/src/launch.ts",
+      "find": "  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? []), ...(opts.envAllow ?? [])]) copy(k);",
+      "replace": "  for (const k of [...(opts.providerKeys ?? []), ...(opts.mcpKeys ?? [])]) copy(k);",
+      "expectRed": "O2 explicit spawn.env opt-in delivered SSH_AUTH_SOCK",
+      "afterRestore": "pnpm build > /dev/null"
+    }
+  ]
+}

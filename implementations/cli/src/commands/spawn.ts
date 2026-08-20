@@ -513,8 +513,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // --share-tools selection. Default (no config) is none — the connector launches isolated.
   const cotalConfig = loadCotalConfig(target.root);
   const mcpServers = connectorServers(cotalConfig, agentType, parseShareSelection(values["share-tools"]));
-  // The operator's spawn-env policy travels the same route: absent means the child inherits their
-  // environment, present means containment. Resolved HERE, like the servers above, because a
+  // Extra spawned-agent environment names are resolved here, like shared MCP servers, because a
   // connector never reads the config file itself.
   const envAllow = spawnEnvAllow(cotalConfig);
 
@@ -590,8 +589,8 @@ export async function spawn(args: ParsedArgs): Promise<void> {
     if (userAuth) console.error(c.dim(`  running as you: ${userAuth.owner}.${name} (actor granted; revoked automatically when this process exits)`));
     child = spawnProcess(spec.command, spec.args, {
       stdio: "inherit",
-      // P3: only the connector-declared env (OS allow-list + identity + named model key) — never
-      // `...process.env`, so the operator's unrelated secrets don't bleed into the foreground agent.
+      // P3: only connector-declared environment reaches the foreground agent, never ambient
+      // process.env. Explicit spawn.env remains the operator opt-in for additional names.
       env: spec.env ?? {},
       // `--cwd` roots the agent at another folder/repo (launch-grammar parity with --detach); a
       // relative path resolves against the invoking shell's cwd. Omitted → inherit this cwd.

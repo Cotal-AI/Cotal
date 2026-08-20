@@ -78,10 +78,8 @@ export const claudeConnector: Connector = {
     if (opts.variant) throw new Error("claude connector: model variants are not supported");
     // Operator MCP servers shared with this agent (default none — see the --mcp-config block).
     const shared = opts.mcpServers ?? {};
-    // claude auths via macOS Keychain / an OAuth token, not an env key → forward NO provider key.
-    // The OS allow-list (PATH/HOME/TERM/…) is the only thing inherited from the manager env, plus
-    // — only when a shared server declares them via `${VAR}` — the named secrets it needs (mcpKeys,
-    // by name). The operator's unrelated secrets don't reach the child (P3).
+    // Claude auths through its own Keychain or OAuth state, not a provider env key. The child gets
+    // the OS allow-list and only `${VAR}` names declared by explicitly shared MCP servers.
     // The session's local control endpoint: the MCP server LISTENS on it (auth), and the lifecycle
     // hooks (child processes of `claude`, which inherit this env) CONNECT to it. Both read the
     // SOCKET PATH from the env and the TOKEN from the launch-material file the env points at, never

@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, materialEnv } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
  *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
@@ -12,6 +12,36 @@ const LAUNCH_COMMAND = FROM_BUILD
   ? process.execPath
   : fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
 
+
+/** Provider keys Hermes supports beyond the shared connector set. */
+export const HERMES_PROVIDER_KEYS: readonly string[] = [
+  ...MODEL_PROVIDER_KEYS,
+  "OPENCODE_GO_API_KEY",
+  "OPENCODE_ZEN_API_KEY",
+  "XAI_API_KEY",
+  "GEMINI_API_KEY",
+  "NOVITA_API_KEY",
+  "DEEPSEEK_API_KEY",
+  "GLM_API_KEY",
+  "ZAI_API_KEY",
+  "Z_AI_API_KEY",
+  "KIMI_API_KEY",
+  "KIMI_CODING_API_KEY",
+  "KIMI_CN_API_KEY",
+  "MINIMAX_API_KEY",
+  "MINIMAX_CN_API_KEY",
+  "DASHSCOPE_API_KEY",
+  "ALIBABA_CODING_PLAN_API_KEY",
+  "STEPFUN_API_KEY",
+  "ARCEEAI_API_KEY",
+  "GMI_API_KEY",
+  "NVIDIA_API_KEY",
+  "KILOCODE_API_KEY",
+  "XIAOMI_API_KEY",
+  "TOKENHUB_API_KEY",
+  "OLLAMA_API_KEY",
+  "AZURE_FOUNDRY_API_KEY",
+];
 
 /**
  * The Hermes (Nous Research) connector. Unlike Claude Code / Codex — where the harness *is* the
@@ -48,12 +78,10 @@ export const hermesConnector: Connector = {
     // rendering arbitrary options to env would silently drop them. Fail loud rather than pretend.
     if (opts.launchOptions && Object.keys(opts.launchOptions).length)
       throw new Error("the Hermes connector does not support launch options (--opt / launchOptions)");
-    // The operator's environment, minus Cotal's own per-session COTAL_* (see launchEnv). Hermes is
-    // model-agnostic across its own provider registry, and which of those providers the operator has
-    // a key for is their business, not a list this connector maintains. `envAllow` is set only when
-    // the operator declared `spawn.env`, which confines the child instead.
+    // Hermes supports the named provider keys below. All other ambient environment authority stays
+    // outside the child unless the operator deliberately declares it in spawn.env.
     const env: Record<string, string> = {
-      ...launchEnv({ envAllow: opts.envAllow }),
+      ...launchEnv({ providerKeys: HERMES_PROVIDER_KEYS, envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
       // mints the control endpoint itself and merges the token into the same file (see launch.ts).

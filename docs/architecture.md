@@ -176,13 +176,11 @@ laterally; the manager only births and configures them.
   floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
   fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
   process launched, so a refused spawn leaves nothing behind.
-- **Inherited env, minus Cotal's own namespace.** A spawned agent gets the operator's
-  environment, because a harness they installed and configured should behave the same way
-  under `cotal spawn` as it does in their shell. Cotal resets only its own `COTAL_*`
-  namespace, which is identity rather than preference: a connector supplies those per child
-  and does so conditionally, so an inherited value would reach an agent that was never
-  granted it. Connection material is not in the environment at all; it rides a private file.
-  An operator who wants the child confined declares `spawn.env` in the cotal config.
+- **Declared environment boundary.** A spawned agent receives a fixed OS allow-list,
+  connector-declared provider inputs, explicitly shared MCP references, and any names an operator
+  deliberately adds through `spawn.env`. It never inherits the operator's ambient environment, so
+  capabilities such as an ssh-agent socket do not reach a child by default. Connection material
+  rides a private file instead of the environment.
 - **Instance addressing.** One space can hold more than one manager. Each keeps a stable
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal

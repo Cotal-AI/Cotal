@@ -92,12 +92,9 @@ export interface LaunchOpts {
    *  (Claude launches isolated with `--strict-mcp-config`). Connectors that don't support sharing
    *  throw on a non-empty map rather than silently dropping it. */
   mcpServers?: Record<string, McpServerSpec>;
-  /** The spawned-agent env allow-list an operator declared in the cotal config (`spawn.env`),
-   *  resolved from it by the CALLER exactly the way {@link mcpServers} is (see `spawnEnvAllow`).
-   *  `undefined` - the default - means the child inherits the operator's environment; an array,
-   *  including an EMPTY one, opts into containment and names everything the child gets beyond a
-   *  fixed OS allow-list. A connector passes it straight through to `launchEnv`; it never
-   *  interprets it, and it never reads the config itself. */
+  /** Extra environment names an operator deliberately declared in `spawn.env`, resolved by the
+   *  caller exactly as {@link mcpServers} is. `undefined` supplies no extras; an array, including
+   *  an empty one, is carried unchanged to `launchEnv`. Connectors never read config themselves. */
   envAllow?: readonly string[];
   /** The manager's workspace root. Connectors that keep per-agent local state (e.g. the OpenCode
    *  connector's SQLite DB + serve pidfile) pin it here so a per-agent working directory — which can

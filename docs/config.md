@@ -22,9 +22,8 @@ same-named server in the operator-level file; connectors or servers present in o
 kept. A missing file is empty (valid); malformed JSON or a non-object top level is a loud error.
 
 It carries two things: which of your personal MCP servers a connector should **share** with the
-agents it spawns, and an optional `spawn.env` allow-list that confines what a spawned agent's
-process environment contains (see [Environment variables](#environment-variables) below; the default
-is that the agent inherits yours).
+agents it spawns, and optional `spawn.env` names that deliberately add environment capability to a
+spawned agent (see [Environment variables](#environment-variables) below).
 
 The sharing half: By default a spawned agent gets none: the Claude connector launches with
 `--strict-mcp-config`, dropping every ambient MCP server (they are heavy and useless to a meshed
@@ -123,36 +122,26 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
 
-A spawned agent inherits **your environment**, so a harness you already configured resolves its
-model and provider the same way it does when you run it yourself. Cotal resets its own `COTAL_*`
-names before the child starts, keeping the machine-wide ones (`COTAL_HOME`, the `COTAL_FEEDBACK_*`
-set, `COTAL_DEFAULT_AGENT` / `COTAL_DEFAULT_PERSONA`, the `*_BIN` overrides and the timing knobs).
-That reset is not a preference setting: a connector supplies the per-session names for each child
-and does so conditionally, so an inherited one would never be overwritten and would hand an agent
-another agent's credential path, ACL, or lifecycle uid. Connection material is not in the
-environment at all (see [identity & auth](identity-and-auth.md)).
+A spawned agent receives a fixed OS execution allow-list (PATH, HOME, TERM, locale, and
+XDG/Windows config directories), the provider inputs its connector declares, and `${VAR}` names an
+explicitly shared MCP server requires. It does not inherit the operator's ambient environment.
+This blocks environment-only capabilities such as `SSH_AUTH_SOCK`, cloud credentials, source-control
+tokens, and unrelated service secrets unless they are deliberately supplied. Connection material is
+not in the environment at all (see [identity & auth](identity-and-auth.md)).
 
-To confine a spawned agent instead, declare `spawn.env` in the config file:
+To deliberately add an environment name for a spawned agent, declare `spawn.env` in the config file:
 
 ```json
-{ "spawn": { "env": ["MY_PROVIDER_API_KEY"] } }
+{ "spawn": { "env": ["MY_REQUIRED_CAPABILITY"] } }
 ```
 
-The child then gets a fixed OS allow-list (PATH, HOME, TERM, locale, XDG/Windows config dirs) plus
-exactly the names you list, plus any `${VAR}` a shared MCP server references. An empty array is a
-real policy, meaning the OS allow-list alone. A space-local `spawn` block replaces the
-operator-level one outright rather than merging, so the narrower file stays narrow.
+The listed names are added to the fixed boundary. An empty array adds nothing. A space-local
+`spawn` block replaces the operator-level one outright rather than merging, so a local list stays
+exactly local. No `spawn` block, `"spawn": { "env": [] }`, and `"spawn": {}` all add no extra
+environment names.
 
-Three states that look alike are not: no `spawn` block means no allow-list and the agent inherits
-your environment; `"spawn": { "env": [] }` means the OS allow-list alone; and `"spawn": {}` in a
-space-local file replaces the operator-level block with nothing, so that space inherits even when
-your machine-wide file confines. The last one is how a space opts out of machine-wide containment,
-which is worth knowing before you write it by accident.
-
-Be honest with yourself about what this buys: `HOME` is forwarded either way, so an agent with a
-shell reads `~/.aws`, `~/.ssh` and `~/.config` regardless. `spawn.env` protects secrets that live
-**only** in the environment, such as an `aws-vault exec` or `op run` shell, or CI-injected values.
-Real containment is a sandbox or a VM.
+This does not constrain filesystem access: `HOME` remains available, so a child with a shell can
+read accessible files. Use a sandbox or VM when filesystem containment is required.
 
 ### Launch material
 
