@@ -1,5 +1,134 @@
 # @cotal-ai/connector-codex
 
+## 0.25.0
+
+### Minor Changes
+
+- aa6c63d: Codex seats publish an AG-UI event plane
+
+  A Codex seat launched with `cotal spawn --events` now publishes a structured account of its work on
+  `events.<owner>.<actor>`: run boundaries per turn, assistant text, reasoning summaries, and the tool
+  calls the model makes through Codex's function-call and custom-tool interfaces, each with its
+  arguments, its end, and its result. Before this the connector had no event plane at all, so an
+  external observer watching a mesh saw nothing from a Codex seat.
+
+  The durable source is the thread's rollout file inside the seat's own isolated `CODEX_HOME`, not the
+  live app-server stream. The file is written by the child and outlives this process's view of it, so a
+  seat that restarts its own app-server picks a thread's records up where it stopped rather than from
+  whatever the socket delivers next.
+
+  Four behaviours are worth knowing before reading a stream. A turn that fails ends its run with a run
+  error carrying the code Codex reported, rather than as a finished run, because Codex records a
+  failure on the turn's own completion record. No user authored text is ever published: your prompts,
+  the peer messages injected into the thread, and the persona's developer instructions are all
+  withheld, because the events channel carries a different read ACL from the channel you typed into.
+  A restarted app-server is a new thread and gets a new stream: the seat finishes the old one, closing
+  any run it left open, before it begins the new one. That holds even when the new thread's file is
+  slow to appear, though the order there is the other way round: the seat spends its whole bounded
+  look for the successor first, and the old run is closed when that look gives up, not at the moment
+  the restart happened. From the give-up on it publishes nothing until a later turn boundary binds
+  the successor, rather than continuing to report the dead thread's activity as if it were live. And Codex's own built-in tools, web search, tool
+  search and image generation, are not published, because their records carry an end with no start and
+  no key that joins the halves.
+
+  What is published is worth stating plainly: an observer of the events channel sees every tool call's
+  arguments and outputs verbatim, so withholding user authored text does not make the stream safe to
+  widen.
+
+  Two limits are worth knowing as well. A stream begins at the last complete record in the file at the
+  moment the seat binds to it, never at the beginning of the thread, so anything written before that
+  moment is not republished; the seat says so in its log when it happens. And a seat whose broker was
+  unreachable when it started loses its emitter, reports that it did, and rebuilds it at a later turn
+  boundary once the broker is there, so the outage costs the turns it covered rather than the rest of
+  the seat's life.
+
+  Migration: none. The plane is opt in per spawn, arming is separate from authorization, and a seat
+  launched without `--events` behaves exactly as before.
+
+- a4e4c49: Codex event plane: take the stream's starting boundary at the bind, not when the emitter finished starting
+
+  An armed Codex seat announced its stream as started at the bind, then positioned itself wherever the
+  rollout file happened to be once its asynchronous setup had finished: the write-ahead log directory,
+  the subject frontier, the log open, then a channel resolve and a preflight. Every record the thread
+  appended inside that window landed behind the cursor and was treated as already published, so a turn
+  that completed inside it was dropped permanently and silently, underneath a line that had already
+  said the stream was live. The boundary is now captured at the bind, before the announcement, and
+  substituted on the emitter's first read, so the announced fact is true at the moment it is
+  announced. A log that already carries a cursor is a resume and keeps it, because a cursor written by
+  a live emitter is the honest one.
+
+  It is substituted rather than written into the log, and that half is what keeps a failed start from
+  changing what a later one publishes. A seat whose broker is not up yet loses its emitter at launch;
+  a boundary written into the log before that start would outlive it, and the next bind would read it
+  as a resume and republish everything the thread wrote while the seat was cut off, onto an events
+  channel whose read ACL is not the input channel's. The log's cursor is now written only by an
+  emitter that started.
+
+  Migration: a rebind after a lost connection declines to publish two things, and readers who watched
+  the old behaviour should expect both. It declines what the thread wrote during the outage. It also
+  declines the turn whose own boundary triggered it, because Codex writes a turn's first record before
+  it announces that the turn started, that announcement is what a rebind runs on, and a run is never
+  opened from the middle of a turn. The first turn to start after the rebind is published in full.
+  One case is different and is stated in full rather than in passing, because it is the one a reader
+  is most likely to be surprised by: if the emitter had already been publishing this thread and then
+  died, its position is in the log, and the rebind continues that log rather than starting where it
+  binds. An outage there costs the wait, not the content: what the thread wrote while the plane was
+  down, and what it wrote while the plane was already dead, is delivered once the plane is back. Two
+  things follow that a reader should not have to discover. A tool result is published as the tool
+  returned it, so text a tool read on the seat's behalf from a channel with a narrower reader set
+  crosses into the events channel unredacted and unattributed; and a backlog written while the plane
+  was terminal is delivered rather than discarded. The session's own record of the user's words and
+  the developer instructions is not published in either case. Neither carrier is introduced here and
+  neither changes shape; both are the same at the merge base and no new shape is added. What this
+  change does alter, on every armed seat and not only the one whose emitter never started, is which
+  records reach the stream: what the thread appended between the bind and the emitter's first read
+  used to land behind the cursor and be dropped, and it is published now. A whole turn can sit in
+  that window, tool results included, so the carrier above covers a stretch of the session it
+  previously lost. The reader set that follows from all this is a requirement and not a guarantee:
+  the grant does not enforce it. A spawn through the manager gives a seat publish rights on its own
+  event channel and nothing else and a spawn naming a different agent's is refused at the door, but
+  that fence is the manager's, it reads the concrete form rather than a pattern, and a foreground
+  spawn on your own machine grants whatever you name. Read access is minted separately and out of
+  band either way, so holding the events readers to at least the width of every channel the seat's
+  tools can read is the operator's policy to keep. Nothing is sent twice in either case. A seat launched
+  without the event plane armed is unaffected.
+
+  The window above is now graded rather than argued. A test-only setting widens the emitter's setup
+  so a fixture can release a whole completed turn into it and assert the turn reaches the wire;
+  absent, empty, zero, negative and unparseable all mean no wait, so an uninstrumented seat runs the
+  path it ran before. Measured, and the reason the cell was needed: the mutant that deletes the
+  boundary rule passed the suite three times in five without it, failing on disjoint cells the two
+  times it failed.
+
+- a087c2b: A spawned agent now inherits the operator's environment. A harness you installed and configured
+  should behave under `cotal spawn` the way it behaves when you run it yourself, and the alternative
+  was Cotal maintaining a list of inference vendors: every new provider needed a change in Cotal
+  before it would work through a managed spawn. `MODEL_PROVIDER_KEYS` and the per-connector lists
+  that extended it are gone, and Cotal no longer names an inference vendor anywhere in its source.
+
+  Cotal still resets its own `COTAL_*` namespace before the child starts, keeping the machine-wide
+  knobs (`COTAL_HOME`, the feedback set, the default-agent pair, the `*_BIN` overrides, the timing
+  knobs). That reset is not configurable, because it is identity and not preference: a connector
+  supplies the per-session names for each child and does so conditionally, so an inherited value is
+  never overwritten and would hand an agent another agent's credential path, ACL, or lifecycle uid.
+  The whole prefix is stripped rather than a named list, because which names a connector sets varies
+  between connectors and a deny-list only ever names what its author remembered.
+
+  To confine a spawned agent instead, declare `spawn.env` in the cotal config file. The child then
+  gets a fixed OS allow-list plus exactly the names you list. An empty array is a real policy meaning
+  the OS allow-list alone. Note what this does and does not buy: `HOME` is forwarded either way, so
+  an agent with a shell reads `~/.aws` and `~/.ssh` regardless, and this protects only secrets that
+  live nowhere but the environment.
+
+- 34caaf4: Agent seats no longer export their connection material into the environment every descendant
+  process inherits. The broker URL, the creds path, the auth token, the user-mode identity and the
+  local control token now ride a private 0600 launch-material file whose path is the only thing in the
+  seat's environment; pi, codex and OpenCode drop even that path once they have read it (for OpenCode
+  that happens in the `opencode serve` process its seat shim starts, which is also what runs the
+  session's tool calls), while claude and hermes keep the reference because their readers are
+  short-lived children that start later. A session driven by hand still sets `COTAL_CREDS` / `COTAL_SERVERS` itself, and a
+  launch that carries both carriers is refused rather than resolved by precedence.
+
 ## 0.24.0
 
 ## 0.23.0
