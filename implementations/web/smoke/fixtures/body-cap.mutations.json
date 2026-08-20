@@ -14,7 +14,7 @@
       "file": "implementations/web/src/web.ts",
       "find": "  const declared = Number(req.headers[\"content-length\"]);\n  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");\n",
       "replace": "",
-      "expectRed": "5.1 a DECLARED oversize is refused, and the caller is cut off having sent a small fraction of what it announced, so the read never ran to the end"
+      "expectRed": "5.0 a body ANNOUNCED as oversized is refused on the announcement, without waiting for bytes the caller never sends"
     },
     {
       "name": "C3 the cap TRUNCATES instead of refusing, which is the failure this route can least afford: it turns an oversized body into a shortened one and acts on whatever that parses to, the same shape as a channel name the caller never sent",

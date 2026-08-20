@@ -146,6 +146,11 @@ try {
       setTimeout(() => { sock.destroy(); done(); }, 25_000);
     });
 
+  const CHUNKED_HEAD = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
+    "Connection: close\r\nTransfer-Encoding: chunked\r\n\r\n";
+  const asChunks = (b: Buffer): Buffer =>
+    Buffer.concat([Buffer.from(b.length.toString(16) + "\r\n"), b, Buffer.from("\r\n")]);
+
   console.log("1. the ground truth this suite is about");
   ok("1.0 the shipped `web` entry point serves at all", served, log.slice(-300));
   ok("1.1 CONTROL: all three seeded channels hold their message, so every cell below is about the BODY and not about an empty broker",
@@ -198,17 +203,32 @@ try {
     // that capped by keeping the first CAP bytes would be holding a prefix of this, and the whole
     // point of the name check on this route is that a name the caller did not send must never
     // address a channel.
+    // SENT WITHOUT A DECLARED LENGTH ON PURPOSE. With a `content-length` the header gate answers
+    // first and the body is never read at all, so a cap that truncates while reading would sail
+    // through this section looking correct. Chunked forces the reading path, which is the only
+    // place truncation could happen.
     const payload = JSON.stringify({ channel: PREFIX, pad: "a".repeat(CAP * 4) });
     ok("4.0 CONTROL: the channel this body names really is the first field, so a truncating cap would be holding a prefix that starts with it",
       payload.startsWith(`{"channel":"${PREFIX}"`), payload.slice(0, 40));
-    const r = await post(payload);
+    const r = await raw(CHUNKED_HEAD, Buffer.from(payload, "utf8"), asChunks);
     ok("4.1 the channel named in the first bytes of an oversized body is NOT purged: the body was declined, not shortened and acted on",
       await stillThere(PREFIX), r);
     ok("4.2 ...and the refusal is about the size, never a complaint about a channel name, which is what a truncated parse would produce",
-      r.status === 413 && !r.text.includes("channel required") && !r.text.includes("is not a channel"), r);
+      r.status.includes("413") && !r.text.includes("channel required") && !r.text.includes("is not a channel"), r);
   }
 
   console.log("5. the two gates, separately");
+  {
+    // ONLY THE HEADER GATE CAN ANSWER THIS. The caller announces a body far over the cap and then
+    // sends a few bytes and stops. The streaming count never reaches the cap, so a server that
+    // only counts what arrives waits for bytes that are not coming, and the caller learns nothing
+    // until something else times out. Refusing on the announcement is the difference.
+    const head = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
+      `Connection: close\r\nContent-Length: ${20_000_000}\r\n\r\n`;
+    const r = await raw(head, Buffer.from('{"channel":"a', "utf8"));
+    ok("5.0 a body ANNOUNCED as oversized is refused on the announcement, without waiting for bytes the caller never sends",
+      r.status.includes("413"), { status: r.status, sent: r.sent, text: r.text.slice(0, 160) });
+  }
   {
     // Declared: refused before the body is read at all.
     const body = Buffer.alloc(20_000_000, 0x61);
@@ -218,10 +238,6 @@ try {
     ok("5.1 a DECLARED oversize is refused, and the caller is cut off having sent a small fraction of what it announced, so the read never ran to the end",
       r.sent < body.length / 4, { sent: r.sent, declared: body.length, status: r.status });
   }
-  const CHUNKED_HEAD = "POST /api/channel/delete HTTP/1.1\r\nHost: h\r\nContent-Type: application/json\r\n" +
-    "Connection: close\r\nTransfer-Encoding: chunked\r\n\r\n";
-  const asChunks = (b: Buffer): Buffer =>
-    Buffer.concat([Buffer.from(b.length.toString(16) + "\r\n"), b, Buffer.from("\r\n")]);
   {
     // Chunked: there is no content-length to check, so only the streaming gate can refuse this.
     // Without that gate the header check alone would look like a cap and stop nothing.
