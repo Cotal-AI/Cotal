@@ -1079,7 +1079,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
       const r =
         on === "walker"
           ? await walkResume(source, journal, back as never)
-          : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
+          : await resumeOnEngine(source, transform(source).module, journal, { ...(back as Record<string, unknown>), evaluate } as never);
       return { value: r.value as unknown, fault: null as null | { code?: string; recorded?: unknown; supplied?: unknown } };
     } catch (e) {
       return { value: undefined as unknown, fault: e as { code?: string; recorded?: unknown; supplied?: unknown } };
@@ -1184,7 +1184,7 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
         const r =
           on === "walker"
             ? await walkResume(source, journal, back as never)
-            : await resumeOnEngine(source, transform(source).module, journal, { ...(back as never), evaluate });
+            : await resumeOnEngine(source, transform(source).module, journal, { ...(back as Record<string, unknown>), evaluate } as never);
         return { logs, run: r as Awaited<ReturnType<typeof walkResume>> | null, fault: null as null | { code?: string; recorded?: unknown; supplied?: unknown } };
       } catch (e) {
         return { logs, run: null, fault: e as { code?: string; recorded?: unknown; supplied?: unknown } };
