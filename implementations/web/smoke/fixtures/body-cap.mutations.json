@@ -43,6 +43,20 @@
       "find": "const MAX_BODY_BYTES = 8 * 1024;",
       "replace": "const MAX_BODY_BYTES = 1024;",
       "expectRed": "2.4 a body just UNDER the cap is processed normally, extra fields and all"
+    },
+    {
+      "name": "C7 the read loop refuses AT the cap instead of past it, so a body of exactly the permitted size is rejected: the limit becomes one the caller must stay under rather than one it may reach, and every cell built on a body far below or far above the cap still passes",
+      "file": "implementations/web/src/web.ts",
+      "find": "    if (seen > MAX_BODY_BYTES) throw tooLarge(seen, \"read\");",
+      "replace": "    if (seen >= MAX_BODY_BYTES) throw tooLarge(seen, \"read\");",
+      "expectRed": "6.3 the same body with NO declared length is accepted too, which is the read loop's own boundary rather than the header gate's"
+    },
+    {
+      "name": "C8 the same off-by-one in the DECLARED gate, which compares a different number than the read loop does, so an error in one is invisible to the other and needs its own cell",
+      "file": "implementations/web/src/web.ts",
+      "find": "  if (Number.isFinite(declared) && declared > MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");",
+      "replace": "  if (Number.isFinite(declared) && declared >= MAX_BODY_BYTES) throw tooLarge(declared, \"declared\");",
+      "expectRed": "6.1 a body of EXACTLY the cap is accepted and purges: the limit is a ceiling the caller may reach, not one it must stay under"
     }
   ]
 }

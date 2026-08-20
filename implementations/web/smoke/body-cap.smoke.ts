@@ -64,6 +64,8 @@ const CAP = 8 * 1024;
 const SMALL = "keep_me";      // deleted through the ordinary path, proves the route still works
 const PADDED = "padded_me";   // deleted through a body just under the cap
 const PREFIX = "prefix_me";   // named in the first bytes of an OVERSIZED body; must survive
+const EDGE_CL = "edge_cl";    // deleted through a body of EXACTLY the cap, with a declared length
+const EDGE_TE = "edge_te";    // the same, with no declared length at all
 const MSG = "seeded";
 
 const PORT = await freePort();
@@ -79,12 +81,12 @@ try {
   if (!up) throw new Error("nats-server did not start");
   await setupSpaceStreams({ servers: SERVER, space: SPACE });
 
-  const seed = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [SMALL, PADDED, PREFIX],
+  const seed = new CotalEndpoint({ space: SPACE, servers: SERVER, channels: [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE],
     consume: false, registerPresence: false,
     card: { id: newIdentity().id, name: "seed", kind: "endpoint" } });
   seed.on("error", () => {});
   await seed.start();
-  for (const ch of [SMALL, PADDED, PREFIX]) await seed.multicast(MSG, { channel: ch });
+  for (const ch of [SMALL, PADDED, PREFIX, EDGE_CL, EDGE_TE]) await seed.multicast(MSG, { channel: ch });
   await seed.stop();
 
   const WEB_PORT = await freePort();
@@ -153,8 +155,9 @@ try {
 
   console.log("1. the ground truth this suite is about");
   ok("1.0 the shipped `web` entry point serves at all", served, log.slice(-300));
-  ok("1.1 CONTROL: all three seeded channels hold their message, so every cell below is about the BODY and not about an empty broker",
-    (await stillThere(SMALL)) && (await stillThere(PADDED)) && (await stillThere(PREFIX)));
+  ok("1.1 CONTROL: every seeded channel holds its message, so every cell below is about the BODY and not about an empty broker",
+    (await stillThere(SMALL)) && (await stillThere(PADDED)) && (await stillThere(PREFIX))
+    && (await stillThere(EDGE_CL)) && (await stillThere(EDGE_TE)));
 
   console.log("2. under the cap, nothing changed");
   {
@@ -254,6 +257,42 @@ try {
     const r = await raw(CHUNKED_HEAD, body, asChunks);
     ok("5.3 ...and the caller is cut off partway through an undeclared body, so the refusal happened AT the threshold rather than after reading to the end",
       r.sent < body.length / 4, { sent: r.sent, total: body.length, status: r.status });
+  }
+
+  console.log("6. the threshold itself, one byte on each side of it");
+  {
+    // THE CAP IS A NUMBER AND A COMPARISON, and section 2 pins CAP-200 while sections 3 to 5 pin
+    // CAP*4 and larger. Every one of those survives an off-by-one: turning `>` into `>=` at either
+    // gate refuses a body of exactly the cap, which is a legitimate request, and nothing above
+    // notices. So the boundary is asserted here on BOTH gates, since they compare different
+    // numbers: the header gate compares what the caller declared, the read loop compares what has
+    // arrived, and an off-by-one in one is invisible to the other.
+    const exact = (channel: string, n: number): string => {
+      const head = `{"channel":"${channel}","pad":"`;
+      const body = head + "a".repeat(n - head.length - 2) + '"}';
+      if (Buffer.byteLength(body) !== n) throw new Error(`built ${Buffer.byteLength(body)} bytes, wanted ${n}`);
+      return body;
+    };
+    const atCap = exact(EDGE_CL, CAP), overCap = exact(PREFIX, CAP + 1), atCapTe = exact(EDGE_TE, CAP);
+    ok("6.0 CONTROL: the bodies below really are the cap and one byte past it, so this section tests the comparison and not the arithmetic in this file",
+      Buffer.byteLength(atCap) === CAP && Buffer.byteLength(overCap) === CAP + 1 && Buffer.byteLength(atCapTe) === CAP,
+      [Buffer.byteLength(atCap), Buffer.byteLength(overCap)]);
+
+    const r1 = await post(atCap);
+    ok("6.1 a body of EXACTLY the cap is accepted and purges: the limit is a ceiling the caller may reach, not one it must stay under",
+      r1.status === 200 && !(await stillThere(EDGE_CL)), r1);
+
+    const r2 = await post(overCap);
+    ok("6.2 ...and ONE byte more is refused, so the declared-length gate turns over between CAP and CAP+1 and not somewhere either side of it",
+      r2.status === 413, r2);
+
+    const r3 = await raw(CHUNKED_HEAD, Buffer.from(atCapTe, "utf8"), asChunks);
+    ok("6.3 the same body with NO declared length is accepted too, which is the read loop's own boundary rather than the header gate's",
+      r3.status.includes("200") && !(await stillThere(EDGE_TE)), { status: r3.status, text: r3.text.slice(0, 160) });
+
+    const r4 = await raw(CHUNKED_HEAD, Buffer.from(exact(PREFIX, CAP + 1), "utf8"), asChunks);
+    ok("6.4 ...and one byte past it is refused on the read loop as well, with the channel it names untouched",
+      r4.status.includes("413") && (await stillThere(PREFIX)), { status: r4.status, text: r4.text.slice(0, 160) });
   }
 } finally {
   webChild?.kill("SIGKILL");
