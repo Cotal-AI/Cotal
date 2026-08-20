@@ -10,11 +10,14 @@ not about NATS. The host that runs a program on the mesh is `@cotal-ai/runtime`.
 
 **Two engines.** `run`/`resume` are the tree-walker, language version `1`, and it stays the replay
 engine for every run recorded under it. `engine/` is version `2`: a different language, not a faster
-one. Each engine stamps the pins it resolves with its own version and compares a recorded version
-against its own, which is why `WALKER_LANGUAGE_VERSION` and `ENGINE_LANGUAGE_VERSION` are two
-constants and `LANGUAGE_VERSION` is an alias for the current language, the engine's. A record binds
-only under the engine that wrote it (L5008). The engine requires node 22 or newer and refuses below
-it with L1000, an implementation limit that is deliberately not in the error catalog.
+one, and the one fresh driver runs execute on. Each engine stamps the pins it resolves with its own
+version and compares a recorded version against its own, which is why `WALKER_LANGUAGE_VERSION` and
+`ENGINE_LANGUAGE_VERSION` are two constants and `LANGUAGE_VERSION` is an alias for the current
+language, the engine's. A record binds only under the engine that wrote it (L5008). The engine
+requires node 22 or newer and refuses below it with L1000, an implementation limit that is
+deliberately not in the error catalog. A host runs a program in the engine's worker thread with the
+handler either built inside it from cloneable config, or — when the handler is a live object, as a
+driver's is — kept in the host with the effect seam bridged over a message port (`engine/bridge.ts`).
 
 The language is defined by [`spec/cotal-lang.md`](../../spec/cotal-lang.md) (normative; every
 `js` block in it is validated by this package's surface suite) and its wire footprint by

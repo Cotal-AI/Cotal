@@ -21,7 +21,7 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, RunJournalTailTruncated } from "@cotal-ai/core";
-import { ENGINE_LANGUAGE_VERSION, LANGUAGE_VERSION, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, type JournalEntry } from "@cotal-ai/lang";
+import { ENGINE_LANGUAGE_VERSION, Journal, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
 import { pickFreePort } from "./_free-port.js";
 
@@ -336,6 +336,20 @@ try {
   }));
   c("a successor under a fresh horizon finishes the run from where it stopped",
     done2.status === "completed", why(done2));
+
+  // AND A HORIZON ALREADY PAST WHEN THE DRIVE BEGINS stops the run before its FIRST effect. The
+  // walker asks before every effect and answers this for free; the engine host must publish the
+  // expired horizon before the thread's first pre-effect check, and this is the cell that holds it
+  // to that — an engine that learned of the horizon only from append traffic would run one effect
+  // first.
+  const never = new CountingHandler();
+  (never as unknown as { now: () => number }).now = () => 9_000;
+  const early = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-7z", source: PROGRAM, lease: lease("m1", 1, takeovers += 1), handler: never,
+    workExpiry: 5_000,
+  }));
+  c("a horizon already past at the start stops the run before its first effect",
+    early.status === "released" && never.effects.length === 0, { status: why(early), effects: never.effects });
 }
 
 // ── 7) pause: an operator stop is not a failure either ───────────────────────────────────────
@@ -603,14 +617,29 @@ await sleep("1h", { name: "first" });
   }));
   c("a fresh run completes on the engine this build serves", out.status === "completed", why(out));
   const pinned = (await readRunRecord(kv, EP, "d-v-fresh"))!.spec.value.pins;
-  // THE STAMP IS THE ENGINE'S, NOT THE LANGUAGE'S, and the second half of this cell is what makes
-  // the first half mean anything: with one shared constant both sides read the same and a driver
-  // stamping the current language would pass. MEASURED before the split existed: a driver stamping
-  // the current language and then calling the only engine it hosts refuses its own fresh runs,
-  // `driver stamps "2" -> walker: REFUSED L5008`.
-  c("and it is stamped with the version of the ENGINE that ran it, not with the current language",
-    pinned.languageVersion !== LANGUAGE_VERSION && pinned.languageVersion === WALKER_LANGUAGE_VERSION,
-    { stamped: pinned.languageVersion, engine: WALKER_LANGUAGE_VERSION, language: LANGUAGE_VERSION });
+  // THE STAMP IS THE ENGINE'S, NOT ANOTHER ENTRY'S, and the walker half of this cell is what makes
+  // the first half mean anything: this build serves both versions, so a dispatcher stamping the
+  // wrong table entry would still complete the run somewhere and every other cell here would pass.
+  // MEASURED before the split existed: a driver stamping a version and then calling an engine of
+  // the other refuses its own fresh runs, `driver stamps "2" -> walker: REFUSED L5008`.
+  c("and it is stamped with the version of the ENGINE that ran it, not the walker's",
+    pinned.languageVersion === ENGINE_LANGUAGE_VERSION && (ENGINE_LANGUAGE_VERSION as string) !== WALKER_LANGUAGE_VERSION,
+    { stamped: pinned.languageVersion, engine: ENGINE_LANGUAGE_VERSION, walker: WALKER_LANGUAGE_VERSION });
+  // AND IT EXECUTED THERE, said in the one unit that cannot be stamped: steps. A walker dispatch
+  // and a transformed-site hit are different units (spec §8.4), so the same source walked
+  // in-process and driven through the dispatcher agreeing on the count is what a walker behind the
+  // dispatcher would produce, and their disagreement is the execution observed rather than read
+  // off a record the dispatcher itself wrote. The loop is what keeps the two counts apart by more
+  // than an off-by-one: five iterations charge dozens of dispatches and a handful of site hits.
+  const UNITS = "let n = 0; for (let i = 0; i < 5; i = i + 1) { n = n + i; } log(n); await sleep(\"1h\", { name: \"tick\" });";
+  const driven = await attempt(startRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-units", source: UNITS, lease: lease("m1", 1, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  const walked = await walkProgram(UNITS, { runId: "d-units-walk", handler: new CountingHandler(), journal: new Journal({ run: "d-units-walk" }) });
+  c("and it charges steps in the engine's own units: the same source, walked in-process, counts differently",
+    driven.status === "completed" && driven.result.steps > 0 && walked.steps > 0 && driven.result.steps !== walked.steps,
+    { driver: driven.status === "completed" ? driven.result.steps : why(driven), walker: walked.steps });
 
   // A RECORD FROM A BUILD THAT SERVES MORE THAN THIS ONE. Written directly, because that is exactly
   // what the driver will meet: a spec some other build's dispatcher stamped.
@@ -627,7 +656,7 @@ await sleep("1h", { name: "first" });
     refused.status === "released" ? (refused.reason as { code?: string }).code : why(refused));
   c("and the refusal names both the version it met and the set this build serves",
     refused.status === "released" && /language version 9/.test(refused.reason.message)
-    && refused.reason.message.includes(`this build serves ${WALKER_LANGUAGE_VERSION}`),
+    && refused.reason.message.includes(`this build serves ${ENGINE_LANGUAGE_VERSION}, ${WALKER_LANGUAGE_VERSION}`),
     refused.status === "released" ? refused.reason.message.slice(0, 120) : why(refused));
   // THE TEETH, AND THEY NEEDED A REAL JOURNAL TO HAVE ANY. A refusal that had already activated the
   // run would have taken the lease and written the activation, and "refused" would then describe the
@@ -666,23 +695,21 @@ await sleep("1h", { name: "first" });
   c("and a record with no journal is refused with no status written at all",
     untouched?.status === undefined, untouched?.status?.value);
 
-  // THE RECORD THIS BUILD WILL ACTUALLY MEET, as opposed to a version nobody wrote: one stamped by
-  // the ENGINE. It takes the same branch as the unserved number above and it is not the same claim -
-  // that one says the table refuses what it does not list, this one says the version the other
-  // engine really writes is on the far side of that line today. It is also the cell that must be
-  // revisited rather than silently kept the day the engine joins the table: it will red, and the
-  // red is the point, because on that day the dispatcher's answer for a v2 record changes.
-  const v2 = { ...resolvePins({ runId: "d-v2" }, 1_000, WALKER_LANGUAGE_VERSION), languageVersion: ENGINE_LANGUAGE_VERSION };
-  await createRunSpec(kv, EP, "d-v2", { pins: v2, createdAt: 1_000 });
-  const engineRecord = await attempt(driveRun(js, jsm, {
-    space: SPACE, endpoint: EP, kv, runId: "d-v2", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
-    handler: new CountingHandler(),
+  // THE RECORD THIS BUILD ACTUALLY WRITES, back at its own dispatcher: it routes to the engine
+  // that wrote it. This cell held the opposite claim while the table served only the walker — a
+  // v2 record was on the far side of the L5023 line, and its own comment said the red would be the
+  // point the day the engine joined the table. That day: the record is `d-v-fresh`'s own, written
+  // by the engine three cells up, and the proof of the ROUTE is the resume's shape — a journal
+  // whose every entry is settled replays without re-effecting anything, so a successor whose
+  // handler was never touched is a record that was read by an engine that speaks its language.
+  const successor = new CountingHandler();
+  const routed = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v-fresh", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: successor,
   }));
-  c("a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
-    engineRecord.status === "released"
-    && (engineRecord.reason as { code?: string }).code === "L5023"
-    && engineRecord.reason.message.includes(`language version ${ENGINE_LANGUAGE_VERSION}`),
-    engineRecord.status === "released" ? engineRecord.reason.message.slice(0, 120) : why(engineRecord));
+  c("a record the engine wrote resumes through the dispatcher on the engine that wrote it",
+    routed.status === "completed" && successor.effects.length === 0,
+    { status: why(routed), effects: successor.effects });
 
   // A RECORD FROM BEFORE THE FIELD EXISTED. It reaches the same branch by a different route: not a
   // version this build does not serve, but no version at all, which `find` also fails to match. The
@@ -699,7 +726,7 @@ await sleep("1h", { name: "first" });
     absent.status === "released" ? (absent.reason as { code?: string }).code : why(absent));
   c("and the refusal says the record names none, rather than interpolating the missing value",
     absent.status === "released" && !/undefined/.test(absent.reason.message)
-    && absent.reason.message.includes(`this build serves ${WALKER_LANGUAGE_VERSION}`),
+    && absent.reason.message.includes(`this build serves ${ENGINE_LANGUAGE_VERSION}, ${WALKER_LANGUAGE_VERSION}`),
     absent.status === "released" ? absent.reason.message.slice(0, 140) : why(absent));
 
   // THE CONTROL, and without it the three cells above are satisfied by a driver that refuses every

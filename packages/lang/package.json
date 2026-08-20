@@ -15,6 +15,9 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./engine/worker-entry": {
+      "import": "./dist/engine/worker-entry.js"
     }
   },
   "scripts": {

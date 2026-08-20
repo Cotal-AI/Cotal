@@ -6,11 +6,18 @@
  * accept that on its own behalf. A worker gives the run its own realm to harden, and gives the host
  * an isolate whose intrinsics it still owns.
  *
- * WHAT ACTUALLY CROSSES. The whole run happens INSIDE the thread - the seam, the journal, the effect
- * host and the handler. That is not an optimisation: `handler.now()` and every `journal.*` call in
- * the effect path are SYNCHRONOUS, and a proxy over a message port is not. So the request names the
- * handler by module and the worker constructs it there, and what crosses is a request in and a
- * result out, with log lines streamed between.
+ * WHAT ACTUALLY CROSSES. The run happens INSIDE the thread - the seam, the journal and the effect
+ * host - and the request comes in, the result goes out, with log lines streamed between. The
+ * HANDLER has two routes, chosen by what the handler is. One that can be built from cloneable
+ * config is named BY MODULE and constructed in the thread, whole. One that cannot - a live object
+ * holding sockets, a mesh client, a lease-bound appender - STAYS IN THE HOST, and the thread
+ * forwards the effect seam over a MessagePort (`bridge.ts`): every `EffectHandler` member except
+ * `now()` is async, and the journal's durable half (`JournalStore.append`) is a Promise the
+ * journal awaits before any effect fires, so both survive a port hop with the awaits lining up
+ * exactly as they line up over a PubAck. What is genuinely synchronous is `now()` and the stop
+ * flag, and both go over shared memory. An earlier form of this header ruled the bridge out by
+ * claiming "every journal.* call in the effect path" is synchronous; the durable append never was,
+ * and the in-memory reads that are never leave the thread.
  *
  * CANCELLATION IS THE ONE EXCEPTION, and it is why there is a SharedArrayBuffer here. `shouldStop`
  * is read synchronously, between effects, so it cannot be a message either. The host writes a reason
@@ -23,9 +30,11 @@
  * message, lockdown included, 22.8-26.4ms over three spawns.
  */
 
-import { Worker } from "node:worker_threads";
-import type { JournalEntry } from "./../journal.js";
+import { MessageChannel, Worker, type MessagePort } from "node:worker_threads";
+import type { EffectHandler } from "../effects.js";
+import type { JournalEntry, JournalStore } from "./../journal.js";
 import type { RunPins } from "../pins.js";
+import { serviceBridge } from "./bridge.js";
 
 /** Where the reason's byte length lives in the shared stop buffer; the bytes follow it. */
 const STOP_HEADER = 4;
@@ -50,11 +59,25 @@ export interface WorkerRunRequest {
   readonly source: string;
   readonly module: string;
   readonly runId: string;
-  readonly handler: WorkerHandlerSpec;
+  /**
+   * `"bridged"` keeps the handler in the host: the thread forwards the effect seam over a
+   * MessagePort instead of constructing a handler, and the caller supplies the live handler and
+   * store via {@link WorkerRunOptions.bridge}. Exactly one of the two must be chosen — a request
+   * naming both routes, or neither, is a caller that has not decided where its effects run.
+   */
+  readonly handler: WorkerHandlerSpec | "bridged";
   readonly pins?: RunPins;
   /** A resume: the recorded entries, rebuilt into the run's journal inside the thread. */
   readonly entries?: readonly JournalEntry[];
   readonly file?: string;
+  /**
+   * The caller's loose limits and seed, forwarded so the thread's `bindPins` performs the same
+   * agreement check (L5009) the in-process engines perform: with pins present these must agree or
+   * be absent, and dropping them at this boundary would silently skip that refusal.
+   */
+  readonly seed?: string;
+  readonly effectCeiling?: number;
+  readonly stepBudget?: number;
 }
 
 export interface WorkerRunOk {
@@ -72,6 +95,18 @@ export interface WorkerRunFailed {
   readonly code?: string;
   readonly name: string;
   readonly message: string;
+  /**
+   * `RunReleased.reason` (L5012), carried as the field it is so a host rebuilding the class does
+   * not have to parse its own sentence back out of the message.
+   */
+  readonly reason?: string;
+  /**
+   * An `EffectError`'s domain fields, carried so a host can rebuild the class whole: `kind` is what
+   * failure handling branches on and `detail` is a recorded value, already fenced at its throw
+   * site. Present together with `code` exactly when the run failed as an effect failure.
+   */
+  readonly kind?: string;
+  readonly detail?: Readonly<Record<string, unknown>>;
 }
 
 export type WorkerRunResult = WorkerRunOk | WorkerRunFailed;
@@ -139,6 +174,11 @@ export interface WorkerRunOptions {
   readonly entry: URL | string;
   /** Called for each `log` the run emits, as it emits it. */
   readonly onLog?: (line: { scope: string; values: readonly unknown[] }) => void;
+  /**
+   * The live seam a `"bridged"` request runs against: the host's handler and its durable store.
+   * Required exactly when the request says `"bridged"`; see {@link WorkerRunRequest.handler}.
+   */
+  readonly bridge?: { readonly handler: EffectHandler; readonly store: JournalStore };
 }
 
 /**
@@ -148,8 +188,31 @@ export interface WorkerRunOptions {
  * point, and a thread that outlives its run is a realm holding a journal nobody is reading.
  */
 export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions): WorkerRun {
+  // ONE ROUTE, DECIDED, before a thread exists to be wrong in. A bridged request with no seam has
+  // nowhere to run its effects; a module-named handler beside a live seam is two answers to where
+  // the effects live, and picking one silently would be this module deciding the caller's
+  // confinement posture for it.
+  if ((request.handler === "bridged") !== (options.bridge !== undefined)) {
+    throw new Error(
+      request.handler === "bridged"
+        ? `request ${request.runId} names the bridged handler route but no bridge seam was supplied; pass options.bridge with the live handler and store`
+        : `request ${request.runId} names a module handler and a bridge seam at once; a run's effects live in the thread or in the host, not both`,
+    );
+  }
   const stop = new SharedArrayBuffer(STOP_HEADER + STOP_CAPACITY);
-  const worker = new Worker(options.entry, { workerData: { request, stop } });
+  let host: { readonly clock: SharedArrayBuffer; close(): void } | undefined;
+  let bridge: { port: MessagePort; clock: SharedArrayBuffer } | undefined;
+  if (options.bridge !== undefined) {
+    const channel = new MessageChannel();
+    host = serviceBridge(channel.port1, options.bridge);
+    bridge = { port: channel.port2, clock: host.clock };
+  }
+  // Two literal spellings rather than one spread, so the crossing audit in the engine suite reads
+  // exactly what the thread is handed in each route off this source.
+  const worker =
+    bridge !== undefined
+      ? new Worker(options.entry, { workerData: { request, stop, bridge }, transferList: [bridge.port] })
+      : new Worker(options.entry, { workerData: { request, stop } });
 
   const done = new Promise<WorkerRunResult>((resolve, reject) => {
     let answered = false;
@@ -176,7 +239,11 @@ export function runInWorker(request: WorkerRunRequest, options: WorkerRunOptions
       // the only honest thing left: the journal may hold a pending step and only the store knows.
       if (!answered) reject(new Error(`cotal-lang engine worker exited with code ${code} before the run answered`));
     });
-  }).finally(() => void worker.terminate());
+  }).finally(() => {
+    // The seam closes AFTER the thread is gone, so no in-flight effect answers into a closed port;
+    // terminate() returns a promise and the close rides its settlement.
+    void worker.terminate().finally(() => host?.close());
+  });
 
   return { done, stop: (reason) => publishStop(stop, reason) };
 }

@@ -20,9 +20,10 @@
     "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
     "a record that names no language version at all is refused the same way",
     "and the refusal says the record names none, rather than interpolating the missing value",
-    "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+    "a record the engine wrote resumes through the dispatcher on the engine that wrote it",
     "while the same spec at a version this build DOES serve gets past the table",
     "a fresh run completes on the engine this build serves",
-    "and it is stamped with the version of the ENGINE that ran it, not with the current language"
+    "and it is stamped with the version of the ENGINE that ran it, not the walker's",
+    "and it charges steps in the engine's own units: the same source, walked in-process, counts differently"
   ]
 }

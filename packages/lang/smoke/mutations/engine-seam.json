@@ -509,7 +509,7 @@
     {
       "name": "the request's named handler export is ignored",
       "file": "packages/lang/src/engine/worker-entry.ts",
-      "find": "  const name = request.handler.export ?? \"createHandler\";",
+      "find": "  const name = exportName ?? \"createHandler\";",
       "replace": "  const name = \"createHandler\";",
       "expectRed": "a request naming an export that is not there is refused",
       "completionMarker": "ok and the refusal names the language's rule, not a clone algorithm",
@@ -708,8 +708,8 @@
     {
       "name": "the host reaches for a default worker entry when none is given",
       "file": "packages/lang/src/engine/worker.ts",
-      "find": "  const worker = new Worker(options.entry, { workerData: { request, stop } });",
-      "replace": "  const worker = new Worker(options.entry ?? new URL(\"./worker-entry.js\", import.meta.url), { workerData: { request, stop } });",
+      "find": "      : new Worker(options.entry, { workerData: { request, stop } });",
+      "replace": "      : new Worker(options.entry ?? new URL(\"./worker-entry.js\", import.meta.url), { workerData: { request, stop } });",
       "expectRed": "a request with NO entry starts no thread at all",
       "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
       "cell": "a request with NO entry starts no thread at all",
@@ -954,6 +954,63 @@
       "cell": "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
       "completionMarker": "and its journal is the first run's, entry for entry",
       "note": "The lang suite proves the door DEPENDS on the value; this proves the THREAD reaches it. They are different claims and the second is the one that matters here, because workerData is a structured clone and preserves Date, NaN, -0, an own `undefined` key and a Map - so the thread's door is the only one of the two that can fire on today's store. Aimed at the CODE cell, not at the completes/does-not-complete one: measured, the latter stays green with the door deleted, because a hand-built entry fails its input-hash comparison too and a divergence looks the same from outside."
+    },
+    {
+      "name": "the bridge flattens every failure into the host domain",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "find": "  if (e instanceof EffectError) {",
+      "replace": "  if ((false as boolean) && e instanceof EffectError) {",
+      "expectRed": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
+      "completionMarker": "ok and the host bind's own pending record is durable in the store, before the sim's bind replaced it",
+      "cell": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
+      "note": "The domain discriminant is the one bit the two failure domains hang on. Flattened, a handler's EffectError crosses as a host fault, perform.ts wraps it L4000 handler-fault, and the run's failure loses the code and kind the walker raises in-process - a wrong-classed failure every downstream reader would accept as real."
+    },
+    {
+      "name": "the thread rehydrates an effect failure as a plain error",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "find": "  if (w.domain === \"effect\") return new EffectError(w.code ?? \"L4000\", w.kind ?? \"handler-fault\", w.message, w.detail);",
+      "replace": "  if ((false as boolean) && w.domain === \"effect\") return new EffectError(w.code ?? \"L4000\", w.kind ?? \"handler-fault\", w.message, w.detail);",
+      "expectRed": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
+      "completionMarker": "ok and the host bind's own pending record is durable in the store, before the sim's bind replaced it",
+      "cell": "a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
+      "note": "The same discriminant one hop later: the flatten kept the domain and the rehydration ignored it. Graded on the same cell as the flatten deliberately - one proves the domain is written, this proves it is read."
+    },
+    {
+      "name": "the thread's clock is its own rather than the handler's",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "find": "      Atomics.store(flag, 0, 0);\n      port.postMessage({ kind: \"now\" } satisfies ToHost);\n      Atomics.wait(flag, 0, 0);\n      return value[0] as number;",
+      "replace": "      return Date.now();",
+      "expectRed": "the journal a bridged run brings back is the WALKER'S, entry for entry",
+      "completionMarker": "ok a bridged run completes, its handler never having left this process",
+      "cell": "the journal a bridged run brings back is the WALKER'S, entry for entry",
+      "note": "The one shortcut the same-process boundary invites: a worker thread's Date.now IS the driver's wall clock, so nothing breaks until the handler's clock is not the wall - and the handler's clock is injectable (the simulator's is virtual, the mesh handler takes one). Mutated, the bridged journal's stamps come from the wall while the walker's come from the SimHandler's virtual clock, and the entry-for-entry cell is what notices."
+    },
+    {
+      "name": "the host answers an append before the store has recorded it",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "find": "      void seam.store.append(m.entry).then(\n        () => port.postMessage({ kind: \"answer\", seq: m.seq, ok: true, value: undefined } satisfies ToThread),\n        (e: unknown) => port.postMessage({ kind: \"answer\", seq: m.seq, ok: false, error: flatten(e) } satisfies ToThread),\n      );",
+      "replace": "      void seam.store.append(m.entry).catch(() => {});\n      port.postMessage({ kind: \"answer\", seq: m.seq, ok: true, value: undefined } satisfies ToThread);",
+      "expectRed": "a step's pending half is durable in the host BEFORE its effect fires, and its settled half after",
+      "completionMarker": "ok every effect was serviced by the host's own handler instance",
+      "cell": "a step's pending half is durable in the host BEFORE its effect fires, and its settled half after",
+      "note": "The durability order is the property the async append contract carries over the port: `Journal.persist` awaits the store, and the store's resolution must BE the durable write, not a receipt for one that is still in flight. The graded cell's store pushes a tick after the call precisely so this early answer is visible as reordering rather than hidden by a synchronous push."
+    },
+    {
+      "name": "a bind from the host never reaches the thread's journal",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "find": "        bind: (external) => {\n          const b = bseq++;\n          const answer = new Promise<void>((resolve, reject) => binds.set(b, { resolve, reject }));\n          port.postMessage({ kind: \"bind\", bseq: b, seq: seqHere, external } satisfies ToThread);\n          return answer;\n        },",
+      "replace": "        bind: () => Promise.resolve(),",
+      "expectRed": "and the host's store hears exactly the append sequence the walker's store hears",
+      "completionMarker": "ok every effect was serviced by the host's own handler instance",
+      "cell": "and the host's store hears exactly the append sequence the walker's store hears",
+      "note": "A bind is what makes a crash mid-effect recoverable, and it runs AGAINST the arrow: the handler in the host declares the resource, the journal in the thread records it, and the durable append comes back out. Swallowed, every handler bind - the simulator's own included - vanishes from the append stream, so the bridged store hears four appends where the walker's hears six. Aimed at the sequence-parity cell rather than the named-bind cell because the simulator's binds die first and the suite is fail-fast: the parity cell is the earliest observer."
+    }
+  ],
+  "unkillable": [
+    {
+      "name": "an effect's cancel signal is forwarded to the host handler's mirror",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "why": "Ungradable at this sha because the route has no in-run producer on EITHER engine, and that is measured rather than assumed: a race loser parked inside its handler never sees its signal fire on the walker (probed 2026-08-20 - the scope settles, the cancel INTENT is journalled with issued:false, and issuance belongs to the driving layer, per perform.ts's ScopeOutcome). Until something in-run calls BranchSignal.cancel on an effect's signal, a mutant deleting the forward can only report SURVIVED, which would be honest and mean nothing. The forward is kept because the signal is part of the handler contract; the day a driving layer issues cancellation mid-run, this becomes gradable and belongs in the set above."
     }
   ]
 }
