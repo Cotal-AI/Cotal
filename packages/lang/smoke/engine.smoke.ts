@@ -207,7 +207,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // lands with the step key the walker would have allocated.
 
 {
-  const h = harness({ script: { turns: { build: { status: "done" } } } });
+  const h = harness({ script: { turns: { build: { status: "done", at: 0 } } } });
   // What the transform emits, hand-written: `await turn(agent, { name: "build" })`.
   const module = `(ctx) => async () => {
     await ctx.fuel();
@@ -915,7 +915,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
 
 {
-  const first = harness({ script: { turns: { build: { status: "done" } } }, runId: "eng-replay" });
+  const first = harness({ script: { turns: { build: { status: "done", at: 0 } } }, runId: "eng-replay" });
   const module = `(ctx) => async () => {
     const agent = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
     return await ctx.effect("turn", [agent, ctx.born({ name: "build" })]);
@@ -981,7 +981,7 @@ const MODULE = `(ctx) => async () => {
   const r = await ctx.effect("turn", [builder, ctx.born({ name: "build" })]);
   await ctx.free("log", ["status", ctx.get(r, "status")]);
 }`;
-const SCRIPT = { turns: { build: { status: "done" as const } } };
+const SCRIPT = { turns: { build: { status: "done" as const, at: 0 } } };
 
 {
   const logs: unknown[][] = [];
@@ -1029,7 +1029,9 @@ const SCRIPT = { turns: { build: { status: "done" as const } } };
     "while the language version is the one pin they must NOT share, and each is its own engine's",
     walker.pins.languageVersion === WALKER_LANGUAGE_VERSION
       && engine.pins.languageVersion === ENGINE_LANGUAGE_VERSION
-      && walker.pins.languageVersion !== engine.pins.languageVersion,
+      // Compared as values, not as the literal types the constants narrow to: the point is that a
+      // future edit making them equal reds this cell, which a static "no overlap" refusal forbids.
+      && (walker.pins.languageVersion as string) !== (engine.pins.languageVersion as string),
     { walker: walker.pins.languageVersion, engine: engine.pins.languageVersion },
   );
 
@@ -2778,7 +2780,8 @@ let n = 1;
     walkerSaid.refused && engineSaid.refused
       && walkerSaid.name === "NotCrossable" && engineSaid.name === "NotCrossable" && workerAnswer.name === "NotCrossable"
       && walkerSaid.message === engineSaid.message && engineSaid.message === workerAnswer.message,
-    { walker: walkerSaid.name, engine: engineSaid.name, worker: workerAnswer.name, same: walkerSaid.message === workerAnswer.message },
+    { walker: walkerSaid.refused ? walkerSaid.name : null, engine: engineSaid.refused ? engineSaid.name : null,
+      worker: workerAnswer.name, same: walkerSaid.refused && walkerSaid.message === workerAnswer.message },
   );
   ok(
     "so the thread answers the LANGUAGE's refusal instead of a clone algorithm quoting the emitted module back",

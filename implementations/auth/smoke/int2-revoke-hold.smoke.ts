@@ -12,7 +12,18 @@
  * FINDING: on the current tree the copied token's exchange is blocked by the DEEPER auth-plane gate
  * retirement (terminally-retired issuance gate), so the ledger-hold is a defense-in-depth belt over
  * the surviving row; "copied token mints" only reproduces if the RAIL retirement also fails.
- * GREEN on the current tree (fix present); pristine f6115a6 would free the name (RED). READ+RUN only.
+ * MEASURED on the current tree: 20 passed, 0 failed, and the suite is now GATED: it is in
+ * bin/smoke/ci-suites.txt, so a CI shard runs it. Phase C is green throughout (the hold,
+ * standingAuthorityLive, the operator copy, the refused respawn, the copied token blocked by the
+ * retired gate). Phase D's last cell, a same-name spawn takes the EXACT alias after recovery, had
+ * been reading RED because it spawned once: after the recovery nudge the reservation clears within
+ * ~1s, but the predecessor's advisory presence row keeps uniqueName numbering the successor until
+ * that record's TTL plus one sweep tick expires (endpoint.ts: ttlMs 6000, sweep every ttlMs/3), and
+ * the auth plane refuses the numbered name-form. The single shot landed inside that window, so the
+ * cell now retries to a deadline past its ceiling. The numbered-name refusal is itself real and is
+ * tracked as #694, same mechanism as #693 and #667. Until the store wiring was repaired this suite
+ * threw before its first cell, so its cells are newly VISIBLE rather than newly caused. Pristine
+ * f6115a6 would free the name (RED). READ+RUN only.
  *
  * PHASES: A/B spawn a user-mode agent and capture a copied actor token; C chmod the managed-actor
  * ledger dir read-only so revokeAgent's rmSync throws EACCES, despawn, and assert the name stays HELD
@@ -30,6 +41,7 @@ const SUBCOMMAND = process.argv[2] ?? "";
 if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
   await import("@cotal-ai/auth");
   const { registry } = await import("@cotal-ai/core");
+  type Command = import("@cotal-ai/core").Command;
   const rest = process.argv.slice(3);
   const values: Record<string, string | boolean | undefined> = {};
   const positionals: string[] = [];
@@ -42,9 +54,10 @@ if (SUBCOMMAND === "agent-bearer" || SUBCOMMAND === "auth-service") {
       else values[key] = true;
     } else positionals.push(a);
   }
-  const cmd = registry
-    .all<{ name: string; run: (a: { values: typeof values; positionals: string[]; raw: readonly string[] }) => Promise<void> }>("command")
-    .find((c) => c.name === SUBCOMMAND);
+  // The real contract, rather than a hand-written shape: `all` constrains its type argument to
+  // Extension, which the inline shape did not satisfy because it omitted `kind`, and ParsedArgs is
+  // exactly the values/positionals/raw triple this dispatcher already passes.
+  const cmd = registry.all<Command>("command").find((c) => c.name === SUBCOMMAND);
   if (!cmd) { console.error(`self-dispatch: command "${SUBCOMMAND}" is not registered`); process.exit(1); }
   try {
     await cmd.run({ values, positionals, raw: rest });
@@ -72,7 +85,15 @@ type LaunchSpec = import("@cotal-ai/core").LaunchSpec;
 type ControlReply = import("@cotal-ai/core").ControlReply;
 
 const { spawn } = await import("node:child_process");
-const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync } = await import("node:fs");
+const { mkdtempSync, mkdirSync, writeFileSync, readFileSync, existsSync, readdirSync, rmSync, chmodSync } = await import("node:fs");
+
+/** `Manager.list` is PRIVATE; the cells below read one field off the row `cotal ps` renders, so the
+ *  reach goes through one named view rather than a cast per call site, and the view names that field
+ *  and no other. Widening the method to public would be a shipped-source change made for a test's
+ *  convenience, which is not this change's business. */
+type PsRow = { name: string };
+const psList = (m: object, ownerFilter?: string): PsRow[] =>
+  (m as unknown as { list: (o?: string) => PsRow[] }).list(ownerFilter);
 const { tmpdir } = await import("node:os");
 const { join } = await import("node:path");
 
@@ -100,7 +121,7 @@ const { jetstreamManager } = await import("@nats-io/jetstream");
 const { Kvm } = await import("@nats-io/kv");
 const { encodeUser, fmtCreds } = await import("@nats-io/jwt");
 const { fromPublic, fromSeed } = await import("@nats-io/nkeys");
-const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths } = await import("@cotal-ai/workspace");
+const { authDir, userAuthStateDir, saveSpaceAuth, recordMesh, assertUserAuthInfo, agentLifecycleSecretFilePaths, workspaceSecretStore } = await import("@cotal-ai/workspace");
 const {
   cotalAuthProvider, establishIdpSession, grantActor, loadAuthServiceInfo,
   managedActorLedgerDir, ledgerRowFilename,
@@ -144,6 +165,10 @@ const SPACE = `fsb-${Math.floor(Math.random() * 1e6)}`;
 const CLIENT_ID = "cotal-cli";
 const AGENT = "worker";
 const dir = userAuthStateDir(root, SPACE);
+// The provider's SECRET seam. `prepareServer` and `ownerForLogin` both REQUIRE it (callout account,
+// issuer keys, owner secret, service key projection all ride it); the calls below used to omit it,
+// so the provider was reached with `store` undefined. Same workspace-rooted store the CLI composes.
+const store = workspaceSecretStore(root);
 const credsDir = join(authDir(root), "creds");
 const coreDist = join(import.meta.dirname, "..", "..", "..", "packages", "core", "dist", "index.js");
 
@@ -264,6 +289,7 @@ try {
   };
 
   const prepared = await cotalAuthProvider.prepareServer({
+    store,
     space: SPACE,
     operatorSeed: auth.operator.seed,
     account: { pub: auth.account.pub, signingSeed: auth.account.signingSeed },
@@ -325,13 +351,15 @@ try {
     dir: home, idpUrl: base, clientId: CLIENT_ID,
     onPrompt: (p: DeviceLoginPrompt) => void approve(p.userCode),
   });
-  const OWNER = await cotalAuthProvider.ownerForLogin({ dir, space: SPACE });
+  const OWNER = await cotalAuthProvider.ownerForLogin({ store, dir, space: SPACE });
   grantActor(dir, { owner: OWNER, actor: "cli", scope: ["spawn", "role:worker"], allowSubscribe: ["general"], allowPublish: ["general"], label: "smoke operator" });
 
-  // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding
-  // today's exact resource names, so the same asserts stay compilable and flip green under the
-  // lifecycle-keyed rename (dm_<principal> becomes dm_<principal>-<lifecycleUid> etc.) without
-  // editing the smoke. Enumeration (`$JS.API.CONSUMER.LIST`) is deliberately grantable by NO
+  // Broker-footprint inspectors. The checks ENUMERATE by principal PREFIX rather than binding one
+  // exact resource name. The lifecycle-keyed rename has LANDED on this tree, so the names they
+  // match already carry the uid (`dm_<owner>-<actor>-<lifecycleUid>`, built by `lifecycleNameKey`
+  // in `subjects.ts`, SPEC 13.1); the prefix form is what let these asserts survive that rename
+  // without being edited, and it is what keeps them standing through the next one.
+  // Enumeration (`$JS.API.CONSUMER.LIST`) is deliberately grantable by NO
   // production profile, so the inspector rides a HARNESS-ONLY god cred signed with the account
   // key the smoke already owns — observability of the harness, never a surface of the code under test.
   const principal = principalKey(OWNER, AGENT);
@@ -379,14 +407,13 @@ try {
   // ================================================================================================
   // INT-2 — SWALLOWED revokeAgent: a failed user-mode ledger revoke must NOT free the name.
   // ================================================================================================
-  const { chmodSync } = await import("node:fs");
   const mAny = manager as unknown as {
     opStop: (a: Record<string, unknown>, c: string, admin: boolean) => Promise<ControlReply>;
     deprovision: (a: { id: string; name: string; lifecycleUid: string; userOwner?: string }) => Promise<void>;
     ep: { ref: () => { id: string } };
     retiring: Map<string, { agentId: string; lifecycleUid: string; userOwner?: string; standingAuthorityLive?: boolean; lastError?: string }>;
   };
-  const listNames = (): string[] => manager!.list().map((a: { name: string }) => a.name);
+  const listNames = (): string[] => psList(manager!).map((a) => a.name);
 
   // Capture the manager's despawn/terminal logs (console.error) so we can read the RED vs GREEN
   // terminal face directly ("name stays held" = GREEN; "free for reuse" = RED/pristine).
@@ -453,7 +480,7 @@ try {
   check("GREEN: a same-name spawn is REFUSED while the mint authority stands (alias not reassigned)",
     respawn.ok === false, respawn);
   check("GREEN: no successor managed record took the alias (the manager lists no live agent under the held name)",
-    !manager.list().some((a: { name: string }) => a.name === AGENT), listNames());
+    !psList(manager).some((a) => a.name === AGENT), listNames());
   check("GREEN: the SAME hold is still in place after the refused respawn (unchanged lifecycleUid, no ABA swap)",
     mAny.retiring.get(AGENT)?.lifecycleUid === heldUidBeforeRespawn && heldUidBeforeRespawn !== undefined,
     { before: heldUidBeforeRespawn, after: mAny.retiring.get(AGENT)?.lifecycleUid });
@@ -511,10 +538,27 @@ try {
   // nudge may already have spawned `worker` once the hold cleared; if not, do it here. Assert the EXACT
   // alias is live -- a suffixed sibling (worker-2) or an unrelated failure would BOTH leave the exact
   // alias absent from the roster, so this rejects both.
-  if (!manager!.list().some((a: { name: string }) => a.name === AGENT))
+  // Same two-stage release the freeslot suite measures: after the recovery nudge the reservation
+  // clears within ~1s, but the predecessor's advisory presence row keeps uniqueName numbering the
+  // successor until that record's TTL plus one sweep tick expires (endpoint.ts: ttlMs 6000, sweep
+  // every ttlMs/3), and the auth plane refuses the numbered name-form. A single shot lands inside
+  // that window, so retry to a deadline past its ceiling. The assertion below names the EXACT
+  // alias, so a numbered stand-in can never satisfy it, and it shows up in the failure payload.
+  const aliasDeadline = Date.now() + 30_000;
+  while (!psList(manager!).some((a) => a.name === AGENT) && Date.now() < aliasDeadline) {
+    const before = listNames();
     await manager!.startAgent({ name: AGENT, agent: "e2e", owner: OWNER });
+    if (psList(manager!).some((a) => a.name === AGENT)) break;
+    // Stop anything the attempt DID create under another name, the way the freeslot suite does.
+    // On this tree the numbered attempt is refused outright and leaves nothing behind, so this
+    // never fires; it is here so that a future change admitting a live numbered sibling cannot
+    // leave one running for the cells below to trip over.
+    for (const stray of listNames().filter((x) => !before.includes(x) && x !== AGENT))
+      await mAny.opStop({ name: stray, graceful: false }, mAny.ep.ref().id, true);
+    await wait(250);
+  }
   check("GREEN: a same-name spawn takes the EXACT alias after recovery (no suffix, no lingering reservation)",
-    manager!.list().some((a: { name: string }) => a.name === AGENT), { live: listNames() });
+    psList(manager!).some((a) => a.name === AGENT), { live: listNames() });
 
   console.error = origErr;
   console.log(`\nINT-2 SWALLOWED-REVOKE ${fail === 0 ? "GREEN ✅ (fix present: failed revoke holds the name; retry re-drives)" : "RED ❌"}  (${pass} passed, ${fail} failed)`);
@@ -523,6 +567,10 @@ try {
   console.error("  ✗ scenario threw:", (e as Error).stack ?? (e as Error).message);
   process.exitCode = 1;
 } finally {
+  // `chmodSync` used to be pulled in by a block-scoped import several hundred lines above, so this
+  // line threw ReferenceError into its own `catch` on every run: the ledger dir stayed at the 0o500
+  // the fault arms above, and the `rmSync` below could not clear it. Imported at the top now, with
+  // the same best-effort intent.
   try { chmodSync(managedActorLedgerDir(dir), 0o700); } catch { /* best-effort restore before rm */ }
   try { await manager?.stop(); } catch { /* already stopped */ }
   try { await delivery?.stop(); } catch { /* already stopped */ }

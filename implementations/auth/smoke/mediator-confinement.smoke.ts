@@ -179,7 +179,7 @@ try {
   await denied("the mediator CANNOT create ANY records consumer (no CONSUMER.CREATE grant), even under the old pinned name+filter",
     () => jsmMed.consumers.add(recordsKvStreamName(SPACE), { name: exploitName, filter_subject: exploitFilter, ack_policy: AckPolicy.None, deliver_policy: DeliverPolicy.LastPerSubject, mem_storage: true, inactive_threshold: 30_000_000_000 }));
   await denied("DENIED: the EXACT EXPLOIT — a matching name+filter create with a DURABLE + PUSH body (a persistent oblig-subtree exporter)",
-    () => medNc.request(`$JS.API.CONSUMER.CREATE.${recordsKvStreamName(SPACE)}.${exploitName}.${exploitFilter}`, enc.encode(JSON.stringify({ stream_name: recordsKvStreamName(SPACE), config: { name: exploitName, durable_name: exploitName, filter_subject: exploitFilter, deliver_subject: `attacker.exfil.${SPACE}`, deliver_policy: "all", ack_policy: "none" } })), { timeout: 1500 }));
+    () => medNc!.request(`$JS.API.CONSUMER.CREATE.${recordsKvStreamName(SPACE)}.${exploitName}.${exploitFilter}`, enc.encode(JSON.stringify({ stream_name: recordsKvStreamName(SPACE), config: { name: exploitName, durable_name: exploitName, filter_subject: exploitFilter, deliver_subject: `attacker.exfil.${SPACE}`, deliver_policy: "all", ack_policy: "none" } })), { timeout: 1500 }));
   await denied("no exploit consumer survives on the records stream (denied at publish, nothing created)",
     () => jsm.consumers.info(recordsKvStreamName(SPACE), exploitName));
   // A foreign records-stream consumer, created by the trusted side: the mediator holds NO records
@@ -227,13 +227,13 @@ try {
     await jsMed.publish(subject, enc.encode(JSON.stringify({ ...got.row, state: "terminal" })));
     const overwritten = await jsm.streams.getMessage(recordsKvStreamName(SPACE), { last_by_subj: subject });
     c("the mediator CAN overwrite its own obligation to valid terminal: the named payload-blind KV residual",
-      JSON.parse(new TextDecoder().decode(overwritten.data)).state === "terminal");
+      overwritten !== null && JSON.parse(new TextDecoder().decode(overwritten.data)).state === "terminal");
 
     const delSubject = `$KV.${recordsBucket(SPACE)}.oblig.${tgt.lifecycleUid}.${EP}.local.caller.${"q".repeat(26)}.del001`;
     const h = natsHeaders(); h.set("KV-Operation", "DEL");
     await jsMed.publish(delSubject, new Uint8Array(), { headers: h });
     const marker = await jsm.streams.getMessage(recordsKvStreamName(SPACE), { last_by_subj: delSubject });
-    c("the mediator CAN emit an own-obligation DEL marker (readers fail loud; stream erasure remains denied)", marker.header?.get("KV-Operation") === "DEL");
+    c("the mediator CAN emit an own-obligation DEL marker (readers fail loud; stream erasure remains denied)", marker !== null && marker.header?.get("KV-Operation") === "DEL");
   }
   {
     const foreignReply = `foreign.reply.${Date.now()}`;
@@ -253,13 +253,13 @@ try {
   // bonded to THIS space. A hand-assembled structural object (its scanObligations returns []) or a
   // foreign-space scanner would let a mediator drain declare quiescence over live obligations.
   await denied("openAdmissionMediator REJECTS a hand-assembled records scanner (not built by the module; never enumerates)",
-    () => openAdmissionMediator(medNc, SPACE, EP, { now: () => NOW, recordsScanner: { scanObligations: async () => [], close: async () => {} } as never }));
+    () => openAdmissionMediator(medNc!, SPACE, EP, { now: () => NOW, recordsScanner: { scanObligations: async () => [], close: async () => {} } as never }));
   await denied("openAdmissionMediator REJECTS a FOREIGN-SPACE records scanner (bonded to another space)",
-    () => openAdmissionMediator(medNc, SPACE, EP, { now: () => NOW, recordsScanner: makeRecordsScannerOverConnection(nc, "otherspace") }));
+    () => openAdmissionMediator(medNc!, SPACE, EP, { now: () => NOW, recordsScanner: makeRecordsScannerOverConnection(nc!, "otherspace") }));
   await denied("openLifecycleRegistry REJECTS a foreign-space records scanner",
-    () => openLifecycleRegistry(nc, SPACE, undefined, makeRecordsScannerOverConnection(nc, "otherspace")));
+    () => openLifecycleRegistry(nc!, SPACE, undefined, makeRecordsScannerOverConnection(nc!, "otherspace")));
   await denied("openLifecycleRegistry REJECTS a hand-assembled records scanner (both injection points cover both negatives)",
-    () => openLifecycleRegistry(nc, SPACE, undefined, { scanObligations: async () => [], close: async () => {} } as never));
+    () => openLifecycleRegistry(nc!, SPACE, undefined, { scanObligations: async () => [], close: async () => {} } as never));
   // Filter confinement: the closed scan op refuses any filter that escapes the `oblig.` subtree, so
   // the sealed scanner can never be widened to the records root or a foreign subtree (head/govern/lease).
   await denied("scanObligations REFUSES a non-oblig subtree filter (govern head)",

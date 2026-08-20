@@ -6,7 +6,7 @@
  * be discouraged. Each case below is written the way an LLM would naturally write it, because
  * those are the programs the rules have to catch.
  */
-import { validate } from "../src/grammar.js";
+import { validate, type ValidateResult } from "../src/grammar.js";
 import { CATALOG, LangErrors, type LangErrorCode } from "../src/errors.js";
 
 let pass = 0;
@@ -493,13 +493,23 @@ accepts("role-parametric procedures are the reuse mechanism",
 // ---- 9) the lints that warn rather than fail ----------------------------------------------
 
 {
-  const r = validate(
-    'async function f(a, b) { await parallel([() => turn(a, { name: "x" }), () => turn(b, { name: "y" })], { name: "both" }); }',
-  );
-  // `validate` throws on a rejected program, so reaching here IS the proof. Stating it as `true`
-  // made a real no-throw check indistinguishable from decoration, which is the whole difficulty.
-  ok("array-form parallel is legal", r.errors === undefined || r.errors.length === 0, r.errors);
-  ok("array-form parallel is linted", r.warnings.some((w) => w.code === "L3023"), r.warnings.map((w) => w.code));
+  // ⚠️ `validate` THROWS on a rejected program, so a RETURNED result is the proof of legality and
+  // there is no `errors` field to inspect. The previous check read `r.errors === undefined`, which
+  // is the decoration the comment beside it warned against wearing a check's clothes: the property
+  // does not exist on `ValidateResult`, so the clause was `undefined === undefined` and COULD NOT
+  // FAIL. Catching the throw is what makes acceptance falsifiable: a rejection now reddens this
+  // cell and names the codes, instead of crashing the suite or passing silently.
+  let r: ValidateResult | undefined;
+  let rejectedWith: string | undefined;
+  try {
+    r = validate(
+      'async function f(a, b) { await parallel([() => turn(a, { name: "x" }), () => turn(b, { name: "y" })], { name: "both" }); }',
+    );
+  } catch (e) {
+    rejectedWith = (e as LangErrors).errors.map((x) => x.code).join(", ");
+  }
+  ok("array-form parallel is legal, and this can now FAIL: `validate` throws on a rejected program, so a returned result is the proof and a throw reddens here naming the codes", r !== undefined, rejectedWith ?? "accepted");
+  ok("array-form parallel is linted", r?.warnings.some((w) => w.code === "L3023") === true, r?.warnings.map((w) => w.code));
 }
 {
   // A list whose items visibly carry no id: the source shows there is no stable key.

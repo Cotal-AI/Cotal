@@ -214,7 +214,9 @@ log(now() - t0);
 // two versions are DIFFERENT, and that neither function reads a version out of this module.
 
 {
-  ok("the walker's version and the engine's are two different languages", WALKER_LANGUAGE_VERSION !== ENGINE_LANGUAGE_VERSION,
+  // Compared as values, not as the literal types the constants narrow to: the point is that a future
+  // edit making them equal reds this cell, which a static "no overlap" refusal forbids.
+  ok("the walker's version and the engine's are two different languages", (WALKER_LANGUAGE_VERSION as string) !== (ENGINE_LANGUAGE_VERSION as string),
     { walker: WALKER_LANGUAGE_VERSION, engine: ENGINE_LANGUAGE_VERSION });
   // The CURRENT language is the engine's. `LANGUAGE_VERSION` is what a caller means by "this
   // language" and it must move with the newest engine, not with the oldest one still supported.
