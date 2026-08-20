@@ -40,8 +40,18 @@
       "expectRed": "a horizon already past at the start stops the run before its first effect",
       "cell": "a horizon already past at the start stops the run before its first effect",
       "note": "The thread's first pre-effect check reads the shared flag; a stop published on the pending APPEND arrives after that check has passed, so the first effect runs. The walker answers this case with zero effects, and the upfront publish is the one line that makes the engine give the same answer."
+    },
+    {
+      "name": "a throwing stop check crashes the host from the poll's timer stack",
+      "file": "implementations/runtime/src/engine-host.ts",
+      "find": "    } catch (e) {\n      pollFault = e ?? new Error(\"the host's stop check threw a falsy value\");\n      clearInterval(poll);\n      worker.stop(\"the host's stop check itself threw; the driver re-raises the fault\");\n    }",
+      "replace": "    } catch (e) {\n      throw e;\n    }",
+      "expectRed": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
+      "cell": "a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
+      "note": "Rethrowing from the timer callback is exactly the unguarded shape this guard replaced: the throw lands on Timeout._onTimeout, bypasses the driver's catch, and without the cell's own uncaughtException trap it kills the host process (MEASURED at c24be213). The cell traps the escape so the kill is a named red rather than a dead suite."
     }
   ],
+
   "unkillable": [
     {
       "name": "the worker entry's existence check reaches for a fallback path",

@@ -1373,13 +1373,15 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     ["2. a v1 record with entries, on the engine host: refused L5008", HERE, ["and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
     ["3. a v2 record with entries, on the walker: refused L5008, the defence behind the dispatch, for a caller who reaches past it", HERE, ["and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
     ["4. a v2 record with entries, on the engine host: it resumes", HERE, ["the engine resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock"]],
-    ["5. a record at a version no engine here serves, and one naming none at all, at the driver: released, L5023, run untouched", DRIVER, [
+    ["5. a record at a version no engine here serves, one naming none at all, and one whose version is not even a string, at the driver: released (L5023, or MALFORMED by its own name), run untouched", DRIVER, [
       "a record no engine here serves is RELEASED, not failed and not thrown",
       "and it is refused by name, L5023",
       "and the refusal names both the version it met and the set this build serves",
       "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
       "a record that names no language version at all is refused the same way",
       "and the refusal says the record names none, rather than interpolating the missing value",
+      "a record whose languageVersion is a number is refused as MALFORMED, not as an unserved version",
+      "and the refusal names the type it met rather than interpolating it into a version claim",
     ]],
     ["6. a journal with no entries, on either engine: a store, not a resume, and its pins are its own", HERE, [
       "the walker takes a journal with no entries and no pins as a fresh run's store rather than as a resume it must refuse",

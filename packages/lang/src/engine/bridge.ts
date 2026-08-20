@@ -310,6 +310,11 @@ export function serviceBridge(port: MessagePort, seam: { readonly handler: Effec
       return;
     }
     if (m.kind === "cancel") {
+      // A cancel finds its mirror only while the effect is in flight: the answer deletes the
+      // mirror, so the walker's post-settle blanket cancellations (aimed at arms that already
+      // returned) do not cross. Deliberate, and pinned by the engine suite's parked-loser cells:
+      // the host handler hears a cancel exactly when its effect is still open, which is the only
+      // time it can act on one.
       cancels.get(m.seq)?.fire(m.reason);
       return;
     }

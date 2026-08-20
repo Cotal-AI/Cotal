@@ -141,6 +141,24 @@ const ENGINES: readonly HostedEngine[] = [
  * recorded version AND the served set, because "this build cannot" is only actionable if it says
  * what it can.
  */
+/**
+ * A record whose `languageVersion` is not the string the wire contract declares (SPEC §14.3,
+ * core's run-record). Distinct from L5023 on purpose: L5023 says "a version this build does not
+ * serve", and folding a malformed field into it produced the self-contradictory sentence
+ * "recorded under language version 2 ... this build serves 2, 1" when the 2 was a number - the
+ * table compares strings, so a number misses every entry while printing like a served version.
+ * The writer that produced the record is the defect; the record is refused untouched.
+ */
+class RunRecordMalformed extends Error {
+  constructor(runId: string, got: unknown) {
+    super(
+      `run ${runId}'s record is malformed: \`languageVersion\` must be a string and this record carries a ${typeof got}`
+        + ` (${JSON.stringify(got) ?? String(got)}). No engine dispatch was attempted; the writer that produced this record is the defect to fix.`,
+    );
+    this.name = "RunRecordMalformed";
+  }
+}
+
 function unservedLanguage(version: string | undefined): RuntimeFault {
   // A RECORD MAY NAME NO VERSION AT ALL, and it reaches this branch by the same route: written
   // before the field existed, it matches no engine either. The two cases get different sentences
@@ -347,6 +365,16 @@ async function drive(
     // READ BACK, never re-derived. A default is a property of the interpreter, and the interpreter
     // is the thing that may have changed between attempts.
     pins = record.spec.value.pins as RunPins;
+    // THE FIELD DISPATCH READS IS CHECKED BEFORE THE TABLE IS CONSULTED. The cast above verifies
+    // nothing, and the table below compares strings: a record carrying the NUMBER 2 would miss
+    // every entry and be released as L5023 whose sentence says "recorded under language version 2"
+    // while "this build serves 2" - a self-contradiction handed to an operator. Absent stays with
+    // the table's own no-version sentence; any other non-string is a malformed record, refused by
+    // its own name. MEASURED before the repair, through this driver against a real broker.
+    const wireVersion: unknown = (record.spec.value.pins as unknown as Record<string, unknown>)["languageVersion"];
+    if (wireVersion !== undefined && typeof wireVersion !== "string") {
+      return { status: "released", reason: new RunRecordMalformed(req.runId, wireVersion) };
+    }
     // AND THE ENGINE IS READ BACK WITH THEM. No fallback: a record whose language this build cannot
     // speak is refused by name (L5023) rather than walked by whatever engine happens to be here,
     // which would run a program under semantics it was never recorded under.

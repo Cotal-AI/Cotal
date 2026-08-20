@@ -119,7 +119,8 @@ The language, its validator, interpreter, simulator and dry run are `@cotal-ai/l
 (`packages/lang`), usable in-process with your own effect handler and with no broker: `validate(src)`,
 then `run(src, { runId, handler })`, and `resume(src, journal, { runId, pins, handler })` to pick a
 run up from its journal (the package README has the snippet, with `SimHandler` as the handler). That
-is the only way to run a program today. The wire
+is the in-process route, yours to drive with your own handler; a run the driver starts executes on
+the compiled engine, as the engine paragraph below says. The wire
 substrate of §14 (the `WFJ_<space>` stream, the four record kinds, the activation barrier, the
 per-run grants) is in `@cotal-ai/core`, and the run driver, journal store, migrate and fork are
 `@cotal-ai/runtime` (`implementations/runtime`). On the mesh handler, `sleep`, `checkpoint`,

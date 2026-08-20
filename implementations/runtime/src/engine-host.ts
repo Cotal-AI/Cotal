@@ -182,14 +182,28 @@ export async function runOnHostedEngine(req: EngineHostRequest): Promise<RunResu
   const already = req.shouldStop();
   if (already !== undefined) worker.stop(already);
 
-  // The host's stop conditions with no bridge traffic to ride on; see STOP_POLL_MS.
+  // The host's stop conditions with no bridge traffic to ride on; see STOP_POLL_MS. The callback
+  // runs on the timer's own stack, where a throwing `shouldStop` would otherwise become an
+  // UNCAUGHT exception that bypasses every catch the driver holds and leaves the worker running -
+  // the walker route surfaces the same throw inside the driver's try, so this route must answer
+  // the same way: stop the run, and re-raise the fault from the await below, on the caller's
+  // stack. (The same throw at an append boundary already answers honestly: the store's
+  // before-append check rejects that append, and the run is graded through the L5010 path.)
+  let pollFault: unknown;
   const poll = setInterval(() => {
-    const reason = req.shouldStop();
-    if (reason !== undefined) worker.stop(reason);
+    try {
+      const reason = req.shouldStop();
+      if (reason !== undefined) worker.stop(reason);
+    } catch (e) {
+      pollFault = e ?? new Error("the host's stop check threw a falsy value");
+      clearInterval(poll);
+      worker.stop("the host's stop check itself threw; the driver re-raises the fault");
+    }
   }, STOP_POLL_MS);
 
   try {
     const result = await worker.done;
+    if (pollFault !== undefined) throw pollFault;
     if (!result.ok) throw rehydrate(result, store);
     return {
       value: result.value,

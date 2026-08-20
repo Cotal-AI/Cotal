@@ -21,8 +21,9 @@ import { connect } from "@nats-io/transport-node";
 import { jetstream, jetstreamManager } from "@nats-io/jetstream";
 import { Kvm } from "@nats-io/kv";
 import { isReachable, createEndpointStreams, activateRun, replayRunJournal, openRecordsBucket, readRunRecord, createRunSpec, RunJournalTailTruncated } from "@cotal-ai/core";
-import { ENGINE_LANGUAGE_VERSION, Journal, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type JournalEntry } from "@cotal-ai/lang";
+import { ENGINE_LANGUAGE_VERSION, Journal, PIN_DEFAULTS, SimHandler, WALKER_LANGUAGE_VERSION, resolvePins, run as walkProgram, type EffectHandler, type JournalEntry } from "@cotal-ai/lang";
 import { startRun, driveRun, RunJournalStore, PauseToken } from "../src/index.js";
+import { runOnHostedEngine } from "../src/engine-host.js";
 import { pickFreePort } from "./_free-port.js";
 
 const SPACE = "wfjdrive";
@@ -350,6 +351,59 @@ try {
   }));
   c("a horizon already past at the start stops the run before its first effect",
     early.status === "released" && never.effects.length === 0, { status: why(early), effects: never.effects });
+
+  // AND A STOP CHECK THAT ITSELF THROWS is the RUN'S fault, on the caller's stack. The poll's
+  // callback runs on the timer's own stack, where an unguarded throw becomes an uncaught
+  // exception that bypasses every catch the driver holds and kills the host process (MEASURED at
+  // c24be213: Timeout._onTimeout, engine-host.ts). The throw window is deterministic, not timed:
+  // the handler holds its effect open after the pending append landed, and in that window the
+  // poll is the only caller of the stop check - the append boundary's own throw is a different,
+  // already-graded path (the store witnesses a rejected append).
+  {
+    const sim = new SimHandler({});
+    let pendingSeen = false;
+    let parked = false;
+    const parking: EffectHandler = {
+      now: () => sim.now(),
+      spawn: async (r, x) => {
+        parked = true;
+        await new Promise((res) => setTimeout(res, 400));
+        parked = false;
+        return sim.spawn(r, x);
+      },
+      turn: (r, x) => sim.turn(r, x),
+      ask: (r, x) => sim.ask(r, x),
+      checkpoint: (r, x) => sim.checkpoint(r, x),
+      sleep: (r, x) => sim.sleep(r, x),
+      wait: (r, x) => sim.wait(r, x),
+      notify: (r, x) => sim.notify(r, x),
+      monitor: (r, x) => sim.monitor(r, x),
+      openConclave: (r, x) => sim.openConclave(r, x),
+      closeConclave: (r, x) => sim.closeConclave(r, x),
+    };
+    let trapResolve!: (v: string) => void;
+    const trap = new Promise<string>((resolve) => { trapResolve = resolve; });
+    const onUncaught = (e: Error) => trapResolve(`uncaught: ${e.message}`);
+    process.once("uncaughtException", onUncaught);
+    const outcome = await Promise.race([
+      runOnHostedEngine({
+        source: `const a = await spawn("x", { name: "s" })\nlog("done", 1)`,
+        runId: "d-7t",
+        pins: resolvePins({ runId: "d-7t" }, sim.now(), ENGINE_LANGUAGE_VERSION),
+        handler: parking,
+        store: { append: async () => { pendingSeen = true; } },
+        entries: [],
+        shouldStop: () => {
+          if (pendingSeen && parked) throw new Error("the stop check exploded");
+          return undefined;
+        },
+      }).then(() => "completed", (e: Error) => `rejected: ${e.message}`),
+      trap,
+    ]);
+    process.removeListener("uncaughtException", onUncaught);
+    c("a stop check that throws on the poll's own stack is the RUN'S fault, never an uncaught exception",
+      outcome === "rejected: the stop check exploded", outcome);
+  }
 }
 
 // ── 7) pause: an operator stop is not a failure either ───────────────────────────────────────
@@ -729,7 +783,26 @@ await sleep("1h", { name: "first" });
     && absent.reason.message.includes(`this build serves ${ENGINE_LANGUAGE_VERSION}, ${WALKER_LANGUAGE_VERSION}`),
     absent.status === "released" ? absent.reason.message.slice(0, 140) : why(absent));
 
-  // THE CONTROL, and without it the three cells above are satisfied by a driver that refuses every
+  // A RECORD WHOSE VERSION IS NOT EVEN A STRING. The wire contract types `languageVersion` as a
+  // string; a writer that put the NUMBER 2 there produced, before the repair, a released L5023
+  // whose sentence read "recorded under language version 2" while "this build serves 2" - a
+  // self-contradiction handed to an operator (MEASURED at c24be213, through this same driver,
+  // against a real broker). A malformed record is a different statement from an unserved version,
+  // and the dispatch says which one it met, before the table is consulted.
+  const numbered = { ...foreign, languageVersion: 2 as unknown as string };
+  await createRunSpec(kv, EP, "d-v-num", { pins: numbered, createdAt: 1_000 });
+  const malformed = await attempt(driveRun(js, jsm, {
+    space: SPACE, endpoint: EP, kv, runId: "d-v-num", source: PROGRAM, lease: lease("m2", 2, takeovers += 1),
+    handler: new CountingHandler(),
+  }));
+  c("a record whose languageVersion is a number is refused as MALFORMED, not as an unserved version",
+    malformed.status === "released" && malformed.reason.name === "RunRecordMalformed" && (malformed.reason as { code?: string }).code === undefined,
+    malformed.status === "released" ? `${malformed.reason.name}: ${malformed.reason.message.slice(0, 120)}` : why(malformed));
+  c("and the refusal names the type it met rather than interpolating it into a version claim",
+    malformed.status === "released" && malformed.reason.message.includes("carries a number") && !malformed.reason.message.includes("this build serves"),
+    malformed.status === "released" ? malformed.reason.message.slice(0, 140) : why(malformed));
+
+  // THE CONTROL, and without it the refusal cells above are satisfied by a driver that refuses every
   // hand-written spec. Same construction, same absent journal, ONE character different.
   const served = { ...foreign, languageVersion: WALKER_LANGUAGE_VERSION };
   await createRunSpec(kv, EP, "d-v1", { pins: served, createdAt: 1_000 });

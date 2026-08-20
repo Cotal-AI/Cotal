@@ -1768,6 +1768,80 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
     { bridged: refused.ok === false ? { code: refused.code, kind: refused.kind } : refused, walker: { code: walkerRefusal?.code, kind: walkerRefusal?.kind } });
 }
 
+// ---- a race loser's cancellation crosses the bridge while the loser is parked -------------------
+//
+// The signal's one in-run producer: a `race` settling fires `signal.cancel` on every arm whose
+// effect is still in flight (perform.ts, onSettle), and the effect ctx's signal IS that frame's
+// signal. On the bridged route the cancellation must cross the port and fire the HOST handler's
+// mirror while the handler is genuinely parked inside the effect. Order is the claim - the cancel
+// lands between the effect's enter and its return - never a count. One divergence is deliberate
+// and pinned by the third cell: the walker also fires post-settle blanket cancellations at arms
+// that already returned, and those find the bridge's per-effect mirror already retired (the
+// answer deleted it), so the bridged handler hears a cancel only for an effect still in flight. A
+// cancel after the effect answered changes nothing in any handler this repo ships.
+{
+  const RACE = `
+const r = await race({
+  fast: async () => { await spawn("fast", { name: "f" }); return 1; },
+  slow: async () => { await spawn("slow", { name: "s" }); return 2; },
+}, { name: "r" })
+log("winner", r.index)
+`;
+  // The park is event-driven, not a timed bet: the slow arm holds its effect open until its own
+  // cancellation arrives (the 5s timer is a failure bound, hit only when the forward is broken).
+  const parked = (events: string[]): EffectHandler => {
+    const sim = new SimHandler({});
+    return {
+      now: () => sim.now(),
+      spawn: async (req, ctx) => {
+        events.push(`enter:${req.persona}`);
+        ctx.signal.onCancel(() => events.push(`cancel:${req.persona}`));
+        if (req.persona === "slow") {
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, 5_000);
+            ctx.signal.onCancel(() => {
+              clearTimeout(t);
+              resolve();
+            });
+          });
+        }
+        const out = await sim.spawn(req, ctx);
+        events.push(`return:${req.persona}`);
+        return out;
+      },
+      turn: (req, ctx) => sim.turn(req, ctx),
+      ask: (req, ctx) => sim.ask(req, ctx),
+      checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
+      sleep: (req, ctx) => sim.sleep(req, ctx),
+      wait: (req, ctx) => sim.wait(req, ctx),
+      notify: (req, ctx) => sim.notify(req, ctx),
+      monitor: (req, ctx) => sim.monitor(req, ctx),
+      openConclave: (req, ctx) => sim.openConclave(req, ctx),
+      closeConclave: (req, ctx) => sim.closeConclave(req, ctx),
+    };
+  };
+  const parkedOrder = (ev: string[]): boolean => {
+    const e = ev.indexOf("enter:slow");
+    const c = ev.indexOf("cancel:slow");
+    const r = ev.indexOf("return:slow");
+    return e !== -1 && c !== -1 && r !== -1 && e < c && c < r;
+  };
+  const wEv: string[] = [];
+  await walkerRun(RACE, { runId: "host-c1", handler: parked(wEv) });
+  const bEv: string[] = [];
+  const raced = await runInWorker(
+    { source: RACE, module: transform(RACE).module, runId: "host-c2", handler: "bridged" },
+    { entry: WORKER_ENTRY, bridge: { handler: parked(bEv), store: { append: async () => {} } } },
+  ).done;
+  ok("a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+    raced.ok === true && parkedOrder(bEv), bEv);
+  ok("and the walker fires the same in-flight cancellation while its loser is parked, the parity that makes it one language",
+    parkedOrder(wEv), wEv);
+  ok("and the walker's post-settle blanket cancellations do not cross: the bridged handler hears a cancel only for an effect still in flight",
+    bEv.filter((e) => e.startsWith("cancel:")).length === 1 && wEv.filter((e) => e.startsWith("cancel:")).length > 1,
+    { bridged: bEv, walker: wEv });
+}
+
 {
   // THE CONFINEMENT, MEASURED THROUGH THE REAL WORKER rather than in a probe beside it. What the
   // program can reach is the whole security claim, so it is asked from inside the Compartment the

@@ -1004,13 +1004,17 @@
       "completionMarker": "ok a bridged run completes, its handler never having left this process",
       "cell": "the journal a bridged run brings back is the WALKER'S, entry for entry",
       "note": "A bind is what makes a crash mid-effect recoverable, and it runs AGAINST the arrow: the handler in the host declares the resource, the journal in the thread records it, and the durable append comes back out. Swallowed, every handler bind - the simulator's own included - vanishes, so the bridged entries lose their `external` while the walker's keep it. Aimed at the entry-for-entry parity cell because it is the EARLIEST observer and the suite is fail-fast: the first prediction (the append-sequence cell) graded WRONG-RED, measured - the entry parity reds before the sequence comparison is reached."
+    },
+    {
+      "name": "a race loser's cancellation is swallowed by the host bridge",
+      "file": "packages/lang/src/engine/bridge.ts",
+      "find": "      cancels.get(m.seq)?.fire(m.reason);",
+      "replace": "      void m.reason;",
+      "expectRed": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+      "completionMarker": "ok a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
+      "cell": "a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+      "note": "Promoted from unkillable 2026-08-20: the recorded dead-code probe was FALSE - its fixture never parked the loser during the win, so the zero was the fixture's. With a real park (the graded cell holds the slow arm open until its own cancellation arrives), perform.ts's onSettle fires the in-flight frame's signal on BOTH engines, and this swallow survived every suite until the cell existed. The mutant keeps the wire kind and the branch intact on purpose, so the BRIDGE_KINDS source-text audit cannot see it and only behavior can."
     }
   ],
-  "unkillable": [
-    {
-      "name": "an effect's cancel signal is forwarded to the host handler's mirror",
-      "file": "packages/lang/src/engine/bridge.ts",
-      "why": "Ungradable at this sha because the route has no in-run producer on EITHER engine, and that is measured rather than assumed: a race loser parked inside its handler never sees its signal fire on the walker (probed 2026-08-20 - the scope settles, the cancel INTENT is journalled with issued:false, and issuance belongs to the driving layer, per perform.ts's ScopeOutcome). Until something in-run calls BranchSignal.cancel on an effect's signal, a mutant deleting the forward can only report SURVIVED, which would be honest and mean nothing. The forward is kept because the signal is part of the handler contract; the day a driving layer issues cancellation mid-run, this becomes gradable and belongs in the set above."
-    }
-  ]
+  "unkillable": []
 }
