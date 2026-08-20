@@ -331,16 +331,26 @@ try {
   for (let i = 0; i < 50; i++) { if (await isReachable(servers2)) break; await sleep(200); }
   await seedChannelRegistry({ servers: servers2, space: SPACE, file: { defaults: { replay: false } } });
 
-  // THE LINK IS CUT, THE BROKER IS NOT KILLED, AND THE DIFFERENCE IS THE WHOLE REASON THIS RELAY
-  // EXISTS. A frame reaches the log only on the path through `beginSend`, and everything before it
-  // has to succeed to get there. `splitFrames` asks the endpoint for `maxPayload`, which is read off
-  // the client's cached server INFO and THROWS the moment the client knows it is disconnected, so a
-  // broker that is simply gone takes the pump down one step too early: measured, with a SIGKILL the
-  // emitter stopped at "max_payload is only known while connected" and no frame was ever pending.
-  // A link that stops delivering without closing leaves the client believing it is live, so the pump
-  // reads the limit, freezes the frame into the log, and only then fails to get its ack back. That
-  // is the ordinary shape of a network failure mid-drain, and it is the one the log's pending state
-  // was designed for.
+  // THE LINK IS CUT, THE BROKER IS NOT KILLED, AND THE DIFFERENCE IS DETERMINISM RATHER THAN
+  // POSSIBILITY. A frame reaches the log only through `beginSend`, and everything before it has to
+  // succeed to get there: `splitFrames` asks the endpoint for `maxPayload`, which is read off the
+  // client's cached server INFO and throws once the client has processed the close, because nats.js
+  // nulls `protocol.info` on its first reconnect dial.
+  //
+  // SO KILLING THE BROKER IS A RACE, AND BOTH OUTCOMES ARE REAL. Reach `beginSend` before the client
+  // processes the close and the frame is frozen, the publish then failing on its ack timeout, which
+  // is the state this arm is about. Lose that race and the pump dies on the payload read with
+  // nothing ever pending. Both have been observed against the real plugin on this same scenario,
+  // differing only in timing. An earlier version of this comment reported the second as what a
+  // SIGKILL does; that was one side of a race written up as a certainty, which is worse than a gap
+  // because the next reader builds on it.
+  //
+  // A LINK THAT STOPS DELIVERING WITHOUT CLOSING REMOVES THE RACE, which is why the relay is here
+  // and a kill is not. The client is never told, so `maxPayload` keeps answering from cache, the
+  // pump always reaches `beginSend`, and only the ack fails to come back. That is the ordinary shape
+  // of a network failure mid-drain, it is the one the log's pending state was designed for, and it
+  // is reached the same way on every run. A cell that grades whichever side of a race it landed on
+  // is not a cell.
   const relayPort = await freePort();
   let cut = false;
   const relaySockets: Socket[] = [];
