@@ -97,7 +97,7 @@ export const claudeConnector: Connector = {
     // `claude` first. Tracked separately rather than guessed at here.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared) }),
+      ...launchEnv({ mcpKeys: mcpServerEnvKeys(shared), envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, so the
       // shells, builds and third-party CLIs this session runs no longer inherit live authority.

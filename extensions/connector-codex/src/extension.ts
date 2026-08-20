@@ -14,11 +14,6 @@ import { resolve } from "node:path";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec, type ModelCatalog, type ModelInfo } from "@cotal-ai/core";
 import { aclEnv, connectorLaunchOptions, controlEndpoint, eventChannel, launchEnv, materialEnv } from "@cotal-ai/connector-core";
 
-/** Env the codex child genuinely needs beyond the OS allow-list: the API key (API-key auth) and
- *  the operator's CODEX_HOME override (the host resolves auth.json from it). Forwarded BY NAME,
- *  never `...process.env` (P3). ChatGPT-plan auth rides auth.json under HOME/CODEX_HOME. */
-const CODEX_ENV_KEYS = ["OPENAI_API_KEY", "CODEX_HOME"] as const;
-
 /** The bundled host loop (self-contained — core + connector-core inlined, see package.json's
  *  bundle script) run with this same node; from SOURCE (dev), the `.ts` entry through tsx. */
 const FROM_BUILD = import.meta.url.includes("/dist/");
@@ -155,7 +150,7 @@ export const codexConnector: Connector = {
     // Minted before the env is built: the token goes into the launch material, the path into the env.
     const control = controlEndpoint(opts.space, opts.name);
     const env: Record<string, string> = {
-      ...launchEnv({ providerKeys: CODEX_ENV_KEYS }),
+      ...launchEnv({ envAllow: opts.envAllow }),
       ...aclEnv(opts),
       // Creds, broker URL and the control token ride a 0600 file; only its path is exported, and the
       // host drops even that once it has read it, so a shell this seat runs inherits neither.

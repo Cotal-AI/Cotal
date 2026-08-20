@@ -21,8 +21,12 @@ They merge per connector and per server name: a server in the space-local file r
 same-named server in the operator-level file; connectors or servers present in only one side are
 kept. A missing file is empty (valid); malformed JSON or a non-object top level is a loud error.
 
-Today it carries one thing: which of your personal MCP servers a connector should **share** with the
-agents it spawns. By default a spawned agent gets none: the Claude connector launches with
+It carries two things: which of your personal MCP servers a connector should **share** with the
+agents it spawns, and an optional `spawn.env` allow-list that confines what a spawned agent's
+process environment contains (see [Environment variables](#environment-variables) below; the default
+is that the agent inherits yours).
+
+The sharing half: By default a spawned agent gets none: the Claude connector launches with
 `--strict-mcp-config`, dropping every ambient MCP server (they are heavy and useless to a meshed
 teammate). This file is the explicit opt-in.
 
@@ -119,11 +123,30 @@ the session. They are not operator knobs; listed so you recognize them in a proc
 | `OPENCODE_CONFIG_CONTENT` | Inline OpenCode config (the injected cotal plugin, highest merge layer) |
 | `OPENCODE_DB` / `OPENCODE_HOME` / `OPENCODE_PORT` / `OPENCODE_SERVER_URL` / `COTAL_OPENCODE_*` | OpenCode server plumbing (home, port, DB, server URL) |
 
-The launcher forwards only a fixed OS allow-list (PATH, HOME, TERM, locale, XDG/Windows config dirs,
-…) plus the named model-provider key and any `${VAR}` secrets a shared MCP server references, never
-your whole environment, so unrelated secrets don't bleed into spawned agents. There are also a few
-internal timing knobs (e.g. `COTAL_MEMBERSHIP_INTERVAL_MS`, `COTAL_DELIVERY_BROKER_GONE_MS`) that you
-should not set in normal operation.
+A spawned agent inherits **your environment**, so a harness you already configured resolves its
+model and provider the same way it does when you run it yourself. Cotal resets its own `COTAL_*`
+names before the child starts, keeping the machine-wide ones (`COTAL_HOME`, the `COTAL_FEEDBACK_*`
+set, `COTAL_DEFAULT_AGENT` / `COTAL_DEFAULT_PERSONA`, the `*_BIN` overrides and the timing knobs).
+That reset is not a preference setting: a connector supplies the per-session names for each child
+and does so conditionally, so an inherited one would never be overwritten and would hand an agent
+another agent's credential path, ACL, or lifecycle uid. Connection material is not in the
+environment at all (see [identity & auth](identity-and-auth.md)).
+
+To confine a spawned agent instead, declare `spawn.env` in the config file:
+
+```json
+{ "spawn": { "env": ["NEBIUS_API_KEY"] } }
+```
+
+The child then gets a fixed OS allow-list (PATH, HOME, TERM, locale, XDG/Windows config dirs) plus
+exactly the names you list, plus any `${VAR}` a shared MCP server references. An empty array is a
+real policy, meaning the OS allow-list alone. A space-local `spawn` block replaces the
+operator-level one outright rather than merging, so the narrower file stays narrow.
+
+Be honest with yourself about what this buys: `HOME` is forwarded either way, so an agent with a
+shell reads `~/.aws`, `~/.ssh` and `~/.config` regardless. `spawn.env` protects secrets that live
+**only** in the environment, such as an `aws-vault exec` or `op run` shell, or CI-injected values.
+Real containment is a sandbox or a VM.
 
 ### Launch material
 
