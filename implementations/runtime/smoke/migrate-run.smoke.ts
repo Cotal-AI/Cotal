@@ -40,6 +40,7 @@ import {
   programHashOf,
   journalEntryKeyString,
   resolvePins,
+  WALKER_LANGUAGE_VERSION,
   run as runProgram,
   SimHandler,
   type JournalEntry,
@@ -50,7 +51,7 @@ import { pickFreePort } from "./_free-port.js";
 const SPACE = "migrun";
 const EP = "manager";
 const NOW = 1_770_000_000_000;
-const PINS = resolvePins({ runId: "r" }, NOW);
+const PINS = resolvePins({ runId: "r" }, NOW, WALKER_LANGUAGE_VERSION);
 
 let ok = 0, fail = 0;
 const c = (n: string, v: boolean, extra?: unknown) => {

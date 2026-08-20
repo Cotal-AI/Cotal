@@ -1,0 +1,959 @@
+{
+  "suite": "packages/lang/smoke/engine.smoke.ts",
+  "guard": "The engine seam enforces the same laws the walker enforces inline: the member laws (L4014/L4018/L4020), freeze-on-share in both halves (L2031/L2032), the fuel budget and its macrotask yield (L4013 + the cut), the thenable gate the walker cannot survive, the calling-convention adapter that exists only on this side (and the invariant that it is invisible from inside the program), the host's run wiring (source-pinned hash, the resume refusals, the run-bound effect ceiling), the concurrency scopes over the SHARED machinery (the calling-convention adapter on the arms, the bag's key, the deferred body, and the branch digest the engine has no AST to compute), the cell read (get's third argument, hasOwn rather than truthiness) and the loud clause that a native ReferenceError is the ENGINE's fault, the node floor (refused at the run boundary, by major version), and the worker: lockdown once per thread, a Compartment with zero endowments, the shared stop flag as the only cancellation channel, and what does and does not cross the boundary. (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-engine",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/engine-seam.json",
+  "why": [
+    "These cells are first-party rather than differential, because the walker cannot grade them: the",
+    "fuel unit changes in languageVersion 2, the thenable programs kill the walker's host process, and",
+    "the calling-convention adapter has no walker counterpart. A first-party cell with no mutant is a",
+    "cell nobody has shown can fail, so every law the seam claims to hold gets a mutation here.",
+    "",
+    "ONE CELL HERE HAS NO MUTANT, ON PURPOSE. `the library calls exactly the argument positions the",
+    "seam adapts` is a drift alarm on library.ts, which the engine may not edit: it probes every name in",
+    "every table with a marker and compares the positions the library ACTUALLY calls to the ones the",
+    "seam adapts. It is declaration-independent by construction, so mutating the seam's list cannot red",
+    "it - the two mutants that grade that list are the ones on `adaptArgs` and on the read form. Its own",
+    "failure mode, finding nothing at all, is graded by the count cell beside it.",
+    "",
+    "THE COLD-START CELL HAS NO MUTANT EITHER, and for the same kind of reason as the drift alarm above:",
+    "it REPORTS the number in its own name and bounds it only loosely, because a tight bound on a shared",
+    "machine is a flaky cell rather than a rule. What the worker must actually do is graded by the eleven",
+    "mutants below it, every one of which leaves a run that still answers.",
+    "",
+    "THE TWO DIVERGENCE CELLS IN THE SCOPE SECTION HAVE NO MUTANT HERE, and the reason is worth writing",
+    "down rather than leaving as a gap. `an edit inside a LOSING arm diverges on resume` grades the",
+    "COMPARISON, which lives in perform.ts and belongs to the shared machinery's own ledger. What this",
+    "file owns is that the digest handed to it is the walker's, and any mutation of that is caught one",
+    "cell earlier, as a journal difference on the live run - which is why both digest mutants below",
+    "name the journal cell rather than the divergence cell they would also break.",
+    "",
+    "THE CLOSURE-OBLIGATION SECTION HAS NO MUTANT OF ITS OWN, for the same reason as the drift",
+    "alarm above: what it holds is a property of library.ts, which the engine may not edit, and it probes",
+    "the WHOLE builtin table behaviourally rather than reading a declaration - so nothing in the seam can",
+    "be mutated to break it. Its own failure mode, probing nothing, is graded by the count in the first",
+    "cell's name. The two gates that actually keep the door shut, born() and set() refusing a callable",
+    "`then`, are mutated where they live, further up this file."
+  ],
+  "mutations": [
+    {
+      "name": "a record answers the host prototype for a name it does not own",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        return Object.prototype.hasOwnProperty.call(obj, prop) ? (obj as Record<string, unknown>)[prop] : undefined;",
+      "replace": "        return (obj as Record<string, unknown>)[prop];",
+      "expectRed": "a record answers undefined for `constructor`",
+      "completionMarker": "ok a record answers its own field",
+      "cell": "a record answers undefined for `constructor`",
+      "note": "The walker's own member-access mutation guards this hole on its side. The engine reaches records through a different door, so the hole has to be closed and graded twice; it is not covered by the walker's config."
+    },
+    {
+      "name": "a method is handed out as a value instead of being resolved at the call",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (!asCallee) {",
+      "replace": "    if (false) {",
+      "expectRed": "a method read as a VALUE is L4020, not a bound function",
+      "completionMarker": "ok and a name outside that table is L4014",
+      "cell": "a method read as a VALUE is L4020, not a bound function",
+      "note": "Handing one out produces everything a bound-function factory produces: `xs.map !== xs.map` where JavaScript says equal, and an extracted `push` that writes to a receiver strict JavaScript refuses."
+    },
+    {
+      "name": "the birth-depth check is dropped, so a value born outside a branch is writable inside it",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (birthDepth(target) < frame.depth) {",
+      "replace": "    if (false) {",
+      "expectRed": "a value born outside a concurrent branch and written inside it is L2032",
+      "completionMarker": "ok a value that crossed an effect boundary is frozen and refuses a write (L2031)",
+      "cell": "a value born outside a concurrent branch and written inside it is L2032",
+      "note": "L2032's runtime half, reached through a VALUE rather than a binding. The static walk provably cannot see the alias path, so this door is the only one on it."
+    },
+    {
+      "name": "the thenable gate at birth is dropped",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      refuseThenable(v, \"this value\");",
+      "replace": "",
+      "expectRed": "a literal with an own callable `then` refuses at birth (L4021)",
+      "completionMarker": "ok writing a member of null is L4010",
+      "cell": "a literal with an own callable `then` refuses at birth (L4021)",
+      "note": "Measured: returning such a value out of any async function runs its `then` with the host's settlement functions as arguments, outside the run's frame. Birth is one of the two doors that close the whole value graph. The cell captures the outcome instead of returning the value through its own async boundary: written the other way, this mutant made the suite HANG rather than fail (the assimilated `then` ignores resolve, so the promise never settles, exit 13), the hazard demonstrating itself inside the cell meant to grade it."
+    },
+    {
+      "name": "the thenable gate at a field write is dropped, so a record acquires one after birth",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");",
+      "replace": "",
+      "expectRed": "writing a callable into the field `then` refuses (L4021)",
+      "completionMarker": "ok a FUNCTION carrying an own callable `then` refuses at birth too",
+      "cell": "writing a callable into the field `then` refuses (L4021)",
+      "note": "The second door. Without it `x[\"th\" + \"en\"] = f` mints the hazard past any static spelling of the name, which is the shape no emitter-side check can see."
+    },
+    {
+      "name": "the thenable gate at await is dropped, so the host calls the closure first",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      refuseThenable(v, \"this awaited value\");",
+      "replace": "",
+      "expectRed": "awaiting an own-callable-`then` value is L4021 as well",
+      "completionMarker": "ok writing a NON-callable into `then` stays legal",
+      "cell": "awaiting an own-callable-`then` value is L4021 as well",
+      "note": "The cell's second conjunct is what this mutant really exposes: the gate has to run BEFORE the await, because once `await` has the value the host has already called its `then`."
+    },
+    {
+      "name": "the step budget never fires",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (steps > run.pins.stepBudget) {",
+      "replace": "    if (false) {",
+      "expectRed": "the step budget fires as L4013",
+      "completionMarker": "ok and a plain value awaits to itself",
+      "cell": "the step budget fires as L4013",
+      "note": "The effect ceiling is blind to a loop that performs nothing, by construction. This is the only bound on pure work, and a later cell in this suite relies on it to end a soft-cancelled spin, so under this mutant the suite would hang if the graded cell did not red first."
+    },
+    {
+      "name": "fuel never yields, so the macrotask queue is starved",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (steps < nextYield) return;",
+      "replace": "    return;",
+      "expectRed": "with yielding on, a host macrotask timer fires DURING the run",
+      "completionMarker": "ok and it fires AT the budget rather than after it",
+      "cell": "with yielding on, a host macrotask timer fires DURING the run",
+      "note": "A program that only ever yields microtasks takes the host down with it: a watchdog's setTimeout never fires, and the run kills the timer plane and every other run on that host. The cell is a PAIR, so this mutant reddens the claim while its control still passes."
+    },
+    {
+      "name": "the yield boundary ignores the cut",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (frame.signal.cutPure) throw new Cancelled(frame.signal.reason ?? \"cancelled\");",
+      "replace": "",
+      "expectRed": "a branch cut at the pure level is abandoned at its next yield",
+      "completionMarker": "ok and the control proves the cell can fail: with yielding off, it does not",
+      "cell": "a branch cut at the pure level is abandoned at its next yield",
+      "note": "The cut is the scope's call, not the yield's: an arm that cannot win is abandoned here, an arm that could still win runs its pure work to a settle. The cell beside this one grades the other arm of the same rule."
+    },
+    {
+      "name": "an own-field function is adapted as if it spoke the walker's convention",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        answer = await (found.value as (...a: unknown[]) => unknown)(...list);",
+      "replace": "        answer = await (found.value as unknown as Callable)(currentFrame(), adaptArgs(found.key, list));",
+      "expectRed": "and a member call through the seam agrees",
+      "completionMarker": "ok a record-shaped builtin hands out program-convention members",
+      "cell": "and a member call through the seam agrees",
+      "note": "This is the defect the cell was written from, not one invented for the config: collapsing the table path and the own-field path adapted twice, passed the frame in as the first argument, and shifted every real argument along by a position: `json.stringify([1,2])` refused its own array as an illegal second argument, a convention mismatch wearing a coercion error's name."
+    },
+    {
+      "name": "a seam call with no frame invents one instead of failing",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "  if (f === undefined) {",
+      "replace": "  if (false) {",
+      "expectRed": "a seam call outside any frame throws rather than inventing a root frame",
+      "completionMarker": "ok calling a non-function value is L4011",
+      "cell": "a seam call outside any frame throws rather than inventing a root frame",
+      "note": "No fallback frame, deliberately: a stray call given a root frame gets a key namespace, a clock and a depth belonging to no branch, and its step lands in the wrong place in the journal instead of failing."
+    },
+    {
+      "name": "the run is pinned to the MODULE's hash instead of the source's",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  const programHash = programHashOf(source);",
+      "replace": "  const programHash = programHashOf(module);",
+      "expectRed": "its programHash is the SOURCE's hash, not the module's",
+      "completionMarker": "ok runOnEngine answers the walker's RunResult shape",
+      "cell": "its programHash is the SOURCE's hash, not the module's",
+      "note": "A run record names the program an author wrote, not the string a compiler produced. Pinned to the module, a transform release would re-hash every open run and no walker-written journal could ever be resumed on the engine."
+    },
+    {
+      "name": "the source is never validated, so the engine executes what the walker would refuse",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  validate(source, options.file);",
+      "replace": "",
+      "expectRed": "invalid source is refused by the VALIDATOR",
+      "completionMarker": "ok the step COUNTS differ, which is the declared v2 pin-unit divergence",
+      "cell": "invalid source is refused by the VALIDATOR",
+      "note": "The validator's refusals have to arrive before anything is journalled, whichever engine is about to execute; without this the engine is a second, laxer front door onto the same journal. This mutant SURVIVED the cell's first form, which only asserted that something threw - with `validate` gone the program still threw, because its module performs an unscripted effect. The cell now asserts the refusal is a LangErrors AND that the evaluator was never called."
+    },
+    {
+      "name": "a resume with no pins re-resolves them instead of refusing",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (options.pins === undefined && options.journal !== undefined && options.journal.entries().length > 0) {",
+      "replace": "  if (false) {",
+      "expectRed": "a journal with entries and no pins is L5021, not a silently different run",
+      "completionMarker": "ok the caller's evaluator is what turns the module into a factory",
+      "cell": "a journal with entries and no pins is L5021, not a silently different run",
+      "note": "Silent by construction: the clock moves to the resuming host and the seed falls back to the runId default, and neither the epoch nor a pure draw is a recorded fact a replay could diverge on."
+    },
+    {
+      "name": "a run accepts another run's journal",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (options.journal !== undefined && options.journal.run !== options.runId) {",
+      "replace": "  if (false) {",
+      "expectRed": "and another run's journal is L5011",
+      "completionMarker": "ok a journal with entries and no pins is L5021, not a silently different run",
+      "cell": "and another run's journal is L5011",
+      "note": "Request ids derive from the runId while recorded results come from the journal, so a mismatch submits work under one identity and resolves it against another's history."
+    },
+    {
+      "name": "the effect ceiling counts per activation instead of per run",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    effectCount: run.journal.dispatchedEffects(),",
+      "replace": "    effectCount: 0,",
+      "expectRed": "a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one",
+      "completionMarker": "ok a run right up to its ceiling completes",
+      "cell": "a RESUMED run reaches the ceiling the RUN was pinned to, not a fresh one",
+      "note": "The engine builds its own EffectHost, so this seeding is engine-specific wiring the walker's effect-ceiling config does not reach. Under the mutant the resume gets a full fresh allowance, performs the two remaining sleeps and ends GREEN with six entries - a runaway loop that crashes periodically never reaches the ceiling at all."
+    },
+    {
+      "name": "a builtin read as a VALUE does not adapt the callback it is handed",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      const p = async (...args: unknown[]): Promise<unknown> => await (v as Callable)(currentFrame(), adaptArgs(key, args));",
+      "replace": "      const p = async (...args: unknown[]): Promise<unknown> => await (v as Callable)(currentFrame(), args);",
+      "expectRed": "a builtin read as a VALUE adapts the callback it is handed",
+      "completionMarker": "ok so the run's frame never reaches the program through an element call",
+      "cell": "a builtin read as a VALUE adapts the callback it is handed",
+      "note": "The read form and the call form reach library.ts by different paths, and only one of them adapted. Reduced on the differential corpus: `const f = map; f([1, 2], (x) => x)` answered `[<EngineFrame>, <EngineFrame>]` - the run's own key scope, clock and cancellation signal handed to the program as an argument, readable and writable."
+    },
+    {
+      "name": "a builtin's program view is minted afresh on every read",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const had = programView.get(v as object);\n    if (had !== undefined) return had;",
+      "replace": "",
+      "expectRed": "a builtin read twice is the same value",
+      "completionMarker": "ok and the run's frame never reaches the program through it",
+      "cell": "a builtin read twice is the same value",
+      "note": "A builtin is ONE immutable binding for the whole run, so `map === map` is true on the walker. A fresh adapter per read makes it false, and nothing in the output of a program differs until it compares two reads."
+    },
+    {
+      "name": "every function in an argument list is adapted, not only the one the library calls",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const at = CALLBACK_ARG.get(key);\n    if (at === undefined || typeof args[at] !== \"function\") return args as unknown[];\n    const out = args.slice();\n    out[at] = toWalker(args[at] as (...x: unknown[]) => unknown);\n    return out;",
+      "replace": "    return args.map((a) => (typeof a === \"function\" ? toWalker(a as (...x: unknown[]) => unknown) : a));",
+      "expectRed": "a program closure stored through a library method reads back as the SAME value",
+      "completionMarker": "ok and a member call through the seam agrees",
+      "cell": "a program closure stored through a library method reads back as the SAME value",
+      "note": "The adaptation invariant, and the shape of the defect that produced it: a mutating method STORES its argument, so blanket adaptation put the walker view in the program's own array. Reduced on the differential corpus: the program read it back and it neither called (`args is not iterable`) nor compared `===` to the value it pushed."
+    },
+    {
+      "name": "a member is classified by what it answered instead of by its name",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (typeof obj === \"string\" || Array.isArray(obj)) {\n      if (prop === \"length\" || arrayIndex(prop) !== undefined) return { from: \"own\", value: memberOf(obj, prop, asCallee) };\n    }\n    return { from: \"table\", fn: memberOf(obj, prop, asCallee) as Callable, key: `${kind}.${prop}` };",
+      "replace": "    const v = memberOf(obj, prop, asCallee);\n    return typeof v === \"function\" ? { from: \"table\", fn: v as Callable, key: `${kind}.${prop}` } : { from: \"own\", value: v };",
+      "expectRed": "a function ELEMENT is called as a program closure, not as a curated method",
+      "completionMarker": "ok a program closure stored through a library method reads back as the SAME value",
+      "cell": "a function ELEMENT is called as a program closure, not as a curated method",
+      "note": "The second frame-leak door, found while writing the cell for the first and reproduced before the fix: an array element that happens to be a closure looked like a curated method, so `fs[0](\"a\")` was called `(frame, [\"a\"])` and ANSWERED the EngineFrame. Reads right, and wrong - the name decides the path, never the value the name produced."
+    },
+    {
+      "name": "free() does not serve the pure primitives or the event constructors",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    freeNames.set(name, ((_frame, a) => impl(a)) as Callable);",
+      "replace": "    if (name === \"\") freeNames.set(name, ((_frame, a) => impl(a)) as Callable);",
+      "expectRed": "free() serves the pure primitives and the event constructors",
+      "completionMarker": "ok the step COUNTS differ, which is the declared v2 pin-unit divergence",
+      "cell": "free() serves the pure primitives and the event constructors",
+      "note": "The seam contract puts `channel`, `run`, `replied`, `message`, `idle` and `down` behind `free()`; the engine answered L2001 for all six, found by the first differential run. The graded cell compares the SHAPES the two engines produce, so serving them from a second copy of the table would fail it just as serving nothing does."
+    },
+    {
+      "name": "the operand of `++` is not required to be a number",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          if (typeof v !== \"number\") {",
+      "replace": "          if (false) {",
+      "expectRed": "a STRING operand of `++` refuses (L4018) rather than counting",
+      "completionMarker": "ok unary `update` answers a number operand unchanged",
+      "cell": "a STRING operand of `++` refuses (L4018) rather than counting",
+      "note": "A declared divergence: the walker reads the operand through `Number(...)`, so `\"5\"++` answers 6 while `o + 1` on the same value does something else - the silent-coercion class, filed as Cotal-AI/Cotal#646 and NOT built into the new engine. Under the mutant the operand passes through unrefused, which is the walker's answer minus even its coercion."
+    },
+    {
+      "name": "a non-function callee is called instead of refused",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (typeof v !== \"function\") {\n        throw new RuntimeFault(\"L4011\", `this value is not a function, so it cannot be called`);\n      }\n      return v;",
+      "replace": "      return v;",
+      "expectRed": "calling a record is L4011",
+      "completionMarker": "ok a function callee passes through as itself",
+      "cell": "calling a record is L4011",
+      "note": "Seam member 14, the last of the seam. It is the whole of the member: the transform emits it behind a `typeof`, so nothing but the refusal ever reaches it, and a `callee` that refuses nothing is a callee that is not there."
+    },
+    {
+      "name": "a branch shares its parent's key namespace instead of opening its own",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      this.keys.branch(kind, name, occurrence, branchKey),",
+      "replace": "      this.keys,",
+      "expectRed": "a branch frame allocates the walker's own step keys",
+      "completionMarker": "ok a constructor read as a VALUE is a function, not L2001",
+      "cell": "a branch frame allocates the walker's own step keys",
+      "note": "Two branches running the same named effect would race for one occurrence counter, so which arm finished first would decide which step key each got - the journal would record a different pair of keys on every run and no resume could find either. The cell compares against the oracle's own keys for the same program rather than asserting a spelling."
+    },
+    {
+      "name": "a branch shares its parent's clock",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      this.clock.fork(),",
+      "replace": "      this.clock,",
+      "expectRed": "and moves without moving the parent's",
+      "completionMarker": "ok a branch inherits the clock at the fork",
+      "cell": "and moves without moving the parent's",
+      "note": "The recorded clocks are what decide a race: an arm advances its own past the frontier and proves it cannot win. On one shared clock a sibling's effect moves every arm, so the frontier is whatever landed last and the winner is whoever the host scheduled."
+    },
+    {
+      "name": "a branch shares its parent's cancellation signal",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      this.signal.child(),",
+      "replace": "      this.signal,",
+      "expectRed": "cancelling a branch does not cancel the run it branched from",
+      "completionMarker": "ok the join takes the branch's history",
+      "cell": "cancelling a branch does not cancel the run it branched from",
+      "note": "A scope cancels its LOSERS. On a shared signal the first loser cancels the run that is still waiting for the winner, so a race would end every program that used one."
+    },
+    {
+      "name": "a conclave body raises the depth like a racing branch",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "      kind === \"conclave\" ? this.depth : this.depth + 1,",
+      "replace": "      this.depth + 1,",
+      "expectRed": "and a conclave body does NOT, because it has no sibling to race",
+      "completionMarker": "ok a concurrent branch raises the depth",
+      "cell": "and a conclave body does NOT, because it has no sibling to race",
+      "note": "A conclave opens a scope but not a race: one body, nothing running beside it, so a write from inside it is as ordered as a write anywhere else. Under the mutant L2032 refuses writes that the walker allows, and the refusal names a nondeterminism that cannot occur."
+    },
+    {
+      "name": "a child signal does not inherit a parent that is already cancelled",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    if (this.cancelled) s.cancel(this.reason ?? \"parent cancelled\", { cutPure: this.cutPure });",
+      "replace": "",
+      "expectRed": "a child made after the cut starts cancelled AND cut",
+      "completionMarker": "ok a repeated cancellation is not a third event",
+      "cell": "a child made after the cut starts cancelled AND cut",
+      "note": "A nested branch launched after its parent was cut is a branch that cannot win either, and it would otherwise run - and perform - with no cancellation at all, because the parent's cancel already fired before it subscribed."
+    },
+    {
+      "name": "a child signal never subscribes to its parent",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    this.onCancel((r, cut) => s.cancel(r, { cutPure: cut }));",
+      "replace": "",
+      "expectRed": "a parent's cancellation reaches the child",
+      "completionMarker": "ok a child of a live signal starts live",
+      "cell": "a parent's cancellation reaches the child",
+      "note": "Cancellation flows down or it does nothing: a scope cancels the arm, and the arm's own nested branches keep running and keep performing against the world."
+    },
+    {
+      "name": "a soft cancellation can never be escalated to the cut",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    const escalated = cut && !this.cutPure;",
+      "replace": "    const escalated = first && cut && !this.cutPure;",
+      "expectRed": "and the ESCALATION reaches an already-cancelled child",
+      "completionMarker": "ok softly, when the parent cancelled softly",
+      "cell": "and the ESCALATION reaches an already-cancelled child",
+      "note": "The walker re-decides the cut when a cancelled arm's own clock lands past the frontier - measured there as an infinite pure tail burning the whole step budget and killing a run whose race had already settled ok, while a resume of the same journal returned the winner. Without the escalation the engine cannot re-decide it either. The mutant is conditioned on `first` on purpose: dropping the escalation outright also breaks the FIRST cut, so it reddened the yield-boundary cell four sections earlier and graded a rule it was not aimed at. Conditioned, it leaves a fresh cut working and removes only the escalation of a signal already cancelled softly."
+    },
+    {
+      "name": "a later cancellation overwrites the reason the branch was cancelled for",
+      "file": "packages/lang/src/engine/frame.ts",
+      "find": "    if (first) {\n      this.cancelled = true;\n      this.reason = reason;\n    }",
+      "replace": "    this.cancelled = true;\n    this.reason = reason;",
+      "expectRed": "the reason stays the FIRST one, because that is what cancelled the branch",
+      "completionMarker": "ok and the ESCALATION reaches an already-cancelled child",
+      "cell": "the reason stays the FIRST one, because that is what cancelled the branch",
+      "note": "The reason is what the Cancelled error carries out of the branch and into the trace. An escalation is not a new reason for stopping - the branch stopped when it lost - so overwriting it makes every cut arm report the escalation instead of the loss."
+    },
+    {
+      "name": "an optional call does not short-circuit a nullish member",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true) {",
+      "replace": "      if (false) {",
+      "expectRed": "and so does the engine, with nothing called",
+      "completionMarker": "ok the walker short-circuits an absent member",
+      "cell": "and so does the engine, with nothing called",
+      "note": "The whole of the optional-call flag. Without it `o.m?.()` on an absent member is L4011 - the answer the walker gives for a member that is PRESENT and not a function, so the program is refused for a reason that is not true of it."
+    },
+    {
+      "name": "an optional call evaluates its arguments before deciding to short-circuit",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true) {",
+      "replace": "      if (((typeof args === \"function\" ? args() : args), found.from === \"own\" && (found.value === null || found.value === undefined) && optional === true)) {",
+      "expectRed": "and the engine's short-circuit never asks for its arguments",
+      "completionMarker": "ok while the same argument on a PRESENT method journals its effect",
+      "cell": "and the engine's short-circuit never asks for its arguments",
+      "note": "The reason the optional form takes a thunk at all: measured on the walker, a short-circuited call journals NOTHING while the same argument on a present method journals a `sleep`. The mutant asks the thunk for the arguments before it decides, so their effects land in the journal and a resume of that entry replays a step the walker's run never recorded. It shares its find-string with the mutant that removes the short-circuit outright; the two replaces grade different halves of the same line."
+    },
+    {
+      "name": "an optional call accepts an argument list that has already been evaluated",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (optional === true && typeof args !== \"function\") {",
+      "replace": "      if (false) {",
+      "expectRed": "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+      "completionMarker": "ok while a present member does ask, exactly once",
+      "cell": "an optional call handed an ARRAY refuses, rather than short-circuiting after the fact",
+      "note": "No silent acceptance: an array reaching this parameter means the arguments ran before the seam was entered, so the short-circuit that follows would be a lie - it returns undefined having already performed whatever the arguments performed. The refusal is loud because the emitter, not the program, is what got it wrong."
+    },
+    {
+      "name": "a short-circuited optional call still runs the chain written after it",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        return undefined;",
+      "replace": "        return chain === undefined ? undefined : await chain(undefined);",
+      "expectRed": "the engine short-circuits the chain and never runs it",
+      "completionMarker": "ok and a trailing CALL",
+      "cell": "the engine short-circuits the chain and never runs it",
+      "note": "`o.z?.().x` answers undefined and `o.m?.().x` on a member that RETURNED undefined refuses L4010, and both give undefined to any guard written outside the host - which is why the continuation comes here at all. Under the mutant the short-circuit runs the chain against undefined, so the first shape refuses L4010 too and a program that reads a field off an absent optional call is refused where the walker answers."
+    },
+    {
+      "name": "a call continuation is accepted without the optional flag",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (chain !== undefined && optional !== true) {",
+      "replace": "      if (false) {",
+      "expectRed": "a continuation without the optional flag is refused, not silently run",
+      "completionMarker": "ok and a record answers the field through the chain",
+      "cell": "a continuation without the optional flag is refused, not silently run",
+      "note": "An ordinary call's chain is written natively, because nothing in it depends on a decision only the host made. A continuation arriving without the flag is an emitter mistake, and running it anyway would hide the mistake behind an answer that happens to be right for the shapes that do not short-circuit."
+    },
+    {
+      "name": "the optional call's thunk is not awaited",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      const list = typeof args === \"function\" ? await args() : args;",
+      "replace": "      const list = typeof args === \"function\" ? args() : args;",
+      "expectRed": "and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise",
+      "completionMarker": "ok the walker calls a present member with a plain argument",
+      "cell": "and the engine awaits the thunk, so the arguments arrive as a LIST rather than as a promise",
+      "note": "The thunk is `async` because any argument the transform emits may itself hold an `await`, so a sync arrow could not carry one. Unawaited, the spread that follows receives a Promise: an ordinary `o.m?.(1)` dies on \"Spread syntax requires ...iterable\" and `xs.map?.(f)` reaches the curated method with a Promise where its argument list should be. The shapes that stayed clean are exactly the two that never call the thunk, which is why a sync-thunk fixture cannot see this."
+    },
+    {
+      "name": "the module is evaluated outside the Compartment",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  const factory = compartment.evaluate(module) as unknown;",
+      "replace": "  const factory = (0, eval)(module) as unknown;",
+      "expectRed": "inside the Compartment `Date.now()` throws",
+      "completionMarker": "ok the confinement probe ran",
+      "cell": "inside the Compartment `Date.now()` throws",
+      "note": "Turning the module string into a function is exactly where confinement is applied or lost. Under the mutant the module still runs and still answers, and every other cell in the suite stays green: only the cells that ask the program what it can REACH can tell the difference, which is why they are asked from inside the real worker rather than from a probe beside it."
+    },
+    {
+      "name": "the realm is never locked down",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "lockdown();",
+      "replace": "void 0;",
+      "expectRed": "inside the Compartment `Date.now()` throws",
+      "completionMarker": "ok the confinement probe ran",
+      "cell": "inside the Compartment `Date.now()` throws",
+      "note": "`lockdown()` is irreversible and realm-wide, which is why the run gets a thread of its own to spend it in. MEASURED under the mutant rather than assumed: the Compartment is still BUILT and the program still runs - what a Compartment gives you without lockdown is a fresh global object, not tamed intrinsics - so `Date.now()` answers inside it and the run has a clock the journal never saw."
+    },
+    {
+      "name": "a run with no value is put through the rule about values",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  if (result.value !== undefined) assertCrossable(result.value, \"the value this run returned\");",
+      "replace": "  assertCrossable(result.value, \"the value this run returned\");",
+      "expectRed": "a run completes in its own locked-down thread, spawned from the BUILT package",
+      "completionMarker": "ok a continuation without the optional flag is refused, not silently run",
+      "cell": "a run completes in its own locked-down thread, spawned from the BUILT package",
+      "note": "A program whose last line is a statement ends with NO value, and the walker reports exactly that. `assertCrossable` refuses undefined by design - it is a rule about values crossing an effect boundary, and absence is not a value - so applying it here refuses the ordinary case. Measured before the guard existed: the first worker cell written refused its own fixture."
+    },
+    {
+      "name": "a value that cannot cross is left to the structured-clone algorithm",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  if (result.value !== undefined) assertCrossable(result.value, \"the value this run returned\");",
+      "replace": "  void result.value;",
+      "expectRed": "and the refusal names the language's rule, not a clone algorithm",
+      "completionMarker": "ok and it carries the reason the host wrote into shared memory",
+      "cell": "and the refusal names the language's rule, not a clone algorithm",
+      "note": "Unrefused, a function reaches `postMessage` and the clone fails. The thread no longer DIES on that: since the rethrow landed it ANSWERS with the DataCloneError, so the outcome cell is satisfied either way (`ok === false` holds for an answered refusal as much as a refused value) and the kill moved one cell downstream, onto the one that refuses a host algorithm's name where the language has a word of its own. Measured on two arms rather than reasoned: with the rethrow the outcome cell prints ok and the naming cell fails with {\"name\":\"DataCloneError\"}; at the commit before it, the thread exits and the host rejects at worker.ts:177 with `worker exited with code 0 before the run answered`, which reds the outcome cell instead. The general rule this cost us: a rethrow that converts a death into an answer moves every mutant's kill in that file one cell downstream, so re-grade a file's WHOLE config when a commit touches it, not just the entries the commit adds."
+    },
+    {
+      "name": "the run never reads the stop flag",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  return n > 0 ? new TextDecoder().decode(stopBytes.slice(0, n)) : undefined;",
+      "replace": "  return undefined;",
+      "expectRed": "a stopped run ends through its own cancellation path",
+      "completionMarker": "ok while `({}).constructor === Object` still holds, which is the model",
+      "cell": "a stopped run ends through its own cancellation path",
+      "note": "Shared memory rather than a message because `shouldStop` is read SYNCHRONOUSLY, between effects. Under the mutant nothing crashes and no error appears: the run simply finishes work its host asked it to abandon, which is the failure this whole mechanism exists to prevent and the reason there is no wall-clock timeout beside it."
+    },
+    {
+      "name": "the stop reason's length is never published",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "  Atomics.store(new Int32Array(buffer, 0, 1), 0, written);",
+      "replace": "  void written;",
+      "expectRed": "a stopped run ends through its own cancellation path",
+      "completionMarker": "ok while `({}).constructor === Object` still holds, which is the model",
+      "cell": "a stopped run ends through its own cancellation path",
+      "note": "The bytes are written first and the LENGTH is what publishes them, so a reader can never see a length promising bytes the writer has not finished writing. Drop the store and the reader's atomic load answers 0 forever: the reason is in memory the run will never look at."
+    },
+    {
+      "name": "the reason is cut by bytes again, through a character",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "  const { written } = new TextEncoder().encodeInto(reason === \"\" ? NO_REASON : reason, room);",
+      "replace": "  const b = new TextEncoder().encode(reason === \"\" ? NO_REASON : reason).subarray(0, STOP_CAPACITY);\n  room.set(b);\n  const written = b.length;",
+      "expectRed": "a reason cut by the buffer is cut BETWEEN characters, never through one",
+      "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
+      "cell": "a reason cut by the buffer is cut BETWEEN characters, never through one",
+      "note": "The spelling this replaced, restored exactly. A UTF-8 character is one to four bytes and a cut placed by byte count alone lands inside one: measured through the real thread, a three-byte character straddling the buffer's last byte reached the run as U+FFFD on the end of the operator's sentence. `encodeInto` fills the room with whole code points and reports what that took. The truncation cell above stays green under this mutant - it only asks that a long reason is cut at all - which is why the cut's PLACE needs a cell and a mutant of its own."
+    },
+    {
+      "name": "an empty stop reason arrives as a byte again",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "reason === \"\" ? NO_REASON : reason, room);",
+      "replace": "reason, room);",
+      "expectRed": "a stop with an EMPTY reason still ends the run",
+      "completionMarker": "ok including a four-byte one, which a two-byte fix would still cut",
+      "cell": "a stop with an EMPTY reason still ends the run",
+      "note": "The length is what publishes the bytes, so a reason of no bytes is no stop at all: without the substitution `stop(\"\")` stores 0 and the run never reads a reason, so it runs to completion and the cell that says an empty stop still ends the run reds. The older spelling floored the length at 1 instead, which DID stop the run - and delivered whatever byte happened to be in shared memory, measured as a NUL on the end of the operator's sentence."
+    },
+    {
+      "name": "the journal does not cross back out of the thread",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    entries: result.journal.entries(),",
+      "replace": "    entries: [],",
+      "expectRed": "the journal it brings back is the WALKER'S, entry for entry",
+      "completionMarker": "ok and its log lines reached the host",
+      "cell": "the journal it brings back is the WALKER'S, entry for entry",
+      "note": "The run happens inside the thread, so the journal is written there and the host only ever sees what crosses back. A run that answers with a value and an empty journal looks successful and is unresumable."
+    },
+    {
+      "name": "a resumed run's pins are left behind at the boundary",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    ...(request.pins !== undefined ? { pins: request.pins } : {}),",
+      "replace": "    ...{},",
+      "expectRed": "the resume completes against an EMPTY script",
+      "completionMarker": "ok the first run recorded its steps",
+      "cell": "the resume completes against an EMPTY script",
+      "note": "The pins decide the run's logical epoch and its seed, so a resume that loses them is a different run wearing the same journal. `runOnEngine` already refuses that (L5021) - this mutant proves the refusal is REACHED through the thread boundary, rather than that it exists."
+    },
+    {
+      "name": "the request's named handler export is ignored",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "  const name = request.handler.export ?? \"createHandler\";",
+      "replace": "  const name = \"createHandler\";",
+      "expectRed": "a request naming an export that is not there is refused",
+      "completionMarker": "ok and the refusal names the language's rule, not a clone algorithm",
+      "cell": "a request naming an export that is not there is refused",
+      "note": "A handler is not serialisable, so the request names a module and an export and the thread builds the handler there. Ignoring the named export silently builds a DIFFERENT handler than the one the request asked for, which for a run means a different set of effects against a different broker."
+    },
+    {
+      "name": "log lines never leave the thread",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
+      "replace": "    onLog: () => {},",
+      "expectRed": "and its log lines reached the host",
+      "completionMarker": "ok a run completes in its own locked-down thread, spawned from the BUILT package",
+      "cell": "and its log lines reached the host",
+      "note": "`log` is a free builtin: it is not journalled, so a line that does not cross while the run is alive is a line nobody ever sees. The run still answers, still with the right journal and the right value."
+    },
+    {
+      "name": "an arm is called without being adapted to the scope machinery's convention",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (name !== \"parallel\" && name !== \"race\") return first;",
+      "replace": "    return first;",
+      "expectRed": "parallel: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok and its journal is the first run's, entry for entry",
+      "cell": "parallel: the journals are IDENTICAL, entry for entry",
+      "note": "The scope machinery calls an arm `(frame, args)`; the program's arms are its own closures. Unadapted, an arm still RUNS - it ignores the arguments it was handed - but it runs outside its branch frame, so every effect inside it is keyed under the scope's parent instead of under the branch. The value is right and the journal is a different run's."
+    },
+    {
+      "name": "a scope body handed over already evaluated is accepted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (typeof thunk !== \"function\") {",
+      "replace": "    if (false) {",
+      "expectRed": "a scope body handed over already evaluated is refused",
+      "completionMarker": "ok and the ambient frame is what a framed call reads",
+      "cell": "a scope body handed over already evaluated is refused",
+      "note": "The refusal is what stops a wrong emission from becoming a wrong journal quietly. Without it the seam calls whatever it was handed, and what a reader gets is a host TypeError from inside the scope machinery rather than a sentence saying which argument arrived in the wrong shape."
+    },
+    {
+      "name": "the scope body is not deferred at all",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    return asArm(await (thunk as () => unknown)());",
+      "replace": "    return asArm(thunk);",
+      "expectRed": "fanOut: the engine ran a program the walker ran, rather than refusing it",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the engine ran a program the walker ran, rather than refusing it",
+      "note": "Measured on the walker: `fanOut(xs, await choose(), bag)` journals `[fanOut, sleep]` and `fanOut(xs, fn, { key: await choose() })` journals `[sleep, fanOut]`. The body is evaluated INSIDE the scope and the bag before it, so the body arrives as a thunk and the seam is what calls it there. Re-aimed after the log rule landed: undeferred, the body reaches `log` as a FUNCTION and the engine refuses L4016 on a program the walker completes, so the run-happened guard reds one cell before the journal comparison does. The mutant is the same and so is what it proves; only the cell that notices moved."
+    },
+    {
+      "name": "fanOut's key function is not adapted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    setOwn(out, \"key\", asArm(key));",
+      "replace": "    setOwn(out, \"key\", key);",
+      "expectRed": "fanOut: the engine ran a program the walker ran, rather than refusing it",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the engine ran a program the walker ran, rather than refusing it",
+      "note": "`key` is called by the scope machinery too, and by the same convention as an arm. Unadapted it receives the FRAME where the program wrote its item, so the branch key is computed from the host's own object - measured under the mutant, the read refuses and the whole fanOut fails, which is why the comparison hands its journal IN and grades a refusal as its own named cell."
+    },
+    {
+      "name": "a settled race records no branchDigest",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    if (bodies === undefined) return undefined;",
+      "replace": "    return undefined;",
+      "expectRed": "race: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok parallel: the log is the same",
+      "cell": "race: the journals are IDENTICAL, entry for entry",
+      "note": "The engine has no AST, so the one journal field that is a function of the source arrives as the call site's static payload. Drop it and the entry is missing a field the walker's has, which is a journal difference before it is ever a divergence question."
+    },
+    {
+      "name": "the branch digest is over the arm NAMES and not their bodies",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "          .map((n) => [n, Object.prototype.hasOwnProperty.call(bodies, n) ? bodies[n] : null]),",
+      "replace": "          .map((n) => [n, null]),",
+      "expectRed": "race: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok parallel: the log is the same",
+      "cell": "race: the journals are IDENTICAL, entry for entry",
+      "note": "A digest over the names alone is green for every edit anyone would make INSIDE a losing arm, which is the only thing it exists to catch. It is graded here as a journal difference because the digest is compared against the walker's own, byte for byte, on a race that settled."
+    },
+    {
+      "name": "a conclave's identity leaves out its members",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const subject = spec.hashesSubject",
+      "replace": "    const subject = false",
+      "expectRed": "conclave: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok fanOut: the log is the same",
+      "cell": "conclave: the journals are IDENTICAL, entry for entry",
+      "note": "A conclave is the one scope whose identity includes a SUBJECT: the members are what the sub-team IS. Without it, editing the member list resumes into a different room rather than diverging, and the entry's inputHash stops matching the walker's on the very first run."
+    },
+    {
+      "name": "the options bag is read at a fixed argument position",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    const bag = args[spec.optionsAt];",
+      "replace": "    const bag = args[1];",
+      "expectRed": "fanOut: the journals are IDENTICAL, entry for entry",
+      "completionMarker": "ok a RENAMED losing arm diverges too",
+      "cell": "fanOut: the journals are IDENTICAL, entry for entry",
+      "note": "`parallel` and `race` take their bag second, `fanOut` and `conclave` third, and the position is declared in primitives.ts rather than remembered here. Read at a fixed position, a fanOut's bag is its body: the scope loses its name (so its step key changes) and its `key` function (so it refuses L3021)."
+    },
+    {
+      "name": "a cell's presence is decided by truthiness instead of hasOwn",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "Object.prototype.hasOwnProperty.call(cell, prop)",
+      "replace": "(cell as Record<string, unknown>)[prop] !== undefined",
+      "expectRed": "a cell holding `undefined` is INITIALISED, and reads as undefined",
+      "completionMarker": "ok with the WALKER'S message, word for word",
+      "cell": "a cell holding `undefined` is INITIALISED, and reads as undefined",
+      "note": "The two rules agree on every value except the one that matters: a binding initialised to `undefined` HAS been initialised, and a truthiness test refuses it as unreached. `let x = undefined;` then reading `x` from a closure would answer L2004 on a line the declaration already ran. Aimed at the ONE place the question is asked, which is now shared by the read door and the write door."
+    },
+    {
+      "name": "the binding name is accepted and ignored",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    get(o, k, binding) {",
+      "replace": "    get(o, k, binding) {\n      binding = undefined;",
+      "expectRed": "and so does the engine, when the cell has no own key yet",
+      "completionMarker": "ok the walker refuses a TDZ read at run time with L2004",
+      "cell": "and so does the engine, when the cell has no own key yet",
+      "note": "The whole of the cell-read host clause is this check. Without it a TDZ read answers `undefined` instead of refusing, which is the silent-answer class: the program takes a branch on a binding that does not have a value yet, and no journal entry ever disagrees with the walker's, because the walker refused before it wrote one. Anchored on the signature rather than on the guard, because the guard's text is the same at both doors and an ambiguous anchor is a mutation nobody can aim."
+    },
+    {
+      "name": "the cell refusal drifts from the walker's words",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "is used before its declaration was reached: the binding exists for the whole block",
+      "replace": "is used before its declaration was reached: the binding exists for the block",
+      "expectRed": "with the WALKER'S message, word for word",
+      "completionMarker": "ok and so does the engine, when the cell has no own key yet",
+      "cell": "with the WALKER'S message, word for word",
+      "note": "The sentence lives inside interpret.ts's `Env.get` and is not exported, so this side carries a copy and the cell takes the original FROM THE ORACLE at run time to compare against. That is what keeps a copy from quietly becoming a second answer."
+    },
+    {
+      "name": "a native ReferenceError is converted into a program error",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      if (e instanceof ReferenceError) throw new EngineFault(e);",
+      "replace": "      void 0;",
+      "expectRed": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
+      "completionMarker": "ok and the engine's catch head answers that same record for the read",
+      "cell": "the loud clause: a native ReferenceError is the ONLY thing between an emitter temp bug and a program-visible value, so the catch head rethrows it",
+      "note": "The emitted module has zero free identifiers, so a ReferenceError can only be a binding the transform did not classify as a cell or an emitter temporary read before it was bound. Converted, a compiler bug arrives at the program as an ordinary catchable error and the program handles it - which is how a missed classification ships."
+    },
+    {
+      "name": "an engine fault is catchable",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "  \"EngineFault\",\n  \"Cancelled\",",
+      "replace": "  \"Cancelled\",",
+      "expectRed": "an emitted catch around it rethrows rather than catching",
+      "completionMarker": "ok while it carries what actually happened",
+      "cell": "an emitted catch around it rethrows rather than catching",
+      "note": "Loud is not enough on its own: a program with a `try` around the bad read would catch the engine's own fault and carry on, which is the same outcome as converting it, reached one line later."
+    },
+    {
+      "name": "the run boundary lets a ReferenceError through as the program's",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "      throw e instanceof ReferenceError ? new EngineFault(e) : e;",
+      "replace": "      throw e;",
+      "expectRed": "a ReferenceError escaping the whole run is an ENGINE fault too",
+      "completionMarker": "ok an emitted catch around it rethrows rather than catching",
+      "cell": "a ReferenceError escaping the whole run is an ENGINE fault too",
+      "note": "The catch head is only ONE of the two places this can surface. A program with no `try` around the bad read has nothing to route it through, so it arrives here - and a bare ReferenceError reaching a caller is indistinguishable from a host crash."
+    },
+    {
+      "name": "the floor is never checked at the run boundary",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "export const NODE_FLOOR = 22;",
+      "replace": "export const NODE_FLOOR = 999;",
+      "expectRed": "the run boundary is reached, and a refusal at it has a cell to land on",
+      "cell": "the run boundary is reached, and a refusal at it has a cell to land on",
+      "note": "The PREDICATE being right proves nothing about the run reaching it, which is why this mutant moves the floor rather than deleting the check: raised past every version that exists, the refusal fires on the FIRST boundary crossing in the file. WHICH CELL THAT IS was a position and not a name, and it moved twice - once when two cells were inserted in section 3, which the ledger caught as a WRONG-RED, and once when that cell's run was left unguarded, which turned this mutant into an uncaught fault from host.ts with no cell attached to it. Section 0 exists so it stops moving: it is the first crossing by construction, it captures rather than awaiting into the cell, and the audit in section 23 asserts it is still first. That cell is also the FIRST this file prints, so there is nothing upstream of it to mark and no exemption to generalise from: section 23 asserts that the aim is that first cell, that this note says so, and that this is the ONLY mutation in this config declaring no completionMarker."
+    },
+    {
+      "name": "the crossing search narrows back to one entry point",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "  const CROSSING = \"On\" + \"Engine(\";",
+      "replace": "  const CROSSING = \"run\" + \"OnEngine(\";",
+      "expectRed": "and so is a resume, which is the same crossing under a name the other search misses",
+      "completionMarker": "ok a run spliced in above the guard is caught by the audit",
+      "cell": "and so is a resume, which is the same crossing under a name the other search misses",
+      "note": "The spelling this replaced, restored exactly, and the reason the check needed a second control arm. `resumeOnEngine` calls `runOnEngine`, which asks the node floor before the validator, so a resume crosses the boundary identically - and `runOnEngine(` is not a substring of `resumeOnEngine(`, so a search for the first walks past the second. The transform side found it while it was still latent (first run in section 0, first resume some 1500 lines below), and MEASURED before the fix: a resume spliced above the guard left the narrow audit fully green, 374 checks passed. The arm above stays green under this mutant - it splices the entry point the narrow needle already matches - which is exactly why one arm was not enough."
+    },
+    {
+      "name": "a node below the floor is allowed through",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (Number.isFinite(major) && major < NODE_FLOOR) {",
+      "replace": "  if (false) {",
+      "expectRed": "a node below the floor is refused by major version",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "a node below the floor is refused by major version",
+      "note": "The floor is the MEASURED runtime floor, 22: ALS propagates 9 of 9 shapes on 22.23.2 and the worker from `dist` answers the same value with the same confinement there, so this suite is 271 of 271 green on 22 as well as on 26. What the refusal is for is the node below it, which nothing here has ever run on - and an engine whose frame plumbing rests on AsyncLocalStorage failing somewhere inside a run is a far worse answer than one sentence at the boundary. Unmutated the cell asks about 20.19.0; mutated, `if (false)` lets it through."
+    },
+    {
+      "name": "an unreadable version is refused for being unreadable",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "  if (Number.isFinite(major) && major < NODE_FLOOR) {",
+      "replace": "  if (!(major >= NODE_FLOOR)) {",
+      "expectRed": "an unreadable version is not refused on the strength of being unreadable",
+      "completionMarker": "ok and anything above it",
+      "cell": "an unreadable version is not refused on the strength of being unreadable",
+      "note": "`NaN < 22` is false and `!(NaN >= 22)` is true, which is the whole difference. A version string this cannot parse is a runtime it knows nothing about; refusing it would fail a run for the SHAPE OF A STRING rather than for the runtime under it, and the check exists to answer the second question."
+    },
+    {
+      "name": "the host reaches for a default worker entry when none is given",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "  const worker = new Worker(options.entry, { workerData: { request, stop } });",
+      "replace": "  const worker = new Worker(options.entry ?? new URL(\"./worker-entry.js\", import.meta.url), { workerData: { request, stop } });",
+      "expectRed": "a request with NO entry starts no thread at all",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "a request with NO entry starts no thread at all",
+      "note": "This is the exact move the rule took out: a worker entry derived from the module's own URL rather than named by the caller. It is invisible on a node whose loader reaches worker threads and it is ERR_MODULE_NOT_FOUND on one whose loader does not, which is how it survived the first time. Mutated, a request with no entry quietly spawns a thread at a path nobody chose instead of refusing."
+    },
+    {
+      "name": "an entry constant is exported for callers to inherit",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "export interface WorkerRunOptions {",
+      "replace": "export const WORKER_ENTRY = new URL(\"./worker-entry.js\", import.meta.url);\nexport interface WorkerRunOptions {",
+      "expectRed": "the worker module exports no entry for a caller to inherit",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "the worker module exports no entry for a caller to inherit",
+      "note": "The other half of the same rule, and the half the no-entry cell cannot see: a derivation does not have to live inside `runInWorker` to be a derivation. Exported, it is the value every caller picks up instead of deciding, and the decision quietly moves back into this package where it cannot be right for a bundler, an installed copy, or a suite that means to grade `dist`."
+    },
+    {
+      "name": "a dead-zone WRITE is let through",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    set(o, k, v, binding) {",
+      "replace": "    set(o, k, v, binding) {\n      binding = undefined;",
+      "expectRed": "and so does the engine's write clause, when the cell has no own key yet",
+      "completionMarker": "ok without a binding name, an absent field is still just undefined",
+      "cell": "and so does the engine's write clause, when the cell has no own key yet",
+      "note": "The shape the classifier cannot see from reads alone: a binding only ever WRITTEN from a deeper function. Before the clause the engine died on a native ReferenceError - loud, uncatchable, and an engine fault by this host's own rule - where the walker answers a catchable L2004. Dropping the argument on the floor restores exactly that."
+    },
+    {
+      "name": "the write answers the READ's sentence",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "`${binding} is assigned before its declaration was reached: the binding exists for the whole block, but it holds no value until the \\`let\\`/\\`const\\` line runs.`",
+      "replace": "`${binding} is used before its declaration was reached: the binding exists for the whole block, but it holds no value until the \\`let\\`/\\`const\\` line runs. Call this function after the declaration, or move the declaration up.`",
+      "expectRed": "with the WALKER'S ASSIGNMENT message, word for word",
+      "completionMarker": "ok without a binding name, an absent field is still just undefined",
+      "cell": "with the WALKER'S ASSIGNMENT message, word for word",
+      "note": "The two sentences are one word apart and the walker says both, for two different things. A host that answered the read's words for a write diverges where a program can see it - `e.message` is a program-visible value - while every code-level cell stays green, which is why the words are compared against the oracle and not just the code. Aimed at the word-for-word comparison rather than the difference cell: the suite is fail-fast and the comparison against the oracle stands first, so it is the cell that actually notices."
+    },
+    {
+      "name": "the refused write initialises the cell anyway",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    set(o, k, v, binding) {",
+      "replace": "    set(o, k, v, binding) {\n      if (binding !== undefined && o !== null && typeof o === \"object\" && !Object.prototype.hasOwnProperty.call(o, keyOf(k))) { (o as Record<string, unknown>)[keyOf(k)] = v; throw new RuntimeFault(\"L2004\", `${binding} is assigned before its declaration was reached: the binding exists for the whole block, but it holds no value until the \\`let\\`/\\`const\\` line runs.`); }",
+      "expectRed": "and it left the cell uninitialised, so the declaration can still initialise it",
+      "completionMarker": "ok without a binding name, an absent field is still just undefined",
+      "cell": "and it left the cell uninitialised, so the declaration can still initialise it",
+      "note": "Refuses with the same code and the same words, so every cell about the refusal stays green - and leaves the key behind. A caught early write would then have initialised the binding from a line that never ran, and the `let` that follows would look like a redeclaration to the cell test rather than the initialisation it is."
+    },
+    {
+      "name": "the sub-floor refusal carries no language code",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "      \"L1000\",",
+      "replace": "      \"L9999\",",
+      "expectRed": "and it carries the language code, not a bare Error",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "and it carries the language code, not a bare Error",
+      "note": "A refusal that throws is not yet a refusal a caller can branch on. `instanceof RuntimeFault` stays true under this mutant, which is the point: the cell above it does not notice, and the code is what a host reads."
+    },
+    {
+      "name": "the sub-floor refusal reads as a module-resolution failure",
+      "file": "packages/lang/src/engine/host.ts",
+      "find": "`the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "replace": "`Cannot find module: the cotal-lang engine requires node ${NODE_FLOOR} or newer and this is node ${version}.",
+      "expectRed": "and it never presents as a module-resolution failure",
+      "completionMarker": "ok and it names why a free identifier cannot be the program's fault",
+      "cell": "and it never presents as a module-resolution failure",
+      "note": "Keeps both the version it found and the floor, so the cell above it stays green, and puts back the one thing this whole change removed: a sub-floor run presenting as node failing to resolve a file that is right there. That was the developer-visible symptom on node 22, and the cell exists to say it can never come back."
+    },
+    {
+      "name": "the thenable gate runs ahead of the member rule",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
+      "replace": "      assertWritable(o, currentFrame());\n      if (prop === \"then\") refuseThenable({ then: v }, \"this field write\");\n      if (Array.isArray(o)) {",
+      "expectRed": "and so does the engine, not the value's rule",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth (L4021)",
+      "cell": "and so does the engine, not the value's rule",
+      "note": "Where this gate stood until the order was measured, and the reason a rule about the VALUE cannot be asked before the rule about the MEMBER: `keys({a:1}).then = () => 1` came back L4018 where the walker says L4014, the same sentence `.foo` gets, because an array does not have that member at all. Both engines refuse the program either way, which is why only a cell comparing the CODES against the oracle catches it."
+    },
+    {
+      "name": "the member rule runs ahead of the freeze",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "      assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
+      "replace": "      if (!Array.isArray(o)) assertWritable(o, currentFrame());\n      if (Array.isArray(o)) {",
+      "expectRed": "and so does the engine, freeze ahead of the member rule",
+      "completionMarker": "ok a literal with an own callable `then` refuses at birth (L4021)",
+      "cell": "and so does the engine, freeze ahead of the member rule",
+      "note": "The other end of the same order, and it is measured on the oracle too: a frozen array written with a member it does not have answers L2031, not L4014. A host that asked the member rule first would tell an author to fix the member name on a value no member name would have made writable."
+    },
+    {
+      "name": "a member declares a parameter the seam never granted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "    caught(e) {",
+      "replace": "    caught(e, unused) {",
+      "expectRed": "every member's declared MAX is its implemented parameter count (14 checked)",
+      "completionMarker": "ok and they are the SAME names, by set equality in both directions",
+      "cell": "every member's declared MAX is its implemented parameter count (14 checked)",
+      "note": "A pure ARITY mutant, which is the only kind this section can be graded by: it sits last in a fail-fast suite, so any mutant that also changes behaviour reds a rule that names itself better. One extra parameter changes nothing a program can see and everything the contract says - the seam's max for `caught` is 1, and a host declaring 2 has either invented an argument or is about to be handed one the seam never granted."
+    },
+    {
+      "name": "the host implements a member the seam never granted",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "  const ctx: EngineCtx = {\n    fuel,",
+      "replace": "  const ctx: EngineCtx = {\n    noop: () => undefined,\n    fuel,",
+      "expectRed": "the seam declares 14 members, and the host implements the same number",
+      "completionMarker": "ok a ReferenceError escaping the whole run is an ENGINE fault too",
+      "cell": "the seam declares 14 members, and the host implements the same number",
+      "note": "The widening this whole surface exists to refuse, and the shape it would actually arrive in: not a member removed, which every behavioural cell would notice, but one ADDED - reachable from the program, invisible to every law cell, and outside the table both sides hold. Set equality is checked in both directions for exactly this. First spelling of this cell put BOTH counts in its name, so under the mutant it renamed itself to '...implements 15' and the config could not name it: a clean red graded WRONG-RED. The name now carries only the side the mutant does not move."
+    },
+    {
+      "name": "the code predicate stops seeing a function",
+      "file": "packages/lang/src/values.ts",
+      "find": "  if (typeof value === \"function\") {\n    throw new NotCrossable(\n      \"function\",",
+      "replace": "  if (false) {\n    throw new NotCrossable(\n      \"function\",",
+      "expectRed": "an empty record and one carrying a closure, which a shallow signature could not",
+      "completionMarker": "ok and the two infinities, which it draws alike as well",
+      "cell": "an empty record and one carrying a closure, which a shallow signature could not",
+      "note": "`assertNoCode` has TWO dependents now and this grades the predicate itself, which is why it moved twice. It was aimed at the worker leg, then at the engine's log sink when the rule moved there (src/engine/ctx.ts became its only caller), and the rendering remedy then made the shape signature's `carriesCode` catch the SAME predicate on purpose - so that the signature and the log rule cannot drift apart. The cost of that choice is this mutant's aim: measured at 7f2cd1a2 it reds in section 15b, upstream of section 20b, because a shape control asks the predicate a question before any log line does. Re-aimed at the cell that actually reds first, and the log rule keeps a mutant of its own on the sink in ctx.ts, which nothing shadows. Marker is the control immediately above."
+    },
+    {
+      "name": "the engine's log sink stops asking whether a value carries code",
+      "file": "packages/lang/src/engine/ctx.ts",
+      "find": "        assertNoCode(v, `log: value ${i + 1}`);",
+      "replace": "        void v;",
+      "expectRed": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "completionMarker": "ok an unreadable version is not refused on the strength of being unreadable",
+      "cell": "the engine refuses a log line carrying a function (L4016) and names the value",
+      "note": "THE RULE, where it lives, with an anchor nothing else reads. The defect it was found by: unrefused, `log((x) => x)` reaches `postMessage` and the thread dies on a host DataCloneError whose message carries the emitted module body - a structured-clone complaint about a language rule, with the program's compiled source in it. It is an ENGINE rule with NO ORACLE BEHIND IT: the walker replays runs recorded under language version 1 and hands a logged builtin to its host as it is, on purpose, so the differential declares it a divergence and there is no second arm to compare against. Aimed at section 20b's in-process cell, which runs a program through the transform onto the engine and reads the L4016 sentence; the worker leg in section 22 is NOT the aim, because unrefused the thread's own run fails on the clone and that failure still crosses as a fault, so its first cell stays green."
+    },
+    {
+      "name": "the thread posts a kind the crossing table never cells",
+      "file": "packages/lang/src/engine/worker-entry.ts",
+      "find": "    onLog: (line) => port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }),",
+      "replace": "    onLog: (line) => { if (request.runId === \"\\u0000never\") port.postMessage({ kind: \"trace\", line }); port.postMessage({ kind: \"log\", line: { scope: line.scope, values: [...line.values] } }); },",
+      "expectRed": "the thread posts exactly the 2 message kinds this table cells",
+      "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
+      "cell": "the thread posts exactly the 2 message kinds this table cells",
+      "note": "The failure the table exists for is a MISSING cell, not a wrong one: a crossing added to the thread side with nothing asserting anything about it, which is exactly how the log path shipped with an assertion on the return path and none on its own. The mutant's extra post is DEAD CODE on purpose - it changes the file's text and nothing else - because a kind that actually crossed would red the host's unknown-kind refusal first, which is a different rule with its own cell. Set equality against the file is what makes a new crossing red until somebody cells it."
+    },
+    {
+      "name": "an unknown message kind is read as the run's answer",
+      "file": "packages/lang/src/engine/worker.ts",
+      "find": "      if (m.kind !== \"result\") {",
+      "replace": "      if (false) {",
+      "expectRed": "an unknown message kind is refused, not read as the run's answer",
+      "completionMarker": "ok and a reason past the buffer is truncated, not dropped",
+      "cell": "an unknown message kind is refused, not read as the run's answer",
+      "note": "The handler this branch replaced: one case for `log` and everything else read as the answer. A thread posting anything unexpected resolved the run with `undefined` - success, no value - and the real result arrived after nobody was listening. Found by a mutation that added a message kind, reproduced with a two-line worker entry the suite hands in, which is what the entry being an INPUT buys."
+    },
+    {
+      "name": "the shape leg is compared but never able to differ",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(b);",
+      "replace": "const sameShapes = (a: readonly (readonly unknown[])[], b: readonly (readonly unknown[])[]): boolean => shapes(a) === shapes(a) && b !== null;",
+      "expectRed": "absence and a literal null render the same and are told apart",
+      "completionMarker": "ok and a trailing CALL",
+      "cell": "absence and a literal null render the same and are told apart",
+      "note": "The gate leg and the section-15b controls call ONE predicate, so this grades the predicate the gate actually uses rather than a second copy. Mutated to compare an arm against itself, every pair reads 'same' and the first control - the undefined/null pair, which is the distinction these cells lean on hardest - reds. Marker is the last cell of section 15, immediately above the controls."
+    },
+    {
+      "name": "the shape signature goes shallow again",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "          : typeof v === \"object\"\n            ? carriesCode(v)\n              ? \"object+code\"\n              : \"object\"\n            : typeof v;",
+      "replace": "          : typeof v;",
+      "expectRed": "an empty record and one carrying a closure, which a shallow signature could not",
+      "completionMarker": "ok and the two infinities, which it draws alike as well",
+      "cell": "an empty record and one carrying a closure, which a shallow signature could not",
+      "note": "The first spelling of this signature WAS shallow `typeof`, and shallow it fails the two rows it was added for: `{ g: (x) => x }` and `{}` both read 'object'. The four top-level pairs above survive shallow, which is exactly what made the first spelling look fine, so this reds only the two nesting controls and the nesting one comes first. `carriesCode` catches `assertNoCode` rather than re-implementing it, so this mutant also says the signature and the engine's log rule cannot drift apart."
+    },
+    {
+      "name": "negative zero stops being named",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "    : Object.is(v, -0)\n      ? \"-0\"\n",
+      "replace": "    : false\n      ? \"-0\"\n",
+      "expectRed": "zero and negative zero, which an ordinary division reaches",
+      "completionMarker": "ok and an array of absence against an array carrying code, which come free",
+      "cell": "zero and negative zero, which an ordinary division reaches",
+      "note": "JSON draws -0 as 0 and `0 / -1` is an ordinary program, so this is a hazard a run can reach rather than a curiosity. Unnamed, -0 falls through to `typeof` and reads 'number' exactly as 0 does, and the control that separates them reds."
+    },
+    {
+      "name": "the name audit accepts a name that matches several cells",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "    return matches.length === 1 ? [] : [",
+      "replace": "    return matches.length >= 1 ? [] : [",
+      "expectRed": "a name that is a substring of a sibling's is reported, not passed as present",
+      "completionMarker": "ok while a search for one entry point alone calls that resume guarded, which is why the needle matches both",
+      "cell": "a name that is a substring of a sibling's is reported, not passed as present",
+      "note": "The audit this replaced, restored exactly: `present` rather than `exactly one`. The tool matches a named assertion by SUBSTRING over the transcript, so a name that is also a substring of a sibling's name is found on whichever line prints first - measured live in this config, a marker matched a cell three positions EARLIER than the one it named, which would have graded a run that died in between instead of reporting it never reached the check. THE SUBJECT IS SYNTHETIC ON PURPOSE: the real ambiguity was fixed in the same commit that added the audit, so the only thing left able to produce this fault is a list built to contain it. A guard whose subject cannot fail the way it claims is a cell-shaped comment - one shipped on the transform side and its ledger found it, which is why the controls here hand the predicate its own failing input. The zero-match arm below stays green under this mutant, since `>= 1` still reports a name nothing prints."
+    },
+    {
+      "name": "a second mutation quietly loses its completion marker",
+      "file": "packages/lang/smoke/mutations/engine-seam.json",
+      "find": "      \"completionMarker\": \"ok a record answers its own field\",\n",
+      "replace": "",
+      "expectRed": "exactly one mutation names no completion marker, because only a first cell can lack an upstream",
+      "cell": "exactly one mutation names no completion marker, because only a first cell can lack an upstream",
+      "completionMarker": "ok a run spliced in above the guard is caught by the audit",
+      "note": "THE FAULT THIS WHOLE CLAUSE EXISTS FOR, manufactured rather than waited for. Measured before the clause was written: stripping this line left the suite at 380/380 green, because all four checks below the loop iterate the markers that EXIST and the set they walk shrinks with the fault. The aim is an ungraded aim: with no marker, a death UPSTREAM of the cell grades as a kill."
+    },
+    {
+      "name": "the marker-less mutation stops aiming at the first cell, so the exemption is no longer impossible",
+      "file": "packages/lang/smoke/mutations/engine-seam.json",
+      "find": "      \"cell\": \"the run boundary is reached, and a refusal at it has a cell to land on\"",
+      "replace": "      \"cell\": \"it wrote exactly the two entries the two effects owe\"",
+      "expectRed": "and that one aims at the first cell this file prints, which is what makes it impossible not merely absent",
+      "cell": "and that one aims at the first cell this file prints, which is what makes it impossible not merely absent",
+      "completionMarker": "ok a run spliced in above the guard is caught by the audit",
+      "note": "A marker is IMPOSSIBLE only for a first cell. Moved onto an ordinary deep cell the same mutation becomes an ordinary unguarded aim wearing the exemption, which is the shape the next author would copy."
+    },
+    {
+      "name": "the exemption note is reworded past the word the next author greps for",
+      "file": "packages/lang/smoke/mutations/engine-seam.json",
+      "find": "declaring no completionMarker.\"",
+      "replace": "declaring no upstream marker.\"",
+      "expectRed": "and its own note says the word, so the next author reads the rule and not just the exemption",
+      "cell": "and its own note says the word, so the next author reads the rule and not just the exemption",
+      "completionMarker": "ok a run spliced in above the guard is caught by the audit",
+      "note": "Anchored THROUGH the closing quote on purpose: this config mutates itself, so a find-string is unique only when it contains a character JSON must escape - the field stores that quote as a backslash-quote and is therefore not a second copy of the target text."
+    },
+    {
+      "name": "an anchor stops being unique, so a mutation can be aimed at nothing",
+      "file": "packages/lang/smoke/mutations/engine-seam.json",
+      "find": "      \"find\": \"export const NODE_FLOOR = 22;\",",
+      "replace": "      \"find\": \"const \",",
+      "expectRed": "every `find` matches its file exactly once, so every mutant can be aimed",
+      "cell": "every `find` matches its file exactly once, so every mutant can be aimed",
+      "completionMarker": "ok a run spliced in above the guard is caught by the audit",
+      "note": "The cell this aims at could not fail until this commit gave it its own pass above the audit loop: it read a list the loop below filled, so it asserted an empty array, and MEASURED with this very anchor - `const ` in ctx.ts, 76 occurrences - the suite stayed green at 380/380. The aim had to move as well as the check, because nothing can name a cell that prints after the audit."
+    },
+    {
+      "name": "the exact-match half stops being exact and accepts a substring",
+      "file": "packages/lang/smoke/engine.smoke.ts",
+      "find": "const namesExactly = (list: readonly string[], name: string): boolean => list.indexOf(name) >= 0;",
+      "replace": "const namesExactly = (list: readonly string[], name: string): boolean => list.some((c) => c.includes(name));",
+      "expectRed": "a name that is a substring of one cell but is not that cell passes the tool's rule and fails the exact-match half",
+      "cell": "a name that is a substring of one cell but is not that cell passes the tool's rule and fails the exact-match half",
+      "completionMarker": "ok a run spliced in above the guard is caught by the audit",
+      "note": "Weakened to the TOOL's own substring rule, which is the reading that nearly collapsed the two name checks into one and deleted this half. It is a real loss in the audit, not a stylistic one: a substring aim then goes unreported, `indexOf` still answers -1 for it, and the ordering check below silently skips that mutation."
+    },
+    {
+      "name": "the load door stops looking, so the thread's own door is the one that goes quiet",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail]] as const) {",
+      "replace": "      for (const [field, value] of [] as [string, unknown][]) {",
+      "expectRed": "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
+      "cell": "the thread ANSWERS L5024 by name rather than diverging on replay or dying and leaving the host to guess",
+      "completionMarker": "and its journal is the first run's, entry for entry",
+      "note": "The lang suite proves the door DEPENDS on the value; this proves the THREAD reaches it. They are different claims and the second is the one that matters here, because workerData is a structured clone and preserves Date, NaN, -0, an own `undefined` key and a Map - so the thread's door is the only one of the two that can fire on today's store. Aimed at the CODE cell, not at the completes/does-not-complete one: measured, the latter stays green with the door deleted, because a hand-built entry fails its input-hash comparison too and a divergence looks the same from outside."
+    }
+  ]
+}

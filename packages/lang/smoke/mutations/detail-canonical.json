@@ -1,0 +1,39 @@
+{
+  "suite": "packages/lang/smoke/journal.smoke.ts",
+  "guard": "A failure's `detail` is a recorded value too: refused where it is written, at BOTH sites, and refused on load by the same door (L5024). (FAIL-FAST suite: markers are upstream of the cells they guard.)",
+  "command": "pnpm smoke:lang-journal",
+  "proveWith": "pnpm mutation-proof --config packages/lang/smoke/mutations/detail-canonical.json",
+  "why": "One rule, one helper, THREE call sites, and a mutation per site rather than one on the helper. Mutating `recordableError` itself would kill both write cells with a single edit and prove nothing about whether each site actually calls it - which is the half-fence question, and the one that was open on the bind wrappers until it was measured.",
+  "mutations": [
+    {
+      "name": "the effect site records the handler's detail again, unchecked",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    const recorded = e instanceof EffectError ? recordableError(e, \"handler-fault\") : undefined;",
+      "replace": "    const recorded = e instanceof EffectError ? { error: { code: e.code, kind: e.kind, message: e.message, ...(e.detail !== undefined ? { detail: e.detail } : {}) }, faithful: true } : undefined;",
+      "expectRed": "a failure whose detail has no canonical form is recorded as the handler fault it is, not with the code the handler chose",
+      "completionMarker": "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
+      "cell": "a failure whose detail has no canonical form is recorded as the handler fault it is, not with the code the handler chose",
+      "note": "The exact pre-fix expression. With it back, a caught failure leaves a function in a settled entry of a run that SUCCEEDED - measured in-process, and fatal through the worker, where the journal is structured-cloned back to the host."
+    },
+    {
+      "name": "only the effect site is checked, and the scope's own failure record is left open",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        ? recordableError(reason, \"scope-fault\").error",
+      "replace": "        ? { code: reason.code, kind: reason.kind, message: reason.message, ...(reason.detail !== undefined ? { detail: reason.detail } : {}) }",
+      "expectRed": "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",
+      "completionMarker": "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
+      "cell": "the same rule on the scope's own failure record, which a fix at the effect site alone would leave open",
+      "note": "The half-fence mutation for this rule. The bind wrappers taught it: the effect path is the one a probe reaches first and the scope path is the one nobody re-checks."
+    },
+    {
+      "name": "the load door reads the binding but stops looking at the failure detail",
+      "file": "packages/lang/src/journal.ts",
+      "find": "      for (const [field, value] of [[\"external\", e.external], [\"error.detail\", e.error?.detail]] as const) {",
+      "replace": "      for (const [field, value] of [[\"external\", e.external]] as const) {",
+      "expectRed": "a recorded failure detail with no canonical form is refused on load by the same door, naming the FIELD",
+      "completionMarker": "an ordinary recorded binding still loads, including the `-0` the rule admits and JSON does not preserve",
+      "cell": "a recorded failure detail with no canonical form is refused on load by the same door, naming the FIELD",
+      "note": "The write guards fence every shipped caller by enumeration; a record written before this rule is behind them either way, and this is the door it cannot go around."
+    }
+  ]
+}

@@ -36,6 +36,7 @@ import {
   newIdentity,
   setupSpaceStreams,
 } from "@cotal-ai/core";
+import { controlFromEnv } from "@cotal-ai/connector-core";
 import { opencodeConnector } from "../src/extension.js";
 import { pickFreePort } from "./_free-port.js";
 import { SMOKE_BROKER_TOKEN, teardownOnSignal } from "@cotal-ai/smoke-kit";
@@ -197,13 +198,30 @@ try {
     allowPublish: ["general"],
   });
   check(
-    "buildLaunch attaches the control endpoint to the LaunchSpec + child env",
-    !!spec.control && spec.env?.COTAL_CONTROL_SOCKET === spec.control.path && spec.env?.COTAL_CONTROL_TOKEN === spec.control.token,
+    "buildLaunch attaches the control endpoint: socket path in the child env, token in the launch material",
+    !!spec.control &&
+      spec.env?.COTAL_CONTROL_SOCKET === spec.control.path &&
+      spec.env?.COTAL_CONTROL_TOKEN === undefined &&
+      controlFromEnv(spec.env)?.token === spec.control.token,
     spec.control,
   );
   const ep = spec.control!;
 
   // Boot the REAL plugin in a subprocess with the connector-built env (Otto's identity + control).
+  //
+  // THE AMBIENT `COTAL_*` IS STRIPPED FIRST, and that is not tidiness. Whatever runs this suite may
+  // itself be a managed agent session, whose environment carries a LIVE credential and a LIVE broker
+  // URL. Spreading it here hands the child an identity nothing in this file asked for, and the
+  // connector env layered on top used to overwrite exactly the variables that would have made it
+  // visible, so the inheritance was real and silent. Measured: on a box where the suite ran inside
+  // an agent session, this spread produced a child carrying both the launch material and an
+  // inherited creds path, and the config parser refused it. Strip, then build.
+  //
+  // `HOST_ENV` IS WHERE THAT STRIP LIVES, and it is the reason there is no second one here. It is
+  // built once at the top of this file and drops `OPENCODE_` as well as `COTAL_`, so it is a strict
+  // superset of a COTAL-only scrub, and every one of this suite's ten seats already spreads it. A
+  // local copy beside one of them would be a second answer to a question this file has answered
+  // once, and the seat that forgot to use it would be the one that inherited a live identity.
   const PROBE = fileURLToPath(new URL("./cooperative-stop-probe.ts", import.meta.url));
   // Arm the event plane and hand the probe a marker path. The marker is written by the probe's
   // own fake OpenCode server when it finishes answering a queued read, so its presence after the

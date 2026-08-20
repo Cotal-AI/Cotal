@@ -1,0 +1,79 @@
+{
+  "grades": "suite",
+  "guard": "the ps row's mesh value is the manager's own roster status for that agent's NAME, and the absent sentinel when the roster has no entry for it",
+  "command": "pnpm --filter @cotal-ai/manager build && pnpm smoke:user-spawn:live",
+  "progressPattern": "✓",
+  "why": "A row that renders live whatever the mesh says admits an unavailable principal to the operator's live view. A closed-set assertion does not catch that, and neither does comparing the row to the roster on a joined seat alone, because a joined seat's status is `idle` and a hard-coded `idle` agrees with it. These mutations sever the projection in each of the ways it can be severed, and the cell that reddens is the one that pins both of its branches at once.",
+  "mutations": [
+    {
+      "name": "the row carries a constant LIVE status instead of the roster's",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: \"idle\" as const,\n",
+      "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "note": "The severing a security review found green: every managed row reads live whatever the mesh says."
+    },
+    {
+      "name": "the row carries a constant ABSENT instead of the roster's",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: \"absent\" as const,\n",
+      "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "note": "The opposite constant, so the pair proves the cell pins a projection rather than one literal."
+    },
+    {
+      "name": "the roster is keyed by the agent's principal id instead of its name",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.id)?.status ?? \"absent\",\n",
+      "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "note": "The map is keyed by card name, so an id lookup misses every row and a joined seat reads absent."
+    },
+    {
+      "name": "the absent sentinel is dropped, so a row with no roster entry carries nothing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.name)?.status,\n",
+      "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build",
+      "note": "The sentinel is the half a joined-seat-only cell can never reach."
+    },
+    {
+      "name": "only the OFFLINE status is rewritten, so an unavailable principal renders live",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.name)?.status === \"offline\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "expectRed": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "cell": "every ps row's mesh is the manager's own roster status for that name, and the absent sentinel where the roster has no entry for it",
+      "note": "A joined row is idle and a never-joining row is absent, so a rewrite that touches only offline agrees with both and needs a managed row that actually reaches offline.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "only the WORKING status is rewritten, so a row misreports what its agent is doing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.name)?.status === \"working\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "expectRed": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "cell": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "note": "The fixture walks the whole union, so a rewrite aimed at working has nowhere to hide either.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    },
+    {
+      "name": "only the WAITING status is rewritten, so a row misreports what its agent is doing",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "        mesh: roster.get(a.name)?.status ?? \"absent\",\n",
+      "replace": "        mesh: roster.get(a.name)?.status === \"waiting\" ? \"idle\" : (roster.get(a.name)?.status ?? \"absent\"),\n",
+      "expectRed": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "cell": "a seat that joins and then walks the rest of the status union is still a managed row, and each status the roster holds is the one the row carries",
+      "note": "The fixture walks the whole union, so a rewrite aimed at waiting has nowhere to hide either.",
+      "afterRestore": "pnpm --filter @cotal-ai/manager build"
+    }
+  ]
+}

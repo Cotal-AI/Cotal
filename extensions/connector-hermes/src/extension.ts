@@ -1,6 +1,6 @@
 import { fileURLToPath } from "node:url";
 import { loadAgentFile, registry, type Connector, type LaunchOpts, type LaunchSpec } from "@cotal-ai/core";
-import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, userAuthEnv } from "@cotal-ai/connector-core";
+import { aclEnv, launchEnv, MODEL_PROVIDER_KEYS, materialEnv } from "@cotal-ai/connector-core";
 
 /** The launcher owns the mesh endpoint and supervises the Hermes gateway as a child — see launch.ts.
  *  From the BUILD, `launch.js` is a self-contained ESM bundle (core + connector-core inlined): run it with
@@ -99,15 +99,15 @@ export const hermesConnector: Connector = {
     const env: Record<string, string> = {
       ...launchEnv({ providerKeys: HERMES_PROVIDER_KEYS }),
       ...aclEnv(opts),
-      ...userAuthEnv(opts),
+      // Creds and broker URL ride a 0600 file; only its path is exported. This connector's launcher
+      // mints the control endpoint itself and merges the token into the same file (see launch.ts).
+      ...materialEnv({ creds: opts.creds, servers: opts.servers, userAuth: opts.userAuth }),
       COTAL_SPACE: opts.space,
       COTAL_NAME: opts.name,
     };
     if (opts.role) env.COTAL_ROLE = opts.role;
     if (opts.id) env.COTAL_ID = opts.id;
     if (opts.lifecycleUid) env.COTAL_LIFECYCLE_UID = opts.lifecycleUid;
-    if (opts.creds) env.COTAL_CREDS = opts.creds;
-    if (opts.servers) env.COTAL_SERVERS = opts.servers;
     // An agent file carries identity + persona + model; the launcher applies the persona as
     // Hermes' SOUL.md (system prompt) at gateway startup, the one place it can be set.
     if (opts.configPath) env.COTAL_AGENT_FILE = opts.configPath;

@@ -152,6 +152,20 @@ export const CATALOG = {
   // awaited `Promise.race([])`, which never settles. Its own code and not L5001 because that one is
   // a hash comparison down to its field names, and this is a comparison of branch NAMES.
   L5022: "A recorded branch is not in the migrated source",
+  // Allocated here because the L5xxx range is where a fact about a RECORD lives, and this is one: the
+  // record names a language version and this build has no engine that speaks it. Deliberately not
+  // L5008, which is the same shape of disagreement one layer in - a record handed to a SPECIFIC
+  // engine whose version differs, where the repair is to run it on the engine that matches. Here
+  // there is no such engine to name, so the repair is a different sentence and gets its own code.
+  L5023: "No engine in this build serves this record's language version",
+  // Allocated from THIS FILE, same rule as the three above. A fact about a RECORD, so L5xxx: the
+  // entry's `external` is a value the language cannot express, which is different from the record
+  // disagreeing with the source (L5001) or with this build (L5023): nothing here disagrees with
+  // anything, the field simply cannot be read back. Its write-side sibling is deliberately NOT a new
+  // code: a handler that binds such a value fails inside its own dispatch, where L4000 handler-fault
+  // already says exactly that, and a second name for one fact is the defect the L5017..L5020 note
+  // above was written about.
+  L5024: "A recorded value has no canonical form",
 
   // ---- L6xxx: simulation -------------------------------------------------------------------------
   L6001: "Unscripted effect in simulation",
@@ -301,5 +315,88 @@ export class RuntimeFault extends Error {
   ) {
     super(`${code} ${message}`);
     this.name = "RuntimeFault";
+  }
+}
+
+/** The message off anything a foreign body throws, read defensively: other people's code may throw a primitive. */
+export function messageOf(v: unknown): string {
+  if (v instanceof Error) return v.message;
+  const m = (v as { message?: unknown } | null | undefined)?.message;
+  return typeof m === "string" ? m : String(v);
+}
+
+/** A recorded step's inputs changed, so its recorded result may no longer be the truth. */
+export class RunDivergence extends Error {
+  constructor(
+    readonly stepKey: string,
+    readonly recordedHash: string,
+    readonly programHash: string,
+  ) {
+    super(
+      `L5001 Run divergence\n\n  step  ${stepKey}   INPUT CHANGED\n        recorded  ${recordedHash}\n        program   ${programHash}\n\nThe recorded result was produced from different inputs, so replaying it would hand the program an answer to a question it is no longer asking.\n\nOptions\n  fork(run, "${stepKey}")   re-run from this step, keeping everything before it\n  revert the inputs         keep the recorded result`,
+    );
+    this.name = "RunDivergence";
+  }
+}
+
+/**
+ * A migration's walk reached a settled scope it cannot enter.
+ *
+ * A `conclave` is the case that exists today: its channel handle is HANDLER-DERIVED, the mint
+ * returns it and nothing journals it, so a walk cannot re-enter the body without inventing a
+ * handle, and an invented one would re-hash every step inside that used the channel into a
+ * divergence the run never had. Refusing is the honest exit. Consuming the subtree instead would
+ * hide exactly the orphans a migration exists to find, which is a silent wrong answer in place of
+ * a loud refusal.
+ */
+export class UnwalkableScope extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly why: string,
+  ) {
+    super(
+      `a migration cannot walk inside the settled ${why} at ${scopeKey}: its handle is handler-derived and was never journalled, so the walk would have to invent one. Fork from this step instead, or migrate a run that does not contain it.`,
+    );
+    this.name = "UnwalkableScope";
+  }
+}
+
+/**
+ * A migration's walk was sent into a recorded branch the new source does not have.
+ *
+ * Its own code rather than `RunDivergence`, for the reason the L5005/L5006/L5007 collision in the
+ * orphan table bought: `RunDivergence` is a HASH comparison and says so in both its fields and its
+ * message, and putting branch NAMES in fields called `recordedHash`/`programHash` would be a lie in
+ * the payload a repair loop reads. The author's repair differs too: this one is fixed by looking at
+ * an arm's NAME, not at its body.
+ */
+export class ScopeBranchMissing extends Error {
+  constructor(
+    readonly scopeKey: string,
+    readonly scope: string,
+    readonly missing: readonly string[],
+    readonly recorded: readonly string[],
+    readonly source: readonly string[],
+  ) {
+    super(recorded.length === 0
+      // THE EMPTY CASE IS NOT THE SAME SENTENCE. "A recorded branch is not in the source" is false
+      // here: no branch was recorded at all, and saying "missing: " with nothing after it would
+      // send a reader looking through their source for an arm that was never named. The cause is
+      // the entry, not the edit, and the repair is different too.
+      ? `L5022 A settled scope recorded no branch names\n\n  step  ${scopeKey}   BRANCH NAMES ABSENT\n`
+        + `        source    ${source.join(", ")}\n\n`
+        + `This ${scope} settled before scopes recorded their arm names on failure, so the walk has `
+        + `nothing to tell it which arm ran. It cannot enter one, and entering none would wait `
+        + `forever on a scope with no branches in it.\n\nOptions\n  resume(run)   replay it rather `
+        + `than walking it\n  fork(run, "${scopeKey}")   re-run this scope on the current arms`
+      : `L5022 A recorded branch is not in the migrated source\n\n  step  ${scopeKey}   BRANCH MISSING\n`
+        + `        recorded  ${recorded.join(", ")}\n        source    ${source.join(", ")}\n`
+        + `        missing   ${missing.join(", ")}\n\n`
+        + `This ${scope} settled on ${missing.length === 1 ? "a branch" : "branches"} the new source no longer declares, so the walk `
+        + `cannot enter ${missing.length === 1 ? "it" : "them"} to check what ran inside. Migrating anyway would hand the program a `
+        + `result produced by an arm it does not have.\n\nOptions\n  restore the branch ${missing.map((k) => `\`${k}\``).join(", ")}   `
+        + `keep the recorded result\n  fork(run, "${scopeKey}")   re-run this scope on the new arms`,
+    );
+    this.name = "ScopeBranchMissing";
   }
 }

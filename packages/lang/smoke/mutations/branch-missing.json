@@ -28,45 +28,45 @@
   "mutations": [
     {
       "name": "the guard is skipped entirely: the walk enters nothing and awaits an empty race",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      if (only !== undefined) {\n        const present = new Set(all.map(([k]) => k));",
-      "replace": "      if (false) {\n        const present = new Set(all.map(([k]) => k));",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (only !== undefined) {\n      const present = new Set(all.map(([k]) => k));",
+      "replace": "    if (false) {\n      const present = new Set(all.map(([k]) => k));",
       "expectRed": "REPAIRED: a walk into a recorded winning arm the edit renamed away RETURNS rather than hanging",
       "cell": "REPAIRED: a walk into a recorded winning arm the edit renamed away RETURNS rather than hanging",
       "note": "The cell carries its own deadline for exactly this mutation. Asserted with a bare `await`, removing the guard would HANG the suite rather than redden it, and the mutation would be graded on the harness's patience instead of on the guard."
     },
     {
       "name": "the guard covers `race` only, where the hang made it obvious",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "      if (only !== undefined) {\n        const present",
-      "replace": "      if (only !== undefined && name === \"race\") {\n        const present",
+      "file": "packages/lang/src/perform.ts",
+      "find": "    if (only !== undefined) {\n      const present",
+      "replace": "    if (only !== undefined && name === \"race\") {\n      const present",
       "expectRed": "a parallel branch the edit renamed away is refused too, rather than completing silently",
       "cell": "a parallel branch the edit renamed away is refused too, rather than completing silently",
       "note": "The half that is easy to miss, because `parallel` never announced itself: `Promise.all([])` resolves, so the only symptom is a recorded value handed back under a key the source dropped. A guard written from the bug report alone would stop here."
     },
     {
       "name": "PARANOID: the gap is computed the other way round -- source arms absent from `only`",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        const missing = [...only].filter((k) => !present.has(k));",
-      "replace": "        const missing = [...present].filter((k) => !only.has(k));",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      const missing = [...only].filter((k) => !present.has(k));",
+      "replace": "      const missing = [...present].filter((k) => !only.has(k));",
       "expectRed": "an unedited race still walks to completion",
       "cell": "an unedited race still walks to completion",
       "note": "Every decided race has a loser that is in the SOURCE and not in `only`, so this refuses every race ever recorded -- including one whose source did not change. The control cell is what catches it, which is why the control is not ceremony."
     },
     {
       "name": "PARANOID: refuse when the arm COUNT changed rather than when a recorded name is absent",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "        const missing = [...only].filter((k) => !present.has(k));",
-      "replace": "        const missing = present.size === only.size ? [] : [...only];",
+      "file": "packages/lang/src/perform.ts",
+      "find": "      const missing = [...only].filter((k) => !present.has(k));",
+      "replace": "      const missing = present.size === only.size ? [] : [...only];",
       "expectRed": "and an arm the edit ADDED does not trip it: nothing recorded went missing",
       "cell": "and an arm the edit ADDED does not trip it: nothing recorded went missing",
       "note": "The second narrowness twin. Widening a race adds an arm and removes nothing recorded, so the walk must still complete; a count test cannot tell the two edits apart and makes every widened scope un-migratable."
     },
     {
       "name": "the refusal fires with an empty payload, so it names no arm and no scope",
-      "file": "packages/lang/src/interpret.ts",
-      "find": "          throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);",
-      "replace": "          throw new ScopeBranchMissing(\"\", name, [], [], []);",
+      "file": "packages/lang/src/perform.ts",
+      "find": "        throw new ScopeBranchMissing(stepKeyString(ctx.key), name, missing, [...only], [...present]);",
+      "replace": "        throw new ScopeBranchMissing(\"\", name, [], [], []);",
       "expectRed": "the refusal names the missing arm, the scope, and what the source does declare",
       "cell": "the refusal names the missing arm, the scope, and what the source does declare",
       "note": "The whole repair for this refusal is a NAME. An author told only 'this scope diverged' goes looking inside an arm's body, which is the one place nothing changed -- so the payload is the guard, not decoration on it."
