@@ -29,10 +29,9 @@
  *
  * WHAT THIS SUITE DOES NOT CLAIM. It does not claim the caller always READS the 413. It cannot: a
  * server that cuts a caller off mid-upload leaves unread bytes in the socket, that close goes out
- * as an RST, and an RST makes the peer drop the response it had already buffered. Measured over
- * equal arms of 200 posts of 30 MB, 144/200 callers read it without the drain in the request frame
- * and 176/200 with it. Better, not solved, and not assertable. The refusal that is never lost is
- * the OPERATOR LINE, which is written before the response is, and that is what cell 3.3 pins.
+ * as an RST, and an RST makes the peer drop the response it had already buffered. The refusal that
+ * is never lost is the OPERATOR LINE, which is written before the response is, and that is what
+ * cell 3.3 pins.
  *
  * Needs nats-server on PATH. Run: pnpm smoke:web-body-cap
  */
