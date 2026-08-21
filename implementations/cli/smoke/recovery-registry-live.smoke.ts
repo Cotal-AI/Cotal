@@ -26,7 +26,11 @@ const home = join(scratch, "home");
 const root = join(scratch, "root");
 mkdirSync(home, { recursive: true });
 mkdirSync(join(root, ".cotal"), { recursive: true });
-const env = { ...process.env, COTAL_HOME: home, COTAL_SKIP_CONNECTOR_SEED: "1" };
+// A suite can run inside a managed seat; never pass its mesh credential or target URL into the
+// nested CLI processes that make this fixture. The smoke owns exactly the two COTAL_ values below.
+const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith("COTAL_")));
+env.COTAL_HOME = home;
+env.COTAL_SKIP_CONNECTOR_SEED = "1";
 const kids: ChildProcess[] = [];
 
 let pass = 0;
