@@ -14,6 +14,7 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { once } from "node:events";
 import { mkdirSync, mkdtempSync, rmSync } from "node:fs";
+import { get } from "node:http";
 import { createConnection, createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -53,6 +54,70 @@ const cli = (args: string[], opts: { timeout?: number; cwd?: string } = {}) => s
 });
 const output = (r: ReturnType<typeof cli>) => `${r.stdout ?? ""}${r.stderr ?? ""}`;
 
+async function connectionCount(port: number): Promise<number> {
+  return await new Promise<number>((resolveCount, reject) => {
+    const req = get(`http://127.0.0.1:${port}/connz`, (res) => {
+      let body = "";
+      res.setEncoding("utf8");
+      res.on("data", (chunk) => { body += chunk; });
+      res.on("end", () => {
+        if (res.statusCode !== 200) return reject(new Error(`monitor returned HTTP ${res.statusCode}`));
+        try {
+          const count = JSON.parse(body).num_connections;
+          if (typeof count !== "number") throw new Error("monitor response omitted num_connections");
+          resolveCount(count);
+        } catch (e) {
+          reject(e);
+        }
+      });
+    });
+    req.setTimeout(1_000, () => req.destroy(new Error("monitor request timed out")));
+    req.on("error", reject);
+  });
+}
+
+type SuperviseRun = {
+  state: "ready" | "exited" | "timed-out";
+  connections?: number;
+  status: number | null;
+  signal: NodeJS.Signals | null;
+  output: string;
+};
+
+/**
+ * `spawnSync(..., { timeout })` reports a platform-dependent exit after it signals a daemon: on
+ * Linux CI its graceful shutdown sometimes returns 1 even after manager startup. Observe readiness
+ * while the process is alive, inspect the registered broker itself, then own shutdown explicitly.
+ */
+async function superviseUntilReady(monitorPort: number): Promise<SuperviseRun> {
+  const child = spawn(TSX, [CLI, "supervise", "--space", space], { cwd: root, env, stdio: ["ignore", "pipe", "pipe"] });
+  let superviseOut = "";
+  let readyResolve!: () => void;
+  const ready = new Promise<void>((resolveReady) => { readyResolve = resolveReady; });
+  const collect = (chunk: Buffer) => {
+    superviseOut += chunk.toString();
+    if (/✓ manager up/.test(superviseOut)) readyResolve();
+  };
+  child.stdout.on("data", collect);
+  child.stderr.on("data", collect);
+  const exited = once(child, "exit").then(([status, signal]) => ({ status: status as number | null, signal: signal as NodeJS.Signals | null }));
+  const state = await Promise.race([
+    ready.then(() => "ready" as const),
+    exited.then(() => "exited" as const),
+    sleep(8_000).then(() => "timed-out" as const),
+  ]);
+  let connections: number | undefined;
+  if (state === "ready") connections = await connectionCount(monitorPort);
+
+  child.kill("SIGTERM");
+  let stopped = await Promise.race([exited, sleep(4_000).then(() => undefined)]);
+  if (!stopped) {
+    child.kill("SIGKILL");
+    stopped = await exited;
+  }
+  return { state, connections, status: stopped.status, signal: stopped.signal, output: superviseOut };
+}
+
 async function waitReady(port: number) {
   for (let i = 0; i < 50; i++) {
     const connected = await new Promise<boolean>((res) => {
@@ -67,20 +132,23 @@ async function waitReady(port: number) {
 }
 
 const port = await freePort();
+const monitorPort = await freePort();
 const server = `nats://127.0.0.1:${port}`;
 const space = "recovery-registry";
 
 try {
-  const broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port)], { stdio: "ignore" });
+  const broker = spawn("nats-server", ["-js", "-a", "127.0.0.1", "-p", String(port), "-m", String(monitorPort)], { stdio: "ignore" });
   kids.push(broker);
   await waitReady(port);
   const added = cli(["meshes", "add", space, "--server", server, "--root", root, "--mode", "open", "--force"]);
   ok("fixture: a live non-default broker is hand-registered", added.status === 0, output(added));
+  const baselineConnections = await connectionCount(monitorPort);
 
-  // The original bug: this exited at :4222. With the fix it starts (then timeout terminates it).
-  const supervise = cli(["supervise", "--space", space], { timeout: 8_000 });
-  const superviseOut = output(supervise);
-  ok("supervise dials the registered broker", (supervise.signal === "SIGTERM" || supervise.status === null || supervise.status === 0) && /✓ manager up/.test(superviseOut), { status: supervise.status, signal: supervise.signal, superviseOut });
+  // The original bug: this routed the manager to :4222. Startup wording alone cannot distinguish
+  // the two brokers, so inspect the registered broker while the manager is alive.
+  const supervise = await superviseUntilReady(monitorPort);
+  const superviseOut = supervise.output;
+  ok("supervise dials the registered broker", supervise.state === "ready" && supervise.connections !== undefined && supervise.connections > baselineConnections, { baselineConnections, ...supervise });
   ok("supervise does not fall back to loopback", !superviseOut.includes("nats://127.0.0.1:4222"), superviseOut);
 
   // `--dev-mint` reaches resolution first, then correctly refuses because an open mesh has no
