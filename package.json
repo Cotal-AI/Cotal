@@ -185,6 +185,7 @@
     "smoke:kv-read-shape": "tsx packages/core/smoke/kv-read-shape.smoke.ts",
     "smoke:history-recent": "tsx packages/core/smoke/history-recent.smoke.ts",
     "smoke:server-resolution:live": "tsx implementations/cli/smoke/server-resolution-live.smoke.ts",
+    "smoke:recovery-registry:live": "tsx implementations/cli/smoke/recovery-registry-live.smoke.ts",
     "smoke:cooperative-stop:live": "tsx implementations/manager/smoke/cooperative-stop-live.smoke.ts",
     "smoke:lifecycle-e2e": "tsx implementations/manager/smoke/lifecycle-e2e.smoke.ts",
     "smoke:spawn-args": "tsx extensions/connector-core/smoke/spawn-args.smoke.ts",

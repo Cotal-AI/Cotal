@@ -3,7 +3,6 @@ import { join } from "node:path";
 import { connect } from "@nats-io/transport-node";
 import { Kvm } from "@nats-io/kv";
 import {
-  isReachable,
   epAuthBucket,
   recordsBucket,
   instancePinnedInstrumentCapabilities,
@@ -21,6 +20,7 @@ import {
 } from "@cotal-ai/core";
 import {
   authDir, findCotalRoot, getSpaceAuth, loadManagerInstanceIdentity, soleSpaceOf, workspaceSecretStore,
+  resolveTargetOrExit, preflightOrExit,
   MANAGER_DELIVERY_AWARE_MARKER, MANAGER_PIDFILE,
 } from "@cotal-ai/workspace";
 import { Manager } from "./manager.js";
@@ -100,8 +100,14 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   if (defaultRuntime === "auto" && v.runtime) {
     runtime = v.runtime as RuntimeMode;
   }
-  const space = spaceFor(v);
-  const server = v.server ?? DEFAULT_SERVER;
+  // Recovery must target the same registered mesh as every client command. In particular, a
+  // hand-registered remote broker is authoritative when `--server` is absent; DEFAULT_SERVER is
+  // only the resolver's local-project fallback. Resolve + preflight before constructing Manager so
+  // an offline record refuses by its recorded URL instead of silently trying loopback.
+  const target = await resolveTargetOrExit({ space: v.space, server: v.server });
+  await preflightOrExit(target);
+  const space = target.space;
+  const server = target.server;
   // Parse the roster + launch spec before touching the network — a malformed file should fail fast,
   // before the manager comes up or any agent is spawned.
   const roster = v.roster ? loadRoster(v.roster) : [];
@@ -112,10 +118,6 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   }
   if (v["resume-commit-token"] && !v["resume-attempt"]) {
     console.error(c.red("✗ --resume-commit-token requires --resume-attempt"));
-    process.exit(1);
-  }
-  if (!(await isReachable(server))) {
-    console.error(c.red(`Can't reach NATS at ${server}. Run: cotal up`));
     process.exit(1);
   }
   const consolePort = v["console-port"] ? Number(v["console-port"]) : undefined;
@@ -142,6 +144,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
       wsPort,
       attachHost,
       installedExtensions: true,
+      workspaceRoot: target.root,
       resumeAttemptId: v["resume-attempt"],
       resumeDurableCommitToken: v["resume-commit-token"],
     });
@@ -152,7 +155,7 @@ async function runManager(args: ParsedArgs, defaultRuntime: RuntimeMode): Promis
   await mgr.start();
   // AFTER start, not before: a manager that failed to come up must not leave a record claiming it
   // did. `findCotalRoot` is the same root the Manager itself defaulted to.
-  const releasePidRecord = recordManagerPid(findCotalRoot());
+  const releasePidRecord = recordManagerPid(target.root);
   console.log(
     c.green("✓ manager up") +
       c.dim(` (space ${space} · ${mgr.runtimeKind})`) +
@@ -391,8 +394,8 @@ const managerCommands: Command[] = [
     summary:
       "run a manager - [--runtime <name>] (default pty; extension runtimes are explicit-only) [--space <s>] [--server <url>] [--console-port <n>] [--roster <file>] [--launch <spec>] [--resume-attempt <id>]",
     flags: [
-      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: this folder's auth space)" },
-      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "space", type: "string", value: "<s>", description: "space to supervise (default: the resolved mesh)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the resolved mesh; overrides its registry entry)" },
       { name: "runtime", type: "string", value: "<name>", description: "agent runtime (default pty; others come from installed extensions)" },
       { name: "console-port", type: "string", value: "<n>", description: "protocol-console port" },
       { name: "console-host", type: "string", value: "<host>", description: "bind host for the console endpoint (default: loopback)" },

@@ -1,7 +1,6 @@
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
-  DEFAULT_SERVER,
   LEASE_TTL_MS,
   accountFromCreds,
   credsClaims,
@@ -13,7 +12,7 @@ import {
   type ParsedArgs,
   type SecretStore,
 } from "@cotal-ai/core";
-import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, soleSpaceOf, workspaceSecretStore } from "@cotal-ai/workspace";
+import { DELIVERY_CREDS_KEY, FsSecretStore, authDir, findCotalRoot, loadSpaceAuth, soleSpaceOf, workspaceSecretStore, preflightOrExit, resolveTargetOrExit } from "@cotal-ai/workspace";
 import { startMembership } from "./membership.js";
 import { executeEviction, executePlaneLiveness, executePrincipalLiveness, type ScanTarget } from "./evict-exec.js";
 
@@ -35,7 +34,7 @@ type CredsSource = { store: SecretStore; key: string; where: string; injected: b
  *  read in `runDelivery` — so a hosted composition can never cross back into workstation trust
  *  material (a creds file, the local signer), not even for a space label. `where` is the human
  *  label used in error messages so a local operator still sees a path, not an abstract key. */
-function resolveCredsStore(v: Values, injected?: SecretStore): CredsSource {
+function resolveCredsStore(v: Values, root: string, injected?: SecretStore): CredsSource {
   if (injected) {
     const local = ["creds", "dev-mint"].filter((f) => v[f] !== undefined);
     if (local.length)
@@ -48,7 +47,6 @@ function resolveCredsStore(v: Values, injected?: SecretStore): CredsSource {
     const p = resolve(v.creds);
     return { store: new FsSecretStore(dirname(p)), key: basename(p), where: p, injected: false };
   }
-  const root = findCotalRoot();
   return { store: workspaceSecretStore(root), key: DELIVERY_CREDS_KEY, where: join(root, ".cotal", DELIVERY_CREDS_KEY), injected: false };
 }
 
@@ -63,7 +61,7 @@ function resolveCredsStore(v: Values, injected?: SecretStore): CredsSource {
  *  dev run with no stored cred can opt into `--dev-mint`, which loads the local signer and self-remints
  *  a scoped `delivery` cred (one stable identity) — LOUDLY flagged as dev-only, never the production
  *  contract. */
-async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial: string; source: () => Promise<string> }> {
+async function loadDeliveryCreds(src: CredsSource, v: Values, root: string): Promise<{ initial: string; source: () => Promise<string> }> {
   const { store, key, where } = src;
   const initial = await store.get(key);
   if (initial !== undefined) {
@@ -94,7 +92,7 @@ async function loadDeliveryCreds(src: CredsSource, v: Values): Promise<{ initial
     );
   if (v["dev-mint"] !== undefined) {
     // Space-blind dev path: the root must name exactly one space (soleSpaceOf fails loud on several).
-    const devRoot = authDir(findCotalRoot());
+    const devRoot = authDir(root);
     const devSpace = soleSpaceOf(devRoot);
     const auth = devSpace ? loadSpaceAuth(devRoot, devSpace) : undefined;
     if (!auth) throw new Error("delivery --dev-mint: no .cotal/auth here to mint from");
@@ -137,28 +135,30 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
         "The partition() seam ships but operating shards>1 needs the channel-prefix grammar — see core-sub-fabric.md.",
     );
 
-  // Resolve the cred source FIRST — before the ambient space derivation below — so an injected
-  // store rejects local-source flags before anything can read the workstation signer.
-  const credsSrc = resolveCredsStore(v, store);
+  // Preserve the hosted-store boundary before any target resolution can consult local workspace
+  // material. Once this passes, local mode resolves its target and its one associated root.
+  if (store) resolveCredsStore(v, "", store);
 
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
-  const space = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
-  if (!space) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
-  const server = v.server ?? DEFAULT_SERVER;
-  const creds = await loadDeliveryCreds(credsSrc, v); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  const requestedSpace = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
+  if (!requestedSpace) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
+  // Recovery must resolve through the shared workspace registry before it reads the daemon cred:
+  // registered remote meshes have a non-loopback broker and their own root. An explicit --server
+  // remains the resolution override. The resolved target also makes an unreachable registered
+  // broker refuse with its recorded URL, never a default endpoint.
+  const target = await resolveTargetOrExit({ space: requestedSpace, server: v.server });
+  const credsSrc = resolveCredsStore(v, target.root, store);
+  const space = target.space;
+  const server = target.server;
+  const creds = await loadDeliveryCreds(credsSrc, v, target.root); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
-  // REQUIRE TLS when the operator said to. This daemon holds a STANDING credential and reconnects
-  // unattended, so a downgrade here is not a one-shot exposure like a human running `cotal status`
-  // - it is repeated, on every reconnect, with nobody watching. `tls: true` makes the client refuse
-  // rather than fall back, which is the only behaviour that survives a forged plaintext INFO.
+  // REQUIRE TLS when the operator said to. A registry-recorded TLS requirement is equally binding;
+  // a command flag can only strengthen that decision.
   // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
   // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
-  const tls = v.tls !== undefined;
-  if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
-    console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
-    process.exit(1);
-  }
+  const tls = target.tlsRequired || v.tls !== undefined;
+  await preflightOrExit(target, latestCreds);
 
   // PIN THE SCAN TARGET ONCE, HERE. The $SYS sweeps below resolve an ACCOUNT, and a complete sweep
   // of the WRONG account is indistinguishable from "the principal is gone" — a healthy-looking
@@ -167,7 +167,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // foreign tenant while looking entirely well. So: the root is fixed at start, and the account on
   // disk is cross-checked against the account this daemon's OWN credential authenticates as — a
   // fact that does not come from that root, which is what makes it an independent check.
-  const scanTarget: ScanTarget = { root: findCotalRoot(), expectedAccount: accountFromCreds(creds.initial) };
+  const scanTarget: ScanTarget = { root: target.root, expectedAccount: accountFromCreds(creds.initial) };
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
 
   const ep = new CotalEndpoint({

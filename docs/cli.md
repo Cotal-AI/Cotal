@@ -775,8 +775,8 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--space <s>` | this folder's auth space | Space to supervise |
-| `--server <url>` | the local mesh | Broker URL |
+| `--space <s>` | resolved mesh | Space to supervise |
+| `--server <url>` | registry entry | Broker URL override |
 | `--runtime <name>` | `pty` | Agent runtime (`pty` built in; extension runtimes are explicit-only) |
 | `--console-port <n>` | — | Protocol-console port |
 | `--console-host <host>` | loopback | Bind host for the console + attach endpoint. Loopback keeps it machine-local; `cotal up` passes the address it bound the broker to, which is what lets `cotal attach` reach this manager from another machine |
@@ -786,7 +786,10 @@ cotal supervise [--runtime <name>] [--space <s>] [--server <url>] [--spawn <name
 
 The manager is the agent supervisor and control plane: it answers `spawn --detach`, `stop`, `ps`,
 `attach`, and the `cotal_*` manager tools. `cotal up --detach` starts one for you; run `supervise`
-directly to recover a dead manager or drive a custom runtime. Default runtime is `pty`; install an
+directly to recover a dead manager or drive a custom runtime. It resolves the named (or current)
+mesh through the local registry, so a remote registered broker is used without repeating `--server`;
+an explicit `--server` overrides that record. If the recorded broker is down, it refuses naming that
+URL rather than trying a local broker. Default runtime is `pty`; install an
 optional provider first (`cotal ext add @cotal-ai/orca`, `@cotal-ai/tmux`, `@cotal-ai/cmux`, or `@cotal-ai/herdr`) and
 select it explicitly. A missing provider or app fails loudly; there is no fallback. See [Deploy](deploy.md).
 
@@ -1229,9 +1232,11 @@ loopback token exchange and JWKS); `cotal up --user-auth` starts and supervises 
 so you run it directly only to recover one by hand.
 
 `deliver` runs the server-side Plane-3 delivery daemon: the durable backstop and membership/ACL
-authority. It is auth-mode-only and single-instance (`--shard`/`--shards` accept only `N=1`);
-`--dev-mint` mints a scoped cred from the local signer for standalone dev. See the
-[delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
+authority. It resolves the named mesh through the local registry, so a remote registered broker is
+used without repeating `--server`; an explicit `--server` overrides that record. If the recorded
+broker is down, it refuses naming that URL rather than trying a local broker. It is auth-mode-only
+and single-instance (`--shard`/`--shards` accept only `N=1`); `--dev-mint` mints a scoped cred from
+the local signer for standalone dev. See the [delivery daemon](delivery-daemon.md). `feedback-intake` runs a self-hosted feedback server
 (requires `--keys` and a scoped `--creds`), announcing submissions into a space channel; flags
 include `--host`/`--port`, `--store`, `--space`/`--channel`, `--max-bytes`, and `--rate-limit`.
 

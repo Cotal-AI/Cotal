@@ -18,7 +18,7 @@ const deliveryCommands: Command[] = [
       "run the delivery daemon — the server-side Plane-3 durable backstop [--space <s>] [--server <url>] [--creds <file>] (auth mode only; N=1)",
     flags: [
       { name: "space", type: "string", value: "<s>", description: "space to serve (required; the scoped cred doesn't encode it)" },
-      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the local mesh)" },
+      { name: "server", type: "string", value: "<url>", description: "broker URL (default: the resolved mesh; overrides its registry entry)" },
       { name: "tls", type: "boolean", description: "REQUIRE TLS to the broker - refuse to connect if it is not offered" },
       { name: "creds", type: "string", value: "<file>", description: "pre-minted scoped delivery cred" },
       { name: "shard", type: "string", value: "<n>", description: "shard index (N=1 only; non-zero is rejected)" },
