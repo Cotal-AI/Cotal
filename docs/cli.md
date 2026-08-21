@@ -666,7 +666,25 @@ Each reconnect also hands the abandoned session back to the manager, over the fi
 carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
 time. If that message never gets a link, the attach says so when it ends.
 
-`attach` streams over the manager's own HTTP/WS face rather than the mesh. That endpoint binds
+Which mesh `attach` resolves also decides **whose trust it redeems with**. Redeeming a session grant
+means minting a short-lived, session-scoped credential from the space's seed, and that seed comes
+from the root the mesh resolved to, never from a `.cotal` found by walking up from whichever
+directory you happen to be standing in. The difference is not hypothetical: `~/.cotal` exists on
+every install because the mesh registry lives there, so a command run anywhere under your home
+directory but outside a project used to mint from your home directory's trust and present it to a
+broker that trusts a different chain, which surfaced as a bare authorization failure that named
+nothing. A directory that does hold another chain for the same space is now reported on the way
+past, and not obeyed:
+
+```text
+! this directory resolves to /Users/you, whose .cotal/auth holds a DIFFERENT trust chain for space "team".
+  attach used /Users/you/projects/app, the root this mesh resolved to. The other one is not being used, and is worth a look.
+```
+
+When the resolved mesh holds no seed at all, `attach` refuses and names what it resolved, the broker
+and the root, instead of describing a directory it did not use.
+
+Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
 address down, which is what lets you attach to an agent whose manager runs on another machine. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
