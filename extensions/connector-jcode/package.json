@@ -1,7 +1,7 @@
 {
   "name": "@cotal-ai/connector-jcode",
   "description": "Cotal connector for Jcode: a host-mode mesh peer driven through Jcode's Harness API bridge.",
-  "version": "0.25.0",
+  "version": "0.26.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
