@@ -39,9 +39,15 @@ function skip(label: string, why: string): void {
   console.log(`• ${label} skipped (${why})`);
 }
 
-const SENTINEL = "COTAL_P3_SENTINEL_UNRELATED"; // deliberately NOT under the COTAL_ reset: see below
+/** A `COTAL_*` name no connector assigns and no keep-list entry names. It has to be INJECTED here
+ *  to mean anything: asserting the absence of a string the parent never set cannot fail, and an
+ *  earlier version of this file did exactly that. Injected, it proves the reset is driven by the
+ *  PREFIX rather than by the enumerated `PER_SESSION` list, so a family added tomorrow is already
+ *  covered. */
+const SENTINEL = "COTAL_P3_SENTINEL_UNRELATED";
 const OPERATOR_SECRET = "P3_OPERATOR_SECRET";
 const OPERATOR_VALUE = "inherited-marker-xyz";
+process.env[SENTINEL] = "parent-sentinel-value";
 process.env[OPERATOR_SECRET] = OPERATOR_VALUE; // an ordinary operator variable, now inherited
 
 /** One name from every per-session family a connector assigns CONDITIONALLY. Each is set here, in
@@ -87,7 +93,8 @@ function assertBoundary(label: string, out: string): void {
   check("no per-session VALUE survived under another name", !out.includes("parent-COTAL_"));
   // The operator knob crosses, so the reset is a scalpel and not a blanket that breaks `cotal`.
   check("machine-wide COTAL_HOME crossed", /(^|\n)COTAL_HOME=\/tmp\/operator-cotal-home/.test(out));
-  check("the sentinel name itself is not silently present", !out.includes(SENTINEL));
+  // Live because the parent sets it above: an unenumerated COTAL_* name is reset by the prefix.
+  check("an unenumerated COTAL_* name was RESET too (prefix, not a hardcoded list)", !out.includes(SENTINEL));
   // Case-insensitive: Windows spells this `Path`, not `PATH`.
   check("PATH present (the child can still run)", /(^|\n)PATH=/i.test(out));
   const homeVar = process.platform === "win32" ? "USERPROFILE" : "HOME";
@@ -126,6 +133,7 @@ if (tmuxOk) {
 }
 
 for (const k of PER_SESSION) delete process.env[k];
+delete process.env[SENTINEL];
 delete process.env[OPERATOR_SECRET];
 console.log(`\nENV-BOUNDARY SMOKE ${failures === 0 ? "OK ✅" : "FAILED ❌"}`);
 process.exit(failures === 0 ? 0 : 1);
