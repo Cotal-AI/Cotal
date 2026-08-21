@@ -14,6 +14,7 @@ import {
   agentFilePath,
   clearSpaceHistory,
   connectorServers,
+  spawnEnvAllow,
   deprovisionAgent,
   firstFreeName,
   idFromCreds,
@@ -44,7 +45,7 @@ import {
   eventChannelPrincipal,
 } from "@cotal-ai/core";
 import { agentAuthState, agentCredsDir, agentLifecycleSecretFilePaths, agentSecretFilePaths, agentSecretKeyForFile, authDir, connectorInstallHint, DEFAULT_CONNECTOR, defaultAgentType, DELIVERY_CREDS_KEY, findCotalRoot, getSpaceAuth, hasUserAuthState, loadManagerInstanceIdentity, loadMeshes, manifestExtensionNames, materializeFromManifest, materializeSecretToFile, MEMBERSHIP_RW_CREDS_KEY, mergeLaunchOptions, remintDaemonCreds, resolveOnPath, saveManagerInstanceIdentity, SYSTEM_CREDS_FILES, userAuthStateDir, workspaceSecretStore, writeRenewalRecord, type RenewalRecord } from "@cotal-ai/workspace";
-import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
+import type { ActionContext, AgentDef, AttachSession, Connector, ConnectorModelCatalog, ControlReply, CredHealth, LaunchOpts, LaunchSpec, ManagerLeaseInfo, MeshLaunchAgent, Presence, SecretStore, SpaceAuth } from "@cotal-ai/core";
 import {
   createRuntime,
   type AgentHandle,
@@ -56,6 +57,7 @@ import { makeManagerEndpointEvictor } from "./endpoint-evict.js";
 import { launchSpecForRun, materializePersona, launchAgentToStartOpts, parseLaunchSpec, persistLaunchSpec } from "./launch.js";
 import { authorizeLaunch, authorizeNamedControl } from "./authorize.js";
 import { controlShutdown } from "./control-shutdown.js";
+import { controlSession } from "./control-session.js";
 import { parseResumeCommitArgs, parseResumeControlArgs, parseResumeFinalizeArgs } from "./resume.js";
 // Unit B (the static §13.1 lifecycle executor): the shared grammar/stores from core plus the
 // manager-side adapter (transport + slot orchestration + the F1 terminal) — see static-lifecycle.ts.
@@ -161,6 +163,10 @@ const MIN_LIFETIME = 10_000;
  *  launch-parity smoke can assert every launch client's request timeout OUTLIVES this window — the tier
  *  rule forbids the clients importing it directly. */
 export const READINESS_TIMEOUT_MS = 30_000;
+/** Managed same-session crash recovery follows the Codex host precedent: three restarts are allowed
+ * inside a rolling two-minute window; the fourth crash is a loop and retires the seat loud. */
+const SESSION_RESTART_LIMIT = 3;
+const SESSION_RESTART_WINDOW_MS = 120_000;
 /** Upper bound on a detached agent-exit deprovision (#159 B2). A wedged broker must not leave the
  *  fire-and-forget teardown pending forever with no log — past this it rejects into freeSlot's fail-loud
  *  `.catch`. Generous over the helper's 5s connect timeout to allow the two consumer-deletes + ACL purge
@@ -300,6 +306,8 @@ export interface ManagerResumeAgent {
     shareTools?: string;
     /** Original connector fork source, not a captured id for the currently running host session. */
     forkSource?: string;
+    /** Exact current host session reported by a continuation-capable connector. */
+    sessionId?: string;
     /** Values are deliberately not persisted: connector launch options are opaque and may be secrets. */
     unresolvedLaunchOptionKeys?: string[];
   };
@@ -427,11 +435,13 @@ interface ManagedLaunch {
   events: boolean;
   shareTools?: string;
   forkSource?: string;
+  sessionId?: string;
   unresolvedLaunchOptionKeys?: string[];
 }
 
 interface PreparedResume {
   spec: LaunchSpec;
+  launchOpts: LaunchOpts;
   id?: string;
   creds?: string;
   userAuth?: { owner: string; actor: string; sentinelCredsPath: string; bearerCmd: string[] };
@@ -477,6 +487,10 @@ interface ManagedAgent {
    *  kill that would deny the agent its clean mesh-leave. */
   control?: { path: string; token: string };
   launch: ManagedLaunch;
+  /** In-memory process-recovery input. It is never persisted with secret values: preservation
+   * reconstructs it from the validated inventory and current config. Only connectors explicitly
+   * declaring same-session continuation receive it. */
+  restart?: { opts: LaunchOpts; sessionStatePath?: string; crashes: number[]; recovering: boolean; armed: boolean };
   /** Preservation and a not-yet-confirmed resume retain broker/auth state if the process exits. */
   suppressCleanup?: boolean;
   /** The F5 TERMINALIZING latch (Unit B): flipped SYNCHRONOUSLY before the first await on every
@@ -1545,6 +1559,7 @@ export class Manager {
         events: a.launch.events,
         shareTools: a.launch.shareTools,
         forkSource: a.launch.forkSource,
+        sessionId: a.restart?.armed ? this.readManagedSession(a) : a.launch.sessionId,
         unresolvedLaunchOptionKeys: a.launch.unresolvedLaunchOptionKeys,
       },
       dependencies,
@@ -2445,6 +2460,7 @@ export class Manager {
     if (this.agents.get(a.name) !== a) return; // already freed (exit raced despawn, etc.)
     a.terminalizing = true; // F5 latch (Unit B): also covers exit/reap paths that never rode stopHandle
     this.agents.delete(a.name);
+    if (a.restart?.sessionStatePath) rmSync(a.restart.sessionStatePath, { force: true });
     // P2 item 6 (pin 4): end any live §13.6 attach session bound to THIS incarnation with the honest
     // `target-despawn` reason. Fires once per agent on every free path (despawn / self-stop / reap /
     // exit) via the `agents` guard above; a no-op when no plane or no live session for the target.
@@ -2751,13 +2767,179 @@ export class Manager {
     }
   }
 
-  /** A managed agent's process exited on its own (crash, /exit, finished). Free its slot
-   *  (rate-floored — exit-driven churn counts) and reap any children it spawned. Idempotent via
-   *  freeSlot's identity guard, so a later graceful-stop SIGKILL firing exit again is a no-op. */
+  private readSessionStatePath(path: string): { sessionId: string; status: "running" | "quit" } {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(readFileSync(path, "utf8"));
+    } catch (error) {
+      throw new Error(`cannot read connector session state ${path}: ${(error as Error).message}`);
+    }
+    const state = parsed as { version?: unknown; sessionId?: unknown; status?: unknown };
+    if (state.version !== 1 || typeof state.sessionId !== "string" || !state.sessionId.trim() || state.sessionId.length > 4096 ||
+        (state.status !== "running" && state.status !== "quit"))
+      throw new Error(`connector session state ${path} is malformed`);
+    return { sessionId: state.sessionId, status: state.status };
+  }
+
+  private readManagedSessionState(a: ManagedAgent): { sessionId: string; status: "running" | "quit" } {
+    const path = a.restart?.sessionStatePath;
+    if (!path) throw new Error("connector supplied no session state path");
+    return this.readSessionStatePath(path);
+  }
+
+  /** Upgrade bridge: inventories written before sessionId existed can still resume exactly after
+   *  the old Pi seat has loaded the new extension once and written its lifecycle-keyed state file. */
+  private retainedSessionId(entry: ManagerResumeAgent, connector: Connector): string | undefined {
+    if (entry.launch.sessionId) return entry.launch.sessionId;
+    if (!connector.supportsSessionContinuation) return undefined;
+    const path = join(this.workspaceRoot, ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
+    try {
+      return this.readSessionStatePath(path).sessionId;
+    } catch (error) {
+      throw new Error(
+        `retained ${connector.name} agent ${entry.name} has no sessionId in its older inventory and no usable upgrade state at ${path} ` +
+          `(${(error as Error).message}). Reload the live Pi seat before the preservation cut; refusing to resume fresh and lose its context.`,
+      );
+    }
+  }
+
+  private readManagedSession(a: ManagedAgent): string {
+    return this.readManagedSessionState(a).sessionId;
+  }
+
+  private async awaitManagedSessionState(a: ManagedAgent): Promise<{ sessionId: string; status: "running" | "quit" }> {
+    const deadline = Date.now() + 15_000;
+    let last = "session state not written yet";
+    while (Date.now() < deadline) {
+      if (a.handle.status() === "exited") throw new Error("process exited before writing session state");
+      try {
+        return this.readManagedSessionState(a);
+      } catch (error) {
+        last = (error as Error).message;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`connector did not write session state (${last})`);
+  }
+
+  /** Bind a continuation-capable connector only after its process is ready. The file proves the
+   *  latest in-process session (including Pi /resume); the authenticated socket proves this process
+   *  owns that session now. Presence may lead session_start by milliseconds, so both proofs are
+   *  awaited within a bounded readiness window rather than read once. */
+  private async armSessionRecovery(a: ManagedAgent): Promise<void> {
+    if (!a.restart || !a.control) return;
+    const state = await this.awaitManagedSessionState(a);
+    if (state.status !== "running") throw new Error("connector reported a deliberate quit before readiness completed");
+    await this.awaitRecoveredSession(a, state.sessionId);
+    a.restart.armed = true;
+  }
+
+  private async awaitRecoveredSession(
+    a: ManagedAgent,
+    expected: string,
+    handle: AgentHandle = a.handle,
+    control: { path: string; token: string } | undefined = a.control,
+  ): Promise<void> {
+    const deadline = Date.now() + 15_000;
+    let last = "control endpoint not ready";
+    while (Date.now() < deadline) {
+      if (handle.status() === "exited") throw new Error("replacement process exited before reporting its session");
+      if (control) {
+        try {
+          const reported = await controlSession(control);
+          if (reported !== expected) throw new Error(`replacement reported session ${reported}, expected ${expected}`);
+          return;
+        } catch (error) {
+          last = (error as Error).message;
+        }
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+    throw new Error(`replacement did not prove session ${expected} (${last})`);
+  }
+
+  /** Restart one continuation-capable managed process in place. Identity, lifecycle, credentials,
+   *  durables, children, and the manager row remain owned; only the process handle/control endpoint
+   *  change. A fourth crash inside two minutes is a loop and falls through to normal retirement. */
+  private recoverManagedSession(a: ManagedAgent): void {
+    const restart = a.restart;
+    if (!restart || !restart.armed || restart.recovering || a.terminalizing) return;
+    const release = this.beginLifecycle();
+    if (!release) return; // preservation owns the cut once the lifecycle fence closes
+    const now = Date.now();
+    restart.crashes = restart.crashes.filter((at) => now - at < SESSION_RESTART_WINDOW_MS);
+    restart.crashes.push(now);
+    if (restart.crashes.length > SESSION_RESTART_LIMIT) {
+      console.error(`! ${a.name}: Pi crash loop (${restart.crashes.length} crashes in ${SESSION_RESTART_WINDOW_MS / 1000}s) - retiring the managed seat`);
+      restart.armed = false;
+      this.freeSlot(a, true);
+      this.reapChildrenOf(this.managedPrincipal(a));
+      release();
+      return;
+    }
+    restart.recovering = true;
+    void (async () => {
+      let replacement: AgentHandle | undefined;
+      try {
+        const sessionId = this.readManagedSession(a);
+        const connector = await this.resolveConnector(a.agent);
+        if (!connector.supportsSessionContinuation)
+          throw new Error(`connector ${connector.name} no longer declares same-session continuation`);
+        const opts: LaunchOpts = {
+          ...restart.opts,
+          resume: undefined,
+          prompt: undefined,
+          continueSession: sessionId,
+        };
+        const spec = connector.buildLaunch(opts);
+        const handle = this.runtime.spawn(a.name, spec, a.launch.cwd);
+        replacement = handle;
+        restart.sessionStatePath = spec.sessionStatePath ?? restart.sessionStatePath;
+        await this.awaitRecoveredSession(a, sessionId, handle, spec.control);
+        if (this.agents.get(a.name) !== a || a.terminalizing) {
+          try { handle.stop({ graceful: false }); } catch { /* terminal path owns cleanup */ }
+          return;
+        }
+        a.handle = handle;
+        a.control = spec.control;
+        replacement = undefined;
+        restart.opts = opts;
+        restart.recovering = false;
+        console.error(`! ${a.name}: recovered Pi session ${sessionId} after crash (${restart.crashes.length}/${SESSION_RESTART_LIMIT})`);
+        this.watchExit(a);
+      } catch (error) {
+        restart.recovering = false;
+        restart.armed = false;
+        let tail = "";
+        try { tail = this.tail(await (replacement ?? a.handle).attach().backlog()); } catch { /* runtime has no readable tail */ }
+        console.error(`! ${a.name}: Pi session recovery failed: ${(error as Error).message}${tail ? ` - last output: ${tail}` : ""} - retiring the managed seat`);
+        // The replacement may be alive but unable to prove the expected session. Stop it BEFORE
+        // retiring credentials/durables; otherwise an untracked process survives under torn auth.
+        try { replacement?.stop({ graceful: false }); } catch { /* terminal cleanup continues */ }
+        this.freeSlot(a, true);
+        this.reapChildrenOf(this.managedPrincipal(a));
+      } finally {
+        release();
+      }
+    })();
+  }
+
+  /** A managed agent's process exited on its own (crash, /exit, finished). Continuation-capable Pi
+   *  seats restart in place after readiness; every other exit follows the existing terminal path. */
   private onAgentExit(a: ManagedAgent): void {
     // Preservation owns the child-stop snapshot. Exit watchers must neither delete that snapshot nor
     // trigger normal deprovision/reap while the cut is being formed.
     if (this.maintenanceState !== "active") return;
+    if (a.restart?.armed && !a.terminalizing) {
+      try {
+        if (this.readManagedSessionState(a).status === "running") {
+          this.recoverManagedSession(a);
+          return;
+        }
+      } catch (error) {
+        console.error(`! ${a.name}: cannot classify Pi process exit for recovery: ${(error as Error).message} - retiring the seat`);
+      }
+    }
     this.freeSlot(a, true);
     this.reapChildrenOf(this.managedPrincipal(a));
   }
@@ -3405,11 +3587,11 @@ export class Manager {
       // Personal MCP servers the operator opted to share with manager-spawned agents of this type
       // (cotal config; default none → isolated, the memory-safe default this guards), narrowed by
       // an optional --share-tools selection (absent → all declared, the pre-merge behavior).
-      const mcpServers = connectorServers(
-        loadCotalConfig(this.workspaceRoot),
-        agent,
-        parseShareSelection(opts.shareTools),
-      );
+      const cotalConfig = loadCotalConfig(this.workspaceRoot);
+      const mcpServers = connectorServers(cotalConfig, agent, parseShareSelection(opts.shareTools));
+      // The operator's spawn-env policy travels the same route: absent means the child inherits
+      // their environment, present means containment. A connector never reads the config itself.
+      const envAllow = spawnEnvAllow(cotalConfig);
       // Per-agent cwd overrides the manager's shared workspace root, so agents can be rooted at
       // arbitrary folders/repos. A relative path resolves against the workspace root; omitted → the
       // agent shares the workspace root (the prior, unchanged behavior).
@@ -3419,7 +3601,7 @@ export class Manager {
         ? join(this.workspaceRoot, ".cotal", "run", `${opts.launchRef.runId}.json`)
         : undefined;
       const manifestSha256 = manifestPath ? this.fileDigest(manifestPath) : undefined;
-      const spec = connector.buildLaunch({
+      const launchOpts: LaunchOpts = {
         space: this.space,
         name,
         role,
@@ -3453,10 +3635,12 @@ export class Manager {
         capabilities,
         events,
         mcpServers,
+        envAllow,
         // So a connector that keeps per-agent local state can root it at the workspace, not the
         // (possibly per-agent) launch cwd below. The cwd itself rides runtime.spawn, not the launch.
         workspaceRoot: this.workspaceRoot,
-      });
+      };
+      const spec = connector.buildLaunch(launchOpts);
       const handle = this.runtime.spawn(name, spec, cwd);
       hooks?.onLaunched?.(); // P2 item 2: the "launched" progress edge (process spawned, pre-presence)
       const managed: ManagedAgent = {
@@ -3503,6 +3687,9 @@ export class Manager {
               ? Object.keys(opts.launchOptions).sort()
               : undefined,
         },
+        ...(connector.supportsSessionContinuation
+          ? { restart: { opts: launchOpts, sessionStatePath: spec.sessionStatePath, crashes: [], recovering: false, armed: false } }
+          : {}),
       };
       // Unit B: the DURABLE slot takes the `active` phase before the in-memory row takes the
       // name — a crash between the two leaves an active-but-unadopted slot the boot sweep
@@ -3532,8 +3719,24 @@ export class Manager {
       if (!readiness.ok && !readiness.uncertain) { await hooks?.onOutcome?.({ kind: "failed", data: { error: readiness.detail } }); return { ok: false, error: readiness.detail }; } // failed → already reaped
       // Started OR uncertain: the agent stays managed, so wire the ongoing exit reaper (it reaps a later
       // death — including one that follows an `uncertain` verdict, which deliberately does NOT deprovision).
+      if (!readiness.ok) {
+        this.watchExit(managed);
+        await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } });
+        return { ok: false, error: readiness.detail };
+      }
+      if (managed.restart) {
+        try {
+          await this.armSessionRecovery(managed);
+          managed.launch.sessionId = this.readManagedSession(managed);
+        } catch (error) {
+          const detail = `${managed.name} joined, but its exact host session could not be bound for supervised recovery: ${(error as Error).message}`;
+          this.stopHandle(managed, false);
+          this.freeSlot(managed, true);
+          await hooks?.onOutcome?.({ kind: "failed", data: { error: detail } });
+          return { ok: false, error: detail };
+        }
+      }
       this.watchExit(managed);
-      if (!readiness.ok) { await hooks?.onOutcome?.({ kind: "uncertain", data: { reason: readiness.detail } }); return { ok: false, error: readiness.detail }; } // uncertain: non-success, but kept, and the detail rides the terminal (#605)
       // Reply with the id the slot actually carries (user-mode: the owner.actor principal —
       // presence, ps, and the manifest ownership ledger all key on it; the throwaway static nkey
       // would never match and down -f would treat the agent as foreign).
@@ -3852,6 +4055,16 @@ export class Manager {
         return { ok: false, error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found` };
       if (entry.launch.variant && !connector.supportsModelVariant)
         return { ok: false, error: `${connector.name} connector does not support model variants (variant)` };
+      let retainedSession: string | undefined;
+      try {
+        retainedSession = this.retainedSessionId(entry, connector);
+      } catch (error) {
+        return { ok: false, error: (error as Error).message };
+      }
+      if (entry.launch.forkSource && !retainedSession && !connector.supportsResume)
+        return { ok: false, error: `${connector.name} connector does not support session fork (resume)` };
+      if (retainedSession && !connector.supportsSessionContinuation)
+        return { ok: false, error: `${connector.name} connector does not support exact-session continuation` };
 
       let launchOptions: Record<string, unknown> | undefined;
       if (entry.launch.source.kind === "manifest") {
@@ -3886,12 +4099,10 @@ export class Manager {
       }
 
       try {
-        const mcpServers = connectorServers(
-          loadCotalConfig(this.workspaceRoot),
-          entry.launch.connector,
-          parseShareSelection(entry.launch.shareTools),
-        );
-        const spec = connector.buildLaunch({
+        const resumeConfig = loadCotalConfig(this.workspaceRoot);
+        const mcpServers = connectorServers(resumeConfig, entry.launch.connector, parseShareSelection(entry.launch.shareTools));
+        const envAllow = spawnEnvAllow(resumeConfig);
+        const launchOpts: LaunchOpts = {
           space: this.space,
           name: entry.name,
           role: entry.role,
@@ -3909,16 +4120,19 @@ export class Manager {
           model: entry.launch.model,
           variant: entry.launch.variant,
           launchOptions,
-          resume: entry.launch.forkSource,
+          resume: retainedSession ? undefined : entry.launch.forkSource,
+          continueSession: retainedSession,
           subscribe: entry.launch.subscribe,
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
           capabilities: entry.launch.capabilities,
           events: entry.launch.events,
           mcpServers,
+          envAllow,
           workspaceRoot: this.workspaceRoot,
-        });
-        const value = { spec, ...authority } satisfies PreparedResume;
+        };
+        const spec = connector.buildLaunch(launchOpts);
+        const value = { spec, launchOpts, ...authority } satisfies PreparedResume;
         prepared?.set(entry.name, value);
         if (preflightOnly) return { ok: true, data: { name: entry.name, preflight: true } };
         return this.launchPreparedResume(entry, value, batchReserved);
@@ -3982,7 +4196,11 @@ export class Manager {
           events: entry.launch.events,
           shareTools: entry.launch.shareTools,
           forkSource: entry.launch.forkSource,
+          sessionId: entry.launch.sessionId,
         },
+        ...(prepared.spec.sessionStatePath
+          ? { restart: { opts: prepared.launchOpts, sessionStatePath: prepared.spec.sessionStatePath, crashes: [], recovering: false, armed: false } }
+          : {}),
         suppressCleanup: true,
       };
       this.agents.set(entry.name, managed);
@@ -3993,6 +4211,16 @@ export class Manager {
         this.watchExit(managed);
         this.watchResumeAdoption(managed);
         return { ok: false, error: readiness.detail };
+      }
+      if (managed.restart) {
+        try {
+          await this.armSessionRecovery(managed);
+          managed.launch.sessionId = this.readManagedSession(managed);
+        } catch (error) {
+          this.stopHandle(managed, false);
+          this.freeSlot(managed, true, true);
+          return { ok: false, error: `${managed.name} resumed, but its exact host session could not be rebound: ${(error as Error).message}` };
+        }
       }
       if (!this.resumeAttemptId) managed.suppressCleanup = false;
       this.watchExit(managed);

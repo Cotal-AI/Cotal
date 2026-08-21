@@ -1373,31 +1373,37 @@ const RESUMABLE: readonly (readonly [string, string, object])[] = [
     ["2. a v1 record with entries, on the engine host: refused L5008", HERE, ["and the engine refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
     ["3. a v2 record with entries, on the walker: refused L5008, the defence behind the dispatch, for a caller who reaches past it", HERE, ["and the walker refuses that journal by name, naming the version that wrote it and its own: sleep and the run clock"]],
     ["4. a v2 record with entries, on the engine host: it resumes", HERE, ["the engine resumes the journal it wrote itself, reading it rather than dispatching: sleep and the run clock"]],
-    ["5. a record at a version no engine here serves, and one naming none at all, at the driver: released, L5023, run untouched", DRIVER, [
+    ["5. a record at a version no engine here serves, one naming none at all, and one whose version is not even a string, at the driver: released (L5023, or MALFORMED by its own name), run untouched", DRIVER, [
       "a record no engine here serves is RELEASED, not failed and not thrown",
       "and it is refused by name, L5023",
       "and the refusal names both the version it met and the set this build serves",
       "and the run was not touched: the refusal came before the activation, so only the first holder's is there",
       "a record that names no language version at all is refused the same way",
       "and the refusal says the record names none, rather than interpolating the missing value",
+      "a record whose languageVersion is a number is refused as MALFORMED, not as an unserved version",
+      "and the refusal names the type it met rather than interpolating it into a version claim",
     ]],
     ["6. a journal with no entries, on either engine: a store, not a resume, and its pins are its own", HERE, [
       "the walker takes a journal with no entries and no pins as a fresh run's store rather than as a resume it must refuse",
       "and when pins DO come with that empty journal the walker keeps them rather than resolving its own",
     ]],
-    ["7. which ARM ran, observed by the refusal it produces rather than by the answer it returns", DRIVER, [
-      "a record at the version the ENGINE writes is released by the dispatcher, L5023, naming it",
+    ["7. which ARM ran, observed through the dispatcher: a v2 record resumes on its engine, a v1 spec passes the table, and the step units disagree", DRIVER, [
+      "a record the engine wrote resumes through the dispatcher on the engine that wrote it",
       "while the same spec at a version this build DOES serve gets past the table",
+      "and it charges steps in the engine's own units: the same source, walked in-process, counts differently",
     ]],
-    ["8. a fresh run at the driver: stamped with the engine it dispatched to, which is not the current language", DRIVER, [
+    ["8. a fresh run at the driver: stamped with the compiled engine it dispatched to, not the walker", DRIVER, [
       "a fresh run completes on the engine this build serves",
-      "and it is stamped with the version of the ENGINE that ran it, not with the current language",
+      "and it is stamped with the version of the ENGINE that ran it, not the walker's",
     ]],
   ];
 
   // Row 7's other half is the one only this package can own: the same v2 record forced onto the
-  // walker's own entry point answers L5008 where the dispatcher answers L5023, and the disagreement
-  // between those two codes IS the arm observation. That is row 3's cell, cited twice on purpose.
+  // walker's own entry point answers L5008 where the dispatcher RESUMES it, and the disagreement
+  // between refusal and resume IS the arm observation. That is row 3's cell, cited twice on
+  // purpose. (While the table served only the walker, the dispatcher's side of this disagreement
+  // was L5023; the day the engine joined the table it became the resume, exactly as the old cell's
+  // own comment said it would.)
   // AND THE ROW SET IS CHECKED BEFORE THE CITATIONS ARE. Both cells below are satisfied by an EMPTY
   // matrix: drop a row and every remaining citation still resolves, so the index shrinks in silence
   // and the row nobody asserts is the row that stops being true. The ordinals are the guard: they

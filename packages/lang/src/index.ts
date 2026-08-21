@@ -156,3 +156,22 @@ export {
   type ScopeKind,
   type StepKey,
 } from "./keys.js";
+
+/**
+ * The compiled engine's driver-facing surface: the transform that produces what the engine runs,
+ * and the worker runner a host executes it with. The evaluator itself is NOT exported — it lives
+ * in the worker entry, where the Compartment is, and naming it here would offer an unconfined
+ * production path.
+ */
+export { transform, type TransformMeta, type TransformOptions } from "./transform/index.js";
+export {
+  runInWorker,
+  type WorkerHandlerSpec,
+  type WorkerRun,
+  type WorkerRunFailed,
+  type WorkerRunOk,
+  type WorkerRunOptions,
+  type WorkerRunRequest,
+  type WorkerRunResult,
+} from "./engine/worker.js";
+export { NODE_FLOOR, assertNodeFloor } from "./engine/host.js";

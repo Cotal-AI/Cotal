@@ -176,11 +176,13 @@ laterally; the manager only births and configures them.
   floor bounds spawn/despawn churn, so a capability-holding but compromised peer cannot
   fork-bomb the host. The gate runs at goal acceptance, before any identity is minted or
   process launched, so a refused spawn leaves nothing behind.
-- **Declared env, not inherited.** Runtimes pass spawned children an explicit allow-list
-  (PATH / HOME / locale / TERM + the model key + opted-in shared-server vars, forwarded by
-  name), never `process.env`, so the operator's unrelated secrets stop bleeding into every
-  agent. This closes env-var bleed; it does not prevent filesystem reads or exfiltration
-  of the model key itself.
+- **Inherited env, minus Cotal's own namespace.** A spawned agent gets the operator's
+  environment, because a harness they installed and configured should behave the same way
+  under `cotal spawn` as it does in their shell. Cotal resets only its own `COTAL_*`
+  namespace, which is identity rather than preference: a connector supplies those per child
+  and does so conditionally, so an inherited value would reach an agent that was never
+  granted it. Connection material is not in the environment at all; it rides a private file.
+  An operator who wants the child confined declares `spawn.env` in the cotal config.
 - **Instance addressing.** One space can hold more than one manager. Each keeps a stable
   logical instance id across restarts and advances its process epoch when it comes back, so
   peers address a specific manager without caring which process currently serves it. `cotal

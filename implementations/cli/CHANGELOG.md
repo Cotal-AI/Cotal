@@ -1,5 +1,70 @@
 # @cotal-ai/cli
 
+## 0.25.0
+
+### Minor Changes
+
+- a087c2b: A spawned agent now inherits the operator's environment. A harness you installed and configured
+  should behave under `cotal spawn` the way it behaves when you run it yourself, and the alternative
+  was Cotal maintaining a list of inference vendors: every new provider needed a change in Cotal
+  before it would work through a managed spawn. `MODEL_PROVIDER_KEYS` and the per-connector lists
+  that extended it are gone, and Cotal no longer names an inference vendor anywhere in its source.
+
+  Cotal still resets its own `COTAL_*` namespace before the child starts, keeping the machine-wide
+  knobs (`COTAL_HOME`, the feedback set, the default-agent pair, the `*_BIN` overrides, the timing
+  knobs). That reset is not configurable, because it is identity and not preference: a connector
+  supplies the per-session names for each child and does so conditionally, so an inherited value is
+  never overwritten and would hand an agent another agent's credential path, ACL, or lifecycle uid.
+  The whole prefix is stripped rather than a named list, because which names a connector sets varies
+  between connectors and a deny-list only ever names what its author remembered.
+
+  To confine a spawned agent instead, declare `spawn.env` in the cotal config file. The child then
+  gets a fixed OS allow-list plus exactly the names you list. An empty array is a real policy meaning
+  the OS allow-list alone. Note what this does and does not buy: `HOME` is forwarded either way, so
+  an agent with a shell reads `~/.aws` and `~/.ssh` regardless, and this protects only secrets that
+  live nowhere but the environment.
+
+### Patch Changes
+
+- 3f1ee2f: `cotal ps --wide` / `--json`: surface the per-seat facts the manager already records. The agent row now carries the model pin (and variant), `cwd`, `pid`, spawner, and the owning manager's instance id and host, all optional so an unrecorded fact (no model pinned; a runtime that owns no real process) serializes absent, never fabricated. Bare `ps` output is unchanged; `--wide` prints one dim facts line under each seat; `--json` prints the manager's row verbatim, one object per line, with instance headers on stderr. No new collection path: every field was already held in the manager's spawn-time record.
+- a7742a7: attach: own the keyboard whenever there is no session. Keystrokes typed at a terminal whose link
+  has died are read and dropped instead of buffered, so nothing an operator types at a frozen screen
+  is delivered to the agent by a reconnect they did not know had happened, Ctrl-C included. That now
+  covers every gap in the loop: the waits, the attempts, the hand-back of a session that faulted on a
+  link that is still up, and the first establishment, so a key struck before the very first attach
+  comes up does not arrive at the agent when it does. The detach key is read across all of them, and
+  a press that lands while a session is opening ends the attach rather than being swallowed by the
+  handoff to that session's own reader. With stdin a pipe the old behaviour is kept on purpose, in
+  every one of those windows rather than only the first: a script's input is buffered and delivered
+  when the session opens, including across a reconnect, so a feed piped into an attach does not lose
+  what was written while the link was down. `--no-reconnect` keeps the single-session behaviour
+  everywhere.
+
+  Also: a piped attach now gives the shell back when it detaches. `printf 'ls\n' | cotal attach --name
+web --no-reconnect` printed `detached from web` and then held the process open, because nothing
+  released the command's own claim on stdin on the way out. That release is made where there is
+  something to release: a terminal and a pipe are sockets, while a stdin that is a file
+  (`cotal attach --name web < seed.txt`, or a parent that spawns attach with stdin ignored) is not,
+  and releasing it there raised `process.stdin.unref is not a function` on the way out.
+
+  Also: a session that dies while it is still opening no longer leaves the keyboard unread. The
+  window is one round trip wide, between the reconnect being announced and the session going live,
+  and a link that dies inside it ended a session that had never taken the stream while the client
+  paused it regardless, so the reader that was still installed read nothing for the whole backoff and
+  everything typed at that frozen terminal was delivered to the agent when the next session opened.
+  The stream is now paused only by a session that resumed it.
+
+- Updated dependencies [636b4b8]
+- Updated dependencies [c83e600]
+- Updated dependencies [b501ec5]
+- Updated dependencies [a087c2b]
+- Updated dependencies [0b602e4]
+- Updated dependencies [34caaf4]
+- Updated dependencies [8e38835]
+- Updated dependencies [6959679]
+  - @cotal-ai/core@0.25.0
+  - @cotal-ai/workspace@0.25.0
+
 ## 0.24.0
 
 ### Patch Changes

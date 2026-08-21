@@ -384,9 +384,10 @@ smoke:lang-differential
 # with nothing to report it.
 smoke:freeslot-barrier:live
 smoke:int2-revoke:live
-
-# The default-deny read ACL: an agent subscribes only to the channels its spawn named, and a spawn
-# that names none grants none (the agent stays DM-reachable). The session suite covers the
-# connector side, where the boot set and the granted set must agree or the session refuses.
+smoke:operator-env-keep
+smoke:spawn-env-config
+smoke:spawn-env-e2e
+smoke:hermes-launch-env
+smoke:env-isolate
 smoke:no-implicit-general
 smoke:session-channels
