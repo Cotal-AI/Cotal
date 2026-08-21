@@ -150,9 +150,23 @@ your machine-wide file confines. The last one is how a space opts out of machine
 which is worth knowing before you write it by accident.
 
 Be honest with yourself about what this buys: `HOME` is forwarded either way, so an agent with a
-shell reads `~/.aws`, `~/.ssh` and `~/.config` regardless. `spawn.env` protects secrets that live
-**only** in the environment, such as an `aws-vault exec` or `op run` shell, or CI-injected values.
-Real containment is a sandbox or a VM.
+shell reads `~/.aws`, `~/.ssh` and `~/.config` regardless. `spawn.env` protects what a file on disk
+cannot hand over anyway, and that is more than a list of secret values. Some variables are **capability
+handles**: they do not contain a secret, they name a live process that will act on your behalf.
+`SSH_AUTH_SOCK` is the sharp one. Inherit it and the agent can ask your `ssh-agent` to sign, which
+means it can reach any host or sign any commit that key authorises, and it keeps that power even
+if the private key file is not on disk at all. Nothing under `~/.ssh` has to exist for it to work,
+so "a shell reads `~/.ssh` regardless" does not cover this case. The same shape covers a
+`gpg-agent` socket and the desktop and cloud credential brokers. So `spawn.env` protects two things:
+secrets that live **only** in the environment, such as an `aws-vault exec` or `op run` shell or
+CI-injected values, and the capability handles above, which it removes along with everything else
+it does not name. Real containment is still a sandbox or a VM.
+
+Model discovery is the exception, and it is deliberate rather than an oversight. When the `codex` or
+`opencode` connector enumerates a model catalog (`cotal models`, and the manager's selector), it runs
+that harness with your environment minus Cotal's own `COTAL_*`, and it does **not** consult
+`spawn.env`. Those probes are short-lived catalog reads rather than agent seats, so an allow-list
+that confines a seat does not confine them.
 
 ### Launch material
 
