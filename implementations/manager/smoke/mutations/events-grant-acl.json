@@ -96,6 +96,15 @@
       "expectRed": "arming grants no event channel on the READ side",
       "cell": "arming grants no event channel on the READ side",
       "note": "The symmetric-looking edit a later reader could make while 'tidying up', and the one that turns arming into a read capability. An event channel carries a session's full tool inputs and outputs, so what a credential ADMITS matters more than what it may write."
+    },
+    {
+      "name": "G8 the manager's read-set default reverts to general, so a channel-less persona carries the row",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? [];",
+      "replace": "      allowSubscribe = opts.allowSubscribe ?? def.allowSubscribe ?? subscribe ?? [\"general\"];",
+      "expectRed": "an omitted read set mints NO channel read row at the manager door — general included",
+      "cell": "an omitted read set mints NO channel read row at the manager door — general included",
+      "note": "The manager's own copy of the no-implicit-general contract, and before cell 4b the ONLY ungraded one of the six default sites: this revert went green everywhere (no-implicit-general drives core directly, session-channels drives the connector env, and the broader corpus asserts launch success, never ACL absence). Graded from the minted creds file — the artifact the broker enforces — because the regression is a chat.*.*.general read row nothing else in the system renders visible."
     }
   ]
 }

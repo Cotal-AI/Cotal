@@ -430,7 +430,7 @@ export async function spawn(args: ParsedArgs): Promise<void> {
   // The agent's access policy (flags > persona file) — minted into the creds AND forwarded to the
   // connector (COTAL_SUBSCRIBE / COTAL_ALLOW_*) so the session's runtime read/post set matches its
   // credentials. One source, so a `--subscribe` override can't land in the creds yet be lost at
-  // runtime (the connector would otherwise read only the persona file / fall back to `general`).
+  // runtime (the connector would otherwise read only the persona file and miss the override).
   const subscribe = splitFlag(values.subscribe) ?? def.subscribe;
   const allowSubscribe = splitFlag(values["allow-subscribe"]) ?? def.allowSubscribe ?? subscribe;
   let allowPublish = splitFlag(values["allow-publish"]) ?? def.allowPublish;

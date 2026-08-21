@@ -283,8 +283,8 @@ whole chat plane, which is the opposite of what a scoped watcher is for. The age
 reader needs, since an authed consuming endpoint refuses to start without one.
 
 Two things a reader has to do that are not obvious, both on `CotalEndpoint`. It must pass the event
-channel in `channels`, or the endpoint joins `general` by default and a scoped credential is refused
-there. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not
+channel in `channels`: an endpoint reads exactly the channels it lists, so one constructed without
+the event channel joins nothing and the frames never arrive. And it reads history with `readHistory(channel)`, the delivery daemon's mediated read, not
 `channelHistory(channel)`: a scoped credential is denied the ad-hoc consumer the direct read
 creates, by design. `cotal console` and the web console already do both.
 
