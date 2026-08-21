@@ -398,3 +398,4 @@ smoke:env-isolate
 # existing suite: they all run from a checkout that IS the resolved root, where the two answers
 # agree.
 smoke:attach-auth-root
+smoke:manager-reconcile-startup

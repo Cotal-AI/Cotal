@@ -180,6 +180,10 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
+/** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
+ * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
+ * a reuse. */
+const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
 
 /** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
  *  despawn retry, a same-name-spawn nudge, and the auth service's boot resume all drive the SAME
@@ -732,6 +736,9 @@ export class Manager {
   private agentGoals = new Map<string, GoalRef>();
   /** Process start, for the served `status` uptime. */
   private readonly startedAtMs = Date.now();
+  /** Static aliases whose startup exact-op terminal is still in flight. Scoped per alias: control
+   * serves during the sweep, but no caller can reuse or attach an alias the sweep still owns. */
+  private readonly reconcilingAliases = new Set<string>();
   /** SINGLE-FLIGHT guard for {@link deprovision} (INT-2/C): one in-flight teardown per
    *  (name, lifecycleUid). The detached freeSlot teardown and every same-name-spawn nudge that
    *  re-drives it JOIN one promise instead of launching a SECOND, concurrent teardown. Without it,
@@ -994,12 +1001,14 @@ export class Manager {
     }
     this.leaseTimer = setInterval(() => { void this.renewLease(); }, MANAGER_LEASE_RENEW_MS);
     this.leaseTimer.unref?.();
-    // Unit B (static §13.1): ensure the two authority stores exist with their normative shape,
-    // then sweep the durable slot rows and reconcile — re-drive any crashed activation/terminal
-    // (exact-op) and terminalize dead-but-active slots (F3 "no active orphan"). Runs ONLY under
-    // the just-acquired lease (a refused second manager must never sweep-terminal live slots) and
-    // BEFORE control serving, so no spawn races the reconciliation.
-    if (this.auth && !this.userMode) await this.reconcileStaticLifecycles();
+    // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
+    // now, but do not let their exact-op terminals make the whole space unreachable. The service
+    // comes up below, then the sweep overlaps the remaining registration work. `reconcilingAliases`
+    // keeps the old no-race property at the actual conflict boundary: a caller cannot spawn or
+    // attach THAT alias until its terminal attempt returns.
+    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
+    if (startupReconcile)
+      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - a later manager start retries any unfinished terminal`));
     // P2 item 1 (1d): the manager serves NO ctl tiers - its whole control surface is the v0.4
     // service endpoint registered below. The old three-tier rail (self/manager/admin) is deleted;
     // `ctl.delivery`/`ctl.delivery-admin` (the delivery daemon) and `ctl.auth-admin` (the auth
@@ -3370,6 +3379,8 @@ export class Manager {
     // alone) so a retry re-drives the standing-authority revoke (INT-2) AND the broker cleanup before
     // any hold-clear (C): the alias must not free while the durable teardown or the revoke is still
     // outstanding. All the teardown ops are idempotent, and the rail request is single-flighted.
+    if (this.reconcilingAliases.has(identityName))
+      return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
       void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, secretPaths: held.secretPaths }).catch(() => {});
@@ -5530,6 +5541,7 @@ export class Manager {
     } finally {
       await nc.drain().catch(() => nc.close());
     }
+    const terminalRows: StaticManagedSlotRow[] = [];
     for (const row of slotRows) {
       if (row.phase === "retired") {
         // A retirement is a GLOBAL refusal fact — seed the F5 index for EVERY retired incarnation
@@ -5555,10 +5567,20 @@ export class Manager {
       // did not claim. provisioning/terminalizing NEVER defer (they are crashed operations, never
       // an agent to adopt). At `postAdoption` (or a non-resume boot) nothing defers.
       if (!postAdoption && row.phase === "active" && !adopted && this.resumeRequired) continue;
-      const action = planStaticSlotResume(row, adopted);
-      if (action === "none") continue;
-      console.error(`static reconcile ${row.alias}: slot is ${row.phase} with no live managed owner${postAdoption ? " after resume adoption" : ""} - driving its exact-op terminal (uid ${row.lifecycleUid})`);
-      await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid });
+      if (planStaticSlotResume(row, adopted) !== "none") terminalRows.push(row);
+    }
+    // Mark the complete planned set before the first terminal awaits. The manager may already be
+    // serving by now; this synchronous handoff prevents a spawn from slipping between an alias's
+    // discovery and its later serial exact-op terminal.
+    for (const row of terminalRows) this.reconcilingAliases.add(row.alias);
+    for (let index = 0; index < terminalRows.length; index++) {
+      const row = terminalRows[index]!;
+      try {
+        console.error(`static reconcile ${index + 1}/${terminalRows.length} via ${this.servers ?? DEFAULT_SERVER}: ${row.alias} is ${row.phase} with no live managed owner${postAdoption ? " after resume adoption" : ""} - driving its exact-op terminal (uid ${row.lifecycleUid})`);
+        await this.driveStaticRetirement({ id: row.actor, name: row.alias, lifecycleUid: row.lifecycleUid });
+      } finally {
+        this.reconcilingAliases.delete(row.alias);
+      }
     }
   }
 
