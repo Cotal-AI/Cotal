@@ -468,7 +468,7 @@ cotal spawn -f <cotal.yaml> [--dry-run]
 | `--creds <path>` | — | Control-caller creds for an off-registry manager (`--detach` only) |
 | `--name <n>` | persona's `name:` | Presence-name override (does not choose the persona) |
 | `--config <persona-or-path>` | — | Persona catalog name or file path; wins over the positional |
-| `--agent <a>` | `COTAL_DEFAULT_AGENT`, else `claude` | Connector type (`claude`, `opencode`, `hermes`, …) |
+| `--agent <a>` | `COTAL_DEFAULT_AGENT`, else `claude` | Connector type (`claude`, `opencode`, `jcode`, `hermes`, …) |
 | `--role <r>` | persona's `role:` | Role override |
 | `--model <m>` | persona's `model:` | Model override |
 | `--variant <v>` | persona's `variant:` | Model variant override (connector-defined; e.g. OpenCode reasoning tiers) |
@@ -666,7 +666,25 @@ Each reconnect also hands the abandoned session back to the manager, over the fi
 carry the message, so an attach that flaps does not eat the manager's session slots one outage at a
 time. If that message never gets a link, the attach says so when it ends.
 
-`attach` streams over the manager's own HTTP/WS face rather than the mesh. That endpoint binds
+Which mesh `attach` resolves also decides **whose trust it redeems with**. Redeeming a session grant
+means minting a short-lived, session-scoped credential from the space's seed, and that seed comes
+from the root the mesh resolved to, never from a `.cotal` found by walking up from whichever
+directory you happen to be standing in. The difference is not hypothetical: `~/.cotal` exists on
+every install because the mesh registry lives there, so a command run anywhere under your home
+directory but outside a project used to mint from your home directory's trust and present it to a
+broker that trusts a different chain, which surfaced as a bare authorization failure that named
+nothing. A directory that does hold another chain for the same space is now reported on the way
+past, and not obeyed:
+
+```text
+! this directory resolves to /Users/you, whose .cotal/auth holds a DIFFERENT trust chain for space "team".
+  attach used /Users/you/projects/app, the root this mesh resolved to. The other one is not being used, and is worth a look.
+```
+
+When the resolved mesh holds no seed at all, `attach` refuses and names what it resolved, the broker
+and the root, instead of describing a directory it did not use.
+
+Terminal bytes stream over the mesh; the manager's own HTTP/WS face serves the console. That endpoint binds
 **loopback by default**, so nothing is exposed by accident; `cotal up --host <addr>` passes its bind
 address down, which is what lets you attach to an agent whose manager runs on another machine. A
 bare `cotal supervise` and an embedded manager stay machine-local. Set it directly with
@@ -1161,12 +1179,12 @@ whose lifecycle provider is gone.
 
 ### Built-in connectors are seeded extensions
 
-The first-party agent connectors (`claude`, `opencode`, `codex`, `hermes`, `pi`) are not compiled into
+The first-party agent connectors (`claude`, `opencode`, `codex`, `hermes`, `jcode`, `pi`) are not compiled into
 the binary. They are seeded on first run through the **same** `ext add` path a third party uses, and
 appear in `cotal ext list` like any other extension. So you can remove one you do not want
 (`cotal ext remove @cotal-ai/connector-hermes`), and a deliberately-removed connector STAYS removed
 across upgrades. `cotal ext add <your-package>` adds a third-party connector the same way. The web
-dashboard (`@cotal-ai/web`, providing `command:web`) is a fifth built-in seeded on the same path.
+dashboard (`@cotal-ai/web`, providing `command:web`) is the seventh built-in seeded on the same path.
 
 `cotal ext seed` is the maintenance entry for that seeding (it runs automatically on the first real
 command of each boot, so you rarely call it):
@@ -1175,7 +1193,7 @@ command of each boot, so you rarely call it):
 |---|---|
 | (none) | Reconcile: seed any never-seeded built-in, refresh a seeded one whose version the binary bumped, leave a removed one removed. A no-op once current. |
 | `--repair` | Recover after an interrupted seed or a lost authority (rebuilds the interrupted connector; restores the removed-vs-never-seeded record from its durable backup). |
-| `--reset` | Discard the record and re-seed all six built-ins (the five connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
+| `--reset` | Discard the record and re-seed all seven built-ins (the six connectors plus the web dashboard). **Resurrects any you removed.** Rebuilds cleanly over corrupt seed state. |
 | `--force` | Re-seed the built-ins even when the version stamp is current or a downgrade. |
 
 The default connector for a bare `cotal spawn` (no `--agent`) is `claude`; set `COTAL_DEFAULT_AGENT`

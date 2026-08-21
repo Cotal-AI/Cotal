@@ -127,7 +127,7 @@ try {
   }
   const list = spawnSync("node", [invokedBin, "ext", "list"], { encoding: "utf8", env: { ...process.env, XDG_CONFIG_HOME: cfg } });
   const out = list.stdout ?? "";
-  for (const n of ["claude", "opencode", "hermes", "pi"]) {
+  for (const n of ["claude", "opencode", "codex", "hermes", "jcode", "pi"]) {
     check(`seeded connector:${n} from the tarball binary`, out.includes(`connector:${n}`), list.stderr);
   }
   check("seeded command:web (the dashboard) from the bundled payload", out.includes("command:web"), list.stderr);
@@ -137,10 +137,10 @@ try {
   };
   const hermes = manifest.extensions.find((e) => e.pkg === "@cotal-ai/connector-hermes");
   check("connector installed from the durable store under the isolated config (pubDir branch)", Boolean(hermes && hermes.spec.startsWith(cfg)), hermes?.spec);
-  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/pi", "@cotal-ai/web"];
+  const firstParty = ["@cotal-ai/connector-claude-code", "@cotal-ai/connector-opencode", "@cotal-ai/connector-codex", "@cotal-ai/connector-hermes", "@cotal-ai/connector-jcode", "@cotal-ai/pi", "@cotal-ai/web"];
   const seededEntries = manifest.extensions.filter((e) => firstParty.includes(e.pkg));
   const allSeeded = seededEntries.every((e) => e.source === "seeded");
-  check("all six first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 6);
+  check("all seven first-party exts recorded source:seeded (registered into the binary's single core)", allSeeded && seededEntries.length === 7);
   const webEntry = manifest.extensions.find((e) => e.pkg === "@cotal-ai/web");
   check("web installed from the durable store under the isolated config (bundled, not npm-fetched)", Boolean(webEntry && webEntry.spec.startsWith(cfg)), webEntry?.spec);
 
@@ -153,6 +153,7 @@ try {
     "@cotal-ai/connector-opencode": "dist/serve.js",
     "@cotal-ai/connector-codex": "dist/host.js",
     "@cotal-ai/connector-hermes": "dist/launch.js",
+    "@cotal-ai/connector-jcode": "dist/host.js",
   };
   for (const [pkg, shim] of Object.entries(launchShims)) {
     check(`${pkg} launcher shim ${shim} is packaged (buildLaunch target exists)`, existsSync(join(extRoot, ...pkg.split("/"), ...shim.split("/"))));
