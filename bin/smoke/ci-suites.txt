@@ -389,3 +389,6 @@ smoke:spawn-env-config
 smoke:spawn-env-e2e
 smoke:hermes-launch-env
 smoke:env-isolate
+
+# Startup orphan reconciliation: overlapping sweep and control availability, with per-alias reuse fences.
+smoke:manager-reconcile-startup

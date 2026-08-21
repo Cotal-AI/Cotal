@@ -7,11 +7,11 @@
  * The fixture writes several ACTIVE orphan rows before start. The manager therefore cannot finish
  * reconciliation before the first terminal transition lands. We await that first transition, then
  * invoke `status` over the real ep.one rail. A green status reply while later slots remain ACTIVE
- * proves serve-first concurrency. In the old serial start() order, that invocation has no service
- * registration yet, so the assertion fails.
+ * proves overlap and availability before sweep completion. In the old serial start() order, that
+ * invocation has no service registration yet, so the assertion fails.
  *
  * The sweep still owns a per-alias gate: a new spawn for an alias whose row is being reconciled is
- * refused until that exact terminal has cleared; it cannot race the terminal and reuse its name.
+ * refused until that exact terminal attempt returns; it cannot race the terminal and reuse its name.
  *
  * Run: pnpm smoke:manager-reconcile-startup   (needs nats-server + node on PATH)
  */

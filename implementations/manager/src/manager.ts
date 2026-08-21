@@ -180,8 +180,9 @@ const DELIVERY_ADMIN_RELOAD_TIMEOUT_MS = 15_000;
 /** A hard preservation stop should settle quickly. The manager still waits and reports a partial
  * cut rather than pretending a child is gone. Held in ManagerOptions so fake runtimes can shorten it. */
 const PRESERVE_STOP_TIMEOUT_MS = 10_000;
-/** Startup reconciliation remains asynchronous after control serving begins. A spawn or attach for
- * one of these aliases must wait for THAT alias's exact-op terminal rather than racing a reuse. */
+/** Startup reconciliation overlaps control-service registration. A spawn or attach for one of
+ * these aliases must wait until THAT alias's exact-op terminal attempt returns rather than racing
+ * a reuse. */
 const STARTUP_RECONCILING = "startup static lifecycle reconciliation";
 
 /** The STABLE retirement opId for one lifecycle (#29 piece 3): deterministic from the uid, so a
@@ -1002,9 +1003,9 @@ export class Manager {
     this.leaseTimer.unref?.();
     // Unit B (static §13.1): after this instance holds its lease, collect the durable static rows
     // now, but do not let their exact-op terminals make the whole space unreachable. The service
-    // comes up below, then the sweep runs in the background. `reconcilingAliases` keeps the old
-    // no-race property at the actual conflict boundary: a caller cannot spawn or attach THAT alias
-    // until its terminal finishes.
+    // comes up below, then the sweep overlaps the remaining registration work. `reconcilingAliases`
+    // keeps the old no-race property at the actual conflict boundary: a caller cannot spawn or
+    // attach THAT alias until its terminal attempt returns.
     const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;
     if (startupReconcile)
       void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - a later manager start retries any unfinished terminal`));

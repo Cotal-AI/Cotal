@@ -16,12 +16,14 @@ See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
 
 ## Startup reconciliation
 
-On an authenticated static mesh, the manager registers and serves its control endpoint before it
-finishes reconciling durable orphaned static slots. Startup logs each terminal as
-`static reconcile k/N via <broker>: <alias> ...`; `cotal ps` is therefore available during a slow
-broker sweep. The no-race boundary is per alias: `spawn` for an alias still reconciling refuses
-until that exact lifecycle terminal completes; unrelated aliases and read-only control remain
-available.
+On an authenticated static mesh, the manager starts reconciling durable orphaned static slots,
+then overlaps the remaining sweep with control-service registration. Startup logs each terminal as
+`static reconcile k/N via <broker>: <alias> ...`; `cotal ps` becomes available before a slow sweep
+completes. The no-race boundary is per alias: `spawn` for an alias still reconciling refuses until
+that exact lifecycle terminal attempt returns; unrelated aliases and read-only control remain
+available. A terminal error releases that alias fence so the sweep can continue, but leaves the
+slot wedged until the next manager start re-drives it; `k/N` is sweep progress, not a count of
+successful terminals.
 
 ## Maintenance API
 
