@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { mirrorJcodeCredentials, shortSocketHome } from "../src/private-state.js";
@@ -20,7 +20,7 @@ try {
   const apiSocket = join(short.jcodeHome, "run", "jcode-api.sock");
   check("short API socket path stays below the cross-platform AF_UNIX budget", Buffer.byteLength(apiSocket) < 100, { bytes: Buffer.byteLength(apiSocket), apiSocket });
   check("short API socket directory is owner-only", mode(short.socketDir) === 0o700, { mode: mode(short.socketDir).toString(8) });
-  check("short API socket home aliases the managed home", lstatSync(short.jcodeHome).isSymbolicLink(), short.jcodeHome);
+  check("short API socket home aliases the managed home", lstatSync(short.jcodeHome).isSymbolicLink() && readlinkSync(short.jcodeHome) === pathological, short.jcodeHome);
   short.dispose();
 
   const sources = {
@@ -43,10 +43,19 @@ try {
   mkdirSync(join(home, "external", ".config", "Cursor", "User", "globalStorage"), { recursive: true, mode: 0o700 });
   symlinkSync(external, join(home, "external", ".config", "Cursor", "User", "globalStorage", "state.vscdb"));
 
-  mirrorJcodeCredentials(home, sources);
+  let firstMirrorError: unknown;
+  try {
+    mirrorJcodeCredentials(home, sources);
+  } catch (error) {
+    firstMirrorError = error;
+  }
   const copiedExternal = join(home, "external", ".config", "Cursor", "User", "globalStorage", "state.vscdb");
   const copiedDirect = join(home, "auth.json");
-  check("external auth mirror is copied rather than symlinked", !lstatSync(copiedExternal).isSymbolicLink() && lstatSync(copiedExternal).isFile(), copiedExternal);
+  check(
+    "external auth mirror is copied rather than symlinked",
+    firstMirrorError === undefined && !lstatSync(copiedExternal).isSymbolicLink() && lstatSync(copiedExternal).isFile() && readFileSync(copiedExternal, "utf8") === "cursor-store",
+    firstMirrorError instanceof Error ? firstMirrorError.message : copiedExternal,
+  );
   check("copied external auth file is owner-only", mode(copiedExternal) === 0o600, { mode: mode(copiedExternal).toString(8) });
   check("external auth mirror directory is owner-only", mode(join(home, "external", ".config", "Cursor", "User", "globalStorage")) === 0o700);
   check("Jcode-home auth file is copied rather than symlinked", !lstatSync(copiedDirect).isSymbolicLink() && readFileSync(copiedDirect, "utf8") === "first-token");
