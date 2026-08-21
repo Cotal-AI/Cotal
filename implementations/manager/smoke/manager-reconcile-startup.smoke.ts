@@ -66,7 +66,8 @@ const broker = await bootBroker(auth);
 const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-reconcile-start-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
-writeFileSync(join(workspaceRoot, ".cotal", "agents", "orphan-0.md"), "---\nname: orphan-0\nrole: worker\n---\nbody\n");
+for (let n = 0; n < ORPHANS; n++)
+  writeFileSync(join(workspaceRoot, ".cotal", "agents", `orphan-${n}.md`), `---\nname: orphan-${n}\nrole: worker\n---\nbody\n`);
 // The connector is deliberately valid. If the alias guard is removed, the request gets past
 // admission and must fail for a later lifecycle reason rather than being confused with a missing
 // connector refusal.
@@ -165,23 +166,15 @@ try {
     { reply: status?.reply, statusError, lastPhase: await phase(`orphan-${ORPHANS - 1}`) },
   );
 
-  let spawn: Awaited<ReturnType<typeof epCall>> | undefined;
-  let spawnError: string | undefined;
-  try {
-    spawn = await epCall(
-      callerNc,
-      space,
-      { mode: "one" },
-      { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: `orphan-${ORPHANS - 1}`, agent: "reconcile-stub" } },
-      { deadlineMs: 5_000, currentEpoch: async () => 0 },
-    );
-  } catch (error) {
-    spawnError = (error as Error).message;
-  }
+  // Drive the *same* entry point as the served spawn handler, but await its inner lifecycle path:
+  // `spawn` is an ACTION and returns its acceptance before that path finishes, so a wire reply alone
+  // cannot distinguish an alias gate from a later failure. The real service/control proof is above;
+  // this waits for the actual alias admission verdict and proves the no-race guard it relies on.
+  const directSpawn = await manager.startAgent({ name: `orphan-${ORPHANS - 1}`, agent: "reconcile-stub" });
   check(
     "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
-    spawn?.reply.ok === false && /still reconciling/i.test(String(spawn.reply.error?.message ?? "")),
-    { reply: spawn?.reply, spawnError },
+    directSpawn.ok === false && /still reconciling/i.test(directSpawn.error ?? ""),
+    directSpawn,
   );
 
   await starting;
