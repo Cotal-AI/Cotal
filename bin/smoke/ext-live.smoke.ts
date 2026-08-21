@@ -374,8 +374,15 @@ registry.register(
   rmSync(loaded, { force: true });
   const downCompletion = cotal(["__complete", "down", ""]);
   ok("selective down completes installed process providers without importing", downCompletion.status === 0 && /fixture-worker/.test(downCompletion.stdout) && !existsSync(loaded), downCompletion.stdout + downCompletion.stderr);
+  // Target resolution/preflight now guards every recovery daemon before manager construction. The
+  // runtime still materializes lazily from the installed extension surface; when that resolved
+  // broker is down, its named recovery refusal is more actionable than the old generic NATS copy.
   const supervise = cotal(["supervise", "--runtime", "fixture-runtime", "--server", "nats://127.0.0.1:1"]);
-  ok("supervise lazy-loads an installed runtime provider", supervise.status === 1 && existsSync(loaded) && /Can't reach NATS/.test(supervise.stderr) && !/unknown runtime/.test(supervise.stderr), supervise.stderr.slice(-400));
+  ok(
+    "supervise lazy-loads an installed runtime provider before refusing an unavailable broker",
+    supervise.status === 1 && existsSync(loaded) && /no mesh running at nats:\/\/127\.0\.0\.1:1 - run `cotal up`/.test(supervise.stderr) && !/unknown runtime/.test(supervise.stderr),
+    supervise.stderr.slice(-400),
+  );
 
   const unavailableManifest = join(sandbox, "unavailable.yaml");
   writeFileSync(unavailableManifest, `apiVersion: cotal/v1\nkind: Mesh\nspace: unavailable\nruntime: fixture-unavailable\nchannels: {}\n`);
