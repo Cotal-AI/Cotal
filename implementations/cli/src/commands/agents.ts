@@ -1,5 +1,5 @@
 import { mintCreds, newIdentity, openSessionRail, standaloneConnectOpts, type CompletionResult, type FlagSpec, type FlagValues, type ParsedArgs, type SessionGrant } from "@cotal-ai/core";
-import { authDir, findCotalRoot, loadMeshes, loadSpaceAuth, targetFlags } from "@cotal-ai/workspace";
+import { divergentCwdAnchor, loadMeshes, targetFlags } from "@cotal-ai/workspace";
 import { connect, type NatsConnection } from "@nats-io/transport-node";
 import { c } from "../ui.js";
 import { askManager, scatterManager, failIfNotOk, resolveControlTarget, onInstanceOrExit, type ScatterInstanceLiveness } from "../lib/control.js";
@@ -533,11 +533,33 @@ async function establishAttachSession(
   // the terminal through the session rail. USER mesh (bearer, no local seed): refuse LOUD — the
   // 2-step user-mode redemption callout is the #29 follow-up, deliberately not wired here.
   const { grant } = reply.data as { grant: SessionGrant };
-  const auth = loadSpaceAuth(authDir(findCotalRoot()), t.space);
+  // The trust material the TARGET resolved, not a second answer walked up from the cwd. This used
+  // to be `loadSpaceAuth(authDir(findCotalRoot()), t.space)`, which is the defect behind issue #722:
+  // resolution had already picked a root from the registry and connected with it, and then this line
+  // asked the current directory the same question and got a different answer. On any machine that is
+  // not a hypothetical: `~/.cotal` exists because the registry lives there, `findCotalRoot` accepts
+  // any directory merely NAMED `.cotal`, so every cwd under $HOME outside a project resolves here to
+  // the home directory - whose trust chain for the same space differs from the resolved root's in
+  // account, signing, sys and operator material. The result was a credential minted from a mesh the
+  // broker never trusted, surfacing as a bare `Authorization Violation` that named nothing.
+  // `control.ts` already stated the rule this restores: trust is carried forward rather than
+  // re-loaded, because a second load is a second answer to "which space's seed" for one command.
+  // A cwd anchor holding a DIFFERENT chain for this space is reported, never obeyed. It cannot
+  // change what this command does any more - the seed above comes from the resolution, not the walk
+  // - but staying silent is how issue #722 stayed a mystery: the operator had no way to learn that
+  // the directory they were standing in carried another mesh's trust. Reported on the way past, so
+  // it is said whether or not the attach then succeeds.
+  const shadow = t.root === undefined ? undefined : divergentCwdAnchor(t.root, t.space);
+  if (shadow)
+    console.error(
+      `! this directory resolves to ${shadow.cwdRoot}, whose .cotal/auth holds a DIFFERENT trust chain for space "${t.space}".\n` +
+      `  attach used ${t.root}, the root this mesh resolved to. The other one is not being used, and is worth a look.`,
+    );
+  const auth = t.spaceAuth;
   if (!auth)
     return {
       ok: false, kind: "fatal",
-      message: "mesh attach needs the local space seed (static auth mesh); user-mode session redemption is the #29 callout follow-up, not wired yet",
+      message: attachNoSeedMessage(t),
     };
   const id = newIdentity();
   const creds = await mintCreds(auth, id, "session-caller", {
@@ -569,6 +591,32 @@ async function establishAttachSession(
     ...(reconnect ? { pingInterval: 10_000 } : {}),
   });
   return { ok: true, nc, grant, creds, inbox: id.id, server: t.server };
+}
+
+/** Why attach cannot redeem a session grant, said in terms of what the command actually resolved.
+ *
+ *  Three distinct states, kept distinct because the remedy differs and a single sentence covering
+ *  all three is the defect issue #722 opened on (its old text named an internal work item and no
+ *  root at all). A USER-AUTH mesh holds no local seed by design. A REGISTERED static mesh has a
+ *  root and it is named, so an operator can see which directory the command used rather than
+ *  guessing at their cwd.
+ *
+ *  The third arm is an INVARIANT, not advice, and is written that way on purpose. A connection with
+ *  no resolved root is what the type allows, and no supported route reaches redemption in that
+ *  state: both off-registry routes are refused earlier, which `smoke:attach-auth-root` measures
+ *  rather than assumes. So that arm says what its own existence would mean instead of offering a
+ *  remedy for a situation that cannot currently arise. */
+function attachNoSeedMessage(t: { space: string; server: string; root?: string; auth: { bearer?: unknown } }): string {
+  const shadow = t.root === undefined ? undefined : divergentCwdAnchor(t.root, t.space);
+  const shadowLine = shadow
+    ? `\n  NOTE this directory resolves to ${shadow.cwdRoot}, which holds a DIFFERENT trust chain for "${t.space}"; it was NOT used.`
+    : "";
+  const head = `mesh attach needs this space's local seed to redeem the session grant, and the mesh resolved for "${t.space}" does not provide one.`;
+  if (t.auth.bearer)
+    return `${head}\n  broker ${t.server}\n  This is a USER-AUTH mesh, which holds no local seed by design; two-step user-mode redemption is not wired yet, so attach is unavailable on it from every directory, not just this one.${shadowLine}`;
+  if (t.root === undefined)
+    return `${head}\n  broker ${t.server}\n  This connection resolved NO checkout root, and no supported route reaches redemption in that state: an off-registry \`--server\` on an unregistered space is refused for missing credentials, and \`--creds\` is refused at the control surface, both before a session grant is asked for. Reaching this sentence means a route now exists that skips both refusals.${shadowLine}`;
+  return `${head}\n  broker ${t.server}\n  resolved root ${t.root}\n  A static-auth mesh keeps this space's seed under <root>/.cotal/auth. That root is what this command resolved and connected with, so if it is not the checkout holding this space's auth, re-register the mesh with \`cotal meshes add ${t.space} --server ${t.server} --root <dir>\`.${shadowLine}`;
 }
 
 /** A session this side can no longer reach, plus the one credential that can still speak for it. */
