@@ -13,6 +13,7 @@ export const OFFICIAL_CONNECTORS: Readonly<Record<string, string>> = {
   opencode: "@cotal-ai/connector-opencode",
   codex: "@cotal-ai/connector-codex",
   hermes: "@cotal-ai/connector-hermes",
+  jcode: "@cotal-ai/connector-jcode",
   pi: "@cotal-ai/pi",
 };
 
