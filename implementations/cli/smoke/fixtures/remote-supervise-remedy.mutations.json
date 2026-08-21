@@ -1,0 +1,12 @@
+{
+  "command": "pnpm smoke:meshes-registry",
+  "mutations": [
+    {
+      "name": "the remote registered-mesh branch falls back to record removal instead of naming the control-plane recovery commands",
+      "file": "implementations/cli/src/commands/up.ts",
+      "find": "`To recover its control plane, run \\`cotal supervise --space ${space} --server ${existing.server}\\`; for durable delivery, run \\`cotal deliver --space ${space} --server ${existing.server}\\`. ` +",
+      "replace": "`Remove its record with \\`cotal meshes rm ${space}\\`. ` +",
+      "expectRed": "a remote registered space directs the operator to supervise and deliver on its recorded broker"
+    }
+  ]
+}

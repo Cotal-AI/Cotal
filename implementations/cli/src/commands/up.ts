@@ -2117,7 +2117,8 @@ function realpathSafe(p: string): string {
 
 /** A space name maps to one mesh in the registry (the key `--space`/`use`/`down` act on). Before
  *  starting a broker, refuse to reuse a space already claimed by a DIFFERENT live mesh — a stale/dead
- *  holder is reclaimed. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
+ *  holder is reclaimed. A non-local operator registration instead directs recovery to its existing
+ *  broker; removing that record is reserved for an operator-confirmed stale route. Re-`up`ping the same mesh (same server + root) is a refresh (port-reachable
  *  path). NOTE: this is a best-effort sequential guard — two `cotal up --space X` racing from
  *  different roots within the same instant can both pass the check before either records; that
  *  concurrent case is out of scope (a single-operator CLI action), not synchronized with a lock. */
@@ -2129,8 +2130,18 @@ export async function claimSpace(space: string, server: string, root: string): P
   // reclaimed: unreachable is not proof the mesh is gone (the record describes a broker on another
   // machine), the reclaim runs BEFORE this launch starts anything, and `cotal down` — what the
   // liveness branch below would advise — cannot stop a mesh this machine does not run.
-  if (existing.origin === "manual")
+  if (existing.origin === "manual") {
+    const host = new URL(existing.server).hostname.replace(/^\[|\]$/g, "");
+    const local = host === "localhost" || host === "::1" || host === "0:0:0:0:0:0:0:1" || /^127(?:\.\d{1,3}){3}$/.test(host);
+    if (!local) {
+      throw new Error(
+        `space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it was registered by hand, so \`cotal up\` neither takes it over nor reclaims the name. ` +
+        `To recover its control plane, run \`cotal supervise --space ${space} --server ${existing.server}\`; for durable delivery, run \`cotal deliver --space ${space} --server ${existing.server}\`. ` +
+        `Use \`cotal meshes rm ${space}\` only if that record is stale, or start this one under a different \`--space\``,
+      );
+    }
     throw new Error(`space "${space}" is registered to a mesh at ${existing.server} (${existing.root}) - it was registered by hand, so \`cotal up\` neither takes it over nor reclaims the name: \`cotal meshes rm ${space}\` to drop that record first, or start this one under a different \`--space\``);
+  }
   if (await isReachable(existing.server)) {
     throw new Error(`space "${space}" is already in use by a mesh at ${existing.server} (${existing.root}) - pick a different \`--space\`, or \`cotal down\` it first`);
   }

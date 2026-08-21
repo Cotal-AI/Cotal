@@ -24,7 +24,7 @@ import { strict as assert } from "node:assert";
 import { spawn } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
-import { tmpdir } from "node:os";
+import { networkInterfaces, tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 
 // Sandbox the machine-home BEFORE anything reads the registry — homeCotalDir() reads COTAL_HOME per
@@ -98,7 +98,15 @@ function projectRoot(label: string): string {
 const DEAD = `nats://127.0.0.1:${await freePort()}`; // nothing listens there
 const brokerPort = await freePort();
 const LIVE = `nats://127.0.0.1:${brokerPort}`;
-const broker = spawn("nats-server", ["-a", "127.0.0.1", "-p", String(brokerPort)], { stdio: "ignore" });
+// Drive the remote-registration remedy through a real non-loopback route. The broker is still a
+// smoke fixture, but the registry sees the same address class an operator names for a mesh hosted
+// elsewhere, rather than a loopback alias.
+const remoteAddress = Object.values(networkInterfaces()).flat().find((a) =>
+  a?.family === "IPv4" && !a.internal,
+)?.address;
+assert.ok(remoteAddress, "the smoke host has no non-loopback IPv4 address");
+const REMOTE_LIVE = `nats://${remoteAddress}:${brokerPort}`;
+const broker = spawn("nats-server", ["-a", "0.0.0.0", "-p", String(brokerPort)], { stdio: "ignore" });
 // A second broker that actually ENFORCES something, so the guided flow's auth branches (the
 // "this folder holds no credentials" recovery) are reachable at all. Password auth is enough:
 // probeEnforcement only asks whether a bare connect is refused.
@@ -276,6 +284,21 @@ try {
   check("`up` refuses to reclaim a registered space rather than deleting it", claimError !== undefined, claimError?.message);
   check("…and the registration survives the refusal", findMesh("claimed") !== undefined, loadMeshes());
   check("…naming `cotal meshes rm` as the way through", claimError?.message.includes("cotal meshes rm claimed") === true, claimError?.message);
+
+  // This is the #757 reproduction: write an operator registration for a broker reached through a
+  // real non-loopback address, then drive `up`'s actual claim guard. A registry entry is the route
+  // used by supervise, attach, and read commands, so telling its operator only to remove it loses
+  // the control path they came to recover.
+  check("the remote broker route is live before it is registered", await isReachable(REMOTE_LIVE), REMOTE_LIVE);
+  recordMesh({ space: "claimed-remote", server: REMOTE_LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
+  let remoteClaimError: Error | undefined;
+  await claimSpace("claimed-remote", LIVE, localRoot).catch((e: Error) => void (remoteClaimError = e));
+  check("a remote registered space directs the operator to supervise and deliver on its recorded broker",
+    remoteClaimError?.message.includes(`cotal supervise --space claimed-remote --server ${REMOTE_LIVE}`) === true &&
+      remoteClaimError.message.includes(`cotal deliver --space claimed-remote --server ${REMOTE_LIVE}`) === true &&
+      remoteClaimError.message.includes("only if that record is stale") === true,
+    remoteClaimError?.message);
+  check("…and the remote registration survives that control-plane remedy", findMesh("claimed-remote")?.server === REMOTE_LIVE, findMesh("claimed-remote"));
   // A LIVE registered holder must reach the SAME refusal. Deciding liveness first sent the operator
   // to `cotal down`, which cannot stop a mesh this machine does not run.
   recordMesh({ space: "claimed-live", server: LIVE, root, mode: "open", origin: "manual", ts: new Date(0).toISOString() });
@@ -290,6 +313,7 @@ try {
   check("a dead `up` holder is still reclaimed (unchanged)", findMesh("reclaimable") === undefined, loadMeshes());
   removeMesh("claimed");
   removeMesh("claimed-live");
+  removeMesh("claimed-remote");
 
   // PROVENANCE IS NOT DOWNGRADED BY A REFRESH. Several `up` paths re-record a mesh they did not
   // start (the "a broker is already on this port" branch concludes it is up from reachability
@@ -339,6 +363,7 @@ try {
   setCurrent("remote-dead");
   const removed = await run(["rm", "remote-dead"]);
   check("rm drops the record", removed.code === 0 && findMesh("remote-dead") === undefined, loadMeshes());
+  check("rm says it removed this machine's route to the mesh", removed.out.includes("removed this machine's registry route to that mesh"), removed.out);
   check("rm releases a current that pointed at it", getCurrent() === undefined, getCurrent());
   check("rm says the default is gone", removed.out.includes("no default mesh now"), removed.out);
 

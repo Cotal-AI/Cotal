@@ -437,7 +437,7 @@ user-auth space cannot be registered by hand, because its IdP pins are trust tha
 address, or credentials that mesh will not accept, fails here instead of at the first `spawn`;
 `--force` records without verifying (and replaces an existing record).
 
-`meshes rm` drops records — it never stops a mesh. For a mesh running on this machine `cotal down`
+`meshes rm` drops this machine's registry route to the named mesh — it never stops a mesh. For a mesh running on this machine `cotal down`
 is the right verb, and `rm` says so unless you pass `--force`. A record you added by hand is only
 removed by something that names it — `meshes rm`, or an `add --force` replacement — or by a
 `cotal up` that actually starts the broker for that same space, server and root, which becomes that
@@ -445,7 +445,10 @@ mesh and so takes the record over (a `cotal up` for that space anywhere else ref
 Nothing that merely *infers* a record is stale touches it: an
 unreachable broker is listed `offline` and stays, and `cotal down` / `cotal clean all` leave it
 alone even when it shares a root with the project they are tearing down, because nothing on this
-machine could write it back.
+machine could write it back. When `up` refuses a hand-registered non-local broker, recover that
+mesh's control plane with `cotal supervise --space <space> --server <registered-url>` and, where
+durable delivery is needed, `cotal deliver --space <space> --server <registered-url>`; use `meshes
+rm` only for a record you know is stale.
 
 `use <space>` sets that default; the selection applies from every directory,
 including inside another mesh's project. `status` is a read-only report: machine prerequisites

@@ -199,8 +199,8 @@ function take<T>(r: Check<T>): T {
 
 // ---- rm -------------------------------------------------------------------------------------
 
-/** `cotal meshes rm <space> …` — drop records. This never stops a mesh: it removes what THIS
- *  machine remembers about one. For a mesh running here that distinction is a footgun (the broker
+/** `cotal meshes rm <space> …` — drop this machine's registry route. This never stops a mesh: it
+ *  removes what THIS machine remembers about one. For a mesh running here that distinction is a footgun (the broker
  *  keeps running with nothing pointing at it), so those are refused in favour of `cotal down`. */
 async function removeMeshes(names: string[], v: Values): Promise<void> {
   if (names.length === 0) {
@@ -243,7 +243,7 @@ async function removeMeshes(names: string[], v: Values): Promise<void> {
       clearCurrent();
       clearedCurrent = true;
     }
-    console.log(c.green(`✓ unregistered "${space}"`), c.dim(m.server));
+    console.log(c.green(`✓ unregistered "${space}"`), c.dim(`${m.server} (removed this machine's registry route to that mesh)`));
   }
   if (clearedCurrent) console.log(c.dim("there is no default mesh now - `cotal use <name>` to set one"));
   if (failed) process.exit(1);
