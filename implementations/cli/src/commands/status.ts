@@ -490,16 +490,17 @@ async function componentEp(target: MeshTarget): Promise<{ ep: CotalEndpoint; clo
 /** A service registration is the health target itself.  Calling its `status` command through a
  * generic endpoint does not work on this base because a passive status endpoint has no v0.4 caller
  * rail; a one-shot standalone caller does. */
-async function managerServiceHealth(target: MeshTarget, creds?: string): Promise<{ instanceId?: unknown; runtime?: unknown }> {
-  const id = newIdentity();
-  const caller = { owner: "local", actor: id.id, uid: mintLifecycleUid() };
+async function managerServiceHealth(
+  target: MeshTarget,
+  auth: { creds?: string; caller: { owner: string; actor: string; uid: string } },
+): Promise<{ instanceId?: unknown; runtime?: unknown }> {
   const nc = await connect({
     servers: target.server,
-    ...standaloneConnectOpts(creds ? { creds, tls: target.tlsRequired } : { tls: target.tlsRequired }),
+    ...standaloneConnectOpts(auth.creds ? { creds: auth.creds, tls: target.tlsRequired } : { tls: target.tlsRequired }),
     maxReconnectAttempts: 0,
   });
   try {
-    const service = await resolveService(nc, target.space, "manager", caller, { deadlineMs: 3_000 });
+    const service = await resolveService(nc, target.space, "manager", auth.caller, { deadlineMs: 3_000 });
     const response = await invokeCommand(nc, target.space, service, "status", undefined, { deadlineMs: 3_000 });
     if (response.reply.ok !== true)
       throw new EpEnvelopeError(response.reply.error?.code === "unavailable" ? "unavailable" : "failed-precondition", response.reply.error?.message ?? "manager status refused");
@@ -529,8 +530,18 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
     const lease = await component.ep.readManagerLease();
     if (lease) facts.push(`lease holder ${lease.holder}`, `lease pid ${lease.pid}`);
     else facts.push("lease absent");
-    const serviceCreds = target.auth ? await mintCreds(target.auth, newIdentity(), "deployer", { lifecycleUid: mintLifecycleUid() }) : undefined;
-    const served = await managerServiceHealth(target, serviceCreds);
+    // The service caller triple is part of the manager's own authenticated control surface.  Keep
+    // the minted credential and the subject caller on the SAME identity; a mismatched random actor
+    // would turn an authorized manager into a false no-answer on static meshes.
+    const serviceIdentity = newIdentity();
+    const serviceUid = mintLifecycleUid();
+    const serviceCreds = target.auth
+      ? await mintCreds(target.auth, serviceIdentity, "deployer", { lifecycleUid: serviceUid })
+      : undefined;
+    const served = await managerServiceHealth(target, {
+      creds: serviceCreds,
+      caller: { owner: "local", actor: serviceIdentity.id, uid: serviceUid },
+    });
     facts.push(`service instance ${served.instanceId ?? "unreported"}`);
     facts.push(`runtime ${served.runtime ?? "unreported"}`);
     facts.push("phase not reported by this manager build");
