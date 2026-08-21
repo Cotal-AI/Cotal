@@ -14,7 +14,7 @@
       "name": "Jcode external auth is copied",
       "file": "extensions/connector-jcode/src/private-state.ts",
       "find": "  copyFileSync(source, destination);",
-      "replace": "  copyFileSync(source, destination + \\".wrong\\");",
+      "replace": "  copyFileSync(source, `${destination}.wrong`);", 
       "expectRed": "external auth mirror is copied rather than symlinked"
     }
   ]
