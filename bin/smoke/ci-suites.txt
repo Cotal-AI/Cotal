@@ -183,6 +183,7 @@ smoke:ledger
 smoke:down-lease-tombstone
 smoke:spawn-from-anywhere
 smoke:spawn-from-anywhere:live
+smoke:recovery-registry:live
 smoke:cross-path-dedup
 smoke:inbox-window
 smoke:backup-cli
