@@ -96,9 +96,11 @@ try {
   writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' '${canary}' >&2\nexit 1\n`);
   chmodSync(fake, 0o755);
   const hostHome = join(root, "host-home");
+  const ambientEnv: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(ambientEnv)) if (key.startsWith("COTAL_")) delete ambientEnv[key];
   const hostEnv = {
-    ...process.env,
-    PATH: `${fakeDir}:${process.env.PATH ?? ""}`,
+    ...ambientEnv,
+    PATH: `${fakeDir}:${ambientEnv.PATH ?? ""}`,
     COTAL_SPACE: "security",
     COTAL_NAME: "stderrcanary",
     COTAL_ID: "stderrcanary",
