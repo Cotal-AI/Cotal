@@ -146,6 +146,9 @@ try {
   await stop(holder);
   holder = undefined;
   rmSync(join(root, ".cotal", "manager.pid"), { force: true });
+  // The manager lease has a 10s TTL. The absent control must wait for its real expiry: deleting
+  // the PID record alone would still be a present lease-holder case, not an absent component.
+  await sleep(10_500);
 
   const oldAbsent = cli("ps", "--space", SPACE, "--server", server);
   const oldAbsentText = `${oldAbsent.stdout}${oldAbsent.stderr}`;

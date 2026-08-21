@@ -511,17 +511,16 @@ async function managerServiceHealth(
 }
 
 async function managerHealth(target: MeshTarget, context: LocalProcessContext): Promise<ComponentHealth> {
-  const pidPath = localProcessPath("manager.pid", context);
-  const record = processRecord(pidPath);
+  const record = processRecord(localProcessPath("manager.pid", context));
   const facts = pidFacts(record);
-  const stopped = processVerdict(record);
-  if (stopped) {
-    if (record.kind === "dead") facts.push("stale pidfile");
-    if (record.kind === "unattributable") facts.push("unattributable pidfile");
-    if (record.kind === "unknown") facts.push("pid liveness unestablishable");
+  // A corrupt or kernel-unreadable LOCAL record is neither evidence that the manager is absent nor
+  // permission to replace it with a network answer.  Name that failed local control surface first.
+  if (record.kind === "unattributable" || record.kind === "unknown") {
+    facts.push(record.kind === "unattributable" ? "unattributable pidfile" : "pid liveness unestablishable");
     facts.push("phase not reported by this manager build");
-    return { name: "manager", verdict: stopped, facts };
+    return { name: "manager", verdict: "refused", facts };
   }
+  if (record.kind === "dead") facts.push("stale pidfile");
 
   let close: (() => Promise<void>) | undefined;
   try {
@@ -547,16 +546,19 @@ async function managerHealth(target: MeshTarget, context: LocalProcessContext): 
     facts.push("phase not reported by this manager build");
     facts.push("serve reachable");
     // A manager service without its own liveness lease is a contradicted component surface, not a
-    // healthy one.  It still reports the reachability fact, but cannot claim the lease holder the
-    // operator asked for.
+    // healthy one. It still reports reachability, but cannot claim the required lease holder.
     return { name: "manager", verdict: lease ? "serving" : "not-serving", facts };
   } catch (e) {
     facts.push("phase not reported by this manager build");
-    // A missing manager service registry is a definitive no-service state on this broker, not a
-    // failed read.  Everything else that prevents the probe reading its own rail stays a refusal.
-    const absentRail = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
-    facts.push(absentRail ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
-    return { name: "manager", verdict: absentRail ? "not-serving" : "refused", facts };
+    // A no-responder service rail or an absent manager registry is definitive no-service evidence.
+    // The lease and PID answer whether that missing service belongs to an extant component (not
+    // serving) or an absent one; any other failed probe remains a refusal.
+    const noService = e instanceof EpEnvelopeError && (unansweredRequest(e) || /service registry.*stream not found/i.test(e.message));
+    facts.push(noService ? "serve no answer" : `serve probe refused: ${(e as Error).message}`);
+    if (!noService) return { name: "manager", verdict: "refused", facts };
+    const liveRecord = record.kind === "live";
+    const hasLease = facts.some((fact) => fact.startsWith("lease holder "));
+    return { name: "manager", verdict: liveRecord || hasLease ? "not-serving" : "absent", facts };
   } finally {
     await close?.();
   }
