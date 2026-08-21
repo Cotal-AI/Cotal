@@ -27,7 +27,7 @@
     {
       "name": "drop the alias admission guard",
       "file": "implementations/manager/src/manager.ts",
-      "find": "    if (this.reconcilingAliases.has(ref))\n      return { ok: false, error: `the name \"${ref}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
+      "find": "    if (this.reconcilingAliases.has(identityName))\n      return { ok: false, error: `the name \"${identityName}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
       "replace": "    void this.reconcilingAliases;",
       "expectRed": "spawn for an alias still reconciling is refused by its reconcile gate",
       "cell": "spawn for an alias still reconciling is refused by its reconcile gate",

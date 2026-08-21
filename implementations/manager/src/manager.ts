@@ -3250,8 +3250,6 @@ export class Manager {
     // filename (unique on disk); two files can't collide on the key.
     const ref = opts.name.trim();
     if (!ref) return { ok: false, error: "name required" };
-    if (this.reconcilingAliases.has(ref))
-      return { ok: false, error: `the name "${ref}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     // A bare ref maps to `.cotal/agents/<ref>.md`, so it must be a safe token (no path traversal); a
     // `--config` path is validated by existsSync below instead.
     if (!opts.config) {
@@ -3380,6 +3378,8 @@ export class Manager {
     // alone) so a retry re-drives the standing-authority revoke (INT-2) AND the broker cleanup before
     // any hold-clear (C): the alias must not free while the durable teardown or the revoke is still
     // outstanding. All the teardown ops are idempotent, and the rail request is single-flighted.
+    if (this.reconcilingAliases.has(identityName))
+      return { ok: false, error: `the name "${identityName}" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };
     const held = this.retiring.get(identityName);
     if (held !== undefined) {
       void this.deprovision({ id: held.agentId, name: identityName, lifecycleUid: held.lifecycleUid, userOwner: held.userOwner, secretPaths: held.secretPaths }).catch(() => {});
