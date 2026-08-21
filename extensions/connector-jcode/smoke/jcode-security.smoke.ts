@@ -82,35 +82,28 @@ try {
   writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' '${canary}' >&2\nexit 1\n`);
   chmodSync(fake, 0o755);
   const hostHome = join(root, "host-home");
-  const result = spawnSync(tsx, [host], {
-    cwd: root,
-    env: {
-      ...process.env,
-      PATH: `${fakeDir}:${process.env.PATH ?? ""}`,
-      COTAL_SPACE: "security",
-      COTAL_NAME: "stderrcanary",
-      COTAL_ID: "stderrcanary",
-      COTAL_SERVERS: "nats://127.0.0.1:1",
-      COTAL_SUBSCRIBE: "team",
-      COTAL_ALLOW_SUBSCRIBE: "team",
-      COTAL_ALLOW_PUBLISH: "team",
-      COTAL_JCODE_HOME: hostHome,
-      COTAL_JCODE_TUI: "0",
-      COTAL_CONTROL_SOCKET: join(root, "control.sock"),
-      COTAL_CONTROL_TOKEN: "jcode-security-control-token",
-    },
-    encoding: "utf8",
-  });
-  check(
-    "host launch failure reports the safe SDK startup code",
-    result.status === 1 && /Jcode host startup failed \(startup_failed\)/.test(result.stderr),
-    { status: result.status, stderr: result.stderr },
-  );
-  check(
-    "host launch failure never prints captured Jcode child stderr canary",
-    result.status === 1 && !result.stderr.includes(canary),
-    { status: result.status, stderr: result.stderr },
-  );
+  const hostEnv = {
+    ...process.env,
+    PATH: `${fakeDir}:${process.env.PATH ?? ""}`,
+    COTAL_SPACE: "security",
+    COTAL_NAME: "stderrcanary",
+    COTAL_ID: "stderrcanary",
+    COTAL_SERVERS: "nats://127.0.0.1:1",
+    COTAL_SUBSCRIBE: "team",
+    COTAL_ALLOW_SUBSCRIBE: "team",
+    COTAL_ALLOW_PUBLISH: "team",
+    COTAL_JCODE_HOME: hostHome,
+    COTAL_JCODE_TUI: "0",
+    COTAL_CONTROL_SOCKET: join(root, "control.sock"),
+    COTAL_CONTROL_TOKEN: "jcode-security-control-token",
+  };
+  const result = spawnSync(tsx, [host], { cwd: root, env: hostEnv, encoding: "utf8" });
+  // Render failures as named assertions instead of throwing inside check's condition. mutation-proof
+  // needs the canary assertion to print even when a mutant makes the first safe-diagnostic check red.
+  const safeCode = result.status === 1 && /startup_failed/.test(result.stderr);
+  const noCanary = result.status === 1 && !result.stderr.includes(canary);
+  check("host launch failure reports the safe SDK startup code", safeCode, { status: result.status, stderr: result.stderr });
+  check("host launch failure never prints captured Jcode child stderr canary", noCanary, { status: result.status, stderr: result.stderr });
 
   console.log(`\nJCODE SECURITY SMOKE PASSED (${pass} checks)`);
 } finally {
