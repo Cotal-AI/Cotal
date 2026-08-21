@@ -11,7 +11,7 @@
     "hand-constructed call to reconcileStaticLifecycles.",
     "",
     "The second cell invokes spawn for a later planned alias. It must reach the manager service and",
-    "be refused by the alias fence before connector resolution. That catches both moving the fence",
+    "be refused by the alias fence before lifecycle provisioning. That catches both moving the fence",
     "behind an await and dropping the startAgent guard."
   ],
   "mutations": [
@@ -29,8 +29,8 @@
       "file": "implementations/manager/src/manager.ts",
       "find": "    if (this.reconcilingAliases.has(identityName))\n      return { ok: false, error: `the name \"${identityName}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
       "replace": "    void this.reconcilingAliases;",
-      "expectRed": "spawn for an alias still reconciling is refused by its reconcile gate",
-      "cell": "spawn for an alias still reconciling is refused by its reconcile gate",
+      "expectRed": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
+      "cell": "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
       "afterRestore": "pnpm --filter @cotal-ai/manager... build"
     }
   ]

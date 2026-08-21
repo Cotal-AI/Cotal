@@ -32,7 +32,10 @@ import {
   recordsBucket,
   epAuthBucket,
   epCall,
+  registry,
+  type Connector,
   type EpCaller,
+  type LaunchSpec,
 } from "@cotal-ai/core";
 import { authDir, saveSpaceAuth } from "@cotal-ai/workspace";
 import { Manager } from "../src/manager.js";
@@ -64,6 +67,16 @@ const workspaceRoot = mkdtempSync(join(tmpdir(), "cotal-reconcile-start-ws-"));
 mkdirSync(join(workspaceRoot, ".cotal", "agents"), { recursive: true });
 saveSpaceAuth(authDir(workspaceRoot), auth);
 writeFileSync(join(workspaceRoot, ".cotal", "agents", "orphan-0.md"), "---\nname: orphan-0\nrole: worker\n---\nbody\n");
+// The connector is deliberately valid. If the alias guard is removed, the request gets past
+// admission and must fail for a later lifecycle reason rather than being confused with a missing
+// connector refusal.
+const reconcileStub: Connector = {
+  kind: "connector",
+  name: "reconcile-stub",
+  requires: ["node"],
+  buildLaunch: (): LaunchSpec => { throw new Error("reconcile-stub: alias guard did not refuse"); },
+};
+registry.register(reconcileStub);
 
 const callerIdentity = newIdentity();
 const caller: EpCaller = { owner: DEV_OWNER, actor: callerIdentity.id, uid: mintLifecycleUid() };
@@ -159,14 +172,14 @@ try {
       callerNc,
       space,
       { mode: "one" },
-      { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: `orphan-${ORPHANS - 1}`, agent: "missing-connector" } },
+      { endpoint: MANAGER_ENDPOINT, command: "spawn", contract: MANAGER_CONTRACTS.spawn, caller, args: { name: `orphan-${ORPHANS - 1}`, agent: "reconcile-stub" } },
       { deadlineMs: 5_000, currentEpoch: async () => 0 },
     );
   } catch (error) {
     spawnError = (error as Error).message;
   }
   check(
-    "spawn for an alias still reconciling is refused by its reconcile gate before connector resolution",
+    "spawn for an alias still reconciling is refused by its reconcile gate before lifecycle provisioning",
     spawn?.reply.ok === false && /still reconciling/i.test(String(spawn.reply.error?.message ?? "")),
     { reply: spawn?.reply, spawnError },
   );
