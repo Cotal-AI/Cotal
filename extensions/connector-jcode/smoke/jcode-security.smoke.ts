@@ -1,0 +1,118 @@
+import assert from "node:assert/strict";
+import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { shortSocketHome } from "../src/private-state.js";
+import { jcodeConnector } from "../src/extension.js";
+
+let pass = 0;
+const check = (name: string, condition: boolean, actual?: unknown): void => {
+  assert.ok(condition, `${name}${actual === undefined ? "" : ` — ${JSON.stringify(actual)}`}`);
+  pass++;
+  console.log(`  ✓ ${name}`);
+};
+
+const root = mkdtempSync(join(tmpdir(), "cotal-jcode-security-"));
+const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
+const containerTsx = "/workspace/extensions/connector-jcode/node_modules/.bin/tsx";
+const containerPrivateState = "/workspace/extensions/connector-jcode/src/private-state.ts";
+const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
+const containerProbe = "/workspace/extensions/connector-jcode/smoke/fixtures/foreign-owner-probe.mts";
+const fakeDir = join(root, "bin");
+const fake = join(fakeDir, "jcode");
+const canary = "AUTH_BYTES_CANARY=do-not-log-this";
+
+try {
+  // The production bug exists only in a privileged connector: a root process can chmod an
+  // attacker-owned 0700 directory, so the guard must reject ownership before mode hardening.
+  if (process.platform === "win32") {
+    check("foreign-owner short socket directory check skipped on Windows", true);
+  } else if (process.getuid?.() !== 0) {
+    if (!existsSync("/var/run/docker.sock")) throw new Error("Jcode foreign-owner security smoke requires the local Docker daemon");
+    // The mounted worktree supplies the exact source under test. The runner image supplies only
+    // a real root/container context, which is the deployment mode where chmod alone was unsafe.
+    const rootProbe = spawnSync("docker", [
+      "run", "--rm", "--entrypoint", "sh", "-u", "0:0", "-v", `${process.cwd()}:/workspace`, "cotal-runner:latest", "-c",
+      [
+        "set -eu",
+        "cd /workspace",
+        `home=$(mktemp -d /tmp/jcode-owned-home.XXXXXX)`,
+        `socket=/tmp/jc-$(node -e 'const c=require("node:crypto");const p=require("node:path");console.log(c.createHash("sha256").update(p.resolve(process.argv[1])).digest("hex").slice(0,12))' "$home")`,
+        "setpriv --reuid=1001 --regid=1001 --clear-groups mkdir -m 700 \"$socket\"",
+        `set +e; ${containerTsx} ${containerProbe} \"${containerPrivateState}\" \"$home\"; rc=$?; set -e`,
+        "rm -rf \"$socket\" \"$home\"",
+        "exit \"$rc\"",
+      ].join("; "),
+    ], { encoding: "utf8" });
+    check(
+      "root connector refuses a foreign-owned deterministic socket directory",
+      rootProbe.status === 0 && /REFUSED_FOREIGN_OWNER/.test(rootProbe.stdout) && !/ADOPTED_FOREIGN_OWNER/.test(rootProbe.stdout),
+      { status: rootProbe.status, stdout: rootProbe.stdout, stderr: rootProbe.stderr },
+    );
+  } else {
+    check("root connector refuses a foreign-owned deterministic socket directory", false, "run this suite from a non-root parent so it can create the foreign UID directory");
+  }
+
+  // The connector's buildLaunch refuses Windows before host startup because the Harness API bridge
+  // is Unix-socket-only. The POSIX ownership guard must not invent a later Windows-only failure.
+  const platform = Object.getOwnPropertyDescriptor(process, "platform");
+  Object.defineProperty(process, "platform", { value: "win32" });
+  try {
+    let connectorRefused = false;
+    try {
+      jcodeConnector.buildLaunch({ space: "security", name: "windowsseat" });
+    } catch (error) {
+      connectorRefused = /not supported on Windows/.test(String((error as Error).message));
+    }
+    check("connector rejects unsupported Windows before the Unix socket host can start", connectorRefused);
+    const windowsHome = join(root, "windows-managed-home");
+    mkdirSync(windowsHome, { recursive: true, mode: 0o700 });
+    const short = shortSocketHome(windowsHome);
+    check("short socket helper does not add a Windows ownership refusal before connector preflight", short.jcodeHome.includes("/tmp/jc-"), short.jcodeHome);
+    short.dispose();
+  } finally {
+    Object.defineProperty(process, "platform", platform!);
+  }
+
+  mkdirSync(fakeDir, { recursive: true, mode: 0o700 });
+  // The SDK captures this exact child stderr and puts it in its launch error. host-main must never
+  // render the caught message or stack, or an upstream auth failure can disclose the bytes.
+  writeFileSync(fake, `#!/bin/sh\nprintf '%s\\n' '${canary}' >&2\nexit 1\n`);
+  chmodSync(fake, 0o755);
+  const hostHome = join(root, "host-home");
+  const result = spawnSync(tsx, [host], {
+    cwd: root,
+    env: {
+      ...process.env,
+      PATH: `${fakeDir}:${process.env.PATH ?? ""}`,
+      COTAL_SPACE: "security",
+      COTAL_NAME: "stderrcanary",
+      COTAL_ID: "stderrcanary",
+      COTAL_SERVERS: "nats://127.0.0.1:1",
+      COTAL_SUBSCRIBE: "team",
+      COTAL_ALLOW_SUBSCRIBE: "team",
+      COTAL_ALLOW_PUBLISH: "team",
+      COTAL_JCODE_HOME: hostHome,
+      COTAL_JCODE_TUI: "0",
+      COTAL_CONTROL_SOCKET: join(root, "control.sock"),
+      COTAL_CONTROL_TOKEN: "jcode-security-control-token",
+    },
+    encoding: "utf8",
+  });
+  check(
+    "host launch failure reports the safe SDK startup code",
+    result.status === 1 && /Jcode host startup failed \(startup_failed\)/.test(result.stderr),
+    { status: result.status, stderr: result.stderr },
+  );
+  check(
+    "host launch failure never prints captured Jcode child stderr canary",
+    result.status === 1 && !result.stderr.includes(canary),
+    { status: result.status, stderr: result.stderr },
+  );
+
+  console.log(`\nJCODE SECURITY SMOKE PASSED (${pass} checks)`);
+} finally {
+  rmSync(root, { recursive: true, force: true });
+}

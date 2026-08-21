@@ -43,7 +43,7 @@ function assertRelative(relativePath: string): void {
     throw new Error(`unsafe Jcode credential mirror path: ${relativePath}`);
 }
 
-function privateDirectory(path: string, { replaceSymlink = false }: { replaceSymlink?: boolean } = {}): void {
+function privateDirectory(path: string, { replaceSymlink = false, requireOwner = false }: { replaceSymlink?: boolean; requireOwner?: boolean } = {}): void {
   try {
     const stats = lstatSync(path);
     if (stats.isSymbolicLink()) {
@@ -52,12 +52,28 @@ function privateDirectory(path: string, { replaceSymlink = false }: { replaceSym
       mkdirSync(path, { mode: 0o700 });
     } else if (!stats.isDirectory()) {
       throw new Error(`Jcode private path is not a directory: ${path}`);
+    } else if (requireOwner) {
+      assertCurrentUserOwns(path, stats.uid);
     }
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
     mkdirSync(path, { mode: 0o700 });
   }
   hardenPrivate(path, "dir");
+  // Verify owner after creation and hardening as well. On POSIX a privileged process can chmod an
+  // attacker-owned /tmp directory, so permissions alone never establish namespace ownership.
+  if (requireOwner) assertCurrentUserOwns(path, lstatSync(path).uid);
+}
+
+function assertCurrentUserOwns(path: string, uid: number): void {
+  // Jcode's connector refuses Windows before this helper is reachable: its released Harness API
+  // integration is a Unix-socket surface. Do not manufacture an extra ownership failure there.
+  if (process.platform === "win32") return;
+  const currentUid = process.getuid?.();
+  if (currentUid === undefined)
+    throw new Error(`cannot determine effective UID for Jcode short API socket directory: ${path}`);
+  if (uid !== currentUid)
+    throw new Error(`refusing Jcode short API socket directory owned by uid ${uid}, not effective uid ${currentUid}: ${path}`);
 }
 
 function mirrorParent(home: string, destination: string): void {
@@ -162,7 +178,7 @@ export interface ShortSocketHome {
 export function shortSocketHome(home: string): ShortSocketHome {
   const id = createHash("sha256").update(resolve(home)).digest("hex").slice(0, 12);
   const socketDir = join("/tmp", `jc-${id}`);
-  privateDirectory(socketDir);
+  privateDirectory(socketDir, { requireOwner: true });
   const alias = join(socketDir, "home");
   try {
     const stats = lstatSync(alias);

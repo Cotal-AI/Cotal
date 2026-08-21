@@ -138,7 +138,7 @@ try {
   let blockedErr = "";
   blocked.stderr?.on("data", (chunk: Buffer) => (blockedErr += chunk.toString()));
   await Promise.race([once(blocked, "exit"), sleep(10_000)]);
-  check("project MCP config is refused rather than overlaid", blocked.exitCode !== 0 && /project MCP configuration/.test(blockedErr), blockedErr);
+  check("project MCP config is refused rather than overlaid", blocked.exitCode !== 0 && /Jcode host startup failed \(project_mcp_config\)/.test(blockedErr), blockedErr);
   console.log(`\nJCODE HOST SMOKE PASSED (${pass} checks)`);
 } finally {
   if (child && child.exitCode === null) child.kill("SIGKILL");
