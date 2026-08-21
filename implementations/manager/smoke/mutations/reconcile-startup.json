@@ -1,7 +1,7 @@
 {
   "suite": "implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
   "guard": "A manager registers its control service before draining startup static lifecycle terminals, while every alias in the collected reconcile plan is refused for spawn until its own terminal returns.",
-  "command": "pnpm exec tsx implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
+  "command": "pnpm smoke:manager-reconcile-startup",
   "completionMarker": "MANAGER RECONCILE STARTUP SMOKE",
   "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/reconcile-startup.json",
   "why": [
