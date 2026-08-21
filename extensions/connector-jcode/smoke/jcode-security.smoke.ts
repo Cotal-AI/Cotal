@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmodSync, existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { spawnSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -16,33 +16,46 @@ const check = (name: string, condition: boolean, actual?: unknown): void => {
 
 const root = mkdtempSync(join(tmpdir(), "cotal-jcode-security-"));
 const tsx = fileURLToPath(new URL("../node_modules/.bin/tsx", import.meta.url));
-const containerTsx = "/workspace/extensions/connector-jcode/node_modules/.bin/tsx";
-const containerPrivateState = "/workspace/extensions/connector-jcode/src/private-state.ts";
+const esbuild = fileURLToPath(new URL("../node_modules/.bin/esbuild", import.meta.url));
+const privateState = fileURLToPath(new URL("../src/private-state.ts", import.meta.url));
 const host = fileURLToPath(new URL("../src/host-main.ts", import.meta.url));
-const containerProbe = "/workspace/extensions/connector-jcode/smoke/fixtures/foreign-owner-probe.mts";
 const fakeDir = join(root, "bin");
 const fake = join(fakeDir, "jcode");
 const canary = "AUTH_BYTES_CANARY=do-not-log-this";
 
 try {
-  // The production bug exists only in a privileged connector: a root process can chmod an
-  // attacker-owned 0700 directory, so the guard must reject ownership before mode hardening.
+  // The production bug exists only in a privileged connector: root can chmod an attacker-owned
+  // 0700 directory. Bundle the exact source under test, then run it as root in the public Node
+  // image that GitHub-hosted runners can pull anonymously. No locally-built Cotal image is needed.
   if (process.platform === "win32") {
     check("foreign-owner short socket directory check skipped on Windows", true);
   } else if (process.getuid?.() !== 0) {
-    if (!existsSync("/var/run/docker.sock")) throw new Error("Jcode foreign-owner security smoke requires the local Docker daemon");
-    // The mounted worktree supplies the exact source under test. The runner image supplies only
-    // a real root/container context, which is the deployment mode where chmod alone was unsafe.
+    const bundledPrivateState = join(root, "private-state.cjs");
+    const bundle = spawnSync(esbuild, [privateState, "--bundle", "--platform=node", "--format=cjs", `--outfile=${bundledPrivateState}`], { encoding: "utf8" });
+    check("foreign-owner probe bundles the exact private-state source", bundle.status === 0, { status: bundle.status, stdout: bundle.stdout, stderr: bundle.stderr });
+    writeFileSync(
+      join(root, "foreign-owner-probe.cjs"),
+      `const { shortSocketHome } = require("/proof/private-state.cjs");
+const home = process.argv[2];
+try {
+  shortSocketHome(home);
+  console.log("ADOPTED_FOREIGN_OWNER");
+  process.exitCode = 1;
+} catch (error) {
+  if (/owned by uid/.test(String(error?.message))) console.log("REFUSED_FOREIGN_OWNER");
+  else throw error;
+}
+`,
+    );
     const rootProbe = spawnSync("docker", [
-      "run", "--rm", "--entrypoint", "sh", "-u", "0:0", "-v", `${process.cwd()}:/workspace`, "cotal-runner:latest", "-c",
+      "run", "--rm", "--entrypoint", "sh", "-u", "0:0", "-v", `${root}:/proof:ro`, "node:24-slim", "-c",
       [
         "set -eu",
-        "cd /workspace",
-        `home=$(mktemp -d /tmp/jcode-owned-home.XXXXXX)`,
+        "home=$(mktemp -d /tmp/jcode-owned-home.XXXXXX)",
         `socket=/tmp/jc-$(node -e 'const c=require("node:crypto");const p=require("node:path");console.log(c.createHash("sha256").update(p.resolve(process.argv[1])).digest("hex").slice(0,12))' "$home")`,
         "mkdir -m 700 \"$socket\"",
         "chown 1001:1001 \"$socket\"",
-        `set +e; ${containerTsx} ${containerProbe} \"${containerPrivateState}\" \"$home\"; rc=$?; set -e`,
+        "set +e; node /proof/foreign-owner-probe.cjs \"$home\"; rc=$?; set -e",
         "rm -rf \"$socket\" \"$home\"",
         "exit \"$rc\"",
       ].join("; "),

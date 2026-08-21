@@ -1,7 +1,7 @@
 {
   "command": "pnpm smoke:jcode-security",
   "progressPattern": "✓",
-  "minTicks": 5,
+  "minTicks": 6,
   "mutations": [
     {
       "name": "Jcode short socket directory refuses foreign owner",
