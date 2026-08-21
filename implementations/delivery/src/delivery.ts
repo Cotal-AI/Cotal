@@ -1,6 +1,7 @@
 import { basename, dirname, join, resolve } from "node:path";
 import {
   CotalEndpoint,
+  DEFAULT_SERVER,
   LEASE_TTL_MS,
   accountFromCreds,
   credsClaims,
@@ -146,11 +147,14 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // registered remote meshes have a non-loopback broker and their own root. An explicit --server
   // remains a raw operator override for standalone/hosted recovery, as it was before the registry.
   // It is never replaced with a loopback default.
-  const target = v.server === undefined ? await resolveTargetOrExit({ space: requestedSpace }) : undefined;
+  // An injected store is a hosted composition boundary: it has no workstation registry or root
+  // to resolve through. Its caller supplies the endpoint (or keeps the longstanding raw default),
+  // while the registered CLI route below resolves when no override was passed.
+  const target = !store && v.server === undefined ? await resolveTargetOrExit({ space: requestedSpace }) : undefined;
   if (target) await preflightOrExit(target);
   const root = target?.root ?? findCotalRoot();
   const space = target?.space ?? requestedSpace;
-  const server = target?.server ?? v.server!;
+  const server = target?.server ?? v.server ?? DEFAULT_SERVER;
   const credsSrc = resolveCredsStore(v, root, store);
   const creds = await loadDeliveryCreds(credsSrc, v, root); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
