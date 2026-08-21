@@ -93,6 +93,11 @@ try {
   ok("offline registered broker refuses naming its recorded URL", offline.status === 1 && offlineOut.includes(`no broker answered at ${server}`), offlineOut);
   ok("offline registered broker never redirects to loopback", !offlineOut.includes("nats://127.0.0.1:4222"), offlineOut);
 
+  const offlineDeliver = cli(["deliver", "--space", space, "--dev-mint"]);
+  const offlineDeliverOut = output(offlineDeliver);
+  ok("offline delivery refuses naming its recorded URL", offlineDeliver.status === 1 && offlineDeliverOut.includes(`no broker answered at ${server}`), offlineDeliverOut);
+  ok("offline delivery never redirects to loopback", !offlineDeliverOut.includes("nats://127.0.0.1:4222"), offlineDeliverOut);
+
   console.log(`\nRECOVERY REGISTRY LIVE SMOKE OK (${pass} checks)`);
 } finally {
   for (const child of kids) child.kill("SIGKILL");

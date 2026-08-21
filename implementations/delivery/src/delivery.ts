@@ -147,6 +147,10 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // remains the resolution override. The resolved target also makes an unreachable registered
   // broker refuse with its recorded URL, never a default endpoint.
   const target = await resolveTargetOrExit({ space: requestedSpace, server: v.server });
+  // Confirm the selected registry target before loading a local daemon credential. This makes a
+  // stale remote record fail by the recorded URL even when its credential file is also absent, and
+  // keeps recovery diagnosis about the broker rather than a possibly foreign cwd.
+  await preflightOrExit(target);
   const credsSrc = resolveCredsStore(v, target.root, store);
   const space = target.space;
   const server = target.server;
