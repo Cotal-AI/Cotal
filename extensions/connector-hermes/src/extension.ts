@@ -28,6 +28,7 @@ export const hermesConnector: Connector = {
   name: "hermes",
   requires: ["hermes"],
   buildLaunch(opts: LaunchOpts): LaunchSpec {
+    if (opts.continueSession) throw new Error("the Hermes connector does not support exact-session continuation");
     // Hermes is Unix-only: its sidecar bridge + hook relay use AF_UNIX `.sock` paths and a Python
     // sidecar, none of which are ported to Windows. Fail loud rather than launch a half-wired agent
     // the manager can't drive (no Windows named-pipe bridge, no cooperative shutdown). No fallback.

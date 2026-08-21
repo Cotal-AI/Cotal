@@ -1,6 +1,6 @@
 {
   "name": "@cotal-ai/pi",
-  "version": "0.24.0",
+  "version": "0.25.0",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
@@ -31,13 +31,15 @@
     "prepublishOnly": "pnpm run build"
   },
   "peerDependencies": {
-    "@cotal-ai/core": ">=0.1.0"
+    "@cotal-ai/core": ">=0.1.0",
+    "@earendil-works/pi-tui": ">=0.79.10"
   },
   "devDependencies": {
     "@cotal-ai/core": "workspace:*",
     "@cotal-ai/connector-core": "workspace:*",
     "@earendil-works/pi-ai": "0.79.10",
     "@earendil-works/pi-coding-agent": "0.79.10",
+    "@earendil-works/pi-tui": "0.79.10",
     "esbuild": "^0.28.0",
     "typebox": "^1.1.0",
     "zod": "^4.4.3"

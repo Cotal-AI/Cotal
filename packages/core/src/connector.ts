@@ -70,6 +70,12 @@ export interface LaunchOpts {
    *  left untouched — resuming MUST NOT hijack the source session. A connector that can't fork
    *  THROWS at {@link Connector.buildLaunch} rather than silently spawning fresh. */
   resume?: string;
+  /** Exact session of THIS connector process to continue after a supervised process restart.
+   *  Distinct from {@link resume}: `resume` forks FROM an existing transcript into a new session;
+   *  `continueSession` reopens the already-meshed session itself. Manager-internal only, never a
+   *  CLI/manifest/model-provided field. A connector that cannot preserve its mesh surface across
+   *  same-session continuation throws rather than silently launching fresh. */
+  continueSession?: string;
   /** Publish this session's AG-UI event plane to the agent's own event channel (see
    *  {@link Connector.eventChannel}), so an external observer or UI can read what the agent actually
    *  did as structured events rather than as prose (sets `COTAL_EVENTS`). Defaults to OFF; set `true`
@@ -118,6 +124,10 @@ export interface LaunchSpec {
    *  OpenCode (in-process plugin) connectors mint one; absent only for a connector with no control
    *  plane at all. */
   control?: { path: string; token: string };
+  /** Connector-owned host-session state file. A supervised restart reads this exact manager-provided
+   *  path after process exit, then verifies the successor reports the same session over `control`.
+   *  Contains no transcript or credential; currently used by Pi for its current session id. */
+  sessionStatePath?: string;
 }
 
 /** One provider-specific model variant. `options` is opaque connector metadata for UIs; core never
@@ -198,6 +208,9 @@ export interface Connector extends Extension {
    *  stays as the backstop. Only a connector that forks-from a prior session (never hijacks it) sets
    *  this `true`. */
   readonly supportsResume?: boolean;
+  /** Whether this connector can reopen the exact host session named by
+   *  {@link LaunchOpts.continueSession} after a supervised process crash. Default-deny. */
+  readonly supportsSessionContinuation?: boolean;
   /** Whether this connector can honor {@link LaunchOpts.variant}. Default-deny so a variant request
    *  fails before provisioning side effects in the manager. */
   readonly supportsModelVariant?: boolean;

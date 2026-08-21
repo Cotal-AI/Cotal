@@ -387,6 +387,8 @@ smoke:int2-revoke:live
 smoke:operator-env-keep
 smoke:spawn-env-config
 smoke:spawn-env-e2e
+smoke:hermes-launch-env
+smoke:env-isolate
 
 # `cotal attach` redeems with the seed the MESH resolved, never one walked up from the cwd (#722):
 # a real authed broker that trusts one chain, a fossil `.cotal` holding another, and the binary run

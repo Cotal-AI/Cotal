@@ -438,6 +438,7 @@
     "smoke:pi-tool-closed": "tsx extensions/pi/smoke/tool-input-closed.smoke.ts",
     "smoke:hermes-tool-closed": "tsx extensions/connector-hermes/smoke/tool-input-closed.smoke.ts",
     "smoke:hermes-hooks-control": "tsx extensions/connector-hermes/smoke/hooks-control.smoke.ts",
+    "smoke:hermes-launch-env": "tsx extensions/connector-hermes/smoke/launch-env.smoke.ts",
     "smoke:codex-tool-closed": "tsx extensions/connector-codex/smoke/tool-input-closed.smoke.ts",
     "smoke:cli-on-instance": "tsx implementations/manager/smoke/cli-on-instance-live.smoke.ts",
     "smoke:seat-input": "tsx implementations/manager/smoke/seat-input-live.smoke.ts",

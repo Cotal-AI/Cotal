@@ -73,6 +73,7 @@ const agent = z.strictObject({
     events: z.boolean().default(false),
     shareTools: z.string().max(4096).optional(),
     forkSource: z.string().min(1).max(4096).optional(),
+    sessionId: z.string().min(1).max(4096).optional(),
     unresolvedLaunchOptionKeys: z.array(label).max(64).optional(),
   }),
   dependencies: z.array(path).max(16),

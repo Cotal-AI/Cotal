@@ -23,6 +23,7 @@ import {
 } from "@cotal-ai/connector-core";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type, type TSchema } from "typebox";
+import { wrapped } from "./wrap.js";
 
 const PULL_INBOX_DESCRIPTION =
   "Pull and clear quiet-channel ambient waiting for you. Connector-managed automatic traffic " +
@@ -66,28 +67,6 @@ function sendCallLine(name: string, config: AgentConfig, args: Record<string, un
   return `cotal_send → #${channel}: ${text}`;
 }
 
-/** Word-wrap a line to the viewport, satisfying pi-tui's structural `Component` contract
- *  ({ render(width): string[]; invalidate(): void }) without importing pi-tui — the published
- *  extension must add no runtime dependency on the host. Static text: invalidate is a no-op. */
-function wrapped(line: string): { render(width: number): string[]; invalidate(): void } {
-  return {
-    invalidate(): void {},
-    render(width: number): string[] {
-      const w = Math.max(16, width);
-      const out: string[] = [];
-      let rest = line.replace(/\s+/g, " ");
-      while (rest.length > w) {
-        const cut = rest.lastIndexOf(" ", w);
-        const at = cut > w / 2 ? cut : w;
-        out.push(rest.slice(0, at));
-        rest = rest.slice(at).trimStart();
-      }
-      out.push(rest);
-      return out;
-    },
-  };
-}
-
 const SEND_TOOLS = new Set(["cotal_send", "cotal_dm", "cotal_anycast"]);
 
 /** Register the full cotal_* tool set on a pi session, wired to one mesh agent. */
@@ -104,7 +83,7 @@ export function registerCotalTools(pi: ExtensionAPI, mesh: MeshAgent, config: Ag
       parameters: toParameters(readonlyInbox ? NO_TOOL_ARGS : spec.schema),
       promptGuidelines: spec.name === "cotal_send" ? SEND_GUIDELINES : undefined,
       renderCall: SEND_TOOLS.has(spec.name)
-        ? (args) => wrapped(sendCallLine(spec.name, config, (args ?? {}) as Record<string, unknown>))
+        ? (args) => wrapped(sendCallLine(spec.name, config, (args ?? {}) as Record<string, unknown>).replace(/\s+/g, " "))
         : undefined,
       async execute(_id, params) {
         const args: Record<string, unknown> = readonlyInbox
