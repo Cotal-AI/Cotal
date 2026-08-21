@@ -6,8 +6,8 @@
     {
       "name": "the manager's service answer is treated as healthy even when its control rail never answered",
       "file": "implementations/cli/src/commands/status.ts",
-      "find": "return { name: \"manager\", verdict: absentRail ? \"not-serving\" : \"refused\", facts };",
-      "replace": "return { name: \"manager\", verdict: \"serving\", facts };",
+      "find": "if (!noService) return { name: \"manager\", verdict: \"refused\", facts };\n    const liveRecord = record.kind === \"live\";\n    const hasLease = facts.some((fact) => fact.startsWith(\"lease holder \"));\n    return { name: \"manager\", verdict: liveRecord || hasLease ? \"not-serving\" : \"absent\", facts };",
+      "replace": "if (!noService) return { name: \"manager\", verdict: \"refused\", facts };\n    return { name: \"manager\", verdict: \"serving\", facts };",
       "expectRed": "live lease-holder that never serves exits present-not-serving (2)",
       "cell": "live lease-holder that never serves exits present-not-serving (2)"
     },
