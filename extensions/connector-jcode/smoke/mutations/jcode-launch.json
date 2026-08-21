@@ -1,0 +1,21 @@
+{
+  "command": "pnpm smoke:jcode-args",
+  "progressPattern": "✓",
+  "minTicks": 20,
+  "mutations": [
+    {
+      "name": "Jcode connector self-registers",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "registry.register(jcodeConnector);",
+      "replace": "// registry intentionally removed",
+      "expectRed": "self-registers as connector jcode"
+    },
+    {
+      "name": "Jcode connector rejects unsupported resume",
+      "file": "extensions/connector-jcode/src/extension.ts",
+      "find": "if (opts.resume)\n      throw new Error(\"jcode connector: resuming an existing session is not supported — the private Harness API instance never shares a session with another seat\");",
+      "replace": "if (false) throw new Error(\"mutant\");",
+      "expectRed": "refuses resume"
+    }
+  ]
+}

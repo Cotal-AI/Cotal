@@ -67,6 +67,7 @@ const UNGATED: Record<string, string> = {
   "smoke:orca:live": "drives the public orca CLI",
   "smoke:orca-e2e:live": "drives the public orca CLI", "smoke:pi": "needs a pi install", "smoke:codex-live": "needs a logged-in codex CLI",
   "smoke:codex-tui-live": "needs a codex TUI session",
+  "smoke:jcode-live": "needs an installed, authenticated jcode CLI (COTAL_E2E_JCODE=1)",
   // A STANDING DECISION, and only for the REAL-SESSION arm. The same suite is GATED as
   // `smoke:agui-map`, pointed at a fixture DERIVED from a real session by
   // `scripts/redact-claude-session.mjs` (whitelist by construction, identifiers pseudonymised

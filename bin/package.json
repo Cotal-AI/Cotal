@@ -52,6 +52,7 @@
     "@cotal-ai/connector-claude-code": "workspace:*",
     "@cotal-ai/connector-codex": "workspace:*",
     "@cotal-ai/connector-hermes": "workspace:*",
+    "@cotal-ai/connector-jcode": "workspace:*",
     "@cotal-ai/connector-opencode": "workspace:*",
     "@cotal-ai/pi": "workspace:*",
     "@cotal-ai/smoke-kit": "workspace:*",
