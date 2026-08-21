@@ -142,27 +142,29 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // Space comes from --space (the CLI passes it). Only --dev-mint may derive it from the local signer.
   const requestedSpace = v.space ?? (v["dev-mint"] !== undefined ? soleSpaceOf(authDir(findCotalRoot())) : undefined);
   if (!requestedSpace) throw new Error("delivery: --space is required (the scoped creds file does not encode it)");
-  // Recovery must resolve through the shared workspace registry before it reads the daemon cred:
+  // With no explicit endpoint, recovery must resolve through the shared workspace registry:
   // registered remote meshes have a non-loopback broker and their own root. An explicit --server
-  // remains the resolution override. The resolved target also makes an unreachable registered
-  // broker refuse with its recorded URL, never a default endpoint.
-  const target = await resolveTargetOrExit({ space: requestedSpace, server: v.server });
-  // Confirm the selected registry target before loading a local daemon credential. This makes a
-  // stale remote record fail by the recorded URL even when its credential file is also absent, and
-  // keeps recovery diagnosis about the broker rather than a possibly foreign cwd.
-  await preflightOrExit(target);
-  const credsSrc = resolveCredsStore(v, target.root, store);
-  const space = target.space;
-  const server = target.server;
-  const creds = await loadDeliveryCreds(credsSrc, v, target.root); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
+  // remains a raw operator override for standalone/hosted recovery, as it was before the registry.
+  // It is never replaced with a loopback default.
+  const target = v.server === undefined ? await resolveTargetOrExit({ space: requestedSpace }) : undefined;
+  if (target) await preflightOrExit(target);
+  const root = target?.root ?? findCotalRoot();
+  const space = target?.space ?? requestedSpace;
+  const server = target?.server ?? v.server!;
+  const credsSrc = resolveCredsStore(v, root, store);
+  const creds = await loadDeliveryCreds(credsSrc, v, root); // pre-minted scoped cred; NO signer/loadSpaceAuth in this path
   let latestCreds = creds.initial; // freshest renewal — the broker-reachability poll below presents it
 
   // REQUIRE TLS when the operator said to. A registry-recorded TLS requirement is equally binding;
   // a command flag can only strengthen that decision.
   // Boolean flags arrive as presence in this Values map (`Record<string, string | undefined>`),
   // matching how `--dev-mint` is read below. Comparing to `true` would silently never match.
-  const tls = target.tlsRequired || v.tls !== undefined;
-  await preflightOrExit(target, latestCreds);
+  const tls = (target?.tlsRequired ?? false) || v.tls !== undefined;
+  if (target) await preflightOrExit(target, latestCreds);
+  else if (!(await isReachable(server, { creds: latestCreds, ...(tls ? { tls: true } : {}) }))) {
+    console.error(`✗ delivery: can't reach NATS at ${server}. Run: cotal up`);
+    process.exit(1);
+  }
 
   // PIN THE SCAN TARGET ONCE, HERE. The $SYS sweeps below resolve an ACCOUNT, and a complete sweep
   // of the WRONG account is indistinguishable from "the principal is gone" — a healthy-looking
@@ -171,7 +173,7 @@ export async function runDelivery(args: ParsedArgs, store?: SecretStore): Promis
   // foreign tenant while looking entirely well. So: the root is fixed at start, and the account on
   // disk is cross-checked against the account this daemon's OWN credential authenticates as — a
   // fact that does not come from that root, which is what makes it an independent check.
-  const scanTarget: ScanTarget = { root: target.root, expectedAccount: accountFromCreds(creds.initial) };
+  const scanTarget: ScanTarget = { root, expectedAccount: accountFromCreds(creds.initial) };
   console.error(`• delivery: $SYS sweeps bound to ${join(scanTarget.root, ".cotal")} (account ${scanTarget.expectedAccount})`);
 
   const ep = new CotalEndpoint({
