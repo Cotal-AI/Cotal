@@ -30,6 +30,13 @@ try {
     // check() can print its label, which makes mutation-proof correctly call it an unrelated red.
   }
   check("self-registers as connector jcode", registered);
+  if (process.platform === "win32") {
+    // The refusal below is the FIRST buildLaunch on this platform: every later probe in this file
+    // assumes a Unix host, so the Windows arm must run before any of them can throw unlabelled.
+    throws("refuses unsupported Windows host", () => jcodeConnector.buildLaunch({ space: "s", name: "n" }), /not supported on Windows/);
+    console.log(`\nJCODE ARGS SMOKE PASSED (${pass} checks)`);
+    process.exit(0);
+  }
   const base = jcodeConnector.buildLaunch({ space: "space", name: "seat" });
   check("starts the host entry", base.args.length === 1 && /host/.test(base.args[0]), base.args);
   check("requires the jcode binary", jcodeConnector.requires?.join(",") === "jcode");
@@ -82,11 +89,6 @@ try {
   check("uses agent-file model as a default", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona }).env?.COTAL_MODEL === "from-file");
   check("explicit model wins over agent file", jcodeConnector.buildLaunch({ space: "s", name: "seat", configPath: persona, model: "flag" }).env?.COTAL_MODEL === "flag");
 
-  if (process.platform === "win32") {
-    throws("refuses unsupported Windows host", () => jcodeConnector.buildLaunch({ space: "s", name: "n" }), /not supported on Windows/);
-    console.log(`\nJCODE ARGS SMOKE PASSED (${pass} checks)`);
-    process.exit(0);
-  }
   // Jcode decorates its MCP calls with these two harness fields. The bridge extends only the
   // advertised host schema and strips them before relaying; arbitrary Cotal inputs remain closed.
   const hostSchema = cotalToolSpecs(configFromEnv(full.env), "jcode").find((spec) => spec.name === "cotal_dm")!.schema
