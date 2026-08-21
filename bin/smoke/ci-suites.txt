@@ -153,6 +153,7 @@ smoke:codex-dist
 smoke:codex-installed
 smoke:jcode-args
 smoke:jcode-host
+smoke:jcode-private-state
 smoke:web-harness
 smoke:web-parts
 smoke:web-channel-authority
