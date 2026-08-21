@@ -1,0 +1,37 @@
+{
+  "suite": "implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
+  "guard": "A manager registers its control service before draining startup static lifecycle terminals, while every alias in the collected reconcile plan is refused for spawn until its own terminal returns.",
+  "command": "pnpm exec tsx implementations/manager/smoke/manager-reconcile-startup.smoke.ts",
+  "completionMarker": "MANAGER RECONCILE STARTUP SMOKE",
+  "proveWith": "pnpm mutation-proof --config implementations/manager/smoke/mutations/reconcile-startup.json",
+  "why": [
+    "The live fixture creates real durable ACTIVE orphan rows against a real JWT broker before the",
+    "manager starts. It waits for an observed terminal transition, then calls the registered status",
+    "service while later rows are still ACTIVE. This is the entrypoint and outage shape, not a",
+    "hand-constructed call to reconcileStaticLifecycles.",
+    "",
+    "The second cell invokes spawn for a later planned alias. It must reach the manager service and",
+    "be refused by the alias fence before connector resolution. That catches both moving the fence",
+    "behind an await and dropping the startAgent guard."
+  ],
+  "mutations": [
+    {
+      "name": "serve last again, recreating startup-wide manager unavailability",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    const startupReconcile = this.auth && !this.userMode ? this.reconcileStaticLifecycles() : undefined;\n    if (startupReconcile)\n      void startupReconcile.catch((e) => console.error(`! ${STARTUP_RECONCILING}: ${(e as Error).message} - a later manager start retries any unfinished terminal`));",
+      "replace": "    if (this.auth && !this.userMode) await this.reconcileStaticLifecycles();",
+      "expectRed": "status serves while later orphan rows remain ACTIVE",
+      "cell": "status serves while later orphan rows remain ACTIVE",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    },
+    {
+      "name": "drop the alias admission guard",
+      "file": "implementations/manager/src/manager.ts",
+      "find": "    if (this.reconcilingAliases.has(ref))\n      return { ok: false, error: `the name \"${ref}\" is still reconciling at manager startup; its prior lifecycle terminal owns this alias until it completes. Retry shortly.` };",
+      "replace": "    void this.reconcilingAliases;",
+      "expectRed": "spawn for an alias still reconciling is refused by its reconcile gate",
+      "cell": "spawn for an alias still reconciling is refused by its reconcile gate",
+      "afterRestore": "pnpm --filter @cotal-ai/manager... build"
+    }
+  ]
+}

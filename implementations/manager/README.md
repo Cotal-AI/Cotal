@@ -14,6 +14,15 @@ each other; they meet at runtime over NATS.
 See [docs/architecture.md](../../docs/architecture.md) (*Manager*) and the
 [root AGENTS.md](../../AGENTS.md) for the tier rules.
 
+## Startup reconciliation
+
+On an authenticated static mesh, the manager registers and serves its control endpoint before it
+finishes reconciling durable orphaned static slots. Startup logs each terminal as
+`static reconcile k/N via <broker>: <alias> ...`; `cotal ps` is therefore available during a slow
+broker sweep. The no-race boundary is per alias: `spawn` for an alias still reconciling refuses
+until that exact lifecycle terminal completes; unrelated aliases and read-only control remain
+available.
+
 ## Maintenance API
 
 The admin control operations `preparePreservation {attemptId}` and
