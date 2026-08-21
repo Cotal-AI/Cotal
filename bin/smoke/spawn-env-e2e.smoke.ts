@@ -38,6 +38,7 @@ import { registry, type Connector, type LaunchOpts } from "@cotal-ai/core";
 import "@cotal-ai/connector-claude-code";
 import "@cotal-ai/connector-opencode";
 import "@cotal-ai/connector-codex";
+import "@cotal-ai/connector-jcode";
 
 const ALLOWED = "E2E_ALLOWED_7f21", DENIED = "E2E_DENIED_7f21";
 const box = mkdtempSync(join(tmpdir(), "cotal-e2e-"));
@@ -74,7 +75,7 @@ const ck = (label: string, cond: boolean, extra = "") => {
   console.log(`${cond ? "  ✓" : "  ✗"} ${label}${cond ? "" : "  <- " + extra}`); if (!cond) fail++;
 };
 
-for (const connectorName of ["claude", "opencode", "codex"]) {
+for (const connectorName of ["claude", "opencode", "codex", "jcode"]) {
   console.log(`\n=== ${connectorName} ===`);
   const connector = registry.resolve<Connector>("connector", connectorName);
 

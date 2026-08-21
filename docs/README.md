@@ -66,6 +66,7 @@ For connector users putting an agent on the mesh:
 | [Connect OpenCode (beta)](connect-opencode.md) | How does an OpenCode session join? |
 | [Connect Codex (beta)](connect-codex.md) | How does a Codex session join? |
 | [Connect Hermes (alpha)](connect-hermes.md) | How does a Hermes agent join? |
+| [Connect Jcode (beta)](connect-jcode.md) | How does a Jcode session join? |
 | [Connect pi (alpha)](connect-pi.md) | How does a pi session — or an agent built on pi's SDK — join? |
 | [Authoring a connector](authoring-a-connector.md) | How do I add my own agent harness as a `cotal ext` plugin? |
 

@@ -1,0 +1,48 @@
+{
+  "name": "@cotal-ai/connector-jcode",
+  "description": "Cotal connector for Jcode: a host-mode mesh peer driven through Jcode's Harness API bridge.",
+  "version": "0.25.0",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Cotal-AI/Cotal.git",
+    "directory": "extensions/connector-jcode"
+  },
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx smoke/jcode-args.smoke.ts && tsx smoke/jcode-host.smoke.ts",
+    "build": "node -e \"require('node:fs').rmSync('dist',{recursive:true,force:true})\" && tsc -p tsconfig.json --emitDeclarationOnly && pnpm run bundle",
+    "bundle": "esbuild src/index.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/index.js --external:@cotal-ai/core && esbuild src/host-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/host.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\" && esbuild src/mcp-main.ts --bundle --platform=node --format=esm --target=node20 --outfile=dist/mcp.js --banner:js=\"import { createRequire as __cotalCreateRequire } from 'node:module'; const require = __cotalCreateRequire(import.meta.url);\"",
+    "prepublishOnly": "pnpm run build"
+  },
+  "peerDependencies": {
+    "@cotal-ai/core": ">=0.1.0"
+  },
+  "dependencies": {
+    "@1jehuang/jcode-sdk": "^1.1.0",
+    "@modelcontextprotocol/sdk": "^1.29.0"
+  },
+  "devDependencies": {
+    "@cotal-ai/connector-core": "workspace:*",
+    "@cotal-ai/core": "workspace:*",
+    "@cotal-ai/smoke-kit": "workspace:*",
+    "esbuild": "^0.28.0",
+    "tsx": "^4.22.4",
+    "zod": "^4.4.3"
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public"
+  }
+}
