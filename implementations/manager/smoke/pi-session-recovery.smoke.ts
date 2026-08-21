@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -164,8 +164,21 @@ for (let attempt = 1; attempt <= 3; attempt++) {
   check(opts.resume === undefined && opts.prompt === undefined, `crash ${attempt} never replays fork source or initial prompt`);
 }
 
-const inventory = (manager as unknown as { resumeEntry(agent: typeof managed): { launch: { sessionId?: string } } }).resumeEntry(managed);
+const inventory = (manager as unknown as { resumeEntry(agent: typeof managed): { launch: { sessionId?: string }; identity: { lifecycleUid: string }; name: string } }).resumeEntry(managed);
 check(inventory.launch.sessionId === sessionId, "manager preservation records the exact current Pi session");
+const legacyInventory = { ...inventory, launch: { ...inventory.launch, sessionId: undefined } };
+const legacyPath = join(workspaceRoot, ".cotal", "pi-sessions", `${legacyInventory.name}-${legacyInventory.identity.lifecycleUid}.json`);
+writeFileSync(legacyPath, JSON.stringify({ version: 1, sessionId, status: "running" }) + "\n");
+const bridged = (manager as unknown as { retainedSessionId(entry: typeof legacyInventory, connector: Connector): string | undefined }).retainedSessionId(legacyInventory, connector);
+check(bridged === sessionId, "an older inventory recovers the exact session from lifecycle-keyed upgrade state");
+rmSync(legacyPath, { force: true });
+assert.throws(
+  () => (manager as unknown as { retainedSessionId(entry: typeof legacyInventory, connector: Connector): string | undefined }).retainedSessionId(legacyInventory, connector),
+  /refusing to resume fresh/,
+  "an older inventory without upgrade state must fail loud instead of losing context",
+);
+checks++;
+writeFileSync(statePath, JSON.stringify({ version: 1, sessionId, status: "running" }) + "\n");
 
 // Fourth crash in the rolling window is a loop: no fourth spawn and normal terminal cleanup runs.
 handles.at(-1)!.crash();

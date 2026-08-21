@@ -2767,9 +2767,7 @@ export class Manager {
     }
   }
 
-  private readManagedSessionState(a: ManagedAgent): { sessionId: string; status: "running" | "quit" } {
-    const path = a.restart?.sessionStatePath;
-    if (!path) throw new Error("connector supplied no session state path");
+  private readSessionStatePath(path: string): { sessionId: string; status: "running" | "quit" } {
     let parsed: unknown;
     try {
       parsed = JSON.parse(readFileSync(path, "utf8"));
@@ -2781,6 +2779,28 @@ export class Manager {
         (state.status !== "running" && state.status !== "quit"))
       throw new Error(`connector session state ${path} is malformed`);
     return { sessionId: state.sessionId, status: state.status };
+  }
+
+  private readManagedSessionState(a: ManagedAgent): { sessionId: string; status: "running" | "quit" } {
+    const path = a.restart?.sessionStatePath;
+    if (!path) throw new Error("connector supplied no session state path");
+    return this.readSessionStatePath(path);
+  }
+
+  /** Upgrade bridge: inventories written before sessionId existed can still resume exactly after
+   *  the old Pi seat has loaded the new extension once and written its lifecycle-keyed state file. */
+  private retainedSessionId(entry: ManagerResumeAgent, connector: Connector): string | undefined {
+    if (entry.launch.sessionId) return entry.launch.sessionId;
+    if (!connector.supportsSessionContinuation) return undefined;
+    const path = join(this.workspaceRoot, ".cotal", "pi-sessions", `${entry.name}-${entry.identity.lifecycleUid}.json`);
+    try {
+      return this.readSessionStatePath(path).sessionId;
+    } catch (error) {
+      throw new Error(
+        `retained ${connector.name} agent ${entry.name} has no sessionId in its older inventory and no usable upgrade state at ${path} ` +
+          `(${(error as Error).message}). Reload the live Pi seat before the preservation cut; refusing to resume fresh and lose its context.`,
+      );
+    }
   }
 
   private readManagedSession(a: ManagedAgent): string {
@@ -4035,9 +4055,15 @@ export class Manager {
         return { ok: false, error: `${connector.name} harness needs ${missing.join(", ")} on PATH - not found` };
       if (entry.launch.variant && !connector.supportsModelVariant)
         return { ok: false, error: `${connector.name} connector does not support model variants (variant)` };
-      if (entry.launch.forkSource && !entry.launch.sessionId && !connector.supportsResume)
+      let retainedSession: string | undefined;
+      try {
+        retainedSession = this.retainedSessionId(entry, connector);
+      } catch (error) {
+        return { ok: false, error: (error as Error).message };
+      }
+      if (entry.launch.forkSource && !retainedSession && !connector.supportsResume)
         return { ok: false, error: `${connector.name} connector does not support session fork (resume)` };
-      if (entry.launch.sessionId && !connector.supportsSessionContinuation)
+      if (retainedSession && !connector.supportsSessionContinuation)
         return { ok: false, error: `${connector.name} connector does not support exact-session continuation` };
 
       let launchOptions: Record<string, unknown> | undefined;
@@ -4094,8 +4120,8 @@ export class Manager {
           model: entry.launch.model,
           variant: entry.launch.variant,
           launchOptions,
-          resume: entry.launch.sessionId ? undefined : entry.launch.forkSource,
-          continueSession: entry.launch.sessionId,
+          resume: retainedSession ? undefined : entry.launch.forkSource,
+          continueSession: retainedSession,
           subscribe: entry.launch.subscribe,
           allowSubscribe: entry.launch.allowSubscribe,
           allowPublish: entry.launch.allowPublish,
