@@ -97,17 +97,24 @@ try {
   host.stdout?.on("data", (chunk: Buffer) => (output += chunk.toString()));
   host.stderr?.on("data", (chunk: Buffer) => (output += chunk.toString()));
 
-  await waitFor("Jcode peer presence", () => peerId);
-  check("real Jcode Harness API seat joins the mesh", Boolean(peerId));
+  try {
+    await waitFor("Jcode peer presence", () => peerId);
+    check("real Jcode Harness API seat joins the mesh", Boolean(peerId));
 
-  await operator.unicast(
-    peerId!,
-    "Use cotal_dm to send exactly the single word JCODE_LIVE_PONG to the peer named operator. Do not run commands and do not reply in text; make that one tool call.",
-  );
-  await waitFor("Jcode mesh-tool reply", () => (reply.includes("JCODE_LIVE_PONG") ? reply : undefined));
-  check("real Jcode model replies over the mesh via cotal_dm", reply.includes("JCODE_LIVE_PONG"), reply);
-  check("presence reports working during the Harness API turn", sawWorking);
-  console.log(`\nJCODE LIVE E2E PASSED (${pass} checks)`);
+    await operator.unicast(
+      peerId!,
+      "Use cotal_dm to send exactly the single word JCODE_LIVE_PONG to the peer named operator. Do not run commands and do not reply in text; make that one tool call.",
+    );
+    await waitFor("Jcode mesh-tool reply", () => (reply.includes("JCODE_LIVE_PONG") ? reply : undefined));
+    check("real Jcode model replies over the mesh via cotal_dm", reply.includes("JCODE_LIVE_PONG"), reply);
+    check("presence reports working during the Harness API turn", sawWorking);
+    console.log(`\nJCODE LIVE E2E PASSED (${pass} checks)`);
+  } catch (error) {
+    // The harness reports startup causes only on its host streams. Print them before rethrowing a
+    // waitFor failure so a missing peer is diagnosable without hand-editing the smoke.
+    process.stderr.write(`\nJCODE LIVE HOST OUTPUT:\n${output || "(no host output captured)"}\n`);
+    throw error;
+  }
 } finally {
   if (host && host.exitCode === null) {
     host.kill("SIGTERM");

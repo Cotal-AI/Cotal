@@ -1,9 +1,28 @@
 import { runJcodeHost } from "./host.js";
 
+const STARTUP_FAILURE_CODES = new Set([
+  "project_mcp_config",
+  "jcode_not_found",
+  "startup_failed",
+  "startup_timeout",
+  "invalid_instance_home",
+  "connect_failed",
+  "handshake_failed",
+  "unsupported_version",
+]);
+
+function startupFailureCode(error: unknown): string {
+  // This refusal is emitted by our own project-config preflight. Expose its fixed code, never the
+  // source message, because the message lists local filenames and arbitrary child errors do not.
+  if (error instanceof Error && error.message.startsWith("jcode connector: project MCP configuration")) return "project_mcp_config";
+  const code = typeof error === "object" && error !== null && "code" in error ? (error as { code?: unknown }).code : undefined;
+  return typeof code === "string" && STARTUP_FAILURE_CODES.has(code) ? code : "unknown";
+}
+
 runJcodeHost().catch((error) => {
-  const err = error as Error;
-  const stack = err.stack?.split("\n").slice(1).join("\n");
-  if (stack?.trim()) process.stderr.write(`${stack}\n`);
-  process.stderr.write(`[cotal-jcode] fatal: ${err.message || String(error)}\n`);
+  // The SDK appends captured child stderr to startup errors. A Jcode auth failure can therefore
+  // carry sensitive provider material. Keep the SDK's fixed error code for diagnosis, but never
+  // render the caught message, stack, or child bytes. The live smoke prints this controlled reason.
+  process.stderr.write(`[cotal-jcode] fatal: Jcode host startup failed (${startupFailureCode(error)}); inspect the private Jcode logs.\n`);
   process.exit(1);
 });

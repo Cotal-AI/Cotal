@@ -6,6 +6,7 @@ import { join, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { JcodeClient, type ApiEvent } from "@1jehuang/jcode-sdk";
 import { hardenPrivate, loadAgentFile } from "@cotal-ai/core";
+import { mirrorJcodeCredentials, shortSocketHome } from "./private-state.js";
 import {
   MeshAgent,
   ORIENTATION_BOOTSTRAP,
@@ -221,6 +222,11 @@ export async function runJcodeHost(): Promise<void> {
   const cwd = process.cwd();
   assertNoProjectMcpConfig(cwd);
   const home = privateAgentHome(config.space, config.name);
+  // SDK 1.1.0 has no socket-path launch option: it derives `run/jcode-api.sock` below jcodeHome.
+  // The managed home stays in the workspace, but this private short alias keeps that fixed API
+  // path below AF_UNIX's platform limit. Failure is fatal; a long-path fallback is the reported bug.
+  mirrorJcodeCredentials(home);
+  const socketHome = shortSocketHome(home);
   const relay = relayEndpoint(config.space, config.name);
 
   // The endpoint is the sole reader of Cotal material. Once it has parsed config/control, neither
@@ -254,6 +260,7 @@ export async function runJcodeHost(): Promise<void> {
     try {
       await client?.close();
     } finally {
+      socketHome.dispose();
       await agent.stop().catch(() => {});
       process.exit(code);
     }
@@ -315,9 +322,11 @@ export async function runJcodeHost(): Promise<void> {
   try {
     client = await JcodeClient.launch({
       binary,
-      jcodeHome: home,
+      jcodeHome: socketHome.jcodeHome,
       workingDir: cwd,
-      inheritLogins: true,
+      // Re-copied above on every launch. Do not call the SDK default: it links rotating provider
+      // auth files, while current jcode correctly refuses external auth paths that are symlinks.
+      inheritLogins: false,
       env: { JCODE_DISABLE_CLAUDE_MCP: "1" },
     });
     const session = await client.createSession(cwd);
@@ -365,10 +374,10 @@ export async function runJcodeHost(): Promise<void> {
 
     const useTui = tuiOverride ? /^(1|true|yes|on)$/i.test(tuiOverride) : Boolean(process.stdout.isTTY);
     if (useTui) {
-      const runtime = join(home, "run");
+      const runtime = join(socketHome.jcodeHome, "run");
       tui = spawn(binary, ["--socket", join(runtime, "jcode.sock"), "--resume", sessionId], {
         cwd,
-        env: { ...noCotalEnv(), JCODE_HOME: home, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
+        env: { ...noCotalEnv(), JCODE_HOME: socketHome.jcodeHome, JCODE_RUNTIME_DIR: runtime, JCODE_SOCKET: join(runtime, "jcode.sock") },
         stdio: "inherit",
       });
       tui.once("exit", (code) => void shutdown(code ?? 0));
@@ -377,6 +386,7 @@ export async function runJcodeHost(): Promise<void> {
     startControl?.close();
     await closeServer(relayServer);
     await client?.close().catch(() => {});
+    socketHome.dispose();
     await agent.stop().catch(() => {});
     throw error;
   }
