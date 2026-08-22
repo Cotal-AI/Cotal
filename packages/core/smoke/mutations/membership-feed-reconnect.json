@@ -6,7 +6,7 @@
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
     "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned client aborts that path after the named read failure, so it is not misreported as a mutation kill.",
-    "The four completing mutations isolate watch rearm, caller-stop broker deletion, fresh-connection predecessor cleanup after terminal close, and rejected-chain recovery."
+    "The three completing mutations isolate watch rearm, awaitable caller-stop broker deletion, and fresh-connection predecessor cleanup after terminal close. Transient rejected-chain recovery remains a direct regression cell; removing its reset perturbs earlier cleanup ordering before that named cell and is not misreported as an isolated kill."
   ],
   "mutations": [
     {
@@ -35,15 +35,6 @@
       "expectRed": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "cell": "terminal self-heal creates one successor and deletes the closed-epoch predecessor",
       "note": "After nc.closed, the fresh connection must delete the recorded predecessor before creating its successor."
-    },
-    {
-      "name": "a rejected watch arm permanently poisons the serialized lifecycle chain",
-      "file": "packages/core/src/endpoint.ts",
-      "find": "    for (const watch of this.membershipFeedWatches)\n      watch.arm = watch.arm.catch(() => {}).then(() => this.disarmMembershipWatch(watch));\n",
-      "replace": "    for (const watch of this.membershipFeedWatches)\n      watch.arm = watch.arm.then(() => this.disarmMembershipWatch(watch));\n",
-      "expectRed": "a later rebuild recovers a membership watch after a transient arm rejection",
-      "cell": "a later rebuild recovers a membership watch after a transient arm rejection",
-      "note": "clearConnectionScoped is the one reset point: it must turn a rejected prior arm into a completing cleanup queue before rearm appends new work."
     }
   ]
 }
