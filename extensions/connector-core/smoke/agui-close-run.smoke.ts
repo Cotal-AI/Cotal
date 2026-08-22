@@ -22,10 +22,18 @@
  *   K4  drop the halted guard -> `close:a-HALTED-emitter-refuses-to-close`
  *   K5  drop the `onRunClosed` report
  *       -> `holder:the-closed-run-is-reported-so-a-mapper-can-forget-it`
+ *   K6  publish a finish even when a failure was reported, which is what this plane shipped
+ *       -> `close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code`
+ *   K7  drop the reason in the holder, one layer above the emitter that would have carried it
+ *       -> `holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given`
+ *   K8  skip the close-path bound, so an oversized failure detail still throws in packUnits
+ *       -> `close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR`
+ *   K9  delete `this.run = undefined` from the shared terminal arm of AguiBrackets.accept
+ *       -> `close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED`
+ *       The property is real; the claim that no deletion can violate it was false. The machine
+ *       staying open after RUN_ERROR is exactly the line that lets a second close publish a finish.
  *
- * WHAT CARRIES NO KILL, NAMED RATHER THAN COUNTED AS COVERAGE. Two properties here are held by
- * something other than a line a mutation can break, and saying so is what keeps the five above
- * meaning what they say:
+ * WHAT CARRIES NO KILL, NAMED RATHER THAN COUNTED AS COVERAGE:
  *   - the clone validation before the publish. A closing unit is ONE event, and the real machine
  *     refuses it before mutating anything, so removing the clone changes no observable outcome. It
  *     is kept as symmetry with `pump`, where a multi-event batch makes it load-bearing, and it is
@@ -93,6 +101,8 @@ interface Call {
   id: string;
   expectedLastSubjectSeq: number;
   parts: Part[];
+  channel: string;
+  encodedSize: number;
 }
 
 class FakeEndpoint {
@@ -119,7 +129,18 @@ class FakeEndpoint {
     id: string;
     expectedLastSubjectSeq: number;
   }): Promise<{ ack: { seq: number; duplicate: boolean } }> {
-    this.publishes.push({ id: o.id, expectedLastSubjectSeq: o.expectedLastSubjectSeq, parts: o.parts });
+    const encodedSize = this.encodedSize(o);
+    // THE INSTRUMENT ENFORCES THE CEILING, because the broker does. A fake that accepts any size
+    // cannot witness an over-packed closing frame — the defect this suite's boundary cell grades.
+    if (encodedSize > this.maxPayload)
+      throw new Error(`FakeEndpoint: payload ${encodedSize} exceeds max_payload ${this.maxPayload}`);
+    this.publishes.push({
+      id: o.id,
+      expectedLastSubjectSeq: o.expectedLastSubjectSeq,
+      parts: o.parts,
+      channel: o.channel,
+      encodedSize,
+    });
     const a = this.answers.shift();
     if (a === undefined) throw new Error("FakeEndpoint: publish with no scripted answer");
     if (a instanceof Error) throw a;
@@ -383,6 +404,110 @@ try {
     c("holder:a-second-close-reports-NOTHING", closedRuns.length === 1, closedRuns);
   });
 
+  // ── AN ERROR CLOSE PUBLISHES RUN_ERROR, AND IT IS STILL A CLOSE ─────────────────────────────
+  //
+  // A turn that FAILED ended too, so it closes through this same terminal — the connector supplies
+  // the reason and this file carries it to the wire. The property that matters to a reader is not
+  // which method was called but WHAT THE SEQUENCE SAYS: `RUN_ERROR` closes a run on its own, so a
+  // run that emitted one must never also emit a `RUN_FINISHED`. That is graded below by asking the
+  // stream, after an error close, for another close and requiring it to publish nothing.
+  await block("AN ERROR CLOSE PUBLISHES RUN_ERROR, AND IT IS STILL A CLOSE", async () => {
+    const { src, walPath, wal, source } = await fresh("error-close");
+    const ep = new FakeEndpoint();
+    const em = await AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper });
+    await em.pump(); // adopt
+    append(src, { open: "run-e" });
+    ep.answers = [{ seq: 21, duplicate: false }];
+    await em.pump();
+
+    const beforeClose = await reopen(walPath);
+    const cursorBefore = beforeClose.frontier.sourceCursor;
+
+    ep.answers = [{ seq: 22, duplicate: false }];
+    const closed = await attempt(() =>
+      em.closeRun({ timestamp: 99, error: { message: "upstream returned 500", code: "APIError" } }),
+    );
+    c("close:an-ERROR-close-names-the-run-it-closed", closed.value === "run-e", {
+      returned: closed.value,
+      err: closed.err?.message,
+    });
+
+    const errFrame = frameOf(ep.publishes[ep.publishes.length - 1]!);
+    const ev = errFrame.events[0] as { type?: string; message?: string; code?: string; runId?: string };
+    c(
+      "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code",
+      errFrame.events.length === 1 &&
+        ev.type === "RUN_ERROR" &&
+        ev.message === "upstream returned 500" &&
+        ev.code === "APIError" &&
+        // RUN_ERROR has no runId of its own; the FRAME is what attributes it to a run.
+        ev.runId === undefined &&
+        errFrame.runId === "run-e",
+      { events: errFrame.events, frameRun: errFrame.runId },
+    );
+
+    // Same cursor discipline as the finish: this frame consumed no source record either.
+    const afterClose = await reopen(walPath);
+    c(
+      "close:an-ERROR-close-republishes-the-source-cursor-UNCHANGED",
+      afterClose.frontier.sourceCursor === cursorBefore && cursorBefore !== undefined,
+      { before: cursorBefore, after: afterClose.frontier.sourceCursor },
+    );
+
+    // THE SEQUENCE PROPERTY, asked of the stream rather than of the caller. Nothing here inspects
+    // which method ran; it asks the emitter for an ordinary close and requires the answer to be
+    // that there is nothing left to close, and requires the wire to have gained no frame.
+    const publishesAfterError = ep.publishes.length;
+    const second = await attempt(() => em.closeRun({ timestamp: 100 }));
+    c(
+      "close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED",
+      second.value === null && second.err === undefined && ep.publishes.length === publishesAfterError,
+      { returned: second.value, err: second.err?.message, publishes: ep.publishes.length },
+    );
+    const allEvents = ep.publishes.flatMap((call) => frameOf(call).events as { type?: string }[]);
+    c(
+      "close:and-no-RUN_FINISHED-appears-ANYWHERE-in-what-this-stream-published",
+      !allEvents.some((e) => e.type === "RUN_FINISHED"),
+      allEvents.map((e) => e.type),
+    );
+  });
+
+  await block("THE HOLDER CARRIES A FAILURE THROUGH THE SAME CLOSE", async () => {
+    const { src, wal, source } = await fresh("holder-error-close");
+    const ep = new FakeEndpoint();
+    const errors: Error[] = [];
+    const closedRuns: string[] = [];
+    const holder = new AguiEmitterHolder<Rec>(
+      async () => AguiEmitter.start({ endpoint: ep, wal, subjectFrontier: memorySubjectFrontier(), source, map: mapper }),
+      (e) => errors.push(e),
+      (runId) => closedRuns.push(runId),
+    );
+
+    holder.flush(src); // adopt
+    await holder.settled();
+    append(src, { open: "run-h" });
+    ep.answers = [{ seq: 61, duplicate: false }, { seq: 62, duplicate: false }];
+    holder.flush(src);
+    await holder.settled();
+    holder.closeRun(99, { message: "provider rejected the request", code: "ProviderAuthError" });
+    await holder.settled();
+
+    const frame = frameOf(ep.publishes[ep.publishes.length - 1]!);
+    const ev = frame.events[0] as { type?: string; message?: string; code?: string };
+    c(
+      "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
+      ev.type === "RUN_ERROR" && ev.message === "provider rejected the request" && ev.code === "ProviderAuthError",
+      { events: frame.events, errors: errors.map((e) => e.message) },
+    );
+    // An error close is still a close, so the mapper must be told to forget the run exactly as it is
+    // told after a finish. Without this it attributes the next turn's records to a closed run.
+    c(
+      "holder:an-ERROR-close-reports-the-closed-run-so-a-mapper-can-forget-it",
+      closedRuns.length === 1 && closedRuns[0] === "run-h" && errors.length === 0,
+      { closedRuns, errors: errors.map((e) => e.message) },
+    );
+  });
+
   await block("THE HOLDER STARTS NOTHING ON THE WAY OUT OF A TURN", async () => {
     const { src, wal, source } = await fresh("holder-never-adopted");
     const ep = new FakeEndpoint();
@@ -405,6 +530,200 @@ try {
     // And it did not BIND either. A holder that bound a path here would refuse the real transcript
     // when the next session's first hook finally handed one over.
     c("holder:a-close-does-not-BIND-a-path", holder.path === undefined, holder.path);
+  });
+
+  // ── AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND A SHORT ONE IS UNCHANGED ───────────────────
+  //
+  // The close frame is the one a reader waits on. Upstream free text (`error_details` /
+  // `data.message`) can encode past the live broker ceiling while still passing a 1e6 JS code-unit
+  // control-socket guard. If packUnits then refuses the unit, no terminal is durable, the WAL has
+  // no pending recovery, persisted brackets stay open, and the holder dies. This block drives that
+  // shape through the REAL emitter and the REAL holder, at a 1 MiB ceiling, with a multibyte
+  // payload. The short-message control is the inverse: the bound must not flatten ordinary text.
+  await block("AN OVERSIZED FAILURE DETAIL STILL CLOSES, AND A SHORT ONE IS UNCHANGED", async () => {
+    const CEILING = 1_048_576;
+    const oversized = { message: "€".repeat(400_000), code: "APIError" };
+    const noticeNeedle = "omitted or shortened because it exceeded the frame bound";
+
+    const terminalsOf = (ep: FakeEndpoint): { type?: string; message?: string; code?: string }[] =>
+      ep.publishes.flatMap((call) => frameOf(call).events as { type?: string; message?: string; code?: string }[]);
+
+    {
+      const { src, walPath, wal, source } = await fresh("bound-oversize-emitter");
+      const ep = new FakeEndpoint();
+      ep.maxPayload = CEILING;
+      const em = await AguiEmitter.start({
+        endpoint: ep,
+        wal,
+        subjectFrontier: memorySubjectFrontier(),
+        source,
+        map: mapper,
+      });
+      await em.pump();
+      append(src, { open: "run-bound-e" });
+      ep.answers = [{ seq: 71, duplicate: false }];
+      await em.pump();
+      ep.answers = [{ seq: 72, duplicate: false }];
+      const closed = await attempt(() => em.closeRun({ timestamp: 99, error: oversized }));
+      const terms = terminalsOf(ep).filter((e) => e.type === "RUN_ERROR" || e.type === "RUN_FINISHED");
+      const errEv = terms.find((e) => e.type === "RUN_ERROR");
+      const last = ep.publishes[ep.publishes.length - 1];
+      const disk = await reopen(walPath);
+      c(
+        "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+        closed.err === undefined &&
+          closed.value === "run-bound-e" &&
+          terms.length === 1 &&
+          errEv?.type === "RUN_ERROR",
+        { err: closed.err?.message, returned: closed.value, terms },
+      );
+      c(
+        "close:the-bounded-RUN_ERROR-explicitly-says-the-original-detail-was-omitted-or-shortened",
+        typeof errEv?.message === "string" && errEv.message.includes(noticeNeedle),
+        errEv?.message?.slice(0, 200),
+      );
+      c("close:the-bounded-RUN_ERROR-preserves-the-failure-code", errEv?.code === "APIError", errEv?.code);
+      c(
+        "close:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
+        errEv?.type === "RUN_ERROR" &&
+          last !== undefined &&
+          last.encodedSize <= CEILING &&
+          (frameOf(last).events[0] as { type?: string }).type === "RUN_ERROR",
+        { encodedSize: last?.encodedSize, ceiling: CEILING, lastType: last ? (frameOf(last).events[0] as { type?: string }).type : undefined },
+      );
+      c(
+        "close:an-oversized-close-leaves-NO-finish-terminal",
+        errEv?.type === "RUN_ERROR" && !terminalsOf(ep).some((e) => e.type === "RUN_FINISHED"),
+        terminalsOf(ep).map((e) => e.type),
+      );
+      c(
+        "close:an-oversized-close-does-NOT-stop-the-emitter",
+        closed.err === undefined && em.stopped === false,
+        { err: closed.err?.message, stopped: em.stopped },
+      );
+      c(
+        "close:an-oversized-close-closes-the-persisted-brackets",
+        disk.brackets?.run === undefined && disk.pending === null,
+        { brackets: disk.brackets, pending: disk.pending },
+      );
+    }
+
+    {
+      const { src, walPath, wal, source } = await fresh("bound-oversize-holder");
+      const ep = new FakeEndpoint();
+      ep.maxPayload = CEILING;
+      const errors: Error[] = [];
+      const closedRuns: string[] = [];
+      const holder = new AguiEmitterHolder<Rec>(
+        async () =>
+          AguiEmitter.start({
+            endpoint: ep,
+            wal,
+            subjectFrontier: memorySubjectFrontier(),
+            source,
+            map: mapper,
+          }),
+        (e) => errors.push(e),
+        (runId) => closedRuns.push(runId),
+      );
+      holder.flush(src);
+      await holder.settled();
+      append(src, { open: "run-bound-h" });
+      ep.answers = [{ seq: 81, duplicate: false }, { seq: 82, duplicate: false }];
+      holder.flush(src);
+      await holder.settled();
+      holder.closeRun(99, oversized);
+      await holder.settled();
+      const terms = terminalsOf(ep).filter((e) => e.type === "RUN_ERROR" || e.type === "RUN_FINISHED");
+      const errEv = terms.find((e) => e.type === "RUN_ERROR");
+      const last = ep.publishes[ep.publishes.length - 1];
+      const disk = await reopen(walPath);
+      c(
+        "holder:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+        errors.length === 0 &&
+          holder.failure === undefined &&
+          terms.length === 1 &&
+          errEv?.type === "RUN_ERROR" &&
+          closedRuns[0] === "run-bound-h",
+        { errors: errors.map((e) => e.message), terms, closedRuns, failure: holder.failure?.message },
+      );
+      c(
+        "holder:the-bounded-RUN_ERROR-explicitly-says-the-original-detail-was-omitted-or-shortened",
+        typeof errEv?.message === "string" && errEv.message.includes(noticeNeedle),
+        errEv?.message?.slice(0, 200),
+      );
+      c("holder:the-bounded-RUN_ERROR-preserves-the-failure-code", errEv?.code === "APIError", errEv?.code);
+      c(
+        "holder:the-bounded-RUN_ERROR-fits-the-live-payload-ceiling",
+        errEv?.type === "RUN_ERROR" &&
+          last !== undefined &&
+          last.encodedSize <= CEILING &&
+          (frameOf(last).events[0] as { type?: string }).type === "RUN_ERROR",
+        { encodedSize: last?.encodedSize, ceiling: CEILING, lastType: last ? (frameOf(last).events[0] as { type?: string }).type : undefined },
+      );
+      c(
+        "holder:an-oversized-close-leaves-NO-finish-terminal",
+        errEv?.type === "RUN_ERROR" && !terminalsOf(ep).some((e) => e.type === "RUN_FINISHED"),
+        terminalsOf(ep).map((e) => e.type),
+      );
+      c(
+        "holder:an-oversized-close-does-NOT-die",
+        holder.failure === undefined && errors.length === 0,
+        { failure: holder.failure?.message, errors: errors.map((e) => e.message) },
+      );
+      c(
+        "holder:an-oversized-close-closes-the-persisted-brackets",
+        disk.brackets?.run === undefined && disk.pending === null,
+        { brackets: disk.brackets, pending: disk.pending },
+      );
+      // A later flush on the same holder must still act — death is what used to suppress it.
+      append(src, { open: "run-bound-h2" });
+      ep.answers = [{ seq: 83, duplicate: false }];
+      const publishesBeforeLater = ep.publishes.length;
+      holder.flush(src);
+      await holder.settled();
+      c(
+        "holder:an-oversized-close-does-NOT-suppress-later-events",
+        errors.length === 0 && ep.publishes.length === publishesBeforeLater + 1,
+        { errors: errors.map((e) => e.message), published: ep.publishes.length - publishesBeforeLater },
+      );
+    }
+
+    {
+      const { src, wal, source } = await fresh("bound-short-control");
+      const ep = new FakeEndpoint();
+      ep.maxPayload = CEILING;
+      const em = await AguiEmitter.start({
+        endpoint: ep,
+        wal,
+        subjectFrontier: memorySubjectFrontier(),
+        source,
+        map: mapper,
+      });
+      await em.pump();
+      append(src, { open: "run-bound-s" });
+      ep.answers = [{ seq: 91, duplicate: false }];
+      await em.pump();
+      ep.answers = [{ seq: 92, duplicate: false }];
+      const short = { message: "upstream returned 500", code: "APIError" };
+      const closed = await attempt(() => em.closeRun({ timestamp: 99, error: short }));
+      const last = ep.publishes[ep.publishes.length - 1];
+      const ev = last ? (frameOf(last).events[0] as { type?: string; message?: string; code?: string }) : undefined;
+      c(
+        "close:CONTROL-a-short-failure-detail-is-byte-for-byte-unchanged",
+        closed.err === undefined &&
+          ev?.type === "RUN_ERROR" &&
+          ev.message === "upstream returned 500" &&
+          ev.code === "APIError" &&
+          (last?.encodedSize ?? Infinity) <= CEILING,
+        { err: closed.err?.message, ev, encodedSize: last?.encodedSize },
+      );
+      c(
+        "close:CONTROL-a-short-failure-detail-does-NOT-carry-the-bound-notice",
+        typeof ev?.message === "string" && !ev.message.includes(noticeNeedle),
+        ev?.message,
+      );
+    }
   });
 } finally {
   rmSync(dir, { recursive: true, force: true });

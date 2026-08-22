@@ -217,7 +217,7 @@ from delivering messages or flushing held ones.
 | `UserPromptSubmit` | `working` (turn starts; surfaces the inbox) |
 | `PreToolUse` | no change; records *what* is about to run, so a permission wait can name it |
 | `Notification` (permission / elicitation) | `waiting` (blocked on a human: activity leads with the pending tool, e.g. `Bash: git push …`) |
-| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy) |
+| `Stop` / `StopFailure` | `idle` (turn done / died on an API error; flushes anything held while busy). On the [event plane](#event-plane) the two differ: `StopFailure` closes the run with `RUN_ERROR`. |
 | `SessionEnd` | `offline` (graceful leave) |
 
 Hooks are relayed over the connector's **authenticated** local control endpoint (per-user
@@ -299,6 +299,17 @@ channel by name.
 The rule governs the manager's doors, which are the ones a caller other than you can reach. A
 foreground `cotal spawn` on your own machine mints from your own signing material, so it can still
 grant any channel you name: that is the out-of-band grant, not a way around the rule.
+
+**A failed turn is published as a run error, not as a finished run.** Claude Code decides for itself
+whether a turn finished or died and fires one of two hooks accordingly, so the connector relays that
+decision rather than making one of its own: a turn that ended on an API error ends its run with
+`RUN_ERROR` carrying the harness's own error kind (`rate_limit`, `billing_error`, `server_error`,
+`max_output_tokens` and the rest) as the code, and whatever detail it reported as the message. If that
+detail cannot fit in the one closing frame, the shared close still publishes exactly one `RUN_ERROR`
+that does fit: it keeps the code and says the original detail was omitted or shortened because of the
+bound, so a reader is never shown a truncated message as complete. A turn that ended normally still
+ends with a run-finished event carrying no outcome, which says the turn ended and does not claim it
+succeeded.
 
 Events are written to a per-session write-ahead log before they are published, so a hook that fires
 after a restart resumes at the cursor it left rather than replaying or skipping, and a run that was

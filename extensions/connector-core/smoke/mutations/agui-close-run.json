@@ -1,6 +1,6 @@
 {
   "suite": "extensions/connector-core/smoke/agui-close-run.smoke.ts",
-  "guard": "closing a run out of band from the record stream publishes one RUN_FINISHED, consumes no source record, and refuses every state where publishing would be a guess",
+  "guard": "closing a run out of band from the record stream publishes ONE terminal — RUN_FINISHED, or RUN_ERROR when the connector reports a failed turn — consumes no source record, and refuses every state where publishing would be a guess",
   "command": "pnpm smoke:agui-close-run",
   "completionMarker": "agui-close-run smoke:",
   "proveWith": "node scripts/mutation-proof.mjs --config extensions/connector-core/smoke/mutations/agui-close-run.json",
@@ -22,7 +22,21 @@
     "removing the clone changes nothing observable. It is symmetry with `pump`, where a multi-event",
     "batch makes it load-bearing. And the holder cell about starting nothing is enforced by a",
     "signature that takes no path, so it is a fence against a future signature rather than evidence",
-    "about this one."
+    "about this one.",
+    "",
+    "K6 and K7 are the error close, and they are two mutations rather than one because the failure",
+    "travels through two objects: the emitter decides WHICH terminal to build, and the holder decides",
+    "whether the reason it was handed reaches the emitter at all. A connector that reports a failed",
+    "turn to a holder that drops it on the floor publishes a finish, and that is indistinguishable on",
+    "the wire from never having reported it.",
+    "",
+    "K8 is the size bound on that same close. An oversized upstream detail used to make packUnits",
+    "refuse before beginSend, so the run got no terminal and the holder died. The bound is one call",
+    "on the shared close; skipping it restores the defect.",
+    "",
+    "K9 is the never-both-terminal property. Deleting this.run = undefined from the shared terminal",
+    "arm of AguiBrackets.accept leaves the machine open, so a second close publishes a finish. The",
+    "earlier claim that no such deletion existed was false; the cell already graded the property."
   ],
   "mutations": [
     {
@@ -55,11 +69,11 @@
     {
       "name": "K4 drop the halted guard on the close",
       "file": "extensions/connector-core/src/agui.ts",
-      "find": "  async closeRun(o: { timestamp: number; cotal?: CotalMeta }): Promise<string | null> {\n    if (this.halted) throw this.halted;",
-      "replace": "  async closeRun(o: { timestamp: number; cotal?: CotalMeta }): Promise<string | null> {",
+      "find": "  }): Promise<string | null> {\n    if (this.halted) throw this.halted;",
+      "replace": "  }): Promise<string | null> {",
       "expectRed": "close:a-HALTED-emitter-refuses-to-close",
       "cell": "close:a-HALTED-emitter-refuses-to-close",
-      "note": "A halt means the stream's position is not known. The suite scripts a broker answer the mutant could use, so the kill is the guard and not an instrument running dry."
+      "note": "A halt means the stream's position is not known. The suite scripts a broker answer the mutant could use, so the kill is the guard and not an instrument running dry. RE-ANCHORED ON CODE when `closeRun` grew its `error` parameter: the old anchor embedded the one-line signature, which the new parameter list broke. The mutation is unchanged; only the text it hangs on moved."
     },
     {
       "name": "K5 drop the onRunClosed report",
@@ -69,6 +83,42 @@
       "expectRed": "holder:the-closed-run-is-reported-so-a-mapper-can-forget-it",
       "cell": "holder:the-closed-run-is-reported-so-a-mapper-can-forget-it",
       "note": "Without the report a connector's mapper keeps attributing records to a run the published stream has already closed, and the emitter refuses the batch."
+    },
+    {
+      "name": "K6 the emitter ignores the failure it was handed and publishes a finish, which is the state this plane shipped in",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "    const event = o.error",
+      "replace": "    const event = false",
+      "expectRed": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code",
+      "cell": "close:the-closing-frame-carries-exactly-one-RUN_ERROR-with-its-message-and-code",
+      "note": "The pre-fix behaviour exactly: every close is a RUN_FINISHED, so a failed turn is published as one that ended and a reader cannot tell it from one that succeeded."
+    },
+    {
+      "name": "K7 the holder drops the reason on the way to the emitter, so a reported failure closes as a finish",
+      "file": "extensions/connector-core/src/agui-holder.ts",
+      "find": "      const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });",
+      "replace": "      const runId = await emitter.closeRun({ timestamp });",
+      "expectRed": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
+      "cell": "holder:the-failure-reaches-the-wire-as-RUN_ERROR-with-the-reason-it-was-given",
+      "note": "A silent drop one layer above the emitter. The connector still believes it reported a failure, the emitter never hears about it, and the wire says the turn finished."
+    },
+    {
+      "name": "K8 skip the close-path bound so an oversized failure detail still throws in packUnits",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      ? boundRunErrorForFrame({\n          message: o.error.message,",
+      "replace": "      ? runError({\n          message: o.error.message,",
+      "expectRed": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+      "cell": "close:an-oversized-failure-detail-still-emits-exactly-one-bounded-RUN_ERROR",
+      "note": "Restores the defect: unbounded upstream text is packed as-is, packUnits refuses before beginSend, no terminal, holder dies."
+    },
+    {
+      "name": "K9 delete this.run = undefined from the shared terminal arm of AguiBrackets.accept",
+      "file": "extensions/connector-core/src/agui.ts",
+      "find": "      this.run = undefined;\n      return;\n    }\n\n    switch (t) {",
+      "replace": "      return;\n    }\n\n    switch (t) {",
+      "expectRed": "close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED",
+      "cell": "close:a-run-closed-by-RUN_ERROR-can-NEVER-also-emit-a-RUN_FINISHED",
+      "note": "The machine stays open after RUN_ERROR, so a following ordinary close publishes RUN_FINISHED. The property was always this assignment; the ledger had claimed no such line existed."
     }
   ]
 }

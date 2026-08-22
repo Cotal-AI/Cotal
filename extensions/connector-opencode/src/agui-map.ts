@@ -85,14 +85,15 @@ export interface OpenCodeMapper {
  *   drops it and the carrier is filed against the frame contract rather than invented here.
  * - `file`, `patch`, `snapshot`, `subtask`, `agent`, `retry`, `compaction` -> nothing in v1 (§3.4).
  *
- * **THERE IS NO `RUN_ERROR` ARM, AND THAT IS NOT AN OMISSION OF THIS CONNECTOR.** §3.2 maps
- * `session.error` to `RUN_ERROR`, and the vocabulary has the constructor, but NO emitter path
- * publishes one anywhere on this plane today: the holder exposes `adopt`, `flush` and `closeRun`,
- * and the already-merged Claude connector closes an errored turn the same way a normal one ends.
- * Reaching it means adding a method to the shared emitter, which is a vocabulary-adjacent change
- * that does not ride inside a connector cutover. A failed turn therefore ends with `RUN_FINISHED`
- * carrying NO outcome, which says the run ended and does not claim it succeeded, and the gap is
- * filed rather than papered over.
+ * **THERE IS STILL NO `RUN_ERROR` ARM HERE, AND THAT IS NOW A STATEMENT ABOUT WHERE IT LIVES.**
+ * §3.2 maps `session.error` to `RUN_ERROR`, and a failed turn IS published as one — but not from
+ * this file, because `session.error` is a BUS event and never a record in the session store this
+ * mapper reads. It is a turn boundary the record stream cannot see, exactly like the finish, so it
+ * closes the run through the same out-of-band path: `plugin.ts` decides which errors are failed
+ * turns and hands the reason to `AguiEmitterHolder.closeRun`. An earlier revision of this comment
+ * said no emitter anywhere on this plane could publish one and that reaching it needed a new method
+ * on the shared emitter; the first half was overtaken by the codex connector, which emits
+ * `RUN_ERROR` straight from its mapper, and the second half is what this change did.
  */
 const HANDLED = new Set(["text", "reasoning", "tool"]);
 

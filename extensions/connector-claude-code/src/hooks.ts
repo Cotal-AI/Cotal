@@ -34,6 +34,44 @@ function toolDetail(name: unknown, input: unknown): { name: string; detail: stri
   return { name, detail };
 }
 
+/**
+ * The failure a `StopFailure` hook reports, or `undefined` for any other turn end.
+ *
+ * **THE DECIDING RULE, and it is written down because "which harness signals mean the run failed"
+ * is precisely the judgment a connector must make explicitly rather than by accident.** Claude Code
+ * chooses between `Stop` and `StopFailure` ITSELF and fires exactly one of them: `Stop` when the
+ * model finished responding, `StopFailure` when the turn ended on an error. So EVERY `StopFailure`
+ * closes the run with `RUN_ERROR`, and the harness's own `error` value rides along as the code,
+ * UNJUDGED. This connector is not claiming to know what a rate limit means; it is relaying a
+ * classification the harness already made, on the hook it made it with.
+ *
+ * The eleven values `error` can take are `authentication_failed`, `oauth_org_not_allowed`,
+ * `account_on_hold`, `billing_error`, `rate_limit`, `overloaded`, `invalid_request`,
+ * `model_not_found`, `server_error`, `max_output_tokens` and `unknown` (read off the shipped
+ * harness's own hook schema, not inferred from a page about it).
+ *
+ * **TWO OF THEM ARE ARGUABLE AND ARE DECIDED HERE RATHER THAN LEFT IMPLICIT.** `max_output_tokens`
+ * is a turn that produced real output and was then cut off, and `rate_limit` is a turn nobody got
+ * wrong. Calling either of those "finished" would be this connector overriding the harness on a
+ * question the harness had already answered — the exact claim-about-a-harness that kept `RUN_ERROR`
+ * unreachable in the first place. Publishing the distinction and letting the reader classify is the
+ * cheaper mistake: a consumer holding the code can treat a truncation differently from an auth
+ * failure, and a consumer told `RUN_FINISHED` has nothing to treat differently at all.
+ *
+ * Shape-tolerant on the way in, like every other read of a hook payload here: `error` is required by
+ * the harness's schema, and a payload that somehow arrives without one is still a failed turn, just
+ * one that cannot name its kind.
+ */
+function stopFailure(ev: HookEvent): { message: string; code?: string } | undefined {
+  if (ev.hook_event_name !== "StopFailure") return undefined;
+  const code = typeof ev.error === "string" && ev.error ? ev.error : undefined;
+  const detail = typeof ev.error_details === "string" ? ev.error_details.trim() : "";
+  return {
+    message: detail || `claude turn ended on ${code ?? "an unreported error"}`,
+    ...(code ? { code } : {}),
+  };
+}
+
 export interface ClaudeHandleDeps {
   /** The session's AG-UI emitter, read lazily — `mcp.ts` assigns it after the handler exists. */
   events?: () => AguiEmitterHolder<ClaudeEntry> | undefined;
@@ -203,7 +241,14 @@ export function createClaudeHandle(deps: ClaudeHandleDeps = {}): ClaudeHooks {
           // record the turn produced, or the closing frame would land while a message or a tool
           // call was still open and the emitter would refuse it. It republishes the source cursor
           // unchanged, because advancing it would mark records consumed that were never mapped.
-          events()?.closeRun(Date.now());
+          //
+          // AND ON `StopFailure` IT CLOSES WITH `RUN_ERROR` RATHER THAN `RUN_FINISHED`. Both hooks
+          // land here because both end a turn and both must reset presence; only one of them ends a
+          // turn that FAILED, and publishing them identically told a reader of the plane that a turn
+          // killed by a rate limit or a billing error had simply finished. See {@link stopFailure}
+          // for which signals count and why. `RUN_ERROR` closes the run on its own, so there is no
+          // second terminal to follow it.
+          events()?.closeRun(Date.now(), stopFailure(ev));
           await safeStatus(agent, "idle");
           // Now idle: if ambient channel chatter was held while we were busy, ask the channel to
           // wake one turn so its UserPromptSubmit surfaces the batch. (Ack sites are two: the

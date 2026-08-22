@@ -159,12 +159,21 @@ export class AguiEmitterHolder<T> {
    * It deliberately does NOT start an emitter. A session that never adopted a transcript has nothing
    * open and nothing to close, and starting one here would reach the broker on the way OUT of a
    * turn that published nothing.
+   *
+   * **`error` CLOSES THE RUN WITH `RUN_ERROR` INSTEAD**, for a turn the connector knows FAILED. It
+   * is one parameter on the one close rather than a second method, because `RUN_ERROR` closes a run
+   * by itself and a run must never carry both terminals: one call builds one terminal, and the
+   * caller cannot ask for the other afterwards because the run is no longer open. This holder does
+   * not decide what counts as a failure — that is a claim about a harness, and it belongs at the
+   * connector's own mapping site where the harness's record is in hand.
    */
-  closeRun(timestamp: number): void {
+  closeRun(timestamp: number, error?: { message: string; code?: string }): void {
     this.enqueue(async () => {
       const emitter = this.emitter;
       if (this.dead || !emitter || emitter.stopped) return;
-      const runId = await emitter.closeRun({ timestamp });
+      const runId = await emitter.closeRun({ timestamp, ...(error ? { error } : {}) });
+      // Reported for EITHER terminal. The mapper's job here is to stop attributing records to a run
+      // the published stream has closed, and an error close closes it exactly as a finish does.
       if (runId !== null) this.onRunClosed?.(runId);
     });
   }

@@ -118,6 +118,24 @@
       "cell": "\u2026and so does an unreadable RESOLVED root, rather than claiming a divergence it cannot see",
       "afterRestore": "pnpm --filter @cotal-ai/workspace build && pnpm --filter @cotal-ai/cli build",
       "note": "The fix someone writes after reading only the bug report: guard the side the report named. The other side is the same abort with the roots swapped, and it is the direction a later change is most likely to reintroduce."
+    },
+    {
+      "name": "CONTROL the attach seed-output assertion is live in its suite file",
+      "file": "bin/smoke/attach-auth-root.smoke.ts",
+      "find": "    ![fromFossil, fromBare, fromCorrupt].some((o) => /(?:^|\\n)(?:\u2713 added @cotal-ai\\/|\u2192 wrote operator-global seed store payload)/.test(o)),",
+      "replace": "    false,",
+      "expectRed": "the attached-session subprocess does not reconcile connector payloads before exercising attach",
+      "cell": "the attached-session subprocess does not reconcile connector payloads before exercising attach",
+      "note": "Positive control for the same-file reach requirement. It proves the suite executes the seed-output assertion before the seed-skip mutation is graded."
+    },
+    {
+      "name": "the attached-session subprocess loses the seed-skip guard and reconciles before attach",
+      "file": "bin/smoke/attach-auth-root.smoke.ts",
+      "find": "cwd,\n    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, \"xdg\"), COTAL_SKIP_CONNECTOR_SEED: \"1\", NO_COLOR: \"1\" },\n    stdio:",
+      "replace": "cwd,\n    env: { ...cleanEnv, COTAL_HOME: home, XDG_CONFIG_HOME: join(home, \"xdg\"), NO_COLOR: \"1\" },\n    stdio:",
+      "expectRed": "the attached-session subprocess does not reconcile connector payloads before exercising attach",
+      "cell": "the attached-session subprocess does not reconcile connector payloads before exercising attach",
+      "note": "The attach subprocess must reach the attach path directly. Without the skip, the command auto-reconciles connector payloads first; its seed output can consume the bounded window and hide both the attached banner and the divergent-root report."
     }
   ]
 }
