@@ -536,120 +536,156 @@ interface HandlerCtx {
   mintConnectCredential: (args: { owner: string; actor: string; lifecycleUid: string }) => Promise<string>;
 }
 
-/** Route one HTTP request. Local-only surface: /jwks (public keys, cacheable), /exchange (IdP JWT →
- *  bearer; capability-gated), /health. Anything else 404s. Errors are JSON `{ error }`. */
-async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
-  const send = (status: number, body: unknown, headers: Record<string, string> = {}) => {
-    // No CORS headers, ever — a browser context must never be granted a readable response here.
-    res.writeHead(status, { "content-type": "application/json", ...headers });
-    res.end(JSON.stringify(body));
-  };
-  try {
-    if (req.url === "/health") return send(200, { ok: true, issuer: ctx.issuer.issuer });
-    if (req.url === "/jwks") {
-      if (req.method !== "GET") return send(405, { error: "GET only" });
+/** Per-listener policy for `POST /exchange` — how a caller is proven and attributed on the face
+ *  the request arrived on. The loopback face demands the per-start capability (a same-uid file-ACL
+ *  boundary via the 0600 discovery file) and attributes peers by socket address. */
+interface ExchangePolicy {
+  /** Demand `Authorization: Bearer <cap>` (the discovery-file capability) before anything else. */
+  requireCapability: boolean;
+  /** Name the requesting peer for failure attribution. */
+  peerKey(req: IncomingMessage): string;
+}
+
+/** The loopback face: capability-gated; peers keyed by socket remote address. */
+const LOOPBACK_POLICY: ExchangePolicy = {
+  requireCapability: true,
+  peerKey: (req) => req.socket.remoteAddress ?? "loopback",
+};
+
+/** JSON reply helper. No CORS headers, ever — a browser context must never be granted a readable
+ *  response here. */
+function send(res: ServerResponse, status: number, body: unknown, headers: Record<string, string> = {}): void {
+  res.writeHead(status, { "content-type": "application/json", ...headers });
+  res.end(JSON.stringify(body));
+}
+
+type RouteHandler = (req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx) => void | Promise<void>;
+
+/** The loopback route table: /health, /jwks (public keys, cacheable), /exchange (IdP JWT →
+ *  bearer; capability-gated). Anything else 404s. A `Map` (not an object literal) so a hostile
+ *  request-target like `toString` can never resolve through the prototype chain. */
+const ROUTES = new Map<string, RouteHandler>([
+  ["/health", (_req, res, ctx) => send(res, 200, { ok: true, issuer: ctx.issuer.issuer })],
+  [
+    "/jwks",
+    (req, res, ctx) => {
+      if (req.method !== "GET") return send(res, 405, { error: "GET only" });
       // The explicit cache contract (see the module doc): max-age bounds how stale a verifier's set
       // may be, which in turn floors how long a retired kid must stay published after rotation.
-      return send(200, ctx.issuer.jwks(), { "cache-control": `max-age=${JWKS_MAX_AGE_SEC}` });
-    }
-    if (req.url === "/exchange") {
-      if (req.method !== "POST") return send(405, { error: "POST only" });
-      // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`
-      // (and can't strip it). The CLI never sends one. Reject before touching anything else.
-      if (req.headers.origin !== undefined) return send(403, { error: "browser-origin requests are not served here" });
-      if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
-        return send(415, { error: "content-type must be application/json" });
-      // The capability gate: same-user file ACL on the 0600 discovery file is the boundary. An
-      // invalid/missing cap is still a failed exchange attempt — audited and throttled, in its own
-      // window (see BAD_CAP_PER_MIN), before anything downstream is touched.
-      const auth = req.headers.authorization ?? "";
-      if (auth !== `Bearer ${ctx.cap}`) {
-        const now = Date.now();
-        while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
-        ctx.badCaps.push(now);
-        console.error("auth-service: rejected an exchange with a missing/invalid capability");
-        if (ctx.badCaps.length > BAD_CAP_PER_MIN)
-          return send(429, { error: "too many invalid-capability attempts - wait a minute and retry" });
-        return send(401, { error: "missing/invalid exchange capability - read it from the space's auth-service.json" });
-      }
-      // Refused-exchange rate limit (probing protection): count only FAILURES.
-      const now = Date.now();
-      while (ctx.failures.length && now - ctx.failures[0] > 60_000) ctx.failures.shift();
-      if (ctx.failures.length >= FAILED_EXCHANGE_PER_MIN)
-        return send(429, { error: "too many refused exchanges - wait a minute and retry" });
-      const body = await readJsonBody(req);
-      const { idpToken, actor, actorToken, owner, ttlSec, view } = body as {
-        idpToken?: unknown;
-        actor?: unknown;
-        actorToken?: unknown;
-        owner?: unknown;
-        ttlSec?: unknown;
-        view?: unknown;
-      };
-      if (ttlSec !== undefined && typeof ttlSec !== "number") return send(400, { error: "ttlSec must be a number" });
-      if (view !== undefined && typeof view !== "string") return send(400, { error: "view must be a string when present" });
-      // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
-      // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
-      // A request presenting both is malformed — refuse rather than pick.
-      if (idpToken !== undefined && actorToken !== undefined)
-        return send(400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
-      if (actorToken !== undefined) {
-        // Elevated views are for signed-in HUMANS only: an agent's secret exchange never mints one,
-        // whatever its ledger row carries (v1 — agents hold no god views).
-        if (view !== undefined)
-          return send(400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
-        if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
-          return send(400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
-        try {
-          const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
-          if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
-            throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
-          // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
-          // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
-          // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
-          const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
-          const token = await ctx.issuer.issue({
-            owner,
-            space: ctx.space,
-            actor,
-            scope: grant.scope,
-            parent: grant.parent,
-            // Lifecycle-BIND the bearer (SPEC 13.1): the row's uid rides act.lifecycleUid, and the
-            // callout refuses a mismatch against the CURRENT row at connect — a predecessor's
-            // still-unexpired bearer dies at the alias's respawn instead of minting the
-            // successor's broker authority.
-            lifecycleUid: grant.lifecycleUid,
-            credentialId,
-            ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
-          });
-          const { exp } = decodeJwt(token);
-          return send(200, { token, owner, exp });
-        } catch (e) {
-          ctx.failures.push(Date.now());
-          const reason = e instanceof Error ? e.message : String(e);
-          console.error(`auth-service: refused an agent exchange: ${reason}`);
-          return send(401, { error: reason });
-        }
-      }
-      if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
-        return send(400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }" });
-      try {
-        // The bridge validates `view` against the closed enum and the fresh ledger grant — an
-        // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
-        const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec, view: view as UserTokenView | undefined });
-        return send(200, r);
-      } catch (e) {
-        // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
-        // denial with the reason — the client shows it to the operator verbatim.
-        ctx.failures.push(Date.now());
-        const reason = e instanceof Error ? e.message : String(e);
-        console.error(`auth-service: refused an exchange: ${reason}`);
-        return send(401, { error: reason });
-      }
-    }
-    return send(404, { error: "unknown path - /health, /jwks, /exchange" });
+      return send(res, 200, ctx.issuer.jwks(), { "cache-control": `max-age=${JWKS_MAX_AGE_SEC}` });
+    },
+  ],
+  ["/exchange", (req, res, ctx) => handleExchange(req, res, ctx, LOOPBACK_POLICY)],
+]);
+
+/** Route one HTTP request against the loopback route table. Errors are JSON `{ error }`. */
+async function handle(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx): Promise<void> {
+  try {
+    const route = ROUTES.get(req.url ?? "");
+    if (!route) return send(res, 404, { error: "unknown path - /health, /jwks, /exchange" });
+    await route(req, res, ctx);
   } catch (e) {
-    send(400, { error: e instanceof Error ? e.message : String(e) });
+    send(res, 400, { error: e instanceof Error ? e.message : String(e) });
+  }
+}
+
+/** The exchange body, shared by every face; `policy` says how this face proves and attributes the
+ *  caller. Behavior on the loopback face is unchanged from the pre-route-table handler. */
+async function handleExchange(req: IncomingMessage, res: ServerResponse, ctx: HandlerCtx, policy: ExchangePolicy): Promise<void> {
+  if (req.method !== "POST") return send(res, 405, { error: "POST only" });
+  // Browser exclusion: a cross-site page CAN reach loopback, but its requests carry `Origin`
+  // (and can't strip it). The CLI never sends one. Reject before touching anything else.
+  if (req.headers.origin !== undefined) return send(res, 403, { error: "browser-origin requests are not served here" });
+  if (!/^application\/json\b/.test(req.headers["content-type"] ?? ""))
+    return send(res, 415, { error: "content-type must be application/json" });
+  if (policy.requireCapability) {
+    // The capability gate: same-user file ACL on the 0600 discovery file is the boundary. An
+    // invalid/missing cap is still a failed exchange attempt — audited and throttled, in its own
+    // window (see BAD_CAP_PER_MIN), before anything downstream is touched.
+    const auth = req.headers.authorization ?? "";
+    if (auth !== `Bearer ${ctx.cap}`) {
+      const now = Date.now();
+      while (ctx.badCaps.length && now - ctx.badCaps[0] > 60_000) ctx.badCaps.shift();
+      ctx.badCaps.push(now);
+      console.error("auth-service: rejected an exchange with a missing/invalid capability");
+      if (ctx.badCaps.length > BAD_CAP_PER_MIN)
+        return send(res, 429, { error: "too many invalid-capability attempts - wait a minute and retry" });
+      return send(res, 401, { error: "missing/invalid exchange capability - read it from the space's auth-service.json" });
+    }
+  }
+  // Refused-exchange rate limit (probing protection): count only FAILURES.
+  const now = Date.now();
+  while (ctx.failures.length && now - ctx.failures[0] > 60_000) ctx.failures.shift();
+  if (ctx.failures.length >= FAILED_EXCHANGE_PER_MIN)
+    return send(res, 429, { error: "too many refused exchanges - wait a minute and retry" });
+  const body = await readJsonBody(req);
+  const { idpToken, actor, actorToken, owner, ttlSec, view } = body as {
+    idpToken?: unknown;
+    actor?: unknown;
+    actorToken?: unknown;
+    owner?: unknown;
+    ttlSec?: unknown;
+    view?: unknown;
+  };
+  if (ttlSec !== undefined && typeof ttlSec !== "number") return send(res, 400, { error: "ttlSec must be a number" });
+  if (view !== undefined && typeof view !== "string") return send(res, 400, { error: "view must be a string when present" });
+  // TWO grant types, disjoint by construction: a HUMAN exchange proves an IdP session
+  // (idpToken), an AGENT exchange proves a spawn-time ledger secret (owner + actorToken).
+  // A request presenting both is malformed — refuse rather than pick.
+  if (idpToken !== undefined && actorToken !== undefined)
+    return send(res, 400, { error: "exchange takes idpToken (human) OR owner+actorToken (agent), never both" });
+  if (actorToken !== undefined) {
+    // Elevated views are for signed-in HUMANS only: an agent's secret exchange never mints one,
+    // whatever its ledger row carries (v1 — agents hold no god views).
+    if (view !== undefined)
+      return send(res, 400, { error: "the managed (agent-secret) exchange never mints elevated views - views ride a signed-in human exchange" });
+    if (typeof owner !== "string" || !owner || typeof actor !== "string" || !actor || typeof actorToken !== "string" || !actorToken)
+      return send(res, 400, { error: "agent exchange needs { owner: string, actor: string, actorToken: string, ttlSec?: number }" });
+    try {
+      const grant = ledgerAuthorizeAgentExchange(ctx.dir, owner, actor, actorToken);
+      if (typeof grant.lifecycleUid !== "string" || !grant.lifecycleUid)
+        throw new Error(`actor "${actor}" has no lifecycleUid on its ledger row - respawn it (bearers are lifecycle-bound from v0.4)`);
+      // Credential-BIND the bearer (SPEC 13.1, R1): the incarnation's live root credential is
+      // ensured (minted release-last on first exchange) BEFORE the bearer bytes are signed,
+      // and rides act.credentialId — the connect arm requires it against the LIVE cred row.
+      const credentialId = await ctx.mintConnectCredential({ owner, actor, lifecycleUid: grant.lifecycleUid });
+      const token = await ctx.issuer.issue({
+        owner,
+        space: ctx.space,
+        actor,
+        scope: grant.scope,
+        parent: grant.parent,
+        // Lifecycle-BIND the bearer (SPEC 13.1): the row's uid rides act.lifecycleUid, and the
+        // callout refuses a mismatch against the CURRENT row at connect — a predecessor's
+        // still-unexpired bearer dies at the alias's respawn instead of minting the
+        // successor's broker authority.
+        lifecycleUid: grant.lifecycleUid,
+        credentialId,
+        ttlSec: Math.min(ttlSec ?? AGENT_BEARER_TTL_SEC, AGENT_BEARER_TTL_SEC),
+      });
+      const { exp } = decodeJwt(token);
+      return send(res, 200, { token, owner, exp });
+    } catch (e) {
+      ctx.failures.push(Date.now());
+      const reason = e instanceof Error ? e.message : String(e);
+      console.error(`auth-service: refused an agent exchange: ${reason}`);
+      return send(res, 401, { error: reason });
+    }
+  }
+  if (typeof idpToken !== "string" || !idpToken || typeof actor !== "string" || !actor)
+    return send(res, 400, { error: "exchange needs { idpToken: string, actor: string, ttlSec?: number, view?: string }" });
+  try {
+    // The bridge validates `view` against the closed enum and the fresh ledger grant — an
+    // unknown or under-scoped view is a refused exchange (audited + throttled like any other).
+    const r = await ctx.bridge.exchange(idpToken, { actor, ttlSec, view: view as UserTokenView | undefined });
+    return send(res, 200, r);
+  } catch (e) {
+    // A refused exchange (bad IdP token, ungranted actor, expired proof) is an AUTHENTICATED
+    // denial with the reason — the client shows it to the operator verbatim.
+    ctx.failures.push(Date.now());
+    const reason = e instanceof Error ? e.message : String(e);
+    console.error(`auth-service: refused an exchange: ${reason}`);
+    return send(res, 401, { error: reason });
   }
 }
 
