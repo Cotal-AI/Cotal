@@ -31,7 +31,17 @@ const failures: string[] = [];
  * with the whole list (see the epilogue), so the kill set is the list rather than one line.
  */
 const check = (name: string, cond: boolean, extra?: unknown) => {
-  const detail = `${name}${extra !== undefined ? ` — ${JSON.stringify(extra)}` : ""}`;
+  // `JSON.stringify` throws on a cycle, a BigInt, or a throwing `toJSON`. The reporter must never
+  // be the thing that takes the run down — that failure mode is what this whole repair is about.
+  let rendered = "";
+  if (extra !== undefined) {
+    try {
+      rendered = ` — ${JSON.stringify(extra) ?? String(extra)}`;
+    } catch {
+      rendered = " — <extra could not be serialized>";
+    }
+  }
+  const detail = `${name}${rendered}`;
   if (!cond) {
     failures.push(detail);
     console.log(`  ✗ ${detail}`);
@@ -48,6 +58,41 @@ const WITH_TLS = { tlsRequired: true, allowUnencryptedOverlay: false };
 /** The operator explicitly accepted the tunnel dependency (`--allow-unencrypted-overlay`). */
 const ACKED = { tlsRequired: false, allowUnencryptedOverlay: true };
 
+/**
+ * Describe ANY thrown value as a string, without ever throwing itself.
+ *
+ * JavaScript lets you throw anything — a string, `{}`, `null`, an object whose `message` is a
+ * getter that throws, or one whose `toString` does. The previous guard read `(e as Error).message`
+ * and called `.split` on it, so a throw with no `message` raised a TypeError INSIDE the reporter:
+ * the run aborted at that cell, nothing was recorded, and the epilogue never ran. A reporter that
+ * can itself throw is exactly what swallowed the original bug, so this one is total: every branch
+ * returns a string, and the last resort is a description of the failure to describe.
+ */
+function describeThrown(e: unknown): string {
+  if (e instanceof Error) {
+    try {
+      const m = typeof e.message === "string" ? e.message : "<non-string .message>";
+      return `${e.name ?? "Error"}: ${m}`;
+    } catch {
+      return "Error whose .message accessor threw";
+    }
+  }
+  if (e === null) return "threw null";
+  if (e === undefined) return "threw undefined";
+  if (typeof e === "string") return `threw a string: ${e}`;
+  try {
+    return `threw a non-Error ${typeof e}: ${JSON.stringify(e) ?? String(e)}`;
+  } catch {
+    // JSON.stringify throws on a cycle or a throwing toJSON; String() can throw on a null-prototype
+    // object or a throwing toString. Neither may take the run down.
+    try {
+      return `threw a non-Error ${typeof e} that could not be serialized`;
+    } catch {
+      return "threw a value that could not be described";
+    }
+  }
+}
+
 /** Classify, expecting a permitted verdict.
  *
  *  A REFUSAL IS A FAILURE OF THIS CELL, NOT AN ABORT OF THE SUITE. Calling the classifier bare
@@ -60,7 +105,8 @@ const permits = (url: string, reach: "loopback" | "overlay" | "public-tls", poli
   try {
     t = classifyJoinTarget(url, policy);
   } catch (e) {
-    check(`permits ${url} as ${reach}`, false, `REFUSED: ${(e as Error).message.split("\n")[0]}`);
+    // Same total reporter as the refusal arm: a non-Error throw must not crash the describer.
+    check(`permits ${url} as ${reach}`, false, `REFUSED: ${describeThrown(e).split("\n")[0]}`);
     return;
   }
   check(`permits ${url} as ${reach}`, t.reach === reach, t);
@@ -76,25 +122,34 @@ const permits = (url: string, reach: "loopback" | "overlay" | "public-tls", poli
  *  classifier died instead of refusing, and a crashing classifier would be indistinguishable from a
  *  correct one. The guard lives INSIDE the helper so no call site can forget it. */
 const refuses = (url: string, why: string, policy = TODAY): string => {
-  let message = "";
+  let permitted: string | undefined;
+  let thrown: unknown;
   try {
     const t = classifyJoinTarget(url, policy);
-    assert.fail(`${url} was PERMITTED as ${t.reach} — ${why}`);
+    permitted = t.reach; // an UNDER-REFUSAL: record it below, never throw out of here
   } catch (e) {
-    message = (e as Error).message;
-    if (/was PERMITTED as/.test(message)) throw e; // the assert.fail above, not a refusal
-    // A refusal from this classifier always names the target and says "refused:", or is one of the
-    // two shape rejections it throws before classifying. Anything else is a crash wearing a
-    // refusal's clothes, and the cell fails NAMING it rather than silently passing.
-    const isRefusal =
-      / refused: /.test(message) ||
-      /is not a URL - pass a broker address/.test(message) ||
-      /must be a nats:\/\/ or tls:\/\/ URL/.test(message) ||
-      /has no host/.test(message);
-    if (!isRefusal) {
-      check(`refuses ${url} (${why})`, false, `NOT A REFUSAL — ${(e as Error).name}: ${message.split("\n")[0]}`);
-      return message;
-    }
+    thrown = e;
+  }
+  // THE UNDER-REFUSAL IS A RECORDED FAILURE, NOT AN ABORT. This used to `assert.fail` and rethrow,
+  // so the one mutation this lane exists to catch — a private address wrongly permitted — exited at
+  // the first casualty, skipped the epilogue, and left every later cell unrun. The failure that
+  // matters most was the one the collector could not collect.
+  if (permitted !== undefined) {
+    check(`refuses ${url} (${why})`, false, `PERMITTED as ${permitted}`);
+    return "";
+  }
+  // A refusal from this classifier always names the target and says "refused:", or is one of the
+  // shape rejections it throws before classifying. Anything else is a crash wearing a refusal's
+  // clothes, and the cell fails NAMING it rather than silently passing.
+  const message = describeThrown(thrown);
+  const isRefusal =
+    / refused: /.test(message) ||
+    /is not a URL - pass a broker address/.test(message) ||
+    /must be a nats:\/\/ or tls:\/\/ URL/.test(message) ||
+    /has no host/.test(message);
+  if (!isRefusal) {
+    check(`refuses ${url} (${why})`, false, `NOT A REFUSAL — ${message.split("\n")[0]}`);
+    return message;
   }
   check(`refuses ${url} (${why})`, true);
   return message;
