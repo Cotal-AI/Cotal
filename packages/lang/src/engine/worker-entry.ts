@@ -23,12 +23,13 @@
  * step budget (L4013) and the shared stop flag are the only two things that end a run.
  */
 
-import { parentPort, workerData } from "node:worker_threads";
+import { parentPort, workerData, type MessagePort } from "node:worker_threads";
 import "ses";
-import { Journal } from "../journal.js";
+import { Journal, type JournalStore } from "../journal.js";
 import { RuntimeFault } from "../errors.js";
 import { assertCrossable } from "../values.js";
-import type { EffectHandler } from "../effects.js";
+import { EffectError, type EffectHandler } from "../effects.js";
+import { bridgedSeam } from "./bridge.js";
 import { runOnEngine } from "./host.js";
 import type { EngineCtx } from "./ctx.js";
 import type { WorkerRunRequest, WorkerRunResult } from "./worker.js";
@@ -39,7 +40,11 @@ lockdown();
 if (parentPort === null) throw new Error("cotal-lang engine worker: no parent port; this module is a worker entry, not a library");
 const port = parentPort;
 
-const { request, stop } = workerData as { request: WorkerRunRequest; stop: SharedArrayBuffer };
+const { request, stop, bridge } = workerData as {
+  request: WorkerRunRequest;
+  stop: SharedArrayBuffer;
+  bridge?: { port: MessagePort; clock: SharedArrayBuffer };
+};
 
 /**
  * The run's cancellation, read where it has always been read.
@@ -74,29 +79,62 @@ const confined = (module: string): ((ctx: EngineCtx) => () => Promise<unknown>) 
   return factory as (ctx: EngineCtx) => () => Promise<unknown>;
 };
 
-async function buildHandler(): Promise<EffectHandler> {
-  const mod = (await import(request.handler.module)) as Record<string, unknown>;
-  const name = request.handler.export ?? "createHandler";
+/**
+ * The seam this run performs against, by the route the request chose.
+ *
+ * `"bridged"`: the handler and the durable store live in the HOST, and both halves ride the port
+ * this thread was handed (`bridge.ts`); the journal is built HERE, over the recorded entries and
+ * that store, so every append is durable in the host before the effect it precedes fires. A
+ * module-named handler keeps its whole path in the thread, journal and all, as it always has.
+ */
+async function buildSeam(): Promise<{ handler: EffectHandler; journal?: Journal }> {
+  if (request.handler === "bridged") {
+    if (bridge === undefined) {
+      throw new RuntimeFault(
+        "L1000",
+        `request ${request.runId} names the bridged handler route but the thread was started without a bridge port; runInWorker is the caller that wires one`,
+      );
+    }
+    const seam = bridgedSeam(bridge.port, bridge.clock);
+    return {
+      handler: seam.handler,
+      journal: new Journal({ run: request.runId, entries: request.entries ?? [], store: seam.store }),
+    };
+  }
+  return {
+    handler: await buildHandler(request.handler.module, request.handler.export, request.handler.config),
+    // Exactly the shape this route always had: a journal only when there are entries to resume,
+    // and the fresh case left to the engine's own default.
+    ...(request.entries !== undefined ? { journal: new Journal({ run: request.runId, entries: request.entries }) } : {}),
+  };
+}
+
+async function buildHandler(module: string, exportName: string | undefined, config: unknown): Promise<EffectHandler> {
+  const mod = (await import(module)) as Record<string, unknown>;
+  const name = exportName ?? "createHandler";
   const make = mod[name];
   if (typeof make !== "function") {
     throw new RuntimeFault(
       "L1000",
-      `${request.handler.module} has no \`${name}\` export that is a function. A handler is not serialisable - it holds sockets, a client and a clock - so the request names a module and the thread builds it: that export takes the config and answers an EffectHandler.`,
+      `${module} has no \`${name}\` export that is a function. A handler is not serialisable - it holds sockets, a client and a clock - so the request names a module and the thread builds it: that export takes the config and answers an EffectHandler.`,
     );
   }
-  return (make as (config: unknown) => EffectHandler)(request.handler.config);
+  return (make as (config: unknown) => EffectHandler)(config);
 }
 
 async function run(): Promise<WorkerRunResult> {
-  const handler = await buildHandler();
+  const seam = await buildSeam();
   const result = await runOnEngine(request.source, request.module, {
     runId: request.runId,
-    handler,
+    handler: seam.handler,
     evaluate: confined,
     shouldStop,
     ...(request.file !== undefined ? { file: request.file } : {}),
     ...(request.pins !== undefined ? { pins: request.pins } : {}),
-    ...(request.entries !== undefined ? { journal: new Journal({ run: request.runId, entries: request.entries }) } : {}),
+    ...(seam.journal !== undefined ? { journal: seam.journal } : {}),
+    ...(request.seed !== undefined ? { seed: request.seed } : {}),
+    ...(request.effectCeiling !== undefined ? { effectCeiling: request.effectCeiling } : {}),
+    ...(request.stepBudget !== undefined ? { stepBudget: request.stepBudget } : {}),
     onLog: (line) => port.postMessage({ kind: "log", line: { scope: line.scope, values: [...line.values] } }),
   });
   // THE RUN'S VALUE CROSSES A BOUNDARY, so it answers to the language's own crossing rule rather
@@ -121,7 +159,7 @@ async function run(): Promise<WorkerRunResult> {
 
 /** The answer a thread owes when it cannot give the one it was asked for. */
 const answerWith = (e: unknown): void => {
-  const err = e as { code?: string; name?: string; message?: string };
+  const err = e as { code?: string; name?: string; message?: string; reason?: string; kind?: string; detail?: Readonly<Record<string, unknown>> };
   port.postMessage({
     kind: "result",
     result: {
@@ -129,6 +167,11 @@ const answerWith = (e: unknown): void => {
       ...(typeof err?.code === "string" ? { code: err.code } : {}),
       name: typeof err?.name === "string" ? err.name : "Error",
       message: typeof err?.message === "string" ? err.message : String(e),
+      // A release's reason is a field on the class (L5012), and an EffectError's kind and detail
+      // are its domain; each crosses as the field it is. See WorkerRunFailed.
+      ...(typeof err?.reason === "string" ? { reason: err.reason } : {}),
+      ...(typeof err?.kind === "string" ? { kind: err.kind } : {}),
+      ...(err?.detail !== undefined && e instanceof EffectError ? { detail: err.detail } : {}),
     } satisfies WorkerRunResult,
   });
 };

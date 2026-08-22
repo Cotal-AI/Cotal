@@ -1,3 +1,4 @@
+// @ts-check
 /**
  * Find `nats-server` processes that a smoke suite started and then failed to kill, and report them.
  *
@@ -31,6 +32,23 @@
  */
 import { execFileSync } from "node:child_process";
 
+/**
+ * One live `nats-server` process, as `ps` reports it.
+ * @typedef {{ pid: number, args: string }} NatsServerRow
+ */
+
+/**
+ * A broker this reaper claimed, with the dead owner whose pid the store dir carried.
+ * @typedef {NatsServerRow & { owner: number }} ReapedBroker
+ */
+
+/**
+ * What one reap pass did, and what it deliberately made no claim on. `supported` is false on a
+ * platform where the enumerator cannot look, so a caller can tell "nothing leaked" from "nothing was
+ * looked at".
+ * @typedef {{ inspected: number, reaped: ReapedBroker[], ownedLive: number, unparseable: number, unclaimable: number, supported: boolean }} ReapReport
+ */
+
 /** The stable half of the token minted by `@cotal-ai/smoke-kit`. Duplicated as a literal on purpose:
  *  this file runs from the CI runner before any workspace build, so it must not depend on a built
  *  package. The smoke suite asserts the two are equal, so the duplication cannot drift unnoticed. */
@@ -46,6 +64,8 @@ const OWNER_RE = /cotal-smoke-broker-(\d+)-/;
  * printing a clean bill of health it did not earn. That is a stated platform limit, not a silent
  * degradation: the Windows shards run the same suites, and a reader of that output must be able to
  * tell "nothing leaked" from "nothing was looked at".
+ *
+ * @returns {NatsServerRow[] | undefined}
  */
 export function listNatsServers() {
   if (process.platform === "win32") return undefined;
@@ -68,12 +88,13 @@ export function listNatsServers() {
   return rows;
 }
 
+/** @param {number} pid */
 const alive = (pid) => {
   try {
     process.kill(pid, 0);
     return true;
   } catch (e) {
-    return e.code === "EPERM"; // exists, not ours to signal
+    return /** @type {NodeJS.ErrnoException} */ (e).code === "EPERM"; // exists, not ours to signal
   }
 };
 
@@ -103,6 +124,9 @@ const alive = (pid) => {
  * `dryRun` returns the exact same set without signalling anything, so the claim a reaper makes can be
  * read before it is acted on. It is the honest way to answer "what would this kill on my machine",
  * and the answer is worth having: on one developer box, of 15 live brokers it claimed 1.
+ *
+ * @param {{ dryRun?: boolean }} [opts]
+ * @returns {ReapReport}
  */
 export function reapSmokeBrokers({ dryRun = false } = {}) {
   const rows = listNatsServers();
@@ -111,6 +135,7 @@ export function reapSmokeBrokers({ dryRun = false } = {}) {
   }
 
   const tokened = rows.filter((r) => r.args.includes(SMOKE_BROKER_PREFIX));
+  /** @type {ReapedBroker[]} */
   const reaped = [];
   let ownedLive = 0, unparseable = 0;
   for (const { pid, args } of tokened) {
@@ -125,7 +150,7 @@ export function reapSmokeBrokers({ dryRun = false } = {}) {
       process.kill(pid, "SIGKILL");
       reaped.push({ pid, args, owner: Number(owner[1]) });
     } catch (e) {
-      console.error(`smoke broker reaper: could not kill pid ${pid}: ${e.message}`);
+      console.error(`smoke broker reaper: could not kill pid ${pid}: ${/** @type {Error} */ (e).message}`);
     }
   }
   return {
@@ -138,7 +163,13 @@ export function reapSmokeBrokers({ dryRun = false } = {}) {
   };
 }
 
-/** One line when there is nothing to say, a named list when there is. */
+/**
+ * One line when there is nothing to say, a named list when there is.
+ *
+ * @param {string} label
+ * @param {ReapReport} result
+ * @returns {void}
+ */
 export function reportReaped(label, result) {
   if (!result.supported) {
     console.log(`  [reaper] not run on ${process.platform}: leaked smoke brokers are NOT checked here`);

@@ -296,7 +296,7 @@ const out = await fanOut(
   }
   ok("editing what the human saw diverges the resume", div !== null);
   ok("and the error names the exact step", div?.stepKey === "/checkpoint:approve-plan#0", div?.stepKey);
-  ok("and offers fork as the repair", div?.message.includes('fork(run, "/checkpoint:approve-plan#0")'));
+  ok("and offers fork as the repair", div?.message.includes('fork(run, "/checkpoint:approve-plan#0")') === true);
 
   // A `catch` never sees the divergence. Measured before the rule: the resume below caught
   // `{ code: "L4000", kind: "host" }`, logged past it, and performed a NEW effect against the
@@ -566,7 +566,7 @@ else { await sleep("1s", { name: "short-path" }); }
 const c = await checkpoint("gate", "ok?", { timeout: "1m", onExpiry: "${onExpiry}" });
 if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
 `;
-  const script = { checkpoints: { gate: { status: "expired", by: "sim" } }, clock: { start: 0 } };
+  const script = { checkpoints: { gate: { status: "expired" as const, by: "sim" } }, clock: { start: 0 } };
 
   const live = await run(gate("proceed"), { runId: "r-14", handler: new SimHandler(script) });
   ok("under proceed the program continues", keysOf(live.journal).some((k) => k.includes("continued")));
@@ -587,6 +587,30 @@ if (c.status === "expired") { await sleep("1s", { name: "continued" }); }
     threw = e;
   }
   ok("editing onExpiry to fail makes the resume throw", (threw as { code?: string })?.code === "L4007", String(threw).slice(0, 60));
+}
+
+// ---- 14b) the record EVERY non-escalating checkpoint writes ------------------------------------
+//
+// Three sites write an `attempts` array: the live escalation, the recovery of an open hop, and this
+// one, which every checkpoint that does not escalate takes. An engineering review severed this
+// third site, writing `settled: "expired"` in place of the outcome, and all fifteen suites stayed
+// green, because the outcome was only ever read on the escalating chain. It is the most travelled
+// of the three and it was the unguarded one.
+{
+  const PLAIN = `
+const c = await checkpoint("gate", "ok?", { timeout: "1m" });
+log(c.status);
+`;
+  const r = await run(PLAIN, {
+    runId: "r-14b",
+    handler: new SimHandler({ checkpoints: { gate: { status: "resolved", value: true, by: "d" } }, clock: { start: 0 } }),
+  });
+  const rec = (r.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string; settled?: string; to?: string | null }[] })?.attempts ?? [];
+  ok(
+    "a checkpoint that never escalates records one attempt, what it settled as, and no recipient",
+    rec.length === 1 && rec[0]?.attempt === 0 && rec[0]?.settled === "resolved" && rec[0]?.to === undefined,
+    rec,
+  );
 }
 
 // ---- 15) escalation: one entry, two identities -------------------------------------------------
@@ -630,7 +654,7 @@ log(c.status);
   ok("escalation stays inside ONE journal entry", cps.length === 1, cps.length);
   ok("and that entry is occurrence 0, not a second occurrence", cps[0]?.occurrence === 0);
 
-  const attempts = (cps[0]?.result as { attempts?: { attempt: number; requestId: string }[] })?.attempts ?? [];
+  const attempts = (cps[0]?.result as { attempts?: { attempt: number; requestId: string; settled?: string; to?: string | null }[] })?.attempts ?? [];
   ok("the entry records both attempts", attempts.length === 2, attempts);
   ok(
     "each attempt has its OWN identity, derivable before its mint",
@@ -639,6 +663,17 @@ log(c.status);
     attempts.map((a) => a.requestId),
   );
   ok("the program sees the escalated answer", logs[0] === "resolved", logs);
+  // The rest of each attempt's record, which the cells above never read: the identities can be
+  // perfect while the row says the wrong thing happened. Nothing in this package consumes
+  // `settled` or `to` today, so a drift there is silent until the first consumer trusts it, and
+  // both were measured as unasserted: attempt 0's `settled` flipped from `expired` to `resolved`,
+  // and the escalation's `to` dropped entirely, each left every lang suite green. The record's
+  // whole job is to say what happened to whom, so it is asserted here rather than believed.
+  ok(
+    "each attempt records what it settled as, and the escalation records who it went to",
+    attempts[0]?.settled === "expired" && attempts[1]?.settled === "resolved" && attempts[1]?.to === "david",
+    attempts,
+  );
 
   // THE LINE I FLAGGED AS WEAKEST, now asserted rather than believed. Attempt 1's identity is
   // derived from the checkpoint's input projection; if that projection ever drifts from the value
@@ -772,8 +807,32 @@ log(c.status);
   // snapshotted from a REAL run, from inside the second mint, which is exactly the instant a host
   // can die with work outstanding.
   let atSecondMint: readonly JournalEntry[] = [];
+  // ...and a SECOND snapshot, taken one instant later: after the escalation attempt's own bind has
+  // completed, but before its terminal settles. `atSecondMint` above is taken as the second call
+  // ENTERS, so it cannot see whether that attempt records anything at all. A security review showed
+  // what that costs: give the escalated call a bind that SUCCEEDS and records nothing
+  // (`{ ...ctx, attempt: 1, bind: async () => {} }` at the reissue site) and the whole package stays
+  // green, 84 checks here and 43 in `sim.smoke`, while a crash between the handler returning and the
+  // terminal has an ACTIVE row with no external reference to rebind to. The sim-side arms cannot see
+  // it either: they prove the handler awaits whatever bind it is handed, and this is the interpreter
+  // handing it a useless one.
+  let afterSecondBind: readonly JournalEntry[] = [];
+  let journalBinds = 0;
+  let bindsBeforeSecond = 0;
+  let bindsDuringSecond = -1;
   const live = await (async () => {
-    const journal = new Journal({ run: "r-17" });
+    const bare = new Journal({ run: "r-17" });
+    // Count the journal writes the INTERPRETER drives, so the cell below can say the escalation
+    // attempt's bind reached the journal rather than merely that the row carries some fact.
+    const journal = new Proxy(bare, {
+      get(t, prop, recv) {
+        if (prop !== "bind") return Reflect.get(t, prop, recv);
+        return async (...args: Parameters<Journal["bind"]>) => {
+          journalBinds += 1;
+          return t.bind(...args);
+        };
+      },
+    });
     const sim = new SimHandler({
       checkpoints: { gate: [{ status: "expired", by: "s" }, { status: "resolved", value: 1, by: "d" }] },
       clock: { start: 0 },
@@ -788,8 +847,21 @@ log(c.status);
           if (prop !== "checkpoint") return Reflect.get(t, prop, recv);
           return async (req: never, ctx: never) => {
             call += 1;
-            if (call === 2) atSecondMint = journal.entries().map((e) => ({ ...e }));
-            return innerCp(req, ctx);
+            if (call !== 2) return innerCp(req, ctx);
+            atSecondMint = journal.entries().map((e) => ({ ...e }));
+            bindsBeforeSecond = journalBinds;
+            // Wrap the context the INTERPRETER supplied, so what is measured is the bind the
+            // interpreter passes rather than one this test authored.
+            const supplied = ctx as unknown as { bind: (e: Readonly<Record<string, unknown>>) => Promise<void> };
+            const watched = {
+              ...(ctx as object),
+              bind: async (e: Readonly<Record<string, unknown>>) => {
+                await supplied.bind(e);
+                afterSecondBind = journal.entries().map((x) => ({ ...x }));
+                bindsDuringSecond = journalBinds - bindsBeforeSecond;
+              },
+            };
+            return innerCp(req, watched as never);
           };
         },
       }) as never,
@@ -809,6 +881,24 @@ log(c.status);
     attempt: openRow?.attempt,
     expected: id1,
   });
+
+  // The half the row above cannot reach: that the escalation attempt BOUND something, onto the row
+  // that is still active, before it settled. Asserted on the pending state as well as on the fact,
+  // because an external reference that only appears after the terminal is no use to a crash.
+  //
+  // Asserted as a WRITE the interpreter drove, not as a field that happens to be present. `reissueAs`
+  // carries the row forward with `{ ...entry, requestId, attempt }`, so attempt 0's `external`
+  // SURVIVES into attempt 1 and the two are indistinguishable by value: the sim binds the same step
+  // key both times. A cell that only read the field was green under the no-op mutant, measured, which
+  // is why this counts the journal binds the escalation attempt actually caused.
+  const boundRow = afterSecondBind.find((e) => e.kind === "checkpoint");
+  ok(
+    "the escalation attempt drives its OWN journal bind, on the still-active row, before its terminal",
+    bindsDuringSecond === 1 &&
+      boundRow?.state === "pending" &&
+      (boundRow?.external as { simCheckpoint?: unknown } | undefined)?.simCheckpoint !== undefined,
+    { bindsDuringSecond, state: boundRow?.state, external: boundRow?.external, attempt: boundRow?.attempt },
+  );
 
   /** Exactly what survived the crash, replayed back at the interpreter. */
   const crashed = () => new Journal({ run: "r-17", entries: atSecondMint });
@@ -840,10 +930,20 @@ log(c.status);
     ok(`recovering an open hop that ${label} calls the handler exactly once`, seen.length === 1, seen);
     ok(`and submits under the RECORDED attempt-1 id`, seen[0] === id1, { saw: seen[0], expected: id1 });
 
-    const rec = (r.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string }[] })?.attempts ?? [];
+    const rec = (r.journal.entries()[0]?.result as { attempts?: { attempt: number; requestId: string; settled?: string; to?: string | null }[] })?.attempts ?? [];
     ok(`and the recovered chain still records both attempts`, rec.length === 2, rec);
     ok(`and attempt 1 stays numbered 1 rather than being relabelled the first`, rec[1]?.attempt === 1 && rec[1]?.requestId === id1, rec);
     ok(`and attempt 0 keeps its own identity in the record`, rec[0]?.requestId === id0 && rec[0]?.requestId !== rec[1]?.requestId, rec);
+    // The RECOVERY arm writes its own attempts array, and it is a different write site from the live
+    // escalation the cell above section 16 reads. An engineering review severed this one, flipping
+    // attempt 0 to `resolved` and dropping attempt 1's recipient, and every suite stayed green: the
+    // outcome and the recipient were asserted on the live chain only. A resumed run is precisely
+    // when nobody is left to remember what happened, so the record has to carry it here too.
+    ok(
+      `and the recovered chain records that attempt 0 expired, what attempt 1 settled as, and who it went to`,
+      rec[0]?.settled === "expired" && rec[1]?.settled === expected && rec[1]?.to === "david",
+      rec,
+    );
     ok(`and the program sees ${expected}`, logs[0] === expected, logs);
   }
 }

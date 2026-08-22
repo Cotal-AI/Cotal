@@ -89,7 +89,7 @@ export interface EngineCtx {
   call(
     o: unknown,
     k: unknown,
-    args: unknown[] | (() => unknown[]),
+    args: unknown[] | (() => unknown[] | Promise<unknown[]>),
     optional?: boolean,
     chain?: (value: unknown) => unknown,
   ): Promise<unknown>;

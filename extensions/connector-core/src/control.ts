@@ -28,7 +28,7 @@ export type HookHandle = (agent: MeshAgent, ev: HookEvent) => Promise<Record<str
  *  explicit op, NOT a disguised hook event. */
 type ControlFrame =
   | { token?: unknown; event?: unknown; handoff?: unknown; op?: undefined }
-  | { token?: unknown; op?: "shutdown" };
+  | { token?: unknown; op?: "shutdown" | "session" };
 
 /** One line a handoff-aware client writes back once the reply has cleared ITS output to the runtime.
  *  Content is irrelevant — arrival is the signal — but a stable token keeps a transcript readable. */
@@ -52,6 +52,10 @@ export interface ControlServerOpts {
    *  its own clean teardown (close the server, `agent.stop()` to leave the mesh, then exit) — the
    *  server never owns `process.exit`. Absent → shutdown frames are accepted + acked but inert. */
   onShutdown?: () => void;
+  /** Read-only host-session identity. A manager uses this after Pi joins to bind supervised crash
+   *  recovery to the exact Pi JSONL session, never to a newest-session heuristic. Undefined means
+   *  the connector has not reached session_start yet. */
+  onSession?: () => string | undefined;
   /** Called once per handled hook frame, after the reply has been written, with whether it reached a
    *  LIVE client. A hook reply is the only vehicle for the peer messages a handler injects, and it is
    *  not guaranteed to arrive: the relay abandons the exchange after its own timeout, and the runtime
@@ -244,13 +248,23 @@ export function startControlServer(
         sock.destroy(); // unauthenticated — drop hard before handle/onShutdown (no half-open)
         return;
       }
-      if ((frame as { op?: unknown }).op === "shutdown") {
+      const op = (frame as { op?: unknown }).op;
+      if (op === "shutdown") {
         try {
           sock.end(JSON.stringify({ ok: true }) + "\n");
         } catch {
           /* client gone */
         }
         opts.onShutdown?.();
+        return;
+      }
+      if (op === "session") {
+        const sessionId = opts.onSession?.();
+        try {
+          sock.end(JSON.stringify(sessionId ? { ok: true, sessionId } : { ok: false, error: "session not ready" }) + "\n");
+        } catch {
+          /* client gone */
+        }
         return;
       }
       const ev = ((frame as { event?: unknown }).event ?? {}) as HookEvent;

@@ -21,7 +21,8 @@ import { Journal, RunClock } from "../src/journal.js";
 import { KeyScope, programHashOf, stepKeyString } from "../src/keys.js";
 import { ENGINE_LANGUAGE_VERSION, WALKER_LANGUAGE_VERSION, resolvePins, type RunPins } from "../src/pins.js";
 import { RuntimeFault, RunDivergence } from "../src/errors.js";
-import { Cancelled } from "../src/effects.js";
+import { Cancelled, EffectError, type EffectContext, type EffectHandler } from "../src/effects.js";
+import type { JournalEntry, JournalStore } from "../src/journal.js";
 import { LangErrors } from "../src/errors.js";
 import { SimHandler } from "../src/sim.js";
 import { arrayMethods, numberMethods, stringMethods } from "../src/library.js";
@@ -207,7 +208,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // lands with the step key the walker would have allocated.
 
 {
-  const h = harness({ script: { turns: { build: { status: "done" } } } });
+  const h = harness({ script: { turns: { build: { status: "done", at: 0 } } } });
   // What the transform emits, hand-written: `await turn(agent, { name: "build" })`.
   const module = `(ctx) => async () => {
     await ctx.fuel();
@@ -915,7 +916,7 @@ const BOUNDARY_GUARD = "the run boundary is reached, and a refusal at it has a c
 // ---- 11) replay: a recorded effect returns its recorded result and dispatches nothing -----------
 
 {
-  const first = harness({ script: { turns: { build: { status: "done" } } }, runId: "eng-replay" });
+  const first = harness({ script: { turns: { build: { status: "done", at: 0 } } }, runId: "eng-replay" });
   const module = `(ctx) => async () => {
     const agent = await ctx.effect("spawn", ["builder", ctx.born({ name: "hire" })]);
     return await ctx.effect("turn", [agent, ctx.born({ name: "build" })]);
@@ -981,7 +982,7 @@ const MODULE = `(ctx) => async () => {
   const r = await ctx.effect("turn", [builder, ctx.born({ name: "build" })]);
   await ctx.free("log", ["status", ctx.get(r, "status")]);
 }`;
-const SCRIPT = { turns: { build: { status: "done" as const } } };
+const SCRIPT = { turns: { build: { status: "done" as const, at: 0 } } };
 
 {
   const logs: unknown[][] = [];
@@ -1029,7 +1030,9 @@ const SCRIPT = { turns: { build: { status: "done" as const } } };
     "while the language version is the one pin they must NOT share, and each is its own engine's",
     walker.pins.languageVersion === WALKER_LANGUAGE_VERSION
       && engine.pins.languageVersion === ENGINE_LANGUAGE_VERSION
-      && walker.pins.languageVersion !== engine.pins.languageVersion,
+      // Compared as values, not as the literal types the constants narrow to: the point is that a
+      // future edit making them equal reds this cell, which a static "no overlap" refusal forbids.
+      && (walker.pins.languageVersion as string) !== (engine.pins.languageVersion as string),
     { walker: walker.pins.languageVersion, engine: engine.pins.languageVersion },
   );
 
@@ -1639,6 +1642,206 @@ const SIM_HANDLER = new URL("./_sim-handler.mjs", import.meta.url).href;
   // Reported rather than bounded tightly: the number is the point, and a tight bound on a shared
   // machine is a flaky cell. Measured on this floor at 22.8-26.4ms for the thread alone.
   ok(`a cold worker run took ${coldMs}ms, thread and lockdown included`, coldMs < 30_000, coldMs);
+}
+
+// ---- the BRIDGED handler route: effects and the durable store stay in the host ------------------
+//
+// The other answer to "where does the handler live". A handler that cannot be built from cloneable
+// config — a driver's, holding sockets and a lease-bound appender — stays in the host, and the
+// thread forwards the seam over a MessagePort (`bridge.ts`). The claims that make that route the
+// same LANGUAGE as the in-thread one: the journal the run brings back is the walker's entry for
+// entry (which only holds if `now()` really proxies the HOST handler's clock — the SimHandler's is
+// virtual, so a thread that shortcut it to its own `Date.now()` diverges here), every effect is
+// serviced by the host's own handler instance, every entry is durable in the host's store with the
+// pending half BEFORE its effect fires, a bind crosses back into the thread's journal, and a
+// failure keeps its whole domain.
+{
+  const events: string[] = [];
+  const stored: JournalEntry[] = [];
+  const sim = new SimHandler(SCRIPT);
+  const recording: EffectHandler = {
+    now: () => sim.now(),
+    spawn: (req, ctx) => { events.push("effect:spawn"); return sim.spawn(req, ctx); },
+    turn: (req, ctx) => { events.push("effect:turn"); return sim.turn(req, ctx); },
+    ask: (req, ctx) => sim.ask(req, ctx),
+    checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
+    sleep: (req, ctx) => sim.sleep(req, ctx),
+    wait: (req, ctx) => sim.wait(req, ctx),
+    notify: (req, ctx) => sim.notify(req, ctx),
+    monitor: (req, ctx) => sim.monitor(req, ctx),
+    openConclave: (req, ctx) => sim.openConclave(req, ctx),
+    closeConclave: (req, ctx) => sim.closeConclave(req, ctx),
+  };
+  const store: JournalStore = {
+    // The push happens a tick AFTER the call, on purpose: a host that answered the append before
+    // this promise settled would still push in call order if the push were synchronous, and the
+    // ordering cell below could not see that defect at all.
+    append: async (e) => {
+      await new Promise((r) => setTimeout(r, 2));
+      events.push(`append:${e.kind}:${e.state}`);
+      stored.push(e);
+    },
+  };
+  const logs: unknown[][] = [];
+  const bridged = await runInWorker(
+    { source: SOURCE, module: transform(SOURCE).module, runId: "host-b1", handler: "bridged" },
+    { entry: WORKER_ENTRY, bridge: { handler: recording, store }, onLog: (l) => logs.push([...l.values]) },
+  ).done;
+  ok("a bridged run completes, its handler never having left this process", bridged.ok === true, JSON.stringify(bridged).slice(0, 200));
+  const bgot = bridged as Extract<typeof bridged, { ok: true }>;
+  ok("and a bridged run's log lines reached the host", JSON.stringify(logs) === '[["status","done"]]', logs);
+  const walkerAppends: string[] = [];
+  const bwalker = await walkerRun(SOURCE, {
+    runId: "host-b1",
+    handler: new SimHandler(SCRIPT),
+    journal: new Journal({ run: "host-b1", store: { append: async (e) => { walkerAppends.push(`append:${e.kind}:${e.state}`); } } }),
+  });
+  // The one comparison that grades the whole seam at once: stamps come from the HOST handler's
+  // virtual clock, results from its scripted answers, and order from the journal's own laws.
+  ok(
+    "the journal a bridged run brings back is the WALKER'S, entry for entry",
+    JSON.stringify(bgot.entries) === JSON.stringify(bwalker.journal.entries()),
+    { bridged: bgot.entries.map((e) => `${e.kind}#${e.occurrence}/${e.state}@${e.startedAt}`), walker: bwalker.journal.entries().map((e) => `${e.kind}#${e.occurrence}/${e.state}@${e.startedAt}`) },
+  );
+  ok("and there were entries to compare", bgot.entries.length === 2, bgot.entries.length);
+  ok("every effect was serviced by the host's own handler instance",
+    events.includes("effect:spawn") && events.includes("effect:turn"), events);
+  // THE DURABILITY ORDER, which is the property the async append contract carries over the port:
+  // the pending half of a step is in the host's store BEFORE its effect fires, and the settled
+  // half after — for both steps, read off one recorded sequence.
+  const order = (name: string) => events.indexOf(name);
+  ok("a step's pending half is durable in the host BEFORE its effect fires, and its settled half after",
+    order("append:spawn:pending") < order("effect:spawn") && order("effect:spawn") < order("append:spawn:settled")
+    && order("append:turn:pending") < order("effect:turn") && order("effect:turn") < order("append:turn:settled"),
+    events);
+  // The store sequence is compared against the walker's own store, not against a remembered count:
+  // the sim binds on spawn and on turn, so each step appends pending, pending-with-external, then
+  // settled, and the honest claim is that the bridged store hears exactly what the walker's does.
+  ok("and the host's store hears exactly the append sequence the walker's store hears",
+    JSON.stringify(events.filter((e) => e.startsWith("append:"))) === JSON.stringify(walkerAppends)
+    && JSON.stringify(stored.filter((e) => e.state === "settled")) === JSON.stringify([...bgot.entries]),
+    { bridged: events.filter((e) => e.startsWith("append:")), walker: walkerAppends });
+
+  // A BIND CROSSES AGAINST THE ARROW: the handler (host) declares the resource, the journal
+  // (thread) records it, and the durable append comes straight back out — so the recorded entry
+  // carries the external on both arms or the route is not the same language.
+  class BindingHandler extends SimHandler {
+    override async spawn(req: Parameters<SimHandler["spawn"]>[0], ctx: EffectContext) {
+      await ctx.bind({ mark: "b7" });
+      return await super.spawn(req, ctx);
+    }
+  }
+  const bindStored: JournalEntry[] = [];
+  const bound = await runInWorker(
+    { source: SOURCE, module: transform(SOURCE).module, runId: "host-b2", handler: "bridged" },
+    { entry: WORKER_ENTRY, bridge: { handler: new BindingHandler(SCRIPT), store: { append: async (e) => { bindStored.push(e); } } } },
+  ).done;
+  const bboundWalker = await walkerRun(SOURCE, { runId: "host-b2", handler: new BindingHandler(SCRIPT) });
+  // The final external is the sim's own (its `spawn` binds after ours, and the last bind wins,
+  // identically on both arms); what proves the HOST's bind crossed is its own record in the store.
+  const external = (entries: readonly JournalEntry[]) => entries.find((e) => e.kind === "spawn")?.external;
+  ok("a bind made by the host handler is recorded by the thread's journal, exactly as the walker records it",
+    bound.ok === true
+    && external((bound as Extract<typeof bound, { ok: true }>).entries) !== undefined
+    && JSON.stringify(external((bound as Extract<typeof bound, { ok: true }>).entries)) === JSON.stringify(external(bboundWalker.journal.entries())),
+    { bridged: bound.ok === true ? external((bound as Extract<typeof bound, { ok: true }>).entries) : bound, walker: external(bboundWalker.journal.entries()) });
+  ok("and the host bind's own pending record is durable in the store, before the sim's bind replaced it",
+    bindStored.some((e) => e.state === "pending" && (e.external as { mark?: string } | undefined)?.mark === "b7"),
+    bindStored.map((e) => `${e.kind}:${e.state}:${JSON.stringify(e.external)}`));
+
+  // A FAILURE KEEPS ITS WHOLE DOMAIN across both boundaries: the handler's EffectError crosses
+  // into the thread as the class perform.ts grades, and the run's failure crosses back out with
+  // its code and kind as fields, exactly what the walker raises in-process.
+  class RefusingHandler extends SimHandler {
+    override async turn(): Promise<never> {
+      throw new EffectError("L4009", "sim-refusal", "the sim refuses this turn", { turn: "build" });
+    }
+  }
+  const refused = await runInWorker(
+    { source: SOURCE, module: transform(SOURCE).module, runId: "host-b3", handler: "bridged" },
+    { entry: WORKER_ENTRY, bridge: { handler: new RefusingHandler(SCRIPT), store: { append: async () => {} } } },
+  ).done;
+  const walkerRefusal = await walkerRun(SOURCE, { runId: "host-b3", handler: new RefusingHandler(SCRIPT) }).then(
+    () => undefined,
+    (e: unknown) => e as EffectError,
+  );
+  ok("a handler's EffectError crosses the bridge and the thread with its code and kind intact, matching the walker's own raise",
+    refused.ok === false && refused.code === walkerRefusal?.code && refused.kind === walkerRefusal?.kind && refused.code === "L4009" && refused.kind === "sim-refusal",
+    { bridged: refused.ok === false ? { code: refused.code, kind: refused.kind } : refused, walker: { code: walkerRefusal?.code, kind: walkerRefusal?.kind } });
+}
+
+// ---- a race loser's cancellation crosses the bridge while the loser is parked -------------------
+//
+// The signal's one in-run producer: a `race` settling fires `signal.cancel` on every arm whose
+// effect is still in flight (perform.ts, onSettle), and the effect ctx's signal IS that frame's
+// signal. On the bridged route the cancellation must cross the port and fire the HOST handler's
+// mirror while the handler is genuinely parked inside the effect. Order is the claim - the cancel
+// lands between the effect's enter and its return - never a count. One divergence is deliberate
+// and pinned by the third cell: the walker also fires post-settle blanket cancellations at arms
+// that already returned, and those find the bridge's per-effect mirror already retired (the
+// answer deleted it), so the bridged handler hears a cancel only for an effect still in flight. A
+// cancel after the effect answered changes nothing in any handler this repo ships.
+{
+  const RACE = `
+const r = await race({
+  fast: async () => { await spawn("fast", { name: "f" }); return 1; },
+  slow: async () => { await spawn("slow", { name: "s" }); return 2; },
+}, { name: "r" })
+log("winner", r.index)
+`;
+  // The park is event-driven, not a timed bet: the slow arm holds its effect open until its own
+  // cancellation arrives (the 5s timer is a failure bound, hit only when the forward is broken).
+  const parked = (events: string[]): EffectHandler => {
+    const sim = new SimHandler({});
+    return {
+      now: () => sim.now(),
+      spawn: async (req, ctx) => {
+        events.push(`enter:${req.persona}`);
+        ctx.signal.onCancel(() => events.push(`cancel:${req.persona}`));
+        if (req.persona === "slow") {
+          await new Promise<void>((resolve) => {
+            const t = setTimeout(resolve, 5_000);
+            ctx.signal.onCancel(() => {
+              clearTimeout(t);
+              resolve();
+            });
+          });
+        }
+        const out = await sim.spawn(req, ctx);
+        events.push(`return:${req.persona}`);
+        return out;
+      },
+      turn: (req, ctx) => sim.turn(req, ctx),
+      ask: (req, ctx) => sim.ask(req, ctx),
+      checkpoint: (req, ctx) => sim.checkpoint(req, ctx),
+      sleep: (req, ctx) => sim.sleep(req, ctx),
+      wait: (req, ctx) => sim.wait(req, ctx),
+      notify: (req, ctx) => sim.notify(req, ctx),
+      monitor: (req, ctx) => sim.monitor(req, ctx),
+      openConclave: (req, ctx) => sim.openConclave(req, ctx),
+      closeConclave: (req, ctx) => sim.closeConclave(req, ctx),
+    };
+  };
+  const parkedOrder = (ev: string[]): boolean => {
+    const e = ev.indexOf("enter:slow");
+    const c = ev.indexOf("cancel:slow");
+    const r = ev.indexOf("return:slow");
+    return e !== -1 && c !== -1 && r !== -1 && e < c && c < r;
+  };
+  const wEv: string[] = [];
+  await walkerRun(RACE, { runId: "host-c1", handler: parked(wEv) });
+  const bEv: string[] = [];
+  const raced = await runInWorker(
+    { source: RACE, module: transform(RACE).module, runId: "host-c2", handler: "bridged" },
+    { entry: WORKER_ENTRY, bridge: { handler: parked(bEv), store: { append: async () => {} } } },
+  ).done;
+  ok("a race loser parked inside the HOST handler hears its cancellation cross the bridge, between its enter and its return",
+    raced.ok === true && parkedOrder(bEv), bEv);
+  ok("and the walker fires the same in-flight cancellation while its loser is parked, the parity that makes it one language",
+    parkedOrder(wEv), wEv);
+  ok("and the walker's post-settle blanket cancellations do not cross: the bridged handler hears a cancel only for an effect still in flight",
+    bEv.filter((e) => e.startsWith("cancel:")).length === 1 && wEv.filter((e) => e.startsWith("cancel:")).length > 1,
+    { bridged: bEv, walker: wEv });
 }
 
 {
@@ -2615,12 +2818,19 @@ let n = 1;
     // EVERY NAME BELOW IS THE DECLARED SIDE, never the found side: a cell that reports what it found
     // renames itself under exactly the mutant meant to red it, and the config can no longer name it.
     const KINDS = ["log", "result"];
-    const REQUEST_FIELDS = ["entries", "file", "handler", "module", "pins", "runId", "source"];
-    const WORKER_DATA = ["request", "stop"];
+    const REQUEST_FIELDS = ["effectCeiling", "entries", "file", "handler", "module", "pins", "runId", "seed", "source", "stepBudget"];
+    const WORKER_DATA = ["bridge", "request", "stop"];
     const posted = [...new Set([...entrySrc.matchAll(/postMessage\(\{\s*kind: "(\w+)"/g)].map((m) => m[1] as string))].sort();
     ok(`the thread posts exactly the ${KINDS.length} message kinds this table cells`, JSON.stringify(posted) === JSON.stringify(KINDS), { declared: KINDS, found: posted });
     const requestFields = [...new Set([...entrySrc.matchAll(/request\.(\w+)/g)].map((m) => m[1] as string))].sort();
     ok(`the thread reads exactly the ${REQUEST_FIELDS.length} request fields this table cells`, JSON.stringify(requestFields) === JSON.stringify(REQUEST_FIELDS), { declared: REQUEST_FIELDS, found: requestFields });
+    // THE BRIDGE IS ITS OWN CROSSING and gets the same table: both halves live in one module, so
+    // the set is the union of the two directions, and a kind added to either side reds this cell
+    // until it is declared here beside the cells that grade its behaviour.
+    const bridgeSrc = readFileSync(fileURLToPath(new URL("../src/engine/bridge.ts", import.meta.url)), "utf8");
+    const BRIDGE_KINDS = ["answer", "append", "bind", "bind-answer", "cancel", "effect", "now"];
+    const bridgePosted = [...new Set([...bridgeSrc.matchAll(/postMessage\(\{\s*kind: "([\w-]+)"/g)].map((m) => m[1] as string))].sort();
+    ok(`the effect bridge speaks exactly the ${BRIDGE_KINDS.length} message kinds this table cells, both directions together`, JSON.stringify(bridgePosted) === JSON.stringify(BRIDGE_KINDS), { declared: BRIDGE_KINDS, found: bridgePosted });
     // AND THE HOST'S SIDE OF THE SAME AGREEMENT, reproduced rather than reasoned: a thread that
     // posts a kind this host does not know. That is only reachable FROM a thread, so the probe is
     // one - which the entry being an input makes a two-line fixture instead of a mock. Before the
@@ -2778,7 +2988,8 @@ let n = 1;
     walkerSaid.refused && engineSaid.refused
       && walkerSaid.name === "NotCrossable" && engineSaid.name === "NotCrossable" && workerAnswer.name === "NotCrossable"
       && walkerSaid.message === engineSaid.message && engineSaid.message === workerAnswer.message,
-    { walker: walkerSaid.name, engine: engineSaid.name, worker: workerAnswer.name, same: walkerSaid.message === workerAnswer.message },
+    { walker: walkerSaid.refused ? walkerSaid.name : null, engine: engineSaid.refused ? engineSaid.name : null,
+      worker: workerAnswer.name, same: walkerSaid.refused && walkerSaid.message === workerAnswer.message },
   );
   ok(
     "so the thread answers the LANGUAGE's refusal instead of a clone algorithm quoting the emitted module back",

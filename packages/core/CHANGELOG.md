@@ -1,5 +1,114 @@
 # @cotal-ai/core
 
+## 0.27.0
+
+## 0.26.0
+
+## 0.25.0
+
+### Minor Changes
+
+- c83e600: Let a caller hear its own goal's terminal, and say so distinctly when it cannot. `epCallerGrantRows`
+  returns `{pub, sub}` and documents its `sub` as the per-goal progress row that lets a caller follow
+  its own goal to terminal, but the `spawn` and `admin` mint branches took `.pub` alone, so a
+  spawn-capable credential could submit a goal and not hear it: the broker refused the follow, the
+  manager committed the terminal on time, and the caller reported a timeout about a goal that had
+  already settled. Both branches now fold `sub` in. Independently, a subscription error in the follow
+  path was discarded, which made a denied subscription indistinguishable from an empty one; it now
+  surfaces at once as a distinct refusal naming the subject, stating the goal is unaffected, and
+  telling the operator not to retry.
+
+  Every subscription error is surfaced, not only the permission one: whether the subscription failed
+  is knowable from the error being present, so narrowing that decision by error class would return
+  every other class to the silent timeout. What does key on the class is the diagnosis. A broker
+  refusal reports `permission-denied` and asks for the grant row; any other failure reports
+  `unavailable`, names the class, and says plainly that changing ACLs is the wrong remedy.
+
+- b501ec5: Parse the dashboard's history limit once, and bound the single-channel read.
+
+  Three history routes each re-derived the same limit parse, so a value that was not a whole number
+  took a different wrong path through each of them. `Number("abc")` is `NaN` and every comparison
+  against `NaN` is false, so the endpoint's `limit <= 0` guard never fired and its widening history
+  search could never reach either exit: the read did not return everything, it never returned, and the
+  abandoned request kept consuming CPU long after its caller had gone. `Infinity` reached the same
+  hole from the other end and returned a channel's entire retained history.
+
+  The limit is now parsed in one place and a value that is not a whole number is refused with a 400
+  naming what it received, so a caller's mistake is no longer reported as a server fault. The same
+  holds for the channel name in the URL: an escape that cannot be percent-decoded is a caller's typo
+  and is answered as a bad request rather than as the server having broken.
+
+  For every caller that does not go through those routes, the endpoint now requires a history limit to
+  be a whole number of messages it can count exactly, not merely a finite one. A page is taken with
+  `slice(-limit)` and slice truncates toward zero, so any limit between zero and one became `slice(0)`
+  and returned the subject's entire retained history; a magnitude past exact counting did the same. The
+  check sits above the empty-page check on purpose, since `-Infinity` is less than zero and would
+  otherwise be folded into a silent empty page.
+
+  The single-channel history read now carries the same per-request deadline as the aggregate routes,
+  with a named refusal, because the console view re-reads it on every poll. Zero still means zero,
+  negatives still mean an empty page, and an absent or empty limit still means the route's default.
+
+- a087c2b: A spawned agent now inherits the operator's environment. A harness you installed and configured
+  should behave under `cotal spawn` the way it behaves when you run it yourself, and the alternative
+  was Cotal maintaining a list of inference vendors: every new provider needed a change in Cotal
+  before it would work through a managed spawn. `MODEL_PROVIDER_KEYS` and the per-connector lists
+  that extended it are gone, and Cotal no longer names an inference vendor anywhere in its source.
+
+  Cotal still resets its own `COTAL_*` namespace before the child starts, keeping the machine-wide
+  knobs (`COTAL_HOME`, the feedback set, the default-agent pair, the `*_BIN` overrides, the timing
+  knobs). That reset is not configurable, because it is identity and not preference: a connector
+  supplies the per-session names for each child and does so conditionally, so an inherited value is
+  never overwritten and would hand an agent another agent's credential path, ACL, or lifecycle uid.
+  The whole prefix is stripped rather than a named list, because which names a connector sets varies
+  between connectors and a deny-list only ever names what its author remembered.
+
+  To confine a spawned agent instead, declare `spawn.env` in the cotal config file. The child then
+  gets a fixed OS allow-list plus exactly the names you list. An empty array is a real policy meaning
+  the OS allow-list alone. Note what this does and does not buy: `HOME` is forwarded either way, so
+  an agent with a shell reads `~/.aws` and `~/.ssh` regardless, and this protects only secrets that
+  live nowhere but the environment.
+
+- 0b602e4: Managed Pi sessions can now fork an existing Pi transcript into the mesh and recover the exact active Pi session after an unexpected process crash. The Pi adapter reports session changes through its authenticated local control endpoint and an owner-only atomic state file; the manager preserves the Cotal identity, lifecycle UID, credentials, children, and durable inbox across up to three restarts in two minutes, then retires a crash loop loudly. Deliberate stops never restart.
+- 34caaf4: Agent seats no longer export their connection material into the environment every descendant
+  process inherits. The broker URL, the creds path, the auth token, the user-mode identity and the
+  local control token now ride a private 0600 launch-material file whose path is the only thing in the
+  seat's environment; pi, codex and OpenCode drop even that path once they have read it (for OpenCode
+  that happens in the `opencode serve` process its seat shim starts, which is also what runs the
+  session's tool calls), while claude and hermes keep the reference because their readers are
+  short-lived children that start later. A session driven by hand still sets `COTAL_CREDS` / `COTAL_SERVERS` itself, and a
+  launch that carries both carriers is refused rather than resolved by precedence.
+- 8e38835: Carry the manager's readiness guidance on an `uncertain` goal terminal. The manager built a
+  diagnosis naming the agent and telling the operator to inspect rather than re-issue, then dropped
+  it: the terminal committed core's generic "the success signal did not arrive within the readiness
+  deadline", which reads as a plain failure and teaches a re-issue, and a re-issue after a launch
+  that actually succeeded mints a duplicate agent. `settleGoalUncertain` now accepts an optional
+  `reason` the committer supplies, and the manager passes the detail it already constructed; core's
+  line remains the fallback for a committer that supplies none.
+- 6959679: The dashboard survives a poll that fails, and its aggregation answers instead of failing.
+
+  A failed poll used to clear the peers and the channels. A 500's body is valid JSON and `fetch` does
+  not reject on one, so the refusal arrived as a successful parse and was stored as the snapshot. Reads
+  now refuse a non-200 by name, a refused read leaves the value the page already holds exactly where it
+  is, and the header says which source is stale and why. Recovery is the next successful read.
+
+  `/api/activity` no longer fans out every channel's history at once with no upper bound, where one
+  channel's rejection became the whole route's 500 and a slow link produced a 34-second success.
+  Sources race one shared deadline through a bounded pool, and the page always carries `partial`, the
+  counts, the named missing sources, and the deadline it used, so a short page cannot be mistaken for a
+  complete one. `/api/dms` is one read with no subset to serve, so its bound is a 503 that names the
+  deadline. A channel list that cannot be read is a refusal that says so rather than a page claiming
+  the space is empty.
+
+  The elevated observer/admin credential can now delete consumers on its own presence bucket. A KV
+  watch rebuilds itself when the link stalls and each rebuild deletes its predecessor; without that
+  grant the cleanup was refused, so orphaned consumers accumulated until their inactivity threshold and
+  the broker logged a violation every time.
+
+### Patch Changes
+
+- 636b4b8: Name the rejected property in closed-contract validation refusals. An `additionalProperties: false` refusal printed only `/ must NOT have additional properties`; the rejected key rides AJV's `params.additionalProperty` and was dropped, so a caller/responder version skew (a newer CLI sending a key an older deployed manager's contract predates) surfaced as a guessing game. Both render sites (the invocation-time `bad-request` and the responder-side `internal`) now append the key: `/ must NOT have additional properties: "events"`.
+
 ## 0.24.0
 
 ### Minor Changes
