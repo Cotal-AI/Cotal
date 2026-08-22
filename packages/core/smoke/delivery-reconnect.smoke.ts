@@ -2,9 +2,9 @@
  * delivery reconnect-responder smoke (blocker 2). `serveControl(CONTROL_DELIVERY)` is bound via
  * `armPlane3`/`armDeliveryControl`, which runs on EVERY (re)connect — a reconnect drains the old
  * connection (the old sub dies, and `clearConnectionScoped` leaves caller-owned subs alone), so the
- * responder + the Plane-3 KV handles (`membersKv`/`aclKv`/`deliveryKv`, cleared in `doRebuild`) must be
- * re-bound/re-opened on the fresh connection. Asserts: after the daemon endpoint reconnects, durable
- * join/leave/list still work (the responder survived and the KV reads/writes use the new connection).
+ * responder + the Plane-3 KV handles (`membersKv`/`aclKv`/`deliveryKv`) and the observer's derived
+ * membership-feed handle (all cleared in `doRebuild`) must be re-bound/re-opened on the fresh connection.
+ * Asserts: after reconnect, durable join/leave/list still work and the observer can watch membership.
  *
  * Run: pnpm smoke:delivery-reconnect:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */

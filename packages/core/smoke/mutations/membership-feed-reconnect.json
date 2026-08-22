@@ -1,6 +1,6 @@
 {
   "suite": "packages/core/smoke/delivery-reconnect.smoke.ts",
-  "guard": "every connection-scoped KV handle, including the derived membership feed, is reopened after endpoint reconnect",
+  "guard": "the connection-scoped derived membership-feed KV is reopened after endpoint reconnect",
   "command": "pnpm --filter @cotal-ai/core build && pnpm smoke:delivery-reconnect:auth",
   "completionMarker": "DELIVERY-RECONNECT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
