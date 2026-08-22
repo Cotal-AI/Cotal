@@ -5,10 +5,10 @@
   "completionMarker": "DELIVERY-RECONNECT SMOKE",
   "proveWith": "node scripts/mutation-proof.mjs --config packages/core/smoke/mutations/membership-feed-reconnect.json",
   "why": [
-    "The mutation deletes the membership-feed cache clear from the rebuild. The suite opens that cache",
-    "on the old connection before reconnect, then watches it afterward. Without the clear, the watch",
-    "reuses an object bound to the drained connection and fails on the named post-reconnect assertion.",
-    "The cache-clear failure throws inside the pinned NATS client after the named read cell reddens and aborts before the suite summary, so it is retained as the live pre-fix reproduction rather than misreported as a clean mutation kill. The three registered mutations grade the rearm and broker-consumer lifecycle and all complete."
+    "The live pre-fix reproduction proves the stale membership-feed cache fails after reconnect; the pinned",
+    "client aborts that path before a terminal summary, so it is not misreported as a mutation kill.",
+    "The three completing mutations grade the new watch rearm, broker-consumer deletion, and the required",
+    "pre-drain cleanup wait. Each reaches a named terminal assertion."
   ],
   "mutations": [
     {

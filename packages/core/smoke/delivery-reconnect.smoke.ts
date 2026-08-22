@@ -3,8 +3,9 @@
  * `armPlane3`/`armDeliveryControl`, which runs on EVERY (re)connect — a reconnect drains the old
  * connection (the old sub dies, and `clearConnectionScoped` leaves caller-owned subs alone), so the
  * responder + the Plane-3 KV handles (`membersKv`/`aclKv`/`deliveryKv`) and the observer's derived
- * membership-feed handle (all cleared in `doRebuild`) must be re-bound/re-opened on the fresh connection.
- * Asserts: after reconnect, durable join/leave/list still work and the observer can watch membership.
+ * membership-feed handle must be re-bound/re-opened on the fresh connection. Its old ordered consumer
+ * is deleted before drain, and the replacement is deleted when the caller stops the watch. Asserts all
+ * three lifetimes beside the existing durable join/leave/list reconnect checks.
  *
  * Run: pnpm smoke:delivery-reconnect:auth   (needs `nats-server` on PATH; auth/JetStream, local-only)
  */
